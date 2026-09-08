@@ -16,13 +16,15 @@ extern void     sx_reset(void);
 extern void     sx_set(uint32_t id, uint64_t v);
 extern uint64_t sx_read(uint32_t id);
 extern void     sx_settle(void);
+extern uint8_t  sx_process_commit(void);
+extern uint8_t  sx_process_changed(uint32_t id);
 extern const uint32_t sx_process_abi_version;
 extern const uint32_t sx_process_count;
 typedef uint8_t (*sx_process_entry)(uint32_t resume_block);
 extern sx_process_entry const sx_process_entries[];
 extern const uint32_t sx_process_initial_blocks[];
 
-enum { CLK = 0, RST = 1, N = 2 };
+enum { CLK = 0, RST = 1, N = 2, V = 3 };
 
 static void tick(void) {
     sx_set(CLK, 0); sx_settle();
@@ -30,11 +32,15 @@ static void tick(void) {
 }
 
 int main(void) {
-    if (sx_process_abi_version != 2 || sx_process_count == 0) return 5;
+    if (sx_process_abi_version != 3 || sx_process_count == 0) return 5;
     if (!sx_process_entries[0]) return 6;
-    /* The first hardware process has assignments, whose direct lowering is
-       intentionally fail-closed at this migration boundary. */
-    if (sx_process_entries[0](sx_process_initial_blocks[0]) != 255) return 7;
+    sx_reset();
+    sx_set(V, 7);
+    if (sx_process_entries[0](sx_process_initial_blocks[0]) != 0) return 7;
+    if (sx_read(N) != 0) return 8; /* staged writes are not immediately visible */
+    if (sx_process_commit() != 1 || sx_process_changed(N) != 1) return 9;
+    if (sx_read(N) != 7) return 10;
+
     sx_reset();
     sx_set(RST, 0);              /* Logic '0' */
     sx_settle();

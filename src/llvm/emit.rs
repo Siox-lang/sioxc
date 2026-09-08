@@ -480,7 +480,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         index_value.set_linkage(Linkage::Internal);
         self.lookup_globals();
         self.state_globals();
+        self.process_staging_globals();
         self.accessors();
+        self.process_staging();
         let comb_helpers = self.comb_helpers();
         self.settle(&comb_helpers);
     }
@@ -570,7 +572,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         // `state_ty`). `snap` holds each delta's entry values, so `old` can
         // advance to them and internally-generated edges fire in the next delta
         // (cascaded event domains / derived clocks).
-        for name in ["cur", "old", "event", "snap"] {
+        for name in ["cur", "old", "event", "snap", "pending"] {
             let g = self.module.add_global(self.state_ty, None, name);
             g.set_initializer(&self.state_ty.const_zero());
             g.set_linkage(Linkage::Internal);
@@ -589,6 +591,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             "old" => 1,
             "event" => 2,
             "snap" => 3,
+            "pending" => 4,
             _ => unreachable!("unknown state array `{arr}`"),
         }
     }
@@ -853,7 +856,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         // words (see `pack_layout`). `snap` holds each delta's entry values so
         // `old` can advance and internally-generated edges fire next delta.
         let arr = self.i64t().array_type(self.words);
-        for name in ["cur", "old", "snap"] {
+        for name in ["cur", "old", "snap", "pending"] {
             let g = self.module.add_global(arr, None, name);
             g.set_initializer(&arr.const_zero());
             g.set_linkage(Linkage::Internal);
@@ -1000,6 +1003,197 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.builder.build_store(ptr, next).unwrap();
     }
 
+    // --- direct Process IR staging ---------------------------------------
+
+    /// Allocate one byte per signal for pending-write and committed-change
+    /// flags. A sentinel byte keeps empty designs legal without inventing an
+    /// observable signal.
+    fn process_staging_globals(&self) {
+        let bytes = self.ctx.i8_type().array_type(self.n.max(1));
+        for name in ["sx.process.valid", "sx.process.changed"] {
+            let global = self.module.add_global(bytes, None, name);
+            global.set_initializer(&bytes.const_zero());
+            global.set_linkage(Linkage::Internal);
+        }
+    }
+
+    /// Address one process-staging flag by its compile-time signal id.
+    fn process_flag_ptr(&self, name: &str, signal: u32) -> PointerValue<'ctx> {
+        let byte = self.ctx.i8_type();
+        let bytes = byte.array_type(self.n.max(1));
+        let global = self
+            .module
+            .get_global(name)
+            .expect("process staging flag global");
+        unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    bytes,
+                    global.as_pointer_value(),
+                    &[
+                        self.ctx.i32_type().const_zero(),
+                        self.ctx.i32_type().const_int(u64::from(signal), false),
+                    ],
+                    "process.flag",
+                )
+                .unwrap()
+        }
+    }
+
+    /// Emit the exact-width staging helpers called by Process IR entries and
+    /// the small scheduler-facing commit/change ABI.
+    ///
+    /// Each process writes only `@pending`, so every process in one ready batch
+    /// observes the same committed state. `sx_process_commit` then updates
+    /// current, old, and event state together. The runtime owns *when* to call
+    /// it; LLVM owns the representation-dependent operation itself.
+    fn process_staging(&self) {
+        let byte = self.ctx.i8_type();
+        let void = self.ctx.void_type();
+
+        for signal in 0..self.n {
+            let id = SignalId(signal);
+            let value_type = self.value_ty(self.signal_width(id));
+            let function = self.module.add_function(
+                &format!("sx.process.stage.{signal}"),
+                void.fn_type(&[value_type.into()], false),
+                Some(Linkage::Internal),
+            );
+            self.builder
+                .position_at_end(self.ctx.append_basic_block(function, "entry"));
+            let value = function
+                .get_first_param()
+                .expect("stage helper has one value")
+                .into_int_value();
+            self.store("pending", id, value);
+            self.builder
+                .build_store(
+                    self.process_flag_ptr("sx.process.valid", signal),
+                    byte.const_int(1, false),
+                )
+                .unwrap();
+            self.builder.build_return(None).unwrap();
+        }
+
+        // uint8_t sx_process_commit(void)
+        let commit = self
+            .module
+            .add_function("sx_process_commit", byte.fn_type(&[], false), None);
+        self.builder
+            .position_at_end(self.ctx.append_basic_block(commit, "entry"));
+        let mut any_changed = self.ctx.bool_type().const_zero();
+        for signal in 0..self.n {
+            let id = SignalId(signal);
+            let valid_ptr = self.process_flag_ptr("sx.process.valid", signal);
+            let valid = self
+                .builder
+                .build_load(byte, valid_ptr, "process.valid")
+                .unwrap()
+                .into_int_value();
+            let valid = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    valid,
+                    byte.const_zero(),
+                    "process.has_write",
+                )
+                .unwrap();
+            let previous = self.load("cur", id);
+            let pending = self.load("pending", id);
+            let next = self
+                .builder
+                .build_select(valid, pending, previous, "process.next")
+                .unwrap()
+                .into_int_value();
+            let changed = self
+                .builder
+                .build_int_compare(IntPredicate::NE, previous, next, "process.changed")
+                .unwrap();
+
+            // `old` is the state immediately before this commit. Event is one
+            // bit regardless of the signal's packed width.
+            self.store("old", id, previous);
+            self.store("cur", id, next);
+            self.store("event", id, self.zext(changed));
+            self.builder
+                .build_store(
+                    self.process_flag_ptr("sx.process.changed", signal),
+                    self.builder
+                        .build_int_z_extend(changed, byte, "process.changed.byte")
+                        .unwrap(),
+                )
+                .unwrap();
+            self.builder
+                .build_store(valid_ptr, byte.const_zero())
+                .unwrap();
+            any_changed = self
+                .builder
+                .build_or(any_changed, changed, "process.any_changed")
+                .unwrap();
+        }
+        let result = self
+            .builder
+            .build_int_z_extend(any_changed, byte, "process.commit.result")
+            .unwrap();
+        self.builder.build_return(Some(&result)).unwrap();
+
+        // uint8_t sx_process_changed(uint32_t signal)
+        let changed = self.module.add_function(
+            "sx_process_changed",
+            byte.fn_type(&[self.ctx.i32_type().into()], false),
+            None,
+        );
+        let entry = self.ctx.append_basic_block(changed, "entry");
+        let done = self.ctx.append_basic_block(changed, "done");
+        let cases = (0..self.n)
+            .map(|signal| {
+                (
+                    self.ctx.i32_type().const_int(u64::from(signal), false),
+                    self.ctx.append_basic_block(changed, "signal"),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.builder.position_at_end(entry);
+        self.builder
+            .build_switch(
+                changed
+                    .get_first_param()
+                    .expect("changed query has a signal id")
+                    .into_int_value(),
+                done,
+                &cases,
+            )
+            .unwrap();
+        let mut incoming = Vec::with_capacity(cases.len());
+        for (signal, (_, block)) in cases.iter().enumerate() {
+            self.builder.position_at_end(*block);
+            let value = self
+                .builder
+                .build_load(
+                    byte,
+                    self.process_flag_ptr("sx.process.changed", signal as u32),
+                    "process.changed.value",
+                )
+                .unwrap()
+                .into_int_value();
+            incoming.push((value, *block));
+            self.builder.build_unconditional_branch(done).unwrap();
+        }
+        self.builder.position_at_end(done);
+        let result = self
+            .builder
+            .build_phi(byte, "process.changed.result")
+            .unwrap();
+        result.add_incoming(&[(&byte.const_zero(), entry)]);
+        for (value, block) in &incoming {
+            result.add_incoming(&[(value as &dyn inkwell::values::BasicValue, *block)]);
+        }
+        self.builder
+            .build_return(Some(&result.as_basic_value().into_int_value()))
+            .unwrap();
+    }
+
     // --- accessors: sx_set / sx_read / sx_reset ---------------------------
 
     /// Emit the `sx_*` accessor functions that make up the design ABI.
@@ -1009,6 +1203,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         // Multi-word values cross the boundary a word at a time through
         // `sx_set_word`/`sx_read_word` instead.
         let i64 = self.ctx.i64_type();
+        let i8 = self.ctx.i8_type();
         let i32 = self.ctx.i32_type();
         let void = self.ctx.void_type();
 
@@ -1042,6 +1237,19 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             self.store("cur", SignalId(id), init);
             self.store("old", SignalId(id), init);
             self.store("event", SignalId(id), i64.const_zero());
+            self.store("pending", SignalId(id), i64.const_zero());
+            self.builder
+                .build_store(
+                    self.process_flag_ptr("sx.process.valid", id),
+                    i8.const_zero(),
+                )
+                .unwrap();
+            self.builder
+                .build_store(
+                    self.process_flag_ptr("sx.process.changed", id),
+                    i8.const_zero(),
+                )
+                .unwrap();
         }
         self.builder.build_return(None).unwrap();
 

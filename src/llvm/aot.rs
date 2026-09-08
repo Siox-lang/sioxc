@@ -77,10 +77,10 @@ mod tests {
     use siox::diag::{FileId, Span};
     use siox::elab::InstanceId;
     use siox::ir::{
-        BinOp, Driver, Expr, LookupTable, LookupTableId, ProcessActivation, ProcessBinaryOp,
-        ProcessBlock, ProcessBlockId, ProcessCfg, ProcessId, ProcessIr, ProcessNumber,
-        ProcessSignalState, ProcessTerminator, ProcessValue, ProcessValueId, ProcessValueKind,
-        Signal, SignalId,
+        BinOp, Driver, Expr, LookupTable, LookupTableId, ProcessActivation, ProcessAssignment,
+        ProcessBinaryOp, ProcessBlock, ProcessBlockId, ProcessCfg, ProcessId, ProcessInstruction,
+        ProcessIr, ProcessNumber, ProcessSignalState, ProcessSuspendOp, ProcessTerminator,
+        ProcessValue, ProcessValueId, ProcessValueKind, Signal, SignalId,
     };
     use std::process::Command;
 
@@ -363,6 +363,270 @@ signed main(void) {
         let run = Command::new(&bin).status().unwrap();
         assert!(run.success(), "native sim returned {:?}", run.code());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    /// Direct process assignments remain invisible until the scheduler's
+    /// commit boundary, override in source order, and update old/event state
+    /// over every ABI word. An unsupported block must publish no partial write.
+    fn process_staged_writes_link_and_commit_atomically() {
+        if Command::new("clang").arg("--version").output().is_err() {
+            eprintln!("skipping process_staged_writes_link_and_commit_atomically: clang not found");
+            return;
+        }
+
+        let span = Span::new(FileId(0), 0..0);
+        let return_none = || ProcessTerminator::Return {
+            value: None,
+            span: None,
+        };
+        let assignment = |value| ProcessInstruction::Assign {
+            semantics: ProcessAssignment::StagedSignal,
+            driver_context: Some(7),
+            target: ProcessValueId(0),
+            value: ProcessValueId(value),
+            span,
+        };
+        let process_ir = ProcessIr {
+            processes: vec![
+                ProcessCfg {
+                    id: ProcessId(0),
+                    root: InstanceId(0),
+                    owner: InstanceId(0),
+                    label: Some("wide-writer".into()),
+                    span,
+                    activation: ProcessActivation::TimeZero,
+                    entry: ProcessBlockId(0),
+                    locals: vec![],
+                    blocks: vec![ProcessBlock {
+                        id: ProcessBlockId(0),
+                        instructions: vec![assignment(1), assignment(2)],
+                        terminator: return_none(),
+                    }],
+                },
+                ProcessCfg {
+                    id: ProcessId(1),
+                    root: InstanceId(0),
+                    owner: InstanceId(0),
+                    label: Some("edge-observer".into()),
+                    span,
+                    activation: ProcessActivation::TimeZero,
+                    entry: ProcessBlockId(0),
+                    locals: vec![],
+                    blocks: vec![
+                        ProcessBlock {
+                            id: ProcessBlockId(0),
+                            instructions: vec![],
+                            terminator: ProcessTerminator::Branch {
+                                condition: ProcessValueId(10),
+                                then_block: ProcessBlockId(1),
+                                else_block: ProcessBlockId(2),
+                            },
+                        },
+                        ProcessBlock {
+                            id: ProcessBlockId(1),
+                            instructions: vec![],
+                            terminator: ProcessTerminator::Stop { span },
+                        },
+                        ProcessBlock {
+                            id: ProcessBlockId(2),
+                            instructions: vec![],
+                            terminator: ProcessTerminator::Finish { span },
+                        },
+                    ],
+                },
+                ProcessCfg {
+                    id: ProcessId(2),
+                    root: InstanceId(0),
+                    owner: InstanceId(0),
+                    label: Some("unsupported-is-transactional".into()),
+                    span,
+                    activation: ProcessActivation::TimeZero,
+                    entry: ProcessBlockId(0),
+                    locals: vec![],
+                    blocks: vec![
+                        ProcessBlock {
+                            id: ProcessBlockId(0),
+                            instructions: vec![assignment(2)],
+                            terminator: ProcessTerminator::Suspend {
+                                operation: ProcessSuspendOp::Await,
+                                arguments: vec![],
+                                resume: ProcessBlockId(1),
+                                span,
+                            },
+                        },
+                        ProcessBlock {
+                            id: ProcessBlockId(1),
+                            instructions: vec![],
+                            terminator: return_none(),
+                        },
+                    ],
+                },
+            ],
+            values: vec![
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(65),
+                    kind: ProcessValueKind::Signal {
+                        signals: vec![SignalId(0)],
+                        state: ProcessSignalState::Current,
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(65),
+                    kind: ProcessValueKind::BitString {
+                        width: 65,
+                        words: vec![5, 0],
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(65),
+                    kind: ProcessValueKind::BitString {
+                        width: 65,
+                        words: vec![0x0123_4567_89ab_cdef, 1],
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(65),
+                    kind: ProcessValueKind::Signal {
+                        signals: vec![SignalId(0)],
+                        state: ProcessSignalState::Old,
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(65),
+                    kind: ProcessValueKind::Signal {
+                        signals: vec![SignalId(0)],
+                        state: ProcessSignalState::Current,
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Signal {
+                        signals: vec![SignalId(0)],
+                        state: ProcessSignalState::Event,
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(65),
+                    kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::Eq,
+                        left: ProcessValueId(3),
+                        right: ProcessValueId(6),
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::BitSlice {
+                        base: ProcessValueId(4),
+                        high: 64,
+                        low: 64,
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::And,
+                        left: ProcessValueId(5),
+                        right: ProcessValueId(7),
+                    },
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::And,
+                        left: ProcessValueId(8),
+                        right: ProcessValueId(9),
+                    },
+                },
+            ],
+            ..ProcessIr::default()
+        };
+        let design = Design {
+            signals: vec![sig("Wide.value", 65)],
+            process_ir,
+            ..Design::default()
+        };
+
+        let dir = std::env::temp_dir().join(format!("siox_process_stage_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let object = dir.join("design.o");
+        let main_c = dir.join("main.c");
+        let binary = dir.join("sim");
+        emit_object(&design, &object).unwrap();
+        std::fs::write(
+            &main_c,
+            r#"
+extern void sx_reset(void);
+extern unsigned long long sx_read_word(unsigned, unsigned);
+extern unsigned char sx_process_commit(void);
+extern unsigned char sx_process_changed(unsigned);
+typedef unsigned char (*sx_process_entry)(unsigned resume_block);
+extern sx_process_entry const sx_process_entries[];
+extern const unsigned sx_process_initial_blocks[];
+signed main(void) {
+    sx_reset();
+    if (sx_process_entries[0](sx_process_initial_blocks[0]) != 0) return 1;
+    if (sx_read_word(0, 0) != 0 || sx_read_word(0, 1) != 0) return 2;
+    if (sx_process_commit() != 1 || sx_process_changed(0) != 1) return 3;
+    if (sx_read_word(0, 0) != 0x0123456789abcdefULL || sx_read_word(0, 1) != 1) return 4;
+    if (sx_process_entries[1](sx_process_initial_blocks[1]) != 2) return 5;
+    if (sx_process_entries[0](sx_process_initial_blocks[0]) != 0) return 6;
+    if (sx_process_commit() != 0 || sx_process_changed(0) != 0) return 7;
+    if (sx_process_entries[1](sx_process_initial_blocks[1]) != 3) return 8;
+    if (sx_process_entries[2](sx_process_initial_blocks[2]) != 255) return 9;
+    if (sx_process_commit() != 0) return 10;
+    return 0;
+}
+"#,
+        )
+        .unwrap();
+        let link = Command::new("clang")
+            .args([
+                main_c.to_str().unwrap(),
+                object.to_str().unwrap(),
+                "-o",
+                binary.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            link.status.success(),
+            "link failed: {}",
+            String::from_utf8_lossy(&link.stderr)
+        );
+        let run = Command::new(&binary).status().unwrap();
+        assert!(
+            run.success(),
+            "native staged process returned {:?}",
+            run.code()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

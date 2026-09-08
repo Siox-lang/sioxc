@@ -18,6 +18,7 @@ use inkwell::IntPredicate;
 use siox::ir::{
     Design, ProcessActivation, ProcessBinaryOp, ProcessCfg, ProcessNumber, ProcessSensitivity,
     ProcessSignalState, ProcessTerminator, ProcessUnaryOp, ProcessValueId, ProcessValueKind,
+    SignalId,
 };
 
 /// Version of the native process metadata ABI emitted into every object.
@@ -25,7 +26,7 @@ use siox::ir::{
 /// This is deliberately a data version rather than the compiler package
 /// version: the reusable native runtime only needs to change when one of the
 /// exported table layouts or encodings changes.
-const PROCESS_ABI_VERSION: u32 = 2;
+const PROCESS_ABI_VERSION: u32 = 3;
 
 /// A process returned normally and has no pending resume.
 const PROCESS_COMPLETED: u8 = 0;
@@ -928,13 +929,156 @@ fn test_name_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: 
     global.set_constant(true);
 }
 
+/// Compute which arena nodes the direct scalar emitter can lower. Values are
+/// dependency ordered, so this stays iterative and cannot overflow the Rust
+/// stack on a large generated expression graph.
+fn supported_process_values(design: &Design) -> Vec<bool> {
+    let mut supported = Vec::with_capacity(design.process_ir.values.len());
+    let has = |supported: &[bool], id: ProcessValueId| {
+        supported.get(id.0 as usize).copied().unwrap_or(false)
+    };
+    for value in &design.process_ir.values {
+        let scalar_width = value
+            .bit_width
+            .is_some_and(|width| width != 0 && width <= super::emit::LLVM_MAX_INT_BITS);
+        let shape = match &value.kind {
+            ProcessValueKind::Number(_)
+            | ProcessValueKind::BitString { .. }
+            | ProcessValueKind::Char(_) => true,
+            ProcessValueKind::Signal { signals, state } => {
+                matches!(signals.as_slice(), [signal] if design.signals.get(signal.0 as usize).is_some())
+                    && (!matches!(state, ProcessSignalState::Event) || value.bit_width == Some(1))
+            }
+            ProcessValueKind::BitSlice { base, high, low } => {
+                has(&supported, *base)
+                    && low <= high
+                    && design
+                        .process_ir
+                        .values
+                        .get(base.0 as usize)
+                        .and_then(|value| value.bit_width)
+                        .is_some_and(|width| *high < width)
+            }
+            ProcessValueKind::TableLookup { table, index } => {
+                has(&supported, *index)
+                    && design.lookup_tables.get(table.0).is_some_and(|table| {
+                        !table.values.is_empty()
+                            && table.values.len() <= u32::MAX as usize
+                            && (1..=64).contains(&table.element_width)
+                    })
+            }
+            ProcessValueKind::ForeignCall {
+                arguments,
+                float_arguments,
+                integer_arguments,
+                ..
+            } => {
+                arguments.len() == float_arguments.len()
+                    && arguments.len() == integer_arguments.len()
+                    && arguments.iter().all(|argument| has(&supported, *argument))
+            }
+            ProcessValueKind::Unary { operand, .. } => has(&supported, *operand),
+            ProcessValueKind::Binary {
+                operation,
+                left,
+                right,
+            } => {
+                !matches!(operation, ProcessBinaryOp::Custom(_))
+                    && has(&supported, *left)
+                    && has(&supported, *right)
+            }
+            ProcessValueKind::Select {
+                condition,
+                then_value,
+                else_value,
+            } => {
+                has(&supported, *condition)
+                    && has(&supported, *then_value)
+                    && has(&supported, *else_value)
+            }
+            ProcessValueKind::Concat(parts) => {
+                parts.iter().all(|part| has(&supported, *part))
+                    && parts.iter().try_fold(0u32, |width, part| {
+                        width.checked_add(design.process_ir.values.get(part.0 as usize)?.bit_width?)
+                    }) == value.bit_width
+            }
+            ProcessValueKind::Suffixed { .. }
+            | ProcessValueKind::String(_)
+            | ProcessValueKind::Local { .. }
+            | ProcessValueKind::Storage(_)
+            | ProcessValueKind::Definition(_)
+            | ProcessValueKind::Intrinsic(_)
+            | ProcessValueKind::Field { .. }
+            | ProcessValueKind::Attribute { .. }
+            | ProcessValueKind::Index { .. }
+            | ProcessValueKind::CheckedIndex { .. }
+            | ProcessValueKind::Range { .. }
+            | ProcessValueKind::MetaCompare { .. }
+            | ProcessValueKind::Match { .. }
+            | ProcessValueKind::Call { .. }
+            | ProcessValueKind::Construct { .. }
+            | ProcessValueKind::Array(_)
+            | ProcessValueKind::Invalid => false,
+        };
+        supported.push(scalar_width && shape);
+    }
+    supported
+}
+
+/// Resolve a whole-scalar current-signal place to the staging helper emitted
+/// for that signal. Projections and aggregate places remain unsupported until
+/// their Process IR lowering is complete.
+fn staged_signal_target(design: &Design, target: ProcessValueId) -> Option<SignalId> {
+    let value = design.process_ir.values.get(target.0 as usize)?;
+    let ProcessValueKind::Signal { signals, state } = &value.kind else {
+        return None;
+    };
+    let [signal] = signals.as_slice() else {
+        return None;
+    };
+    matches!(state, ProcessSignalState::Current)
+        .then_some(*signal)
+        .filter(|signal| design.signals.get(signal.0 as usize).is_some())
+}
+
+/// Whether a block is transactional for the currently implemented direct
+/// subset. Unsupported blocks execute no foreign calls and publish no staged
+/// writes before returning status 255.
+fn block_is_supported(design: &Design, block: &siox::ir::ProcessBlock, values: &[bool]) -> bool {
+    let value = |id: ProcessValueId| values.get(id.0 as usize).copied().unwrap_or(false);
+    let instructions = block
+        .instructions
+        .iter()
+        .all(|instruction| match instruction {
+            siox::ir::ProcessInstruction::Assign {
+                semantics: siox::ir::ProcessAssignment::StagedSignal,
+                target,
+                value: assigned,
+                ..
+            } => staged_signal_target(design, *target).is_some() && value(*assigned),
+            _ => false,
+        });
+    let terminator = match &block.terminator {
+        ProcessTerminator::Return { value: None, .. }
+        | ProcessTerminator::Goto(_)
+        | ProcessTerminator::Stop { .. }
+        | ProcessTerminator::Finish { .. } => true,
+        ProcessTerminator::Branch { condition, .. } => value(*condition),
+        ProcessTerminator::Return { value: Some(_), .. }
+        | ProcessTerminator::Match { .. }
+        | ProcessTerminator::For { .. }
+        | ProcessTerminator::Suspend { .. } => false,
+    };
+    instructions && terminator
+}
+
 /// Emit a process entry that resumes at any CFG block by its stable block ID.
 ///
-/// The initial implementation deliberately covers only control-only CFGs.
-/// Unsupported executable nodes return [`PROCESS_UNSUPPORTED`], making this a
-/// safe ABI foothold rather than a second partial semantic engine. Instruction
-/// and value lowering can now be added behind this exact entry shape without
-/// changing the scheduler contract.
+/// Blocks containing only whole-scalar staged signal assignments execute
+/// directly and publish into the object-owned pending state. Unsupported
+/// executable nodes return [`PROCESS_UNSUPPORTED`] before a block performs any
+/// calls or writes, making this a safe migration path rather than a second
+/// partial semantic engine.
 fn process_entry<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
@@ -975,14 +1119,69 @@ fn process_entry<'ctx>(
         .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
         .unwrap();
 
+    let supported_values = supported_process_values(design);
     for (block, llvm) in process.blocks.iter().zip(&blocks) {
         builder.position_at_end(*llvm);
-        if !block.instructions.is_empty() {
+        if !block_is_supported(design, block, &supported_values) {
             builder
                 .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
                 .unwrap();
             continue;
         }
+
+        let mut cache = HashMap::new();
+        let mut staged = Vec::with_capacity(block.instructions.len());
+        let mut failed = false;
+        for instruction in &block.instructions {
+            let siox::ir::ProcessInstruction::Assign {
+                semantics: siox::ir::ProcessAssignment::StagedSignal,
+                target,
+                value,
+                ..
+            } = instruction
+            else {
+                unreachable!("block support check admitted another instruction")
+            };
+            let signal = staged_signal_target(design, *target)
+                .expect("block support check admitted a non-signal place");
+            let width = design
+                .signal_width(signal)
+                .expect("validated signal target has a width");
+            let Some(value) = process_value_at(
+                context, module, &builder, design, *value, width, false, &mut cache,
+            ) else {
+                failed = true;
+                break;
+            };
+            staged.push((signal, value));
+        }
+        let branch_condition = match &block.terminator {
+            ProcessTerminator::Branch { condition, .. } => {
+                process_value(context, module, &builder, design, *condition, &mut cache)
+                    .and_then(|condition| as_condition(&builder, condition))
+            }
+            _ => None,
+        };
+        if failed
+            || matches!(block.terminator, ProcessTerminator::Branch { .. })
+                && branch_condition.is_none()
+        {
+            builder
+                .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
+                .unwrap();
+            continue;
+        }
+
+        // All values and the terminator were emitted successfully before any
+        // staged write becomes visible. Multiple writes to one target retain
+        // source-order override because each helper replaces its pending slot.
+        for (signal, value) in staged {
+            let stage = module
+                .get_function(&format!("sx.process.stage.{}", signal.0))
+                .expect("Codegen emitted a stage helper for every signal");
+            builder.build_call(stage, &[value.into()], "").unwrap();
+        }
+
         match &block.terminator {
             ProcessTerminator::Return { value: None, .. } => {
                 builder
@@ -1005,24 +1204,13 @@ fn process_entry<'ctx>(
                     .unwrap();
             }
             ProcessTerminator::Branch {
-                condition,
                 then_block,
                 else_block,
+                ..
             } => {
-                let mut cache = HashMap::new();
-                let Some(condition) =
-                    process_value(context, module, &builder, design, *condition, &mut cache)
-                else {
-                    builder
-                        .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
-                        .unwrap();
-                    continue;
-                };
-                let condition = as_condition(&builder, condition)
-                    .expect("validated scalar process condition has a nonzero width");
                 builder
                     .build_conditional_branch(
-                        condition,
+                        branch_condition.expect("supported branch condition was emitted"),
                         blocks[then_block.0 as usize],
                         blocks[else_block.0 as usize],
                     )
@@ -1278,7 +1466,10 @@ mod tests {
             ..Design::default()
         };
         let llvm = crate::llvm::emit_module_ir(&design).unwrap();
-        assert!(llvm.contains("@sx_process_abi_version = constant i32 2"));
+        assert!(llvm.contains("@sx_process_abi_version = constant i32 3"));
+        assert!(llvm.contains("define i8 @sx_process_commit()"));
+        assert!(llvm.contains("define i8 @sx_process_changed(i32"));
+        assert!(llvm.contains("define internal void @sx.process.stage.0(i1"));
         assert!(llvm.contains("@sx_test_count = constant i32 1"));
         assert!(llvm.contains("@sx_process_count = constant i32 2"));
         assert!(

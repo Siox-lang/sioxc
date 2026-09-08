@@ -49,6 +49,8 @@ extern const uint32_t sx_process_owners[];
 typedef uint8_t (*sx_process_entry)(uint32_t resume_block);
 extern sx_process_entry const sx_process_entries[];
 extern const uint32_t sx_process_initial_blocks[];
+uint8_t sx_process_commit(void);
+uint8_t sx_process_changed(uint32_t signal);
 extern const uint8_t  sx_process_activations[];
 extern const uint32_t sx_process_sensitivity_offsets[];
 extern const uint8_t  sx_process_sensitivity_kinds[];
@@ -58,7 +60,10 @@ extern const uint32_t sx_process_sensitivity_ids[];
 Offsets use the usual half-open flattened-table representation. Activation is
 `0 = time zero`, `1 = reactive`; sensitivity is `0 = signal`, `1 = persistent
 storage`. Counts make the one ABI-safe sentinel in each logically empty table
-unobservable. Changing any table or encoding increments
+unobservable. `sx_process_commit` publishes one complete ready batch and
+returns whether any signal changed. `sx_process_changed` identifies the
+committed signals for reactive sensitivity checks. Changing any table,
+function contract, or encoding increments
 `sx_process_abi_version`.
 
 The runtime starts a process by calling `sx_process_entries[id]` with
@@ -67,8 +72,10 @@ resume block recorded by the suspension service. Entry status is `0 =
 completed`, `1 = suspended` (reserved until suspension lowering lands), `2 =
 stopped`, `3 = finish simulation`, and `255 = unsupported migration node`.
 The last status is a temporary fail-closed guard: current entries execute
-control-only CFGs and must not pretend that an instruction omitted by the
-incremental emitter completed successfully.
+scalar control flow and whole-signal staged assignments, but must not pretend
+that an instruction omitted by the incremental emitter completed
+successfully. An unsupported block is rejected transactionally before it
+performs foreign calls or publishes a pending write.
 
 **Provided by the generated C**: 46 embedded runtime functions plus the test
 `main`, the waveform writers, and the AST-to-C translation of every process
@@ -136,11 +143,15 @@ signatures:
    addressed by `ProcessStorageId`, or emitted as LLVM globals. Initializers,
    recursive layouts, flattened DUT bindings, and endpoint directions are now
    complete, so this is an ABI/allocation choice rather than an IR blocker.
-3. **Staged writes.** Whether the runtime commits end-of-step signal writes or
-   LLVM-emitted code does. Timing is now explicit: locals and test storage are
-   immediate, hardware signals are staged, and an immediate storage write
-   stages propagation to its bound DUT inputs. Ownership of that commit loop is
-   still the open ABI choice.
+3. **Staged writes — decided and emitted.** LLVM owns exact-width pending signal
+   storage and the representation-dependent commit operation. Whole-scalar
+   signal assignments write only that pending plane; later writes to the same
+   signal override in source order. The scheduler calls `sx_process_commit`
+   once after a ready batch, then uses `sx_process_changed` with the immutable
+   sensitivity tables to build the next ready set. Commit updates current,
+   old, and one-bit event state atomically across any number of ABI words. This
+   keeps packed/field-backed LLVM layouts out of the reusable runtime while the
+   runtime still owns the scheduling boundary.
 4. **Activation — decided and emitted.** Exact
    `ProcessActivation::Reactive` signal/storage sensitivity lists are immutable
    offset tables in the design object. The runtime reads them while resetting a
@@ -152,8 +163,6 @@ signatures:
 
 ## Non-goals
 
-- Changing `src/driver/build.rs`, `build.rs`, the Cargo files, or the LLVM
-  backend. This document is specification only.
 - Replacing clang as the linker driver. It stops being a source-language
   translator; it may remain a linker.
 - Designing the runtime's internal data structures. Only the boundary is fixed

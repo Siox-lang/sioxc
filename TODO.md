@@ -336,8 +336,14 @@ Remaining:
   std-derived lookup tables; selections; packed concatenations; and scalar
   foreign calls. Positive minimum-width literals remain positive when they
   enter a signed operation instead of being mistaken for two's-complement
-  negatives. Unsupported aggregate/place values still return the explicit
-  unsupported status.
+  negatives. Whole-scalar staged signal assignments also execute directly:
+  LLVM owns exact-width pending state and exported commit/change queries, while
+  the future runtime owns when a ready-process batch commits. Commit preserves
+  source-order override and updates current/old/event state across arbitrary
+  ABI words; an unsupported block performs no partial calls or writes before
+  returning status 255. Locals, persistent storage and projections, checked
+  indexing/failure latches, runtime instructions, match/for, and suspension
+  remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad
