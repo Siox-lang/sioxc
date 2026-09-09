@@ -207,9 +207,13 @@ language-lowering path.
    coverage is added. Exact-width scalar execution, checked-index/range failure
    latches, recursive aggregate frames and constant projections, flattened
    aggregate signal writes, and mixed per-place assignment timing are already
-   direct. Runtime calls, dynamic aggregate selection/update, structured
-   match/for dispatch, delayed scheduling, and suspension are the next coverage
-   boundary.
+   direct. A fixed, design-independent runtime now consumes the immutable test,
+   process, activation, and sensitivity tables; it runs time-zero/reactive ready
+   batches, commits staged state once per delta, and has a fixed filtering/report
+   CLI. An opt-in native link path proves this pipeline without generating
+   design C. Runtime calls, dynamic aggregate selection/update, structured
+   match/for dispatch, delayed scheduling, suspension, and waveforms are the
+   next coverage boundary before it becomes the default.
 7. **Run both native backends differentially.** Require identical test results,
    diagnostics, time progression, resolved values, and VCD/FST samples across
    the full default and bit-packed corpus.

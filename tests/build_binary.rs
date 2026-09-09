@@ -47,6 +47,59 @@ fn waveform_times(trace: &str) -> Vec<u64> {
         .collect()
 }
 
+#[test]
+fn direct_process_runtime_links_without_generated_design_c() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory = std::env::temp_dir().join(format!(
+        "siox_direct_process_runtime_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("direct.siox");
+    let output = directory.join("direct-test");
+    std::fs::write(
+        &source,
+        r#"module direct_runtime;
+           using std::bits::unsigned;
+           #[test] entity DirectRuntime {}
+           impl DirectRuntime {
+               let value: unsigned[1] = 0;
+               process run { value = 1; }
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "direct Process IR fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output).output().unwrap();
+    let report = String::from_utf8_lossy(&run.stdout);
+    assert!(
+        run.status.success() && report.contains("test direct_runtime::DirectRuntime ... ok"),
+        "direct Process IR fixture failed:\n{}{}",
+        report,
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
 #[cfg(unix)]
 #[test]
 fn native_output_path_does_not_need_to_be_utf8() {

@@ -61,6 +61,7 @@ flowchart TB
     DESIGN -->|LLVM output requested| LL["siox::llvm<br/>native state + codegen"]
     DESIGN -->|test descriptors| HARNESS["generated C compatibility harness<br/>scheduler + VCD/FST"]
     RUNTIME["embedded precompiled libfst runtime<br/>source fallback"] --> LINK
+    PROCESS_RUNTIME["embedded fixed Process scheduler + CLI<br/>migration path"] --> LINK
     SY -->|AST compatibility bodies| HARNESS
     LL -->|Emit::LlvmIr| LLVM_TEXT["LLVM IR text"]
     LL -->|object or test requested| OBJ["native object"]
@@ -107,9 +108,9 @@ CFGs with root/instance ownership, while a test plan additionally contributes
 storage, clocks, and stimulus. Branch, suspend/resume, structured match/for
 control, termination, assignment semantics, activation, labels, and spans
 already live there. Operands are arena-owned once and referenced from CFG nodes
-by stable `ProcessValueId`. The current C
-compatibility harness consumes descriptors
-from the design but still translates test statements from AST. The harness
+by stable `ProcessValueId`. The current default C compatibility harness
+consumes descriptors from the design but still translates test statements
+from AST. The harness
 contains the stimulus, scheduler, assertions, and reporting; it
 links with the native design object when `Emit::TestExecutable` is requested.
 The harness contains the VCD writer, and the resulting executable incorporates
@@ -121,6 +122,14 @@ needs Clang and zlib but neither GTKWave nor an installed libfst. Therefore the
 `sioxc` feature set needs an LLVM toolchain; a
 `default-features = false` editor build does not need the native backend or
 harness toolchain.
+
+The replacement boundary is executable now as an opt-in migration path. The
+LLVM object exports immutable test/process/activation/sensitivity tables and
+callable process entries; one fixed precompiled scheduler consumes them, owns
+ready batches and delta commits, and links with a fixed descriptor-driven CLI.
+This path emits no design-specific C. It remains opt-in while suspend/resume,
+runtime operations, and VCD/FST services are ported, so unsupported Process IR
+nodes fail explicitly instead of silently changing behavior.
 
 ## Planned unified process pipeline
 
@@ -273,6 +282,7 @@ flowchart LR
     BACKEND -->|object or test requested| OBJECT["native object"]
     DESIGN -->|test descriptors| HARNESS["generated C compatibility harness"]
     RUNTIME["embedded precompiled libfst runtime"] --> LINK
+    PROCESS_RUNTIME["embedded fixed Process scheduler + CLI<br/>migration path"] --> LINK
     MODULES -->|AST compatibility bodies| HARNESS
     OBJECT -->|Emit::TestExecutable| LINK["Clang + native linker"]
     HARNESS --> LINK

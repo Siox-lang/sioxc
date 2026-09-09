@@ -10,8 +10,9 @@
 //! arbitrary-width scalar representation as elaborated signals.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use siox::elab::{Hierarchy, InstanceId};
 use siox::ir::{
@@ -36,6 +37,68 @@ const LIBFST_LZ4_H: &str = include_str!("../../third_party/libfst/src/lz4.h");
 const LIBFST_API_O: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fstapi.o"));
 const LIBFST_FASTLZ_O: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fastlz.o"));
 const LIBFST_LZ4_O: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lz4.o"));
+const PROCESS_RUNTIME_C: &str = include_str!("../../runtime/process.c");
+const PROCESS_RUNTIME_H: &str = include_str!("../../runtime/process.h");
+const PROCESS_MAIN_C: &str = include_str!("../../runtime/main.c");
+const PROCESS_RUNTIME_O: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/process_runtime.o"));
+const PROCESS_MAIN_O: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/process_main.o"));
+
+static NATIVE_BUILD_SERIAL: AtomicU64 = AtomicU64::new(0);
+
+/// A collision-free scratch directory for concurrent compiler invocations.
+fn native_build_dir(kind: &str) -> PathBuf {
+    let serial = NATIVE_BUILD_SERIAL.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("siox_{kind}_{}_{}", std::process::id(), serial))
+}
+
+/// Link the LLVM Process IR object with the reusable scheduler and CLI.
+///
+/// This is the replacement pipeline: the C inputs are fixed runtime sources,
+/// never text translated from a design. The environment switch in [`build`]
+/// keeps it opt-in until all Process IR runtime operations and suspend forms
+/// have direct implementations.
+fn link_process_runtime(design: &Design, out: &Path) -> Result<(), String> {
+    let tmp = native_build_dir("process_runtime");
+    std::fs::create_dir_all(&tmp).map_err(|error| error.to_string())?;
+    let object = tmp.join("design.o");
+    let result = (|| {
+        siox::llvm::emit_object(design, &object)?;
+
+        let precompiled = !PROCESS_RUNTIME_O.is_empty() && !PROCESS_MAIN_O.is_empty();
+        let mut clang = Command::new("clang");
+        clang.arg(&object);
+        if precompiled {
+            let scheduler = tmp.join("process_runtime.o");
+            let main = tmp.join("process_main.o");
+            std::fs::write(&scheduler, PROCESS_RUNTIME_O).map_err(|error| error.to_string())?;
+            std::fs::write(&main, PROCESS_MAIN_O).map_err(|error| error.to_string())?;
+            clang.arg(scheduler).arg(main);
+        } else {
+            let scheduler = tmp.join("process.c");
+            let header = tmp.join("process.h");
+            let main = tmp.join("main.c");
+            std::fs::write(&scheduler, PROCESS_RUNTIME_C).map_err(|error| error.to_string())?;
+            std::fs::write(&header, PROCESS_RUNTIME_H).map_err(|error| error.to_string())?;
+            std::fs::write(&main, PROCESS_MAIN_C).map_err(|error| error.to_string())?;
+            clang.arg(scheduler).arg(main).arg("-I").arg(&tmp);
+        }
+        let output = clang
+            .args(["-O2", "-lm"])
+            .arg("-o")
+            .arg(out)
+            .output()
+            .map_err(|error| format!("failed to run clang: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "clang failed to link the Process IR simulator:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(tmp);
+    result
+}
 
 /// `file:line:col` for a source span, or `None` when the span has no file.
 ///
@@ -166,6 +229,16 @@ pub(super) fn build(request: BuildRequest<'_>) -> Result<(), String> {
     let issues = design.validate();
     if !issues.is_empty() {
         return Err(issues.join("; "));
+    }
+    if std::env::var_os("SIOX_DIRECT_PROCESS_RUNTIME").is_some() {
+        if debug {
+            return Err(
+                "direct Process IR debug metadata is not implemented; omit --debug or unset \
+                 SIOX_DIRECT_PROCESS_RUNTIME"
+                    .into(),
+            );
+        }
+        return link_process_runtime(design, out);
     }
 
     let mut fns = FunctionIndex::new(resolved);

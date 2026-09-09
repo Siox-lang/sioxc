@@ -56,6 +56,7 @@ flowchart LR
     LLVM --> OBJ["native object"]
     OBJ --> TEST["test executable"]
     HARNESS --> TEST
+    FIXED["fixed Process scheduler + CLI<br/>migration path"] --> TEST
 
     FRONT --> RESULT["Compilation<br/>diagnostics + retained phase products<br/>statistics + optional artifact or failure"]
     OBJ --> RESULT
@@ -69,7 +70,10 @@ sequential/scheduling boundary, the planned endpoint is one semantic track:
 validation → optimization → output`. `#[test]` only adds root/descriptor
 metadata. The remaining native-harness branch is removed by the
 [unified process pipeline plan](proposals/testbench-software-ir.md); only final
-artifact selection remains variable.
+artifact selection remains variable. An opt-in migration path already links
+the LLVM process entries to one fixed scheduler/CLI without generating
+design-specific C; suspension, runtime services, and waveform coverage still
+keep the generated compatibility harness as the default.
 
 The arrows through parse, resolve, type-check, elaboration, and IR are compiler
 work. The final arrow back to `siox::compiler` is the function return, not
@@ -115,11 +119,13 @@ cargo run --bin sioxc -- --test <file> -o tests # compile native #[test] executa
 
 A bare `sioxc <file>` compiles the sole uninstantiated entity to a native
 object (like `rustc foo.rs`); multiple structural roots require
-`--top <qualified-entity>`. LLVM 22 is the selected native backend. Creating a native
-`#[test]` executable additionally invokes Clang on the generated C harness and
-links the compiler's prebuilt FST runtime plus zlib. A frontend-only API/LSP
-build with `default-features = false` needs neither LLVM nor these native-output
-tools.
+`--top <qualified-entity>`. LLVM 22 is the selected native backend. Creating a
+native `#[test]` executable additionally invokes Clang on the generated C
+compatibility harness and links the compiler's prebuilt FST runtime plus zlib.
+The replacement path instead links the same LLVM object with prebuilt,
+design-independent Process scheduler and CLI objects; it is not yet the
+default. A frontend-only API/LSP build with `default-features = false` needs
+neither LLVM nor these native-output tools.
 
 | Command | Does |
 | ------- | ---- |

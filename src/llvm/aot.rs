@@ -80,10 +80,12 @@ mod tests {
         BinOp, Driver, Expr, LayoutDirection, LayoutField, LayoutKind, LookupTable, LookupTableId,
         ProcessActivation, ProcessAggregateField, ProcessAssignment, ProcessBinaryOp, ProcessBlock,
         ProcessBlockId, ProcessCfg, ProcessId, ProcessInstruction, ProcessIr, ProcessLocal,
-        ProcessLocalId, ProcessNumber, ProcessSignalState, ProcessStorage, ProcessStorageBinding,
-        ProcessStorageId, ProcessSuspendOp, ProcessTerminator, ProcessValue, ProcessValueId,
-        ProcessValueKind, ScalarDomain, Signal, SignalId, SourceLayout,
+        ProcessLocalId, ProcessNumber, ProcessSensitivity, ProcessSignalState, ProcessStorage,
+        ProcessStorageBinding, ProcessStorageId, ProcessSuspendOp, ProcessTerminator, ProcessTest,
+        ProcessValue, ProcessValueId, ProcessValueKind, ScalarDomain, Signal, SignalId,
+        SourceLayout,
     };
+    use siox::resolve::DefId;
     use std::process::Command;
 
     /// A minimal test signal: a plain bit vector of `width` at `path`, with no
@@ -1744,5 +1746,171 @@ signed main(void) {
         let run = Command::new(&bin).status().unwrap();
         assert!(run.success(), "native wide sim returned {:?}", run.code());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    /// The reusable runtime, rather than generated per-design C, owns delta
+    /// scheduling. A reactive process sees the time-zero writer only after
+    /// commit, is requeued from its sensitivity table, and publishes its own
+    /// staged result at the following commit.
+    fn fixed_process_runtime_schedules_reactive_delta() {
+        if Command::new("clang").arg("--version").output().is_err() {
+            eprintln!("skipping fixed_process_runtime_schedules_reactive_delta: clang not found");
+            return;
+        }
+
+        let span = Span::new(FileId(0), 0..0);
+        let assignment = |target, value| ProcessInstruction::Assign {
+            semantics: ProcessAssignment::StagedSignal,
+            driver_context: None,
+            target: ProcessValueId(target),
+            value: ProcessValueId(value),
+            span,
+        };
+        let process = |id, activation, instruction| ProcessCfg {
+            id: ProcessId(id),
+            root: InstanceId(0),
+            owner: InstanceId(0),
+            label: Some(format!("delta-{id}")),
+            span,
+            activation,
+            entry: ProcessBlockId(0),
+            locals: vec![],
+            blocks: vec![ProcessBlock {
+                id: ProcessBlockId(0),
+                instructions: vec![instruction],
+                terminator: ProcessTerminator::Return {
+                    value: None,
+                    span: Some(span),
+                },
+            }],
+        };
+        let mut ranged = sig("T.ranged", 64);
+        ranged.integer = true;
+        ranged.range = Some((-2, 2));
+        let mut range_failure = process(2, ProcessActivation::TimeZero, assignment(3, 4));
+        range_failure.root = InstanceId(1);
+        range_failure.owner = InstanceId(1);
+        let design = Design {
+            signals: vec![sig("T.trigger", 1), sig("T.observed", 1), ranged],
+            process_ir: ProcessIr {
+                processes: vec![
+                    process(0, ProcessActivation::TimeZero, assignment(0, 1)),
+                    process(
+                        1,
+                        ProcessActivation::Reactive {
+                            sensitivity: vec![ProcessSensitivity::Signal(SignalId(0))],
+                        },
+                        assignment(2, 0),
+                    ),
+                    range_failure,
+                ],
+                tests: vec![
+                    ProcessTest {
+                        entity: DefId(0),
+                        root: InstanceId(0),
+                        qualified_name: "runtime::delta".into(),
+                        span,
+                        processes: vec![ProcessId(0), ProcessId(1)],
+                    },
+                    ProcessTest {
+                        entity: DefId(1),
+                        root: InstanceId(1),
+                        qualified_name: "runtime::range_failure".into(),
+                        span,
+                        processes: vec![ProcessId(2)],
+                    },
+                ],
+                values: vec![
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(1),
+                        kind: ProcessValueKind::Signal {
+                            signals: vec![SignalId(0)],
+                            state: ProcessSignalState::Current,
+                        },
+                    },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(1),
+                        kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+                    },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(1),
+                        kind: ProcessValueKind::Signal {
+                            signals: vec![SignalId(1)],
+                            state: ProcessSignalState::Current,
+                        },
+                    },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(64),
+                        kind: ProcessValueKind::Signal {
+                            signals: vec![SignalId(2)],
+                            state: ProcessSignalState::Current,
+                        },
+                    },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(64),
+                        kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![7])),
+                    },
+                ],
+                ..ProcessIr::default()
+            },
+            ..Design::default()
+        };
+        let issues = design.validate();
+        assert!(issues.is_empty(), "invalid runtime fixture: {issues:?}");
+
+        let dir = std::env::temp_dir().join(format!("siox_fixed_runtime_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let object = dir.join("design.o");
+        let probe = dir.join("probe.c");
+        let binary = dir.join("sim");
+        emit_object(&design, &object).unwrap();
+        std::fs::write(
+            &probe,
+            r#"
+#include "process.h"
+#include <string.h>
+extern unsigned long long sx_read(unsigned);
+signed main(void) {
+    if (sx_runtime_run_test(0)) return 1;
+    if (sx_runtime_error()) return 2;
+    if (sx_read(1) != 1) return 3;
+    if (!sx_runtime_run_test(1)) return 4;
+    if (!sx_runtime_error() || !strstr(sx_runtime_error(), "range failure")) return 5;
+    return 0;
+}
+"#,
+        )
+        .unwrap();
+        let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
+        let link = Command::new("clang")
+            .args(["-std=c11", "-Wall", "-Wextra", "-Werror"])
+            .arg(&probe)
+            .arg(runtime.join("process.c"))
+            .arg("-I")
+            .arg(&runtime)
+            .arg(&object)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(
+            link.status.success(),
+            "link failed: {}",
+            String::from_utf8_lossy(&link.stderr)
+        );
+        let run = Command::new(&binary).status().unwrap();
+        assert!(run.success(), "fixed runtime returned {:?}", run.code());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

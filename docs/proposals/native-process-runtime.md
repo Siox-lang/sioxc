@@ -1,7 +1,9 @@
 # The native process runtime
 
-Status: **migration ABI**. Runtime services and executable instruction/value
-coverage remain to be implemented. The LLVM object exports source-independent
+Status: **executable migration path**. A fixed runtime now schedules time-zero
+and reactive Process IR entries through delta commits, while suspension,
+runtime services, and remaining executable instruction/value coverage are
+still being implemented. The LLVM object exports source-independent
 test/process descriptors and one callable resume entry per process. It
 specifies the fixed ABI that direct LLVM process lowering will call, so step 6 of the
 [unified process pipeline](testbench-software-ir.md) has a target to build
@@ -80,7 +82,15 @@ incremental emitter completed successfully. An unsupported block is rejected
 transactionally before it performs foreign calls or publishes a pending
 write.
 
-**Provided by the generated C**: 46 embedded runtime functions plus the test
+`runtime/process.c` and `runtime/main.c` implement the first reusable boundary:
+dynamic ready/stopped sets, sensitivity-driven delta requeueing, descriptor ABI
+validation, test filtering, and stable pass/fail accounting. They are compiled
+once with `sioxc` and embedded as relocatable objects, with their fixed sources
+retained only as a toolchain fallback. `SIOX_DIRECT_PROCESS_RUNTIME=1` selects
+this no-generated-design-C linker path during migration. A suspend or otherwise
+unsupported entry fails explicitly; the default remains the compatibility path.
+
+**Still provided by the generated C**: 46 embedded runtime functions plus the test
 `main`, the waveform writers, and the AST-to-C translation of every process
 body. 7,513 of build.rs's 8,833 function lines touch `ast::`; the rest is the
 runtime inventoried below.

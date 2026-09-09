@@ -9044,3 +9044,27 @@ timing. Gates on the final tree: 422 default / 404 all-feature unit tests plus
 all integrations/docs, strict all-target/all-feature Clippy, frontend-only
 check, corpus 183/183 under 8 GiB, linked ABI probes, and a directly built FIFO
 test executable whose VCD passes the semantic waveform checker.
+2026-09-09 Codex: aggregate lowering landed as 0b02b98. Starting the reusable
+native scheduler boundary in `runtime/`, `build.rs`, and the native linker edge.
+The first fixed runtime object will consume only Process IR descriptor/entry
+tables, run time-zero and reactive ready batches, and expose a callable
+`sx_runtime_run_test` independently of its fixed CLI `main`. It will not contain
+per-design statements or AST-derived source, and the compatibility harness
+remains selected until direct instruction/suspension coverage reaches parity.
+2026-09-09 Codex: the first fixed scheduler and direct native linker are green,
+so I am updating `TODO.md`, `docs/README.md`, `docs/architecture.md`, and the two
+runtime/pipeline proposals to describe the actual migration boundary. The new
+path is intentionally opt-in through `SIOX_DIRECT_PROCESS_RUNTIME`: it handles
+time-zero/reactive delta scheduling from immutable Process IR tables without
+generating design C, while suspension, runtime calls, and waveforms remain on
+the compatibility path.
+2026-09-09 Codex: reusable Process runtime boundary is ready to land. The fixed
+runtime/CLI is precompiled and embedded with the compiler (fixed-source fallback
+only), the migration linker emits the LLVM design object and no design-derived
+C, and the scheduler runs descriptor-selected time-zero/reactive processes to
+delta stability. It also consumes the LLVM index/range failure latches rather
+than falsely passing them. Verification on the final tree: strict C11 compile
+for both runtime sources, 423 default unit tests plus integrations/docs, 405
+all-feature unit tests plus integrations/docs, strict all-target/all-feature
+Clippy, frontend-only check, corpus 183/183 under 8 GiB, linked scheduler ABI
+probe, and source-to-fixed-runtime executable test.

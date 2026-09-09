@@ -358,8 +358,12 @@ Remaining:
   local/storage/signal concatenation targets preserve their respective
   immediate or staged timing. Dynamic aggregate indices and mixed targets that
   write multiple projections of the same root still fail closed until their
-  update merge is explicit. Runtime instructions, match/for, scheduling, and
-  suspension remain.
+  update merge is explicit. A fixed embedded scheduler/CLI now consumes the
+  descriptor and entry ABI, executes time-zero/reactive ready batches, commits
+  once per delta, and can be selected through the migration-only
+  `SIOX_DIRECT_PROCESS_RUNTIME` link path without generating design C. Runtime
+  instructions, match/for, delayed scheduling, suspension, waveform services,
+  and making this path the default remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad
@@ -425,10 +429,13 @@ Current baseline:
   unified Process IR instead of translating AST, then add direct LLVM process
   lowering and a linked scheduler/test/waveform runtime. The object-side static
   descriptor ABI, descriptor-owned test filtering/reporting, and IR-owned clock
-  discovery are complete; a temporary descriptor-index-to-C-body dispatcher,
-  statement/value execution, and runtime linking remain. Differentially test
-  both outputs before deleting the C translator. The complete straight-pipeline
-  plan is in `docs/proposals/testbench-software-ir.md`.
+  discovery are complete; a temporary descriptor-index-to-C-body dispatcher
+  and statement/value execution remain. The first fixed runtime/linker path now
+  schedules direct time-zero/reactive LLVM entries and reports descriptor-owned
+  tests without generating design C, but is opt-in until suspensions, runtime
+  services, and waveforms reach parity. Differentially test both outputs before
+  deleting the C translator. The complete straight-pipeline plan is in
+  `docs/proposals/testbench-software-ir.md`.
 - ✅ Generated test executables accept `-o <path>`, choosing the format from
   the path's extension (`.vcd` writes VCD, anything else FST), and
   write hierarchy, femtosecond timestamps, changed arbitrary-width values,

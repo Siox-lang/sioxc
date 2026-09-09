@@ -1,23 +1,25 @@
 //! Check that the vendored-by-reference sources are present.
 //!
-//! `third_party/libfst` is a git submodule. Its native FST runtime is normally
-//! compiled to objects embedded in `sioxc`, while its sources remain embedded
-//! as a fallback. A clone made without `--recursive` leaves that directory
-//! empty, and the failure would otherwise be a raw "couldn't read
-//! .../fstapi.c" pointing inside the compiler rather than at the thing the
-//! reader has to do.
+//! `third_party/libfst` is a git submodule. Fixed native runtime sources are
+//! compiled to objects embedded in `sioxc`; unlike the compatibility harness,
+//! these objects contain no per-design generated code. A clone made without
+//! `--recursive` leaves libfst empty, and the failure would otherwise be a raw
+//! "couldn't read .../fstapi.c" pointing inside the compiler rather than at
+//! the thing the reader has to do.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const LIBFST: &str = "third_party/libfst/src/fstapi.c";
-const RUNTIME_SOURCES: [(&str, &str); 3] = [
-    ("fstapi.c", "fstapi.o"),
-    ("fastlz.c", "fastlz.o"),
-    ("lz4.c", "lz4.o"),
+const RUNTIME_SOURCES: [(&str, &str); 5] = [
+    ("third_party/libfst/src/fstapi.c", "fstapi.o"),
+    ("third_party/libfst/src/fastlz.c", "fastlz.o"),
+    ("third_party/libfst/src/lz4.c", "lz4.o"),
+    ("runtime/process.c", "process_runtime.o"),
+    ("runtime/main.c", "process_main.o"),
 ];
 
-/// Compile the design-independent waveform runtime once with `sioxc` itself.
+/// Compile the design-independent native runtimes once with `sioxc` itself.
 ///
 /// The resulting objects are embedded in the compiler and merely copied when
 /// a simulator is linked. Failure is deliberately non-fatal: cross builds and
@@ -26,17 +28,16 @@ const RUNTIME_SOURCES: [(&str, &str); 3] = [
 fn precompile_runtime(out_dir: &Path) {
     let enabled = std::env::var_os("CARGO_FEATURE_LLVM").is_some();
     let native = std::env::var_os("HOST") == std::env::var_os("TARGET");
-    let source_dir = Path::new("third_party/libfst/src");
-
     for (source, object) in RUNTIME_SOURCES {
+        let source = Path::new(source);
         let output = out_dir.join(object);
         let compiled = enabled
             && native
             && Command::new("clang")
                 .args(["-O2", "-fPIC", "-c"])
-                .arg(source_dir.join(source))
+                .arg(source)
                 .arg("-I")
-                .arg(source_dir)
+                .arg(source.parent().expect("runtime source directory"))
                 .arg("-o")
                 .arg(&output)
                 .status()
@@ -55,7 +56,7 @@ fn precompile_runtime(out_dir: &Path) {
         })
     {
         println!(
-            "cargo:warning=clang could not precompile the native waveform runtime; \
+            "cargo:warning=clang could not precompile the native runtime; \
              simulator builds will compile it from source"
         );
     }
@@ -67,6 +68,9 @@ fn main() {
         "fstapi.c", "fstapi.h", "fastlz.c", "fastlz.h", "lz4.c", "lz4.h",
     ] {
         println!("cargo:rerun-if-changed=third_party/libfst/src/{name}");
+    }
+    for name in ["process.c", "process.h", "main.c"] {
+        println!("cargo:rerun-if-changed=runtime/{name}");
     }
     if !Path::new(LIBFST).exists() {
         println!(
