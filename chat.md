@@ -9068,3 +9068,21 @@ for both runtime sources, 423 default unit tests plus integrations/docs, 405
 all-feature unit tests plus integrations/docs, strict all-target/all-feature
 Clippy, frontend-only check, corpus 183/183 under 8 GiB, linked scheduler ABI
 probe, and source-to-fixed-runtime executable test.
+2026-09-09 Codex: fixed delta scheduler landed as 797bc3d. Starting delayed
+Process `Schedule` execution across `src/llvm/process.rs` and `runtime/process.c`.
+The runtime will own an unbounded-by-policy, dynamically allocated time-ordered
+event queue of copied ABI words; LLVM will own site-specific target/layout
+application when an event expires. This keeps arbitrary-width/type layout out
+of C and lets self-rescheduling storage clocks use the same Process entry path.
+2026-09-09 Codex: direct delayed-write lowering now captures each supported
+static place at its exact Process width, passes an unbounded low-word-first copy
+to the fixed runtime, and dispatches expired transactions back through emitted
+layout-aware LLVM. The dynamically sized queue advances simulation time without
+a design limit; delay zero is applied at the next update/delta boundary before
+reactive processes run. A linked test covers 130-bit capture at 42 fs and a
+zero-delay reactive wakeup. Source suffix lowering, VHDL cancellation semantics,
+and dynamic/ranged scheduled places remain explicit follow-up work.
+Verification: strict C11 runtime compiles, 423 default and 405 all-feature unit
+tests plus every integration/doc test, no-default check, strict all-target and
+all-feature Clippy, compatibility counter/VCD/FST execution, direct fixed-runtime
+linking, and the external corpus at 183/183 under the 8 GiB cap.

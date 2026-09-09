@@ -286,10 +286,14 @@ Remaining:
   from layout metadata. Layouts own their children, so source type-cycle
   rejection remains the cycle boundary instead of a backend depth limit.
 
-- 🟡 **One-shot delayed writes.** The event wheel supports canonical background
-  clocks and `await`, but an arbitrary `x = value after duration` is rejected.
-  Represent the pending target/value write on the event wheel and define its
-  overwrite/cancellation semantics before accepting the general form.
+- 🟡 **One-shot delayed writes.** Direct Process LLVM now copies each supported
+  static target's exact-width value into the fixed runtime's dynamically sized,
+  time-ordered queue. Expiry stages the value through the ordinary commit path;
+  zero-delay writes occupy a new delta before reactive processes resume, and
+  values wider than one ABI word retain every word. Source-level arbitrary
+  `x = value after duration` remains rejected until std-defined suffix calls
+  become canonical Process values and VHDL overwrite/cancellation semantics
+  are defined. Dynamic/ranged delayed targets remain fail-closed too.
 ## LLVM
 
 Owns native lowering, state layout, optimization, and the word ABI. Code:

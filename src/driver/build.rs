@@ -1079,6 +1079,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
         ("fstapi.h", LIBFST_API_H),
         ("fastlz.h", LIBFST_FASTLZ_H),
         ("lz4.h", LIBFST_LZ4_H),
+        ("process.h", PROCESS_RUNTIME_H),
     ] {
         std::fs::write(tmp.join(name), contents).map_err(|error| error.to_string())?;
     }
@@ -1086,6 +1087,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
         ("fstapi.o", LIBFST_API_O),
         ("fastlz.o", LIBFST_FASTLZ_O),
         ("lz4.o", LIBFST_LZ4_O),
+        ("process_runtime.o", PROCESS_RUNTIME_O),
     ];
     let precompiled_runtime = runtime_objects
         .iter()
@@ -1099,6 +1101,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             ("fstapi.c", LIBFST_API_C),
             ("fastlz.c", LIBFST_FASTLZ_C),
             ("lz4.c", LIBFST_LZ4_C),
+            ("process.c", PROCESS_RUNTIME_C),
         ] {
             std::fs::write(tmp.join(name), contents).map_err(|error| error.to_string())?;
         }
@@ -1117,12 +1120,14 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
         clang
             .arg(tmp.join("fstapi.o"))
             .arg(tmp.join("fastlz.o"))
-            .arg(tmp.join("lz4.o"));
+            .arg(tmp.join("lz4.o"))
+            .arg(tmp.join("process_runtime.o"));
     } else {
         clang
             .arg(tmp.join("fstapi.c"))
             .arg(tmp.join("fastlz.c"))
-            .arg(tmp.join("lz4.c"));
+            .arg(tmp.join("lz4.c"))
+            .arg(tmp.join("process.c"));
     }
     clang.args([optimization, "-lm", "-lz"]);
     if debug {

@@ -27,7 +27,7 @@ use siox::ir::{
 /// This is deliberately a data version rather than the compiler package
 /// version: the reusable native runtime only needs to change when one of the
 /// exported table layouts or encodings changes.
-const PROCESS_ABI_VERSION: u32 = 4;
+const PROCESS_ABI_VERSION: u32 = 5;
 
 /// A process returned normally and has no pending resume.
 const PROCESS_COMPLETED: u8 = 0;
@@ -2614,6 +2614,73 @@ struct StaticPlace {
     width: u32,
 }
 
+#[derive(Clone, Copy)]
+struct ScheduleSite {
+    id: u32,
+    process: ProcessId,
+    block: siox::ir::ProcessBlockId,
+    instruction: usize,
+    target: ProcessValueId,
+    width: u32,
+    span: siox::diag::Span,
+}
+
+/// A delayed write may target object-owned storage or a signal, but never a
+/// lexical local: the local could have ended before the event expires. Ranged
+/// endpoints stay fail-closed until the event ABI retains the wider
+/// mathematical source value used by their diagnostic.
+fn delayed_place(design: &Design, target: ProcessValueId) -> Option<StaticPlace> {
+    let place = static_place(design, target)?;
+    match place.root {
+        StaticPlaceRoot::Local(_, _) => None,
+        StaticPlaceRoot::Signal(signal) => design
+            .signals
+            .get(signal.0 as usize)?
+            .range
+            .is_none()
+            .then_some(place),
+        StaticPlaceRoot::Storage(storage) => design
+            .process_ir
+            .storages
+            .get(storage.0 as usize)?
+            .bindings
+            .iter()
+            .all(|binding| {
+                design
+                    .signals
+                    .get(binding.signal.0 as usize)
+                    .is_some_and(|signal| signal.range.is_none())
+            })
+            .then_some(place),
+    }
+}
+
+fn schedule_sites(design: &Design) -> Vec<ScheduleSite> {
+    let mut sites = Vec::new();
+    for process in &design.process_ir.processes {
+        for block in &process.blocks {
+            for (instruction, node) in block.instructions.iter().enumerate() {
+                let ProcessInstruction::Schedule { target, span, .. } = node else {
+                    continue;
+                };
+                let Some(place) = delayed_place(design, *target) else {
+                    continue;
+                };
+                sites.push(ScheduleSite {
+                    id: sites.len() as u32,
+                    process: process.id,
+                    block: block.id,
+                    instruction,
+                    target: *target,
+                    width: place.width,
+                    span: *span,
+                });
+            }
+        }
+    }
+    sites
+}
+
 fn static_place(design: &Design, id: ProcessValueId) -> Option<StaticPlace> {
     let value = design.process_ir.values.get(id.0 as usize)?;
     match &value.kind {
@@ -2972,6 +3039,104 @@ fn write_static_place<'ctx>(
             stage_signal(module, builder, signal, value)
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_schedule_call<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    site: u32,
+    target: ProcessValueId,
+    value: ProcessValueId,
+    delay: ProcessValueId,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<()> {
+    let place = delayed_place(design, target)?;
+    let captured = assignment_value(
+        context,
+        module,
+        builder,
+        design,
+        target,
+        value,
+        place.width,
+        index_sites,
+        cache,
+    )?;
+    let delay = process_value_at(
+        context,
+        module,
+        builder,
+        design,
+        delay,
+        64,
+        false,
+        None,
+        index_sites,
+        cache,
+    )?;
+
+    let i32 = context.i32_type();
+    let i64 = context.i64_type();
+    let pointer = context.ptr_type(AddressSpace::default());
+    let word_count = super::words_for(place.width);
+    let array = i64.array_type(word_count);
+    let words = builder.build_alloca(array, "process.schedule.words").ok()?;
+    for word in 0..word_count {
+        let offset = word.checked_mul(super::ABI_WORD_BITS)?;
+        let part = if offset == 0 {
+            captured
+        } else {
+            builder
+                .build_right_shift(
+                    captured,
+                    captured.get_type().const_int(u64::from(offset), false),
+                    false,
+                    "process.schedule.word.shift",
+                )
+                .ok()?
+        };
+        let part = fit(builder, part, 64)?;
+        let destination = unsafe {
+            builder
+                .build_in_bounds_gep(
+                    array,
+                    words,
+                    &[i32.const_zero(), i32.const_int(u64::from(word), false)],
+                    "process.schedule.word.pointer",
+                )
+                .ok()?
+        };
+        builder.build_store(destination, part).ok()?;
+    }
+
+    let function = module
+        .get_function("sx_runtime_schedule")
+        .unwrap_or_else(|| {
+            module.add_function(
+                "sx_runtime_schedule",
+                context
+                    .void_type()
+                    .fn_type(&[i32.into(), i64.into(), pointer.into(), i32.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    builder
+        .build_call(
+            function,
+            &[
+                i32.const_int(u64::from(site), false).into(),
+                delay.into(),
+                words.into(),
+                i32.const_int(u64::from(word_count), false).into(),
+            ],
+            "",
+        )
+        .ok()?;
+    Some(())
 }
 
 fn storage_changed_ptr<'ctx>(
@@ -3360,7 +3525,23 @@ fn block_is_supported(
                 supported_per_place_assignment(design, process.id, *target, *assigned)
                     && value(*assigned)
             }
-            ProcessInstruction::Schedule { .. } | ProcessInstruction::Runtime { .. } => false,
+            ProcessInstruction::Schedule {
+                target,
+                value: assigned,
+                delay,
+                ..
+            } => {
+                delayed_place(design, *target).is_some()
+                    && value(*assigned)
+                    && value(*delay)
+                    && design
+                        .process_ir
+                        .values
+                        .get(delay.0 as usize)
+                        .and_then(|value| value.bit_width)
+                        .is_some_and(|width| width <= 64)
+            }
+            ProcessInstruction::Runtime { .. } => false,
         });
     let terminator = match &block.terminator {
         ProcessTerminator::Return { value: None, .. }
@@ -3383,6 +3564,7 @@ fn block_is_supported(
 /// executable nodes return [`PROCESS_UNSUPPORTED`] before a block performs any
 /// calls or writes, making this a safe migration path rather than a second
 /// partial semantic engine.
+#[allow(clippy::too_many_arguments)]
 fn process_entry<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
@@ -3391,6 +3573,7 @@ fn process_entry<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     range_sites: &HashMap<siox::diag::Span, u32>,
     checked_values: &[bool],
+    schedule_ids: &HashMap<(ProcessId, siox::ir::ProcessBlockId, usize), u32>,
 ) -> FunctionValue<'ctx> {
     let i8 = context.i8_type();
     let i32 = context.i32_type();
@@ -3438,7 +3621,7 @@ fn process_entry<'ctx>(
 
         let mut cache = ProcessValueCache::new(checked_values);
         let mut failed = false;
-        for instruction in &block.instructions {
+        for (instruction_index, instruction) in block.instructions.iter().enumerate() {
             let emitted = match instruction {
                 ProcessInstruction::Declare {
                     local, initializer, ..
@@ -3696,7 +3879,28 @@ fn process_entry<'ctx>(
                     }
                     (offset == 0).then_some(())
                 }),
-                ProcessInstruction::Schedule { .. } | ProcessInstruction::Runtime { .. } => None,
+                ProcessInstruction::Schedule {
+                    target,
+                    value,
+                    delay,
+                    ..
+                } => schedule_ids
+                    .get(&(process.id, block.id, instruction_index))
+                    .and_then(|site| {
+                        emit_schedule_call(
+                            context,
+                            module,
+                            &builder,
+                            design,
+                            *site,
+                            *target,
+                            *value,
+                            *delay,
+                            index_sites,
+                            &mut cache,
+                        )
+                    }),
+                ProcessInstruction::Runtime { .. } => None,
             };
             if emitted.is_none() {
                 failed = true;
@@ -3788,6 +3992,153 @@ fn process_entry<'ctx>(
     function
 }
 
+fn scheduled_value_from_words<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    words: PointerValue<'ctx>,
+    width: u32,
+) -> Option<IntValue<'ctx>> {
+    let i32 = context.i32_type();
+    let i64 = context.i64_type();
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    let mut value = ty.const_zero();
+    for word in 0..super::words_for(width) {
+        let source = unsafe {
+            builder
+                .build_in_bounds_gep(
+                    i64,
+                    words,
+                    &[i32.const_int(u64::from(word), false)],
+                    "process.scheduled.word.pointer",
+                )
+                .ok()?
+        };
+        let part = builder
+            .build_load(i64, source, "process.scheduled.word")
+            .ok()?
+            .into_int_value();
+        let part = fit(builder, part, width)?;
+        let offset = word.checked_mul(super::ABI_WORD_BITS)?;
+        let part = if offset == 0 {
+            part
+        } else {
+            builder
+                .build_left_shift(
+                    part,
+                    ty.const_int(u64::from(offset), false),
+                    "process.scheduled.word.place",
+                )
+                .ok()?
+        };
+        value = builder
+            .build_or(value, part, "process.scheduled.value")
+            .ok()?;
+    }
+    Some(value)
+}
+
+/// Apply one expired delayed-write site. The fixed runtime owns time and
+/// copies ABI words; this emitted dispatcher owns the target's concrete LLVM
+/// layout and stages the write into the ordinary commit boundary.
+fn emit_scheduled_apply<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    design: &Design,
+    sites: &[ScheduleSite],
+    range_sites: &HashMap<siox::diag::Span, u32>,
+) {
+    let i8 = context.i8_type();
+    let i32 = context.i32_type();
+    let pointer = context.ptr_type(AddressSpace::default());
+    let function = module.add_function(
+        "sx_process_apply_scheduled",
+        i8.fn_type(&[i32.into(), pointer.into(), i32.into()], false),
+        None,
+    );
+    let builder = context.create_builder();
+    let dispatch = context.append_basic_block(function, "dispatch");
+    let invalid = context.append_basic_block(function, "invalid");
+    let blocks = sites
+        .iter()
+        .map(|site| context.append_basic_block(function, &format!("site{}", site.id)))
+        .collect::<Vec<_>>();
+    let applies = sites
+        .iter()
+        .map(|site| context.append_basic_block(function, &format!("site{}.apply", site.id)))
+        .collect::<Vec<_>>();
+
+    builder.position_at_end(dispatch);
+    let site_id = function
+        .get_nth_param(0)
+        .expect("scheduled callback has a site id")
+        .into_int_value();
+    let words = function
+        .get_nth_param(1)
+        .expect("scheduled callback has value words")
+        .into_pointer_value();
+    let count = function
+        .get_nth_param(2)
+        .expect("scheduled callback has a word count")
+        .into_int_value();
+    let cases = sites
+        .iter()
+        .zip(&blocks)
+        .map(|(site, block)| (i32.const_int(u64::from(site.id), false), *block))
+        .collect::<Vec<_>>();
+    builder.build_switch(site_id, invalid, &cases).unwrap();
+
+    builder.position_at_end(invalid);
+    builder
+        .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
+        .unwrap();
+
+    for ((site, block), apply) in sites.iter().zip(&blocks).zip(&applies) {
+        builder.position_at_end(*block);
+        let expected = i32.const_int(u64::from(super::words_for(site.width)), false);
+        let valid = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                count,
+                expected,
+                "process.scheduled.word_count",
+            )
+            .unwrap();
+        builder
+            .build_conditional_branch(valid, *apply, invalid)
+            .unwrap();
+
+        builder.position_at_end(*apply);
+        let emitted = delayed_place(design, site.target)
+            .zip(scheduled_value_from_words(
+                context, &builder, words, site.width,
+            ))
+            .and_then(|(place, value)| {
+                write_static_place(
+                    context,
+                    module,
+                    &builder,
+                    design,
+                    place,
+                    value,
+                    site.span,
+                    range_sites,
+                )
+            });
+        builder
+            .build_return(Some(&i8.const_int(
+                u64::from(if emitted.is_some() {
+                    PROCESS_COMPLETED
+                } else {
+                    PROCESS_UNSUPPORTED
+                }),
+                false,
+            )))
+            .unwrap();
+    }
+}
+
 /// Emit the opaque function-pointer table consumed by the native scheduler.
 fn process_entry_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: &Design) {
     let pointer = context.ptr_type(AddressSpace::default());
@@ -3804,6 +4155,12 @@ fn process_entry_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desi
         .map(|(index, span)| (span, index as u32 + 1))
         .collect::<HashMap<_, _>>();
     let checked_values = checked_process_values(design);
+    let schedule_sites = schedule_sites(design);
+    let schedule_ids = schedule_sites
+        .iter()
+        .map(|site| ((site.process, site.block, site.instruction), site.id))
+        .collect::<HashMap<_, _>>();
+    emit_scheduled_apply(context, module, design, &schedule_sites, &range_sites);
     let values = design
         .process_ir
         .processes
@@ -3817,6 +4174,7 @@ fn process_entry_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desi
                 &index_sites,
                 &range_sites,
                 &checked_values,
+                &schedule_ids,
             )
             .as_global_value()
             .as_pointer_value()
@@ -4047,7 +4405,7 @@ mod tests {
             ..Design::default()
         };
         let llvm = crate::llvm::emit_module_ir(&design).unwrap();
-        assert!(llvm.contains("@sx_process_abi_version = constant i32 4"));
+        assert!(llvm.contains("@sx_process_abi_version = constant i32 5"));
         assert!(llvm.contains("define i8 @sx_process_commit()"));
         assert!(llvm.contains("define i8 @sx_process_changed(i32"));
         assert!(llvm.contains("define i8 @sx_process_storage_changed(i32"));

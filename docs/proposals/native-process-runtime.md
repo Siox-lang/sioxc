@@ -83,12 +83,17 @@ transactionally before it performs foreign calls or publishes a pending
 write.
 
 `runtime/process.c` and `runtime/main.c` implement the first reusable boundary:
-dynamic ready/stopped sets, sensitivity-driven delta requeueing, descriptor ABI
-validation, test filtering, and stable pass/fail accounting. They are compiled
-once with `sioxc` and embedded as relocatable objects, with their fixed sources
-retained only as a toolchain fallback. `SIOX_DIRECT_PROCESS_RUNTIME=1` selects
-this no-generated-design-C linker path during migration. A suspend or otherwise
-unsupported entry fails explicitly; the default remains the compatibility path.
+dynamic ready/stopped sets, sensitivity-driven delta requeueing, a dynamically
+sized time-ordered delayed-write queue, descriptor ABI validation, test
+filtering, and stable pass/fail accounting. Scheduled values are copied as an
+unbounded low-word-first ABI slice and returned to an emitted site dispatcher
+when they expire, so the fixed runtime does not know design layouts. A zero
+delay is an update in the next delta at the current femtosecond. The sources are
+compiled once with `sioxc` and embedded as relocatable objects, with their fixed
+sources retained only as a toolchain fallback.
+`SIOX_DIRECT_PROCESS_RUNTIME=1` selects this no-generated-design-C linker path
+during migration. A suspend or otherwise unsupported entry fails explicitly;
+the default remains the compatibility path.
 
 **Still provided by the generated C**: 46 embedded runtime functions plus the test
 `main`, the waveform writers, and the AST-to-C translation of every process
@@ -101,7 +106,7 @@ runtime inventoried below.
 
 | service | today | notes |
 | ------- | ----- | ----- |
-| scheduler and time wheel | `sx_run_settle`, `sx_step_clock`, `sx_next_edge` | owns the ready queue, delta cycles, and the earliest-next-edge search |
+| scheduler and time wheel | `sx_run_settle`, `sx_step_clock`, `sx_next_edge` | fixed runtime owns ready/delta scheduling and arbitrary queued transactions; canonical clock/suspend integration remains |
 | failure record | `sx_check_ranges`, `sx_checked_index`, `sx_io_fail` | first-failure wins, with value, declared range and source location |
 | file services | `sx_read_file`, `sx_read_text`, `sx_read_values`, `sx_io_alloc`, `sx_io_reset` | buffers and lifetime |
 | UTF-8 | `sx_utf8`, `sx_utf8_next` | decode/encode across the string boundary |

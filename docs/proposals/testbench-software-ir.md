@@ -210,10 +210,13 @@ language-lowering path.
    direct. A fixed, design-independent runtime now consumes the immutable test,
    process, activation, and sensitivity tables; it runs time-zero/reactive ready
    batches, commits staged state once per delta, and has a fixed filtering/report
-   CLI. An opt-in native link path proves this pipeline without generating
-   design C. Runtime calls, dynamic aggregate selection/update, structured
-   match/for dispatch, delayed scheduling, suspension, and waveforms are the
-   next coverage boundary before it becomes the default.
+   CLI. Its dynamically allocated time wheel also copies exact-width scheduled
+   values, advances to the earliest transaction, and applies zero-delay writes
+   at the next delta boundary. An opt-in native link path proves this pipeline
+   without generating design C. Std-defined duration suffix lowering, delayed
+   write cancellation, runtime calls, dynamic aggregate selection/update,
+   structured match/for dispatch, suspension, and waveforms are the next
+   coverage boundary before it becomes the default.
 7. **Run both native backends differentially.** Require identical test results,
    diagnostics, time progression, resolved values, and VCD/FST samples across
    the full default and bit-packed corpus.

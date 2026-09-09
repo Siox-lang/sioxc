@@ -1791,8 +1791,50 @@ signed main(void) {
         let mut range_failure = process(2, ProcessActivation::TimeZero, assignment(3, 4));
         range_failure.root = InstanceId(1);
         range_failure.owner = InstanceId(1);
+        let mut delayed = process(
+            3,
+            ProcessActivation::TimeZero,
+            ProcessInstruction::Schedule {
+                driver_context: None,
+                target: ProcessValueId(5),
+                value: ProcessValueId(6),
+                delay: ProcessValueId(7),
+                span,
+            },
+        );
+        delayed.root = InstanceId(2);
+        delayed.owner = InstanceId(2);
+        let mut zero_delay = process(
+            4,
+            ProcessActivation::TimeZero,
+            ProcessInstruction::Schedule {
+                driver_context: None,
+                target: ProcessValueId(8),
+                value: ProcessValueId(9),
+                delay: ProcessValueId(10),
+                span,
+            },
+        );
+        zero_delay.root = InstanceId(3);
+        zero_delay.owner = InstanceId(3);
+        let mut zero_reactive = process(
+            5,
+            ProcessActivation::Reactive {
+                sensitivity: vec![ProcessSensitivity::Signal(SignalId(4))],
+            },
+            assignment(11, 8),
+        );
+        zero_reactive.root = InstanceId(3);
+        zero_reactive.owner = InstanceId(3);
         let design = Design {
-            signals: vec![sig("T.trigger", 1), sig("T.observed", 1), ranged],
+            signals: vec![
+                sig("T.trigger", 1),
+                sig("T.observed", 1),
+                ranged,
+                sig("T.delayed", 130),
+                sig("T.zero_delay", 1),
+                sig("T.zero_observed", 1),
+            ],
             process_ir: ProcessIr {
                 processes: vec![
                     process(0, ProcessActivation::TimeZero, assignment(0, 1)),
@@ -1804,6 +1846,9 @@ signed main(void) {
                         assignment(2, 0),
                     ),
                     range_failure,
+                    delayed,
+                    zero_delay,
+                    zero_reactive,
                 ],
                 tests: vec![
                     ProcessTest {
@@ -1819,6 +1864,20 @@ signed main(void) {
                         qualified_name: "runtime::range_failure".into(),
                         span,
                         processes: vec![ProcessId(2)],
+                    },
+                    ProcessTest {
+                        entity: DefId(2),
+                        root: InstanceId(2),
+                        qualified_name: "runtime::delayed".into(),
+                        span,
+                        processes: vec![ProcessId(3)],
+                    },
+                    ProcessTest {
+                        entity: DefId(3),
+                        root: InstanceId(3),
+                        qualified_name: "runtime::zero_delay".into(),
+                        span,
+                        processes: vec![ProcessId(4), ProcessId(5)],
                     },
                 ],
                 values: vec![
@@ -1861,6 +1920,61 @@ signed main(void) {
                         bit_width: Some(64),
                         kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![7])),
                     },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(130),
+                        kind: ProcessValueKind::Signal {
+                            signals: vec![SignalId(3)],
+                            state: ProcessSignalState::Current,
+                        },
+                    },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(130),
+                        kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![
+                            0x0123_4567_89ab_cdef,
+                            0xfedc_ba98_7654_3210,
+                            3,
+                        ])),
+                    },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(64),
+                        kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![42])),
+                    },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(1),
+                        kind: ProcessValueKind::Signal {
+                            signals: vec![SignalId(4)],
+                            state: ProcessSignalState::Current,
+                        },
+                    },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(1),
+                        kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+                    },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(64),
+                        kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
+                    },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(1),
+                        kind: ProcessValueKind::Signal {
+                            signals: vec![SignalId(5)],
+                            state: ProcessSignalState::Current,
+                        },
+                    },
                 ],
                 ..ProcessIr::default()
             },
@@ -1881,12 +1995,21 @@ signed main(void) {
 #include "process.h"
 #include <string.h>
 extern unsigned long long sx_read(unsigned);
+extern unsigned long long sx_read_word(unsigned, unsigned);
 signed main(void) {
     if (sx_runtime_run_test(0)) return 1;
     if (sx_runtime_error()) return 2;
     if (sx_read(1) != 1) return 3;
     if (!sx_runtime_run_test(1)) return 4;
     if (!sx_runtime_error() || !strstr(sx_runtime_error(), "range failure")) return 5;
+    if (sx_runtime_run_test(2)) return 6;
+    if (sx_runtime_now() != 42) return 7;
+    if (sx_read_word(3, 0) != 0x0123456789abcdefULL) return 8;
+    if (sx_read_word(3, 1) != 0xfedcba9876543210ULL) return 9;
+    if (sx_read_word(3, 2) != 3) return 10;
+    if (sx_runtime_run_test(3)) return 11;
+    if (sx_runtime_now() != 0) return 12;
+    if (sx_read(5) != 1) return 13;
     return 0;
 }
 "#,
