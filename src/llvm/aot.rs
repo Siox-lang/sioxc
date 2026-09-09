@@ -77,12 +77,12 @@ mod tests {
     use siox::diag::{FileId, Span};
     use siox::elab::InstanceId;
     use siox::ir::{
-        BinOp, Driver, Expr, LayoutDirection, LayoutKind, LookupTable, LookupTableId,
-        ProcessActivation, ProcessAssignment, ProcessBinaryOp, ProcessBlock, ProcessBlockId,
-        ProcessCfg, ProcessId, ProcessInstruction, ProcessIr, ProcessLocal, ProcessLocalId,
-        ProcessNumber, ProcessSignalState, ProcessStorage, ProcessStorageBinding, ProcessStorageId,
-        ProcessSuspendOp, ProcessTerminator, ProcessValue, ProcessValueId, ProcessValueKind,
-        Signal, SignalId, SourceLayout,
+        BinOp, Driver, Expr, LayoutDirection, LayoutField, LayoutKind, LookupTable, LookupTableId,
+        ProcessActivation, ProcessAggregateField, ProcessAssignment, ProcessBinaryOp, ProcessBlock,
+        ProcessBlockId, ProcessCfg, ProcessId, ProcessInstruction, ProcessIr, ProcessLocal,
+        ProcessLocalId, ProcessNumber, ProcessSignalState, ProcessStorage, ProcessStorageBinding,
+        ProcessStorageId, ProcessSuspendOp, ProcessTerminator, ProcessValue, ProcessValueId,
+        ProcessValueKind, ScalarDomain, Signal, SignalId, SourceLayout,
     };
     use std::process::Command;
 
@@ -853,6 +853,575 @@ signed main(void) {
         assert!(
             run.success(),
             "native process state returned {:?}",
+            run.code()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    /// Recursive testbench storage is packed only inside the design object:
+    /// constructors initialize and replace it field-by-field, input bindings
+    /// stage the corresponding flattened leaves, and a following field read
+    /// observes an immediate whole-aggregate assignment.
+    fn process_aggregate_storage_executes_through_flattened_bindings() {
+        if Command::new("clang").arg("--version").output().is_err() {
+            eprintln!(
+                "skipping process_aggregate_storage_executes_through_flattened_bindings: clang not found"
+            );
+            return;
+        }
+
+        let span = Span::new(FileId(0), 0..0);
+        let byte = || SourceLayout {
+            span,
+            kind: LayoutKind::Scalar {
+                width: 8,
+                domain: ScalarDomain::Bits,
+                nominal: None,
+                value_range: None,
+            },
+        };
+        let pair = SourceLayout {
+            span,
+            kind: LayoutKind::Struct {
+                name: "Pair".into(),
+                view: None,
+                fields: vec![
+                    LayoutField {
+                        name: "a".into(),
+                        direction: None,
+                        layout: byte(),
+                    },
+                    LayoutField {
+                        name: "b".into(),
+                        direction: None,
+                        layout: byte(),
+                    },
+                ],
+            },
+        };
+        let output = SourceLayout {
+            span,
+            kind: LayoutKind::Struct {
+                name: "Envelope".into(),
+                view: None,
+                fields: vec![
+                    LayoutField {
+                        name: "pad".into(),
+                        direction: None,
+                        layout: byte(),
+                    },
+                    LayoutField {
+                        name: "payload".into(),
+                        direction: None,
+                        layout: pair.clone(),
+                    },
+                ],
+            },
+        };
+        let pair_ty = siox::types::Ty::Named(siox::resolve::DefId(41));
+        let number = |value| ProcessValue {
+            span,
+            ty: None,
+            bit_width: Some(8),
+            kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![value])),
+        };
+        let construct = |left, right| ProcessValue {
+            span,
+            ty: Some(pair_ty.clone()),
+            bit_width: None,
+            kind: ProcessValueKind::Construct {
+                ty: Some(pair_ty.clone()),
+                fields: vec![
+                    ProcessAggregateField {
+                        name: Some("a".into()),
+                        value: Some(ProcessValueId(left)),
+                        span,
+                    },
+                    ProcessAggregateField {
+                        name: Some("b".into()),
+                        value: Some(ProcessValueId(right)),
+                        span,
+                    },
+                ],
+                spread: None,
+            },
+        };
+        let values = vec![
+            number(1),
+            number(2),
+            construct(0, 1),
+            ProcessValue {
+                span,
+                ty: Some(pair_ty.clone()),
+                bit_width: Some(16),
+                kind: ProcessValueKind::Storage(ProcessStorageId(0)),
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Field {
+                    base: ProcessValueId(3),
+                    field: "b".into(),
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Signal {
+                    signals: vec![SignalId(2)],
+                    state: ProcessSignalState::Current,
+                },
+            },
+            number(3),
+            number(4),
+            construct(6, 7),
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Field {
+                    base: ProcessValueId(3),
+                    field: "a".into(),
+                },
+            },
+            number(5),
+            ProcessValue {
+                span,
+                ty: Some(pair_ty.clone()),
+                bit_width: Some(16),
+                kind: ProcessValueKind::Signal {
+                    signals: vec![SignalId(3), SignalId(4)],
+                    state: ProcessSignalState::Current,
+                },
+            },
+            ProcessValue {
+                span,
+                ty: Some(pair_ty.clone()),
+                bit_width: Some(16),
+                kind: ProcessValueKind::Local {
+                    process: ProcessId(0),
+                    local: ProcessLocalId(0),
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Field {
+                    base: ProcessValueId(12),
+                    field: "a".into(),
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Field {
+                    base: ProcessValueId(12),
+                    field: "b".into(),
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Signal {
+                    signals: vec![SignalId(5)],
+                    state: ProcessSignalState::Current,
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Signal {
+                    signals: vec![SignalId(6)],
+                    state: ProcessSignalState::Current,
+                },
+            },
+        ];
+        let process_ir = ProcessIr {
+            storages: vec![ProcessStorage {
+                id: ProcessStorageId(0),
+                owner: InstanceId(0),
+                name: "pair".into(),
+                source: None,
+                span,
+                ty: Some(pair_ty.clone()),
+                layout: Some(pair.clone()),
+                initializer: Some(ProcessValueId(2)),
+                bindings: vec![
+                    ProcessStorageBinding {
+                        projection: ".a".into(),
+                        signal: SignalId(0),
+                        direction: LayoutDirection::In,
+                    },
+                    ProcessStorageBinding {
+                        projection: ".b".into(),
+                        signal: SignalId(1),
+                        direction: LayoutDirection::In,
+                    },
+                ],
+            }],
+            values,
+            processes: vec![ProcessCfg {
+                id: ProcessId(0),
+                root: InstanceId(0),
+                owner: InstanceId(0),
+                label: Some("aggregate".into()),
+                span,
+                activation: ProcessActivation::TimeZero,
+                entry: ProcessBlockId(0),
+                locals: vec![ProcessLocal {
+                    id: ProcessLocalId(0),
+                    name: "local_pair".into(),
+                    source: None,
+                    span,
+                    ty: Some(pair_ty),
+                    layout: Some(pair.clone()),
+                }],
+                blocks: vec![ProcessBlock {
+                    id: ProcessBlockId(0),
+                    instructions: vec![
+                        ProcessInstruction::Declare {
+                            local: ProcessLocalId(0),
+                            initializer: Some(ProcessValueId(2)),
+                            span,
+                        },
+                        ProcessInstruction::Assign {
+                            semantics: ProcessAssignment::ImmediateLocal,
+                            driver_context: None,
+                            target: ProcessValueId(13),
+                            value: ProcessValueId(10),
+                            span,
+                        },
+                        ProcessInstruction::Assign {
+                            semantics: ProcessAssignment::ImmediateStorage,
+                            driver_context: None,
+                            target: ProcessValueId(3),
+                            value: ProcessValueId(8),
+                            span,
+                        },
+                        ProcessInstruction::Assign {
+                            semantics: ProcessAssignment::ImmediateStorage,
+                            driver_context: None,
+                            target: ProcessValueId(9),
+                            value: ProcessValueId(10),
+                            span,
+                        },
+                        ProcessInstruction::Assign {
+                            semantics: ProcessAssignment::StagedSignal,
+                            driver_context: None,
+                            target: ProcessValueId(5),
+                            value: ProcessValueId(4),
+                            span,
+                        },
+                        ProcessInstruction::Assign {
+                            semantics: ProcessAssignment::StagedSignal,
+                            driver_context: None,
+                            target: ProcessValueId(11),
+                            value: ProcessValueId(8),
+                            span,
+                        },
+                        ProcessInstruction::Assign {
+                            semantics: ProcessAssignment::StagedSignal,
+                            driver_context: None,
+                            target: ProcessValueId(15),
+                            value: ProcessValueId(13),
+                            span,
+                        },
+                        ProcessInstruction::Assign {
+                            semantics: ProcessAssignment::StagedSignal,
+                            driver_context: None,
+                            target: ProcessValueId(16),
+                            value: ProcessValueId(14),
+                            span,
+                        },
+                    ],
+                    terminator: ProcessTerminator::Return {
+                        value: None,
+                        span: Some(span),
+                    },
+                }],
+            }],
+            ..ProcessIr::default()
+        };
+        let design = Design {
+            signals: vec![
+                sig("D.a", 8),
+                sig("D.b", 8),
+                sig("D.observed", 8),
+                sig("D.out.payload.a", 8),
+                sig("D.out.payload.b", 8),
+                sig("D.local.a", 8),
+                sig("D.local.b", 8),
+                sig("D.out.pad", 8),
+            ],
+            source_layouts: std::collections::HashMap::from([("D.out".into(), output)]),
+            process_ir,
+            ..Design::default()
+        };
+
+        let dir =
+            std::env::temp_dir().join(format!("siox_process_aggregate_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let object = dir.join("design.o");
+        let main_c = dir.join("main.c");
+        let binary = dir.join("sim");
+        emit_object(&design, &object).unwrap();
+        std::fs::write(
+            &main_c,
+            r#"
+extern void sx_reset(void);
+extern unsigned long long sx_read(unsigned);
+extern unsigned char sx_process_commit(void);
+typedef unsigned char (*sx_process_entry)(unsigned resume_block);
+extern sx_process_entry const sx_process_entries[];
+extern const unsigned sx_process_initial_blocks[];
+signed main(void) {
+    sx_reset();
+    if (sx_process_commit() != 1 || sx_read(0) != 1 || sx_read(1) != 2) return 1;
+    if (sx_process_entries[0](sx_process_initial_blocks[0]) != 0) return 2;
+    if (sx_read(0) != 1 || sx_read(1) != 2 || sx_read(2) != 0 ||
+        sx_read(3) != 0 || sx_read(4) != 0 || sx_read(5) != 0 || sx_read(6) != 0) return 3;
+    if (sx_process_commit() != 1) return 4;
+    if (sx_read(0) != 5 || sx_read(1) != 4 || sx_read(2) != 4 ||
+        sx_read(3) != 3 || sx_read(4) != 4) return 5;
+    if (sx_read(5) != 5 || sx_read(6) != 2) return 6;
+    if (sx_read(7) != 0) return 7;
+    return 0;
+}
+"#,
+        )
+        .unwrap();
+        let link = Command::new("clang")
+            .args([
+                main_c.to_str().unwrap(),
+                object.to_str().unwrap(),
+                "-o",
+                binary.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            link.status.success(),
+            "link failed: {}",
+            String::from_utf8_lossy(&link.stderr)
+        );
+        let run = Command::new(&binary).status().unwrap();
+        assert!(
+            run.success(),
+            "native aggregate probe returned {:?}",
+            run.code()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    /// A mixed concatenation evaluates once, then updates locals and storage
+    /// immediately while keeping signal writes staged until commit.
+    fn process_per_place_assignment_preserves_each_destination_class() {
+        if Command::new("clang").arg("--version").output().is_err() {
+            eprintln!(
+                "skipping process_per_place_assignment_preserves_each_destination_class: clang not found"
+            );
+            return;
+        }
+
+        let span = Span::new(FileId(0), 0..0);
+        let byte = || SourceLayout {
+            span,
+            kind: LayoutKind::Packed {
+                width: 8,
+                family: "unsigned".into(),
+                range: None,
+                element_enum: None,
+            },
+        };
+        let number = |width, value| ProcessValue {
+            span,
+            ty: None,
+            bit_width: Some(width),
+            kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![value])),
+        };
+        let values = vec![
+            number(8, 0),
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Local {
+                    process: ProcessId(0),
+                    local: ProcessLocalId(0),
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Storage(ProcessStorageId(0)),
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Signal {
+                    signals: vec![SignalId(0)],
+                    state: ProcessSignalState::Current,
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(24),
+                kind: ProcessValueKind::Concat(vec![
+                    ProcessValueId(1),
+                    ProcessValueId(2),
+                    ProcessValueId(3),
+                ]),
+            },
+            number(24, 0x11_22_33),
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Signal {
+                    signals: vec![SignalId(1)],
+                    state: ProcessSignalState::Current,
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Signal {
+                    signals: vec![SignalId(2)],
+                    state: ProcessSignalState::Current,
+                },
+            },
+        ];
+        let process_ir = ProcessIr {
+            storages: vec![ProcessStorage {
+                id: ProcessStorageId(0),
+                owner: InstanceId(0),
+                name: "persistent".into(),
+                source: None,
+                span,
+                ty: None,
+                layout: Some(byte()),
+                initializer: Some(ProcessValueId(0)),
+                bindings: vec![],
+            }],
+            values,
+            processes: vec![ProcessCfg {
+                id: ProcessId(0),
+                root: InstanceId(0),
+                owner: InstanceId(0),
+                label: Some("per-place".into()),
+                span,
+                activation: ProcessActivation::TimeZero,
+                entry: ProcessBlockId(0),
+                locals: vec![ProcessLocal {
+                    id: ProcessLocalId(0),
+                    name: "temporary".into(),
+                    source: None,
+                    span,
+                    ty: None,
+                    layout: Some(byte()),
+                }],
+                blocks: vec![ProcessBlock {
+                    id: ProcessBlockId(0),
+                    instructions: vec![
+                        ProcessInstruction::Declare {
+                            local: ProcessLocalId(0),
+                            initializer: Some(ProcessValueId(0)),
+                            span,
+                        },
+                        ProcessInstruction::Assign {
+                            semantics: ProcessAssignment::PerPlace,
+                            driver_context: Some(0),
+                            target: ProcessValueId(4),
+                            value: ProcessValueId(5),
+                            span,
+                        },
+                        ProcessInstruction::Assign {
+                            semantics: ProcessAssignment::StagedSignal,
+                            driver_context: Some(0),
+                            target: ProcessValueId(6),
+                            value: ProcessValueId(1),
+                            span,
+                        },
+                        ProcessInstruction::Assign {
+                            semantics: ProcessAssignment::StagedSignal,
+                            driver_context: Some(0),
+                            target: ProcessValueId(7),
+                            value: ProcessValueId(2),
+                            span,
+                        },
+                    ],
+                    terminator: ProcessTerminator::Return {
+                        value: None,
+                        span: Some(span),
+                    },
+                }],
+            }],
+            ..ProcessIr::default()
+        };
+        let design = Design {
+            signals: vec![sig("D.staged", 8), sig("D.local", 8), sig("D.storage", 8)],
+            process_ir,
+            ..Design::default()
+        };
+
+        let dir =
+            std::env::temp_dir().join(format!("siox_process_per_place_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let object = dir.join("design.o");
+        let main_c = dir.join("main.c");
+        let binary = dir.join("sim");
+        emit_object(&design, &object).unwrap();
+        std::fs::write(
+            &main_c,
+            r#"
+extern void sx_reset(void);
+extern unsigned long long sx_read(unsigned);
+extern unsigned char sx_process_commit(void);
+typedef unsigned char (*sx_process_entry)(unsigned resume_block);
+extern sx_process_entry const sx_process_entries[];
+extern const unsigned sx_process_initial_blocks[];
+signed main(void) {
+    sx_reset();
+    if (sx_process_commit() != 0) return 1;
+    if (sx_process_entries[0](sx_process_initial_blocks[0]) != 0) return 2;
+    if (sx_read(0) != 0 || sx_read(1) != 0 || sx_read(2) != 0) return 3;
+    if (sx_process_commit() != 1) return 4;
+    if (sx_read(0) != 0x33 || sx_read(1) != 0x11 || sx_read(2) != 0x22) return 5;
+    return 0;
+}
+"#,
+        )
+        .unwrap();
+        let link = Command::new("clang")
+            .args([
+                main_c.to_str().unwrap(),
+                object.to_str().unwrap(),
+                "-o",
+                binary.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            link.status.success(),
+            "link failed: {}",
+            String::from_utf8_lossy(&link.stderr)
+        );
+        let run = Command::new(&binary).status().unwrap();
+        assert!(
+            run.success(),
+            "native per-place probe returned {:?}",
             run.code()
         );
         let _ = std::fs::remove_dir_all(&dir);

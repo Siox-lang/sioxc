@@ -17,9 +17,9 @@ use inkwell::IntPredicate;
 
 use siox::ir::{
     Design, IndexSite, LayoutDirection, LayoutKind, ProcessActivation, ProcessAssignment,
-    ProcessBinaryOp, ProcessCfg, ProcessInstruction, ProcessLocalId, ProcessNumber,
+    ProcessBinaryOp, ProcessCfg, ProcessId, ProcessInstruction, ProcessLocalId, ProcessNumber,
     ProcessSensitivity, ProcessSignalState, ProcessStorageId, ProcessTerminator, ProcessUnaryOp,
-    ProcessValueId, ProcessValueKind, SignalId,
+    ProcessValueId, ProcessValueKind, SignalId, SourceLayout,
 };
 
 /// Version of the native process metadata ABI emitted into every object.
@@ -119,70 +119,117 @@ fn storage_width(design: &Design, storage: ProcessStorageId) -> Option<u32> {
         .filter(|width| *width != 0 && *width <= super::emit::LLVM_MAX_INT_BITS)
 }
 
-/// Scalar and nominal packed storage has one directly addressable LLVM value.
-/// Recursive arrays/structs keep their leaf layout and are lowered separately.
-fn direct_storage_width(design: &Design, storage: ProcessStorageId) -> Option<u32> {
-    let metadata = design.process_ir.storages.get(storage.0 as usize)?;
-    if metadata.layout.as_ref().is_some_and(|layout| {
-        !matches!(
-            layout.kind,
-            LayoutKind::Scalar { .. } | LayoutKind::Packed { .. }
-        )
-    }) {
+/// One recursively selected region within a packed process-frame value.
+/// Aggregate children are laid out in source order from least-significant to
+/// most-significant bits; this convention is internal to the design object.
+#[derive(Clone, Copy)]
+struct LayoutSlice<'a> {
+    layout: &'a SourceLayout,
+    offset: u32,
+    width: u32,
+}
+
+fn field_slice<'a>(layout: &'a SourceLayout, field: &str) -> Option<LayoutSlice<'a>> {
+    let LayoutKind::Struct { fields, .. } = &layout.kind else {
+        return None;
+    };
+    let mut offset = 0u32;
+    for candidate in fields {
+        let width = layout_width(&candidate.layout)?;
+        if candidate.name == field {
+            return Some(LayoutSlice {
+                layout: &candidate.layout,
+                offset,
+                width,
+            });
+        }
+        offset = offset.checked_add(width)?;
+    }
+    None
+}
+
+fn array_slice(layout: &SourceLayout, index: i64) -> Option<LayoutSlice<'_>> {
+    let LayoutKind::Array {
+        range: Some(range),
+        element,
+    } = &layout.kind
+    else {
+        return None;
+    };
+    let length = u32::try_from(range.len()?).ok()?;
+    let position = if range.ascending() {
+        index.checked_sub(range.left)?
+    } else {
+        range.left.checked_sub(index)?
+    };
+    let position = u32::try_from(position).ok()?;
+    if position >= length {
         return None;
     }
+    let width = layout_width(element)?;
+    Some(LayoutSlice {
+        layout: element,
+        offset: position.checked_mul(width)?,
+        width,
+    })
+}
+
+/// Follow a flattened storage-binding suffix such as `.payload[2].valid`.
+fn projection_slice<'a>(layout: &'a SourceLayout, projection: &str) -> Option<LayoutSlice<'a>> {
+    let mut selected = LayoutSlice {
+        layout,
+        offset: 0,
+        width: layout_width(layout)?,
+    };
+    let mut rest = projection;
+    while !rest.is_empty() {
+        let child = if let Some(field) = rest.strip_prefix('.') {
+            let boundary = field.find(['.', '[']).unwrap_or(field.len());
+            let (name, tail) = field.split_at(boundary);
+            rest = tail;
+            field_slice(selected.layout, name)?
+        } else if let Some(index) = rest.strip_prefix('[') {
+            let (index, tail) = index.split_once(']')?;
+            rest = tail;
+            array_slice(selected.layout, index.parse().ok()?)?
+        } else {
+            return None;
+        };
+        selected.offset = selected.offset.checked_add(child.offset)?;
+        selected.layout = child.layout;
+        selected.width = child.width;
+    }
+    Some(selected)
+}
+
+fn storage_binding_slice(
+    design: &Design,
+    storage: ProcessStorageId,
+    projection: &str,
+) -> Option<(u32, u32)> {
+    let metadata = design.process_ir.storages.get(storage.0 as usize)?;
+    if let Some(layout) = metadata.layout.as_ref() {
+        let selected = projection_slice(layout, projection)?;
+        return Some((selected.offset, selected.width));
+    }
+    let width = storage_width(design, storage)?;
+    projection.is_empty().then_some((0, width))
+}
+
+/// Every persistent value, including recursive structs/arrays, has one exact
+/// packed LLVM frame. Bindings must identify a concrete region whose width
+/// agrees with the flattened DUT signal.
+fn storage_state_width(design: &Design, storage: ProcessStorageId) -> Option<u32> {
+    let metadata = design.process_ir.storages.get(storage.0 as usize)?;
     let width = storage_width(design, storage)?;
     metadata
         .bindings
         .iter()
         .all(|binding| {
-            binding.projection.is_empty() && design.signal_width(binding.signal) == Some(width)
+            storage_binding_slice(design, storage, &binding.projection)
+                .is_some_and(|(_, selected)| design.signal_width(binding.signal) == Some(selected))
         })
         .then_some(width)
-}
-
-fn storage_observed_signal(design: &Design, storage: ProcessStorageId) -> Option<Option<SignalId>> {
-    direct_storage_width(design, storage)?;
-    let storage = design.process_ir.storages.get(storage.0 as usize)?;
-    let mut observed = storage
-        .bindings
-        .iter()
-        .filter(|binding| {
-            matches!(
-                binding.direction,
-                LayoutDirection::Out | LayoutDirection::InOut
-            )
-        })
-        .map(|binding| binding.signal);
-    let first = observed.next();
-    observed
-        .all(|signal| Some(signal) == first)
-        .then_some(first)
-}
-
-fn storage_write_signals(design: &Design, storage: ProcessStorageId) -> Option<Vec<SignalId>> {
-    direct_storage_width(design, storage)?;
-    let storage = design.process_ir.storages.get(storage.0 as usize)?;
-    if storage
-        .bindings
-        .iter()
-        .any(|binding| matches!(binding.direction, LayoutDirection::Out))
-    {
-        return None;
-    }
-    Some(
-        storage
-            .bindings
-            .iter()
-            .filter(|binding| {
-                matches!(
-                    binding.direction,
-                    LayoutDirection::In | LayoutDirection::InOut
-                )
-            })
-            .map(|binding| binding.signal)
-            .collect(),
-    )
 }
 
 fn layout_default(design: &Design, layout: Option<&siox::ir::SourceLayout>) -> u64 {
@@ -239,7 +286,7 @@ pub(super) fn declare_state<'ctx>(context: &'ctx Context, module: &Module<'ctx>,
         global.set_linkage(Linkage::Internal);
     };
     for storage in &design.process_ir.storages {
-        if let Some(width) = direct_storage_width(design, storage.id) {
+        if let Some(width) = storage_state_width(design, storage.id) {
             add_state(&storage_state_name(storage.id), width);
             add_state(&storage_old_name(storage.id), width);
         }
@@ -300,6 +347,145 @@ fn fit_signed<'ctx>(
         std::cmp::Ordering::Less => builder.build_int_s_extend(value, ty, "pv.sx").ok(),
         std::cmp::Ordering::Greater => builder.build_int_truncate(value, ty, "pv.tr").ok(),
         std::cmp::Ordering::Equal => Some(value),
+    }
+}
+
+/// Extract one packed aggregate region. Offsets count from the least
+/// significant bit of the object-owned process frame.
+fn extract_region<'ctx>(
+    builder: &Builder<'ctx>,
+    value: IntValue<'ctx>,
+    offset: u32,
+    width: u32,
+) -> Option<IntValue<'ctx>> {
+    let total = value.get_type().get_bit_width();
+    if width == 0 || offset.checked_add(width)? > total {
+        return None;
+    }
+    let shifted = if offset == 0 {
+        value
+    } else {
+        builder
+            .build_right_shift(
+                value,
+                value.get_type().const_int(u64::from(offset), false),
+                false,
+                "pv.aggregate.extract",
+            )
+            .ok()?
+    };
+    fit(builder, shifted, width)
+}
+
+/// Replace one packed aggregate region without disturbing neighbouring
+/// fields/elements.
+fn insert_region<'ctx>(
+    builder: &Builder<'ctx>,
+    base: IntValue<'ctx>,
+    part: IntValue<'ctx>,
+    offset: u32,
+    width: u32,
+) -> Option<IntValue<'ctx>> {
+    let total = base.get_type().get_bit_width();
+    if width == 0 || offset.checked_add(width)? > total {
+        return None;
+    }
+    if offset == 0 && width == total {
+        return fit(builder, part, total);
+    }
+    let ty = base.get_type();
+    let low_mask = builder
+        .build_right_shift(
+            ty.const_all_ones(),
+            ty.const_int(u64::from(total - width), false),
+            false,
+            "pv.aggregate.low_mask",
+        )
+        .ok()?;
+    let mask = if offset == 0 {
+        low_mask
+    } else {
+        builder
+            .build_left_shift(
+                low_mask,
+                ty.const_int(u64::from(offset), false),
+                "pv.aggregate.mask",
+            )
+            .ok()?
+    };
+    let cleared = builder
+        .build_and(
+            base,
+            builder.build_not(mask, "pv.aggregate.keep").ok()?,
+            "pv.aggregate.clear",
+        )
+        .ok()?;
+    let part = fit(builder, part, total)?;
+    let part = if offset == 0 {
+        part
+    } else {
+        builder
+            .build_left_shift(
+                part,
+                ty.const_int(u64::from(offset), false),
+                "pv.aggregate.place",
+            )
+            .ok()?
+    };
+    builder.build_or(cleared, part, "pv.aggregate.insert").ok()
+}
+
+/// Build the recursive language default into the same packed frame used for
+/// aggregate locals/storage. Leaf defaults still come from std-owned metadata.
+fn layout_default_value<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    layout: &SourceLayout,
+) -> Option<IntValue<'ctx>> {
+    let width = layout_width(layout)?;
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    match &layout.kind {
+        LayoutKind::Scalar { .. } | LayoutKind::Packed { .. } | LayoutKind::Opaque { .. } => {
+            Some(ty.const_int(layout_default(design, Some(layout)), false))
+        }
+        LayoutKind::Array {
+            range: Some(range),
+            element,
+        } => {
+            let element_width = layout_width(element)?;
+            let element = layout_default_value(context, builder, design, element)?;
+            let mut value = ty.const_zero();
+            for position in 0..u32::try_from(range.len()?).ok()? {
+                value = insert_region(
+                    builder,
+                    value,
+                    element,
+                    position.checked_mul(element_width)?,
+                    element_width,
+                )?;
+            }
+            Some(value)
+        }
+        LayoutKind::Struct { fields, .. } => {
+            let mut value = ty.const_zero();
+            let mut offset = 0u32;
+            for field in fields {
+                let field_width = layout_width(&field.layout)?;
+                value = insert_region(
+                    builder,
+                    value,
+                    layout_default_value(context, builder, design, &field.layout)?,
+                    offset,
+                    field_width,
+                )?;
+                offset = offset.checked_add(field_width)?;
+            }
+            Some(value)
+        }
+        LayoutKind::Array { range: None, .. } => None,
     }
 }
 
@@ -761,6 +947,142 @@ fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bool {
     }
 }
 
+fn layout_for_type<'a>(design: &'a Design, ty: &siox::types::Ty) -> Option<&'a SourceLayout> {
+    let mut candidates = design
+        .process_ir
+        .storages
+        .iter()
+        .filter(|storage| storage.ty.as_ref() == Some(ty))
+        .filter_map(|storage| storage.layout.as_ref())
+        .chain(
+            design
+                .process_ir
+                .processes
+                .iter()
+                .flat_map(|process| &process.locals)
+                .filter(|local| local.ty.as_ref() == Some(ty))
+                .filter_map(|local| local.layout.as_ref()),
+        );
+    let first = candidates.next()?;
+    candidates
+        .all(|candidate| candidate == first)
+        .then_some(first)
+}
+
+fn signal_layout<'a>(design: &'a Design, signals: &[SignalId]) -> Option<&'a SourceLayout> {
+    let first = design.signals.get(signals.first()?.0 as usize)?;
+    let mut candidates = design
+        .source_layouts
+        .iter()
+        .filter(|(path, _)| {
+            first.path == **path
+                || first
+                    .path
+                    .strip_prefix(path.as_str())
+                    .is_some_and(|suffix| suffix.starts_with('.') || suffix.starts_with('['))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(path, _)| std::cmp::Reverse(path.len()));
+    candidates.into_iter().find_map(|(root, layout)| {
+        let suffix = first.path.strip_prefix(root)?;
+        let mut prefixes = vec![""];
+        let mut offset = 0usize;
+        while offset < suffix.len() {
+            let rest = &suffix[offset..];
+            let consumed = if let Some(field) = rest.strip_prefix('.') {
+                1 + field.find(['.', '[']).unwrap_or(field.len())
+            } else if let Some(index) = rest.strip_prefix('[') {
+                1 + index.find(']')? + 1
+            } else {
+                return None;
+            };
+            offset = offset.checked_add(consumed)?;
+            prefixes.push(&suffix[..offset]);
+        }
+        prefixes.into_iter().rev().find_map(|projection| {
+            let path = format!("{root}{projection}");
+            let field = format!("{path}.");
+            let element = format!("{path}[");
+            let leaves = design
+                .signals
+                .iter()
+                .enumerate()
+                .filter(|(_, signal)| {
+                    signal.path == path
+                        || signal.path.starts_with(&field)
+                        || signal.path.starts_with(&element)
+                })
+                .filter_map(|(index, _)| u32::try_from(index).ok())
+                .filter(|index| {
+                    !design.meta_of.values().any(|companion| companion == index)
+                        && !design.metavalue_temps.contains(index)
+                })
+                .map(SignalId)
+                .collect::<Vec<_>>();
+            (leaves == signals)
+                .then(|| projection_slice(layout, projection).map(|slice| slice.layout))
+                .flatten()
+        })
+    })
+}
+
+/// Recursive layout carried by one arena value. This is intentionally based
+/// only on finalized IR metadata: backends never consult source syntax.
+fn process_value_layout(design: &Design, id: ProcessValueId) -> Option<&SourceLayout> {
+    let value = design.process_ir.values.get(id.0 as usize)?;
+    match &value.kind {
+        ProcessValueKind::Storage(storage) => design
+            .process_ir
+            .storages
+            .get(storage.0 as usize)?
+            .layout
+            .as_ref(),
+        ProcessValueKind::Local { process, local } => design
+            .process_ir
+            .processes
+            .get(process.0 as usize)?
+            .locals
+            .get(local.0 as usize)?
+            .layout
+            .as_ref(),
+        ProcessValueKind::Signal { signals, .. } => signal_layout(design, signals),
+        ProcessValueKind::Field { base, field } => {
+            field_slice(process_value_layout(design, *base)?, field).map(|slice| slice.layout)
+        }
+        ProcessValueKind::Index { base, index } => {
+            let index = process_constant_i64(design, *index)?;
+            array_slice(process_value_layout(design, *base)?, index).map(|slice| slice.layout)
+        }
+        ProcessValueKind::Select {
+            then_value,
+            else_value,
+            ..
+        } => {
+            let then_layout = process_value_layout(design, *then_value)?;
+            (process_value_layout(design, *else_value) == Some(then_layout)).then_some(then_layout)
+        }
+        ProcessValueKind::Construct { ty, .. } => value
+            .ty
+            .as_ref()
+            .or(ty.as_ref())
+            .and_then(|ty| layout_for_type(design, ty)),
+        ProcessValueKind::Array(_) => value.ty.as_ref().and_then(|ty| layout_for_type(design, ty)),
+        _ => value.ty.as_ref().and_then(|ty| layout_for_type(design, ty)),
+    }
+}
+
+fn process_constant_i64(design: &Design, id: ProcessValueId) -> Option<i64> {
+    let ProcessValueKind::Number(ProcessNumber::Integer(words)) =
+        &design.process_ir.values.get(id.0 as usize)?.kind
+    else {
+        return None;
+    };
+    let [word] = words.as_slice() else {
+        return None;
+    };
+    Some(*word as i64)
+}
+
 /// Convert an arbitrary-width scalar to the one-bit condition domain.
 fn as_condition<'ctx>(builder: &Builder<'ctx>, value: IntValue<'ctx>) -> Option<IntValue<'ctx>> {
     if value.get_type().get_bit_width() == 1 {
@@ -1168,6 +1490,307 @@ fn process_binary<'ctx>(
     fit(builder, result, result_width)
 }
 
+fn aggregate_signal_value<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    signals: &[SignalId],
+    state: ProcessSignalState,
+    width: u32,
+) -> Option<IntValue<'ctx>> {
+    if matches!(state, ProcessSignalState::Event) {
+        let mut event = context.bool_type().const_zero();
+        for signal in signals {
+            let leaf = signal_value(context, module, builder, design, &[*signal], state, 1)?;
+            event = builder.build_or(event, leaf, "pv.aggregate.event").ok()?;
+        }
+        return Some(event);
+    }
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    let mut packed = ty.const_zero();
+    let mut offset = 0u32;
+    for signal in signals {
+        let leaf_width = design.signal_width(*signal)?;
+        let leaf = signal_value(
+            context,
+            module,
+            builder,
+            design,
+            &[*signal],
+            state,
+            leaf_width,
+        )?;
+        packed = insert_region(builder, packed, leaf, offset, leaf_width)?;
+        offset = offset.checked_add(leaf_width)?;
+    }
+    (offset == width).then_some(packed)
+}
+
+/// Emit a value using an expected recursive layout. Aggregates have no LLVM
+/// ABI of their own; they are packed only inside the design object so field
+/// reads, copies, and bindings share one exact-width representation.
+#[allow(clippy::too_many_arguments)]
+fn process_value_in_layout<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    id: ProcessValueId,
+    layout: &SourceLayout,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let cache_key = cache.key(id, active);
+    if let Some(value) = cache.emitted.get(&cache_key).copied() {
+        return (value.get_type().get_bit_width() == layout_width(layout)?).then_some(value);
+    }
+    let width = layout_width(layout)?;
+    let value = design.process_ir.values.get(id.0 as usize)?;
+    let emitted = match &value.kind {
+        ProcessValueKind::Storage(storage) => {
+            (storage_state_width(design, *storage) == Some(width)).then(|| {
+                state_value(
+                    context,
+                    module,
+                    builder,
+                    &storage_state_name(*storage),
+                    width,
+                )
+            })??
+        }
+        ProcessValueKind::Local { process, local } => {
+            (local_width(design, *process, *local) == Some(width)).then(|| {
+                state_value(
+                    context,
+                    module,
+                    builder,
+                    &local_state_name(*process, *local),
+                    width,
+                )
+            })??
+        }
+        ProcessValueKind::Signal { signals, state } => {
+            aggregate_signal_value(context, module, builder, design, signals, *state, width)?
+        }
+        ProcessValueKind::Field { base, field } => {
+            let base_layout = process_value_layout(design, *base)?;
+            let selected = field_slice(base_layout, field)?;
+            if selected.width != width {
+                return None;
+            }
+            let base = process_value_in_layout(
+                context,
+                module,
+                builder,
+                design,
+                *base,
+                base_layout,
+                active,
+                index_sites,
+                cache,
+            )?;
+            extract_region(builder, base, selected.offset, selected.width)?
+        }
+        ProcessValueKind::Index { base, index } => {
+            let base_layout = process_value_layout(design, *base)?;
+            let selected = array_slice(base_layout, process_constant_i64(design, *index)?)?;
+            if selected.width != width {
+                return None;
+            }
+            let base = process_value_in_layout(
+                context,
+                module,
+                builder,
+                design,
+                *base,
+                base_layout,
+                active,
+                index_sites,
+                cache,
+            )?;
+            extract_region(builder, base, selected.offset, selected.width)?
+        }
+        ProcessValueKind::Construct { fields, spread, .. } => {
+            let LayoutKind::Struct {
+                fields: layout_fields,
+                ..
+            } = &layout.kind
+            else {
+                return None;
+            };
+            let mut aggregate = match spread {
+                Some(spread) => process_value_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *spread,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?,
+                None => layout_default_value(context, builder, design, layout)?,
+            };
+            let mut positional = 0usize;
+            for field in fields {
+                let field_index = match &field.name {
+                    Some(name) => layout_fields
+                        .iter()
+                        .position(|candidate| candidate.name == *name)?,
+                    None => {
+                        let index = positional;
+                        positional = positional.checked_add(1)?;
+                        index
+                    }
+                };
+                let field_layout = layout_fields.get(field_index)?;
+                let field_value = process_value_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    field.value?,
+                    &field_layout.layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let selected = field_slice(layout, &field_layout.name)?;
+                aggregate = insert_region(
+                    builder,
+                    aggregate,
+                    field_value,
+                    selected.offset,
+                    selected.width,
+                )?;
+            }
+            aggregate
+        }
+        ProcessValueKind::Array(elements) => {
+            let LayoutKind::Array {
+                range: Some(range),
+                element,
+            } = &layout.kind
+            else {
+                return None;
+            };
+            if usize::try_from(range.len()?).ok()? != elements.len() {
+                return None;
+            }
+            let ty = context
+                .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+                .ok()?;
+            let mut aggregate = ty.const_zero();
+            let element_width = layout_width(element)?;
+            for (position, element_value) in elements.iter().enumerate() {
+                let value = process_value_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *element_value,
+                    element,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                aggregate = insert_region(
+                    builder,
+                    aggregate,
+                    value,
+                    u32::try_from(position).ok()?.checked_mul(element_width)?,
+                    element_width,
+                )?;
+            }
+            aggregate
+        }
+        ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } => {
+            let condition = process_value(
+                context,
+                module,
+                builder,
+                design,
+                *condition,
+                active,
+                index_sites,
+                cache,
+            )?;
+            let condition = as_condition(builder, condition)?;
+            let checked_arms =
+                cache.contains_check(*then_value) || cache.contains_check(*else_value);
+            let (then_active, else_active) = if checked_arms {
+                let then_active = match active {
+                    Some(outer) => builder
+                        .build_and(outer, condition, "pv.aggregate.then.active")
+                        .ok()?,
+                    None => condition,
+                };
+                let not_condition = builder
+                    .build_not(condition, "pv.aggregate.else.condition")
+                    .ok()?;
+                let else_active = match active {
+                    Some(outer) => builder
+                        .build_and(outer, not_condition, "pv.aggregate.else.active")
+                        .ok()?,
+                    None => not_condition,
+                };
+                (Some(then_active), Some(else_active))
+            } else {
+                (None, None)
+            };
+            let then_value = process_value_in_layout(
+                context,
+                module,
+                builder,
+                design,
+                *then_value,
+                layout,
+                then_active,
+                index_sites,
+                cache,
+            )?;
+            let else_value = process_value_in_layout(
+                context,
+                module,
+                builder,
+                design,
+                *else_value,
+                layout,
+                else_active,
+                index_sites,
+                cache,
+            )?;
+            builder
+                .build_select(condition, then_value, else_value, "pv.aggregate.select")
+                .ok()?
+                .into_int_value()
+        }
+        _ => process_value_at(
+            context,
+            module,
+            builder,
+            design,
+            id,
+            width,
+            false,
+            active,
+            index_sites,
+            cache,
+        )?,
+    };
+    cache.emitted.insert(cache_key, emitted);
+    Some(emitted)
+}
+
 /// Emit the scalar subset needed by direct CFG control. Values are dependency
 /// ordered, but the per-block cache also prevents a shared arena node from
 /// being emitted more than once in one LLVM block. Foreign calls invalidate
@@ -1201,7 +1824,11 @@ fn process_value<'ctx>(
         ProcessValueKind::Number(ProcessNumber::Real(bits)) => ty.const_int(*bits, false),
         ProcessValueKind::Char(character) => ty.const_int(u64::from(u32::from(*character)), false),
         ProcessValueKind::Signal { signals, state } => {
-            signal_value(context, module, builder, design, signals, *state, width)?
+            if signals.len() == 1 {
+                signal_value(context, module, builder, design, signals, *state, width)?
+            } else {
+                aggregate_signal_value(context, module, builder, design, signals, *state, width)?
+            }
         }
         ProcessValueKind::Local { process, local } => state_value(
             context,
@@ -1580,6 +2207,70 @@ fn process_value<'ctx>(
                 .ok()?
                 .into_int_value()
         }
+        ProcessValueKind::Field { .. } => {
+            let layout = process_value_layout(design, id)?;
+            if layout_width(layout)? != width {
+                return None;
+            }
+            process_value_in_layout(
+                context,
+                module,
+                builder,
+                design,
+                id,
+                layout,
+                active,
+                index_sites,
+                cache,
+            )?
+        }
+        ProcessValueKind::Index { base, index } => {
+            let base_layout = process_value_layout(design, *base)?;
+            match &base_layout.kind {
+                LayoutKind::Array { .. } => {
+                    let layout = process_value_layout(design, id)?;
+                    if layout_width(layout)? != width {
+                        return None;
+                    }
+                    process_value_in_layout(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        id,
+                        layout,
+                        active,
+                        index_sites,
+                        cache,
+                    )?
+                }
+                LayoutKind::Packed {
+                    range: Some(range), ..
+                } if width == 1 => {
+                    let index = process_constant_i64(design, *index)?;
+                    let low = range.left.min(range.right);
+                    let offset = u32::try_from(index.checked_sub(low)?).ok()?;
+                    let base_width = layout_width(base_layout)?;
+                    if offset >= base_width {
+                        return None;
+                    }
+                    let base = process_value_at(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        *base,
+                        base_width,
+                        false,
+                        active,
+                        index_sites,
+                        cache,
+                    )?;
+                    extract_region(builder, base, offset, 1)?
+                }
+                _ => return None,
+            }
+        }
         ProcessValueKind::Concat(parts) => {
             let mut joined = ty.const_zero();
             let mut offset = width;
@@ -1722,17 +2413,30 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
     let has = |supported: &[bool], id: ProcessValueId| {
         supported.get(id.0 as usize).copied().unwrap_or(false)
     };
-    for value in &design.process_ir.values {
+    for (index, value) in design.process_ir.values.iter().enumerate() {
+        let id = ProcessValueId(index as u32);
         let scalar_width = value
             .bit_width
             .is_some_and(|width| width != 0 && width <= super::emit::LLVM_MAX_INT_BITS);
+        let aggregate_width = process_value_layout(design, id)
+            .and_then(layout_width)
+            .is_some_and(|width| width <= super::emit::LLVM_MAX_INT_BITS);
         let shape = match &value.kind {
             ProcessValueKind::Number(_)
             | ProcessValueKind::BitString { .. }
             | ProcessValueKind::Char(_) => true,
             ProcessValueKind::Signal { signals, state } => {
-                matches!(signals.as_slice(), [signal] if design.signals.get(signal.0 as usize).is_some())
-                    && (!matches!(state, ProcessSignalState::Event) || value.bit_width == Some(1))
+                !signals.is_empty()
+                    && signals
+                        .iter()
+                        .all(|signal| design.signals.get(signal.0 as usize).is_some())
+                    && if matches!(state, ProcessSignalState::Event) {
+                        value.bit_width == Some(1)
+                    } else {
+                        signals.iter().try_fold(0u32, |width, signal| {
+                            width.checked_add(design.signal_width(*signal)?)
+                        }) == value.bit_width
+                    }
             }
             ProcessValueKind::BitSlice { base, high, low } => {
                 has(&supported, *base)
@@ -1776,8 +2480,7 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                 local_width(design, *process, *local) == value.bit_width
             }
             ProcessValueKind::Storage(storage) => {
-                direct_storage_width(design, *storage) == value.bit_width
-                    && storage_observed_signal(design, *storage).is_some()
+                storage_state_width(design, *storage) == value.bit_width
                     && design
                         .process_ir
                         .storages
@@ -1807,6 +2510,48 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                     && has(&supported, *then_value)
                     && has(&supported, *else_value)
             }
+            ProcessValueKind::Field { base, .. } => {
+                has(&supported, *base) && process_value_layout(design, id).is_some()
+            }
+            ProcessValueKind::Index { base, index } => {
+                if !has(&supported, *base) || !has(&supported, *index) {
+                    false
+                } else {
+                    let selected = process_constant_i64(design, *index);
+                    match process_value_layout(design, *base) {
+                        Some(
+                            layout @ SourceLayout {
+                                kind: LayoutKind::Array { .. },
+                                ..
+                            },
+                        ) => selected.is_some_and(|index| array_slice(layout, index).is_some()),
+                        Some(SourceLayout {
+                            kind:
+                                LayoutKind::Packed {
+                                    range: Some(range), ..
+                                },
+                            ..
+                        }) => {
+                            selected.is_some_and(|index| {
+                                (range.left.min(range.right)..=range.left.max(range.right))
+                                    .contains(&index)
+                            }) && value.bit_width == Some(1)
+                        }
+                        _ => false,
+                    }
+                }
+            }
+            ProcessValueKind::Construct { fields, spread, .. } => {
+                process_value_layout(design, id).is_some()
+                    && fields
+                        .iter()
+                        .all(|field| field.value.is_some_and(|value| has(&supported, value)))
+                    && spread.is_none_or(|spread| has(&supported, spread))
+            }
+            ProcessValueKind::Array(elements) => {
+                process_value_layout(design, id).is_some()
+                    && elements.iter().all(|element| has(&supported, *element))
+            }
             ProcessValueKind::Concat(parts) => {
                 parts.iter().all(|part| has(&supported, *part))
                     && parts.iter().try_fold(0u32, |width, part| {
@@ -1817,64 +2562,416 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
             | ProcessValueKind::String(_)
             | ProcessValueKind::Definition(_)
             | ProcessValueKind::Intrinsic(_)
-            | ProcessValueKind::Field { .. }
             | ProcessValueKind::Attribute { .. }
-            | ProcessValueKind::Index { .. }
             | ProcessValueKind::Range { .. }
             | ProcessValueKind::MetaCompare { .. }
             | ProcessValueKind::Match { .. }
             | ProcessValueKind::Call { .. }
-            | ProcessValueKind::Construct { .. }
-            | ProcessValueKind::Array(_)
             | ProcessValueKind::Invalid => false,
         };
-        supported.push(scalar_width && shape);
+        supported.push((scalar_width || aggregate_width) && shape);
     }
     supported
 }
 
-/// Resolve a whole-scalar current-signal place to the staging helper emitted
-/// for that signal. Projections and aggregate places remain unsupported until
-/// their Process IR lowering is complete.
+/// Resolve a whole current-signal place. Keeping this fast path preserves the
+/// source expression's wider mathematical value for range checking before it
+/// is narrowed to the signal's representation.
 fn staged_signal_target(design: &Design, target: ProcessValueId) -> Option<SignalId> {
+    let signals = staged_signal_group(design, target)?;
+    let [signal] = signals else {
+        return None;
+    };
+    Some(*signal)
+}
+
+fn staged_signal_group(design: &Design, target: ProcessValueId) -> Option<&[SignalId]> {
     let value = design.process_ir.values.get(target.0 as usize)?;
     let ProcessValueKind::Signal { signals, state } = &value.kind else {
         return None;
     };
-    let [signal] = signals.as_slice() else {
-        return None;
-    };
-    matches!(state, ProcessSignalState::Current)
-        .then_some(*signal)
-        .filter(|signal| design.signals.get(signal.0 as usize).is_some())
+    let width = signals.iter().try_fold(0u32, |width, signal| {
+        width.checked_add(design.signal_width(*signal)?)
+    })?;
+    (matches!(state, ProcessSignalState::Current)
+        && !signals.is_empty()
+        && value.bit_width == Some(width))
+    .then_some(signals)
 }
 
-fn immediate_local_target(
-    design: &Design,
-    owner: siox::ir::ProcessId,
-    target: ProcessValueId,
-) -> Option<(ProcessLocalId, u32)> {
-    let value = design.process_ir.values.get(target.0 as usize)?;
-    let ProcessValueKind::Local { process, local } = &value.kind else {
-        return None;
-    };
-    (*process == owner)
-        .then(|| local_width(design, *process, *local).map(|width| (*local, width)))
-        .flatten()
-        .filter(|(_, width)| Some(*width) == value.bit_width)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum StaticPlaceRoot {
+    Local(ProcessId, ProcessLocalId),
+    Storage(ProcessStorageId),
+    Signal(SignalId),
 }
 
-fn immediate_storage_target(
-    design: &Design,
-    target: ProcessValueId,
-) -> Option<(ProcessStorageId, u32)> {
-    let value = design.process_ir.values.get(target.0 as usize)?;
-    let ProcessValueKind::Storage(storage) = &value.kind else {
+#[derive(Clone, Copy, Debug)]
+struct StaticPlace {
+    root: StaticPlaceRoot,
+    root_width: u32,
+    offset: u32,
+    width: u32,
+}
+
+fn static_place(design: &Design, id: ProcessValueId) -> Option<StaticPlace> {
+    let value = design.process_ir.values.get(id.0 as usize)?;
+    match &value.kind {
+        ProcessValueKind::Local { process, local } => {
+            let width = local_width(design, *process, *local)?;
+            (value.bit_width == Some(width)).then_some(StaticPlace {
+                root: StaticPlaceRoot::Local(*process, *local),
+                root_width: width,
+                offset: 0,
+                width,
+            })
+        }
+        ProcessValueKind::Storage(storage) => {
+            let width = storage_state_width(design, *storage)?;
+            (value.bit_width == Some(width)).then_some(StaticPlace {
+                root: StaticPlaceRoot::Storage(*storage),
+                root_width: width,
+                offset: 0,
+                width,
+            })
+        }
+        ProcessValueKind::Signal { signals, state } => {
+            let [signal] = signals.as_slice() else {
+                return None;
+            };
+            if !matches!(state, ProcessSignalState::Current) {
+                return None;
+            }
+            let width = design.signal_width(*signal)?;
+            (value.bit_width == Some(width)).then_some(StaticPlace {
+                root: StaticPlaceRoot::Signal(*signal),
+                root_width: width,
+                offset: 0,
+                width,
+            })
+        }
+        ProcessValueKind::Field { base, field } => {
+            let mut place = static_place(design, *base)?;
+            let selected = field_slice(process_value_layout(design, *base)?, field)?;
+            place.offset = place.offset.checked_add(selected.offset)?;
+            place.width = selected.width;
+            (value.bit_width == Some(selected.width)).then_some(place)
+        }
+        ProcessValueKind::Index { base, index } => {
+            let mut place = static_place(design, *base)?;
+            let base_layout = process_value_layout(design, *base)?;
+            let index = process_constant_i64(design, *index)?;
+            let (offset, width) = match &base_layout.kind {
+                LayoutKind::Array { .. } => {
+                    let selected = array_slice(base_layout, index)?;
+                    (selected.offset, selected.width)
+                }
+                LayoutKind::Packed {
+                    range: Some(range), ..
+                } => {
+                    let low = range.left.min(range.right);
+                    let offset = u32::try_from(index.checked_sub(low)?).ok()?;
+                    (offset, 1)
+                }
+                _ => return None,
+            };
+            place.offset = place.offset.checked_add(offset)?;
+            place.width = width;
+            (place.offset.checked_add(width)? <= place.root_width && value.bit_width == Some(width))
+                .then_some(place)
+        }
+        _ => None,
+    }
+}
+
+fn place_has_semantics(place: StaticPlace, owner: ProcessId, semantics: ProcessAssignment) -> bool {
+    matches!(
+        (place.root, semantics),
+        (
+            StaticPlaceRoot::Local(process, _),
+            ProcessAssignment::ImmediateLocal
+        ) if process == owner
+    ) || matches!(
+        (place.root, semantics),
+        (
+            StaticPlaceRoot::Storage(_),
+            ProcessAssignment::ImmediateStorage
+        ) | (StaticPlaceRoot::Signal(_), ProcessAssignment::StagedSignal)
+    )
+}
+
+fn place_class(place: StaticPlace, owner: ProcessId) -> Option<u8> {
+    match place.root {
+        StaticPlaceRoot::Local(process, _) if process == owner => Some(0),
+        StaticPlaceRoot::Storage(_) => Some(1),
+        StaticPlaceRoot::Signal(_) => Some(2),
+        StaticPlaceRoot::Local(_, _) => None,
+    }
+}
+
+fn per_place_targets(design: &Design, target: ProcessValueId) -> Option<Vec<StaticPlace>> {
+    let ProcessValueKind::Concat(parts) = &design.process_ir.values.get(target.0 as usize)?.kind
+    else {
         return None;
     };
-    let width = direct_storage_width(design, *storage)?;
-    (value.bit_width == Some(width) && storage_write_signals(design, *storage).is_some())
-        .then_some((*storage, width))
+    let places = parts
+        .iter()
+        .map(|part| static_place(design, *part))
+        .collect::<Option<Vec<_>>>()?;
+    let mut roots = std::collections::HashSet::new();
+    (!places.is_empty() && places.iter().all(|place| roots.insert(place.root))).then_some(places)
+}
+
+fn supported_per_place_assignment(
+    design: &Design,
+    owner: ProcessId,
+    target: ProcessValueId,
+    value: ProcessValueId,
+) -> bool {
+    let Some(places) = per_place_targets(design, target) else {
+        return false;
+    };
+    let mut classes = std::collections::HashSet::new();
+    let Some(width) = places.iter().try_fold(0u32, |width, place| {
+        classes.insert(place_class(*place, owner)?);
+        width.checked_add(place.width)
+    }) else {
+        return false;
+    };
+    classes.len() > 1
+        && design
+            .process_ir
+            .values
+            .get(value.0 as usize)
+            .and_then(|value| value.bit_width)
+            == Some(width)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assignment_value<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    target: ProcessValueId,
+    value: ProcessValueId,
+    width: u32,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    if let Some(layout) =
+        process_value_layout(design, target).filter(|layout| layout_width(layout) == Some(width))
+    {
+        process_value_in_layout(
+            context,
+            module,
+            builder,
+            design,
+            value,
+            layout,
+            None,
+            index_sites,
+            cache,
+        )
+    } else {
+        process_value_at(
+            context,
+            module,
+            builder,
+            design,
+            value,
+            width,
+            false,
+            None,
+            index_sites,
+            cache,
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_storage_value<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    storage: ProcessStorageId,
+    value: IntValue<'ctx>,
+    span: siox::diag::Span,
+    range_sites: &HashMap<siox::diag::Span, u32>,
+) -> Option<()> {
+    let metadata = design.process_ir.storages.get(storage.0 as usize)?;
+    for binding in &metadata.bindings {
+        if !matches!(
+            binding.direction,
+            LayoutDirection::In | LayoutDirection::InOut
+        ) {
+            continue;
+        }
+        let signal = binding.signal;
+        let (offset, binding_width) = storage_binding_slice(design, storage, &binding.projection)?;
+        let signal_width = design.signal_width(signal)?;
+        let part = extract_region(builder, value, offset, binding_width)?;
+        let ranged = design.signals.get(signal.0 as usize)?.range.is_some();
+        let staged = if ranged {
+            let checked_width = binding_width.max(signal_width).max(64);
+            let checked = if design.signals.get(signal.0 as usize)?.integer {
+                fit_signed(builder, part, checked_width)?
+            } else {
+                fit(builder, part, checked_width)?
+            };
+            latch_range_failure(
+                context,
+                module,
+                builder,
+                design,
+                signal,
+                checked,
+                span,
+                range_sites,
+            )?;
+            fit(builder, checked, signal_width)?
+        } else {
+            fit(builder, part, signal_width)?
+        };
+        stage_signal(module, builder, signal, staged)?;
+    }
+    Some(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_signal_group<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    signals: &[SignalId],
+    value: IntValue<'ctx>,
+    span: siox::diag::Span,
+    range_sites: &HashMap<siox::diag::Span, u32>,
+) -> Option<()> {
+    let mut offset = 0u32;
+    for signal in signals {
+        let width = design.signal_width(*signal)?;
+        let part = extract_region(builder, value, offset, width)?;
+        if design.signals.get(signal.0 as usize)?.range.is_some() {
+            let checked_width = width.max(64);
+            let checked = if design.signals.get(signal.0 as usize)?.integer {
+                fit_signed(builder, part, checked_width)?
+            } else {
+                fit(builder, part, checked_width)?
+            };
+            latch_range_failure(
+                context,
+                module,
+                builder,
+                design,
+                *signal,
+                checked,
+                span,
+                range_sites,
+            )?;
+        }
+        stage_signal(module, builder, *signal, part)?;
+        offset = offset.checked_add(width)?;
+    }
+    (offset == value.get_type().get_bit_width()).then_some(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_static_place<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    place: StaticPlace,
+    value: IntValue<'ctx>,
+    span: siox::diag::Span,
+    range_sites: &HashMap<siox::diag::Span, u32>,
+) -> Option<()> {
+    let value = fit(builder, value, place.width)?;
+    match place.root {
+        StaticPlaceRoot::Local(process, local) => {
+            let name = local_state_name(process, local);
+            let value = if place.offset == 0 && place.width == place.root_width {
+                value
+            } else {
+                insert_region(
+                    builder,
+                    state_value(context, module, builder, &name, place.root_width)?,
+                    value,
+                    place.offset,
+                    place.width,
+                )?
+            };
+            store_state(module, builder, &name, place.root_width, value)
+        }
+        StaticPlaceRoot::Storage(storage) => {
+            let name = storage_state_name(storage);
+            let value = if place.offset == 0 && place.width == place.root_width {
+                value
+            } else {
+                insert_region(
+                    builder,
+                    state_value(context, module, builder, &name, place.root_width)?,
+                    value,
+                    place.offset,
+                    place.width,
+                )?
+            };
+            store_state(module, builder, &name, place.root_width, value)?;
+            stage_storage_value(
+                context,
+                module,
+                builder,
+                design,
+                storage,
+                value,
+                span,
+                range_sites,
+            )
+        }
+        StaticPlaceRoot::Signal(signal) => {
+            let value = if place.offset == 0 && place.width == place.root_width {
+                value
+            } else {
+                insert_region(
+                    builder,
+                    signal_value(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        &[signal],
+                        ProcessSignalState::Current,
+                        place.root_width,
+                    )?,
+                    value,
+                    place.offset,
+                    place.width,
+                )?
+            };
+            if design.signals.get(signal.0 as usize)?.range.is_some() {
+                let checked_width = place.root_width.max(64);
+                let checked = if design.signals.get(signal.0 as usize)?.integer {
+                    fit_signed(builder, value, checked_width)?
+                } else {
+                    fit(builder, value, checked_width)?
+                };
+                latch_range_failure(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    signal,
+                    checked,
+                    span,
+                    range_sites,
+                )?;
+            }
+            stage_signal(module, builder, signal, value)
+        }
+    }
 }
 
 fn storage_changed_ptr<'ctx>(
@@ -1963,13 +3060,12 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
                 byte.const_zero(),
             )
             .unwrap();
-        let Some(width) = direct_storage_width(design, storage.id) else {
+        let Some(width) = storage_state_width(design, storage.id) else {
             continue;
         };
         let ty = context
             .custom_width_int_type(std::num::NonZeroU32::new(width).unwrap())
             .expect("validated storage width");
-        let writable = storage_write_signals(design, storage.id);
         let initialized = storage
             .initializer
             .filter(|initializer| {
@@ -1979,37 +3075,63 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
                     .unwrap_or(false)
             })
             .and_then(|initializer| {
-                process_value_at(
-                    context,
-                    module,
-                    &builder,
-                    design,
-                    initializer,
-                    width,
-                    false,
-                    None,
-                    &index_sites,
-                    &mut cache,
-                )
-            });
-        let value = if writable.is_none() {
-            storage_observed_signal(design, storage.id)
-                .flatten()
-                .and_then(|signal| {
-                    signal_value(
+                if let Some(layout) = storage.layout.as_ref() {
+                    process_value_in_layout(
                         context,
                         module,
                         &builder,
                         design,
-                        &[signal],
-                        ProcessSignalState::Current,
-                        width,
+                        initializer,
+                        layout,
+                        None,
+                        &index_sites,
+                        &mut cache,
                     )
-                })
-                .unwrap_or_else(|| ty.const_int(storage_default(design, storage.id), false))
+                } else {
+                    process_value_at(
+                        context,
+                        module,
+                        &builder,
+                        design,
+                        initializer,
+                        width,
+                        false,
+                        None,
+                        &index_sites,
+                        &mut cache,
+                    )
+                }
+            });
+        let mut value = if let Some(initialized) = initialized {
+            initialized
+        } else if let Some(layout) = storage.layout.as_ref() {
+            layout_default_value(context, &builder, design, layout)
+                .unwrap_or_else(|| ty.const_zero())
         } else {
-            initialized.unwrap_or_else(|| ty.const_int(storage_default(design, storage.id), false))
+            ty.const_int(storage_default(design, storage.id), false)
         };
+        // Pure output fields are observations, not reset-time drivers. Read
+        // their already-reset DUT leaves into the packed storage object.
+        for binding in &storage.bindings {
+            if !matches!(binding.direction, LayoutDirection::Out) {
+                continue;
+            }
+            let (offset, binding_width) =
+                storage_binding_slice(design, storage.id, &binding.projection)
+                    .expect("validated storage binding");
+            let observed = signal_value(
+                context,
+                module,
+                &builder,
+                design,
+                &[binding.signal],
+                ProcessSignalState::Current,
+                binding_width,
+            )
+            .expect("validated observed storage binding");
+            value = insert_region(&builder, value, observed, offset, binding_width)
+                .expect("validated observed storage region");
+        }
         store_state(
             module,
             &builder,
@@ -2026,11 +3148,20 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
             value,
         )
         .expect("declared process storage snapshot");
-        if let Some(signals) = writable {
-            for signal in signals {
-                stage_signal(module, &builder, signal, value)
-                    .expect("validated scalar storage binding");
+        for binding in &storage.bindings {
+            if !matches!(
+                binding.direction,
+                LayoutDirection::In | LayoutDirection::InOut
+            ) {
+                continue;
             }
+            let (offset, binding_width) =
+                storage_binding_slice(design, storage.id, &binding.projection)
+                    .expect("validated storage binding");
+            let staged = extract_region(&builder, value, offset, binding_width)
+                .expect("validated writable storage region");
+            stage_signal(module, &builder, binding.signal, staged)
+                .expect("validated storage binding signal");
         }
         cache.clear();
     }
@@ -2042,7 +3173,7 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
     builder.position_at_end(context.append_basic_block(commit, "entry"));
     let mut any_changed = context.bool_type().const_zero();
     for storage in &design.process_ir.storages {
-        let Some(width) = direct_storage_width(design, storage.id) else {
+        let Some(width) = storage_state_width(design, storage.id) else {
             continue;
         };
         let previous = state_value(
@@ -2053,7 +3184,7 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
             width,
         )
         .expect("declared storage snapshot");
-        let current = state_value(
+        let mut current = state_value(
             context,
             module,
             &builder,
@@ -2061,20 +3192,29 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
             width,
         )
         .expect("declared storage state");
-        let current = storage_observed_signal(design, storage.id)
-            .flatten()
-            .and_then(|signal| {
-                signal_value(
-                    context,
-                    module,
-                    &builder,
-                    design,
-                    &[signal],
-                    ProcessSignalState::Current,
-                    width,
-                )
-            })
-            .unwrap_or(current);
+        for binding in &storage.bindings {
+            if !matches!(
+                binding.direction,
+                LayoutDirection::Out | LayoutDirection::InOut
+            ) {
+                continue;
+            }
+            let (offset, binding_width) =
+                storage_binding_slice(design, storage.id, &binding.projection)
+                    .expect("validated storage binding");
+            let observed = signal_value(
+                context,
+                module,
+                &builder,
+                design,
+                &[binding.signal],
+                ProcessSignalState::Current,
+                binding_width,
+            )
+            .expect("validated observed storage binding");
+            current = insert_region(&builder, current, observed, offset, binding_width)
+                .expect("validated observed storage region");
+        }
         store_state(
             module,
             &builder,
@@ -2184,25 +3324,43 @@ fn block_is_supported(
                 target,
                 value: assigned,
                 ..
-            } => immediate_local_target(design, process.id, *target).is_some() && value(*assigned),
+            } => {
+                static_place(design, *target).is_some_and(|place| {
+                    place_has_semantics(place, process.id, ProcessAssignment::ImmediateLocal)
+                }) && value(*assigned)
+            }
             ProcessInstruction::Assign {
                 semantics: ProcessAssignment::ImmediateStorage,
                 target,
                 value: assigned,
                 ..
-            } => immediate_storage_target(design, *target).is_some() && value(*assigned),
+            } => {
+                static_place(design, *target).is_some_and(|place| {
+                    place_has_semantics(place, process.id, ProcessAssignment::ImmediateStorage)
+                }) && value(*assigned)
+            }
             ProcessInstruction::Assign {
                 semantics: ProcessAssignment::StagedSignal,
                 target,
                 value: assigned,
                 ..
-            } => staged_signal_target(design, *target).is_some() && value(*assigned),
+            } => {
+                (staged_signal_group(design, *target).is_some()
+                    || static_place(design, *target).is_some_and(|place| {
+                        place_has_semantics(place, process.id, ProcessAssignment::StagedSignal)
+                    }))
+                    && value(*assigned)
+            }
             ProcessInstruction::Assign {
                 semantics: ProcessAssignment::PerPlace,
+                target,
+                value: assigned,
                 ..
+            } => {
+                supported_per_place_assignment(design, process.id, *target, *assigned)
+                    && value(*assigned)
             }
-            | ProcessInstruction::Schedule { .. }
-            | ProcessInstruction::Runtime { .. } => false,
+            ProcessInstruction::Schedule { .. } | ProcessInstruction::Runtime { .. } => false,
         });
     let terminator = match &block.terminator {
         ProcessTerminator::Return { value: None, .. }
@@ -2220,8 +3378,8 @@ fn block_is_supported(
 
 /// Emit a process entry that resumes at any CFG block by its stable block ID.
 ///
-/// Blocks containing only whole-scalar staged signal assignments execute
-/// directly and publish into the object-owned pending state. Unsupported
+/// Blocks containing directly supported assignments execute and publish
+/// staged writes into the object-owned pending state. Unsupported
 /// executable nodes return [`PROCESS_UNSUPPORTED`] before a block performs any
 /// calls or writes, making this a safe migration path rather than a second
 /// partial semantic engine.
@@ -2285,23 +3443,51 @@ fn process_entry<'ctx>(
                 ProcessInstruction::Declare {
                     local, initializer, ..
                 } => local_width(design, process.id, *local).and_then(|width| {
+                    let metadata = design
+                        .process_ir
+                        .processes
+                        .get(process.id.0 as usize)?
+                        .locals
+                        .get(local.0 as usize)?;
                     let value = match initializer {
-                        Some(initializer) => process_value_at(
-                            context,
-                            module,
-                            &builder,
-                            design,
-                            *initializer,
-                            width,
-                            false,
-                            None,
-                            index_sites,
-                            &mut cache,
-                        )?,
-                        None => context
-                            .custom_width_int_type(std::num::NonZeroU32::new(width)?)
-                            .ok()?
-                            .const_int(local_default(design, process.id, *local), false),
+                        Some(initializer) => {
+                            if let Some(layout) = metadata.layout.as_ref() {
+                                process_value_in_layout(
+                                    context,
+                                    module,
+                                    &builder,
+                                    design,
+                                    *initializer,
+                                    layout,
+                                    None,
+                                    index_sites,
+                                    &mut cache,
+                                )?
+                            } else {
+                                process_value_at(
+                                    context,
+                                    module,
+                                    &builder,
+                                    design,
+                                    *initializer,
+                                    width,
+                                    false,
+                                    None,
+                                    index_sites,
+                                    &mut cache,
+                                )?
+                            }
+                        }
+                        None => {
+                            if let Some(layout) = metadata.layout.as_ref() {
+                                layout_default_value(context, &builder, design, layout)?
+                            } else {
+                                context
+                                    .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+                                    .ok()?
+                                    .const_int(local_default(design, process.id, *local), false)
+                            }
+                        }
                     };
                     store_state(
                         module,
@@ -2315,38 +3501,172 @@ fn process_entry<'ctx>(
                     semantics: ProcessAssignment::ImmediateLocal,
                     target,
                     value,
+                    span,
                     ..
-                } => immediate_local_target(design, process.id, *target).and_then(
-                    |(local, width)| {
-                        let value = process_value_at(
+                } => static_place(design, *target)
+                    .filter(|place| {
+                        place_has_semantics(*place, process.id, ProcessAssignment::ImmediateLocal)
+                    })
+                    .and_then(|place| {
+                        let value = assignment_value(
                             context,
                             module,
                             &builder,
                             design,
+                            *target,
                             *value,
-                            width,
-                            false,
-                            None,
+                            place.width,
                             index_sites,
                             &mut cache,
                         )?;
-                        store_state(
+                        write_static_place(
+                            context,
                             module,
                             &builder,
-                            &local_state_name(process.id, local),
-                            width,
+                            design,
+                            place,
                             value,
+                            *span,
+                            range_sites,
                         )
-                    },
-                ),
+                    }),
                 ProcessInstruction::Assign {
                     semantics: ProcessAssignment::ImmediateStorage,
                     target,
                     value,
                     span,
                     ..
-                } => immediate_storage_target(design, *target).and_then(|(storage, width)| {
-                    let signed_value = process_value_is_signed(design, *value);
+                } => static_place(design, *target)
+                    .filter(|place| {
+                        place_has_semantics(*place, process.id, ProcessAssignment::ImmediateStorage)
+                    })
+                    .and_then(|place| {
+                        let value = assignment_value(
+                            context,
+                            module,
+                            &builder,
+                            design,
+                            *target,
+                            *value,
+                            place.width,
+                            index_sites,
+                            &mut cache,
+                        )?;
+                        write_static_place(
+                            context,
+                            module,
+                            &builder,
+                            design,
+                            place,
+                            value,
+                            *span,
+                            range_sites,
+                        )
+                    }),
+                ProcessInstruction::Assign {
+                    semantics: ProcessAssignment::StagedSignal,
+                    target,
+                    value,
+                    span,
+                    ..
+                } => (|| {
+                    if let Some(signal) = staged_signal_target(design, *target) {
+                        let width = design.signal_width(signal)?;
+                        let source_width =
+                            design.process_ir.values.get(value.0 as usize)?.bit_width?;
+                        let ranged = design.signals.get(signal.0 as usize)?.range.is_some();
+                        let checked_width = if ranged {
+                            width.max(source_width).max(64)
+                        } else {
+                            width
+                        };
+                        let value = process_value_at(
+                            context,
+                            module,
+                            &builder,
+                            design,
+                            *value,
+                            checked_width,
+                            ranged,
+                            None,
+                            index_sites,
+                            &mut cache,
+                        )?;
+                        if ranged {
+                            latch_range_failure(
+                                context,
+                                module,
+                                &builder,
+                                design,
+                                signal,
+                                value,
+                                *span,
+                                range_sites,
+                            )?;
+                        }
+                        stage_signal(module, &builder, signal, fit(&builder, value, width)?)
+                    } else if let Some(signals) = staged_signal_group(design, *target) {
+                        let width = signals.iter().try_fold(0u32, |width, signal| {
+                            width.checked_add(design.signal_width(*signal)?)
+                        })?;
+                        let value = assignment_value(
+                            context,
+                            module,
+                            &builder,
+                            design,
+                            *target,
+                            *value,
+                            width,
+                            index_sites,
+                            &mut cache,
+                        )?;
+                        stage_signal_group(
+                            context,
+                            module,
+                            &builder,
+                            design,
+                            signals,
+                            value,
+                            *span,
+                            range_sites,
+                        )
+                    } else {
+                        let place = static_place(design, *target).filter(|place| {
+                            place_has_semantics(*place, process.id, ProcessAssignment::StagedSignal)
+                        })?;
+                        let value = assignment_value(
+                            context,
+                            module,
+                            &builder,
+                            design,
+                            *target,
+                            *value,
+                            place.width,
+                            index_sites,
+                            &mut cache,
+                        )?;
+                        write_static_place(
+                            context,
+                            module,
+                            &builder,
+                            design,
+                            place,
+                            value,
+                            *span,
+                            range_sites,
+                        )
+                    }
+                })(),
+                ProcessInstruction::Assign {
+                    semantics: ProcessAssignment::PerPlace,
+                    target,
+                    value,
+                    span,
+                    ..
+                } => per_place_targets(design, *target).and_then(|places| {
+                    let width = places
+                        .iter()
+                        .try_fold(0u32, |width, place| width.checked_add(place.width))?;
                     let value = process_value_at(
                         context,
                         module,
@@ -2359,82 +3679,24 @@ fn process_entry<'ctx>(
                         index_sites,
                         &mut cache,
                     )?;
-                    store_state(module, &builder, &storage_state_name(storage), width, value)?;
-                    for signal in storage_write_signals(design, storage)? {
-                        let signal_width = design.signal_width(signal)?;
-                        let ranged = design.signals.get(signal.0 as usize)?.range.is_some();
-                        let staged = if ranged {
-                            let checked_width = width.max(signal_width).max(64);
-                            let checked = if signed_value {
-                                fit_signed(&builder, value, checked_width)?
-                            } else {
-                                fit(&builder, value, checked_width)?
-                            };
-                            latch_range_failure(
-                                context,
-                                module,
-                                &builder,
-                                design,
-                                signal,
-                                checked,
-                                *span,
-                                range_sites,
-                            )?;
-                            fit(&builder, checked, signal_width)?
-                        } else {
-                            fit(&builder, value, signal_width)?
-                        };
-                        stage_signal(module, &builder, signal, staged)?;
-                    }
-                    Some(())
-                }),
-                ProcessInstruction::Assign {
-                    semantics: ProcessAssignment::StagedSignal,
-                    target,
-                    value,
-                    span,
-                    ..
-                } => staged_signal_target(design, *target).and_then(|signal| {
-                    let width = design.signal_width(signal)?;
-                    let source_width = design.process_ir.values.get(value.0 as usize)?.bit_width?;
-                    let ranged = design.signals.get(signal.0 as usize)?.range.is_some();
-                    let checked_width = if ranged {
-                        width.max(source_width).max(64)
-                    } else {
-                        width
-                    };
-                    let value = process_value_at(
-                        context,
-                        module,
-                        &builder,
-                        design,
-                        *value,
-                        checked_width,
-                        ranged,
-                        None,
-                        index_sites,
-                        &mut cache,
-                    )?;
-                    if ranged {
-                        latch_range_failure(
+                    let mut offset = width;
+                    for place in places {
+                        offset = offset.checked_sub(place.width)?;
+                        let part = extract_region(&builder, value, offset, place.width)?;
+                        write_static_place(
                             context,
                             module,
                             &builder,
                             design,
-                            signal,
-                            value,
+                            place,
+                            part,
                             *span,
                             range_sites,
                         )?;
                     }
-                    stage_signal(module, &builder, signal, fit(&builder, value, width)?)
+                    (offset == 0).then_some(())
                 }),
-                ProcessInstruction::Assign {
-                    semantics: ProcessAssignment::PerPlace,
-                    ..
-                }
-                | ProcessInstruction::Schedule { .. }
-                | ProcessInstruction::Runtime { .. } => None,
+                ProcessInstruction::Schedule { .. } | ProcessInstruction::Runtime { .. } => None,
             };
             if emitted.is_none() {
                 failed = true;
@@ -2445,7 +3707,8 @@ fn process_entry<'ctx>(
                 ProcessInstruction::Declare { .. }
                     | ProcessInstruction::Assign {
                         semantics: ProcessAssignment::ImmediateLocal
-                            | ProcessAssignment::ImmediateStorage,
+                            | ProcessAssignment::ImmediateStorage
+                            | ProcessAssignment::PerPlace,
                         ..
                     }
             ) {

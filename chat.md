@@ -9023,3 +9023,24 @@ large runtime-vector-index design remains bounded by the 8 GiB test scope.
 Gates: 420 default / 402 all-feature unit tests plus all integrations/docs,
 strict all-feature Clippy, no-default check, corpus 183/183, source-to-object
 and hand-built linked process-entry probes, and direct counter/VCD validation.
+2026-09-08 Codex: runtime-failure lowering landed as f6574ae. The next direct
+LLVM slice is live in `src/llvm/process.rs` with supporting Process IR/layout
+tests as needed: lower recursive aggregate projections and `PerPlace`
+assignments from retained `SourceLayout` and flattened bindings, while keeping
+unsupported shapes transactionally rejected before any write is published.
+2026-09-09 Codex: aggregate Process IR execution is green and I am synchronizing
+`TODO.md` plus the accepted runtime/pipeline proposals before committing. The
+direct object now packs recursive layouts, executes aggregate local/storage
+initialization and field writes, stages flattened aggregate signals, and applies
+mixed local/storage/signal concatenations with per-place timing. Dynamic
+aggregate indices and multiple partial destinations sharing one root remain
+explicit fail-closed cases until their merge semantics have a direct lowering.
+2026-09-09 Codex: direct aggregate/per-place LLVM lowering is verified and ready
+to land. Nested retained layouts select the correct aggregate subtree; packed
+construct/default/spread/copy values feed aggregate locals and storage; constant
+field/index projections update exact regions; flattened aggregate signals stage
+leaf writes; mixed concatenation targets evaluate once and retain per-place
+timing. Gates on the final tree: 422 default / 404 all-feature unit tests plus
+all integrations/docs, strict all-target/all-feature Clippy, frontend-only
+check, corpus 183/183 under 8 GiB, linked ABI probes, and a directly built FIFO
+test executable whose VCD passes the semantic waveform checker.

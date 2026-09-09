@@ -278,10 +278,13 @@ Remaining:
   emitter peak from 809 MB to 79 MB; the full test build fell from 14.4 s /
   589 MB to 8.3 s / 146 MB, while 10k settles improved from 58.6 ms to
   51.8 ms and output remained byte-identical.
-- 🟡 **Non-flattened composite sizing.** Hardware structs and arrays flatten to
-  leaves today. Any future aggregate IR value must calculate
-  `count × element_layout` recursively, with checked arithmetic and cycle
-  detection.
+- 🟡 **Canonical composite sizing.** Hardware structs and arrays still flatten
+  to leaves, while direct Process LLVM now calculates recursive `SourceLayout`
+  widths with checked arithmetic and packs each process-frame aggregate into
+  one exact-width value. Move that packed width onto the canonical aggregate
+  value itself so every later consumer shares it rather than rediscovering it
+  from layout metadata. Layouts own their children, so source type-cycle
+  rejection remains the cycle boundary instead of a backend depth limit.
 
 - 🟡 **One-shot delayed writes.** The event wheel supports canonical background
   clocks and `await`, but an arbitrary `x = value after duration` is rejected.
@@ -349,8 +352,14 @@ Remaining:
   bounds failure through the shared diagnostic ABI (including path-sensitive
   value-level selections), and ranged signal/storage-binding writes latch
   their mathematical value and Process IR source site before narrowing.
-  Recursive aggregate projections and per-place writes, runtime instructions,
-  match/for, and suspension remain.
+  Recursive struct/array layouts now execute as exact packed process frames:
+  constructors, defaults, spread/copy, constant field/index projections,
+  aggregate locals/storage, flattened aggregate signal reads/writes, and mixed
+  local/storage/signal concatenation targets preserve their respective
+  immediate or staged timing. Dynamic aggregate indices and mixed targets that
+  write multiple projections of the same root still fail closed until their
+  update merge is explicit. Runtime instructions, match/for, scheduling, and
+  suspension remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad

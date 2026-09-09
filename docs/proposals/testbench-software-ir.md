@@ -204,7 +204,12 @@ language-lowering path.
    count from that width rather than imposing a global value width. The object
    now emits one callable function-pointer entry per process, with a stable
    resume-block/status ABI and an explicit unsupported status while instruction
-   coverage is added.
+   coverage is added. Exact-width scalar execution, checked-index/range failure
+   latches, recursive aggregate frames and constant projections, flattened
+   aggregate signal writes, and mixed per-place assignment timing are already
+   direct. Runtime calls, dynamic aggregate selection/update, structured
+   match/for dispatch, delayed scheduling, and suspension are the next coverage
+   boundary.
 7. **Run both native backends differentially.** Require identical test results,
    diagnostics, time progression, resolved values, and VCD/FST samples across
    the full default and bit-packed corpus.

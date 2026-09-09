@@ -144,23 +144,30 @@ signatures:
    bit patterns. `CheckedIndex` nodes retain their Process IR source domain,
    latch only on an evaluated selection path, and feed the existing
    `sx_index_*` failure ABI.
-2. **Storage allocation — decided and scalar/packed forms emitted.** Each
-   scalar/packed process-local and persistent `ProcessStorage` value has
-   exact-width state in the design object. This keeps arbitrary-width layouts
-   and process frames in LLVM rather than teaching the reusable scheduler
-   their representation; globals also retain locals across a future
-   suspend/resume call. Declarations and local/storage assignments update this
-   state immediately. A storage input/inout binding stages the same value into
-   its DUT signal, while an output binding mirrors the committed DUT signal
-   during commit. Ranged bindings check the stored mathematical value before
-   narrowing and use the same source-site failure record as direct signal
-   writes. The object snapshots storage at each batch boundary and exposes its
-   change flags for storage sensitivities. Recursive array/struct leaves and
-   projections remain to be emitted from their retained `SourceLayout`.
+2. **Storage allocation — decided and emitted.** Every process-local and
+   persistent `ProcessStorage` value has exact-width state in the design
+   object. Recursive structs and arrays are packed internally in source order
+   from least- to most-significant regions using retained `SourceLayout`; the
+   scheduler never sees this representation. Globals also retain locals across
+   a future suspend/resume call. Declarations, constructors/defaults/spreads,
+   whole assignments, and constant field/index projections update state
+   immediately. A storage input/inout binding stages its selected flattened
+   region into the DUT signal, while an output binding mirrors the committed
+   DUT leaf during commit. Ranged bindings check the stored mathematical value
+   before narrowing and use the same source-site failure record as direct
+   signal writes. The object snapshots storage at each batch boundary and
+   exposes its change flags for storage sensitivities. Dynamic aggregate
+   indices remain unsupported until direct checked selection/update lowering
+   can merge the selected region without a backend-only layout rule.
 3. **Staged writes — decided and emitted.** LLVM owns exact-width pending signal
-   storage and the representation-dependent commit operation. Whole-scalar
-   signal assignments write only that pending plane; later writes to the same
-   signal override in source order. The scheduler calls `sx_process_commit`
+   storage and the representation-dependent commit operation. Scalar and
+   flattened aggregate signal assignments write only that pending plane;
+   aggregate leaves retain source-layout order, and later writes to one leaf
+   override in source order. Mixed concatenation destinations evaluate their
+   right-hand side once, then preserve local/storage immediate timing and
+   signal staged timing per destination. Multiple partial destinations sharing
+   one root remain fail-closed until they can merge against one pre-write
+   snapshot. The scheduler calls `sx_process_commit`
    once after a ready batch, then uses `sx_process_changed` with the immutable
    sensitivity tables to build the next ready set. Commit updates current,
    old, and one-bit event state atomically across any number of ABI words. This
