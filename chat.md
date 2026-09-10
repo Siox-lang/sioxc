@@ -9114,3 +9114,16 @@ strict all-target/all-feature Clippy gate, 405 all-feature tests and every
 integration/doc test, no-default check, strict C11 runtime build, opt-in direct
 emitted binary, compatibility emitted binaries, and external corpus at 183/183
 all pass under the 8 GiB cap.
+2026-09-10 Codex: beginning the requested structural split of `src/ir/mod.rs`.
+I will first extract the language-neutral design/layout/expression model, then
+the design query/validation/rendering implementation and self-contained passes.
+`ir/mod.rs` will retain Siox frontend lowering and stable public re-exports;
+this is a behavior-preserving move before direct-runtime work resumes.
+2026-09-11 Codex: completed the IR ownership split. `src/ir/mod.rs` is now a
+67-line stable facade; design, expression, layout, function indexing, queries,
+passes, lowering helpers, lowering subdomains, and tests have focused modules.
+The public `siox::ir::*` API and single IR pipeline are unchanged. Verification:
+format/diff checks, strict all-target/all-feature Clippy, no-default check, 405
+all-feature tests, the complete default test suite (423 library tests plus all
+integration/doc suites), the direct no-generated-C executable test, and the
+external corpus at 183/183 all pass under the 8 GiB cap.

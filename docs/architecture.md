@@ -18,11 +18,23 @@ may use is `diag` — plus the LLVM backend:
   no phase product or backend input.
 - **`sioxc`** — the root package's thin command-line adapter.
 
-The IR module is directory-backed: `src/ir/mod.rs` retains the lowering and
-analysis facade, while `src/ir/process.rs` owns the canonical process CFG,
-value arena, descriptors, validation, and textual dump. Public paths remain
-`siox::ir::*`; the file split is an internal ownership boundary, not another
-pipeline stage.
+The IR module is directory-backed and split by responsibility:
+
+- `mod.rs` is the stable `siox::ir::*` facade, while `functions.rs` owns the
+  resolver-backed function and nominal-owner index;
+- `design.rs`, `layout.rs`, and `expr.rs` define language-neutral data;
+- `process.rs` owns the canonical process CFG, value arena, and descriptors;
+- `query.rs` owns validation, scheduler decomposition, and textual dumps;
+- `passes.rs` owns representation-neutral normalization;
+- `lower.rs` coordinates Siox frontend lowering, with its diagnostics,
+  metavalue, source-layout, statement, and expression implementations in
+  `lower/*.rs`; `lower_helpers.rs` contains shared constant/substitution
+  utilities. These are the only Siox-AST-dependent IR modules;
+- `tests.rs` verifies the complete public IR contract.
+
+This file split is an internal ownership boundary, not another pipeline stage.
+Consumers continue to use the stable `siox::ir::*` paths rather than depending
+on implementation submodules.
 
 The separate `Siox-lang/siox-lsp` repository references this compiler through
 Cargo Git and depends only on the backend-independent `siox` crate.
