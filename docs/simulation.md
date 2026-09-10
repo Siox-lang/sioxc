@@ -61,9 +61,10 @@ earliest pending event and advances to it:
   clock with a `5ns` half-period — the canonical clock generator. Every clock
   process starts at time zero independently of source declaration order, and
   multiple clocks interleave on the one wheel with real timestamps.
-- **Delayed assignments.** The native Phase 1 harness currently accepts the
-  canonical self-toggle above. Other `x = v after d;` forms receive a build
-  error until one-shot writes are represented on the event wheel.
+- **Delayed assignments.** The default compatibility harness currently accepts
+  the canonical self-toggle above. The opt-in direct Process runtime also
+  executes one-shot writes to static targets with exact-width captured values;
+  it does not become the default until VHDL cancellation semantics are fixed.
 - **`await`** is the single timing primitive in a testbench, in three forms:
 
   ```siox
@@ -74,10 +75,11 @@ earliest pending event and advances to it:
 
   Each yields to the scheduler until its trigger fires, and may appear inside
   `for`/`if`. (`wait`/`tick` were removed — both now error and point at
-  `await`.) During the compatibility migration the wheel lives in the runner
-  and, identically, in the emitted C of the native binary. `Design::process_ir`
-  now represents `await` as a suspend terminator with an explicit resume block;
-  direct process lowering will move the wheel behind one linked runtime. A
+  `await`.) During the compatibility migration the old wheel still lives in the
+  emitted C harness. The fixed runtime now executes duration waits directly:
+  `Design::process_ir` carries the explicit resume block and the runtime queues
+  it on the common time wheel. Condition and edge waits still use the
+  compatibility path until their direct evaluator/dependency ABI lands. A
   future external-simulator adapter may own time through the same scheduler ABI.
 
 Native time is an unsigned 64-bit femtosecond count. A literal whose unit

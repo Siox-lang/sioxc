@@ -16,4 +16,8 @@ uint64_t sx_runtime_now(void);
 void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
                          uint32_t word_count);
 
+/* Suspend the current process and enqueue its resume block after `delay`. */
+void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
+                             uint64_t delay);
+
 #endif

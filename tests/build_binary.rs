@@ -65,10 +65,19 @@ fn direct_process_runtime_links_without_generated_design_c() {
         &source,
         r#"module direct_runtime;
            using std::bits::unsigned;
+           using std::logic::Bit;
            #[test] entity DirectRuntime {}
            impl DirectRuntime {
                let value: unsigned[1] = 0;
-               process run { value = 1; }
+               let clock: Bit = '0';
+               process clock_source { clock = not clock after 1ns; }
+               process run {
+                   value = 1;
+                   value = 0 after 1ns;
+                   await 2ns;
+                   value = 0;
+                   finish();
+               }
            }"#,
     )
     .unwrap();

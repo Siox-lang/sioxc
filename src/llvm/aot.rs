@@ -1826,6 +1826,36 @@ signed main(void) {
         );
         zero_reactive.root = InstanceId(3);
         zero_reactive.owner = InstanceId(3);
+        let timed_suspend = ProcessCfg {
+            id: ProcessId(6),
+            root: InstanceId(4),
+            owner: InstanceId(4),
+            label: Some("timed-suspend".into()),
+            span,
+            activation: ProcessActivation::TimeZero,
+            entry: ProcessBlockId(0),
+            locals: vec![],
+            blocks: vec![
+                ProcessBlock {
+                    id: ProcessBlockId(0),
+                    instructions: vec![],
+                    terminator: ProcessTerminator::Suspend {
+                        operation: siox::ir::ProcessSuspendOp::Await,
+                        arguments: vec![ProcessValueId(12)],
+                        resume: ProcessBlockId(1),
+                        span,
+                    },
+                },
+                ProcessBlock {
+                    id: ProcessBlockId(1),
+                    instructions: vec![assignment(13, 14)],
+                    terminator: ProcessTerminator::Return {
+                        value: None,
+                        span: Some(span),
+                    },
+                },
+            ],
+        };
         let design = Design {
             signals: vec![
                 sig("T.trigger", 1),
@@ -1834,6 +1864,7 @@ signed main(void) {
                 sig("T.delayed", 130),
                 sig("T.zero_delay", 1),
                 sig("T.zero_observed", 1),
+                sig("T.resumed", 1),
             ],
             process_ir: ProcessIr {
                 processes: vec![
@@ -1849,6 +1880,7 @@ signed main(void) {
                     delayed,
                     zero_delay,
                     zero_reactive,
+                    timed_suspend,
                 ],
                 tests: vec![
                     ProcessTest {
@@ -1878,6 +1910,13 @@ signed main(void) {
                         qualified_name: "runtime::zero_delay".into(),
                         span,
                         processes: vec![ProcessId(4), ProcessId(5)],
+                    },
+                    ProcessTest {
+                        entity: DefId(4),
+                        root: InstanceId(4),
+                        qualified_name: "runtime::timed_suspend".into(),
+                        span,
+                        processes: vec![ProcessId(6)],
                     },
                 ],
                 values: vec![
@@ -1975,6 +2014,27 @@ signed main(void) {
                             state: ProcessSignalState::Current,
                         },
                     },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(64),
+                        kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![5])),
+                    },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(1),
+                        kind: ProcessValueKind::Signal {
+                            signals: vec![SignalId(6)],
+                            state: ProcessSignalState::Current,
+                        },
+                    },
+                    ProcessValue {
+                        span,
+                        ty: None,
+                        bit_width: Some(1),
+                        kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+                    },
                 ],
                 ..ProcessIr::default()
             },
@@ -2010,6 +2070,9 @@ signed main(void) {
     if (sx_runtime_run_test(3)) return 11;
     if (sx_runtime_now() != 0) return 12;
     if (sx_read(5) != 1) return 13;
+    if (sx_runtime_run_test(4)) return 14;
+    if (sx_runtime_now() != 5) return 15;
+    if (sx_read(6) != 1) return 16;
     return 0;
 }
 "#,

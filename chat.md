@@ -9086,3 +9086,31 @@ Verification: strict C11 runtime compiles, 423 default and 405 all-feature unit
 tests plus every integration/doc test, no-default check, strict all-target and
 all-feature Clippy, compatibility counter/VCD/FST execution, direct fixed-runtime
 linking, and the external corpus at 183/183 under the 8 GiB cap.
+2026-09-09 Codex: extending the timed-suspend slice into `src/test_ir.rs` so
+source `await 10ns` and clock `after 5ns` do not remain symbolic backend nodes.
+The adapter will const-evaluate the uniquely resolved canonical
+`std::ops::Suffix` implementation and store the resulting ordinary Process
+number; unit scales continue to live only in `std/sim.siox`. Non-constant,
+ambiguous, real, and user-defined suffix bodies remain explicit `Suffixed`
+values for later general call lowering instead of being guessed.
+2026-09-09 Codex: starting fixed-runtime Process suspension in
+`src/llvm/process.rs` and `runtime/process.{c,h}`. The first safe slice is an
+exact numeric-time `await`: emitted CFG entries register their process/resume
+block, the existing event wheel wakes them at the requested delta/time, and the
+runtime passes the saved block back into the same entry function. Condition and
+edge waits remain fail-closed until their Process value dependencies/evaluators
+are part of the ABI; source suffix normalization is a separate prerequisite.
+2026-09-10 Codex: correction to the suffix hand-off above: a constant
+integer-backed implementation of the canonical `Suffix` trait may be supplied
+by std or user source and is normalized. Only non-constant, ambiguous, real, or
+unrelated same-name trait implementations remain explicit `Suffixed` values.
+No unit symbol or scale is encoded in Rust.
+2026-09-10 Codex: completed the fixed-runtime numeric suspension slice and
+prepared it for review. The reusable runtime now shares one dynamically sized,
+stable event wheel between exact-width delayed writes and process resumes;
+emitted entries register and later receive the exact CFG resume block. Source
+integer suffixes are evaluated from their canonical Siox implementation. The
+strict all-target/all-feature Clippy gate, 405 all-feature tests and every
+integration/doc test, no-default check, strict C11 runtime build, opt-in direct
+emitted binary, compatibility emitted binaries, and external corpus at 183/183
+all pass under the 8 GiB cap.

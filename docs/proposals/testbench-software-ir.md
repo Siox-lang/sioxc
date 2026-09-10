@@ -213,10 +213,12 @@ language-lowering path.
    CLI. Its dynamically allocated time wheel also copies exact-width scheduled
    values, advances to the earliest transaction, and applies zero-delay writes
    at the next delta boundary. An opt-in native link path proves this pipeline
-   without generating design C. Std-defined duration suffix lowering, delayed
-   write cancellation, runtime calls, dynamic aggregate selection/update,
-   structured match/for dispatch, suspension, and waveforms are the next
-   coverage boundary before it becomes the default.
+   without generating design C. Constant integer-backed `Suffix` bodies now
+   normalize to ordinary Process numbers, and timed `await` registers its exact
+   process/resume block on that wheel. Delayed-write cancellation, condition
+   and edge waits, runtime calls, dynamic aggregate selection/update,
+   structured match/for dispatch, and waveforms are the next coverage boundary
+   before it becomes the default.
 7. **Run both native backends differentially.** Require identical test results,
    diagnostics, time progression, resolved values, and VCD/FST samples across
    the full default and bit-packed corpus.

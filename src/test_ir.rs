@@ -22,12 +22,199 @@ use crate::syntax::Module;
 use crate::testbench::TestPlan;
 use crate::types::Typed;
 
+#[derive(Clone)]
+struct ConstantSuffix {
+    target: String,
+    parameter: String,
+    body: ast::Block,
+}
+
 struct LoweringContext<'a> {
     resolved: &'a Resolved,
     typed: &'a Typed,
     design: &'a Design,
     root_path: &'a str,
     process_ir: &'a mut ProcessIr,
+    suffixes: &'a std::collections::HashMap<String, Vec<ConstantSuffix>>,
+}
+
+fn type_leaf(ty: &ast::Type) -> Option<&str> {
+    match ty {
+        ast::Type::Path(path) => path.segments.last().map(|segment| segment.text.as_str()),
+        ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => type_leaf(base),
+        ast::Type::View { target, .. } => type_leaf(target),
+    }
+}
+
+fn constant_suffixes(
+    modules: &[Module],
+    resolved: &Resolved,
+) -> std::collections::HashMap<String, Vec<ConstantSuffix>> {
+    let mut suffixes = std::collections::HashMap::<String, Vec<ConstantSuffix>>::new();
+    for implementation in modules.iter().flat_map(|module| &module.items) {
+        let ast::Item::Impl(implementation) = implementation else {
+            continue;
+        };
+        let Some(trait_path) = &implementation.trait_ else {
+            continue;
+        };
+        let canonical = resolved
+            .resolved(trait_path.span)
+            .and_then(|definition| resolved.def(definition));
+        if !canonical.is_some_and(|definition| {
+            definition.name == "Suffix"
+                && (definition.kind == crate::resolve::DefKind::Builtin
+                    || definition.kind == crate::resolve::DefKind::Trait
+                        && definition.module.as_deref() == Some("std::ops"))
+        }) {
+            continue;
+        }
+        let Some(ast::GenericArg::Positional(ast::Expr::StrLit { text: symbol, .. })) =
+            implementation.trait_args.first()
+        else {
+            continue;
+        };
+        let Some(target) = type_leaf(&implementation.target) else {
+            continue;
+        };
+        for item in &implementation.items {
+            let ast::ImplItem::Fn(function) = item else {
+                continue;
+            };
+            let Some(body) = &function.body else { continue };
+            let Some(parameter) = function.params.iter().find(|parameter| !parameter.is_self)
+            else {
+                continue;
+            };
+            if parameter.ty.as_ref().and_then(type_leaf) != Some("integer") {
+                continue;
+            }
+            let Some(parameter_name) = parameter.name.as_ref() else {
+                continue;
+            };
+            suffixes
+                .entry(symbol.clone())
+                .or_default()
+                .push(ConstantSuffix {
+                    target: target.to_string(),
+                    parameter: parameter_name.text.clone(),
+                    body: body.clone(),
+                });
+        }
+    }
+    suffixes
+}
+
+fn integer_literal_u64(text: &str) -> Option<u64> {
+    let ProcessNumber::Integer(words) = parse_number(text, None) else {
+        return None;
+    };
+    words
+        .get(1..)
+        .is_none_or(|rest| rest.iter().all(|word| *word == 0))
+        .then(|| words.first().copied().unwrap_or(0))
+}
+
+fn eval_suffix_expr(expression: &ast::Expr, suffix: &ConstantSuffix, input: u64) -> Option<u64> {
+    match expression {
+        ast::Expr::Int { text, .. } => integer_literal_u64(text),
+        ast::Expr::Path(path)
+            if path.segments.len() == 1 && path.segments[0].text == suffix.parameter =>
+        {
+            Some(input)
+        }
+        ast::Expr::Call { callee, args, .. }
+            if callee_name(callee) == suffix.target && args.len() == 1 =>
+        {
+            eval_suffix_expr(&args[0], suffix, input)
+        }
+        ast::Expr::IfExpr {
+            cond, then, els, ..
+        } => {
+            if eval_suffix_expr(cond, suffix, input)? != 0 {
+                eval_suffix_expr(then, suffix, input)
+            } else {
+                eval_suffix_expr(els, suffix, input)
+            }
+        }
+        ast::Expr::Unary {
+            op: ast::UnOp::Not,
+            rhs,
+            ..
+        } => Some(u64::from(eval_suffix_expr(rhs, suffix, input)? == 0)),
+        ast::Expr::Unary {
+            op: ast::UnOp::Neg, ..
+        } => None,
+        ast::Expr::Binary { op, lhs, rhs, .. } => {
+            let left = eval_suffix_expr(lhs, suffix, input)?;
+            let right = eval_suffix_expr(rhs, suffix, input)?;
+            match op {
+                ast::BinOp::Add => left.checked_add(right),
+                ast::BinOp::Sub => left.checked_sub(right),
+                ast::BinOp::Mul => left.checked_mul(right),
+                ast::BinOp::Div => left.checked_div(right),
+                ast::BinOp::Shl => u32::try_from(right)
+                    .ok()
+                    .and_then(|shift| left.checked_shl(shift)),
+                ast::BinOp::Shr => u32::try_from(right)
+                    .ok()
+                    .and_then(|shift| left.checked_shr(shift)),
+                ast::BinOp::Eq => Some(u64::from(left == right)),
+                ast::BinOp::Ne => Some(u64::from(left != right)),
+                ast::BinOp::Lt => Some(u64::from(left < right)),
+                ast::BinOp::Le => Some(u64::from(left <= right)),
+                ast::BinOp::Gt => Some(u64::from(left > right)),
+                ast::BinOp::Ge => Some(u64::from(left >= right)),
+                ast::BinOp::And => Some(u64::from(left != 0 && right != 0)),
+                ast::BinOp::Or => Some(u64::from(left != 0 || right != 0)),
+                ast::BinOp::Custom { .. } => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn eval_suffix_block(block: &ast::Block, suffix: &ConstantSuffix, input: u64) -> Option<u64> {
+    for statement in &block.stmts {
+        match statement {
+            ast::Stmt::Return {
+                value: Some(value), ..
+            } => return eval_suffix_expr(value, suffix, input),
+            ast::Stmt::If(branch) => {
+                let selected = if eval_suffix_expr(&branch.cond, suffix, input)? != 0 {
+                    Some(&branch.then)
+                } else {
+                    match branch.else_.as_deref() {
+                        Some(ast::ElseBranch::Block(block)) => Some(block),
+                        _ => None,
+                    }
+                };
+                if let Some(value) =
+                    selected.and_then(|block| eval_suffix_block(block, suffix, input))
+                {
+                    return Some(value);
+                }
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn normalized_suffix(
+    text: &str,
+    symbol: &str,
+    context: &LoweringContext<'_>,
+) -> Option<ProcessNumber> {
+    let [suffix] = context.suffixes.get(symbol)?.as_slice() else {
+        return None;
+    };
+    let input = integer_literal_u64(text)?;
+    Some(ProcessNumber::Integer(vec![eval_suffix_block(
+        &suffix.body,
+        suffix,
+        input,
+    )?]))
 }
 
 /// Fill the canonical process product from normalized hardware plus an
@@ -46,6 +233,7 @@ pub fn lower(
     design: &mut Design,
 ) {
     let mut process_ir = ProcessIr::default();
+    let suffixes = constant_suffixes(modules, resolved);
 
     for test in plan.into_iter().flat_map(|plan| &plan.tests) {
         let root_path = hierarchy.root_path(test.root);
@@ -96,6 +284,7 @@ pub fn lower(
                 design,
                 root_path: &root_path,
                 process_ir: &mut process_ir,
+                suffixes: &suffixes,
             };
             for (definition, initializer) in initializers {
                 let Some(storage) = context
@@ -137,6 +326,7 @@ pub fn lower(
                             design,
                             root_path: &root_path,
                             process_ir: &mut process_ir,
+                            suffixes: &suffixes,
                         };
                         lower_process(
                             id,
@@ -174,6 +364,7 @@ pub fn lower(
                             design,
                             root_path: &root_path,
                             process_ir: &mut process_ir,
+                            suffixes: &suffixes,
                         };
                         lower_process(
                             id,
@@ -209,6 +400,7 @@ pub fn lower(
                     design,
                     root_path: &root_path,
                     process_ir: &mut process_ir,
+                    suffixes: &suffixes,
                 };
                 lower_process(
                     id,
@@ -1361,10 +1553,15 @@ fn value_ref(
             }
         }
         ast::Expr::Int { text, .. } => ProcessValueKind::Number(parse_number(text, ty.as_ref())),
-        ast::Expr::SuffixLit { text, suffix, .. } => ProcessValueKind::Suffixed {
-            number: parse_number(text, ty.as_ref()),
-            suffix: suffix.text.clone(),
-        },
+        ast::Expr::SuffixLit { text, suffix, .. } => {
+            match normalized_suffix(text, &suffix.text, context) {
+                Some(number) => ProcessValueKind::Number(number),
+                None => ProcessValueKind::Suffixed {
+                    number: parse_number(text, ty.as_ref()),
+                    suffix: suffix.text.clone(),
+                },
+            }
+        }
         ast::Expr::BitStrLit { base, digits, .. } => {
             let radix = crate::syntax::radix_of(*base);
             let width = crate::syntax::radix_digits(digits)
@@ -1903,7 +2100,7 @@ mod tests {
                let i: integer = 9;\n\
                let observed: Bool;\n\
                let dut: Device = { .input = flag, .output = observed };\n\
-               process clock { flag = not flag after 1; }\n\
+               process clock { flag = not flag after 1ns; }\n\
                process stimulus {\n\
                  let seen: Bool = flag;\n\
                  let mode: Mode = Mode::On;\n\
@@ -1918,6 +2115,7 @@ mod tests {
                  seen = false;\n\
                  flag = false after 1;\n\
                  flag = false;\n\
+                 await 2ns;\n\
                  await true;\n\
                  assert!(flag == false, \"done\");\n\
                  finish();\n\
@@ -1929,9 +2127,14 @@ mod tests {
              pub trait Boolean { fn as_bool(self) -> Bool; } \
              pub trait Operator<op: string, input, output> { fn apply(self, rhs: input) -> output {} } \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } } \
-             impl Operator<\"not\", Bool, Bool> for Bool { fn apply(self) -> Bool { return self; } }",
+             impl Operator<\"not\", Bool, Bool> for Bool { fn apply(self) -> Bool { return self; } } \
+             pub trait Suffix<symbol: string, input> { fn suffix(data: input) {} }",
             "module std::prelude; pub using std::logic::{Bool}; pub using std::attrs::{test}; \
              pub using std::ops::{Boolean, Operator};",
+            "module std::sim; using std::ops::Suffix; pub struct time(integer); \
+             impl Suffix<\"ns\", integer> for time { \
+               fn suffix(value: integer) -> time { return time(value * 37); } \
+             }",
         ];
         let mut sink = DiagnosticSink::new();
         let modules: Vec<Module> = sources
@@ -1984,10 +2187,20 @@ mod tests {
             },
             "a self-toggle clock wakes on its persistent testbench storage"
         );
-        assert!(clock.blocks.iter().any(|block| block
-            .instructions
+        assert!(clock
+            .blocks
             .iter()
-            .any(|instruction| matches!(instruction, ProcessInstruction::Schedule { .. }))));
+            .any(
+                |block| block.instructions.iter().any(|instruction| matches!(
+                    instruction,
+                    ProcessInstruction::Schedule { delay, .. }
+                        if matches!(
+                            &design.process_ir.values[delay.0 as usize].kind,
+                            ProcessValueKind::Number(ProcessNumber::Integer(words))
+                                if words == &[37]
+                        )
+                ))
+            ));
         let process = &design.process_ir.processes[1];
         assert_eq!(process.label.as_deref(), Some("Smoke::stimulus"));
         assert_eq!(process.locals.len(), 3);
@@ -1995,10 +2208,15 @@ mod tests {
             .blocks
             .iter()
             .any(|block| matches!(block.terminator, ProcessTerminator::Branch { .. })));
-        assert!(process
-            .blocks
-            .iter()
-            .any(|block| matches!(block.terminator, ProcessTerminator::Suspend { .. })));
+        assert!(process.blocks.iter().any(|block| matches!(
+            &block.terminator,
+            ProcessTerminator::Suspend { arguments, .. }
+                if matches!(
+                    &design.process_ir.values[arguments[0].0 as usize].kind,
+                    ProcessValueKind::Number(ProcessNumber::Integer(words))
+                        if words == &[74]
+                )
+        )));
         let hardware = &design.process_ir.processes[2];
         let input = design
             .signals

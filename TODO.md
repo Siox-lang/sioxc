@@ -290,10 +290,13 @@ Remaining:
   static target's exact-width value into the fixed runtime's dynamically sized,
   time-ordered queue. Expiry stages the value through the ordinary commit path;
   zero-delay writes occupy a new delta before reactive processes resume, and
-  values wider than one ABI word retain every word. Source-level arbitrary
-  `x = value after duration` remains rejected until std-defined suffix calls
-  become canonical Process values and VHDL overwrite/cancellation semantics
-  are defined. Dynamic/ranged delayed targets remain fail-closed too.
+  values wider than one ABI word retain every word. Constant integer-backed
+  suffix implementations now normalize to ordinary Process numbers by
+  evaluating the resolved `Suffix` body, so source `after 1ns` reaches this
+  path without a compiler-owned unit table. The compatibility harness still
+  rejects arbitrary one-shot writes, and the direct path stays opt-in until
+  VHDL overwrite/cancellation semantics are defined. Dynamic/ranged delayed
+  targets remain fail-closed too.
 ## LLVM
 
 Owns native lowering, state layout, optimization, and the word ABI. Code:
@@ -366,8 +369,13 @@ Remaining:
   descriptor and entry ABI, executes time-zero/reactive ready batches, commits
   once per delta, and can be selected through the migration-only
   `SIOX_DIRECT_PROCESS_RUNTIME` link path without generating design C. Runtime
-  instructions, match/for, delayed scheduling, suspension, waveform services,
-  and making this path the default remain.
+  integer-backed suffix bodies are normalized from their std/user
+  implementation, so source clock schedules, one-shot static writes, and timed
+  `await` now execute on the fixed wheel. Timed suspension records and restores
+  the exact CFG resume block; condition/edge awaits remain fail-closed until
+  their dependency/evaluator ABI exists. Runtime instructions, match/for,
+  VHDL delayed-write cancellation, waveform services, and making this path the
+  default remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad

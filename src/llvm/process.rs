@@ -27,10 +27,12 @@ use siox::ir::{
 /// This is deliberately a data version rather than the compiler package
 /// version: the reusable native runtime only needs to change when one of the
 /// exported table layouts or encodings changes.
-const PROCESS_ABI_VERSION: u32 = 5;
+const PROCESS_ABI_VERSION: u32 = 6;
 
 /// A process returned normally and has no pending resume.
 const PROCESS_COMPLETED: u8 = 0;
+/// The process yielded after registering a runtime resume operation.
+const PROCESS_SUSPENDED: u8 = 1;
 /// The process stopped itself while leaving the simulation alive.
 const PROCESS_STOPPED: u8 = 2;
 /// The process requested termination of the complete simulation.
@@ -3549,12 +3551,83 @@ fn block_is_supported(
         | ProcessTerminator::Stop { .. }
         | ProcessTerminator::Finish { .. } => true,
         ProcessTerminator::Branch { condition, .. } => value(*condition),
+        ProcessTerminator::Suspend {
+            operation: siox::ir::ProcessSuspendOp::Await,
+            arguments,
+            ..
+        } => {
+            let [delay] = arguments.as_slice() else {
+                return false;
+            };
+            value(*delay)
+                && design
+                    .process_ir
+                    .values
+                    .get(delay.0 as usize)
+                    .is_some_and(|delay| {
+                        delay.bit_width.is_some_and(|width| width <= 64)
+                            && matches!(
+                                delay.kind,
+                                ProcessValueKind::Number(ProcessNumber::Integer(_))
+                            )
+                    })
+        }
         ProcessTerminator::Return { value: Some(_), .. }
         | ProcessTerminator::Match { .. }
-        | ProcessTerminator::For { .. }
-        | ProcessTerminator::Suspend { .. } => false,
+        | ProcessTerminator::For { .. } => false,
     };
     instructions && terminator
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_timed_suspend<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    process: ProcessId,
+    resume: siox::ir::ProcessBlockId,
+    delay: ProcessValueId,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<()> {
+    let delay = process_value_at(
+        context,
+        module,
+        builder,
+        design,
+        delay,
+        64,
+        false,
+        None,
+        index_sites,
+        cache,
+    )?;
+    let i32 = context.i32_type();
+    let i64 = context.i64_type();
+    let function = module
+        .get_function("sx_runtime_suspend_time")
+        .unwrap_or_else(|| {
+            module.add_function(
+                "sx_runtime_suspend_time",
+                context
+                    .void_type()
+                    .fn_type(&[i32.into(), i32.into(), i64.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    builder
+        .build_call(
+            function,
+            &[
+                i32.const_int(u64::from(process.0), false).into(),
+                i32.const_int(u64::from(resume.0), false).into(),
+                delay.into(),
+            ],
+            "",
+        )
+        .ok()?;
+    Some(())
 }
 
 /// Emit a process entry that resumes at any CFG block by its stable block ID.
@@ -3979,10 +4052,39 @@ fn process_entry<'ctx>(
                     )
                     .unwrap();
             }
+            ProcessTerminator::Suspend {
+                operation: siox::ir::ProcessSuspendOp::Await,
+                arguments,
+                resume,
+                ..
+            } => {
+                let emitted = arguments.first().copied().and_then(|delay| {
+                    emit_timed_suspend(
+                        context,
+                        module,
+                        &builder,
+                        design,
+                        process.id,
+                        *resume,
+                        delay,
+                        index_sites,
+                        &mut cache,
+                    )
+                });
+                builder
+                    .build_return(Some(&i8.const_int(
+                        u64::from(if emitted.is_some() {
+                            PROCESS_SUSPENDED
+                        } else {
+                            PROCESS_UNSUPPORTED
+                        }),
+                        false,
+                    )))
+                    .unwrap();
+            }
             ProcessTerminator::Return { value: Some(_), .. }
             | ProcessTerminator::Match { .. }
-            | ProcessTerminator::For { .. }
-            | ProcessTerminator::Suspend { .. } => {
+            | ProcessTerminator::For { .. } => {
                 builder
                     .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
                     .unwrap();
@@ -4405,7 +4507,7 @@ mod tests {
             ..Design::default()
         };
         let llvm = crate::llvm::emit_module_ir(&design).unwrap();
-        assert!(llvm.contains("@sx_process_abi_version = constant i32 5"));
+        assert!(llvm.contains("@sx_process_abi_version = constant i32 6"));
         assert!(llvm.contains("define i8 @sx_process_commit()"));
         assert!(llvm.contains("define i8 @sx_process_changed(i32"));
         assert!(llvm.contains("define i8 @sx_process_storage_changed(i32"));

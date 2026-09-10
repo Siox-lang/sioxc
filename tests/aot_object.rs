@@ -32,7 +32,7 @@ static void tick(void) {
 }
 
 int main(void) {
-    if (sx_process_abi_version != 5 || sx_process_count == 0) return 5;
+    if (sx_process_abi_version != 6 || sx_process_count == 0) return 5;
     if (!sx_process_entries[0]) return 6;
     sx_reset();
     sx_set(V, 7);

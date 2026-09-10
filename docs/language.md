@@ -2739,10 +2739,12 @@ and stays usable as a name everywhere else. `after` is testbench-only in
 Phase 1; hardware impls reject it. (The old `clock()` sugar was removed —
 the after-form is the one generator.)
 
-Of the two forms above, only the self-toggle runs today: the native harness
-rejects a one-shot `after` write until one-shot writes are represented on its
-event wheel (see [simulation.md](simulation.md#simulation-time-and-the-event-wheel)).
-Until then a reset is released by `await 12ns; rst = '0';`.
+The default compatibility harness currently accepts only the self-toggle form.
+The replacement direct Process runtime already queues one-shot static writes,
+but remains opt-in until its VHDL cancellation behavior is specified and
+verified (see [simulation.md](simulation.md#simulation-time-and-the-event-wheel)).
+Portable Phase 1 code therefore still releases a reset with
+`await 12ns; rst = '0';` for now.
 
 #### Generic functions and trait bounds
 

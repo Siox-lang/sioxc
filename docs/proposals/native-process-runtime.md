@@ -72,8 +72,13 @@ contract, or encoding increments `sx_process_abi_version`.
 The runtime starts a process by calling `sx_process_entries[id]` with
 `sx_process_initial_blocks[id]`. A suspended process is called again with the
 resume block recorded by the suspension service. Entry status is `0 =
-completed`, `1 = suspended` (reserved until suspension lowering lands), `2 =
-stopped`, `3 = finish simulation`, and `255 = unsupported migration node`.
+completed`, `1 = suspended`, `2 = stopped`, `3 = finish simulation`, and
+`255 = unsupported migration node`.
+For a timed suspension, emitted code registers `(process, resume block, delay)`
+before returning status 1. The runtime validates that the registration came
+from the process currently executing, queues it on the same wheel as delayed
+writes, and passes the saved block back to the entry when it expires. Condition
+and edge waits require a later evaluator/dependency ABI and still return 255.
 The last status is a temporary fail-closed guard: current entries execute
 scalar control flow, immediate scalar/packed local and persistent-storage
 writes, whole-signal staged assignments, checked-index failure latches, and

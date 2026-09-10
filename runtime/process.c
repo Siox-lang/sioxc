@@ -9,7 +9,9 @@ enum {
     SX_PROCESS_STOPPED = 2,
     SX_PROCESS_FINISHED = 3,
     SX_PROCESS_UNSUPPORTED = 255,
-    SX_PROCESS_ABI = 5
+    SX_PROCESS_ABI = 6,
+    SX_EVENT_WRITE = 0,
+    SX_EVENT_RESUME = 1
 };
 
 typedef uint8_t (*sx_process_entry)(uint32_t resume_block);
@@ -42,8 +44,10 @@ typedef struct sx_event {
     struct sx_event *next;
     uint64_t due;
     uint64_t sequence;
-    uint32_t site;
+    uint32_t target;
+    uint32_t resume_block;
     uint32_t word_count;
+    uint8_t kind;
     uint64_t words[];
 } sx_event;
 
@@ -52,6 +56,8 @@ static sx_event *sx_events;
 static uint64_t sx_now;
 static uint64_t sx_sequence;
 static int sx_running;
+static uint32_t sx_current_process;
+static int sx_suspend_registered;
 
 const char *sx_runtime_error(void) { return sx_error[0] ? sx_error : 0; }
 uint64_t sx_runtime_now(void) { return sx_now; }
@@ -75,32 +81,7 @@ static void sx_clear_events(void) {
     }
 }
 
-void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
-                         uint32_t word_count) {
-    if (sx_error[0]) return;
-    if (!sx_running) {
-        sx_fail("delayed write scheduled outside a running test");
-        return;
-    }
-    size_t value_bytes = (size_t)word_count * sizeof(uint64_t);
-    if (!words || !word_count || value_bytes / sizeof(uint64_t) != word_count ||
-        value_bytes > SIZE_MAX - sizeof(sx_event)) {
-        sx_fail("invalid delayed Process IR value");
-        return;
-    }
-    size_t bytes = sizeof(sx_event) + value_bytes;
-    sx_event *event = malloc(bytes);
-    if (!event) {
-        sx_fail("cannot allocate delayed Process IR event");
-        return;
-    }
-    event->due = UINT64_MAX - sx_now < delay ? UINT64_MAX : sx_now + delay;
-    event->sequence = sx_sequence++;
-    event->site = site;
-    event->word_count = word_count;
-    for (uint32_t word = 0; word < word_count; ++word)
-        event->words[word] = words[word];
-
+static void sx_insert_event(sx_event *event) {
     sx_event **position = &sx_events;
     while (*position && ((*position)->due < event->due ||
                          ((*position)->due == event->due &&
@@ -108,6 +89,74 @@ void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
         position = &(*position)->next;
     event->next = *position;
     *position = event;
+}
+
+static sx_event *sx_allocate_event(uint64_t delay, uint32_t word_count) {
+    size_t value_bytes = (size_t)word_count * sizeof(uint64_t);
+    if (word_count && value_bytes / sizeof(uint64_t) != word_count) {
+        sx_fail("invalid Process IR event value");
+        return 0;
+    }
+    if (value_bytes > SIZE_MAX - sizeof(sx_event)) {
+        sx_fail("invalid Process IR event value");
+        return 0;
+    }
+    sx_event *event = malloc(sizeof(sx_event) + value_bytes);
+    if (!event) {
+        sx_fail("cannot allocate Process IR event");
+        return 0;
+    }
+    event->next = 0;
+    event->due = UINT64_MAX - sx_now < delay ? UINT64_MAX : sx_now + delay;
+    event->sequence = sx_sequence++;
+    event->target = 0;
+    event->resume_block = 0;
+    event->word_count = word_count;
+    event->kind = SX_EVENT_WRITE;
+    return event;
+}
+
+void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
+                         uint32_t word_count) {
+    if (sx_error[0]) return;
+    if (!sx_running) {
+        sx_fail("delayed write scheduled outside a running test");
+        return;
+    }
+    if (!words || !word_count) {
+        sx_fail("invalid delayed Process IR value");
+        return;
+    }
+    sx_event *event = sx_allocate_event(delay, word_count);
+    if (!event) return;
+    event->target = site;
+    for (uint32_t word = 0; word < word_count; ++word)
+        event->words[word] = words[word];
+    sx_insert_event(event);
+}
+
+void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
+                             uint64_t delay) {
+    if (sx_error[0]) return;
+    if (!sx_running || sx_current_process == UINT32_MAX) {
+        sx_fail("process suspension registered outside a running process");
+        return;
+    }
+    if (process != sx_current_process || process >= sx_process_count) {
+        sx_fail_id("invalid suspending Process IR process", process);
+        return;
+    }
+    if (sx_suspend_registered) {
+        sx_fail_id("process registered more than one suspension", process);
+        return;
+    }
+    sx_event *event = sx_allocate_event(delay, 0);
+    if (!event) return;
+    event->kind = SX_EVENT_RESUME;
+    event->target = process;
+    event->resume_block = resume_block;
+    sx_insert_event(event);
+    sx_suspend_registered = 1;
 }
 
 static int sx_design_failed(void) {
@@ -152,12 +201,29 @@ static int sx_has_changed_sensitivity(uint32_t process) {
 /* Apply every transaction due in the current simulation time. Delays of zero
  * are therefore staged into the update phase that follows the process batch
  * which scheduled them, before sensitivity-driven processes resume. */
-static int sx_apply_due_events(void) {
+static int sx_apply_due_events(uint8_t *ready, uint8_t *suspended,
+                               uint32_t *resume_blocks) {
     while (sx_events && sx_events->due == sx_now) {
         sx_event *event = sx_events;
         sx_events = event->next;
+        if (event->kind == SX_EVENT_RESUME) {
+            uint32_t process = event->target;
+            if (process >= sx_process_count || !suspended[process]) {
+                free(event);
+                return sx_fail_id("invalid Process IR resume event", process);
+            }
+            resume_blocks[process] = event->resume_block;
+            suspended[process] = 0;
+            ready[process] = 1;
+            free(event);
+            continue;
+        }
+        if (event->kind != SX_EVENT_WRITE) {
+            free(event);
+            return sx_fail("invalid Process IR event kind");
+        }
         uint8_t applied = sx_process_apply_scheduled(
-            event->site, event->words, event->word_count);
+            event->target, event->words, event->word_count);
         free(event);
         if (applied == SX_PROCESS_UNSUPPORTED)
             return sx_fail("invalid or unsupported delayed Process IR site");
@@ -169,13 +235,16 @@ static int sx_apply_due_events(void) {
 }
 
 int sx_runtime_run_test(uint32_t test) {
-    uint8_t *ready = 0, *next = 0, *stopped = 0;
+    uint8_t *ready = 0, *next = 0, *stopped = 0, *suspended = 0;
+    uint32_t *resume_blocks = 0;
     uint32_t begin, end;
     int result = 0;
     sx_clear_events();
     sx_error[0] = 0;
     sx_now = 0;
     sx_sequence = 0;
+    sx_current_process = UINT32_MAX;
+    sx_suspend_registered = 0;
 
     if (sx_process_abi_version != SX_PROCESS_ABI)
         return sx_fail("unsupported Process IR runtime ABI");
@@ -186,7 +255,9 @@ int sx_runtime_run_test(uint32_t test) {
     ready = calloc(bytes, 1);
     next = calloc(bytes, 1);
     stopped = calloc(bytes, 1);
-    if (!ready || !next || !stopped) {
+    suspended = calloc(bytes, 1);
+    resume_blocks = calloc(bytes, sizeof(uint32_t));
+    if (!ready || !next || !stopped || !suspended || !resume_blocks) {
         result = sx_fail("cannot allocate Process IR ready queue");
         goto done;
     }
@@ -201,26 +272,35 @@ int sx_runtime_run_test(uint32_t test) {
             goto done;
         }
         ready[process] = 1;
+        resume_blocks[process] = sx_process_initial_blocks[process];
     }
 
     for (;;) {
         int ran = 0;
         int finish = 0;
         for (uint32_t process = 0; process < sx_process_count; ++process) {
-            if (!ready[process] || stopped[process]) continue;
+            if (!ready[process] || stopped[process] || suspended[process]) continue;
             ran = 1;
+            sx_current_process = process;
+            sx_suspend_registered = 0;
             sx_process_entry entry = sx_process_entries[process];
             if (!entry) {
                 result = sx_fail_id("missing Process IR entry", process);
                 goto done;
             }
-            uint8_t status = entry(sx_process_initial_blocks[process]);
+            uint8_t status = entry(resume_blocks[process]);
+            sx_current_process = UINT32_MAX;
             if (sx_error[0]) {
                 result = 1;
                 goto done;
             }
             if (sx_design_failed()) {
                 result = 1;
+                goto done;
+            }
+            if (status != SX_PROCESS_SUSPENDED && sx_suspend_registered) {
+                result = sx_fail_id(
+                    "process registered a suspension but returned status", process);
                 goto done;
             }
             if (status == SX_PROCESS_COMPLETED) {
@@ -231,8 +311,12 @@ int sx_runtime_run_test(uint32_t test) {
                 stopped[process] = 1;
                 finish = 1;
             } else if (status == SX_PROCESS_SUSPENDED) {
-                result = sx_fail_id("process suspended without a runtime resume record", process);
-                goto done;
+                if (!sx_suspend_registered) {
+                    result = sx_fail_id(
+                        "process suspended without a runtime resume record", process);
+                    goto done;
+                }
+                suspended[process] = 1;
             } else if (status == SX_PROCESS_UNSUPPORTED) {
                 result = sx_fail_id("direct Process IR lowering is incomplete for process", process);
                 goto done;
@@ -242,7 +326,7 @@ int sx_runtime_run_test(uint32_t test) {
             }
         }
         if (ran) {
-            if (sx_apply_due_events()) {
+            if (sx_apply_due_events(next, suspended, resume_blocks)) {
                 result = 1;
                 goto done;
             }
@@ -251,7 +335,9 @@ int sx_runtime_run_test(uint32_t test) {
             if (changed) {
                 for (uint32_t item = begin; item < end; ++item) {
                     uint32_t process = sx_test_process_ids[item];
-                    if (stopped[process] || sx_process_activations[process] != 1) continue;
+                    if (stopped[process] || suspended[process] ||
+                        sx_process_activations[process] != 1)
+                        continue;
                     int changed_sensitivity = sx_has_changed_sensitivity(process);
                     if (changed_sensitivity < 0) {
                         result = 1;
@@ -270,7 +356,7 @@ int sx_runtime_run_test(uint32_t test) {
 
         if (!sx_events) break;
         sx_now = sx_events->due;
-        if (sx_apply_due_events()) {
+        if (sx_apply_due_events(ready, suspended, resume_blocks)) {
             result = 1;
             goto done;
         }
@@ -278,7 +364,9 @@ int sx_runtime_run_test(uint32_t test) {
         if (sx_process_commit()) {
             for (uint32_t item = begin; item < end; ++item) {
                 uint32_t process = sx_test_process_ids[item];
-                if (stopped[process] || sx_process_activations[process] != 1) continue;
+                if (stopped[process] || suspended[process] ||
+                    sx_process_activations[process] != 1)
+                    continue;
                 int changed_sensitivity = sx_has_changed_sensitivity(process);
                 if (changed_sensitivity < 0) {
                     result = 1;
@@ -291,7 +379,10 @@ int sx_runtime_run_test(uint32_t test) {
 
 done:
     sx_running = 0;
+    sx_current_process = UINT32_MAX;
     sx_clear_events();
+    free(resume_blocks);
+    free(suspended);
     free(stopped);
     free(next);
     free(ready);
