@@ -9165,3 +9165,11 @@ metadata, with ascending/descending regressions. The direct corpus moved from
 38 to 39 passing test executables (`iterate_test`), with 132 later runtime
 failures and the same 5 known scheduler timeouts; all 176 eligible programs
 still build without generated design C.
+2026-09-11 Codex: corpus-wide unsupported-node classification found normalized
+widening conversions were encoded as bit slices wider than their operand and
+rejected by direct LLVM. Those slices now extend according to the normalized
+value's signedness before extraction; the native fixture covers unsigned and
+signed widening. Runtime migration errors also identify the exact Process IR
+block, which made later-boundary classification deterministic. The direct
+corpus is now 40 passing, 131 later failures, and the unchanged 5 scheduler
+timeouts; `registered_array_test` is the new complete direct execution.

@@ -83,7 +83,9 @@ and edge waits require a later evaluator/dependency ABI and still return 255.
 The last status is a temporary fail-closed guard: current entries execute
 scalar control flow, immediate scalar/packed local and persistent-storage
 writes, whole-signal staged assignments, checked-index failure latches, and
-ranged-write checks. They also execute static-string print/assert/warn calls
+ranged-write checks. Normalized widening slices zero- or sign-extend according
+to the retained value semantics instead of being rejected at the original
+operand width. Entries also execute static-string print/assert/warn calls
 and fold source-layout `length`, `left`, `right`, `high`, `low`, and
 `ascending` attributes directly into LLVM. Inclusive directional range and
 source-order array loops execute as ordinary CFGs. Loop cursor/end

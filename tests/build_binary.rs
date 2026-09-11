@@ -64,10 +64,20 @@ fn direct_process_runtime_links_without_generated_design_c() {
     std::fs::write(
         &source,
         r#"module direct_runtime;
-           using std::bits::unsigned;
+           using std::bits::{signed, unsigned};
            using std::logic::Bit;
            struct Inner { pub byte: unsigned[8] }
            struct Packet { pub valid: Bit, pub inner: Inner }
+           entity Widen {
+               source: unsigned[8] in,
+               widened: unsigned[16] out,
+               signed_source: signed[8] in,
+               signed_widened: signed[16] out
+           }
+           impl Widen {
+               widened = unsigned[16](source);
+               signed_widened = signed[16](sext(signed_source));
+           }
            #[test] entity DirectRuntime {}
            impl DirectRuntime {
                let value: unsigned[1] = 0;
@@ -78,6 +88,16 @@ fn direct_process_runtime_links_without_generated_design_c() {
                let bytes: unsigned[8][3] = [1, 2, 3];
                let descending: Bit[3..1];
                let ascending: Bit[0..2];
+               let source: unsigned[8] = 200;
+               let widened: unsigned[16];
+               let signed_source: signed[8] = 240;
+               let signed_widened: signed[16];
+               let widen: Widen = {
+                   .source = source,
+                   .widened = widened,
+                   .signed_source = signed_source,
+                   .signed_widened = signed_widened
+               };
                process clock_source { clock = not clock after 1ns; }
                process run {
                    value = 1;
@@ -97,6 +117,10 @@ fn direct_process_runtime_links_without_generated_design_c() {
                            "direct lowering preserves nested aggregate layouts");
                    assert!(bytes[1] == 5,
                            "direct lowering preserves array layouts");
+                   assert!(widened == 200,
+                           "direct normalized widening zero-extends the source bits");
+                   assert!(signed_widened == 65520,
+                           "direct normalized widening sign-extends kernel values");
                    assert!(descending'length == 3 and descending'left == 3
                            and descending'right == 1 and descending'high == 3
                            and descending'low == 1 and descending'ascending == false,

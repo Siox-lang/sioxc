@@ -1943,6 +1943,7 @@ fn process_value<'ctx>(
             ty.const_int(process_layout_attribute(design, *base, attribute)?, false)
         }
         ProcessValueKind::BitSlice { base, high, low } => {
+            let signed = process_value_is_signed(design, *base);
             let base = process_value(
                 context,
                 module,
@@ -1954,8 +1955,22 @@ fn process_value<'ctx>(
                 cache,
             )?;
             let base_width = base.get_type().get_bit_width();
-            if high < low || *high >= base_width {
+            if high < low {
                 return None;
+            }
+            if *low >= base_width {
+                if !signed {
+                    return Some(ty.const_zero());
+                }
+                let sign = builder
+                    .build_right_shift(
+                        base,
+                        base.get_type().const_int(u64::from(base_width - 1), false),
+                        true,
+                        "pv.slice.sign",
+                    )
+                    .ok()?;
+                return fit_signed(builder, sign, width);
             }
             let shifted = if *low == 0 {
                 base
@@ -1964,12 +1979,16 @@ fn process_value<'ctx>(
                     .build_right_shift(
                         base,
                         base.get_type().const_int(u64::from(*low), false),
-                        false,
+                        signed,
                         "pv.slice",
                     )
                     .ok()?
             };
-            fit(builder, shifted, width)?
+            if signed {
+                fit_signed(builder, shifted, width)?
+            } else {
+                fit(builder, shifted, width)?
+            }
         }
         ProcessValueKind::CheckedIndex {
             index,
@@ -2704,12 +2723,10 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
             ProcessValueKind::BitSlice { base, high, low } => {
                 has(&supported, *base)
                     && low <= high
-                    && design
-                        .process_ir
-                        .values
-                        .get(base.0 as usize)
-                        .and_then(|value| value.bit_width)
-                        .is_some_and(|width| *high < width)
+                    && high
+                        .checked_sub(*low)
+                        .and_then(|width| width.checked_add(1))
+                        == value.bit_width
             }
             ProcessValueKind::CheckedIndex { index, valid, .. } => {
                 has(&supported, *index)

@@ -348,7 +348,11 @@ Remaining:
   std-derived lookup tables; selections; packed concatenations; and scalar
   foreign calls. Positive minimum-width literals remain positive when they
   enter a signed operation instead of being mistaken for two's-complement
-  negatives. Whole-scalar staged signal assignments also execute directly:
+  negatives. Normalized bit slices may also exceed their source width: the
+  direct emitter zero-extends ordinary values and sign-extends signed kernel
+  results before slicing, matching conversion lowering without reconstructing
+  a source-level cast. Whole-scalar staged signal assignments also execute
+  directly:
   LLVM owns exact-width pending state and exported commit/change queries, while
   the future runtime owns when a ready-process batch commits. Commit preserves
   source-order override and updates current/old/event state across arbitrary

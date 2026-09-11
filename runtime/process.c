@@ -75,6 +75,14 @@ static int sx_fail_id(const char *message, uint32_t id) {
     return 1;
 }
 
+static int sx_fail_process_block(const char *message, uint32_t process,
+                                 uint32_t block) {
+    if (!sx_error[0])
+        snprintf(sx_error, sizeof sx_error, "%s %u block %u", message,
+                 (unsigned)process, (unsigned)block);
+    return 1;
+}
+
 uint8_t sx_runtime_assert(uint8_t condition, const char *message,
                           uint32_t file, uint32_t offset) {
     if (condition) return 0;
@@ -343,7 +351,9 @@ int sx_runtime_run_test(uint32_t test) {
                 }
                 suspended[process] = 1;
             } else if (status == SX_PROCESS_UNSUPPORTED) {
-                result = sx_fail_id("direct Process IR lowering is incomplete for process", process);
+                result = sx_fail_process_block(
+                    "direct Process IR lowering is incomplete for process",
+                    process, resume_blocks[process]);
                 goto done;
             } else {
                 result = sx_fail_id("invalid Process IR entry status from process", process);
