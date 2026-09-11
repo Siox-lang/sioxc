@@ -72,11 +72,13 @@ fn direct_process_runtime_links_without_generated_design_c() {
                source: unsigned[8] in,
                widened: unsigned[16] out,
                signed_source: signed[8] in,
-               signed_widened: signed[16] out
+               signed_widened: signed[16] out,
+               signed_shifted: signed[8] out
            }
            impl Widen {
                widened = unsigned[16](source);
                signed_widened = signed[16](sext(signed_source));
+               signed_shifted = signed_source >> 1;
            }
            #[test] entity DirectRuntime {}
            impl DirectRuntime {
@@ -92,11 +94,13 @@ fn direct_process_runtime_links_without_generated_design_c() {
                let widened: unsigned[16];
                let signed_source: signed[8] = 240;
                let signed_widened: signed[16];
+               let signed_shifted: signed[8];
                let widen: Widen = {
                    .source = source,
                    .widened = widened,
                    .signed_source = signed_source,
-                   .signed_widened = signed_widened
+                   .signed_widened = signed_widened,
+                   .signed_shifted = signed_shifted
                };
                process clock_source { clock = not clock after 1ns; }
                process run {
@@ -121,6 +125,8 @@ fn direct_process_runtime_links_without_generated_design_c() {
                            "direct normalized widening zero-extends the source bits");
                    assert!(signed_widened == 65520,
                            "direct normalized widening sign-extends kernel values");
+                   assert!(signed_shifted == 248,
+                           "direct std signed shifts retain computed mask widths");
                    assert!(descending'length == 3 and descending'left == 3
                            and descending'right == 1 and descending'high == 3
                            and descending'low == 1 and descending'ascending == false,

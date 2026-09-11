@@ -351,8 +351,10 @@ Remaining:
   negatives. Normalized bit slices may also exceed their source width: the
   direct emitter zero-extends ordinary values and sign-extends signed kernel
   results before slicing, matching conversion lowering without reconstructing
-  a source-level cast. Whole-scalar staged signal assignments also execute
-  directly:
+  a source-level cast. Process width inference folds integer-only constant
+  shift expressions such as `1 << (WIDTH - 1)`, so std-generated signed shift
+  masks retain their natural width before LLVM emission. Whole-scalar staged
+  signal assignments also execute directly:
   LLVM owns exact-width pending state and exported commit/change queries, while
   the future runtime owns when a ready-process batch commits. Commit preserves
   source-order override and updates current/old/event state across arbitrary

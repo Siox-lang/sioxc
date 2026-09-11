@@ -169,7 +169,10 @@ signatures:
    widening distinguishes mathematical results from positive minimum-width
    bit patterns. `CheckedIndex` nodes retain their Process IR source domain,
    latch only on an evaluated selection path, and feed the existing
-   `sx_index_*` failure ABI.
+   `sx_index_*` failure ABI. Natural width inference also folds integer-only
+   constant shift expressions in the value graph; std's signed-vector shift
+   mask therefore reaches LLVM at its computed width instead of the width of
+   its one-bit seed literal.
 2. **Storage allocation — decided and emitted.** Every process-local and
    persistent `ProcessStorage` value has exact-width state in the design
    object. Recursive structs and arrays are packed internally in source order

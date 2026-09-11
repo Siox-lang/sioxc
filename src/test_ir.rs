@@ -743,17 +743,87 @@ fn integer_words_width(words: &[u64]) -> Option<u32> {
 
 /// Natural width after a possibly constant left shift in an arena value graph.
 fn shifted_arena_width(left: u32, right: ProcessValueId, values: &[ProcessValue]) -> Option<u32> {
-    let Some(ProcessValue {
-        kind: ProcessValueKind::Number(ProcessNumber::Integer(words)),
-        ..
-    }) = values.get(right.0 as usize)
+    let Some(shift) = arena_constant_integer(right, values).and_then(|value| value.try_into().ok())
     else {
         return Some(left);
     };
-    let [shift] = words.as_slice() else {
-        return Some(left);
-    };
-    left.checked_add((*shift).try_into().ok()?)
+    left.checked_add(shift)
+}
+
+/// Conservatively fold an integer-only Process IR value graph. This exists to
+/// retain the natural width of normalized expressions such as
+/// `1 << (WIDTH - 1)`: treating a constant expression as a dynamic shift would
+/// truncate the result before the direct backend ever sees it.
+///
+/// Dependencies precede their users in the arena, so generated Process IR is
+/// acyclic. Values outside the integer subset deliberately return `None` and
+/// keep the dynamic-shift width rule.
+fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]) -> Option<i128> {
+    let value = values.get(id.0 as usize)?;
+    match &value.kind {
+        ProcessValueKind::Number(ProcessNumber::Integer(words)) => {
+            let mut result = 0i128;
+            for &word in words.iter().rev() {
+                result = result.checked_shl(64)?.checked_add(i128::from(word))?;
+            }
+            Some(result)
+        }
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::Neg,
+            operand,
+        } => arena_constant_integer(*operand, values)?.checked_neg(),
+        ProcessValueKind::Binary {
+            operation,
+            left,
+            right,
+        } => {
+            let left = arena_constant_integer(*left, values)?;
+            let right = arena_constant_integer(*right, values)?;
+            match operation {
+                ProcessBinaryOp::Add | ProcessBinaryOp::SignedAdd => left.checked_add(right),
+                ProcessBinaryOp::Sub | ProcessBinaryOp::SignedSub => left.checked_sub(right),
+                ProcessBinaryOp::Mul | ProcessBinaryOp::SignedMul => left.checked_mul(right),
+                ProcessBinaryOp::Div | ProcessBinaryOp::SignedDiv => left.checked_div(right),
+                ProcessBinaryOp::Shl => left.checked_shl(right.try_into().ok()?),
+                ProcessBinaryOp::Shr | ProcessBinaryOp::ArithmeticShr => {
+                    left.checked_shr(right.try_into().ok()?)
+                }
+                ProcessBinaryOp::And => Some(left & right),
+                ProcessBinaryOp::Or => Some(left | right),
+                ProcessBinaryOp::Xor => Some(left ^ right),
+                ProcessBinaryOp::Eq => Some(i128::from(left == right)),
+                ProcessBinaryOp::Ne => Some(i128::from(left != right)),
+                ProcessBinaryOp::Lt | ProcessBinaryOp::SignedLt => Some(i128::from(left < right)),
+                ProcessBinaryOp::Le | ProcessBinaryOp::SignedLe => Some(i128::from(left <= right)),
+                ProcessBinaryOp::Gt | ProcessBinaryOp::SignedGt => Some(i128::from(left > right)),
+                ProcessBinaryOp::Ge | ProcessBinaryOp::SignedGe => Some(i128::from(left >= right)),
+                ProcessBinaryOp::FloatAdd
+                | ProcessBinaryOp::FloatSub
+                | ProcessBinaryOp::FloatMul
+                | ProcessBinaryOp::FloatDiv
+                | ProcessBinaryOp::FloatEq
+                | ProcessBinaryOp::FloatNe
+                | ProcessBinaryOp::FloatLt
+                | ProcessBinaryOp::FloatLe
+                | ProcessBinaryOp::FloatGt
+                | ProcessBinaryOp::FloatGe
+                | ProcessBinaryOp::Custom(_) => None,
+            }
+        }
+        ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } => {
+            let selected = if arena_constant_integer(*condition, values)? != 0 {
+                then_value
+            } else {
+                else_value
+            };
+            arena_constant_integer(*selected, values)
+        }
+        _ => None,
+    }
 }
 
 /// Flatten hierarchy ownership into stable instance paths.
@@ -2609,6 +2679,28 @@ mod tests {
             normalized_value_width(&process_ir, ProcessValueId(0), &Design::default()),
             Some(1)
         );
+    }
+
+    #[test]
+    /// Constant arithmetic in a shift count must contribute to the shifted
+    /// value's natural width. Signed-vector std code builds its fill mask as
+    /// `1 << (width - 1)`, so losing this width changes runtime behavior.
+    fn normalized_shift_width_folds_integer_expression() {
+        let span = crate::diag::Span::new(FileId(0), 0..0);
+        let mut process_ir = ProcessIr::default();
+        let expression = crate::ir::Expr::Binary {
+            op: crate::ir::BinOp::Shl,
+            lhs: Box::new(crate::ir::Expr::Const(1)),
+            rhs: Box::new(crate::ir::Expr::Binary {
+                op: crate::ir::BinOp::Sub,
+                lhs: Box::new(crate::ir::Expr::Const(8)),
+                rhs: Box::new(crate::ir::Expr::Const(1)),
+            }),
+        };
+
+        let shifted = push_normalized_value(&mut process_ir, &expression, span, &Design::default());
+
+        assert_eq!(process_ir.values[shifted.0 as usize].bit_width, Some(8));
     }
 
     #[test]

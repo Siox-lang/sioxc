@@ -9173,3 +9173,22 @@ signed widening. Runtime migration errors also identify the exact Process IR
 block, which made later-boundary classification deterministic. The direct
 corpus is now 40 passing, 131 later failures, and the unchanged 5 scheduler
 timeouts; `registered_array_test` is the new complete direct execution.
+
+### 2026-09-12 — Codex — normalized constant shift widths
+
+Continuing generated-C retirement in `src/test_ir.rs` and the direct native
+fixture. The current signed-shift failure comes from normalized std code using
+`1 << (WIDTH - 1)`: Process IR recognized only a literal shift amount, assigned
+that mask one bit, and lost it before LLVM emission. I am retaining the natural
+width by conservatively folding integer-only Process value graphs and covering
+the std signed-shift behavior end to end.
+
+The focused IR/native regressions and the original `convert_test` now pass.
+The no-generated-C corpus moved from 40 to 41 passing executables, with 130
+later runtime failures, the same 5 known scheduler timeouts, no build failures,
+and 7 non-test compilation cases.
+
+Verification is green under the 8 GiB cap: strict all-target/all-feature
+Clippy, frontend-only no-default checking, 424 default library tests plus every
+integration/doc test, 406 all-feature library tests plus integrations/docs,
+the direct fixture and `convert_test`, and the 183-file compatibility corpus.
