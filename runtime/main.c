@@ -6,6 +6,7 @@
 
 extern const uint32_t sx_test_count;
 extern const char *const sx_test_names[];
+extern uint32_t sx_runtime_warning_count(void);
 
 int main(int argc, char **argv) {
     const char *filter = 0;
@@ -45,8 +46,12 @@ int main(int argc, char **argv) {
         }
     }
 
-    printf("\ntest result: %s. %u passed; %u failed; %u filtered out\n",
+    printf("\ntest result: %s. %u passed; %u failed; %u filtered out",
            failed ? "FAILED" : "ok", (unsigned)(selected - failed),
            (unsigned)failed, (unsigned)(sx_test_count - selected));
+    uint32_t warnings = sx_runtime_warning_count();
+    if (warnings)
+        printf("; %u warning%s", (unsigned)warnings, warnings == 1 ? "" : "s");
+    putchar('\n');
     return failed ? 1 : 0;
 }

@@ -66,16 +66,28 @@ fn direct_process_runtime_links_without_generated_design_c() {
         r#"module direct_runtime;
            using std::bits::unsigned;
            using std::logic::Bit;
+           struct Inner { pub byte: unsigned[8] }
+           struct Packet { pub valid: Bit, pub inner: Inner }
            #[test] entity DirectRuntime {}
            impl DirectRuntime {
                let value: unsigned[1] = 0;
                let clock: Bit = '0';
+               let packet: Packet = { .valid = '0', .inner = { .byte = 3 } };
+               let bytes: unsigned[8][3] = [1, 2, 3];
                process clock_source { clock = not clock after 1ns; }
                process run {
                    value = 1;
                    value = 0 after 1ns;
                    await 2ns;
                    value = 0;
+                   packet.inner.byte = 9;
+                   bytes[1] = 5;
+                   assert!(value == 0, "direct assertion observes process storage");
+                   assert!(packet.inner.byte == 9,
+                           "direct lowering preserves nested aggregate layouts");
+                   assert!(bytes[1] == 5,
+                           "direct lowering preserves array layouts");
+                   warn!(false, "direct warning remains non-fatal");
                    finish();
                }
            }"#,
@@ -100,12 +112,67 @@ fn direct_process_runtime_links_without_generated_design_c() {
 
     let run = Command::new(&output).output().unwrap();
     let report = String::from_utf8_lossy(&run.stdout);
+    let warnings = String::from_utf8_lossy(&run.stderr);
     assert!(
-        run.status.success() && report.contains("test direct_runtime::DirectRuntime ... ok"),
+        run.status.success()
+            && report.contains("test direct_runtime::DirectRuntime ... ok")
+            && report.contains("1 warning")
+            && warnings.contains("warning: direct warning remains non-fatal"),
         "direct Process IR fixture failed:\n{}{}",
         report,
-        String::from_utf8_lossy(&run.stderr)
+        warnings
     );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn direct_process_runtime_reports_assertions_without_generated_design_c() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory =
+        std::env::temp_dir().join(format!("siox_direct_process_assert_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("assert.siox");
+    let output = directory.join("assert-test");
+    std::fs::write(
+        &source,
+        r#"module direct_assert;
+           #[test] entity DirectAssert {}
+           impl DirectAssert {
+               assert!(false, "direct assertion message");
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "direct assertion fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output).output().unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(!run.status.success(), "failing assertion passed:\n{stdout}");
+    assert!(
+        stdout.contains("test direct_assert::DirectAssert ... FAILED"),
+        "{stdout}"
+    );
+    assert!(stderr.contains("direct assertion message"), "{stderr}");
+    assert!(stderr.contains("source 0:"), "{stderr}");
     let _ = std::fs::remove_dir_all(directory);
 }
 

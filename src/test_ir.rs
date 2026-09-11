@@ -1522,6 +1522,56 @@ fn push_local(
     id
 }
 
+/// Resolve an enum-variant declaration to its elaborated discriminant while
+/// the resolver is still available. Backends must not rediscover std/user enum
+/// values from a `DefId`, and the compiler must not hardcode Bool or logic
+/// variant numbers.
+fn definition_number(
+    definition: crate::resolve::DefId,
+    context: &LoweringContext<'_>,
+) -> Option<ProcessNumber> {
+    let variant = context.resolved.def(definition)?;
+    if variant.kind != crate::resolve::DefKind::EnumVariant {
+        return None;
+    }
+    let enumeration = context.resolved.def(variant.parent?)?;
+    let qualified = context.resolved.qualified_name(variant.parent?)?;
+    let symbols = context
+        .design
+        .enum_syms
+        .get(&qualified)
+        .or_else(|| context.design.enum_syms.get(&enumeration.name))?;
+    let discriminant = symbols
+        .iter()
+        .find_map(|(discriminant, symbol)| (symbol == &variant.name).then_some(*discriminant))?;
+    Some(ProcessNumber::Integer(vec![discriminant]))
+}
+
+/// Resolve a context-typed character literal through the enum declaration's
+/// elaborated table. A kernel `Char` remains its Unicode scalar value; a
+/// library enum such as `Bit` or `Logic` uses whatever discriminant std chose.
+fn character_number(
+    character: char,
+    ty: Option<&crate::types::Ty>,
+    context: &LoweringContext<'_>,
+) -> Option<ProcessNumber> {
+    let crate::types::Ty::Named(definition) = ty? else {
+        return None;
+    };
+    let enumeration = context.resolved.def(*definition)?;
+    let qualified = context.resolved.qualified_name(*definition)?;
+    let symbols = context
+        .design
+        .enum_syms
+        .get(&qualified)
+        .or_else(|| context.design.enum_syms.get(&enumeration.name))?;
+    let quoted = format!("'{character}'");
+    let discriminant = symbols.iter().find_map(|(discriminant, symbol)| {
+        (symbol == &quoted || symbol == &character.to_string()).then_some(*discriminant)
+    })?;
+    Some(ProcessNumber::Integer(vec![discriminant]))
+}
+
 /// Lower an expression recursively into the process operand arena. Children
 /// are inserted before their parent, so ids form a directly executable DAG.
 fn value_ref(
@@ -1547,7 +1597,10 @@ fn value_ref(
             } else if let Some(storage) = testbench_storage(path, process.owner, context) {
                 ProcessValueKind::Storage(storage)
             } else if let Some(definition) = context.resolved.resolved(path.span) {
-                ProcessValueKind::Definition(definition)
+                match definition_number(definition, context) {
+                    Some(number) => ProcessValueKind::Number(number),
+                    None => ProcessValueKind::Definition(definition),
+                }
             } else {
                 ProcessValueKind::Intrinsic(path_name(path))
             }
@@ -1574,7 +1627,10 @@ fn value_ref(
                 words: parse_digits_words(digits, radix),
             }
         }
-        ast::Expr::CharLit { ch, .. } => ProcessValueKind::Char(*ch),
+        ast::Expr::CharLit { ch, .. } => match character_number(*ch, ty.as_ref(), context) {
+            Some(number) => ProcessValueKind::Number(number),
+            None => ProcessValueKind::Char(*ch),
+        },
         ast::Expr::StrLit { text, .. } => ProcessValueKind::String(text.clone()),
         ast::Expr::Field { base, field, .. } => {
             if let Some(signals) = signal_reference(expression, process, context) {

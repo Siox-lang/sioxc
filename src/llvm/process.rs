@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
@@ -18,8 +19,8 @@ use inkwell::IntPredicate;
 use siox::ir::{
     Design, IndexSite, LayoutDirection, LayoutKind, ProcessActivation, ProcessAssignment,
     ProcessBinaryOp, ProcessCfg, ProcessId, ProcessInstruction, ProcessLocalId, ProcessNumber,
-    ProcessSensitivity, ProcessSignalState, ProcessStorageId, ProcessTerminator, ProcessUnaryOp,
-    ProcessValueId, ProcessValueKind, SignalId, SourceLayout,
+    ProcessRuntimeOp, ProcessSensitivity, ProcessSignalState, ProcessStorageId, ProcessTerminator,
+    ProcessUnaryOp, ProcessValueId, ProcessValueKind, SignalId, SourceLayout,
 };
 
 /// Version of the native process metadata ABI emitted into every object.
@@ -2378,6 +2379,45 @@ fn private_string<'ctx>(
     global.as_pointer_value()
 }
 
+/// A source string carried as a Process IR operand. Runtime messages are data
+/// in the object, not fragments of generated source code.
+fn process_string(design: &Design, id: ProcessValueId) -> Option<&str> {
+    let value = design.process_ir.values.get(id.0 as usize)?;
+    match &value.kind {
+        ProcessValueKind::String(value) => Some(value),
+        _ => None,
+    }
+}
+
+/// Assertions and warnings have a deliberately small fixed ABI. Formatting
+/// operands remain unsupported until the runtime formatting service can render
+/// their type metadata without consulting the source AST.
+fn runtime_instruction_supported(
+    design: &Design,
+    operation: &ProcessRuntimeOp,
+    arguments: &[ProcessValueId],
+    values: &[bool],
+) -> bool {
+    let condition = arguments
+        .first()
+        .and_then(|id| values.get(id.0 as usize))
+        .copied()
+        .unwrap_or(false);
+    match operation {
+        ProcessRuntimeOp::Assert | ProcessRuntimeOp::Warn => {
+            condition
+                && arguments.len() <= 2
+                && arguments
+                    .get(1)
+                    .is_none_or(|message| process_string(design, *message).is_some())
+        }
+        ProcessRuntimeOp::Print => {
+            arguments.len() == 1 && process_string(design, arguments[0]).is_some()
+        }
+        ProcessRuntimeOp::Call(_) => false,
+    }
+}
+
 /// Emit externally visible `const char *const[]` test names. The logical
 /// length is always `sx_test_count`; an empty design carries one null sentinel.
 fn test_name_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: &Design) {
@@ -2410,6 +2450,132 @@ fn test_name_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: 
 /// Compute which arena nodes the direct scalar emitter can lower. Values are
 /// dependency ordered, so this stays iterative and cannot overflow the Rust
 /// stack on a large generated expression graph.
+fn process_value_supported_in_layout(
+    design: &Design,
+    id: ProcessValueId,
+    layout: &SourceLayout,
+    supported: &[bool],
+) -> bool {
+    let Some(width) = layout_width(layout) else {
+        return false;
+    };
+    if width > super::emit::LLVM_MAX_INT_BITS {
+        return false;
+    }
+    let Some(value) = design.process_ir.values.get(id.0 as usize) else {
+        return false;
+    };
+    let has = |id: ProcessValueId| supported.get(id.0 as usize).copied().unwrap_or(false);
+    match &value.kind {
+        ProcessValueKind::Storage(storage) => storage_state_width(design, *storage) == Some(width),
+        ProcessValueKind::Local { process, local } => {
+            local_width(design, *process, *local) == Some(width)
+        }
+        ProcessValueKind::Signal { signals, state } => {
+            if matches!(state, ProcessSignalState::Event) {
+                width == 1 && !signals.is_empty()
+            } else {
+                signals.iter().try_fold(0u32, |total, signal| {
+                    total.checked_add(design.signal_width(*signal)?)
+                }) == Some(width)
+            }
+        }
+        ProcessValueKind::Field { base, field } => {
+            let Some(base_layout) = process_value_layout(design, *base) else {
+                return false;
+            };
+            field_slice(base_layout, field).is_some_and(|selected| {
+                selected.width == width
+                    && process_value_supported_in_layout(design, *base, base_layout, supported)
+            })
+        }
+        ProcessValueKind::Index { base, index } => {
+            let Some(base_layout) = process_value_layout(design, *base) else {
+                return false;
+            };
+            process_constant_i64(design, *index)
+                .and_then(|index| array_slice(base_layout, index))
+                .is_some_and(|selected| {
+                    selected.width == width
+                        && process_value_supported_in_layout(design, *base, base_layout, supported)
+                })
+        }
+        ProcessValueKind::Construct { fields, spread, .. } => {
+            let LayoutKind::Struct {
+                fields: layout_fields,
+                ..
+            } = &layout.kind
+            else {
+                return false;
+            };
+            if spread.is_some_and(|spread| {
+                !process_value_supported_in_layout(design, spread, layout, supported)
+            }) {
+                return false;
+            }
+            let mut positional = 0usize;
+            fields.iter().all(|field| {
+                let index = match &field.name {
+                    Some(name) => layout_fields
+                        .iter()
+                        .position(|candidate| candidate.name == *name),
+                    None => {
+                        let index = positional;
+                        positional = positional.saturating_add(1);
+                        Some(index)
+                    }
+                };
+                index
+                    .and_then(|index| layout_fields.get(index))
+                    .zip(field.value)
+                    .is_some_and(|(field_layout, value)| {
+                        process_value_supported_in_layout(
+                            design,
+                            value,
+                            &field_layout.layout,
+                            supported,
+                        )
+                    })
+            })
+        }
+        ProcessValueKind::Array(elements) => {
+            let LayoutKind::Array {
+                range: Some(range),
+                element,
+            } = &layout.kind
+            else {
+                return false;
+            };
+            range.len().and_then(|len| usize::try_from(len).ok()) == Some(elements.len())
+                && elements.iter().all(|element_value| {
+                    process_value_supported_in_layout(design, *element_value, element, supported)
+                })
+        }
+        ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } => {
+            has(*condition)
+                && process_value_supported_in_layout(design, *then_value, layout, supported)
+                && process_value_supported_in_layout(design, *else_value, layout, supported)
+        }
+        _ => has(id),
+    }
+}
+
+fn process_value_supported_for_target(
+    design: &Design,
+    target: ProcessValueId,
+    assigned: ProcessValueId,
+    supported: &[bool],
+) -> bool {
+    match process_value_layout(design, target) {
+        Some(layout) => process_value_supported_in_layout(design, assigned, layout, supported),
+        None => supported.get(assigned.0 as usize).copied().unwrap_or(false),
+    }
+}
+
 fn supported_process_values(design: &Design) -> Vec<bool> {
     let mut supported = Vec::with_capacity(design.process_ir.values.len());
     let has = |supported: &[bool], id: ProcessValueId| {
@@ -2488,9 +2654,19 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                         .storages
                         .get(storage.0 as usize)
                         .is_some_and(|storage| {
-                            storage
-                                .initializer
-                                .is_none_or(|initializer| has(&supported, initializer))
+                            storage.initializer.is_none_or(|initializer| {
+                                storage.layout.as_ref().map_or_else(
+                                    || has(&supported, initializer),
+                                    |layout| {
+                                        process_value_supported_in_layout(
+                                            design,
+                                            initializer,
+                                            layout,
+                                            &supported,
+                                        )
+                                    },
+                                )
+                            })
                         })
             }
             ProcessValueKind::Unary { operand, .. } => has(&supported, *operand),
@@ -2724,7 +2900,10 @@ fn static_place(design: &Design, id: ProcessValueId) -> Option<StaticPlace> {
             let selected = field_slice(process_value_layout(design, *base)?, field)?;
             place.offset = place.offset.checked_add(selected.offset)?;
             place.width = selected.width;
-            (value.bit_width == Some(selected.width)).then_some(place)
+            value
+                .bit_width
+                .is_none_or(|width| width == selected.width)
+                .then_some(place)
         }
         ProcessValueKind::Index { base, index } => {
             let mut place = static_place(design, *base)?;
@@ -3479,13 +3658,34 @@ fn block_is_supported(
     values: &[bool],
 ) -> bool {
     let value = |id: ProcessValueId| values.get(id.0 as usize).copied().unwrap_or(false);
+    let assignment_supported =
+        |target, assigned| process_value_supported_for_target(design, target, assigned, values);
     let instructions = block
         .instructions
         .iter()
         .all(|instruction| match instruction {
             ProcessInstruction::Declare {
                 local, initializer, ..
-            } => local_width(design, process.id, *local).is_some() && initializer.is_none_or(value),
+            } => {
+                local_width(design, process.id, *local).is_some()
+                    && initializer.is_none_or(|initializer| {
+                        process
+                            .locals
+                            .get(local.0 as usize)
+                            .and_then(|local| local.layout.as_ref())
+                            .map_or_else(
+                                || value(initializer),
+                                |layout| {
+                                    process_value_supported_in_layout(
+                                        design,
+                                        initializer,
+                                        layout,
+                                        values,
+                                    )
+                                },
+                            )
+                    })
+            }
             ProcessInstruction::Assign {
                 semantics: ProcessAssignment::ImmediateLocal,
                 target,
@@ -3494,7 +3694,7 @@ fn block_is_supported(
             } => {
                 static_place(design, *target).is_some_and(|place| {
                     place_has_semantics(place, process.id, ProcessAssignment::ImmediateLocal)
-                }) && value(*assigned)
+                }) && assignment_supported(*target, *assigned)
             }
             ProcessInstruction::Assign {
                 semantics: ProcessAssignment::ImmediateStorage,
@@ -3504,7 +3704,7 @@ fn block_is_supported(
             } => {
                 static_place(design, *target).is_some_and(|place| {
                     place_has_semantics(place, process.id, ProcessAssignment::ImmediateStorage)
-                }) && value(*assigned)
+                }) && assignment_supported(*target, *assigned)
             }
             ProcessInstruction::Assign {
                 semantics: ProcessAssignment::StagedSignal,
@@ -3516,7 +3716,7 @@ fn block_is_supported(
                     || static_place(design, *target).is_some_and(|place| {
                         place_has_semantics(place, process.id, ProcessAssignment::StagedSignal)
                     }))
-                    && value(*assigned)
+                    && assignment_supported(*target, *assigned)
             }
             ProcessInstruction::Assign {
                 semantics: ProcessAssignment::PerPlace,
@@ -3534,7 +3734,7 @@ fn block_is_supported(
                 ..
             } => {
                 delayed_place(design, *target).is_some()
-                    && value(*assigned)
+                    && assignment_supported(*target, *assigned)
                     && value(*delay)
                     && design
                         .process_ir
@@ -3543,7 +3743,11 @@ fn block_is_supported(
                         .and_then(|value| value.bit_width)
                         .is_some_and(|width| width <= 64)
             }
-            ProcessInstruction::Runtime { .. } => false,
+            ProcessInstruction::Runtime {
+                operation,
+                arguments,
+                ..
+            } => runtime_instruction_supported(design, operation, arguments, values),
         });
     let terminator = match &block.terminator {
         ProcessTerminator::Return { value: None, .. }
@@ -3630,6 +3834,152 @@ fn emit_timed_suspend<'ctx>(
     Some(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn emit_runtime_instruction<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    failed_block: BasicBlock<'ctx>,
+    design: &Design,
+    process: ProcessId,
+    block: siox::ir::ProcessBlockId,
+    instruction: usize,
+    operation: &ProcessRuntimeOp,
+    arguments: &[ProcessValueId],
+    span: siox::diag::Span,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<()> {
+    if matches!(operation, ProcessRuntimeOp::Print) {
+        let [message] = arguments else { return None };
+        let message = process_string(design, *message)?;
+        let message = private_string(
+            context,
+            module,
+            &format!(
+                "sx.process.runtime.message.{}.{}.{}",
+                process.0, block.0, instruction
+            ),
+            message,
+        );
+        let runtime = module.get_function("sx_runtime_print").unwrap_or_else(|| {
+            module.add_function(
+                "sx_runtime_print",
+                context
+                    .void_type()
+                    .fn_type(&[context.ptr_type(AddressSpace::default()).into()], false),
+                Some(Linkage::External),
+            )
+        });
+        builder.build_call(runtime, &[message.into()], "").ok()?;
+        return Some(());
+    }
+
+    let condition = process_value(
+        context,
+        module,
+        builder,
+        design,
+        *arguments.first()?,
+        None,
+        index_sites,
+        cache,
+    )
+    .and_then(|value| as_condition(builder, value))?;
+    let condition = builder
+        .build_int_z_extend(condition, context.i8_type(), "process.runtime.condition")
+        .ok()?;
+    let fallback = match operation {
+        ProcessRuntimeOp::Assert => "assertion failed",
+        ProcessRuntimeOp::Warn => "warning",
+        ProcessRuntimeOp::Print | ProcessRuntimeOp::Call(_) => return None,
+    };
+    let message = arguments
+        .get(1)
+        .and_then(|message| process_string(design, *message))
+        .unwrap_or(fallback);
+    let message = private_string(
+        context,
+        module,
+        &format!(
+            "sx.process.runtime.message.{}.{}.{}",
+            process.0, block.0, instruction
+        ),
+        message,
+    );
+    let i32 = context.i32_type();
+    let arguments = &[
+        condition.into(),
+        message.into(),
+        i32.const_int(u64::from(span.file.0), false).into(),
+        i32.const_int(u64::from(span.start), false).into(),
+    ];
+    match operation {
+        ProcessRuntimeOp::Assert => {
+            let runtime = module.get_function("sx_runtime_assert").unwrap_or_else(|| {
+                module.add_function(
+                    "sx_runtime_assert",
+                    context.i8_type().fn_type(
+                        &[
+                            context.i8_type().into(),
+                            context.ptr_type(AddressSpace::default()).into(),
+                            i32.into(),
+                            i32.into(),
+                        ],
+                        false,
+                    ),
+                    Some(Linkage::External),
+                )
+            });
+            let failed = match builder
+                .build_call(runtime, arguments, "process.runtime.assert")
+                .ok()?
+                .try_as_basic_value()
+            {
+                inkwell::values::ValueKind::Basic(value) => value.into_int_value(),
+                _ => return None,
+            };
+            let failed = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    failed,
+                    context.i8_type().const_zero(),
+                    "process.runtime.assert.failed",
+                )
+                .ok()?;
+            let continuation = context.append_basic_block(
+                function,
+                &format!("bb{}.runtime{}.continue", block.0, instruction),
+            );
+            builder
+                .build_conditional_branch(failed, failed_block, continuation)
+                .ok()?;
+            builder.position_at_end(continuation);
+        }
+        ProcessRuntimeOp::Warn => {
+            let runtime = module.get_function("sx_runtime_warn").unwrap_or_else(|| {
+                module.add_function(
+                    "sx_runtime_warn",
+                    context.void_type().fn_type(
+                        &[
+                            context.i8_type().into(),
+                            context.ptr_type(AddressSpace::default()).into(),
+                            i32.into(),
+                            i32.into(),
+                        ],
+                        false,
+                    ),
+                    Some(Linkage::External),
+                )
+            });
+            builder.build_call(runtime, arguments, "").ok()?;
+        }
+        ProcessRuntimeOp::Print | ProcessRuntimeOp::Call(_) => return None,
+    }
+    Some(())
+}
+
 /// Emit a process entry that resumes at any CFG block by its stable block ID.
 ///
 /// Blocks containing directly supported assignments execute and publish
@@ -3658,6 +4008,7 @@ fn process_entry<'ctx>(
     let builder = context.create_builder();
     let dispatch = context.append_basic_block(function, "dispatch");
     let invalid = context.append_basic_block(function, "invalid");
+    let runtime_failed = context.append_basic_block(function, "runtime.failed");
     let blocks = process
         .blocks
         .iter()
@@ -3680,6 +4031,11 @@ fn process_entry<'ctx>(
     builder.position_at_end(invalid);
     builder
         .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
+        .unwrap();
+
+    builder.position_at_end(runtime_failed);
+    builder
+        .build_return(Some(&i8.const_int(u64::from(PROCESS_STOPPED), false)))
         .unwrap();
 
     let supported_values = supported_process_values(design);
@@ -3973,7 +4329,26 @@ fn process_entry<'ctx>(
                             &mut cache,
                         )
                     }),
-                ProcessInstruction::Runtime { .. } => None,
+                ProcessInstruction::Runtime {
+                    operation,
+                    arguments,
+                    span,
+                } => emit_runtime_instruction(
+                    context,
+                    module,
+                    &builder,
+                    function,
+                    runtime_failed,
+                    design,
+                    process.id,
+                    block.id,
+                    instruction_index,
+                    operation,
+                    arguments,
+                    *span,
+                    index_sites,
+                    &mut cache,
+                ),
             };
             if emitted.is_none() {
                 failed = true;

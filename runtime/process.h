@@ -20,4 +20,14 @@ void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
 void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
                              uint64_t delay);
 
+/* Report source-level runtime operations emitted from Process IR. Assertions
+ * return nonzero when they fail so the generated process entry can stop before
+ * executing any later statement in the same basic block. */
+uint8_t sx_runtime_assert(uint8_t condition, const char *message,
+                          uint32_t file, uint32_t offset);
+void sx_runtime_warn(uint8_t condition, const char *message,
+                     uint32_t file, uint32_t offset);
+void sx_runtime_print(const char *message);
+uint32_t sx_runtime_warning_count(void);
+
 #endif

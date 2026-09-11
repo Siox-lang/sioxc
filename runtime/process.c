@@ -58,9 +58,11 @@ static uint64_t sx_sequence;
 static int sx_running;
 static uint32_t sx_current_process;
 static int sx_suspend_registered;
+static uint32_t sx_warnings;
 
 const char *sx_runtime_error(void) { return sx_error[0] ? sx_error : 0; }
 uint64_t sx_runtime_now(void) { return sx_now; }
+uint32_t sx_runtime_warning_count(void) { return sx_warnings; }
 
 static int sx_fail(const char *message) {
     if (!sx_error[0]) snprintf(sx_error, sizeof sx_error, "%s", message);
@@ -71,6 +73,29 @@ static int sx_fail_id(const char *message, uint32_t id) {
     if (!sx_error[0])
         snprintf(sx_error, sizeof sx_error, "%s %u", message, (unsigned)id);
     return 1;
+}
+
+uint8_t sx_runtime_assert(uint8_t condition, const char *message,
+                          uint32_t file, uint32_t offset) {
+    if (condition) return 0;
+    if (!message || !*message) message = "assertion failed";
+    if (!sx_error[0])
+        snprintf(sx_error, sizeof sx_error, "%s (source %u:%u)", message,
+                 (unsigned)file, (unsigned)offset);
+    return 1;
+}
+
+void sx_runtime_warn(uint8_t condition, const char *message,
+                     uint32_t file, uint32_t offset) {
+    if (condition) return;
+    if (!message || !*message) message = "warning";
+    fprintf(stderr, "warning: %s (source %u:%u)\n", message,
+            (unsigned)file, (unsigned)offset);
+    sx_warnings++;
+}
+
+void sx_runtime_print(const char *message) {
+    puts(message ? message : "");
 }
 
 static void sx_clear_events(void) {

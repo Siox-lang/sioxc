@@ -9139,3 +9139,15 @@ and `ir/tests/`. No lowering behavior or public IR paths changed. Formatting,
 strict all-target/all-feature Clippy, no-default checking, 423 default tests,
 405 all-feature tests, the direct counter executable, and the 183-file corpus
 all pass under the 8 GiB cap.
+2026-09-11 Codex: resuming generated-C retirement after the IR split. A direct
+backend sweep built all 176 corpus test executables without design-generated C,
+but every run currently stops at an unsupported Process IR block; the common
+first blocker is the runtime instruction used by assertions. I am adding the
+fixed-runtime assertion/warning ABI and direct LLVM control-flow lowering first,
+then will remeasure the corpus to expose the next semantic boundary.
+2026-09-11 Codex: the first direct-runtime increment now lowers static-string
+print, assert, and warning operations through a fixed runtime ABI and resolves
+enum/character constants before frontend identities disappear. Layout-aware
+validation also admits struct/array literals and nested aggregate writes. All
+176 corpus test executables link without generated design C; 31 now pass (up
+from 29), 140 expose later semantic gaps, and 5 retain known scheduler hangs.
