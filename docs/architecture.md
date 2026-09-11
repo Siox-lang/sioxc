@@ -26,11 +26,17 @@ The IR module is directory-backed and split by responsibility:
 - `process.rs` owns the canonical process CFG, value arena, and descriptors;
 - `query.rs` owns validation, scheduler decomposition, and textual dumps;
 - `passes.rs` owns representation-neutral normalization;
-- `lower.rs` coordinates Siox frontend lowering, with its diagnostics,
-  metavalue, source-layout, statement, and expression implementations in
-  `lower/*.rs`; `lower_helpers.rs` contains shared constant/substitution
-  utilities. These are the only Siox-AST-dependent IR modules;
-- `tests.rs` verifies the complete public IR contract.
+- `lower.rs` is the Siox frontend-lowering facade and shared state. Focused
+  modules in `lower/` own collection, entity bodies, expressions, operators,
+  calls, values, control flow, block locals, writes, resolution, initializers,
+  layouts, metavalues, and diagnostics;
+- `lower_helpers.rs` is the compatibility facade for the focused
+  `lower_helpers/` utilities: expression/constant builders, type metadata,
+  generate expansion, substitution, and source access. Together with
+  `lower/`, these are the only Siox-AST-dependent IR modules;
+- `tests.rs` contains shared fixtures and `tests/` groups the public IR
+  contract by identity, diagnostics, behavior, value/layout, and control-flow
+  concerns.
 
 This file split is an internal ownership boundary, not another pipeline stage.
 Consumers continue to use the stable `siox::ir::*` paths rather than depending

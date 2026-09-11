@@ -9127,3 +9127,15 @@ format/diff checks, strict all-target/all-feature Clippy, no-default check, 405
 all-feature tests, the complete default test suite (423 library tests plus all
 integration/doc suites), the direct no-generated-C executable test, and the
 external corpus at 183/183 all pass under the 8 GiB cap.
+2026-09-11 Codex: continuing the requested IR directory split before further
+runtime work. The in-progress direct-runtime slice is isolated in a local
+stash. I am splitting the remaining large lowering orchestration, expression,
+statement, helper, process-model, and test modules by semantic ownership while
+preserving `siox::ir::*` and the single pipeline.
+2026-09-11 Codex: completed the structural IR split. `lower.rs`,
+`lower_helpers.rs`, and `tests.rs` are now small facades/fixture modules;
+their implementations are grouped under `ir/lower/`, `ir/lower_helpers/`,
+and `ir/tests/`. No lowering behavior or public IR paths changed. Formatting,
+strict all-target/all-feature Clippy, no-default checking, 423 default tests,
+405 all-feature tests, the direct counter executable, and the 183-file corpus
+all pass under the 8 GiB cap.

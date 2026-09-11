@@ -137,9 +137,11 @@ Remaining:
 
 Owns the elaborated execution model: signals, process control flow, derived
 drivers/events, initializers, type/enum metadata, layouts, and semantic lints.
-Code: `src/ir/`; `mod.rs` owns lowering/analysis and `process.rs` owns the
-canonical process model. The stable `siox::ir::*` facade is consumed by
-`src/driver/` and `src/llvm/`.
+Code: `src/ir/`; `mod.rs` is the stable facade, `lower.rs` plus
+`lower/*.rs` own frontend lowering, `passes.rs` and `query.rs` own
+analysis/normalization, and `process.rs` owns the canonical process model.
+The stable `siox::ir::*` facade is consumed by `src/driver/` and
+`src/llvm/`.
 
 Current baseline:
 
