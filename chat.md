@@ -9158,3 +9158,10 @@ suspension inside both loop forms have a native regression. The same audit
 found and fixed aggregate storage initializers being skipped by a scalar-only
 reset precheck. The direct corpus is now 38 passing, 133 later failures, 5 known
 timeouts, and still zero build failures (up from 31 passing in the prior slice).
+2026-09-11 Codex: continuing in `src/llvm/process.rs` and the direct native
+fixture. Source-layout `length`, `left`, `right`, `high`, `low`, and
+`ascending` attributes now lower to constants from retained Process IR
+metadata, with ascending/descending regressions. The direct corpus moved from
+38 to 39 passing test executables (`iterate_test`), with 132 later runtime
+failures and the same 5 known scheduler timeouts; all 176 eligible programs
+still build without generated design C.

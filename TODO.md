@@ -377,6 +377,10 @@ Remaining:
   the exact CFG resume block; condition/edge awaits remain fail-closed until
   their dependency/evaluator ABI exists. Static-string `print!`, `assert!`, and
   `warn!` use a fixed runtime ABI with source locations and warning accounting.
+  Source-layout `length`, `left`, `right`, `high`, `low`, and `ascending`
+  attributes are materialized as LLVM constants from retained Process IR
+  layout metadata, including signed and directional bounds; the backend does
+  not revisit source syntax or call a runtime service for them.
   Inclusive directional range loops and source-order array loops execute as
   ordinary CFG back-edges; cursor/end state and the array snapshot live in the
   object so suspension inside a loop resumes without re-evaluating its

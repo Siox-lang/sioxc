@@ -828,7 +828,6 @@ fn checked_process_values(design: &Design) -> Vec<bool> {
         let contains = match &value.kind {
             ProcessValueKind::CheckedIndex { .. } => true,
             ProcessValueKind::Field { base, .. }
-            | ProcessValueKind::Attribute { base, .. }
             | ProcessValueKind::BitSlice { base, .. }
             | ProcessValueKind::TableLookup { index: base, .. }
             | ProcessValueKind::Unary { operand: base, .. } => has(&checked, *base),
@@ -886,6 +885,7 @@ fn checked_process_values(design: &Design) -> Vec<bool> {
             | ProcessValueKind::Signal { .. }
             | ProcessValueKind::Definition(_)
             | ProcessValueKind::Intrinsic(_)
+            | ProcessValueKind::Attribute { .. }
             | ProcessValueKind::Invalid => false,
         };
         checked.push(contains);
@@ -1135,6 +1135,35 @@ fn process_value_layout(design: &Design, id: ProcessValueId) -> Option<&SourceLa
         ProcessValueKind::Array(_) => value.ty.as_ref().and_then(|ty| layout_for_type(design, ty)),
         _ => value.ty.as_ref().and_then(|ty| layout_for_type(design, ty)),
     }
+}
+
+/// Evaluate a source-layout attribute without consulting the AST. These are
+/// elaboration metadata, so direct process code materializes a constant rather
+/// than calling the simulation runtime.
+fn process_layout_attribute(design: &Design, base: ProcessValueId, attribute: &str) -> Option<u64> {
+    let layout = process_value_layout(design, base)?;
+    if attribute == "length" {
+        return match &layout.kind {
+            LayoutKind::Array {
+                range: Some(range), ..
+            } => range.len(),
+            LayoutKind::Packed { width, .. } | LayoutKind::Scalar { width, .. } => {
+                Some(u64::from(*width))
+            }
+            LayoutKind::Opaque { width, .. } => width.map(u64::from),
+            LayoutKind::Struct { .. } | LayoutKind::Array { range: None, .. } => None,
+        };
+    }
+    let range = layout.index_range()?;
+    let signed = match attribute {
+        "left" => range.left,
+        "right" => range.right,
+        "high" => range.left.max(range.right),
+        "low" => range.left.min(range.right),
+        "ascending" => return Some(u64::from(range.ascending())),
+        _ => return None,
+    };
+    Some(u64::from_ne_bytes(signed.to_ne_bytes()))
 }
 
 fn process_constant_i64(design: &Design, id: ProcessValueId) -> Option<i64> {
@@ -1910,6 +1939,9 @@ fn process_value<'ctx>(
             &storage_state_name(*storage),
             width,
         )?,
+        ProcessValueKind::Attribute { base, attribute } => {
+            ty.const_int(process_layout_attribute(design, *base, attribute)?, false)
+        }
         ProcessValueKind::BitSlice { base, high, low } => {
             let base = process_value(
                 context,
@@ -2751,6 +2783,9 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                     && has(&supported, *then_value)
                     && has(&supported, *else_value)
             }
+            ProcessValueKind::Attribute { base, attribute } => {
+                process_layout_attribute(design, *base, attribute).is_some()
+            }
             ProcessValueKind::Field { base, .. } => {
                 has(&supported, *base) && process_value_layout(design, id).is_some()
             }
@@ -2803,7 +2838,6 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
             | ProcessValueKind::String(_)
             | ProcessValueKind::Definition(_)
             | ProcessValueKind::Intrinsic(_)
-            | ProcessValueKind::Attribute { .. }
             | ProcessValueKind::Range { .. }
             | ProcessValueKind::MetaCompare { .. }
             | ProcessValueKind::Match { .. }

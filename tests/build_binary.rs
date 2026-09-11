@@ -76,6 +76,8 @@ fn direct_process_runtime_links_without_generated_design_c() {
                let byte_sum: unsigned[8] = 0;
                let packet: Packet = { .valid = '0', .inner = { .byte = 3 } };
                let bytes: unsigned[8][3] = [1, 2, 3];
+               let descending: Bit[3..1];
+               let ascending: Bit[0..2];
                process clock_source { clock = not clock after 1ns; }
                process run {
                    value = 1;
@@ -95,6 +97,14 @@ fn direct_process_runtime_links_without_generated_design_c() {
                            "direct lowering preserves nested aggregate layouts");
                    assert!(bytes[1] == 5,
                            "direct lowering preserves array layouts");
+                   assert!(descending'length == 3 and descending'left == 3
+                           and descending'right == 1 and descending'high == 3
+                           and descending'low == 1 and descending'ascending == false,
+                           "direct lowering folds descending source-layout attributes");
+                   assert!(ascending'length == 3 and ascending'left == 0
+                           and ascending'right == 2 and ascending'high == 2
+                           and ascending'low == 0 and ascending'ascending == true,
+                           "direct lowering folds ascending source-layout attributes");
                    for byte in bytes {
                        byte_sum = byte_sum + byte;
                        await 1ns;

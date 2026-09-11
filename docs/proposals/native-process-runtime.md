@@ -84,7 +84,9 @@ The last status is a temporary fail-closed guard: current entries execute
 scalar control flow, immediate scalar/packed local and persistent-storage
 writes, whole-signal staged assignments, checked-index failure latches, and
 ranged-write checks. They also execute static-string print/assert/warn calls
-and inclusive directional range or source-order array loops. Loop cursor/end
+and fold source-layout `length`, `left`, `right`, `high`, `low`, and
+`ascending` attributes directly into LLVM. Inclusive directional range and
+source-order array loops execute as ordinary CFGs. Loop cursor/end
 state and array snapshots remain in the object across suspension. An
 unsupported block is rejected transactionally before it performs foreign
 calls or publishes a pending write.
