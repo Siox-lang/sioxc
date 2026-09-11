@@ -9151,3 +9151,10 @@ enum/character constants before frontend identities disappear. Layout-aware
 validation also admits struct/array literals and nested aggregate writes. All
 176 corpus test executables link without generated design C; 31 now pass (up
 from 29), 140 expose later semantic gaps, and 5 retain known scheduler hangs.
+2026-09-11 Codex: continuing generated-C retirement in the direct LLVM path.
+Range and array `for` terminators now execute as resumable CFGs with object-owned
+cursor/end and iterable-snapshot state; descending/inclusive range behavior and
+suspension inside both loop forms have a native regression. The same audit
+found and fixed aggregate storage initializers being skipped by a scalar-only
+reset precheck. The direct corpus is now 38 passing, 133 later failures, 5 known
+timeouts, and still zero build failures (up from 31 passing in the prior slice).

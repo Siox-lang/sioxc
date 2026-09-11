@@ -55,6 +55,51 @@ fn storage_old_name(storage: ProcessStorageId) -> String {
     format!("sx.process.storage.old.{}", storage.0)
 }
 
+fn loop_active_name(process: ProcessId, block: siox::ir::ProcessBlockId) -> String {
+    format!("sx.process.loop.active.{}.{}", process.0, block.0)
+}
+
+fn loop_cursor_name(process: ProcessId, block: siox::ir::ProcessBlockId) -> String {
+    format!("sx.process.loop.cursor.{}.{}", process.0, block.0)
+}
+
+fn loop_end_name(process: ProcessId, block: siox::ir::ProcessBlockId) -> String {
+    format!("sx.process.loop.end.{}.{}", process.0, block.0)
+}
+
+fn loop_iterable_name(process: ProcessId, block: siox::ir::ProcessBlockId) -> String {
+    format!("sx.process.loop.iterable.{}.{}", process.0, block.0)
+}
+
+fn range_loop_bounds(
+    design: &Design,
+    iterable: ProcessValueId,
+) -> Option<(ProcessValueId, ProcessValueId)> {
+    match &design.process_ir.values.get(iterable.0 as usize)?.kind {
+        ProcessValueKind::Range {
+            left: Some(left),
+            right: Some(right),
+        } => Some((*left, *right)),
+        _ => None,
+    }
+}
+
+fn array_loop_shape(
+    design: &Design,
+    iterable: ProcessValueId,
+) -> Option<(&SourceLayout, &SourceLayout, u32)> {
+    let layout = process_value_layout(design, iterable)?;
+    let LayoutKind::Array {
+        range: Some(range),
+        element,
+    } = &layout.kind
+    else {
+        return None;
+    };
+    let length = u32::try_from(range.len()?).ok()?;
+    (length != 0).then_some((layout, element, length))
+}
+
 fn layout_width(layout: &siox::ir::SourceLayout) -> Option<u32> {
     u32::try_from(layout.bit_width()?)
         .ok()
@@ -298,6 +343,24 @@ pub(super) fn declare_state<'ctx>(context: &'ctx Context, module: &Module<'ctx>,
         for local in &process.locals {
             if let Some(width) = local_width(design, process.id, local.id) {
                 add_state(&local_state_name(process.id, local.id), width);
+            }
+        }
+        for block in &process.blocks {
+            let ProcessTerminator::For { iterable, .. } = &block.terminator else {
+                continue;
+            };
+            if range_loop_bounds(design, *iterable).is_none()
+                && array_loop_shape(design, *iterable).is_none()
+            {
+                continue;
+            }
+            add_state(&loop_active_name(process.id, block.id), 1);
+            add_state(&loop_cursor_name(process.id, block.id), 64);
+            add_state(&loop_end_name(process.id, block.id), 64);
+            if let Some((layout, _, _)) = array_loop_shape(design, *iterable) {
+                if let Some(width) = layout_width(layout) {
+                    add_state(&loop_iterable_name(process.id, block.id), width);
+                }
             }
         }
     }
@@ -3397,6 +3460,40 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
             )
             .expect("declared process local state");
         }
+        for block in &process.blocks {
+            let ProcessTerminator::For { iterable, .. } = &block.terminator else {
+                continue;
+            };
+            let array = array_loop_shape(design, *iterable);
+            if range_loop_bounds(design, *iterable).is_none() && array.is_none() {
+                continue;
+            }
+            for (name, width) in [
+                (loop_active_name(process.id, block.id), 1),
+                (loop_cursor_name(process.id, block.id), 64),
+                (loop_end_name(process.id, block.id), 64),
+            ] {
+                let ty = context
+                    .custom_width_int_type(std::num::NonZeroU32::new(width).unwrap())
+                    .expect("validated loop state width");
+                store_state(module, &builder, &name, width, ty.const_zero())
+                    .expect("declared process loop state");
+            }
+            if let Some((layout, _, _)) = array {
+                let width = layout_width(layout).expect("declared array loop state width");
+                let ty = context
+                    .custom_width_int_type(std::num::NonZeroU32::new(width).unwrap())
+                    .expect("validated array loop state width");
+                store_state(
+                    module,
+                    &builder,
+                    &loop_iterable_name(process.id, block.id),
+                    width,
+                    ty.const_zero(),
+                )
+                .expect("declared process array-loop state");
+            }
+        }
     }
     let mut cache = ProcessValueCache::new(&checked_values);
     for storage in &design.process_ir.storages {
@@ -3415,10 +3512,22 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
         let initialized = storage
             .initializer
             .filter(|initializer| {
-                supported_values
-                    .get(initializer.0 as usize)
-                    .copied()
-                    .unwrap_or(false)
+                storage.layout.as_ref().map_or_else(
+                    || {
+                        supported_values
+                            .get(initializer.0 as usize)
+                            .copied()
+                            .unwrap_or(false)
+                    },
+                    |layout| {
+                        process_value_supported_in_layout(
+                            design,
+                            *initializer,
+                            layout,
+                            &supported_values,
+                        )
+                    },
+                )
             })
             .and_then(|initializer| {
                 if let Some(layout) = storage.layout.as_ref() {
@@ -3776,9 +3885,31 @@ fn block_is_supported(
                             )
                     })
         }
-        ProcessTerminator::Return { value: Some(_), .. }
-        | ProcessTerminator::Match { .. }
-        | ProcessTerminator::For { .. } => false,
+        ProcessTerminator::For {
+            local, iterable, ..
+        } => {
+            let range = range_loop_bounds(design, *iterable).is_some_and(|(left, right)| {
+                local_width(design, process.id, *local) == Some(64)
+                    && value(left)
+                    && value(right)
+                    && [left, right].into_iter().all(|bound| {
+                        design
+                            .process_ir
+                            .values
+                            .get(bound.0 as usize)
+                            .and_then(|value| value.bit_width)
+                            .is_some_and(|width| width <= 64)
+                    })
+            });
+            let array = array_loop_shape(design, *iterable).is_some_and(|(layout, element, _)| {
+                layout_width(element) == local_width(design, process.id, *local)
+                    && layout_width(layout)
+                        .is_some_and(|width| width <= super::emit::LLVM_MAX_INT_BITS)
+                    && process_value_supported_in_layout(design, *iterable, layout, values)
+            });
+            range || array
+        }
+        ProcessTerminator::Return { value: Some(_), .. } | ProcessTerminator::Match { .. } => false,
     };
     instructions && terminator
 }
@@ -3977,6 +4108,260 @@ fn emit_runtime_instruction<'ctx>(
         }
         ProcessRuntimeOp::Print | ProcessRuntimeOp::Call(_) => return None,
     }
+    Some(())
+}
+
+/// Emit one inclusive, directional range-loop header. Cursor and end state
+/// live in the design object because the body may suspend and resume through a
+/// later call to the process entry. The range operands are evaluated only on
+/// first entry, matching source-level `for` semantics.
+#[allow(clippy::too_many_arguments)]
+fn emit_range_loop<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    design: &Design,
+    process: ProcessId,
+    block: siox::ir::ProcessBlockId,
+    local: ProcessLocalId,
+    iterable: ProcessValueId,
+    body: BasicBlock<'ctx>,
+    exit: BasicBlock<'ctx>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<()> {
+    let (left, right) = range_loop_bounds(design, iterable)?;
+    let active_name = loop_active_name(process, block);
+    let cursor_name = loop_cursor_name(process, block);
+    let end_name = loop_end_name(process, block);
+    let active = state_value(context, module, builder, &active_name, 1)?;
+    let initialize = context.append_basic_block(function, &format!("bb{}.for.initialize", block.0));
+    let advance = context.append_basic_block(function, &format!("bb{}.for.advance", block.0));
+    let complete = context.append_basic_block(function, &format!("bb{}.for.complete", block.0));
+    let next = context.append_basic_block(function, &format!("bb{}.for.next", block.0));
+    builder
+        .build_conditional_branch(active, advance, initialize)
+        .ok()?;
+
+    builder.position_at_end(initialize);
+    let left = process_value_at(
+        context,
+        module,
+        builder,
+        design,
+        left,
+        64,
+        true,
+        None,
+        index_sites,
+        cache,
+    )?;
+    let right = process_value_at(
+        context,
+        module,
+        builder,
+        design,
+        right,
+        64,
+        true,
+        None,
+        index_sites,
+        cache,
+    )?;
+    store_state(module, builder, &cursor_name, 64, left)?;
+    store_state(module, builder, &end_name, 64, right)?;
+    store_state(
+        module,
+        builder,
+        &active_name,
+        1,
+        context.bool_type().const_int(1, false),
+    )?;
+    store_state(module, builder, &local_state_name(process, local), 64, left)?;
+    builder.build_unconditional_branch(body).ok()?;
+
+    builder.position_at_end(advance);
+    let cursor = state_value(context, module, builder, &cursor_name, 64)?;
+    let end = state_value(context, module, builder, &end_name, 64)?;
+    let at_end = builder
+        .build_int_compare(IntPredicate::EQ, cursor, end, "process.loop.at_end")
+        .ok()?;
+    builder
+        .build_conditional_branch(at_end, complete, next)
+        .ok()?;
+
+    builder.position_at_end(complete);
+    store_state(
+        module,
+        builder,
+        &active_name,
+        1,
+        context.bool_type().const_zero(),
+    )?;
+    builder.build_unconditional_branch(exit).ok()?;
+
+    builder.position_at_end(next);
+    let ascending = builder
+        .build_int_compare(IntPredicate::SLT, cursor, end, "process.loop.ascending")
+        .ok()?;
+    let one = context.i64_type().const_int(1, false);
+    let incremented = builder
+        .build_int_add(cursor, one, "process.loop.incremented")
+        .ok()?;
+    let decremented = builder
+        .build_int_sub(cursor, one, "process.loop.decremented")
+        .ok()?;
+    let cursor = builder
+        .build_select(ascending, incremented, decremented, "process.loop.next")
+        .ok()?
+        .into_int_value();
+    store_state(module, builder, &cursor_name, 64, cursor)?;
+    store_state(
+        module,
+        builder,
+        &local_state_name(process, local),
+        64,
+        cursor,
+    )?;
+    builder.build_unconditional_branch(body).ok()?;
+    Some(())
+}
+
+/// Emit an array loop over a snapshot of the source-order packed value. The
+/// snapshot is object state so a suspension in the body does not re-read a
+/// subsequently changed iterable.
+#[allow(clippy::too_many_arguments)]
+fn emit_array_loop<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    design: &Design,
+    process: ProcessId,
+    block: siox::ir::ProcessBlockId,
+    local: ProcessLocalId,
+    iterable: ProcessValueId,
+    body: BasicBlock<'ctx>,
+    exit: BasicBlock<'ctx>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<()> {
+    let (layout, element, length) = array_loop_shape(design, iterable)?;
+    let width = layout_width(layout)?;
+    let element_width = layout_width(element)?;
+    let active_name = loop_active_name(process, block);
+    let cursor_name = loop_cursor_name(process, block);
+    let end_name = loop_end_name(process, block);
+    let iterable_name = loop_iterable_name(process, block);
+    let active = state_value(context, module, builder, &active_name, 1)?;
+    let initialize =
+        context.append_basic_block(function, &format!("bb{}.array.initialize", block.0));
+    let advance = context.append_basic_block(function, &format!("bb{}.array.advance", block.0));
+    let complete = context.append_basic_block(function, &format!("bb{}.array.complete", block.0));
+    let next = context.append_basic_block(function, &format!("bb{}.array.next", block.0));
+    builder
+        .build_conditional_branch(active, advance, initialize)
+        .ok()?;
+
+    builder.position_at_end(initialize);
+    let snapshot = process_value_in_layout(
+        context,
+        module,
+        builder,
+        design,
+        iterable,
+        layout,
+        None,
+        index_sites,
+        cache,
+    )?;
+    store_state(module, builder, &iterable_name, width, snapshot)?;
+    store_state(
+        module,
+        builder,
+        &cursor_name,
+        64,
+        context.i64_type().const_zero(),
+    )?;
+    store_state(
+        module,
+        builder,
+        &end_name,
+        64,
+        context
+            .i64_type()
+            .const_int(u64::from(length.saturating_sub(1)), false),
+    )?;
+    store_state(
+        module,
+        builder,
+        &active_name,
+        1,
+        context.bool_type().const_int(1, false),
+    )?;
+    let first = extract_region(builder, snapshot, 0, element_width)?;
+    store_state(
+        module,
+        builder,
+        &local_state_name(process, local),
+        element_width,
+        first,
+    )?;
+    builder.build_unconditional_branch(body).ok()?;
+
+    builder.position_at_end(advance);
+    let cursor = state_value(context, module, builder, &cursor_name, 64)?;
+    let end = state_value(context, module, builder, &end_name, 64)?;
+    let at_end = builder
+        .build_int_compare(IntPredicate::EQ, cursor, end, "process.array.at_end")
+        .ok()?;
+    builder
+        .build_conditional_branch(at_end, complete, next)
+        .ok()?;
+
+    builder.position_at_end(complete);
+    store_state(
+        module,
+        builder,
+        &active_name,
+        1,
+        context.bool_type().const_zero(),
+    )?;
+    builder.build_unconditional_branch(exit).ok()?;
+
+    builder.position_at_end(next);
+    let cursor = builder
+        .build_int_add(
+            cursor,
+            context.i64_type().const_int(1, false),
+            "process.array.next",
+        )
+        .ok()?;
+    store_state(module, builder, &cursor_name, 64, cursor)?;
+    let snapshot = state_value(context, module, builder, &iterable_name, width)?;
+    let offset = builder
+        .build_int_mul(
+            cursor,
+            context
+                .i64_type()
+                .const_int(u64::from(element_width), false),
+            "process.array.offset",
+        )
+        .ok()?;
+    let offset = fit(builder, offset, width)?;
+    let shifted = builder
+        .build_right_shift(snapshot, offset, false, "process.array.element")
+        .ok()?;
+    let element = fit(builder, shifted, element_width)?;
+    store_state(
+        module,
+        builder,
+        &local_state_name(process, local),
+        element_width,
+        element,
+    )?;
+    builder.build_unconditional_branch(body).ok()?;
     Some(())
 }
 
@@ -4457,9 +4842,53 @@ fn process_entry<'ctx>(
                     )))
                     .unwrap();
             }
-            ProcessTerminator::Return { value: Some(_), .. }
-            | ProcessTerminator::Match { .. }
-            | ProcessTerminator::For { .. } => {
+            ProcessTerminator::For {
+                local,
+                iterable,
+                body,
+                exit,
+                ..
+            } => {
+                let emitted = if range_loop_bounds(design, *iterable).is_some() {
+                    emit_range_loop(
+                        context,
+                        module,
+                        &builder,
+                        function,
+                        design,
+                        process.id,
+                        block.id,
+                        *local,
+                        *iterable,
+                        blocks[body.0 as usize],
+                        blocks[exit.0 as usize],
+                        index_sites,
+                        &mut cache,
+                    )
+                } else {
+                    emit_array_loop(
+                        context,
+                        module,
+                        &builder,
+                        function,
+                        design,
+                        process.id,
+                        block.id,
+                        *local,
+                        *iterable,
+                        blocks[body.0 as usize],
+                        blocks[exit.0 as usize],
+                        index_sites,
+                        &mut cache,
+                    )
+                };
+                if emitted.is_none() {
+                    builder
+                        .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
+                        .unwrap();
+                }
+            }
+            ProcessTerminator::Return { value: Some(_), .. } | ProcessTerminator::Match { .. } => {
                 builder
                     .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
                     .unwrap();

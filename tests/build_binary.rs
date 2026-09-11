@@ -72,6 +72,8 @@ fn direct_process_runtime_links_without_generated_design_c() {
            impl DirectRuntime {
                let value: unsigned[1] = 0;
                let clock: Bit = '0';
+               let sum: integer = 0;
+               let byte_sum: unsigned[8] = 0;
                let packet: Packet = { .valid = '0', .inner = { .byte = 3 } };
                let bytes: unsigned[8][3] = [1, 2, 3];
                process clock_source { clock = not clock after 1ns; }
@@ -82,11 +84,23 @@ fn direct_process_runtime_links_without_generated_design_c() {
                    value = 0;
                    packet.inner.byte = 9;
                    bytes[1] = 5;
+                   for i in 2..0 {
+                       sum = sum + i;
+                       await 1ns;
+                   }
                    assert!(value == 0, "direct assertion observes process storage");
+                   assert!(sum == 3,
+                           "direct range loops are inclusive and resume while descending");
                    assert!(packet.inner.byte == 9,
                            "direct lowering preserves nested aggregate layouts");
                    assert!(bytes[1] == 5,
                            "direct lowering preserves array layouts");
+                   for byte in bytes {
+                       byte_sum = byte_sum + byte;
+                       await 1ns;
+                   }
+                   assert!(byte_sum == 9,
+                           "array loops retain a source-order snapshot across suspension");
                    warn!(false, "direct warning remains non-fatal");
                    finish();
                }

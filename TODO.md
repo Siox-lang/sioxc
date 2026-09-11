@@ -375,9 +375,13 @@ Remaining:
   implementation, so source clock schedules, one-shot static writes, and timed
   `await` now execute on the fixed wheel. Timed suspension records and restores
   the exact CFG resume block; condition/edge awaits remain fail-closed until
-  their dependency/evaluator ABI exists. Runtime instructions, match/for,
-  VHDL delayed-write cancellation, waveform services, and making this path the
-  default remain.
+  their dependency/evaluator ABI exists. Static-string `print!`, `assert!`, and
+  `warn!` use a fixed runtime ABI with source locations and warning accounting.
+  Inclusive directional range loops and source-order array loops execute as
+  ordinary CFG back-edges; cursor/end state and the array snapshot live in the
+  object so suspension inside a loop resumes without re-evaluating its
+  iterable. Formatted/runtime calls, structured `match`, VHDL delayed-write
+  cancellation, waveform services, and making this path the default remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad

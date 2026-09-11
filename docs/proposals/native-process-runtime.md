@@ -1,9 +1,10 @@
 # The native process runtime
 
 Status: **executable migration path**. A fixed runtime now schedules time-zero
-and reactive Process IR entries through delta commits, while suspension,
-runtime services, and remaining executable instruction/value coverage are
-still being implemented. The LLVM object exports source-independent
+and reactive Process IR entries through delta commits, including timed
+suspension, basic reporting operations, and resumable range/array loops, while
+remaining executable instruction/value coverage is still being implemented.
+The LLVM object exports source-independent
 test/process descriptors and one callable resume entry per process. It
 specifies the fixed ABI that direct LLVM process lowering will call, so step 6 of the
 [unified process pipeline](testbench-software-ir.md) has a target to build
@@ -82,10 +83,11 @@ and edge waits require a later evaluator/dependency ABI and still return 255.
 The last status is a temporary fail-closed guard: current entries execute
 scalar control flow, immediate scalar/packed local and persistent-storage
 writes, whole-signal staged assignments, checked-index failure latches, and
-ranged-write checks, but must not pretend that an instruction omitted by the
-incremental emitter completed successfully. An unsupported block is rejected
-transactionally before it performs foreign calls or publishes a pending
-write.
+ranged-write checks. They also execute static-string print/assert/warn calls
+and inclusive directional range or source-order array loops. Loop cursor/end
+state and array snapshots remain in the object across suspension. An
+unsupported block is rejected transactionally before it performs foreign
+calls or publishes a pending write.
 
 `runtime/process.c` and `runtime/main.c` implement the first reusable boundary:
 dynamic ready/stopped sets, sensitivity-driven delta requeueing, a dynamically

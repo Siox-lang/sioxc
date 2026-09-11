@@ -216,9 +216,12 @@ language-lowering path.
    without generating design C. Constant integer-backed `Suffix` bodies now
    normalize to ordinary Process numbers, and timed `await` registers its exact
    process/resume block on that wheel. Delayed-write cancellation, condition
-   and edge waits, runtime calls, dynamic aggregate selection/update,
-   structured match/for dispatch, and waveforms are the next coverage boundary
-   before it becomes the default.
+   and edge waits, formatted/runtime calls, dynamic aggregate selection/update,
+   structured match dispatch, and waveforms are the next coverage boundary
+   before it becomes the default. Static-string print/assert/warn operations
+   already use the fixed runtime ABI. Inclusive directional range loops and
+   source-order array loops keep cursor/end and iterable-snapshot state in the
+   object, so a timed suspension inside their body resumes the same iteration.
 7. **Run both native backends differentially.** Require identical test results,
    diagnostics, time progression, resolved values, and VCD/FST samples across
    the full default and bit-packed corpus.
