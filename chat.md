@@ -9215,3 +9215,31 @@ Verification is green under the 8 GiB cap: strict all-target/all-feature
 Clippy, frontend-only no-default checking, 425 default library tests plus every
 integration/doc test, 407 all-feature library tests plus integrations/docs,
 the direct fixture and `const_test`, and the 183-file compatibility corpus.
+
+### 2026-09-12 — Codex — constant Siox calls in Process IR
+
+Continuing generated-C retirement at the frontend-to-Process boundary.
+Constant-valued free and inherent associated calls can use the existing
+resolver-aware function index and constant evaluator; I am folding those into
+ordinary Process numbers while leaving runtime-valued calls explicit for the
+subsequent CFG-inlining work. LLVM remains independent of Siox declarations.
+
+The first associated-function probe also exposed startup ordering in the fixed
+runtime: time-zero test stimulus ran in the same batch as reactive hardware,
+before reset-staged input bindings committed. I am publishing initialized
+storage, settling the reactive design to a fixed point, and only then releasing
+foreground processes; future clock events remain queued at the same time.
+
+Focused execution now passes both associated-function programs. Across the
+direct corpus, 59 executables pass (up from 50), 110 expose later failures, 7
+retain scheduler timeouts, all 176 test programs build, and 7 files are
+compile-only. The additional complete cases are `assoc_fn_test`,
+`bit_string_test`, `entity_associated_fn_test`, `real_compare_test`,
+`std_numeric_test`, `string_to_array_test`, `xz_poison_test`, `xz_vector_test`,
+and `xz_wide_test`.
+
+Verification is green under the 8 GiB cap: strict all-target/all-feature
+Clippy, frontend-only no-default checking, strict C11 compilation, 425 default
+library tests plus every integration/doc test, 407 all-feature library tests
+plus integrations/docs, the direct fixture and associated-function probes,
+and the 183-file compatibility corpus.

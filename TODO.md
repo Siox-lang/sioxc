@@ -389,12 +389,18 @@ Remaining:
   not revisit source syntax or call a runtime service for them. Resolver-
   selected module and std constants are inlined as ordinary Process value
   graphs while frontend type context is still present, including enum-typed
-  character constants; LLVM never interprets a declaration `DefId`.
+  character constants; LLVM never interprets a declaration `DefId`. Free and
+  inherent associated calls whose arguments are constant are likewise folded
+  through the resolver-selected Siox body before Process IR reaches LLVM;
+  runtime-valued calls still need CFG inlining.
   Inclusive directional range loops and source-order array loops execute as
   ordinary CFG back-edges; cursor/end state and the array snapshot live in the
   object so suspension inside a loop resumes without re-evaluating its
-  iterable. Formatted/runtime calls, structured `match`, VHDL delayed-write
-  cancellation, waveform services, and making this path the default remain.
+  iterable. Runtime startup publishes reset-staged input bindings and settles
+  every reactive DUT process before releasing time-zero test stimulus, while
+  keeping clock events queued at the original simulation time. Formatted/
+  runtime calls, structured `match`, VHDL delayed-write cancellation, waveform
+  services, and making this path the default remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad

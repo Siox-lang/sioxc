@@ -271,6 +271,7 @@ int sx_runtime_run_test(uint32_t test) {
     uint8_t *ready = 0, *next = 0, *stopped = 0, *suspended = 0;
     uint32_t *resume_blocks = 0;
     uint32_t begin, end;
+    int foreground_started = 0;
     int result = 0;
     sx_clear_events();
     sx_error[0] = 0;
@@ -296,6 +297,14 @@ int sx_runtime_run_test(uint32_t test) {
     }
 
     sx_reset();
+    /* Reset initializes process storage and stages its input bindings. Publish
+       those values before any reactive process reads them. The compatibility
+       runner also settles the initialized design before test stimulus starts. */
+    (void)sx_process_commit();
+    if (sx_design_failed()) {
+        result = 1;
+        goto done;
+    }
     begin = sx_test_process_offsets[test];
     end = sx_test_process_offsets[test + 1];
     for (uint32_t item = begin; item < end; ++item) {
@@ -304,8 +313,8 @@ int sx_runtime_run_test(uint32_t test) {
             result = sx_fail_id("test references invalid process", process);
             goto done;
         }
-        ready[process] = 1;
         resume_blocks[process] = sx_process_initial_blocks[process];
+        if (sx_process_activations[process] == 1) ready[process] = 1;
     }
 
     for (;;) {
@@ -386,6 +395,21 @@ int sx_runtime_run_test(uint32_t test) {
             next = swap;
             for (uint32_t process = 0; process < sx_process_count; ++process)
                 next[process] = 0;
+            continue;
+        }
+
+        /* Reactive hardware starts once at time zero and reaches a fixed point
+           before foreground/test processes observe it. Events registered by
+           clocks during that bootstrap stay queued; test stimulus begins at
+           the same simulation time before the wheel may advance. */
+        if (!foreground_started) {
+            foreground_started = 1;
+            for (uint32_t item = begin; item < end; ++item) {
+                uint32_t process = sx_test_process_ids[item];
+                if (sx_process_activations[process] == 0 && !stopped[process] &&
+                    !suspended[process])
+                    ready[process] = 1;
+            }
             continue;
         }
 

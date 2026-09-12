@@ -67,6 +67,7 @@ fn direct_process_runtime_links_without_generated_design_c() {
            using std::bits::{signed, unsigned};
            using std::logic::Bit;
            const EXPECTED_SUM: integer = 3;
+           fn doubled(value: integer) -> integer { return value * 2; }
            struct Inner { pub byte: unsigned[8] }
            struct Packet { pub valid: Bit, pub inner: Inner }
            entity Widen {
@@ -105,6 +106,8 @@ fn direct_process_runtime_links_without_generated_design_c() {
                };
                process clock_source { clock = not clock after 1ns; }
                process run {
+                   assert!(widened == 200 and signed_widened == 65520,
+                           "reactive hardware settles before test stimulus starts");
                    value = 1;
                    value = 0 after 1ns;
                    await 2ns;
@@ -118,6 +121,8 @@ fn direct_process_runtime_links_without_generated_design_c() {
                    assert!(value == 0, "direct assertion observes process storage");
                    assert!(sum == EXPECTED_SUM,
                            "direct range loops are inclusive and resume while descending");
+                   assert!(doubled(EXPECTED_SUM) == 6,
+                           "constant Siox calls fold before direct LLVM lowering");
                    assert!(packet.inner.byte == 9,
                            "direct lowering preserves nested aggregate layouts");
                    assert!(bytes[1] == 5,

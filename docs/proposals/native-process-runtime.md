@@ -93,6 +93,11 @@ state and array snapshots remain in the object across suspension. An
 unsupported block is rejected transactionally before it performs foreign
 calls or publishes a pending write.
 
+The fixed scheduler has an explicit initialization phase: reset-staged storage
+bindings commit first, reactive hardware runs to a fixed point, and only then
+do time-zero foreground/test processes begin. Timed clock events registered
+during initialization remain queued at time zero until stimulus has started.
+
 `runtime/process.c` and `runtime/main.c` implement the first reusable boundary:
 dynamic ready/stopped sets, sensitivity-driven delta requeueing, a dynamically
 sized time-ordered delayed-write queue, descriptor ABI validation, test
@@ -208,8 +213,9 @@ signatures:
 4. **Activation — decided and emitted.** Exact
    `ProcessActivation::Reactive` signal/storage sensitivity lists are immutable
    offset tables in the design object. The runtime reads them while resetting a
-   selected test and gives reactive processes their initial time-zero
-   activation; no generated registration calls are required.
+   selected test, gives reactive processes their initial time-zero activation,
+   settles that initialized design, then releases `TimeZero` foreground
+   processes; no generated registration calls are required.
 5. **Test descriptors — decided and emitted.** `ProcessTest` is an immutable
    name/root/process-list table in the design object. Each descriptor lists
    stimulus, clocks, and all nested DUT hardware processes under its root.

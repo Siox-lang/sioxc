@@ -38,6 +38,8 @@ struct LoweringContext<'a> {
     suffixes: &'a std::collections::HashMap<String, Vec<ConstantSuffix>>,
     constants: &'a std::collections::HashMap<crate::resolve::DefId, &'a ast::Expr>,
     constant_stack: std::collections::HashSet<crate::resolve::DefId>,
+    functions: &'a crate::ir::FunctionIndex<'a>,
+    constant_integers: &'a std::collections::HashMap<String, i64>,
 }
 
 /// Module constants indexed by resolver identity. Their initializers are
@@ -57,6 +59,74 @@ fn module_constants<'a>(
             Some((resolved.declared(constant.name.span)?, &constant.value))
         })
         .collect()
+}
+
+/// Functions whose bodies may be evaluated while their arguments are
+/// constant. Runtime-valued calls remain explicit Process values until their
+/// bodies are lowered into the caller CFG.
+fn process_functions<'a>(
+    modules: &'a [Module],
+    resolved: &'a Resolved,
+) -> crate::ir::FunctionIndex<'a> {
+    let mut functions = crate::ir::FunctionIndex::new(resolved);
+    for item in modules.iter().flat_map(|module| &module.items) {
+        if let ast::Item::Fn(function) = item {
+            functions.insert_free(function);
+        }
+    }
+    for implementation in modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            ast::Item::Impl(implementation) if implementation.trait_.is_none() => {
+                Some(implementation)
+            }
+            _ => None,
+        })
+    {
+        let Some(owner) = functions.type_head_key(&implementation.target) else {
+            continue;
+        };
+        for item in &implementation.items {
+            if let ast::ImplItem::Fn(function) = item {
+                functions.insert_associated(format!("{owner}::{}", function.name.text), function);
+            }
+        }
+    }
+    functions
+}
+
+/// Fold module integer constants to seed const-evaluable function calls. The
+/// fixed point makes declaration order irrelevant and stops naturally when a
+/// rejected cycle or non-integer constant cannot make progress.
+fn module_constant_integers(
+    modules: &[Module],
+    functions: &crate::ir::FunctionIndex<'_>,
+) -> std::collections::HashMap<String, i64> {
+    let constants = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            ast::Item::Const(constant) => Some(constant),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut values = std::collections::HashMap::new();
+    loop {
+        let previous = values.len();
+        for constant in &constants {
+            let key = functions.constant_decl_key(constant);
+            if values.contains_key(&key) {
+                continue;
+            }
+            if let Some(value) = crate::ir::eval_const_fns(&constant.value, &values, functions, 0) {
+                values.insert(key, value);
+            }
+        }
+        if values.len() == previous {
+            return values;
+        }
+    }
 }
 
 fn type_leaf(ty: &ast::Type) -> Option<&str> {
@@ -256,6 +326,8 @@ pub fn lower(
     let mut process_ir = ProcessIr::default();
     let suffixes = constant_suffixes(modules, resolved);
     let constants = module_constants(modules, resolved);
+    let functions = process_functions(modules, resolved);
+    let constant_integers = module_constant_integers(modules, &functions);
 
     for test in plan.into_iter().flat_map(|plan| &plan.tests) {
         let root_path = hierarchy.root_path(test.root);
@@ -309,6 +381,8 @@ pub fn lower(
                 suffixes: &suffixes,
                 constants: &constants,
                 constant_stack: std::collections::HashSet::new(),
+                functions: &functions,
+                constant_integers: &constant_integers,
             };
             for (definition, initializer) in initializers {
                 let Some(storage) = context
@@ -353,6 +427,8 @@ pub fn lower(
                             suffixes: &suffixes,
                             constants: &constants,
                             constant_stack: std::collections::HashSet::new(),
+                            functions: &functions,
+                            constant_integers: &constant_integers,
                         };
                         lower_process(
                             id,
@@ -393,6 +469,8 @@ pub fn lower(
                             suffixes: &suffixes,
                             constants: &constants,
                             constant_stack: std::collections::HashSet::new(),
+                            functions: &functions,
+                            constant_integers: &constant_integers,
                         };
                         lower_process(
                             id,
@@ -431,6 +509,8 @@ pub fn lower(
                     suffixes: &suffixes,
                     constants: &constants,
                     constant_stack: std::collections::HashSet::new(),
+                    functions: &functions,
+                    constant_integers: &constant_integers,
                 };
                 lower_process(
                     id,
@@ -1711,6 +1791,16 @@ fn value_ref_with_type(
                     return value;
                 }
             }
+        }
+    }
+
+    if matches!(expression, ast::Expr::Call { .. }) {
+        if let Some(value) =
+            crate::ir::eval_const_fns(expression, context.constant_integers, context.functions, 0)
+        {
+            let kind = ProcessValueKind::Number(ProcessNumber::Integer(vec![value as u64]));
+            let width = source_value_width(&kind, ty.as_ref(), process, context);
+            return push_value(span, ty, width, kind, context);
         }
     }
 
