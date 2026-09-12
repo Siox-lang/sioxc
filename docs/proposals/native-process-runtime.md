@@ -172,7 +172,10 @@ signatures:
    `sx_index_*` failure ABI. Natural width inference also folds integer-only
    constant shift expressions in the value graph; std's signed-vector shift
    mask therefore reaches LLVM at its computed width instead of the width of
-   its one-bit seed literal.
+   its one-bit seed literal. Module/std constants are also resolver-selected
+   and inlined into this value graph before the backend boundary. Context-
+   typed character constants retain their enum discriminant rather than
+   becoming Unicode code points, and no `Definition` lookup enters LLVM.
 2. **Storage allocation — decided and emitted.** Every process-local and
    persistent `ProcessStorage` value has exact-width state in the design
    object. Recursive structs and arrays are packed internally in source order

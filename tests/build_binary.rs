@@ -66,6 +66,7 @@ fn direct_process_runtime_links_without_generated_design_c() {
         r#"module direct_runtime;
            using std::bits::{signed, unsigned};
            using std::logic::Bit;
+           const EXPECTED_SUM: integer = 3;
            struct Inner { pub byte: unsigned[8] }
            struct Packet { pub valid: Bit, pub inner: Inner }
            entity Widen {
@@ -115,7 +116,7 @@ fn direct_process_runtime_links_without_generated_design_c() {
                        await 1ns;
                    }
                    assert!(value == 0, "direct assertion observes process storage");
-                   assert!(sum == 3,
+                   assert!(sum == EXPECTED_SUM,
                            "direct range loops are inclusive and resume while descending");
                    assert!(packet.inner.byte == 9,
                            "direct lowering preserves nested aggregate layouts");

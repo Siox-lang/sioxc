@@ -9192,3 +9192,26 @@ Verification is green under the 8 GiB cap: strict all-target/all-feature
 Clippy, frontend-only no-default checking, 424 default library tests plus every
 integration/doc test, 406 all-feature library tests plus integrations/docs,
 the direct fixture and `convert_test`, and the 183-file compatibility corpus.
+
+### 2026-09-12 — Codex — Process IR module constants
+
+Continuing generated-C retirement in `src/test_ir.rs`. Module constants used by
+test processes currently survive as frontend `Definition` nodes even though
+their initializers are available and hardware lowering already treats a
+constant as a value. I am inlining resolver-selected module/std constant
+initializers into the Process value DAG, with cycle-safe error recovery, so the
+direct backend receives ordinary executable values rather than interpreting
+source declarations.
+
+The constant regression, direct fixture, and external `const_test` pass. The
+direct corpus moved from 41 to 50 passing executables: `const_test`,
+`derive_test`, `inout_test`, `logic_default_test`, `logic_test`,
+`protocol_view_traits_test`, `std_test`, `stream_bus_test`, and `view_bus_test`
+are the new complete passes. Another two programs now advance past their old
+fail-closed block into the known scheduler hang class, so the current split is
+50 pass, 119 later failures, 7 timeouts, 0 build failures, and 7 non-tests.
+
+Verification is green under the 8 GiB cap: strict all-target/all-feature
+Clippy, frontend-only no-default checking, 425 default library tests plus every
+integration/doc test, 407 all-feature library tests plus integrations/docs,
+the direct fixture and `const_test`, and the 183-file compatibility corpus.

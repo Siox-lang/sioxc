@@ -386,7 +386,10 @@ Remaining:
   Source-layout `length`, `left`, `right`, `high`, `low`, and `ascending`
   attributes are materialized as LLVM constants from retained Process IR
   layout metadata, including signed and directional bounds; the backend does
-  not revisit source syntax or call a runtime service for them.
+  not revisit source syntax or call a runtime service for them. Resolver-
+  selected module and std constants are inlined as ordinary Process value
+  graphs while frontend type context is still present, including enum-typed
+  character constants; LLVM never interprets a declaration `DefId`.
   Inclusive directional range loops and source-order array loops execute as
   ordinary CFG back-edges; cursor/end state and the array snapshot live in the
   object so suspension inside a loop resumes without re-evaluating its

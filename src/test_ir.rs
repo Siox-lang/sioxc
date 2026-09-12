@@ -36,6 +36,27 @@ struct LoweringContext<'a> {
     root_path: &'a str,
     process_ir: &'a mut ProcessIr,
     suffixes: &'a std::collections::HashMap<String, Vec<ConstantSuffix>>,
+    constants: &'a std::collections::HashMap<crate::resolve::DefId, &'a ast::Expr>,
+    constant_stack: std::collections::HashSet<crate::resolve::DefId>,
+}
+
+/// Module constants indexed by resolver identity. Their initializers are
+/// lowered at each use while syntax and type information are still available,
+/// so no backend has to interpret a frontend `Definition` node.
+fn module_constants<'a>(
+    modules: &'a [Module],
+    resolved: &Resolved,
+) -> std::collections::HashMap<crate::resolve::DefId, &'a ast::Expr> {
+    modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| {
+            let ast::Item::Const(constant) = item else {
+                return None;
+            };
+            Some((resolved.declared(constant.name.span)?, &constant.value))
+        })
+        .collect()
 }
 
 fn type_leaf(ty: &ast::Type) -> Option<&str> {
@@ -234,6 +255,7 @@ pub fn lower(
 ) {
     let mut process_ir = ProcessIr::default();
     let suffixes = constant_suffixes(modules, resolved);
+    let constants = module_constants(modules, resolved);
 
     for test in plan.into_iter().flat_map(|plan| &plan.tests) {
         let root_path = hierarchy.root_path(test.root);
@@ -285,6 +307,8 @@ pub fn lower(
                 root_path: &root_path,
                 process_ir: &mut process_ir,
                 suffixes: &suffixes,
+                constants: &constants,
+                constant_stack: std::collections::HashSet::new(),
             };
             for (definition, initializer) in initializers {
                 let Some(storage) = context
@@ -327,6 +351,8 @@ pub fn lower(
                             root_path: &root_path,
                             process_ir: &mut process_ir,
                             suffixes: &suffixes,
+                            constants: &constants,
+                            constant_stack: std::collections::HashSet::new(),
                         };
                         lower_process(
                             id,
@@ -365,6 +391,8 @@ pub fn lower(
                             root_path: &root_path,
                             process_ir: &mut process_ir,
                             suffixes: &suffixes,
+                            constants: &constants,
+                            constant_stack: std::collections::HashSet::new(),
                         };
                         lower_process(
                             id,
@@ -401,6 +429,8 @@ pub fn lower(
                     root_path: &root_path,
                     process_ir: &mut process_ir,
                     suffixes: &suffixes,
+                    constants: &constants,
+                    constant_stack: std::collections::HashSet::new(),
                 };
                 lower_process(
                     id,
@@ -1227,8 +1257,9 @@ fn lower_statement(
             span,
         } => {
             let semantics = assignment_semantics(target, process, context);
+            let target_type = context.typed.expr_type(ast::expr_span(target)).cloned();
             let target = value_ref(target, process, context);
-            let value = value_ref(value, process, context);
+            let value = value_ref_with_type(value, process, context, target_type.as_ref());
             let instruction = match after {
                 Some(delay) => ProcessInstruction::Schedule {
                     driver_context: matches!(
@@ -1649,8 +1680,39 @@ fn value_ref(
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> crate::ir::ProcessValueId {
+    value_ref_with_type(expression, process, context, None)
+}
+
+/// Lower one value with an optional contextual type for its root. Constant
+/// aliases use the type of the path being read: a declaration such as
+/// `const HIGH: Bit = '1'` must remain the `Bit` discriminant rather than the
+/// Unicode code point of a standalone `Char` expression.
+fn value_ref_with_type(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    contextual_type: Option<&crate::types::Ty>,
+) -> crate::ir::ProcessValueId {
     let span = ast::expr_span(expression);
-    let ty = context.typed.expr_type(span).cloned();
+    let ty = contextual_type
+        .cloned()
+        .or_else(|| context.typed.expr_type(span).cloned());
+
+    // Constants are aliases for their initializer values, not runtime
+    // storage. Inline them before constructing the surrounding node so the
+    // Process IR contains only executable value forms. The stack is merely
+    // best-effort recovery for a rejected constant cycle.
+    if let ast::Expr::Path(path) = expression {
+        if let Some(definition) = context.resolved.resolved(path.span) {
+            if let Some(initializer) = context.constants.get(&definition).copied() {
+                if context.constant_stack.insert(definition) {
+                    let value = value_ref_with_type(initializer, process, context, ty.as_ref());
+                    context.constant_stack.remove(&definition);
+                    return value;
+                }
+            }
+        }
+    }
 
     let kind = match expression {
         ast::Expr::Path(path) => {
@@ -1763,11 +1825,23 @@ fn value_ref(
             },
             operand: value_ref(rhs, process, context),
         },
-        ast::Expr::Binary { op, lhs, rhs, .. } => ProcessValueKind::Binary {
-            operation: lower_binary_operator(op),
-            left: value_ref(lhs, process, context),
-            right: value_ref(rhs, process, context),
-        },
+        ast::Expr::Binary { op, lhs, rhs, .. } => {
+            // Character literals are context-typed enum values. Type checking
+            // records the counterpart but deliberately keeps the literal's
+            // standalone `Char` identity, so retain the counterpart here
+            // before its declaration identity disappears.
+            let left_context = matches!(lhs.as_ref(), ast::Expr::CharLit { .. })
+                .then(|| context.typed.expr_type(ast::expr_span(rhs)).cloned())
+                .flatten();
+            let right_context = matches!(rhs.as_ref(), ast::Expr::CharLit { .. })
+                .then(|| context.typed.expr_type(ast::expr_span(lhs)).cloned())
+                .flatten();
+            ProcessValueKind::Binary {
+                operation: lower_binary_operator(op),
+                left: value_ref_with_type(lhs, process, context, left_context.as_ref()),
+                right: value_ref_with_type(rhs, process, context, right_context.as_ref()),
+            }
+        }
         ast::Expr::IfExpr {
             cond, then, els, ..
         } => ProcessValueKind::Select {
@@ -2701,6 +2775,58 @@ mod tests {
         let shifted = push_normalized_value(&mut process_ir, &expression, span, &Design::default());
 
         assert_eq!(process_ir.values[shifted.0 as usize].bit_width, Some(8));
+    }
+
+    #[test]
+    /// Resolver-selected constants become their executable initializer graph;
+    /// a backend must never need the frontend declaration behind a `DefId`.
+    fn module_constants_do_not_survive_as_definitions() {
+        let sources = [
+            "module tests; const EXPECTED: integer = 3; \
+             #[std::attrs::test] entity Smoke {} \
+             impl Smoke { let observed: integer = 0; \
+               process run { observed = EXPECTED; } }",
+            "module std::logic; pub enum Bool { false, true }",
+            "module std::attrs; using std::logic::{Bool}; pub attr test: Bool for entity;",
+            "module std::ops; using std::logic::{Bool}; \
+             pub trait Boolean { fn as_bool(self) -> Bool; } \
+             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+            "module std::prelude; pub using std::logic::{Bool}; \
+             pub using std::attrs::{test}; pub using std::ops::{Boolean};",
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+            })
+            .collect::<Vec<_>>();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let (hierarchy, plan) = crate::testbench::elaborate(&modules, &resolved, &typed, &mut sink);
+        let mut design = crate::ir::lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+
+        lower(
+            &modules,
+            &resolved,
+            &typed,
+            &hierarchy,
+            Some(&plan),
+            &mut design,
+        );
+
+        assert!(design.process_ir.values.iter().any(|value| matches!(
+            value.kind,
+            ProcessValueKind::Number(ProcessNumber::Integer(ref words))
+                if words.as_slice() == [3]
+        )));
+        assert!(design
+            .process_ir
+            .values
+            .iter()
+            .all(|value| !matches!(value.kind, ProcessValueKind::Definition(_))));
     }
 
     #[test]
