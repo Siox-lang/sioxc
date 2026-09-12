@@ -9243,3 +9243,29 @@ Clippy, frontend-only no-default checking, strict C11 compilation, 425 default
 library tests plus every integration/doc test, 407 all-feature library tests
 plus integrations/docs, the direct fixture and associated-function probes,
 and the 183-file compatibility corpus.
+
+### 2026-09-12 — Codex — foreground write settle boundaries
+
+Continuing generated-C retirement at the scheduler boundary. Compatibility C
+settles the design after a testbench signal drive, while direct Process IR
+currently continues into the following assertion before reactive processes
+can publish their outputs. I am making that delta-cycle boundary explicit in
+Process IR: a foreground write to storage bound to a DUT input/inout suspends
+at a `Settle` terminator, then resumes only after reactive work reaches a fixed
+point. This keeps scheduling in the fixed runtime and avoids re-entering it
+from generated LLVM.
+
+The direct fixture now drives a connected input and observes its recomputed
+output in the immediately following statement; `mux_test` passes through the
+same path. The compatibility corpus remains green at 183/183. The full direct
+matrix moves from 59 to 64 passing executables with no regression or build
+failure: `array_test`, `generate_if_test`, `mux_test`, `struct_test`, and
+`testbench_lint_scope_test` are newly complete; 105 programs fail closed at
+later coverage gaps, 7 retain their existing scheduler timeouts, and 7 are
+compile-only.
+
+Verification is green under the 8 GiB cap: strict all-target/all-feature
+Clippy, frontend-only no-default checking, strict C11 compilation, 425 default
+library tests plus every integration/doc test, 407 all-feature library tests
+plus integrations/docs, the direct fixture and `mux_test`, and the 183-file
+compatibility corpus.

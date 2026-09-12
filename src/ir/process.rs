@@ -398,6 +398,9 @@ pub enum ProcessTerminator {
 pub enum ProcessSuspendOp {
     /// `await` — resume once the given time or condition is reached.
     Await,
+    /// Publish a foreground drive, settle reactive processes to a fixed
+    /// point, then resume at the same simulation time.
+    Settle,
 }
 
 /// A typed process operand. Composite expressions refer to earlier arena

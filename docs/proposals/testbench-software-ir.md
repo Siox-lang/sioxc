@@ -222,6 +222,11 @@ language-lowering path.
    already use the fixed runtime ABI. Inclusive directional range loops and
    source-order array loops keep cursor/end and iterable-snapshot state in the
    object, so a timed suspension inside their body resumes the same iteration.
+   Foreground writes to storage connected to DUT inputs also carry an explicit
+   zero-time settle edge: the runtime commits the drive, drains reactive work
+   to a fixed point, and resumes the observer only afterward. This preserves
+   sequential testbench observation without recursively entering the scheduler
+   from generated LLVM.
 7. **Run both native backends differentially.** Require identical test results,
    diagnostics, time progression, resolved values, and VCD/FST samples across
    the full default and bit-packed corpus.

@@ -20,6 +20,9 @@ void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
 void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
                              uint64_t delay);
 
+/* Resume the current foreground process after reactive delta cycles settle. */
+void sx_runtime_settle(uint32_t process, uint32_t resume_block);
+
 /* Report source-level runtime operations emitted from Process IR. Assertions
  * return nonzero when they fail so the generated process entry can stop before
  * executing any later statement in the same basic block. */

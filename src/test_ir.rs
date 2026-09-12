@@ -1337,6 +1337,9 @@ fn lower_statement(
             span,
         } => {
             let semantics = assignment_semantics(target, process, context);
+            let settle = after.is_none()
+                && matches!(process.activation, ProcessActivation::TimeZero)
+                && assignment_drives_design(target, process, context);
             let target_type = context.typed.expr_type(ast::expr_span(target)).cloned();
             let target = value_ref(target, process, context);
             let value = value_ref_with_type(value, process, context, target_type.as_ref());
@@ -1367,7 +1370,18 @@ fn lower_statement(
             process.blocks[block.0 as usize]
                 .instructions
                 .push(instruction);
-            Some(block)
+            if settle {
+                let resume = push_block(process);
+                process.blocks[block.0 as usize].terminator = ProcessTerminator::Suspend {
+                    operation: ProcessSuspendOp::Settle,
+                    arguments: Vec::new(),
+                    resume,
+                    span: *span,
+                };
+                Some(resume)
+            } else {
+                Some(block)
+            }
         }
         Stmt::Expr(ast::Expr::Call {
             callee, args, span, ..
@@ -1450,6 +1464,32 @@ fn assignment_base(target: &ast::Expr) -> Option<&ast::Path> {
         ast::Expr::Field { base, .. } | ast::Expr::Index { base, .. } => assignment_base(base),
         _ => None,
     }
+}
+
+/// Whether an immediate foreground assignment drives at least one DUT input.
+/// The fixed runtime must publish that storage and reach a reactive fixed
+/// point before the next source statement observes connected outputs.
+fn assignment_drives_design(
+    target: &ast::Expr,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> bool {
+    if let ast::Expr::Concat { parts, .. } = target {
+        return parts
+            .iter()
+            .any(|part| assignment_drives_design(part, process, context));
+    }
+    assignment_base(target)
+        .and_then(|path| testbench_storage(path, process.owner, context))
+        .and_then(|storage| context.process_ir.storages.get(storage.0 as usize))
+        .is_some_and(|storage| {
+            storage.bindings.iter().any(|binding| {
+                matches!(
+                    binding.direction,
+                    LayoutDirection::In | LayoutDirection::InOut
+                )
+            })
+        })
 }
 
 /// Lower a call: either a runtime operation (`assert!`, `print!`) or an
@@ -2500,13 +2540,28 @@ mod tests {
             .any(|block| matches!(block.terminator, ProcessTerminator::Branch { .. })));
         assert!(process.blocks.iter().any(|block| matches!(
             &block.terminator,
-            ProcessTerminator::Suspend { arguments, .. }
+            ProcessTerminator::Suspend {
+                operation: ProcessSuspendOp::Await,
+                arguments,
+                ..
+            }
                 if matches!(
                     &design.process_ir.values[arguments[0].0 as usize].kind,
                     ProcessValueKind::Number(ProcessNumber::Integer(words))
                         if words == &[74]
                 )
         )));
+        assert!(
+            process.blocks.iter().any(|block| matches!(
+                &block.terminator,
+                ProcessTerminator::Suspend {
+                    operation: ProcessSuspendOp::Settle,
+                    arguments,
+                    ..
+                } if arguments.is_empty()
+            )),
+            "a foreground drive into the DUT must yield until reactive settling"
+        );
         let hardware = &design.process_ir.processes[2];
         let input = design
             .signals

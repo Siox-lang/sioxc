@@ -108,6 +108,9 @@ fn direct_process_runtime_links_without_generated_design_c() {
                process run {
                    assert!(widened == 200 and signed_widened == 65520,
                            "reactive hardware settles before test stimulus starts");
+                   source = 201;
+                   assert!(widened == 201,
+                           "a foreground drive settles before the next observation");
                    value = 1;
                    value = 0 after 1ns;
                    await 2ns;
@@ -127,7 +130,7 @@ fn direct_process_runtime_links_without_generated_design_c() {
                            "direct lowering preserves nested aggregate layouts");
                    assert!(bytes[1] == 5,
                            "direct lowering preserves array layouts");
-                   assert!(widened == 200,
+                   assert!(widened == 201,
                            "direct normalized widening zero-extends the source bits");
                    assert!(signed_widened == 65520,
                            "direct normalized widening sign-extends kernel values");

@@ -398,7 +398,11 @@ Remaining:
   object so suspension inside a loop resumes without re-evaluating its
   iterable. Runtime startup publishes reset-staged input bindings and settles
   every reactive DUT process before releasing time-zero test stimulus, while
-  keeping clock events queued at the original simulation time. Formatted/
+  keeping clock events queued at the original simulation time. An immediate
+  foreground write to storage bound to a DUT `in`/`inout` port now ends its
+  Process block with an explicit zero-time settle suspension; the fixed
+  scheduler commits the drive, reaches reactive quiescence, and only then
+  resumes the following source statement. Formatted/
   runtime calls, structured `match`, VHDL delayed-write cancellation, waveform
   services, and making this path the default remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires

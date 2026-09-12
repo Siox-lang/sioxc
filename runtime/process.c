@@ -8,10 +8,14 @@ enum {
     SX_PROCESS_SUSPENDED = 1,
     SX_PROCESS_STOPPED = 2,
     SX_PROCESS_FINISHED = 3,
+    SX_PROCESS_SETTLING = 4,
     SX_PROCESS_UNSUPPORTED = 255,
-    SX_PROCESS_ABI = 6,
+    SX_PROCESS_ABI = 7,
     SX_EVENT_WRITE = 0,
-    SX_EVENT_RESUME = 1
+    SX_EVENT_RESUME = 1,
+    SX_SUSPENSION_NONE = 0,
+    SX_SUSPENSION_TIME = 1,
+    SX_SUSPENSION_SETTLE = 2
 };
 
 typedef uint8_t (*sx_process_entry)(uint32_t resume_block);
@@ -57,7 +61,8 @@ static uint64_t sx_now;
 static uint64_t sx_sequence;
 static int sx_running;
 static uint32_t sx_current_process;
-static int sx_suspend_registered;
+static uint8_t sx_suspension_kind;
+static uint32_t sx_settle_resume_block;
 static uint32_t sx_warnings;
 
 const char *sx_runtime_error(void) { return sx_error[0] ? sx_error : 0; }
@@ -179,7 +184,7 @@ void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
         sx_fail_id("invalid suspending Process IR process", process);
         return;
     }
-    if (sx_suspend_registered) {
+    if (sx_suspension_kind != SX_SUSPENSION_NONE) {
         sx_fail_id("process registered more than one suspension", process);
         return;
     }
@@ -189,7 +194,25 @@ void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
     event->target = process;
     event->resume_block = resume_block;
     sx_insert_event(event);
-    sx_suspend_registered = 1;
+    sx_suspension_kind = SX_SUSPENSION_TIME;
+}
+
+void sx_runtime_settle(uint32_t process, uint32_t resume_block) {
+    if (sx_error[0]) return;
+    if (!sx_running || sx_current_process == UINT32_MAX) {
+        sx_fail("process settle registered outside a running process");
+        return;
+    }
+    if (process != sx_current_process || process >= sx_process_count) {
+        sx_fail_id("invalid settling Process IR process", process);
+        return;
+    }
+    if (sx_suspension_kind != SX_SUSPENSION_NONE) {
+        sx_fail_id("process registered more than one suspension", process);
+        return;
+    }
+    sx_settle_resume_block = resume_block;
+    sx_suspension_kind = SX_SUSPENSION_SETTLE;
 }
 
 static int sx_design_failed(void) {
@@ -268,7 +291,8 @@ static int sx_apply_due_events(uint8_t *ready, uint8_t *suspended,
 }
 
 int sx_runtime_run_test(uint32_t test) {
-    uint8_t *ready = 0, *next = 0, *stopped = 0, *suspended = 0;
+    uint8_t *ready = 0, *next = 0, *stopped = 0, *suspended = 0,
+            *settling = 0;
     uint32_t *resume_blocks = 0;
     uint32_t begin, end;
     int foreground_started = 0;
@@ -278,7 +302,8 @@ int sx_runtime_run_test(uint32_t test) {
     sx_now = 0;
     sx_sequence = 0;
     sx_current_process = UINT32_MAX;
-    sx_suspend_registered = 0;
+    sx_suspension_kind = SX_SUSPENSION_NONE;
+    sx_settle_resume_block = 0;
 
     if (sx_process_abi_version != SX_PROCESS_ABI)
         return sx_fail("unsupported Process IR runtime ABI");
@@ -290,8 +315,10 @@ int sx_runtime_run_test(uint32_t test) {
     next = calloc(bytes, 1);
     stopped = calloc(bytes, 1);
     suspended = calloc(bytes, 1);
+    settling = calloc(bytes, 1);
     resume_blocks = calloc(bytes, sizeof(uint32_t));
-    if (!ready || !next || !stopped || !suspended || !resume_blocks) {
+    if (!ready || !next || !stopped || !suspended || !settling ||
+        !resume_blocks) {
         result = sx_fail("cannot allocate Process IR ready queue");
         goto done;
     }
@@ -321,10 +348,12 @@ int sx_runtime_run_test(uint32_t test) {
         int ran = 0;
         int finish = 0;
         for (uint32_t process = 0; process < sx_process_count; ++process) {
-            if (!ready[process] || stopped[process] || suspended[process]) continue;
+            if (!ready[process] || stopped[process] || suspended[process] ||
+                settling[process])
+                continue;
             ran = 1;
             sx_current_process = process;
-            sx_suspend_registered = 0;
+            sx_suspension_kind = SX_SUSPENSION_NONE;
             sx_process_entry entry = sx_process_entries[process];
             if (!entry) {
                 result = sx_fail_id("missing Process IR entry", process);
@@ -340,7 +369,8 @@ int sx_runtime_run_test(uint32_t test) {
                 result = 1;
                 goto done;
             }
-            if (status != SX_PROCESS_SUSPENDED && sx_suspend_registered) {
+            if (status != SX_PROCESS_SUSPENDED && status != SX_PROCESS_SETTLING &&
+                sx_suspension_kind != SX_SUSPENSION_NONE) {
                 result = sx_fail_id(
                     "process registered a suspension but returned status", process);
                 goto done;
@@ -353,12 +383,22 @@ int sx_runtime_run_test(uint32_t test) {
                 stopped[process] = 1;
                 finish = 1;
             } else if (status == SX_PROCESS_SUSPENDED) {
-                if (!sx_suspend_registered) {
+                if (sx_suspension_kind != SX_SUSPENSION_TIME) {
                     result = sx_fail_id(
-                        "process suspended without a runtime resume record", process);
+                        "process suspended without a timed runtime resume record",
+                        process);
                     goto done;
                 }
                 suspended[process] = 1;
+            } else if (status == SX_PROCESS_SETTLING) {
+                if (sx_suspension_kind != SX_SUSPENSION_SETTLE) {
+                    result = sx_fail_id(
+                        "process settling without a settle runtime resume record",
+                        process);
+                    goto done;
+                }
+                settling[process] = 1;
+                resume_blocks[process] = sx_settle_resume_block;
             } else if (status == SX_PROCESS_UNSUPPORTED) {
                 result = sx_fail_process_block(
                     "direct Process IR lowering is incomplete for process",
@@ -379,7 +419,7 @@ int sx_runtime_run_test(uint32_t test) {
             if (changed) {
                 for (uint32_t item = begin; item < end; ++item) {
                     uint32_t process = sx_test_process_ids[item];
-                    if (stopped[process] || suspended[process] ||
+                    if (stopped[process] || suspended[process] || settling[process] ||
                         sx_process_activations[process] != 1)
                         continue;
                     int changed_sensitivity = sx_has_changed_sensitivity(process);
@@ -413,6 +453,21 @@ int sx_runtime_run_test(uint32_t test) {
             continue;
         }
 
+        /* A foreground drive resumes only after every reactive process it
+         * awakened has reached quiescence at this simulation time. Keeping
+         * this separate from a zero-delay event prevents the observer and DUT
+         * from running in the same pre-commit batch. */
+        int released_settling = 0;
+        for (uint32_t item = begin; item < end; ++item) {
+            uint32_t process = sx_test_process_ids[item];
+            if (settling[process] && !stopped[process]) {
+                settling[process] = 0;
+                ready[process] = 1;
+                released_settling = 1;
+            }
+        }
+        if (released_settling) continue;
+
         if (!sx_events) break;
         sx_now = sx_events->due;
         if (sx_apply_due_events(ready, suspended, resume_blocks)) {
@@ -423,7 +478,7 @@ int sx_runtime_run_test(uint32_t test) {
         if (sx_process_commit()) {
             for (uint32_t item = begin; item < end; ++item) {
                 uint32_t process = sx_test_process_ids[item];
-                if (stopped[process] || suspended[process] ||
+                if (stopped[process] || suspended[process] || settling[process] ||
                     sx_process_activations[process] != 1)
                     continue;
                 int changed_sensitivity = sx_has_changed_sensitivity(process);
@@ -441,6 +496,7 @@ done:
     sx_current_process = UINT32_MAX;
     sx_clear_events();
     free(resume_blocks);
+    free(settling);
     free(suspended);
     free(stopped);
     free(next);

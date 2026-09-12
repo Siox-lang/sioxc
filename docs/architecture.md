@@ -145,8 +145,8 @@ The replacement boundary is executable now as an opt-in migration path. The
 LLVM object exports immutable test/process/activation/sensitivity tables and
 callable process entries; one fixed precompiled scheduler consumes them, owns
 ready batches and delta commits, and links with a fixed descriptor-driven CLI.
-This path emits no design-specific C. It remains opt-in while suspend/resume,
-runtime operations, and VCD/FST services are ported, so unsupported Process IR
+This path emits no design-specific C. It remains opt-in while the remaining
+runtime operations and VCD/FST services are ported, so unsupported Process IR
 nodes fail explicitly instead of silently changing behavior.
 
 ## Planned unified process pipeline

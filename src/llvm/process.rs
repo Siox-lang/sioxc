@@ -28,7 +28,7 @@ use siox::ir::{
 /// This is deliberately a data version rather than the compiler package
 /// version: the reusable native runtime only needs to change when one of the
 /// exported table layouts or encodings changes.
-const PROCESS_ABI_VERSION: u32 = 6;
+const PROCESS_ABI_VERSION: u32 = 7;
 
 /// A process returned normally and has no pending resume.
 const PROCESS_COMPLETED: u8 = 0;
@@ -38,6 +38,9 @@ const PROCESS_SUSPENDED: u8 = 1;
 const PROCESS_STOPPED: u8 = 2;
 /// The process requested termination of the complete simulation.
 const PROCESS_FINISHED: u8 = 3;
+/// The process yielded until all reactive work caused by its foreground drive
+/// reaches a fixed point at the current simulation time.
+const PROCESS_SETTLING: u8 = 4;
 /// This migration build encountered an instruction/terminator whose direct
 /// lowering is not implemented yet. The runtime must report this, never treat
 /// it as successful completion.
@@ -3936,6 +3939,11 @@ fn block_is_supported(
                             )
                     })
         }
+        ProcessTerminator::Suspend {
+            operation: siox::ir::ProcessSuspendOp::Settle,
+            arguments,
+            ..
+        } => arguments.is_empty(),
         ProcessTerminator::For {
             local, iterable, ..
         } => {
@@ -4009,6 +4017,36 @@ fn emit_timed_suspend<'ctx>(
                 i32.const_int(u64::from(process.0), false).into(),
                 i32.const_int(u64::from(resume.0), false).into(),
                 delay.into(),
+            ],
+            "",
+        )
+        .ok()?;
+    Some(())
+}
+
+fn emit_settle_suspend<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    process: ProcessId,
+    resume: siox::ir::ProcessBlockId,
+) -> Option<()> {
+    let i32 = context.i32_type();
+    let function = module.get_function("sx_runtime_settle").unwrap_or_else(|| {
+        module.add_function(
+            "sx_runtime_settle",
+            context
+                .void_type()
+                .fn_type(&[i32.into(), i32.into()], false),
+            Some(Linkage::External),
+        )
+    });
+    builder
+        .build_call(
+            function,
+            &[
+                i32.const_int(u64::from(process.0), false).into(),
+                i32.const_int(u64::from(resume.0), false).into(),
             ],
             "",
         )
@@ -4893,6 +4931,27 @@ fn process_entry<'ctx>(
                     )))
                     .unwrap();
             }
+            ProcessTerminator::Suspend {
+                operation: siox::ir::ProcessSuspendOp::Settle,
+                arguments,
+                resume,
+                ..
+            } => {
+                let emitted = arguments
+                    .is_empty()
+                    .then(|| emit_settle_suspend(context, module, &builder, process.id, *resume))
+                    .flatten();
+                builder
+                    .build_return(Some(&i8.const_int(
+                        u64::from(if emitted.is_some() {
+                            PROCESS_SETTLING
+                        } else {
+                            PROCESS_UNSUPPORTED
+                        }),
+                        false,
+                    )))
+                    .unwrap();
+            }
             ProcessTerminator::For {
                 local,
                 iterable,
@@ -5362,7 +5421,7 @@ mod tests {
             ..Design::default()
         };
         let llvm = crate::llvm::emit_module_ir(&design).unwrap();
-        assert!(llvm.contains("@sx_process_abi_version = constant i32 6"));
+        assert!(llvm.contains("@sx_process_abi_version = constant i32 7"));
         assert!(llvm.contains("define i8 @sx_process_commit()"));
         assert!(llvm.contains("define i8 @sx_process_changed(i32"));
         assert!(llvm.contains("define i8 @sx_process_storage_changed(i32"));
