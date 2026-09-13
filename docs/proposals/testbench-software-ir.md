@@ -226,7 +226,12 @@ language-lowering path.
    zero-time settle edge: the runtime commits the drive, drains reactive work
    to a fixed point, and resumes the observer only afterward. This preserves
    sequential testbench observation without recursively entering the scheduler
-   from generated LLVM.
+   from generated LLVM. Pure runtime-valued free/static Siox calls are now
+   inlined into the Process value graph using resolver identities for
+   parameters and locals; returning `if` and enum/Logic `match` expressions
+   become typed selections. Receiver methods, procedure-shaped functions,
+   runtime recursion, and general call CFGs remain before the generated-C path
+   can be retired.
 7. **Run both native backends differentially.** Require identical test results,
    diagnostics, time progression, resolved values, and VCD/FST samples across
    the full default and bit-packed corpus.

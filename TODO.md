@@ -391,8 +391,13 @@ Remaining:
   graphs while frontend type context is still present, including enum-typed
   character constants; LLVM never interprets a declaration `DefId`. Free and
   inherent associated calls whose arguments are constant are likewise folded
-  through the resolver-selected Siox body before Process IR reaches LLVM;
-  runtime-valued calls still need CFG inlining.
+  through the resolver-selected Siox body before Process IR reaches LLVM.
+  Runtime-valued pure free/static calls now inline resolver-identified
+  parameters and locals into SSA values; returning `if` and enum/Logic
+  `match` expressions become typed selections while preserving integer, real,
+  signed-vector, and declared return-type semantics. Receiver methods,
+  procedure-shaped bodies, runtime recursion, and the remaining match forms
+  still need executable CFG lowering.
   Inclusive directional range loops and source-order array loops execute as
   ordinary CFG back-edges; cursor/end state and the array snapshot live in the
   object so suspension inside a loop resumes without re-evaluating its

@@ -9269,3 +9269,31 @@ Clippy, frontend-only no-default checking, strict C11 compilation, 425 default
 library tests plus every integration/doc test, 407 all-feature library tests
 plus integrations/docs, the direct fixture and `mux_test`, and the 183-file
 compatibility corpus.
+
+### 2026-09-13 — Codex — runtime-valued Siox calls
+
+The next direct-runtime coverage boundary is resolver-selected Siox function
+execution. I am lowering pure value-returning bodies into the Process value
+arena while typed AST identity is still available: parameter and local
+bindings use resolver `DefId`s, and `if`/`match` returns become value-level
+selection. LLVM will continue to consume only executable Process values rather
+than learning how to resolve or interpret Siox declarations.
+
+Pure free/static bodies now bind parameters and local aliases by resolver
+identity, lower returning `if` and enum/Logic `match` bodies to Process
+selections, and leave runtime recursion as an explicit unsupported call rather
+than relying on a magic depth limit. Typed integer, real, and signed-vector
+operations retain their semantics, and inlined character literals use the
+declared return type.
+
+The full direct matrix moves from 64 to 69 passing executables with no pass
+regression and no unsupported case becoming a semantic failure:
+`fn_return_type_test`, `fn_test`, `signed_fn_arg_test`, `signed_print_test`, and
+`struct_argument_test` are newly complete. Of 176 buildable programs, 71 now
+fail closed at later coverage gaps, 29 reach an expected semantic/test failure,
+7 retain their existing scheduler timeout, and 7 are compile-only.
+
+Verification is green under the 8 GiB cap: strict all-target/all-feature
+Clippy, frontend-only no-default checking, 425 default library tests plus all
+integration/doc tests, 407 all-feature library tests plus integrations/docs,
+the expanded direct-runtime fixture, and the 183-file compatibility corpus.

@@ -68,6 +68,14 @@ fn direct_process_runtime_links_without_generated_design_c() {
            using std::logic::Bit;
            const EXPECTED_SUM: integer = 3;
            fn doubled(value: integer) -> integer { return value * 2; }
+           fn larger(a: unsigned[8], b: unsigned[8]) -> unsigned[8] {
+               if a > b { return a; }
+               return b;
+           }
+           fn absolute(value: integer) -> integer {
+               if value < 0 { return 0 - value; }
+               return value;
+           }
            struct Inner { pub byte: unsigned[8] }
            struct Packet { pub valid: Bit, pub inner: Inner }
            entity Widen {
@@ -126,6 +134,10 @@ fn direct_process_runtime_links_without_generated_design_c() {
                            "direct range loops are inclusive and resume while descending");
                    assert!(doubled(EXPECTED_SUM) == 6,
                            "constant Siox calls fold before direct LLVM lowering");
+                   assert!(larger(source, 150) == 201,
+                           "runtime-valued Siox calls inline into Process values");
+                   assert!(absolute(0 - sum) == 3,
+                           "inlined kernel-integer operations remain signed");
                    assert!(packet.inner.byte == 9,
                            "direct lowering preserves nested aggregate layouts");
                    assert!(bytes[1] == 5,

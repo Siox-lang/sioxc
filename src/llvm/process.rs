@@ -988,7 +988,7 @@ fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bool {
                 })
         }
         ProcessValueKind::Local { .. } | ProcessValueKind::Storage(_) => {
-            matches!(value.ty, Some(siox::types::Ty::Integer))
+            value.ty.as_ref().is_some_and(process_type_is_signed)
         }
         ProcessValueKind::Unary { operation, .. } => matches!(
             operation,
@@ -1014,6 +1014,17 @@ fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bool {
         ProcessValueKind::ForeignCall { integer_result, .. } => *integer_result,
         _ => false,
     }
+}
+
+fn process_type_is_signed(ty: &siox::types::Ty) -> bool {
+    matches!(ty, siox::types::Ty::Integer)
+        || matches!(
+            ty,
+            siox::types::Ty::Array {
+                family: Some(family),
+                ..
+            } if family.rsplit("::").next() == Some("signed")
+        )
 }
 
 fn layout_for_type<'a>(design: &'a Design, ty: &siox::types::Ty) -> Option<&'a SourceLayout> {

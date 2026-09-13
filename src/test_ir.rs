@@ -40,6 +40,9 @@ struct LoweringContext<'a> {
     constant_stack: std::collections::HashSet<crate::resolve::DefId>,
     functions: &'a crate::ir::FunctionIndex<'a>,
     constant_integers: &'a std::collections::HashMap<String, i64>,
+    value_bindings: Vec<std::collections::HashMap<crate::resolve::DefId, ProcessValueId>>,
+    inline_return_types: Vec<Option<crate::types::Ty>>,
+    inline_functions: std::collections::HashSet<crate::diag::Span>,
 }
 
 /// Module constants indexed by resolver identity. Their initializers are
@@ -61,9 +64,8 @@ fn module_constants<'a>(
         .collect()
 }
 
-/// Functions whose bodies may be evaluated while their arguments are
-/// constant. Runtime-valued calls remain explicit Process values until their
-/// bodies are lowered into the caller CFG.
+/// Functions whose bodies may be evaluated while their arguments are constant
+/// or inlined symbolically into a caller's Process value graph.
 fn process_functions<'a>(
     modules: &'a [Module],
     resolved: &'a Resolved,
@@ -383,6 +385,9 @@ pub fn lower(
                 constant_stack: std::collections::HashSet::new(),
                 functions: &functions,
                 constant_integers: &constant_integers,
+                value_bindings: Vec::new(),
+                inline_return_types: Vec::new(),
+                inline_functions: std::collections::HashSet::new(),
             };
             for (definition, initializer) in initializers {
                 let Some(storage) = context
@@ -429,6 +434,9 @@ pub fn lower(
                             constant_stack: std::collections::HashSet::new(),
                             functions: &functions,
                             constant_integers: &constant_integers,
+                            value_bindings: Vec::new(),
+                            inline_return_types: Vec::new(),
+                            inline_functions: std::collections::HashSet::new(),
                         };
                         lower_process(
                             id,
@@ -471,6 +479,9 @@ pub fn lower(
                             constant_stack: std::collections::HashSet::new(),
                             functions: &functions,
                             constant_integers: &constant_integers,
+                            value_bindings: Vec::new(),
+                            inline_return_types: Vec::new(),
+                            inline_functions: std::collections::HashSet::new(),
                         };
                         lower_process(
                             id,
@@ -511,6 +522,9 @@ pub fn lower(
                     constant_stack: std::collections::HashSet::new(),
                     functions: &functions,
                     constant_integers: &constant_integers,
+                    value_bindings: Vec::new(),
+                    inline_return_types: Vec::new(),
+                    inline_functions: std::collections::HashSet::new(),
                 };
                 lower_process(
                     id,
@@ -1793,6 +1807,298 @@ fn character_number(
     Some(ProcessNumber::Integer(vec![discriminant]))
 }
 
+/// Resolve a function parameter or function-local value in the innermost
+/// active inline. Resolver identity keeps equal spellings in nested calls and
+/// modules distinct without minting synthetic AST declarations.
+fn inline_bound_value(path: &ast::Path, context: &LoweringContext<'_>) -> Option<ProcessValueId> {
+    let definition = context.resolved.resolved(path.span)?;
+    context
+        .value_bindings
+        .iter()
+        .rev()
+        .find_map(|bindings| bindings.get(&definition).copied())
+}
+
+/// Inline a pure, value-returning Siox function into the Process value arena.
+/// Parameters and `let` bindings remain compile-time SSA aliases; control
+/// flow becomes value-level selection, so the backend never needs an AST or a
+/// resolver to execute the call.
+fn inline_process_call(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let ast::Expr::Call { callee, args, .. } = expression else {
+        return None;
+    };
+    let function = context.functions.get(callee)?;
+    let body = function.body.as_ref()?;
+    if function.ret.is_none() || function.params.iter().any(|parameter| parameter.is_self) {
+        return None;
+    }
+    let parameters = function
+        .params
+        .iter()
+        .filter(|parameter| !parameter.is_self)
+        .collect::<Vec<_>>();
+    if parameters.len() != args.len() {
+        return None;
+    }
+
+    let first_value = context.process_ir.values.len();
+    let arguments = args
+        .iter()
+        .map(|argument| value_ref(argument, process, context))
+        .collect::<Vec<_>>();
+    let mut bindings = std::collections::HashMap::new();
+    for (parameter, argument) in parameters.into_iter().zip(arguments) {
+        let Some(name) = parameter.name.as_ref() else {
+            context.process_ir.values.truncate(first_value);
+            return None;
+        };
+        let Some(definition) = context.resolved.declared(name.span) else {
+            context.process_ir.values.truncate(first_value);
+            return None;
+        };
+        bindings.insert(definition, argument);
+    }
+    if !context.inline_functions.insert(function.span) {
+        context.process_ir.values.truncate(first_value);
+        return None;
+    }
+
+    context.value_bindings.push(bindings);
+    context.inline_return_types.push(return_type.cloned());
+    let result = inline_value_statements(&body.stmts, process, context);
+    context.inline_return_types.pop();
+    context.value_bindings.pop();
+    context.inline_functions.remove(&function.span);
+    if result.is_none() {
+        context.process_ir.values.truncate(first_value);
+    }
+    result
+}
+
+/// Evaluate a pure function statement sequence symbolically. `return`, local
+/// aliases, and branching cover the expression-shaped Siox functions shared
+/// by std and hardware lowering; other statements deliberately leave the call
+/// explicit and fail closed in the direct backend.
+fn inline_value_statements(
+    statements: &[Stmt],
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let (statement, rest) = statements.split_first()?;
+    match statement {
+        Stmt::Return {
+            value: Some(value), ..
+        } => {
+            let return_type = context.inline_return_types.last().cloned().flatten();
+            Some(value_ref_with_type(
+                value,
+                process,
+                context,
+                return_type.as_ref(),
+            ))
+        }
+        Stmt::Let(declaration) => {
+            let value = value_ref(declaration.value.as_ref()?, process, context);
+            let definition = context.resolved.declared(declaration.name.span)?;
+            context.value_bindings.last_mut()?.insert(definition, value);
+            inline_value_statements(rest, process, context)
+        }
+        Stmt::If(statement) => inline_value_if(statement, rest, process, context),
+        Stmt::Match(statement) => inline_value_match(statement, rest, process, context),
+        _ => None,
+    }
+}
+
+/// Inline one branch in a fresh lexical binding scope, appending the source
+/// continuation so a branch without an early return falls through normally.
+fn inline_value_branch(
+    branch: &[Stmt],
+    continuation: &[Stmt],
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let mut statements = Vec::with_capacity(branch.len() + continuation.len());
+    statements.extend_from_slice(branch);
+    statements.extend_from_slice(continuation);
+    context
+        .value_bindings
+        .push(std::collections::HashMap::new());
+    let result = inline_value_statements(&statements, process, context);
+    context.value_bindings.pop();
+    result
+}
+
+/// Turn a function-body `if` into a dependency-ordered Process selection.
+fn inline_value_if(
+    statement: &ast::IfStmt,
+    continuation: &[Stmt],
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let condition = value_ref(&statement.cond, process, context);
+    let then_value = inline_value_branch(&statement.then.stmts, continuation, process, context)?;
+    let else_value = match statement.else_.as_deref() {
+        Some(ElseBranch::Block(block)) => {
+            inline_value_branch(&block.stmts, continuation, process, context)?
+        }
+        Some(ElseBranch::If(inner)) => {
+            let branch = [Stmt::If(inner.clone())];
+            inline_value_branch(&branch, continuation, process, context)?
+        }
+        None => inline_value_branch(&[], continuation, process, context)?,
+    };
+    inline_select_value(statement.span, condition, then_value, else_value, context)
+}
+
+/// Turn a function-body `match` into first-match-priority selections. Pattern
+/// decoding happens while enum identities and typed character literals are
+/// still available; the resulting Process graph contains only executable
+/// comparisons and selects.
+fn inline_value_match(
+    statement: &ast::MatchStmt,
+    continuation: &[Stmt],
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let scrutinee = value_ref(&statement.scrutinee, process, context);
+    let mut result = inline_value_branch(&[], continuation, process, context);
+    for arm in statement.arms.iter().rev() {
+        let value = inline_value_branch(&arm.body.stmts, continuation, process, context)?;
+        match inline_pattern_condition(&arm.pattern, scrutinee, context)? {
+            None => result = Some(value),
+            Some(condition) => {
+                result = Some(match result {
+                    Some(fallback) => {
+                        inline_select_value(arm.span, condition, value, fallback, context)?
+                    }
+                    None => value,
+                });
+            }
+        }
+    }
+    result
+}
+
+/// `None` inside the outer option denotes a wildcard; an absent outer option
+/// means the pattern cannot yet be represented directly.
+fn inline_pattern_condition(
+    pattern: &ast::Pattern,
+    scrutinee: ProcessValueId,
+    context: &mut LoweringContext<'_>,
+) -> Option<Option<ProcessValueId>> {
+    let (span, candidate) = match pattern {
+        ast::Pattern::Wildcard => return Some(None),
+        ast::Pattern::Path(path) => {
+            let definition = context.resolved.resolved(path.span)?;
+            let number = definition_number(definition, context)?;
+            (path.span, number)
+        }
+        ast::Pattern::CharLit { ch, span } => {
+            let ty = context
+                .process_ir
+                .values
+                .get(scrutinee.0 as usize)?
+                .ty
+                .as_ref();
+            let number = character_number(*ch, ty, context)?;
+            (*span, number)
+        }
+        ast::Pattern::Or { alts, span } => {
+            let mut condition = None;
+            for alternative in alts {
+                let Some(alternative) = inline_pattern_condition(alternative, scrutinee, context)?
+                else {
+                    return Some(None);
+                };
+                condition = Some(match condition {
+                    Some(previous) => push_inline_binary(
+                        *span,
+                        ProcessBinaryOp::Or,
+                        previous,
+                        alternative,
+                        Some(1),
+                        context,
+                    ),
+                    None => alternative,
+                });
+            }
+            return Some(condition);
+        }
+        ast::Pattern::BitPattern { .. } | ast::Pattern::Range { .. } => return None,
+    };
+    let scrutinee_node = context.process_ir.values.get(scrutinee.0 as usize)?;
+    let candidate = push_value(
+        span,
+        scrutinee_node.ty.clone(),
+        scrutinee_node.bit_width,
+        ProcessValueKind::Number(candidate),
+        context,
+    );
+    Some(Some(push_inline_binary(
+        span,
+        ProcessBinaryOp::Eq,
+        scrutinee,
+        candidate,
+        Some(1),
+        context,
+    )))
+}
+
+/// Append a scalar binary node used by symbolic function control flow.
+fn push_inline_binary(
+    span: crate::diag::Span,
+    operation: ProcessBinaryOp,
+    left: ProcessValueId,
+    right: ProcessValueId,
+    width: Option<u32>,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    push_value(
+        span,
+        None,
+        width,
+        ProcessValueKind::Binary {
+            operation,
+            left,
+            right,
+        },
+        context,
+    )
+}
+
+/// Append one selection while retaining the common result shape.
+fn inline_select_value(
+    span: crate::diag::Span,
+    condition: ProcessValueId,
+    then_value: ProcessValueId,
+    else_value: ProcessValueId,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let then_node = context.process_ir.values.get(then_value.0 as usize)?;
+    let else_node = context.process_ir.values.get(else_value.0 as usize)?;
+    let ty = then_node.ty.clone().or_else(|| else_node.ty.clone());
+    let width = match (then_node.bit_width, else_node.bit_width) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (left, right) => left.or(right),
+    };
+    Some(push_value(
+        span,
+        ty,
+        width,
+        ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        },
+        context,
+    ))
+}
+
 /// Lower an expression recursively into the process operand arena. Children
 /// are inserted before their parent, so ids form a directly executable DAG.
 fn value_ref(
@@ -1818,6 +2124,12 @@ fn value_ref_with_type(
         .cloned()
         .or_else(|| context.typed.expr_type(span).cloned());
 
+    if let ast::Expr::Path(path) = expression {
+        if let Some(value) = inline_bound_value(path, context) {
+            return value;
+        }
+    }
+
     // Constants are aliases for their initializer values, not runtime
     // storage. Inline them before constructing the surrounding node so the
     // Process IR contains only executable value forms. The stack is merely
@@ -1841,6 +2153,9 @@ fn value_ref_with_type(
             let kind = ProcessValueKind::Number(ProcessNumber::Integer(vec![value as u64]));
             let width = source_value_width(&kind, ty.as_ref(), process, context);
             return push_value(span, ty, width, kind, context);
+        }
+        if let Some(value) = inline_process_call(expression, process, context, ty.as_ref()) {
+            return value;
         }
     }
 
@@ -1966,8 +2281,10 @@ fn value_ref_with_type(
             let right_context = matches!(rhs.as_ref(), ast::Expr::CharLit { .. })
                 .then(|| context.typed.expr_type(ast::expr_span(lhs)).cloned())
                 .flatten();
+            let left_type = context.typed.expr_type(ast::expr_span(lhs));
+            let right_type = context.typed.expr_type(ast::expr_span(rhs));
             ProcessValueKind::Binary {
-                operation: lower_binary_operator(op),
+                operation: lower_binary_operator(op, left_type, right_type),
                 left: value_ref_with_type(lhs, process, context, left_context.as_ref()),
                 right: value_ref_with_type(rhs, process, context, right_context.as_ref()),
             }
@@ -2367,8 +2684,39 @@ fn parse_digits_words(digits: &str, radix: u32) -> Vec<u64> {
 }
 
 /// Convert a parsed operator to its precedence-free process form.
-fn lower_binary_operator(operator: &ast::BinOp) -> ProcessBinaryOp {
+fn lower_binary_operator(
+    operator: &ast::BinOp,
+    left: Option<&crate::types::Ty>,
+    right: Option<&crate::types::Ty>,
+) -> ProcessBinaryOp {
+    let real = [left, right]
+        .into_iter()
+        .flatten()
+        .any(|ty| matches!(ty, crate::types::Ty::Real));
+    let signed = [left, right]
+        .into_iter()
+        .flatten()
+        .any(process_type_is_signed);
     match operator {
+        ast::BinOp::Add if real => ProcessBinaryOp::FloatAdd,
+        ast::BinOp::Sub if real => ProcessBinaryOp::FloatSub,
+        ast::BinOp::Mul if real => ProcessBinaryOp::FloatMul,
+        ast::BinOp::Div if real => ProcessBinaryOp::FloatDiv,
+        ast::BinOp::Eq if real => ProcessBinaryOp::FloatEq,
+        ast::BinOp::Ne if real => ProcessBinaryOp::FloatNe,
+        ast::BinOp::Lt if real => ProcessBinaryOp::FloatLt,
+        ast::BinOp::Le if real => ProcessBinaryOp::FloatLe,
+        ast::BinOp::Gt if real => ProcessBinaryOp::FloatGt,
+        ast::BinOp::Ge if real => ProcessBinaryOp::FloatGe,
+        ast::BinOp::Add if signed => ProcessBinaryOp::SignedAdd,
+        ast::BinOp::Sub if signed => ProcessBinaryOp::SignedSub,
+        ast::BinOp::Mul if signed => ProcessBinaryOp::SignedMul,
+        ast::BinOp::Div if signed => ProcessBinaryOp::SignedDiv,
+        ast::BinOp::Shr if signed => ProcessBinaryOp::ArithmeticShr,
+        ast::BinOp::Lt if signed => ProcessBinaryOp::SignedLt,
+        ast::BinOp::Le if signed => ProcessBinaryOp::SignedLe,
+        ast::BinOp::Gt if signed => ProcessBinaryOp::SignedGt,
+        ast::BinOp::Ge if signed => ProcessBinaryOp::SignedGe,
         ast::BinOp::Add => ProcessBinaryOp::Add,
         ast::BinOp::Sub => ProcessBinaryOp::Sub,
         ast::BinOp::Mul => ProcessBinaryOp::Mul,
@@ -2385,6 +2733,20 @@ fn lower_binary_operator(operator: &ast::BinOp) -> ProcessBinaryOp {
         ast::BinOp::Gt => ProcessBinaryOp::Gt,
         ast::BinOp::Ge => ProcessBinaryOp::Ge,
     }
+}
+
+/// Whether a checked source type carries signed numeric semantics. The
+/// compiler is allowed to identify type families; their values and operator
+/// tables remain owned by std.
+fn process_type_is_signed(ty: &crate::types::Ty) -> bool {
+    matches!(ty, crate::types::Ty::Integer)
+        || matches!(
+            ty,
+            crate::types::Ty::Array {
+                family: Some(family),
+                ..
+            } if family.rsplit("::").next() == Some("signed")
+        )
 }
 
 /// Namespace-qualified spelling of a path used as an intrinsic dispatch key.
@@ -2928,9 +3290,13 @@ mod tests {
     fn module_constants_do_not_survive_as_definitions() {
         let sources = [
             "module tests; const EXPECTED: integer = 3; \
+             fn choose(a: integer, b: integer) -> integer { \
+               let left: integer = a; \
+               if left > b { return left; } return b; \
+             } \
              #[std::attrs::test] entity Smoke {} \
              impl Smoke { let observed: integer = 0; \
-               process run { observed = EXPECTED; } }",
+               process run { observed = choose(observed, EXPECTED); } }",
             "module std::logic; pub enum Bool { false, true }",
             "module std::attrs; using std::logic::{Bool}; pub attr test: Bool for entity;",
             "module std::ops; using std::logic::{Bool}; \
@@ -2972,6 +3338,16 @@ mod tests {
             .values
             .iter()
             .all(|value| !matches!(value.kind, ProcessValueKind::Definition(_))));
+        assert!(design
+            .process_ir
+            .values
+            .iter()
+            .any(|value| matches!(value.kind, ProcessValueKind::Select { .. })));
+        assert!(design
+            .process_ir
+            .values
+            .iter()
+            .all(|value| !matches!(value.kind, ProcessValueKind::Call { .. })));
     }
 
     #[test]
