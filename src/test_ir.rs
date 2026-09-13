@@ -139,6 +139,22 @@ fn type_leaf(ty: &ast::Type) -> Option<&str> {
     }
 }
 
+/// Nominal type supplied by a declaration when expression-type persistence is
+/// intentionally incomplete for constructor syntax. The declaration is the
+/// authoritative context for a `let`; retaining it prevents the temporary
+/// adapter from replacing a successfully checked newtype with `Ty::Error`.
+fn declared_nominal_type(ty: Option<&ast::Type>, resolved: &Resolved) -> Option<crate::types::Ty> {
+    let ast::Type::Path(path) = ty? else {
+        return None;
+    };
+    let definition = resolved.resolved(path.span)?;
+    matches!(
+        resolved.def(definition)?.kind,
+        crate::resolve::DefKind::Struct | crate::resolve::DefKind::Enum
+    )
+    .then_some(crate::types::Ty::Named(definition))
+}
+
 fn constant_suffixes(
     modules: &[Module],
     resolved: &Resolved,
@@ -401,7 +417,13 @@ pub fn lower(
                 else {
                     continue;
                 };
-                let value = value_ref(initializer, &initializer_process, &mut context);
+                let target = context.process_ir.storages[storage.0 as usize].ty.clone();
+                let value = value_ref_with_type(
+                    initializer,
+                    &initializer_process,
+                    &mut context,
+                    target.as_ref(),
+                );
                 context.process_ir.storages[storage.0 as usize].initializer = Some(value);
             }
         }
@@ -1052,17 +1074,20 @@ fn register_test_storages(
             continue;
         };
         let id = ProcessStorageId(process_ir.storages.len() as u32);
+        let ty = declaration
+            .value
+            .as_ref()
+            .and_then(|value| typed.expr_type(ast::expr_span(value)))
+            .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+            .cloned()
+            .or_else(|| declared_nominal_type(declaration.ty.as_ref(), resolved));
         process_ir.storages.push(ProcessStorage {
             id,
             owner: root,
             name: name.clone(),
             source: resolved.declared(declaration.name.span),
             span: declaration.span,
-            ty: declaration
-                .value
-                .as_ref()
-                .and_then(|value| typed.expr_type(ast::expr_span(value)))
-                .cloned(),
+            ty,
             layout: Some(layout.clone()),
             initializer: None,
             bindings: testbench_bindings(
@@ -1333,10 +1358,11 @@ fn lower_statement(
     match statement {
         Stmt::Let(declaration) => {
             let local = push_local(process, declaration, context);
+            let target = process.locals[local.0 as usize].ty.clone();
             let initializer = declaration
                 .value
                 .as_ref()
-                .map(|value| value_ref(value, process, context));
+                .map(|value| value_ref_with_type(value, process, context, target.as_ref()));
             process.blocks[block.0 as usize]
                 .instructions
                 .push(ProcessInstruction::Declare {
@@ -1753,7 +1779,9 @@ fn push_local(
             .value
             .as_ref()
             .and_then(|value| context.typed.expr_type(ast::expr_span(value)))
-            .cloned(),
+            .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+            .cloned()
+            .or_else(|| declared_nominal_type(declaration.ty.as_ref(), context.resolved)),
         layout: None,
     });
     id
@@ -1821,10 +1849,11 @@ fn inline_bound_value(path: &ast::Path, context: &LoweringContext<'_>) -> Option
         .find_map(|bindings| bindings.get(&definition).copied())
 }
 
-/// Lower a vector-family type application to the language's explicit raw
-/// resize operation. The target type supplies both the packed width and the
-/// numeric interpretation (`unsigned`, `signed`, or another std family);
-/// resizing itself always truncates or zero-extends.
+/// Lower a value-transparent type application to the language's explicit raw
+/// resize operation. Packed families (`unsigned[N](value)`) and nominal
+/// one-field newtypes (`Byte(value)`) both preserve the operand's bits while
+/// changing its declared type/width; resizing itself always truncates or
+/// zero-extends.
 fn lower_process_raw_resize(
     expression: &ast::Expr,
     process: &ProcessCfg,
@@ -1841,55 +1870,65 @@ fn lower_process_raw_resize(
     else {
         return None;
     };
-    let ast::Expr::Index { base, index, .. } = callee.as_ref() else {
-        return None;
-    };
     if !type_args.is_empty() || args.len() != 1 {
         return None;
     }
-    let target = target.cloned().or_else(|| {
-        let ast::Expr::Path(path) = base.as_ref() else {
-            return None;
-        };
-        let definition = context.resolved.resolved(path.span)?;
-        let family = context.resolved.qualified_name(definition)?;
-        let family_known = context.design.array_element_of_family.contains_key(&family)
-            || family
-                .rsplit("::")
-                .next()
-                .is_some_and(|leaf| context.design.array_element_of_family.contains_key(leaf));
-        if !family_known {
-            return None;
+    let target = match callee.as_ref() {
+        ast::Expr::Index { base, index, .. } => target.cloned().or_else(|| {
+            let ast::Expr::Path(path) = base.as_ref() else {
+                return None;
+            };
+            let definition = context.resolved.resolved(path.span)?;
+            let family = context.resolved.qualified_name(definition)?;
+            let family_known = context.design.array_element_of_family.contains_key(&family)
+                || family
+                    .rsplit("::")
+                    .next()
+                    .is_some_and(|leaf| context.design.array_element_of_family.contains_key(leaf));
+            if !family_known {
+                return None;
+            }
+            let len =
+                crate::ir::eval_const_fns(index, context.constant_integers, context.functions, 0)
+                    .and_then(|width| u32::try_from(width).ok())?;
+            Some(crate::types::Ty::Array {
+                // Packed families carry their width independently of the
+                // element type. The family identity is sufficient until this
+                // temporary adapter is removed in favour of canonical Process
+                // lowering.
+                elem: Box::new(crate::types::Ty::Error),
+                family: Some(family),
+                len,
+            })
+        })?,
+        ast::Expr::Path(path) => {
+            let target = target?.clone();
+            let crate::types::Ty::Named(target_definition) = target else {
+                return None;
+            };
+            let definition = context.resolved.resolved(path.span)?;
+            if definition != target_definition
+                || context.resolved.def(definition)?.kind != crate::resolve::DefKind::Struct
+            {
+                return None;
+            }
+            crate::types::Ty::Named(target_definition)
         }
-        let len = crate::ir::eval_const_fns(index, context.constant_integers, context.functions, 0)
-            .and_then(|width| u32::try_from(width).ok())?;
-        Some(crate::types::Ty::Array {
-            // Packed families carry their width independently of the element
-            // type. The family identity is sufficient until this temporary
-            // adapter is removed in favour of canonical Process lowering.
-            elem: Box::new(crate::types::Ty::Error),
-            family: Some(family),
-            len,
-        })
-    })?;
+        _ => return None,
+    };
     if !matches!(
         target,
         crate::types::Ty::Array {
             family: Some(_),
             ..
-        }
+        } | crate::types::Ty::Named(_)
     ) {
         return None;
     }
-    let width = target.bit_width().filter(|width| *width != 0)?;
     let operand = value_ref(&args[0], process, context);
-    Some(push_value(
-        *span,
-        Some(target),
-        Some(width),
-        ProcessValueKind::RawResize { operand },
-        context,
-    ))
+    let kind = ProcessValueKind::RawResize { operand };
+    let width = source_value_width(&kind, Some(&target), process, context)?;
+    Some(push_value(*span, Some(target), Some(width), kind, context))
 }
 
 /// Lower zero-argument type construction to the type's retained recursive

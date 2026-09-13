@@ -9406,3 +9406,31 @@ The full direct matrix moves from 79 to 80 passing executables, with
 `default_construction_test` moving from unsupported to passing and no other
 category changing: 65 unsupported, 24 semantic failures, 7 scheduler timeouts,
 0 build failures, and 7 compile-only files.
+
+### 2026-09-14 — Codex — transparent newtypes in Process IR
+
+Continued the adjacent constructor gap after typed defaults. A nominal
+one-field newtype such as `struct Byte(unsigned[8]); Byte(200)` is a
+value-transparent type/width conversion, but the temporary adapter retained it
+as a generic call. Packed-family and nominal newtype construction now share the
+typed `RawResize` representation. Resolver identity distinguishes the newtype
+declaration from an ordinary one-argument function, and LLVM only performs the
+declared raw-bit resize.
+
+The first direct probe also exposed that persistent storage and process locals
+were copying an incomplete constructor expression type (`Ty::Error`) instead
+of the authoritative declared `let` type. Registration now retains a resolved
+nominal declaration type as fallback, and initializer lowering passes that
+type as context. The repository direct fixture covers the newtype round trip,
+and the external `newtype_vector_test` now passes without generated C.
+
+Final verification is green under the 8 GiB cap: strict all-target/all-feature
+Clippy, frontend-only no-default checking, 425 default library tests plus all
+integration/doc tests, 407 all-feature library tests plus integrations/docs,
+the expanded direct-runtime fixture, and the 183-file compatibility corpus.
+The full direct matrix improves from 80 to 83 passing executables with no pass
+regression: `newtype_vector_test` moves from unsupported to passing, while
+correct declared initializer context also moves `derive_chain_test` and
+`from_test` from semantic failures to passing. The remaining categories are 64
+unsupported, 22 semantic failures, 7 scheduler timeouts, 0 build failures, and
+7 compile-only files.

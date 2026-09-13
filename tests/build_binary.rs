@@ -83,6 +83,7 @@ fn direct_process_runtime_links_without_generated_design_c() {
            struct Packet { pub valid: Bit, pub inner: Inner }
            enum ResetState { Idle = 2, Running = 3 }
            struct ResetPair { pub state: ResetState, pub bits: unsigned[4] }
+           struct Byte(unsigned[8]);
            entity Widen {
                source: unsigned[8] in,
                widened: unsigned[16] out,
@@ -116,6 +117,7 @@ fn direct_process_runtime_links_without_generated_design_c() {
                let reset_state: ResetState = ResetState();
                let reset_pair: ResetPair = ResetPair::new();
                let reset_bits: unsigned[4] = unsigned[4]();
+               let wrapped: Byte = Byte(201);
                let widen: Widen = {
                    .source = source,
                    .widened = widened,
@@ -162,6 +164,8 @@ fn direct_process_runtime_links_without_generated_design_c() {
                                reset_pair.state == ResetState::Idle and
                                reset_pair.bits == 0 and reset_bits == 0,
                            "type construction uses recursive retained defaults");
+                   assert!(unsigned[8](wrapped) == 201,
+                           "nominal newtype construction preserves its value");
                    assert!(packet.inner.byte == 9,
                            "direct lowering preserves nested aggregate layouts");
                    assert!(bytes[1] == 5,

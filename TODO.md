@@ -399,7 +399,11 @@ Remaining:
   procedure-shaped bodies, runtime recursion, and the remaining match forms
   still need executable CFG lowering. Explicit packed-family construction is
   represented by `RawResize`, a typed Process value that truncates or
-  zero-extends the raw bits while retaining its target family. Direct
+  zero-extends the raw bits while retaining its target family. The same node
+  now represents value-transparent nominal newtype construction such as
+  `Byte(value)`. Persistent/local initializer lowering supplies the declared
+  `let` type as context instead of retaining an incomplete expression
+  `Ty::Error`. Direct
   comparisons now use a packed operand's declared width, selections preserve
   signed branch values, and integer literals retain widths above the kernel
   word instead of being clipped by their fallback type. Zero-argument type
