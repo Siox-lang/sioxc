@@ -9384,3 +9384,25 @@ integration/doc tests, 407 all-feature library tests plus integrations/docs,
 the expanded direct-runtime executable fixture, and the 183-file compatibility
 corpus. The focused fixture exercises nested raw resizing, unsigned literal
 context, signed packed comparison, and a 128-bit decimal literal.
+
+### 2026-09-13 — Codex — typed Process defaults
+
+The next direct-runtime gap was zero-argument type construction. `T()`,
+`T::new()`, and `unsigned[N]()` were type-checked constructors but reached
+Process IR as generic calls, making any storage initialized by them unsupported
+even though the direct backend already knew how to build recursive layout
+defaults. They now lower to a first-class typed `Default` value. LLVM obtains
+the first enum discriminant and recursive packed/array/struct contents from the
+retained `SourceLayout`; it does not recover constructor meaning from AST call
+syntax. The direct fixture covers a nonzero enum default, a struct containing
+that enum and a packed field, and a packed-family default. The external
+`default_construction_test` now builds and passes on the no-generated-C path.
+
+Final verification is green under the 8 GiB cap: strict all-target/all-feature
+Clippy, frontend-only no-default checking, 425 default library tests plus all
+integration/doc tests, 407 all-feature library tests plus integrations/docs,
+the expanded direct-runtime fixture, and the 183-file compatibility corpus.
+The full direct matrix moves from 79 to 80 passing executables, with
+`default_construction_test` moving from unsupported to passing and no other
+category changing: 65 unsupported, 24 semantic failures, 7 scheduler timeouts,
+0 build failures, and 7 compile-only files.

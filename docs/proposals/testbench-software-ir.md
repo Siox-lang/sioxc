@@ -232,9 +232,11 @@ language-lowering path.
    become typed selections. Packed-family construction now lowers to an
    explicit typed raw-resize value rather than surviving as a call; its target
    width governs vector/literal comparisons, while selections retain signed
-   branch interpretation. Receiver methods, procedure-shaped functions,
-   runtime recursion, non-packed conversions, and general call CFGs remain
-   before the generated-C path can be retired.
+   branch interpretation. Zero-argument `T()`/`T::new()` construction is a
+   typed recursive default value backed by retained layout metadata. Receiver
+   methods, procedure-shaped functions, runtime recursion, non-packed
+   conversions, and general call CFGs remain before the generated-C path can
+   be retired.
 7. **Run both native backends differentially.** Require identical test results,
    diagnostics, time progression, resolved values, and VCD/FST samples across
    the full default and bit-packed corpus.

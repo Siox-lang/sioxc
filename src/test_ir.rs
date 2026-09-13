@@ -843,6 +843,7 @@ fn normalized_value_width(
         | ProcessValueKind::Storage(_)
         | ProcessValueKind::Definition(_)
         | ProcessValueKind::Intrinsic(_)
+        | ProcessValueKind::Default
         | ProcessValueKind::Field { .. }
         | ProcessValueKind::Attribute { .. }
         | ProcessValueKind::Index { .. }
@@ -1891,6 +1892,58 @@ fn lower_process_raw_resize(
     ))
 }
 
+/// Lower zero-argument type construction to the type's retained recursive
+/// default rather than leaving `T()`/`T::new()` as an executable call. The
+/// resolver check distinguishes constructors from ordinary zero-argument
+/// functions, whose bodies still go through constant folding or call inlining.
+fn lower_process_default(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    target: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let ast::Expr::Call {
+        callee,
+        type_args,
+        args,
+        bang: false,
+        span,
+    } = expression
+    else {
+        return None;
+    };
+    if !type_args.is_empty() || !args.is_empty() {
+        return None;
+    }
+    let definition = match callee.as_ref() {
+        ast::Expr::Path(path) if path.segments.last()?.text == "new" => context
+            .resolved
+            .resolved(path.segments.get(path.segments.len().checked_sub(2)?)?.span),
+        ast::Expr::Path(path) => context.resolved.resolved(path.span),
+        ast::Expr::Index { base, .. } => match base.as_ref() {
+            ast::Expr::Path(path) => context.resolved.resolved(path.span),
+            _ => None,
+        },
+        _ => None,
+    }?;
+    if !matches!(
+        context.resolved.def(definition)?.kind,
+        crate::resolve::DefKind::Builtin
+            | crate::resolve::DefKind::Struct
+            | crate::resolve::DefKind::Enum
+            | crate::resolve::DefKind::TypeAlias
+    ) {
+        return None;
+    }
+    let target = target?.clone();
+    if matches!(target, crate::types::Ty::Error) {
+        return None;
+    }
+    let kind = ProcessValueKind::Default;
+    let width = source_value_width(&kind, Some(&target), process, context);
+    Some(push_value(*span, Some(target), width, kind, context))
+}
+
 /// Inline a pure, value-returning Siox function into the Process value arena.
 /// Parameters and `let` bindings remain compile-time SSA aliases; control
 /// flow becomes value-level selection, so the backend never needs an AST or a
@@ -2229,6 +2282,9 @@ fn value_ref_with_type(
         if let Some(value) = lower_process_raw_resize(expression, process, context, ty.as_ref()) {
             return value;
         }
+        if let Some(value) = lower_process_default(expression, process, context, ty.as_ref()) {
+            return value;
+        }
         if let Some(value) = inline_process_call(expression, process, context, ty.as_ref()) {
             return value;
         }
@@ -2484,20 +2540,39 @@ fn source_value_width(
     context: &LoweringContext<'_>,
 ) -> Option<u32> {
     let typed_width = |ty: &crate::types::Ty| {
-        ty.bit_width().or_else(|| {
-            let crate::types::Ty::Named(definition) = ty else {
-                return None;
-            };
-            let qualified = context.resolved.qualified_name(*definition)?;
-            let symbols = context.design.enum_syms.get(&qualified).or_else(|| {
-                qualified
-                    .rsplit("::")
-                    .next()
-                    .and_then(|name| context.design.enum_syms.get(name))
-            })?;
-            let highest = symbols.keys().copied().max().unwrap_or(0);
-            Some((u64::BITS - highest.leading_zeros()).max(1))
-        })
+        ty.bit_width()
+            .or_else(|| {
+                let crate::types::Ty::Named(definition) = ty else {
+                    return None;
+                };
+                let qualified = context.resolved.qualified_name(*definition)?;
+                let symbols = context.design.enum_syms.get(&qualified).or_else(|| {
+                    qualified
+                        .rsplit("::")
+                        .next()
+                        .and_then(|name| context.design.enum_syms.get(name))
+                })?;
+                let highest = symbols.keys().copied().max().unwrap_or(0);
+                Some((u64::BITS - highest.leading_zeros()).max(1))
+            })
+            .or_else(|| {
+                let mut widths = context
+                    .process_ir
+                    .storages
+                    .iter()
+                    .filter(|storage| storage.ty.as_ref() == Some(ty))
+                    .filter_map(|storage| storage.layout.as_ref())
+                    .chain(
+                        process
+                            .locals
+                            .iter()
+                            .filter(|local| local.ty.as_ref() == Some(ty))
+                            .filter_map(|local| local.layout.as_ref()),
+                    )
+                    .filter_map(|layout| layout.bit_width()?.try_into().ok());
+                let first = widths.next()?;
+                widths.all(|width| width == first).then_some(first)
+            })
     };
     if let ProcessValueKind::Number(ProcessNumber::Integer(words)) = kind {
         let natural = integer_words_width(words)?;
@@ -2600,6 +2675,7 @@ fn source_value_width(
             .try_fold(0u32, |total, value| total.checked_add(width(value)?)),
         ProcessValueKind::Definition(_)
         | ProcessValueKind::Intrinsic(_)
+        | ProcessValueKind::Default
         | ProcessValueKind::Field { .. }
         | ProcessValueKind::Attribute { .. }
         | ProcessValueKind::Index { .. }

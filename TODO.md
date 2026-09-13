@@ -402,7 +402,10 @@ Remaining:
   zero-extends the raw bits while retaining its target family. Direct
   comparisons now use a packed operand's declared width, selections preserve
   signed branch values, and integer literals retain widths above the kernel
-  word instead of being clipped by their fallback type.
+  word instead of being clipped by their fallback type. Zero-argument type
+  construction is also explicit: `T()` and `T::new()` lower to one typed
+  `Default` value whose scalar, enum, packed, array, or struct contents come
+  from retained layout metadata instead of an unresolved runtime call.
   Inclusive directional range loops and source-order array loops execute as
   ordinary CFG back-edges; cursor/end state and the array snapshot live in the
   object so suspension inside a loop resumes without re-evaluating its

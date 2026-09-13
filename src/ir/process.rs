@@ -592,6 +592,13 @@ pub enum ProcessValueKind {
     Definition(DefId),
     /// A compiler/runtime name that intentionally has no source declaration.
     Intrinsic(String),
+    /// The recursive default value of the declared [`ProcessValue::ty`].
+    ///
+    /// This represents zero-argument type construction (`T()` and
+    /// `T::new()`) without retaining callable source syntax. Scalar defaults,
+    /// enum first-variant values, packed families, arrays, and structs are all
+    /// obtained from the same retained source layout metadata.
+    Default,
     /// A field or method member selected from a value.
     Field {
         /// Aggregate or receiver value.
@@ -1359,6 +1366,7 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
         | ProcessValueKind::Signal { .. }
         | ProcessValueKind::Definition(_)
         | ProcessValueKind::Intrinsic(_)
+        | ProcessValueKind::Default
         | ProcessValueKind::Invalid => Vec::new(),
     }
 }

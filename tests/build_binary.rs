@@ -81,6 +81,8 @@ fn direct_process_runtime_links_without_generated_design_c() {
            }
            struct Inner { pub byte: unsigned[8] }
            struct Packet { pub valid: Bit, pub inner: Inner }
+           enum ResetState { Idle = 2, Running = 3 }
+           struct ResetPair { pub state: ResetState, pub bits: unsigned[4] }
            entity Widen {
                source: unsigned[8] in,
                widened: unsigned[16] out,
@@ -111,6 +113,9 @@ fn direct_process_runtime_links_without_generated_design_c() {
                let nibble: unsigned[4] = 15;
                let wide_literal: unsigned[128] =
                    340282366920938463463374607431768211455;
+               let reset_state: ResetState = ResetState();
+               let reset_pair: ResetPair = ResetPair::new();
+               let reset_bits: unsigned[4] = unsigned[4]();
                let widen: Widen = {
                    .source = source,
                    .widened = widened,
@@ -153,6 +158,10 @@ fn direct_process_runtime_links_without_generated_design_c() {
                    assert!(wide_literal ==
                                340282366920938463463374607431768211455,
                            "wide integer literals retain their natural width");
+                   assert!(reset_state == ResetState::Idle and
+                               reset_pair.state == ResetState::Idle and
+                               reset_pair.bits == 0 and reset_bits == 0,
+                           "type construction uses recursive retained defaults");
                    assert!(packet.inner.byte == 9,
                            "direct lowering preserves nested aggregate layouts");
                    assert!(bytes[1] == 5,

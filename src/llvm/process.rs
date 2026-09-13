@@ -889,6 +889,7 @@ fn checked_process_values(design: &Design) -> Vec<bool> {
             | ProcessValueKind::Signal { .. }
             | ProcessValueKind::Definition(_)
             | ProcessValueKind::Intrinsic(_)
+            | ProcessValueKind::Default
             | ProcessValueKind::Attribute { .. }
             | ProcessValueKind::Invalid => false,
         };
@@ -1726,6 +1727,7 @@ fn process_value_in_layout<'ctx>(
         ProcessValueKind::Signal { signals, state } => {
             aggregate_signal_value(context, module, builder, design, signals, *state, width)?
         }
+        ProcessValueKind::Default => layout_default_value(context, builder, design, layout)?,
         ProcessValueKind::Field { base, field } => {
             let base_layout = process_value_layout(design, *base)?;
             let selected = field_slice(base_layout, field)?;
@@ -1994,6 +1996,12 @@ fn process_value<'ctx>(
             &storage_state_name(*storage),
             width,
         )?,
+        ProcessValueKind::Default => match process_value_layout(design, id) {
+            Some(layout) if layout_width(layout) == Some(width) => {
+                layout_default_value(context, builder, design, layout)?
+            }
+            _ => ty.const_zero(),
+        },
         ProcessValueKind::Attribute { base, attribute } => {
             ty.const_int(process_layout_attribute(design, *base, attribute)?, false)
         }
@@ -2649,6 +2657,7 @@ fn process_value_supported_in_layout(
     };
     let has = |id: ProcessValueId| supported.get(id.0 as usize).copied().unwrap_or(false);
     match &value.kind {
+        ProcessValueKind::Default => true,
         ProcessValueKind::Storage(storage) => storage_state_width(design, *storage) == Some(width),
         ProcessValueKind::Local { process, local } => {
             local_width(design, *process, *local) == Some(width)
@@ -2774,7 +2783,8 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
         let shape = match &value.kind {
             ProcessValueKind::Number(_)
             | ProcessValueKind::BitString { .. }
-            | ProcessValueKind::Char(_) => true,
+            | ProcessValueKind::Char(_)
+            | ProcessValueKind::Default => true,
             ProcessValueKind::Signal { signals, state } => {
                 !signals.is_empty()
                     && signals
