@@ -799,6 +799,7 @@ fn normalized_value_width(
             ProcessUnaryOp::RealToInteger => Some(64),
             ProcessUnaryOp::Neg | ProcessUnaryOp::Not => width(operand),
         },
+        ProcessValueKind::RawResize { operand } => width(operand),
         ProcessValueKind::Binary {
             operation,
             left,
@@ -1819,6 +1820,77 @@ fn inline_bound_value(path: &ast::Path, context: &LoweringContext<'_>) -> Option
         .find_map(|bindings| bindings.get(&definition).copied())
 }
 
+/// Lower a vector-family type application to the language's explicit raw
+/// resize operation. The target type supplies both the packed width and the
+/// numeric interpretation (`unsigned`, `signed`, or another std family);
+/// resizing itself always truncates or zero-extends.
+fn lower_process_raw_resize(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    target: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let ast::Expr::Call {
+        callee,
+        type_args,
+        args,
+        bang: false,
+        span,
+    } = expression
+    else {
+        return None;
+    };
+    let ast::Expr::Index { base, index, .. } = callee.as_ref() else {
+        return None;
+    };
+    if !type_args.is_empty() || args.len() != 1 {
+        return None;
+    }
+    let target = target.cloned().or_else(|| {
+        let ast::Expr::Path(path) = base.as_ref() else {
+            return None;
+        };
+        let definition = context.resolved.resolved(path.span)?;
+        let family = context.resolved.qualified_name(definition)?;
+        let family_known = context.design.array_element_of_family.contains_key(&family)
+            || family
+                .rsplit("::")
+                .next()
+                .is_some_and(|leaf| context.design.array_element_of_family.contains_key(leaf));
+        if !family_known {
+            return None;
+        }
+        let len = crate::ir::eval_const_fns(index, context.constant_integers, context.functions, 0)
+            .and_then(|width| u32::try_from(width).ok())?;
+        Some(crate::types::Ty::Array {
+            // Packed families carry their width independently of the element
+            // type. The family identity is sufficient until this temporary
+            // adapter is removed in favour of canonical Process lowering.
+            elem: Box::new(crate::types::Ty::Error),
+            family: Some(family),
+            len,
+        })
+    })?;
+    if !matches!(
+        target,
+        crate::types::Ty::Array {
+            family: Some(_),
+            ..
+        }
+    ) {
+        return None;
+    }
+    let width = target.bit_width().filter(|width| *width != 0)?;
+    let operand = value_ref(&args[0], process, context);
+    Some(push_value(
+        *span,
+        Some(target),
+        Some(width),
+        ProcessValueKind::RawResize { operand },
+        context,
+    ))
+}
+
 /// Inline a pure, value-returning Siox function into the Process value arena.
 /// Parameters and `let` bindings remain compile-time SSA aliases; control
 /// flow becomes value-level selection, so the backend never needs an AST or a
@@ -2154,6 +2226,9 @@ fn value_ref_with_type(
             let width = source_value_width(&kind, ty.as_ref(), process, context);
             return push_value(span, ty, width, kind, context);
         }
+        if let Some(value) = lower_process_raw_resize(expression, process, context, ty.as_ref()) {
+            return value;
+        }
         if let Some(value) = inline_process_call(expression, process, context, ty.as_ref()) {
             return value;
         }
@@ -2424,6 +2499,13 @@ fn source_value_width(
             Some((u64::BITS - highest.leading_zeros()).max(1))
         })
     };
+    if let ProcessValueKind::Number(ProcessNumber::Integer(words)) = kind {
+        let natural = integer_words_width(words)?;
+        return Some(
+            ty.and_then(&typed_width)
+                .map_or(natural, |contextual| natural.max(contextual)),
+        );
+    }
     if let Some(width) = ty.and_then(&typed_width).filter(|width| *width != 0) {
         return Some(width);
     }
@@ -2478,6 +2560,7 @@ fn source_value_width(
             ProcessUnaryOp::RealToInteger => Some(64),
             ProcessUnaryOp::Neg | ProcessUnaryOp::Not => width(operand),
         },
+        ProcessValueKind::RawResize { operand } => width(operand),
         ProcessValueKind::Binary {
             operation,
             left,
@@ -2693,10 +2776,21 @@ fn lower_binary_operator(
         .into_iter()
         .flatten()
         .any(|ty| matches!(ty, crate::types::Ty::Real));
-    let signed = [left, right]
-        .into_iter()
-        .flatten()
-        .any(process_type_is_signed);
+    // A contextual integer literal adopts the numeric vector family beside
+    // it. `unsigned[4] * 2` is therefore unsigned even though the standalone
+    // literal's fallback type is the signed kernel integer; a `signed`
+    // family beside that same literal selects signed operations.
+    let types = [left, right].into_iter().flatten().collect::<Vec<_>>();
+    let signed = types
+        .iter()
+        .find_map(|ty| match ty {
+            crate::types::Ty::Array {
+                family: Some(family),
+                ..
+            } => Some(family.rsplit("::").next() == Some("signed")),
+            _ => None,
+        })
+        .unwrap_or_else(|| types.into_iter().any(process_type_is_signed));
     match operator {
         ast::BinOp::Add if real => ProcessBinaryOp::FloatAdd,
         ast::BinOp::Sub if real => ProcessBinaryOp::FloatSub,

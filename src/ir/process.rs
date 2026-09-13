@@ -658,6 +658,13 @@ pub enum ProcessValueKind {
         /// Operand.
         operand: ProcessValueId,
     },
+    /// Explicit packed conversion: truncate or zero-extend the operand's raw
+    /// bit pattern to this value's declared width. Numeric interpretation is
+    /// carried by [`ProcessValue::ty`], not by the resize operation.
+    RawResize {
+        /// Value whose bit pattern is resized.
+        operand: ProcessValueId,
+    },
     /// A binary operation.
     Binary {
         /// Operation performed.
@@ -1309,7 +1316,8 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
         | ProcessValueKind::Attribute { base, .. }
         | ProcessValueKind::BitSlice { base, .. }
         | ProcessValueKind::TableLookup { index: base, .. }
-        | ProcessValueKind::Unary { operand: base, .. } => vec![*base],
+        | ProcessValueKind::Unary { operand: base, .. }
+        | ProcessValueKind::RawResize { operand: base } => vec![*base],
         ProcessValueKind::Index { base, index } => vec![*base, *index],
         ProcessValueKind::CheckedIndex { index, valid, .. } => vec![*index, *valid],
         ProcessValueKind::Range { left, right } => left.iter().chain(right).copied().collect(),

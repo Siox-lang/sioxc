@@ -229,9 +229,12 @@ language-lowering path.
    from generated LLVM. Pure runtime-valued free/static Siox calls are now
    inlined into the Process value graph using resolver identities for
    parameters and locals; returning `if` and enum/Logic `match` expressions
-   become typed selections. Receiver methods, procedure-shaped functions,
-   runtime recursion, and general call CFGs remain before the generated-C path
-   can be retired.
+   become typed selections. Packed-family construction now lowers to an
+   explicit typed raw-resize value rather than surviving as a call; its target
+   width governs vector/literal comparisons, while selections retain signed
+   branch interpretation. Receiver methods, procedure-shaped functions,
+   runtime recursion, non-packed conversions, and general call CFGs remain
+   before the generated-C path can be retired.
 7. **Run both native backends differentially.** Require identical test results,
    diagnostics, time progression, resolved values, and VCD/FST samples across
    the full default and bit-packed corpus.

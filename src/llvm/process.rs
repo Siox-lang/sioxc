@@ -833,7 +833,8 @@ fn checked_process_values(design: &Design) -> Vec<bool> {
             ProcessValueKind::Field { base, .. }
             | ProcessValueKind::BitSlice { base, .. }
             | ProcessValueKind::TableLookup { index: base, .. }
-            | ProcessValueKind::Unary { operand: base, .. } => has(&checked, *base),
+            | ProcessValueKind::Unary { operand: base, .. }
+            | ProcessValueKind::RawResize { operand: base } => has(&checked, *base),
             ProcessValueKind::Index { base, index }
             | ProcessValueKind::Binary {
                 left: base,
@@ -983,13 +984,16 @@ fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bool {
                 return false;
             };
             !matches!(state, ProcessSignalState::Event)
-                && design.signals.get(signal.0 as usize).is_some_and(|signal| {
-                    signal.integer && signal.range.map(|(left, _)| left < 0).unwrap_or(true)
-                })
+                && (value.ty.as_ref().is_some_and(process_type_is_signed)
+                    || process_value_layout(design, id).is_some_and(process_layout_is_signed)
+                    || design.signals.get(signal.0 as usize).is_some_and(|signal| {
+                        signal.integer && signal.range.map(|(left, _)| left < 0).unwrap_or(true)
+                    }))
         }
         ProcessValueKind::Local { .. } | ProcessValueKind::Storage(_) => {
             value.ty.as_ref().is_some_and(process_type_is_signed)
         }
+        ProcessValueKind::RawResize { .. } => value.ty.as_ref().is_some_and(process_type_is_signed),
         ProcessValueKind::Unary { operation, .. } => matches!(
             operation,
             ProcessUnaryOp::Neg | ProcessUnaryOp::RealToInteger
@@ -1025,6 +1029,18 @@ fn process_type_is_signed(ty: &siox::types::Ty) -> bool {
                 ..
             } if family.rsplit("::").next() == Some("signed")
         )
+}
+
+fn process_layout_is_signed(layout: &SourceLayout) -> bool {
+    match &layout.kind {
+        LayoutKind::Scalar {
+            domain: siox::ir::ScalarDomain::Integer,
+            value_range,
+            ..
+        } => value_range.is_none_or(|(left, _)| left < 0),
+        LayoutKind::Packed { family, .. } => family.rsplit("::").next() == Some("signed"),
+        _ => false,
+    }
 }
 
 fn layout_for_type<'a>(design: &'a Design, ty: &siox::types::Ty) -> Option<&'a SourceLayout> {
@@ -1364,7 +1380,10 @@ fn process_binary<'ctx>(
             | ProcessBinaryOp::ArithmeticShr
     );
     let operand_width = if comparison {
-        left_width.max(right_width)
+        [left, right]
+            .into_iter()
+            .find_map(|operand| process_value_packed_width(design, operand))
+            .unwrap_or_else(|| left_width.max(right_width))
     } else {
         result_width
     };
@@ -1597,6 +1616,28 @@ fn process_binary<'ctx>(
         | ProcessBinaryOp::Custom(_) => return None,
     };
     fit(builder, result, result_width)
+}
+
+/// Width of the packed-vector domain governing a comparison. Integer
+/// literals are polymorphic at a vector comparison site: both
+/// `signed[8](x) == -56` and `signed[16](x) == 65520` compare the low 8/16-bit
+/// patterns. Widening both sides to the fallback kernel-integer width would
+/// make one of those equivalent spellings fail.
+fn process_value_packed_width(design: &Design, id: ProcessValueId) -> Option<u32> {
+    let value = design.process_ir.values.get(id.0 as usize)?;
+    if matches!(
+        value.ty,
+        Some(siox::types::Ty::Array {
+            family: Some(_),
+            ..
+        })
+    ) {
+        return value.bit_width;
+    }
+    match &process_value_layout(design, id)?.kind {
+        LayoutKind::Packed { width, .. } => Some(*width),
+        _ => None,
+    }
 }
 
 fn aggregate_signal_value<'ctx>(
@@ -2249,6 +2290,19 @@ fn process_value<'ctx>(
                 fit_signed(builder, integer, width)?
             }
         },
+        ProcessValueKind::RawResize { operand } => {
+            let operand = process_value(
+                context,
+                module,
+                builder,
+                design,
+                *operand,
+                active,
+                index_sites,
+                cache,
+            )?;
+            fit(builder, operand, width)?
+        }
         ProcessValueKind::Binary {
             operation,
             left,
@@ -2316,7 +2370,7 @@ fn process_value<'ctx>(
                 design,
                 *then_value,
                 width,
-                false,
+                true,
                 then_active,
                 index_sites,
                 cache,
@@ -2328,7 +2382,7 @@ fn process_value<'ctx>(
                 design,
                 *else_value,
                 width,
-                false,
+                true,
                 else_active,
                 index_sites,
                 cache,
@@ -2795,7 +2849,9 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                             })
                         })
             }
-            ProcessValueKind::Unary { operand, .. } => has(&supported, *operand),
+            ProcessValueKind::Unary { operand, .. } | ProcessValueKind::RawResize { operand } => {
+                has(&supported, *operand)
+            }
             ProcessValueKind::Binary {
                 operation,
                 left,

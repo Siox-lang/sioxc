@@ -397,7 +397,12 @@ Remaining:
   `match` expressions become typed selections while preserving integer, real,
   signed-vector, and declared return-type semantics. Receiver methods,
   procedure-shaped bodies, runtime recursion, and the remaining match forms
-  still need executable CFG lowering.
+  still need executable CFG lowering. Explicit packed-family construction is
+  represented by `RawResize`, a typed Process value that truncates or
+  zero-extends the raw bits while retaining its target family. Direct
+  comparisons now use a packed operand's declared width, selections preserve
+  signed branch values, and integer literals retain widths above the kernel
+  word instead of being clipped by their fallback type.
   Inclusive directional range loops and source-order array loops execute as
   ordinary CFG back-edges; cursor/end state and the array snapshot live in the
   object so suspension inside a loop resumes without re-evaluating its

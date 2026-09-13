@@ -76,6 +76,9 @@ fn direct_process_runtime_links_without_generated_design_c() {
                if value < 0 { return 0 - value; }
                return value;
            }
+           fn low_nibble(value: unsigned[8]) -> unsigned[8] {
+               return unsigned[8](unsigned[4](value));
+           }
            struct Inner { pub byte: unsigned[8] }
            struct Packet { pub valid: Bit, pub inner: Inner }
            entity Widen {
@@ -105,6 +108,9 @@ fn direct_process_runtime_links_without_generated_design_c() {
                let signed_source: signed[8] = 240;
                let signed_widened: signed[16];
                let signed_shifted: signed[8];
+               let nibble: unsigned[4] = 15;
+               let wide_literal: unsigned[128] =
+                   340282366920938463463374607431768211455;
                let widen: Widen = {
                    .source = source,
                    .widened = widened,
@@ -114,7 +120,7 @@ fn direct_process_runtime_links_without_generated_design_c() {
                };
                process clock_source { clock = not clock after 1ns; }
                process run {
-                   assert!(widened == 200 and signed_widened == 65520,
+                   assert!(widened == 200 and signed_widened == 0 - 16,
                            "reactive hardware settles before test stimulus starts");
                    source = 201;
                    assert!(widened == 201,
@@ -138,15 +144,24 @@ fn direct_process_runtime_links_without_generated_design_c() {
                            "runtime-valued Siox calls inline into Process values");
                    assert!(absolute(0 - sum) == 3,
                            "inlined kernel-integer operations remain signed");
+                   assert!(low_nibble(source) == 9,
+                           "explicit vector construction is a raw resize");
+                   assert!(nibble * 2 == 14,
+                           "integer literals adopt an unsigned vector family");
+                   assert!(signed_source == 0 - 16,
+                           "signed vector equality compares at the vector width");
+                   assert!(wide_literal ==
+                               340282366920938463463374607431768211455,
+                           "wide integer literals retain their natural width");
                    assert!(packet.inner.byte == 9,
                            "direct lowering preserves nested aggregate layouts");
                    assert!(bytes[1] == 5,
                            "direct lowering preserves array layouts");
                    assert!(widened == 201,
                            "direct normalized widening zero-extends the source bits");
-                   assert!(signed_widened == 65520,
+                   assert!(signed_widened == 0 - 16,
                            "direct normalized widening sign-extends kernel values");
-                   assert!(signed_shifted == 248,
+                   assert!(signed_shifted == 0 - 8,
                            "direct std signed shifts retain computed mask widths");
                    assert!(descending'length == 3 and descending'left == 3
                            and descending'right == 1 and descending'high == 3
