@@ -1982,6 +1982,58 @@ fn process_value_in_layout<'ctx>(
                 .ok()?
                 .into_int_value()
         }
+        ProcessValueKind::Match { scrutinee, arms } => {
+            let scrutinee_value = process_value(
+                context,
+                module,
+                builder,
+                design,
+                *scrutinee,
+                active,
+                index_sites,
+                cache,
+            )?;
+            let eligible = process_match_eligibility(
+                context,
+                builder,
+                design,
+                *scrutinee,
+                scrutinee_value,
+                arms,
+            )?;
+            let mut result = None;
+            for (arm, eligible) in arms.iter().zip(eligible).rev() {
+                let arm_active = if cache.contains_check(arm.value) {
+                    Some(match active {
+                        Some(outer) => builder
+                            .build_and(outer, eligible, "pv.aggregate.match.arm.active")
+                            .ok()?,
+                        None => eligible,
+                    })
+                } else {
+                    None
+                };
+                let value = process_value_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    arm.value,
+                    layout,
+                    arm_active,
+                    index_sites,
+                    cache,
+                )?;
+                result = Some(match result {
+                    Some(other) => builder
+                        .build_select(eligible, value, other, "pv.aggregate.match.select")
+                        .ok()?
+                        .into_int_value(),
+                    None => value,
+                });
+            }
+            result?
+        }
         _ => process_value_at(
             context,
             module,
@@ -2481,27 +2533,14 @@ fn process_value<'ctx>(
                 index_sites,
                 cache,
             )?;
-            let mut matched = context.bool_type().const_zero();
-            let mut eligible = Vec::with_capacity(arms.len());
-            for arm in arms {
-                let condition = process_pattern_condition(
-                    context,
-                    builder,
-                    design,
-                    *scrutinee,
-                    scrutinee_value,
-                    &arm.pattern,
-                )?;
-                let not_matched = builder.build_not(matched, "pv.match.not_matched").ok()?;
-                eligible.push(
-                    builder
-                        .build_and(not_matched, condition, "pv.match.eligible")
-                        .ok()?,
-                );
-                matched = builder
-                    .build_or(matched, condition, "pv.match.matched")
-                    .ok()?;
-            }
+            let eligible = process_match_eligibility(
+                context,
+                builder,
+                design,
+                *scrutinee,
+                scrutinee_value,
+                arms,
+            )?;
             let mut result = None;
             for (arm, eligible) in arms.iter().zip(eligible).rev() {
                 let arm_active = if cache.contains_check(arm.value) {
@@ -2926,6 +2965,14 @@ fn process_value_supported_in_layout(
                 && process_value_supported_in_layout(design, *then_value, layout, supported)
                 && process_value_supported_in_layout(design, *else_value, layout, supported)
         }
+        ProcessValueKind::Match { scrutinee, arms } => {
+            has(*scrutinee)
+                && !arms.is_empty()
+                && arms.iter().all(|arm| {
+                    process_pattern_supported(&arm.pattern)
+                        && process_value_supported_in_layout(design, arm.value, layout, supported)
+                })
+        }
         _ => has(id),
     }
 }
@@ -3058,15 +3105,22 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
             ProcessValueKind::Match { scrutinee, arms } => {
                 has(&supported, *scrutinee)
                     && !arms.is_empty()
-                    && process_value_layout(design, id).is_none_or(|layout| {
-                        matches!(
-                            layout.kind,
-                            LayoutKind::Scalar { .. } | LayoutKind::Packed { .. }
-                        )
-                    })
-                    && arms.iter().all(|arm| {
-                        process_pattern_supported(&arm.pattern) && has(&supported, arm.value)
-                    })
+                    && process_value_layout(design, id).map_or_else(
+                        || {
+                            arms.iter().all(|arm| {
+                                process_pattern_supported(&arm.pattern)
+                                    && has(&supported, arm.value)
+                            })
+                        },
+                        |layout| {
+                            arms.iter().all(|arm| {
+                                process_pattern_supported(&arm.pattern)
+                                    && process_value_supported_in_layout(
+                                        design, arm.value, layout, &supported,
+                                    )
+                            })
+                        },
+                    )
             }
             ProcessValueKind::Attribute { base, attribute } => {
                 process_layout_attribute(design, *base, attribute).is_some()
@@ -5202,6 +5256,38 @@ fn process_pattern_condition<'ctx>(
             .ok(),
         ProcessPattern::Path { .. } | ProcessPattern::BitPattern(_) => None,
     }
+}
+
+fn process_match_eligibility<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    scrutinee_id: ProcessValueId,
+    scrutinee: IntValue<'ctx>,
+    arms: &[siox::ir::ProcessValueMatchArm],
+) -> Option<Vec<IntValue<'ctx>>> {
+    let mut matched = context.bool_type().const_zero();
+    let mut eligible = Vec::with_capacity(arms.len());
+    for arm in arms {
+        let condition = process_pattern_condition(
+            context,
+            builder,
+            design,
+            scrutinee_id,
+            scrutinee,
+            &arm.pattern,
+        )?;
+        let not_matched = builder.build_not(matched, "pv.match.not_matched").ok()?;
+        eligible.push(
+            builder
+                .build_and(not_matched, condition, "pv.match.eligible")
+                .ok()?,
+        );
+        matched = builder
+            .build_or(matched, condition, "pv.match.matched")
+            .ok()?;
+    }
+    Some(eligible)
 }
 
 #[allow(clippy::too_many_arguments)]

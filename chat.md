@@ -9597,3 +9597,20 @@ timeouts, 0 build failures, and 7 compile-only files, with no pass regression.
 The exact pinned-Rust `scripts/ci-local.sh` gate is green: format, frontend
 check/Clippy, build, default and bitpack tests, all-target Clippy, and both
 default and bitpack 183-file corpus runs.
+
+### 2026-09-14 — Codex — aggregate Process match values
+
+Extended value-level Process matches from scalar/packed results to recursively
+laid-out structs and arrays. The direct LLVM emitter evaluates match eligibility
+once in source priority order, emits every arm against the destination
+`SourceLayout`, and selects the complete packed aggregate. Checked accesses are
+still predicated by the eligible arm, and field order comes from the declared
+layout rather than literal order.
+
+The direct match regression now selects a `Pair` whose fields are deliberately
+written in reverse order, then verifies both the signed member and the complete
+unsigned member. All 26 `build_binary` integration tests pass. Rerunning the 55
+previously unsupported corpus executables produced no new pass yet: each
+aggregate-heavy corpus case reaches another unsupported operation later in its
+stimulus, so this closes an IR/backend capability without overstating corpus
+coverage.

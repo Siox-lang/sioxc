@@ -371,6 +371,7 @@ fn direct_runtime_dispatches_normalized_match_patterns() {
         r#"module direct_match;
            using std::bits::{signed, unsigned};
            enum State { Idle, Run, Done }
+           struct Pair { pub left: signed[8], pub right: unsigned[8] }
            #[test] entity DirectMatch {}
            impl DirectMatch {
                let opcode: unsigned[8] = 0xA7;
@@ -380,6 +381,7 @@ fn direct_runtime_dispatches_normalized_match_patterns() {
                let selected: integer = 0;
                let negative: signed[8] = 240;
                let branch: signed[8] = 0;
+               let pair: Pair = Pair { .left = 0, .right = 0 };
                match opcode { x"A?" => class = 1, _ => class = 2, }
                match 0 - 3 { -5..-1 => ranged = 1, _ => ranged = 2, }
                match state {
@@ -387,10 +389,16 @@ fn direct_runtime_dispatches_normalized_match_patterns() {
                    State::Done => selected = 2,
                }
                branch = match class { 1 => negative, _ => 0 };
+               pair = match class {
+                   1 => Pair { .right = 7, .left = negative },
+                   _ => Pair { .left = 0, .right = 0 },
+               };
                assert!(class == 1, "masked bit pattern selects its arm");
                assert!(ranged == 1, "signed inclusive range selects its arm");
                assert!(selected == 1, "enum or-pattern selects its arm");
                assert!(branch < 0, "match expression retains signed arm semantics");
+               assert!(pair.left < 0, "aggregate match retains signed field semantics");
+               assert!(pair.right == 7, "aggregate match selects the complete struct");
            }"#,
     )
     .unwrap();
