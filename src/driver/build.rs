@@ -64,7 +64,14 @@ fn link_process_runtime(design: &Design, out: &Path) -> Result<(), String> {
     let result = (|| {
         siox::llvm::emit_object(design, &object)?;
 
-        let precompiled = !PROCESS_RUNTIME_O.is_empty() && !PROCESS_MAIN_O.is_empty();
+        // Checked through a slice rather than directly: `build.rs` writes an
+        // empty placeholder when clang could not precompile, so emptiness is a
+        // real build-configuration signal, but clippy's `const_is_empty` sees
+        // only the configuration in front of it and rejects a direct
+        // `CONST.is_empty()`. This is the shape the libfst objects already use.
+        let precompiled = [PROCESS_RUNTIME_O, PROCESS_MAIN_O]
+            .iter()
+            .all(|contents| !contents.is_empty());
         let mut clang = Command::new("clang");
         clang.arg(&object);
         if precompiled {
