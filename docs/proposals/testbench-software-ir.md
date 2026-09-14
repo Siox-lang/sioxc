@@ -236,7 +236,10 @@ language-lowering path.
    expression typing is intentionally incomplete. The target width governs
    vector/literal comparisons, while selections retain signed branch
    interpretation. Zero-argument `T()`/`T::new()` construction is a typed
-   recursive default value backed by retained layout metadata. Receiver
+   recursive default value backed by retained layout metadata. Contextually
+   typed string tokens for fixed digital arrays likewise become exact-width
+   Process values using the declaration-owned layout, while runtime UTF-8
+   strings keep their distinct representation. Receiver
    methods, procedure-shaped functions, runtime recursion, other non-packed
    conversions, and general call CFGs remain before the generated-C path can
    be retired.

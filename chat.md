@@ -9434,3 +9434,31 @@ correct declared initializer context also moves `derive_chain_test` and
 `from_test` from semantic failures to passing. The remaining categories are 64
 unsupported, 22 semantic failures, 7 scheduler timeouts, 0 build failures, and
 7 compile-only files.
+
+### 2026-09-14 — Codex — contextual digital strings in Process IR
+
+A quoted token is not always a runtime `string`: in a declaration such as
+`let pattern: Bit[3..0] = "1010"`, the declared fixed array supplies the
+literal's representation. Process storage registration now treats its retained
+`SourceLayout` as authoritative after exact declared nominal identity and
+before an initializer's intentionally contextual expression type. Layout-name
+recovery considers only declarations that can denote types, preventing an
+equal function or local leaf from becoming a nominal type accidentally.
+
+The adapter lowers a contextually typed fixed digital string to an exact-width
+`BitString`. Packed numeric families preserve conventional most-significant-
+character orientation; ordinary directional arrays preserve source element
+order, which maps the written left index to aggregate position zero. Runtime
+UTF-8 `string` values remain `ProcessValueKind::String`. Packed-family
+metavalues stay fail-closed until Process storage has the companion plane they
+require rather than silently collapsing X/Z into binary values.
+
+Verification is green under the 8 GiB cap: strict all-target/all-feature
+Clippy, frontend-only no-default checking, 425 default library tests plus all
+integration/doc tests, 407 all-feature library tests plus integrations/docs,
+the direct-runtime fixture, focused `numeric_literal_syntax_test`, and the
+183-file compatibility corpus. The full no-generated-C matrix improves from
+83 to 85 passing executables: `numeric_literal_syntax_test` and
+`string_vector_test` move from unsupported to passing. The remaining categories
+are 62 unsupported, 22 semantic failures, 7 scheduler timeouts, 0 build
+failures, and 7 compile-only files.

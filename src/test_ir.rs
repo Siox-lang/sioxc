@@ -155,6 +155,93 @@ fn declared_nominal_type(ty: Option<&ast::Type>, resolved: &Resolved) -> Option<
     .then_some(crate::types::Ty::Named(definition))
 }
 
+fn nominal_type_from_name(name: &str, resolved: &Resolved) -> Option<crate::types::Ty> {
+    let type_definition = |definition: &&crate::resolve::DefInfo| {
+        matches!(
+            definition.kind,
+            crate::resolve::DefKind::Builtin
+                | crate::resolve::DefKind::Struct
+                | crate::resolve::DefKind::View
+                | crate::resolve::DefKind::Enum
+                | crate::resolve::DefKind::Entity
+                | crate::resolve::DefKind::TypeAlias
+        )
+    };
+    let exact = resolved
+        .defs()
+        .iter()
+        .enumerate()
+        .filter(|(_, definition)| type_definition(definition))
+        .find_map(|(index, _)| {
+            let definition = crate::resolve::DefId(u32::try_from(index).ok()?);
+            (resolved.qualified_name(definition).as_deref() == Some(name)).then_some(definition)
+        });
+    let definition = exact.or_else(|| {
+        let leaf = name.rsplit("::").next()?;
+        let mut candidates = resolved
+            .defs()
+            .iter()
+            .enumerate()
+            .filter(|(_, definition)| definition.name == leaf && type_definition(definition))
+            .filter_map(|(index, _)| u32::try_from(index).ok().map(crate::resolve::DefId));
+        let first = candidates.next()?;
+        candidates.next().is_none().then_some(first)
+    })?;
+    Some(crate::types::Ty::Named(definition))
+}
+
+/// Recover the checked value shape from the declaration-owned layout. This is
+/// more authoritative than an initializer expression for contextual literals:
+/// `let bits: Bit[3..0] = "1010"` has a string token on the right but an array
+/// of `Bit` values in storage.
+fn process_type_from_layout(
+    layout: &crate::ir::SourceLayout,
+    resolved: &Resolved,
+) -> Option<crate::types::Ty> {
+    match &layout.kind {
+        LayoutKind::Scalar {
+            domain, nominal, ..
+        } => nominal
+            .as_deref()
+            .and_then(|name| nominal_type_from_name(name, resolved))
+            .or_else(|| match domain {
+                crate::ir::ScalarDomain::Integer => Some(crate::types::Ty::Integer),
+                crate::ir::ScalarDomain::Real => Some(crate::types::Ty::Real),
+                crate::ir::ScalarDomain::Character => Some(crate::types::Ty::Char),
+                crate::ir::ScalarDomain::Enum(name) => nominal_type_from_name(name, resolved),
+                crate::ir::ScalarDomain::Bits => None,
+            }),
+        LayoutKind::Packed {
+            width,
+            family,
+            range,
+            element_enum,
+        } => Some(crate::types::Ty::Array {
+            elem: Box::new(
+                element_enum
+                    .as_deref()
+                    .and_then(|name| nominal_type_from_name(name, resolved))
+                    .unwrap_or(crate::types::Ty::Error),
+            ),
+            len: range
+                .and_then(|range| range.len())
+                .and_then(|length| u32::try_from(length).ok())
+                .unwrap_or(*width),
+            family: Some(family.clone()),
+        }),
+        LayoutKind::Array {
+            range: Some(range),
+            element,
+        } => Some(crate::types::Ty::Array {
+            elem: Box::new(process_type_from_layout(element, resolved)?),
+            len: u32::try_from(range.len()?).ok()?,
+            family: None,
+        }),
+        LayoutKind::Struct { name, .. } => nominal_type_from_name(name, resolved),
+        LayoutKind::Array { range: None, .. } | LayoutKind::Opaque { .. } => None,
+    }
+}
+
 fn constant_suffixes(
     modules: &[Module],
     resolved: &Resolved,
@@ -1074,13 +1161,16 @@ fn register_test_storages(
             continue;
         };
         let id = ProcessStorageId(process_ir.storages.len() as u32);
-        let ty = declaration
-            .value
-            .as_ref()
-            .and_then(|value| typed.expr_type(ast::expr_span(value)))
-            .filter(|ty| !matches!(ty, crate::types::Ty::Error))
-            .cloned()
-            .or_else(|| declared_nominal_type(declaration.ty.as_ref(), resolved));
+        let ty = declared_nominal_type(declaration.ty.as_ref(), resolved)
+            .or_else(|| process_type_from_layout(layout, resolved))
+            .or_else(|| {
+                declaration
+                    .value
+                    .as_ref()
+                    .and_then(|value| typed.expr_type(ast::expr_span(value)))
+                    .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                    .cloned()
+            });
         process_ir.storages.push(ProcessStorage {
             id,
             owner: root,
@@ -2263,6 +2353,81 @@ fn inline_select_value(
     ))
 }
 
+/// Convert a contextually typed string token into the packed representation of
+/// a fixed digital array. Ordinary `string` values keep their runtime string
+/// node; only a non-`Char` array target selects this path.
+fn contextual_string_bits(
+    text: &str,
+    ty: Option<&crate::types::Ty>,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> Option<(u32, Vec<u64>)> {
+    let crate::types::Ty::Array { elem, len, family } = ty? else {
+        return None;
+    };
+    if matches!(elem.as_ref(), crate::types::Ty::Char) {
+        return None;
+    }
+    let characters = text.chars().collect::<Vec<_>>();
+    if characters.len() != usize::try_from(*len).ok()? {
+        return None;
+    }
+
+    let mut encoded = Vec::with_capacity(characters.len());
+    let element_width = if family.is_some() {
+        for character in characters {
+            encoded.push(match character {
+                '0' | 'L' => 0,
+                '1' | 'H' => 1,
+                // Packed numeric families carry a separate metavalue plane in
+                // hardware. Process storage does not model that plane yet, so
+                // do not silently collapse an unknown into an ordinary bit.
+                _ => return None,
+            });
+        }
+        1
+    } else {
+        let first = characters.first().copied()?;
+        let number = character_number(first, Some(elem), context)?;
+        let kind = ProcessValueKind::Number(number.clone());
+        let width = source_value_width(&kind, Some(elem), process, context)?;
+        let encode = |character| match character_number(character, Some(elem), context)? {
+            ProcessNumber::Integer(words)
+                if words
+                    .get(1..)
+                    .is_none_or(|rest| rest.iter().all(|word| *word == 0)) =>
+            {
+                Some(words.first().copied().unwrap_or(0))
+            }
+            ProcessNumber::Integer(_) | ProcessNumber::Real(_) => None,
+        };
+        encoded.push(encode(first)?);
+        for character in characters.into_iter().skip(1) {
+            encoded.push(encode(character)?);
+        }
+        width
+    };
+
+    let width = element_width.checked_mul(*len)?;
+    let mut words = vec![0u64; usize::try_from(width.div_ceil(64)).ok()?];
+    for (position, value) in encoded.into_iter().enumerate() {
+        let position = u32::try_from(position).ok()?;
+        let element = if family.is_some() {
+            len.checked_sub(position.checked_add(1)?)?
+        } else {
+            position
+        };
+        let offset = element.checked_mul(element_width)?;
+        for bit in 0..element_width.min(64) {
+            if value & (1u64 << bit) != 0 {
+                let absolute = offset.checked_add(bit)?;
+                words[usize::try_from(absolute / 64).ok()?] |= 1u64 << (absolute % 64);
+            }
+        }
+    }
+    Some((width, words))
+}
+
 /// Lower an expression recursively into the process operand arena. Children
 /// are inserted before their parent, so ids form a directly executable DAG.
 fn value_ref(
@@ -2378,7 +2543,12 @@ fn value_ref_with_type(
             Some(number) => ProcessValueKind::Number(number),
             None => ProcessValueKind::Char(*ch),
         },
-        ast::Expr::StrLit { text, .. } => ProcessValueKind::String(text.clone()),
+        ast::Expr::StrLit { text, .. } => {
+            match contextual_string_bits(text, ty.as_ref(), process, context) {
+                Some((width, words)) => ProcessValueKind::BitString { width, words },
+                None => ProcessValueKind::String(text.clone()),
+            }
+        }
         ast::Expr::Field { base, field, .. } => {
             if let Some(signals) = signal_reference(expression, process, context) {
                 ProcessValueKind::Signal {

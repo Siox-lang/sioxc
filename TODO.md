@@ -410,6 +410,12 @@ Remaining:
   construction is also explicit: `T()` and `T::new()` lower to one typed
   `Default` value whose scalar, enum, packed, array, or struct contents come
   from retained layout metadata instead of an unresolved runtime call.
+  Contextually typed string tokens such as
+  `let pattern: Bit[3..0] = "1010"` now use that declaration-owned layout and
+  lower to exact-width digital array values; ordinary `string` declarations
+  remain runtime UTF-8 strings. The recovered nominal identity is restricted
+  to type declarations, so an equal function/local leaf cannot capture layout
+  typing.
   Inclusive directional range loops and source-order array loops execute as
   ordinary CFG back-edges; cursor/end state and the array snapshot live in the
   object so suspension inside a loop resumes without re-evaluating its

@@ -106,6 +106,7 @@ fn direct_process_runtime_links_without_generated_design_c() {
                let bytes: unsigned[8][3] = [1, 2, 3];
                let descending: Bit[3..1];
                let ascending: Bit[0..2];
+               let pattern: Bit[3..0] = "1010";
                let source: unsigned[8] = 200;
                let widened: unsigned[16];
                let signed_source: signed[8] = 240;
@@ -166,6 +167,9 @@ fn direct_process_runtime_links_without_generated_design_c() {
                            "type construction uses recursive retained defaults");
                    assert!(unsigned[8](wrapped) == 201,
                            "nominal newtype construction preserves its value");
+                   assert!(pattern[3] == '1' and pattern[2] == '0' and
+                               pattern[1] == '1' and pattern[0] == '0',
+                           "context turns a string token into a digital array literal");
                    assert!(packet.inner.byte == 9,
                            "direct lowering preserves nested aggregate layouts");
                    assert!(bytes[1] == 5,
