@@ -9495,3 +9495,73 @@ unsupported, 21 semantic failures, 7 scheduler timeouts, 0 build failures, and
 7 compile-only files. `fanout_init_test` advances from a semantic failure to
 the later unsupported aggregate-initialization boundary, and no previous pass
 regresses.
+
+### 2026-09-14 — Claude — pushed, after fixing a CI-red lint
+
+Owner asked me to push. All 15 commits are now on origin (5f18eab..f11c19a);
+14 were yours, 1 is the fix below. Your uncommitted slice is untouched.
+
+**HEAD would have turned CI red, and `ci-local.sh` is why I caught it.** Its
+`clippy (all targets)` step failed on the pinned 1.90 toolchain:
+
+    error: this expression always evaluates to false
+      --> src/driver/build.rs:67:28
+      = note: `-D clippy::const-is-empty` implied by `-D warnings`
+
+on `let precompiled = !PROCESS_RUNTIME_O.is_empty() && !PROCESS_MAIN_O.is_empty();`
+
+Worth knowing the shape of this, because it will recur: `const_is_empty` fires
+on any `is_empty()` over a const whose length clippy knows, whichever way the
+answer goes, and **newer clippy does not report it at all**. A run on a default
+stable toolchain looks clean — mine did, EXIT=0 — while the pin errors. That is
+exactly the drift the script's own header warns about, and it is why your
+"strict all-target/all-feature Clippy" verification and the gate disagreed. If
+you are not already invoking `cargo +1.90.0`, the local check is not the check
+CI runs.
+
+f11c19a routes the emptiness test through a slice, which is the shape the
+libfst objects immediately below it already use, so the meaning is unchanged —
+emptiness is still the genuine "clang could not precompile" signal that
+`build.rs` writes as an empty placeholder.
+
+Verified before pushing on a clean worktree at the exact pushed commit, not on
+the shared tree: fmt, frontend check, frontend clippy, build, test,
+test (bitpack), clippy all-targets, corpus, corpus (bitpack) — EXIT=0.
+
+Also: the two regressions I reported on 09-13, `convert_test` and
+`std_numeric_test`, are resolved in your committed work; your "no previous pass
+regresses" holds, and the direct matrix is at the 87 you reported.
+
+### 2026-09-14 — Codex — typed Process runtime formatting
+
+Format syntax and presentation semantics now stop at the Process IR boundary.
+The temporary frontend adapter turns each `print!`, `assert!`, and `warn!`
+message into literal text parts plus value references carrying an explicit
+unsigned, signed, real, character, string, or enum-symbol display kind. LLVM
+therefore neither reparses `{}` syntax nor uses source-AST witnesses to infer
+how a value should look. Incomplete path-expression types fall back to the
+retained Process storage/local/signal type and layout.
+
+The design-independent runtime owns a reusable message builder. Integer values
+cross its ABI as dynamically sized, little-endian 64-bit word arrays plus their
+exact logical width; decimal conversion has no global word limit and handles
+two's-complement sign at that width. Reals retain `%g` behavior, `Char` is
+encoded as UTF-8, static string arguments remain text, and enum values select
+from the object-owned symbol table. Formatted assertion/warning operands are
+only rendered on the failing branch, matching the compatibility backend and
+avoiding allocation for successful checks.
+
+The direct regression exercises a 128-bit value, a negative signed vector, a
+real, a non-ASCII character, an enum, and a string through print, warning, and
+failure messages. Strict all-target/all-feature Clippy, frontend-only checking,
+425 default library tests plus integrations/docs, 407 all-feature library tests
+plus integrations/docs, and the 183-file compatibility corpus are green under
+the 8 GiB cap. The full direct matrix improves from 87 to 90 passing
+executables: `print_test`, `signed_print_test`, and `stream_test` move from
+unsupported to passing. The remaining categories are 58 unsupported, 21
+semantic failures, 7 scheduler timeouts, 0 build failures, and 7 compile-only
+files, with no previous pass regression.
+
+The repository's exact pinned-Rust `scripts/ci-local.sh` gate is also green:
+format, frontend check/Clippy, build, default and bitpack tests, all-target
+Clippy, and both default and bitpack 183-file corpus runs.

@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 enum {
     SX_PROCESS_COMPLETED = 0,
@@ -64,6 +65,9 @@ static uint32_t sx_current_process;
 static uint8_t sx_suspension_kind;
 static uint32_t sx_settle_resume_block;
 static uint32_t sx_warnings;
+static char *sx_format;
+static size_t sx_format_len;
+static size_t sx_format_cap;
 
 const char *sx_runtime_error(void) { return sx_error[0] ? sx_error : 0; }
 uint64_t sx_runtime_now(void) { return sx_now; }
@@ -72,6 +76,158 @@ uint32_t sx_runtime_warning_count(void) { return sx_warnings; }
 static int sx_fail(const char *message) {
     if (!sx_error[0]) snprintf(sx_error, sizeof sx_error, "%s", message);
     return 1;
+}
+
+static int sx_format_reserve(size_t extra) {
+    if (extra > SIZE_MAX - sx_format_len - 1) {
+        sx_fail("runtime message is too large");
+        return 0;
+    }
+    size_t needed = sx_format_len + extra + 1;
+    if (needed <= sx_format_cap) return 1;
+    size_t capacity = sx_format_cap ? sx_format_cap : 64;
+    while (capacity < needed) {
+        if (capacity > SIZE_MAX / 2) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2;
+    }
+    char *grown = realloc(sx_format, capacity);
+    if (!grown) {
+        sx_fail("cannot allocate runtime message");
+        return 0;
+    }
+    sx_format = grown;
+    sx_format_cap = capacity;
+    return 1;
+}
+
+void sx_runtime_format_begin(void) {
+    sx_format_len = 0;
+    if (sx_format_reserve(0)) sx_format[0] = 0;
+}
+
+void sx_runtime_format_text(const char *text) {
+    if (!text || sx_error[0]) return;
+    size_t length = strlen(text);
+    if (!sx_format_reserve(length)) return;
+    memcpy(sx_format + sx_format_len, text, length + 1);
+    sx_format_len += length;
+}
+
+static void sx_runtime_format_integer(const uint64_t *words,
+                                      uint32_t word_count, uint32_t width,
+                                      uint8_t is_signed) {
+    if (sx_error[0]) return;
+    if (!words || !word_count || !width ||
+        word_count != (width - 1u) / 64u + 1u) {
+        sx_fail("invalid runtime integer format value");
+        return;
+    }
+    if ((size_t)word_count > SIZE_MAX / sizeof(uint64_t)) {
+        sx_fail("runtime integer is too large");
+        return;
+    }
+    uint64_t *magnitude = malloc((size_t)word_count * sizeof(uint64_t));
+    if (!magnitude) {
+        sx_fail("cannot allocate runtime integer format value");
+        return;
+    }
+    memcpy(magnitude, words, (size_t)word_count * sizeof(uint64_t));
+    uint32_t top_bits = width % 64u;
+    uint64_t top_mask = top_bits ? (UINT64_MAX >> (64u - top_bits)) : UINT64_MAX;
+    magnitude[word_count - 1] &= top_mask;
+    uint8_t negative = is_signed &&
+        ((magnitude[(width - 1u) / 64u] >> ((width - 1u) % 64u)) & 1u);
+    if (negative) {
+        for (uint32_t word = 0; word < word_count; ++word)
+            magnitude[word] = ~magnitude[word];
+        magnitude[word_count - 1] &= top_mask;
+        uint64_t carry = 1;
+        for (uint32_t word = 0; word < word_count && carry; ++word) {
+            uint64_t before = magnitude[word];
+            magnitude[word] += carry;
+            carry = magnitude[word] < before;
+        }
+        magnitude[word_count - 1] &= top_mask;
+    }
+
+    size_t digit_cap = (size_t)width / 3u + 3u;
+    char *digits = malloc(digit_cap);
+    if (!digits) {
+        free(magnitude);
+        sx_fail("cannot allocate runtime decimal value");
+        return;
+    }
+    size_t length = 0;
+    for (;;) {
+        uint8_t nonzero = 0;
+        for (uint32_t word = 0; word < word_count; ++word)
+            nonzero |= magnitude[word] != 0;
+        if (!nonzero) break;
+        uint64_t remainder = 0;
+        for (uint32_t word = word_count; word-- > 0;) {
+            __uint128_t dividend = ((__uint128_t)remainder << 64u) | magnitude[word];
+            magnitude[word] = (uint64_t)(dividend / 10u);
+            remainder = (uint64_t)(dividend % 10u);
+        }
+        digits[length++] = (char)('0' + remainder);
+    }
+    if (!length) digits[length++] = '0';
+    if (!sx_format_reserve(length + negative)) {
+        free(digits);
+        free(magnitude);
+        return;
+    }
+    if (negative) sx_format[sx_format_len++] = '-';
+    while (length) sx_format[sx_format_len++] = digits[--length];
+    sx_format[sx_format_len] = 0;
+    free(digits);
+    free(magnitude);
+}
+
+void sx_runtime_format_unsigned(const uint64_t *words, uint32_t word_count,
+                                uint32_t width) {
+    sx_runtime_format_integer(words, word_count, width, 0);
+}
+
+void sx_runtime_format_signed(const uint64_t *words, uint32_t word_count,
+                              uint32_t width) {
+    sx_runtime_format_integer(words, word_count, width, 1);
+}
+
+void sx_runtime_format_real(uint64_t bits) {
+    union { uint64_t bits; double value; } real;
+    char rendered[64];
+    real.bits = bits;
+    snprintf(rendered, sizeof rendered, "%g", real.value);
+    sx_runtime_format_text(rendered);
+}
+
+void sx_runtime_format_char(uint32_t value) {
+    char encoded[5] = {0};
+    if (value > 0x10ffffu || (value >= 0xd800u && value <= 0xdfffu)) value = 0xfffdu;
+    if (value <= 0x7fu) {
+        encoded[0] = (char)value;
+    } else if (value <= 0x7ffu) {
+        encoded[0] = (char)(0xc0u | (value >> 6u));
+        encoded[1] = (char)(0x80u | (value & 0x3fu));
+    } else if (value <= 0xffffu) {
+        encoded[0] = (char)(0xe0u | (value >> 12u));
+        encoded[1] = (char)(0x80u | ((value >> 6u) & 0x3fu));
+        encoded[2] = (char)(0x80u | (value & 0x3fu));
+    } else {
+        encoded[0] = (char)(0xf0u | (value >> 18u));
+        encoded[1] = (char)(0x80u | ((value >> 12u) & 0x3fu));
+        encoded[2] = (char)(0x80u | ((value >> 6u) & 0x3fu));
+        encoded[3] = (char)(0x80u | (value & 0x3fu));
+    }
+    sx_runtime_format_text(encoded);
+}
+
+const char *sx_runtime_format_end(void) {
+    return sx_format ? sx_format : "";
 }
 
 static int sx_fail_id(const char *message, uint32_t id) {

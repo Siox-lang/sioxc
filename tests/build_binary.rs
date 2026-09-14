@@ -287,6 +287,73 @@ fn direct_legacy_initializers_keep_source_order() {
 }
 
 #[test]
+fn direct_runtime_formats_typed_process_values() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory = std::env::temp_dir().join(format!("siox_direct_format_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("format.siox");
+    let output = directory.join("format-test");
+    std::fs::write(
+        &source,
+        r#"module direct_format;
+           using std::bits::{signed, unsigned};
+           enum State { Idle, Run }
+           #[test] entity DirectFormat {}
+           impl DirectFormat {
+               let wide: unsigned[128] = 18446744073709551616;
+               let negative: signed[8] = 240;
+               let measured: real = 3.5;
+               let character: Char = 'é';
+               let state: State = State::Run;
+               print!("wide {} signed {} real {} char {} state {} text {}",
+                      wide, negative, measured, character, state, "hello");
+               warn!(false, "warning wide {}", wide);
+               assert!(false, "failure signed {} state {}", negative, state);
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "direct formatting fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output).output().unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(!run.status.success(), "failing formatting fixture passed");
+    assert!(
+        stdout
+            .contains("wide 18446744073709551616 signed -16 real 3.5 char é state Run text hello"),
+        "{stdout}"
+    );
+    assert!(
+        stderr.contains("warning: warning wide 18446744073709551616"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("failure signed -16 state Run (source 0:"),
+        "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn direct_process_runtime_reports_assertions_without_generated_design_c() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");

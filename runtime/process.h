@@ -31,6 +31,17 @@ uint8_t sx_runtime_assert(uint8_t condition, const char *message,
 void sx_runtime_warn(uint8_t condition, const char *message,
                      uint32_t file, uint32_t offset);
 void sx_runtime_print(const char *message);
+/* Build a typed runtime message without design-specific generated source.
+ * Numeric words are little-endian and `width` is the exact logical width. */
+void sx_runtime_format_begin(void);
+void sx_runtime_format_text(const char *text);
+void sx_runtime_format_unsigned(const uint64_t *words, uint32_t word_count,
+                                uint32_t width);
+void sx_runtime_format_signed(const uint64_t *words, uint32_t word_count,
+                              uint32_t width);
+void sx_runtime_format_real(uint64_t bits);
+void sx_runtime_format_char(uint32_t value);
+const char *sx_runtime_format_end(void);
 uint32_t sx_runtime_warning_count(void);
 
 #endif

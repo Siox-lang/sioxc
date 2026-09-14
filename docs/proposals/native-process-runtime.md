@@ -128,7 +128,7 @@ runtime inventoried below.
 | UTF-8 | `sx_utf8`, `sx_utf8_next` | decode/encode across the string boundary |
 | deterministic random | `sx_rand`, `sx_randint`, `sx_random_value`, `sx_uniform` | seed state must be reproducible across backends |
 | dynamic arrays | `sx_dyn_get`, `sx_dyn_get_checked`, `sx_dyn_equal_values` | heap-backed values read at run time |
-| formatting | `sx_decimal`, `sx_chars` | arbitrary-width decimal and char-vector rendering |
+| formatting | generated `sx_decimal`, `sx_chars` | Process IR now carries normalized typed parts; fixed `sx_runtime_format_*` services render arbitrary-width decimal, real, Unicode character, static string, and enum text |
 | waveforms | `sx_vcd_*`, `sx_fst_*`, `sx_is_vcd`, `sx_wave_begin_test` | writer lifetime, per-test files, libfst linkage |
 | descriptors and accounting | generated `main`, `sx_dbg_*` | count/name discovery is already object-owned; move result counting, stable output, and debug lookup into the runtime |
 

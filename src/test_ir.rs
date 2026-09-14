@@ -10,11 +10,12 @@
 use crate::elab::Hierarchy;
 use crate::ir::{
     Design, LayoutDirection, LayoutKind, ProcessActivation, ProcessAggregateField,
-    ProcessAssignment, ProcessBinaryOp, ProcessBlock, ProcessBlockId, ProcessCfg, ProcessId,
-    ProcessInstruction, ProcessIr, ProcessLocal, ProcessLocalId, ProcessMatchArm, ProcessNumber,
-    ProcessPattern, ProcessRuntimeOp, ProcessSensitivity, ProcessSignalState, ProcessStorage,
-    ProcessStorageBinding, ProcessStorageId, ProcessSuspendOp, ProcessTerminator, ProcessTest,
-    ProcessUnaryOp, ProcessValue, ProcessValueId, ProcessValueKind, ProcessValueMatchArm, SignalId,
+    ProcessAssignment, ProcessBinaryOp, ProcessBlock, ProcessBlockId, ProcessCfg,
+    ProcessDisplayKind, ProcessFormatPart, ProcessId, ProcessInstruction, ProcessIr, ProcessLocal,
+    ProcessLocalId, ProcessMatchArm, ProcessNumber, ProcessPattern, ProcessRuntimeOp,
+    ProcessSensitivity, ProcessSignalState, ProcessStorage, ProcessStorageBinding,
+    ProcessStorageId, ProcessSuspendOp, ProcessTerminator, ProcessTest, ProcessUnaryOp,
+    ProcessValue, ProcessValueId, ProcessValueKind, ProcessValueMatchArm, SignalId,
 };
 use crate::resolve::Resolved;
 use crate::syntax::ast::{self, ElseBranch, ImplItem, Stmt};
@@ -1661,6 +1662,7 @@ fn lower_statement(
                 .push(ProcessInstruction::Runtime {
                     operation: ProcessRuntimeOp::Call("<expression>".to_string()),
                     arguments: vec![argument],
+                    format: None,
                     span: ast::expr_span(expression),
                 });
             Some(block)
@@ -1771,7 +1773,7 @@ fn lower_call(
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
     let name = callee_name(callee);
-    let arguments = arguments
+    let lowered_arguments = arguments
         .iter()
         .map(|argument| value_ref(argument, process, context))
         .collect::<Vec<_>>();
@@ -1780,7 +1782,7 @@ fn lower_call(
             let resume = push_block(process);
             process.blocks[block.0 as usize].terminator = ProcessTerminator::Suspend {
                 operation: ProcessSuspendOp::Await,
-                arguments,
+                arguments: lowered_arguments,
                 resume,
                 span,
             };
@@ -1801,15 +1803,136 @@ fn lower_call(
                 "print" => ProcessRuntimeOp::Print,
                 _ => ProcessRuntimeOp::Call(name),
             };
+            let format = lower_process_format(&operation, arguments, &lowered_arguments, context);
             process.blocks[block.0 as usize]
                 .instructions
                 .push(ProcessInstruction::Runtime {
                     operation,
-                    arguments,
+                    arguments: lowered_arguments,
+                    format,
                     span,
                 });
             Some(block)
         }
+    }
+}
+
+fn lower_process_format(
+    operation: &ProcessRuntimeOp,
+    arguments: &[ast::Expr],
+    lowered: &[ProcessValueId],
+    context: &LoweringContext<'_>,
+) -> Option<Vec<ProcessFormatPart>> {
+    let message_index = match operation {
+        ProcessRuntimeOp::Print => 0,
+        ProcessRuntimeOp::Assert | ProcessRuntimeOp::Warn => 1,
+        ProcessRuntimeOp::Call(_) => return None,
+    };
+    let ast::Expr::StrLit { text, .. } = arguments.get(message_index)? else {
+        return None;
+    };
+    let mut values = arguments.iter().zip(lowered).skip(message_index + 1);
+    crate::syntax::format::parts(text)
+        .into_iter()
+        .map(|part| match part {
+            crate::syntax::format::FormatPart::Text(text) => Some(ProcessFormatPart::Text(text)),
+            crate::syntax::format::FormatPart::Placeholder => {
+                let (expression, value) = values.next()?;
+                Some(ProcessFormatPart::Value {
+                    value: *value,
+                    kind: process_display_kind(expression, *value, context)?,
+                })
+            }
+        })
+        .collect()
+}
+
+fn process_display_kind(
+    expression: &ast::Expr,
+    value: ProcessValueId,
+    context: &LoweringContext<'_>,
+) -> Option<ProcessDisplayKind> {
+    let usable = |ty: &&crate::types::Ty| !matches!(ty, crate::types::Ty::Error);
+    let process_value = context.process_ir.values.get(value.0 as usize)?;
+    if matches!(process_value.kind, ProcessValueKind::String(_)) {
+        return Some(ProcessDisplayKind::String);
+    }
+    let ty =
+        context
+            .typed
+            .expr_type(ast::expr_span(expression))
+            .filter(usable)
+            .cloned()
+            .or_else(|| process_value.ty.as_ref().filter(usable).cloned())
+            .or_else(|| match &process_value.kind {
+                ProcessValueKind::Storage(storage) => context
+                    .process_ir
+                    .storages
+                    .get(storage.0 as usize)
+                    .and_then(|storage| {
+                        storage.ty.clone().or_else(|| {
+                            storage.layout.as_ref().and_then(|layout| {
+                                process_type_from_layout(layout, context.resolved)
+                            })
+                        })
+                    }),
+                ProcessValueKind::Local { process, local } => context
+                    .process_ir
+                    .processes
+                    .get(process.0 as usize)
+                    .and_then(|process| process.locals.get(local.0 as usize))
+                    .and_then(|local| {
+                        local.ty.clone().or_else(|| {
+                            local.layout.as_ref().and_then(|layout| {
+                                process_type_from_layout(layout, context.resolved)
+                            })
+                        })
+                    }),
+                ProcessValueKind::Signal { signals, .. } => {
+                    let [signal] = signals.as_slice() else {
+                        return None;
+                    };
+                    let path = &context.design.signals.get(signal.0 as usize)?.path;
+                    context
+                        .design
+                        .source_layouts
+                        .get(path)
+                        .and_then(|layout| process_type_from_layout(layout, context.resolved))
+                }
+                _ => None,
+            })?;
+    match &ty {
+        crate::types::Ty::Integer => Some(ProcessDisplayKind::Signed),
+        crate::types::Ty::Real => Some(ProcessDisplayKind::Real),
+        crate::types::Ty::Char => Some(ProcessDisplayKind::Character),
+        crate::types::Ty::Array { elem, family, .. } => {
+            if family.is_none() && matches!(elem.as_ref(), crate::types::Ty::Char) {
+                Some(ProcessDisplayKind::String)
+            } else if family.as_deref().and_then(|name| name.rsplit("::").next()) == Some("signed")
+            {
+                Some(ProcessDisplayKind::Signed)
+            } else {
+                Some(ProcessDisplayKind::Unsigned)
+            }
+        }
+        crate::types::Ty::Named(definition) => {
+            let info = context.resolved.def(*definition)?;
+            if info.kind != crate::resolve::DefKind::Enum {
+                return None;
+            }
+            let qualified = context.resolved.qualified_name(*definition);
+            let key = qualified
+                .filter(|name| context.design.enum_syms.contains_key(name))
+                .or_else(|| {
+                    context
+                        .design
+                        .enum_syms
+                        .contains_key(&info.name)
+                        .then(|| info.name.clone())
+                })?;
+            Some(ProcessDisplayKind::Enum(key))
+        }
+        crate::types::Ty::Void | crate::types::Ty::Error => None,
     }
 }
 
@@ -4030,6 +4153,7 @@ mod tests {
                         instructions: vec![ProcessInstruction::Runtime {
                             operation: ProcessRuntimeOp::Print,
                             arguments: vec![crate::ir::ProcessValueId(9)],
+                            format: None,
                             span,
                         }],
                         terminator: ProcessTerminator::Return {

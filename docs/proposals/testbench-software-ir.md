@@ -216,10 +216,12 @@ language-lowering path.
    without generating design C. Constant integer-backed `Suffix` bodies now
    normalize to ordinary Process numbers, and timed `await` registers its exact
    process/resume block on that wheel. Delayed-write cancellation, condition
-   and edge waits, formatted/runtime calls, dynamic aggregate selection/update,
-   structured match dispatch, and waveforms are the next coverage boundary
-   before it becomes the default. Static-string print/assert/warn operations
-   already use the fixed runtime ABI. Inclusive directional range loops and
+   and edge waits, dynamic strings and other runtime calls, dynamic aggregate
+   selection/update, structured match dispatch, and waveforms are the next
+   coverage boundary before it becomes the default. Format strings are already
+   normalized into typed Process parts; the fixed runtime renders exact-width
+   signed/unsigned values, reals, characters, static strings, and enum symbols
+   without either backend consulting source syntax. Inclusive directional range loops and
    source-order array loops keep cursor/end and iterable-snapshot state in the
    object, so a timed suspension inside their body resumes the same iteration.
    Foreground writes to storage connected to DUT inputs also carry an explicit

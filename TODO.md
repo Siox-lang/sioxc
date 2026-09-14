@@ -381,8 +381,14 @@ Remaining:
   implementation, so source clock schedules, one-shot static writes, and timed
   `await` now execute on the fixed wheel. Timed suspension records and restores
   the exact CFG resume block; condition/edge awaits remain fail-closed until
-  their dependency/evaluator ABI exists. Static-string `print!`, `assert!`, and
-  `warn!` use a fixed runtime ABI with source locations and warning accounting.
+  their dependency/evaluator ABI exists. `print!`, `assert!`, and `warn!`
+  carry frontend-normalized text/value parts and explicit display kinds in
+  Process IR, so LLVM never parses format syntax or reconstructs presentation
+  types from an AST. The fixed runtime renders arbitrary-width signed/unsigned
+  decimal, `real`, Unicode `Char`, static strings, and retained enum symbols;
+  failed assertions and warnings format lazily and keep source locations and
+  warning accounting. Runtime-sized string values remain part of the dynamic-
+  array boundary.
   Source-layout `length`, `left`, `right`, `high`, `low`, and `ascending`
   attributes are materialized as LLVM constants from retained Process IR
   layout metadata, including signed and directional bounds; the backend does
@@ -433,8 +439,8 @@ Remaining:
   foreground write to storage bound to a DUT `in`/`inout` port now ends its
   Process block with an explicit zero-time settle suspension; the fixed
   scheduler commits the drive, reaches reactive quiescence, and only then
-  resumes the following source statement. Formatted/
-  runtime calls, structured `match`, VHDL delayed-write cancellation, waveform
+  resumes the following source statement. Dynamic strings and other runtime
+  calls, structured `match`, VHDL delayed-write cancellation, waveform
   services, and making this path the default remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,

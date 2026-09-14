@@ -246,6 +246,10 @@ pub enum ProcessInstruction {
         operation: ProcessRuntimeOp,
         /// Its arguments.
         arguments: Vec<ProcessValueId>,
+        /// Frontend-normalized message formatting. Text and display kinds are
+        /// explicit so a backend never has to parse source format syntax or
+        /// reconstruct presentation semantics from an AST.
+        format: Option<Vec<ProcessFormatPart>>,
         /// The call site.
         span: crate::diag::Span,
     },
@@ -280,6 +284,37 @@ pub enum ProcessRuntimeOp {
     Print,
     /// Call a named function that lowering did not inline.
     Call(String),
+}
+
+/// One normalized piece of a runtime message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessFormatPart {
+    /// Literal text, with escaped braces already reduced.
+    Text(String),
+    /// A typed value rendered at this position.
+    Value {
+        /// Process value to render.
+        value: ProcessValueId,
+        /// Source-level presentation semantics.
+        kind: ProcessDisplayKind,
+    },
+}
+
+/// How a Process value is presented by the simulation runtime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessDisplayKind {
+    /// Unsigned arbitrary-width decimal.
+    Unsigned,
+    /// Signed two's-complement arbitrary-width decimal.
+    Signed,
+    /// IEEE-754 `real` using the language's compact display form.
+    Real,
+    /// One Unicode scalar value.
+    Character,
+    /// A UTF-8 string value.
+    String,
+    /// An enum discriminant rendered through the retained symbol table.
+    Enum(String),
 }
 
 /// One arm of a [`ProcessTerminator::Match`].
@@ -1298,7 +1333,16 @@ fn process_instruction_values(instruction: &ProcessInstruction) -> Vec<ProcessVa
             delay,
             ..
         } => vec![*target, *value, *delay],
-        ProcessInstruction::Runtime { arguments, .. } => arguments.clone(),
+        ProcessInstruction::Runtime {
+            arguments, format, ..
+        } => arguments
+            .iter()
+            .copied()
+            .chain(format.iter().flatten().filter_map(|part| match part {
+                ProcessFormatPart::Text(_) => None,
+                ProcessFormatPart::Value { value, .. } => Some(*value),
+            }))
+            .collect(),
     }
 }
 
