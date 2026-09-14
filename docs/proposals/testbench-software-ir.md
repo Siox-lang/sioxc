@@ -217,8 +217,11 @@ language-lowering path.
    normalize to ordinary Process numbers, and timed `await` registers its exact
    process/resume block on that wheel. Delayed-write cancellation, condition
    and edge waits, dynamic strings and other runtime calls, dynamic aggregate
-   selection/update, structured match dispatch, and waveforms are the next
-   coverage boundary before it becomes the default. Format strings are already
+   selection/update, aggregate-valued match selection, and waveforms are the
+   next coverage boundary before it becomes the default. Scalar statement and
+   expression matches already consume frontend-normalized exact, masked,
+   alternative, wildcard, and directional-range patterns directly in LLVM.
+   Format strings are already
    normalized into typed Process parts; the fixed runtime renders exact-width
    signed/unsigned values, reals, characters, static strings, and enum symbols
    without either backend consulting source syntax. Inclusive directional range loops and

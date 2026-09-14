@@ -9565,3 +9565,35 @@ files, with no previous pass regression.
 The repository's exact pinned-Rust `scripts/ci-local.sh` gate is also green:
 format, frontend check/Clippy, build, default and bitpack tests, all-target
 Clippy, and both default and bitpack 183-file corpus runs.
+
+### 2026-09-14 — Codex — scalar Process match dispatch
+
+Statement and expression `match` no longer stop the direct Process backend for
+scalar values. The frontend adapter resolves enum/character patterns to their
+elaborated discriminants and bit patterns to mask/value words; LLVM consumes
+those normalized forms alongside alternatives, wildcards, and inclusive
+signed, unsigned, or real ranges. Statement matches branch through the CFG in
+source priority order. Match expressions form typed selections and predicate
+checked subgraphs by the arm that is actually eligible. Aggregate-valued
+matches still fail closed rather than pretending a scalar representation.
+
+The first expression probe also exposed a representation bug independent of
+matching: an element projected from an array of `signed` values lost signedness
+because the query only inspected the value node's optional `Ty`. Signedness now
+also follows its retained projected `SourceLayout`, which fixes ordinary
+signed struct-field behavior as well. Imported pure calls recover scalar or
+nominal return identity from their resolved declaration before constant
+folding/inlining; this lets `char_of(66)` remain a `Char` through Process IR and
+typed formatting.
+
+The direct regression covers a masked opcode, a descending signed range, an
+enum or-pattern, and a signed match expression. The full direct matrix improves
+from 90 to 94 passing executables: `char_fn_return_test`, `logic_match_test`,
+and `signed_branch_expr_test` move from unsupported to passing, while
+`signed_struct_field_test` moves from semantic failure to passing. The
+remaining categories are 55 unsupported, 20 semantic failures, 7 scheduler
+timeouts, 0 build failures, and 7 compile-only files, with no pass regression.
+
+The exact pinned-Rust `scripts/ci-local.sh` gate is green: format, frontend
+check/Clippy, build, default and bitpack tests, all-target Clippy, and both
+default and bitpack 183-file corpus runs.

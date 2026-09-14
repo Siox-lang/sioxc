@@ -333,6 +333,8 @@ pub struct ProcessMatchArm {
 pub enum ProcessPattern {
     /// `_` — matches anything.
     Wildcard,
+    /// A resolver-selected enum variant or other exact scalar value.
+    Number(ProcessNumber),
     /// An enum variant or constant path. Valid programs carry its stable
     /// declaration identity; segments remain for diagnostics and intrinsic
     /// patterns that have no declaration.
@@ -344,6 +346,14 @@ pub enum ProcessPattern {
     },
     /// A bit pattern, with don't-care positions preserved.
     BitPattern(String),
+    /// A normalized bit pattern: only positions selected by `mask` must equal
+    /// the corresponding positions in `value`.
+    BitMask {
+        /// Compared positions, least-significant word first.
+        mask: Vec<u64>,
+        /// Required bits, least-significant word first.
+        value: Vec<u64>,
+    },
     /// Alternatives, matching if any does.
     Or(Vec<ProcessPattern>),
     /// An inclusive numeric range.

@@ -14,14 +14,14 @@ use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::values::{FunctionValue, IntValue, PointerValue};
 use inkwell::AddressSpace;
-use inkwell::IntPredicate;
+use inkwell::{FloatPredicate, IntPredicate};
 
 use siox::ir::{
     Design, IndexSite, LayoutDirection, LayoutKind, ProcessActivation, ProcessAssignment,
     ProcessBinaryOp, ProcessCfg, ProcessDisplayKind, ProcessFormatPart, ProcessId,
-    ProcessInstruction, ProcessLocalId, ProcessNumber, ProcessRuntimeOp, ProcessSensitivity,
-    ProcessSignalState, ProcessStorageId, ProcessTerminator, ProcessUnaryOp, ProcessValueId,
-    ProcessValueKind, SignalId, SourceLayout,
+    ProcessInstruction, ProcessLocalId, ProcessNumber, ProcessPattern, ProcessRuntimeOp,
+    ProcessSensitivity, ProcessSignalState, ProcessStorageId, ProcessTerminator, ProcessUnaryOp,
+    ProcessValueId, ProcessValueKind, SignalId, SourceLayout,
 };
 
 /// Version of the native process metadata ABI emitted into every object.
@@ -980,22 +980,32 @@ fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bool {
     let Some(value) = design.process_ir.values.get(id.0 as usize) else {
         return false;
     };
+    let event = matches!(
+        value.kind,
+        ProcessValueKind::Signal {
+            state: ProcessSignalState::Event,
+            ..
+        }
+    );
+    if !event
+        && (value.ty.as_ref().is_some_and(process_type_is_signed)
+            || process_value_layout(design, id).is_some_and(process_layout_is_signed))
+    {
+        return true;
+    }
     match &value.kind {
         ProcessValueKind::Signal { signals, state } => {
             let [signal] = signals.as_slice() else {
                 return false;
             };
             !matches!(state, ProcessSignalState::Event)
-                && (value.ty.as_ref().is_some_and(process_type_is_signed)
-                    || process_value_layout(design, id).is_some_and(process_layout_is_signed)
-                    || design.signals.get(signal.0 as usize).is_some_and(|signal| {
-                        signal.integer && signal.range.map(|(left, _)| left < 0).unwrap_or(true)
-                    }))
+                && design.signals.get(signal.0 as usize).is_some_and(|signal| {
+                    signal.integer && signal.range.map(|(left, _)| left < 0).unwrap_or(true)
+                })
         }
-        ProcessValueKind::Local { .. } | ProcessValueKind::Storage(_) => {
-            value.ty.as_ref().is_some_and(process_type_is_signed)
-        }
-        ProcessValueKind::RawResize { .. } => value.ty.as_ref().is_some_and(process_type_is_signed),
+        ProcessValueKind::Local { .. }
+        | ProcessValueKind::Storage(_)
+        | ProcessValueKind::RawResize { .. } => false,
         ProcessValueKind::Unary { operation, .. } => matches!(
             operation,
             ProcessUnaryOp::Neg | ProcessUnaryOp::RealToInteger
@@ -1016,6 +1026,9 @@ fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bool {
             process_value_is_signed(design, *then_value)
                 || process_value_is_signed(design, *else_value)
         }
+        ProcessValueKind::Match { arms, .. } => arms
+            .iter()
+            .any(|arm| process_value_is_signed(design, arm.value)),
         ProcessValueKind::CheckedIndex { index, .. } => process_value_is_signed(design, *index),
         ProcessValueKind::ForeignCall { integer_result, .. } => *integer_result,
         _ => false,
@@ -2457,6 +2470,72 @@ fn process_value<'ctx>(
                 .ok()?
                 .into_int_value()
         }
+        ProcessValueKind::Match { scrutinee, arms } => {
+            let scrutinee_value = process_value(
+                context,
+                module,
+                builder,
+                design,
+                *scrutinee,
+                active,
+                index_sites,
+                cache,
+            )?;
+            let mut matched = context.bool_type().const_zero();
+            let mut eligible = Vec::with_capacity(arms.len());
+            for arm in arms {
+                let condition = process_pattern_condition(
+                    context,
+                    builder,
+                    design,
+                    *scrutinee,
+                    scrutinee_value,
+                    &arm.pattern,
+                )?;
+                let not_matched = builder.build_not(matched, "pv.match.not_matched").ok()?;
+                eligible.push(
+                    builder
+                        .build_and(not_matched, condition, "pv.match.eligible")
+                        .ok()?,
+                );
+                matched = builder
+                    .build_or(matched, condition, "pv.match.matched")
+                    .ok()?;
+            }
+            let mut result = None;
+            for (arm, eligible) in arms.iter().zip(eligible).rev() {
+                let arm_active = if cache.contains_check(arm.value) {
+                    Some(match active {
+                        Some(outer) => builder
+                            .build_and(outer, eligible, "pv.match.arm.active")
+                            .ok()?,
+                        None => eligible,
+                    })
+                } else {
+                    None
+                };
+                let value = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    arm.value,
+                    width,
+                    true,
+                    arm_active,
+                    index_sites,
+                    cache,
+                )?;
+                result = Some(match result {
+                    Some(other) => builder
+                        .build_select(eligible, value, other, "pv.match.select")
+                        .ok()?
+                        .into_int_value(),
+                    None => value,
+                });
+            }
+            result?
+        }
         ProcessValueKind::Field { .. } => {
             let layout = process_value_layout(design, id)?;
             if layout_width(layout)? != width {
@@ -2976,6 +3055,19 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                     && has(&supported, *then_value)
                     && has(&supported, *else_value)
             }
+            ProcessValueKind::Match { scrutinee, arms } => {
+                has(&supported, *scrutinee)
+                    && !arms.is_empty()
+                    && process_value_layout(design, id).is_none_or(|layout| {
+                        matches!(
+                            layout.kind,
+                            LayoutKind::Scalar { .. } | LayoutKind::Packed { .. }
+                        )
+                    })
+                    && arms.iter().all(|arm| {
+                        process_pattern_supported(&arm.pattern) && has(&supported, arm.value)
+                    })
+            }
             ProcessValueKind::Attribute { base, attribute } => {
                 process_layout_attribute(design, *base, attribute).is_some()
             }
@@ -3033,7 +3125,6 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
             | ProcessValueKind::Intrinsic(_)
             | ProcessValueKind::Range { .. }
             | ProcessValueKind::MetaCompare { .. }
-            | ProcessValueKind::Match { .. }
             | ProcessValueKind::Call { .. }
             | ProcessValueKind::Invalid => false,
         };
@@ -3987,6 +4078,20 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
 /// Whether a block is transactional for the currently implemented direct
 /// subset. Unsupported blocks execute no foreign calls and publish no staged
 /// writes before returning status 255.
+fn process_pattern_supported(pattern: &ProcessPattern) -> bool {
+    match pattern {
+        ProcessPattern::Wildcard
+        | ProcessPattern::Number(_)
+        | ProcessPattern::Range { .. }
+        | ProcessPattern::Char(_) => true,
+        ProcessPattern::BitMask { mask, value } => !mask.is_empty() && mask.len() == value.len(),
+        ProcessPattern::Or(alternatives) => {
+            !alternatives.is_empty() && alternatives.iter().all(process_pattern_supported)
+        }
+        ProcessPattern::Path { .. } | ProcessPattern::BitPattern(_) => false,
+    }
+}
+
 fn block_is_supported(
     design: &Design,
     process: &ProcessCfg,
@@ -4142,7 +4247,22 @@ fn block_is_supported(
             });
             range || array
         }
-        ProcessTerminator::Return { value: Some(_), .. } | ProcessTerminator::Match { .. } => false,
+        ProcessTerminator::Match {
+            scrutinee, arms, ..
+        } => {
+            value(*scrutinee)
+                && design
+                    .process_ir
+                    .values
+                    .get(scrutinee.0 as usize)
+                    .and_then(|value| value.bit_width)
+                    .is_some_and(|width| width > 0 && width <= super::emit::LLVM_MAX_INT_BITS)
+                && !arms.is_empty()
+                && arms
+                    .iter()
+                    .all(|arm| process_pattern_supported(&arm.pattern))
+        }
+        ProcessTerminator::Return { value: Some(_), .. } => false,
     };
     instructions && terminator
 }
@@ -4969,6 +5089,158 @@ fn emit_array_loop<'ctx>(
     Some(())
 }
 
+fn process_pattern_condition<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    scrutinee_id: ProcessValueId,
+    scrutinee: IntValue<'ctx>,
+    pattern: &ProcessPattern,
+) -> Option<IntValue<'ctx>> {
+    let ty = scrutinee.get_type();
+    match pattern {
+        ProcessPattern::Wildcard => Some(context.bool_type().const_int(1, false)),
+        ProcessPattern::Number(number) => {
+            let expected = match number {
+                ProcessNumber::Integer(words) => ty.const_int_arbitrary_precision(words),
+                ProcessNumber::Real(bits) => ty.const_int(*bits, false),
+            };
+            builder
+                .build_int_compare(IntPredicate::EQ, scrutinee, expected, "process.match.exact")
+                .ok()
+        }
+        ProcessPattern::BitMask { mask, value } => {
+            let mask = ty.const_int_arbitrary_precision(mask);
+            let value = ty.const_int_arbitrary_precision(value);
+            let selected = builder
+                .build_and(scrutinee, mask, "process.match.mask")
+                .ok()?;
+            builder
+                .build_int_compare(IntPredicate::EQ, selected, value, "process.match.bits")
+                .ok()
+        }
+        ProcessPattern::Or(alternatives) => {
+            let mut any = context.bool_type().const_zero();
+            for alternative in alternatives {
+                let matches = process_pattern_condition(
+                    context,
+                    builder,
+                    design,
+                    scrutinee_id,
+                    scrutinee,
+                    alternative,
+                )?;
+                any = builder.build_or(any, matches, "process.match.or").ok()?;
+            }
+            Some(any)
+        }
+        ProcessPattern::Range { left, right } => {
+            let low = (*left).min(*right);
+            let high = (*left).max(*right);
+            if process_value_is_real(design, scrutinee_id) {
+                let real = builder
+                    .build_bit_cast(scrutinee, context.f64_type(), "process.match.real")
+                    .ok()?
+                    .into_float_value();
+                let above = builder
+                    .build_float_compare(
+                        FloatPredicate::OGE,
+                        real,
+                        context.f64_type().const_float(low as f64),
+                        "process.match.real.low",
+                    )
+                    .ok()?;
+                let below = builder
+                    .build_float_compare(
+                        FloatPredicate::OLE,
+                        real,
+                        context.f64_type().const_float(high as f64),
+                        "process.match.real.high",
+                    )
+                    .ok()?;
+                builder
+                    .build_and(above, below, "process.match.real.range")
+                    .ok()
+            } else {
+                let signed = process_value_is_signed(design, scrutinee_id);
+                let low = ty.const_int(low as u64, signed);
+                let high = ty.const_int(high as u64, signed);
+                let above = builder
+                    .build_int_compare(
+                        if signed {
+                            IntPredicate::SGE
+                        } else {
+                            IntPredicate::UGE
+                        },
+                        scrutinee,
+                        low,
+                        "process.match.low",
+                    )
+                    .ok()?;
+                let below = builder
+                    .build_int_compare(
+                        if signed {
+                            IntPredicate::SLE
+                        } else {
+                            IntPredicate::ULE
+                        },
+                        scrutinee,
+                        high,
+                        "process.match.high",
+                    )
+                    .ok()?;
+                builder.build_and(above, below, "process.match.range").ok()
+            }
+        }
+        ProcessPattern::Char(character) => builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                scrutinee,
+                ty.const_int(u64::from(u32::from(*character)), false),
+                "process.match.char",
+            )
+            .ok(),
+        ProcessPattern::Path { .. } | ProcessPattern::BitPattern(_) => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_process_match<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    design: &Design,
+    scrutinee_id: ProcessValueId,
+    scrutinee: IntValue<'ctx>,
+    arms: &[siox::ir::ProcessMatchArm],
+    fallback: Option<siox::ir::ProcessBlockId>,
+    blocks: &[BasicBlock<'ctx>],
+    invalid: BasicBlock<'ctx>,
+) -> Option<()> {
+    for (index, arm) in arms.iter().enumerate() {
+        let condition = process_pattern_condition(
+            context,
+            builder,
+            design,
+            scrutinee_id,
+            scrutinee,
+            &arm.pattern,
+        )?;
+        let miss = if index + 1 == arms.len() {
+            fallback.map_or(invalid, |fallback| blocks[fallback.0 as usize])
+        } else {
+            context.append_basic_block(function, &format!("process.match.next.{index}"))
+        };
+        builder
+            .build_conditional_branch(condition, blocks[arm.block.0 as usize], miss)
+            .ok()?;
+        if index + 1 != arms.len() {
+            builder.position_at_end(miss);
+        }
+    }
+    Some(())
+}
+
 /// Emit a process entry that resumes at any CFG block by its stable block ID.
 ///
 /// Blocks containing directly supported assignments execute and publish
@@ -5374,9 +5646,24 @@ fn process_entry<'ctx>(
             .and_then(|condition| as_condition(&builder, condition)),
             _ => None,
         };
+        let match_scrutinee = match &block.terminator {
+            ProcessTerminator::Match { scrutinee, .. } => process_value(
+                context,
+                module,
+                &builder,
+                design,
+                *scrutinee,
+                None,
+                index_sites,
+                &mut cache,
+            ),
+            _ => None,
+        };
         if failed
             || matches!(block.terminator, ProcessTerminator::Branch { .. })
                 && branch_condition.is_none()
+            || matches!(block.terminator, ProcessTerminator::Match { .. })
+                && match_scrutinee.is_none()
         {
             builder
                 .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
@@ -5515,7 +5802,31 @@ fn process_entry<'ctx>(
                         .unwrap();
                 }
             }
-            ProcessTerminator::Return { value: Some(_), .. } | ProcessTerminator::Match { .. } => {
+            ProcessTerminator::Match {
+                scrutinee,
+                arms,
+                fallback,
+            } => {
+                if emit_process_match(
+                    context,
+                    &builder,
+                    function,
+                    design,
+                    *scrutinee,
+                    match_scrutinee.expect("supported match scrutinee was emitted"),
+                    arms,
+                    *fallback,
+                    &blocks,
+                    invalid,
+                )
+                .is_none()
+                {
+                    builder
+                        .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
+                        .unwrap();
+                }
+            }
+            ProcessTerminator::Return { value: Some(_), .. } => {
                 builder
                     .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
                     .unwrap();

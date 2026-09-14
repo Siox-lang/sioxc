@@ -425,7 +425,15 @@ Remaining:
   calls: `integer(real)` lowers to signed truncation toward zero, and the
   direct LLVM path preserves real negation as floating-point negation before
   conversion; the supported non-real `integer`/`Char` crossings are explicit
-  raw resizes. Compatibility-era bare testbench declarations also retain the
+  raw resizes. Imported pure calls also recover scalar/nominal return identity
+  from their resolved declaration before constant folding or symbolic inlining,
+  so a returned `Char` cannot collapse back into an untyped integer. Scalar
+  statement and value `match` now dispatch directly in LLVM from normalized
+  Process patterns: exact enum/character values, masked bit patterns,
+  alternatives, wildcards, and inclusive signed/unsigned/real ranges. Selected
+  values preserve projected signed layouts and predicate checked subgraphs by
+  arm. Aggregate-valued matches remain fail-closed. Compatibility-era bare
+  testbench declarations also retain the
   generated-C oracle's sequential source ordering, so an initializer written
   after a statement observes that statement instead of being hoisted into
   reset. Explicit `process` blocks keep the normal model in which impl state is
@@ -440,7 +448,7 @@ Remaining:
   Process block with an explicit zero-time settle suspension; the fixed
   scheduler commits the drive, reaches reactive quiescence, and only then
   resumes the following source statement. Dynamic strings and other runtime
-  calls, structured `match`, VHDL delayed-write cancellation, waveform
+  calls, aggregate-valued `match`, VHDL delayed-write cancellation, waveform
   services, and making this path the default remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,

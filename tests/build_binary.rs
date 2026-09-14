@@ -302,6 +302,7 @@ fn direct_runtime_formats_typed_process_values() {
         r#"module direct_format;
            using std::bits::{signed, unsigned};
            enum State { Idle, Run }
+           fn make_char(value: integer) -> Char { return Char(value); }
            #[test] entity DirectFormat {}
            impl DirectFormat {
                let wide: unsigned[128] = 18446744073709551616;
@@ -309,8 +310,8 @@ fn direct_runtime_formats_typed_process_values() {
                let measured: real = 3.5;
                let character: Char = 'é';
                let state: State = State::Run;
-               print!("wide {} signed {} real {} char {} state {} text {}",
-                      wide, negative, measured, character, state, "hello");
+               print!("wide {} signed {} real {} char {} state {} text {} made {}",
+                      wide, negative, measured, character, state, "hello", make_char(66));
                warn!(false, "warning wide {}", wide);
                assert!(false, "failure signed {} state {}", negative, state);
            }"#,
@@ -338,8 +339,9 @@ fn direct_runtime_formats_typed_process_values() {
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(!run.status.success(), "failing formatting fixture passed");
     assert!(
-        stdout
-            .contains("wide 18446744073709551616 signed -16 real 3.5 char é state Run text hello"),
+        stdout.contains(
+            "wide 18446744073709551616 signed -16 real 3.5 char é state Run text hello made B"
+        ),
         "{stdout}"
     );
     assert!(
@@ -349,6 +351,71 @@ fn direct_runtime_formats_typed_process_values() {
     assert!(
         stderr.contains("failure signed -16 state Run (source 0:"),
         "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn direct_runtime_dispatches_normalized_match_patterns() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory = std::env::temp_dir().join(format!("siox_direct_match_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("match.siox");
+    let output = directory.join("match-test");
+    std::fs::write(
+        &source,
+        r#"module direct_match;
+           using std::bits::{signed, unsigned};
+           enum State { Idle, Run, Done }
+           #[test] entity DirectMatch {}
+           impl DirectMatch {
+               let opcode: unsigned[8] = 0xA7;
+               let class: integer = 0;
+               let ranged: integer = 0;
+               let state: State = State::Run;
+               let selected: integer = 0;
+               let negative: signed[8] = 240;
+               let branch: signed[8] = 0;
+               match opcode { x"A?" => class = 1, _ => class = 2, }
+               match 0 - 3 { -5..-1 => ranged = 1, _ => ranged = 2, }
+               match state {
+                   State::Idle | State::Run => selected = 1,
+                   State::Done => selected = 2,
+               }
+               branch = match class { 1 => negative, _ => 0 };
+               assert!(class == 1, "masked bit pattern selects its arm");
+               assert!(ranged == 1, "signed inclusive range selects its arm");
+               assert!(selected == 1, "enum or-pattern selects its arm");
+               assert!(branch < 0, "match expression retains signed arm semantics");
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "direct match fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "direct match fixture failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
     );
     let _ = std::fs::remove_dir_all(directory);
 }

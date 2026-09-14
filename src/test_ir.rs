@@ -156,6 +156,30 @@ fn declared_nominal_type(ty: Option<&ast::Type>, resolved: &Resolved) -> Option<
     .then_some(crate::types::Ty::Named(definition))
 }
 
+/// Recover the concrete scalar/nominal portion of a function signature when
+/// the expression type table intentionally has no entry for an imported call.
+/// Indexed/generic substitution remains the type checker's job; this fallback
+/// exists so an inlined result retains an explicit `integer`, `real`, `Char`,
+/// enum, or struct identity in backend-independent Process IR.
+fn declared_process_type(ty: &ast::Type, resolved: &Resolved) -> Option<crate::types::Ty> {
+    let ast::Type::Path(path) = ty else {
+        return None;
+    };
+    match path.segments.last()?.text.as_str() {
+        "integer" => Some(crate::types::Ty::Integer),
+        "real" => Some(crate::types::Ty::Real),
+        "Char" => Some(crate::types::Ty::Char),
+        _ => {
+            let definition = resolved.resolved(path.span)?;
+            matches!(
+                resolved.def(definition)?.kind,
+                crate::resolve::DefKind::Struct | crate::resolve::DefKind::Enum
+            )
+            .then_some(crate::types::Ty::Named(definition))
+        }
+    }
+}
+
 fn nominal_type_from_name(name: &str, resolved: &Resolved) -> Option<crate::types::Ty> {
     let type_definition = |definition: &&crate::resolve::DefInfo| {
         matches!(
@@ -1983,10 +2007,14 @@ fn lower_match(
     process: &mut ProcessCfg,
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
+    let scrutinee_type = context
+        .typed
+        .expr_type(ast::expr_span(&statement.scrutinee))
+        .cloned();
     let mut arms = Vec::with_capacity(statement.arms.len());
     for arm in &statement.arms {
         arms.push(ProcessMatchArm {
-            pattern: lower_pattern(&arm.pattern, context.resolved),
+            pattern: lower_pattern(&arm.pattern, scrutinee_type.as_ref(), context),
             block: push_block(process),
             span: arm.span,
         });
@@ -2024,28 +2052,44 @@ fn lower_match(
 }
 
 /// Convert an AST pattern into its process-IR form.
-fn lower_pattern(pattern: &ast::Pattern, resolved: &Resolved) -> ProcessPattern {
+fn lower_pattern(
+    pattern: &ast::Pattern,
+    scrutinee_type: Option<&crate::types::Ty>,
+    context: &LoweringContext<'_>,
+) -> ProcessPattern {
     match pattern {
         ast::Pattern::Wildcard => ProcessPattern::Wildcard,
-        ast::Pattern::Path(path) => ProcessPattern::Path {
-            definition: resolved.resolved(path.span),
-            segments: path
-                .segments
-                .iter()
-                .map(|segment| segment.text.clone())
-                .collect(),
-        },
-        ast::Pattern::BitPattern { text, .. } => ProcessPattern::BitPattern(text.clone()),
+        ast::Pattern::Path(path) => {
+            let definition = context.resolved.resolved(path.span);
+            definition
+                .and_then(|definition| definition_number(definition, context))
+                .map_or_else(
+                    || ProcessPattern::Path {
+                        definition,
+                        segments: path
+                            .segments
+                            .iter()
+                            .map(|segment| segment.text.clone())
+                            .collect(),
+                    },
+                    ProcessPattern::Number,
+                )
+        }
+        ast::Pattern::BitPattern { text, .. } => crate::syntax::bit_pattern_mask(text).map_or_else(
+            || ProcessPattern::BitPattern(text.clone()),
+            |(mask, value)| ProcessPattern::BitMask { mask, value },
+        ),
         ast::Pattern::Or { alts, .. } => ProcessPattern::Or(
             alts.iter()
-                .map(|pattern| lower_pattern(pattern, resolved))
+                .map(|pattern| lower_pattern(pattern, scrutinee_type, context))
                 .collect(),
         ),
         ast::Pattern::Range { lo, hi, .. } => ProcessPattern::Range {
             left: *lo,
             right: *hi,
         },
-        ast::Pattern::CharLit { ch, .. } => ProcessPattern::Char(*ch),
+        ast::Pattern::CharLit { ch, .. } => character_number(*ch, scrutinee_type, context)
+            .map_or(ProcessPattern::Char(*ch), ProcessPattern::Number),
     }
 }
 
@@ -2521,8 +2565,14 @@ fn inline_process_call(
         return None;
     }
 
+    let return_type = return_type.cloned().or_else(|| {
+        function
+            .ret
+            .as_ref()
+            .and_then(|ty| declared_process_type(ty, context.resolved))
+    });
     context.value_bindings.push(bindings);
-    context.inline_return_types.push(return_type.cloned());
+    context.inline_return_types.push(return_type);
     let result = inline_value_statements(&body.stmts, process, context);
     context.inline_return_types.pop();
     context.value_bindings.pop();
@@ -2850,7 +2900,18 @@ fn value_ref_with_type(
     let span = ast::expr_span(expression);
     let ty = contextual_type
         .cloned()
-        .or_else(|| context.typed.expr_type(span).cloned());
+        .or_else(|| context.typed.expr_type(span).cloned())
+        .or_else(|| {
+            let ast::Expr::Call { callee, .. } = expression else {
+                return None;
+            };
+            context
+                .functions
+                .get(callee)?
+                .ret
+                .as_ref()
+                .and_then(|ty| declared_process_type(ty, context.resolved))
+        });
 
     if let ast::Expr::Path(path) = expression {
         if let Some(value) = inline_bound_value(path, context) {
@@ -3041,6 +3102,7 @@ fn value_ref_with_type(
         ast::Expr::Match {
             scrutinee, arms, ..
         } => {
+            let scrutinee_type = context.typed.expr_type(ast::expr_span(scrutinee)).cloned();
             let scrutinee = value_ref(scrutinee, process, context);
             let arms = arms
                 .iter()
@@ -3050,7 +3112,7 @@ fn value_ref_with_type(
                         None => missing_value(arm.span, context),
                     };
                     ProcessValueMatchArm {
-                        pattern: lower_pattern(&arm.pattern, context.resolved),
+                        pattern: lower_pattern(&arm.pattern, scrutinee_type.as_ref(), context),
                         value,
                         span: arm.span,
                     }
