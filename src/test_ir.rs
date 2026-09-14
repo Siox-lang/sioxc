@@ -42,6 +42,7 @@ struct LoweringContext<'a> {
     functions: &'a crate::ir::FunctionIndex<'a>,
     constant_integers: &'a std::collections::HashMap<String, i64>,
     value_bindings: Vec<std::collections::HashMap<crate::resolve::DefId, ProcessValueId>>,
+    inline_self_values: Vec<Option<ProcessValueId>>,
     inline_return_types: Vec<Option<crate::types::Ty>>,
     inline_functions: std::collections::HashSet<crate::diag::Span>,
 }
@@ -81,9 +82,7 @@ fn process_functions<'a>(
         .iter()
         .flat_map(|module| &module.items)
         .filter_map(|item| match item {
-            ast::Item::Impl(implementation) if implementation.trait_.is_none() => {
-                Some(implementation)
-            }
+            ast::Item::Impl(implementation) => Some(implementation),
             _ => None,
         })
     {
@@ -544,6 +543,7 @@ pub fn lower(
                 functions: &functions,
                 constant_integers: &constant_integers,
                 value_bindings: Vec::new(),
+                inline_self_values: Vec::new(),
                 inline_return_types: Vec::new(),
                 inline_functions: std::collections::HashSet::new(),
             };
@@ -599,6 +599,7 @@ pub fn lower(
                             functions: &functions,
                             constant_integers: &constant_integers,
                             value_bindings: Vec::new(),
+                            inline_self_values: Vec::new(),
                             inline_return_types: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
                         };
@@ -644,6 +645,7 @@ pub fn lower(
                             functions: &functions,
                             constant_integers: &constant_integers,
                             value_bindings: Vec::new(),
+                            inline_self_values: Vec::new(),
                             inline_return_types: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
                         };
@@ -698,6 +700,7 @@ pub fn lower(
                     functions: &functions,
                     constant_integers: &constant_integers,
                     value_bindings: Vec::new(),
+                    inline_self_values: Vec::new(),
                     inline_return_types: Vec::new(),
                     inline_functions: std::collections::HashSet::new(),
                 };
@@ -963,6 +966,10 @@ fn normalized_value_width(
             state: ProcessSignalState::Event,
             ..
         } => Some(1),
+        ProcessValueKind::StorageState {
+            state: ProcessSignalState::Event,
+            ..
+        } => Some(1),
         ProcessValueKind::Signal { signals, .. } => signal_width(signals),
         ProcessValueKind::BitSlice { high, low, .. } => high.checked_sub(*low)?.checked_add(1),
         ProcessValueKind::CheckedIndex { index, .. } => width(index),
@@ -1016,6 +1023,7 @@ fn normalized_value_width(
         | ProcessValueKind::String(_)
         | ProcessValueKind::Local { .. }
         | ProcessValueKind::Storage(_)
+        | ProcessValueKind::StorageState { .. }
         | ProcessValueKind::Definition(_)
         | ProcessValueKind::Intrinsic(_)
         | ProcessValueKind::Default
@@ -1786,6 +1794,41 @@ fn assignment_drives_design(
         })
 }
 
+/// Classify the scheduler meaning before source syntax is discarded. A
+/// nominal `std::sim::time` value is authoritative; the suffix check keeps
+/// bare frontend fixtures (which intentionally omit std) deterministic.
+fn await_is_time(argument: &ast::Expr, context: &LoweringContext<'_>) -> bool {
+    if matches!(argument, ast::Expr::SuffixLit { .. }) {
+        return true;
+    }
+    context
+        .typed
+        .expr_type(ast::expr_span(argument))
+        .and_then(|ty| match ty {
+            crate::types::Ty::Named(definition) => context.resolved.qualified_name(*definition),
+            _ => None,
+        })
+        .is_some_and(|name| name == "std::sim::time" || name.ends_with("::time"))
+}
+
+/// Edge waits differ from level conditions in one important way: they must
+/// suspend before testing the event predicate, even if the process itself was
+/// resumed during the current event. The CFG shape records that distinction;
+/// the fixed scheduler only needs a generic "wake after state change" record.
+fn await_is_event(argument: &ast::Expr) -> bool {
+    match argument {
+        ast::Expr::SysAttr { attr, .. } => {
+            matches!(attr.text.as_str(), "event" | "rising" | "falling")
+        }
+        ast::Expr::Call { callee, .. } => matches!(
+            callee.as_ref(),
+            ast::Expr::Field { field, .. }
+                if matches!(field.text.as_str(), "edge" | "rising" | "falling")
+        ),
+        _ => false,
+    }
+}
+
 /// Lower a call: either a runtime operation (`assert!`, `print!`) or an
 /// ordinary named call that lowering did not inline.
 fn lower_call(
@@ -1803,10 +1846,45 @@ fn lower_call(
         .collect::<Vec<_>>();
     match name.as_str() {
         "await" => {
+            if arguments
+                .first()
+                .is_some_and(|argument| await_is_time(argument, context))
+            {
+                let resume = push_block(process);
+                process.blocks[block.0 as usize].terminator = ProcessTerminator::Suspend {
+                    operation: ProcessSuspendOp::AwaitTime,
+                    arguments: lowered_arguments,
+                    resume,
+                    span,
+                };
+                return Some(resume);
+            }
+
+            let condition = *lowered_arguments.first()?;
+            let check = push_block(process);
+            let wait = push_block(process);
+            let settle = push_block(process);
             let resume = push_block(process);
-            process.blocks[block.0 as usize].terminator = ProcessTerminator::Suspend {
-                operation: ProcessSuspendOp::Await,
-                arguments: lowered_arguments,
+            process.blocks[block.0 as usize].terminator =
+                ProcessTerminator::Goto(if arguments.first().is_some_and(await_is_event) {
+                    wait
+                } else {
+                    check
+                });
+            process.blocks[check.0 as usize].terminator = ProcessTerminator::Branch {
+                condition,
+                then_block: settle,
+                else_block: wait,
+            };
+            process.blocks[wait.0 as usize].terminator = ProcessTerminator::Suspend {
+                operation: ProcessSuspendOp::AwaitCondition,
+                arguments: Vec::new(),
+                resume: check,
+                span,
+            };
+            process.blocks[settle.0 as usize].terminator = ProcessTerminator::Suspend {
+                operation: ProcessSuspendOp::Settle,
+                arguments: Vec::new(),
                 resume,
                 span,
             };
@@ -2234,12 +2312,57 @@ fn character_number(
 /// active inline. Resolver identity keeps equal spellings in nested calls and
 /// modules distinct without minting synthetic AST declarations.
 fn inline_bound_value(path: &ast::Path, context: &LoweringContext<'_>) -> Option<ProcessValueId> {
+    if path.segments.len() == 1 && path.segments[0].text == "self" {
+        return context
+            .inline_self_values
+            .iter()
+            .rev()
+            .find_map(|value| *value);
+    }
     let definition = context.resolved.resolved(path.span)?;
     context
         .value_bindings
         .iter()
         .rev()
         .find_map(|bindings| bindings.get(&definition).copied())
+}
+
+fn process_type_key(ty: &crate::types::Ty, context: &LoweringContext<'_>) -> Option<String> {
+    match ty {
+        crate::types::Ty::Integer => Some("integer".into()),
+        crate::types::Ty::Real => Some("real".into()),
+        crate::types::Ty::Char => Some("Char".into()),
+        crate::types::Ty::Named(definition) => context.functions.nominal_type_key(*definition),
+        crate::types::Ty::Array {
+            family: Some(family),
+            ..
+        } => Some(family.clone()),
+        crate::types::Ty::Array { family: None, .. }
+        | crate::types::Ty::Void
+        | crate::types::Ty::Error => None,
+    }
+}
+
+fn inline_signal_state(
+    expression: &ast::Expr,
+    state: ProcessSignalState,
+    context: &LoweringContext<'_>,
+) -> Option<ProcessValueKind> {
+    let ast::Expr::Path(path) = expression else {
+        return None;
+    };
+    let value = inline_bound_value(path, context)?;
+    match &context.process_ir.values.get(value.0 as usize)?.kind {
+        ProcessValueKind::Signal { signals, .. } => Some(ProcessValueKind::Signal {
+            signals: signals.clone(),
+            state,
+        }),
+        ProcessValueKind::Storage(storage) => Some(ProcessValueKind::StorageState {
+            storage: *storage,
+            state,
+        }),
+        _ => None,
+    }
 }
 
 fn process_value_is_real(id: ProcessValueId, context: &LoweringContext<'_>) -> bool {
@@ -2262,7 +2385,7 @@ fn process_value_is_real(id: ProcessValueId, context: &LoweringContext<'_>) -> b
         }
         match &value.kind {
             ProcessValueKind::Number(ProcessNumber::Real(_)) => return true,
-            ProcessValueKind::Storage(storage) => {
+            ProcessValueKind::Storage(storage) | ProcessValueKind::StorageState { storage, .. } => {
                 let Some(storage) = context.process_ir.storages.get(storage.0 as usize) else {
                     continue;
                 };
@@ -2529,9 +2652,26 @@ fn inline_process_call(
     let ast::Expr::Call { callee, args, .. } = expression else {
         return None;
     };
-    let function = context.functions.get(callee)?;
+    let (function, receiver) = match callee.as_ref() {
+        ast::Expr::Field { base, field, .. } => {
+            let receiver = value_ref(base, process, context);
+            let owner = context
+                .process_ir
+                .values
+                .get(receiver.0 as usize)
+                .and_then(|value| value.ty.as_ref())
+                .and_then(|ty| process_type_key(ty, context))?;
+            (
+                context.functions.get_associated(&owner, &field.text)?,
+                Some(receiver),
+            )
+        }
+        _ => (context.functions.get(callee)?, None),
+    };
     let body = function.body.as_ref()?;
-    if function.ret.is_none() || function.params.iter().any(|parameter| parameter.is_self) {
+    if function.ret.is_none()
+        || function.params.iter().any(|parameter| parameter.is_self) != receiver.is_some()
+    {
         return None;
     }
     let parameters = function
@@ -2572,9 +2712,11 @@ fn inline_process_call(
             .and_then(|ty| declared_process_type(ty, context.resolved))
     });
     context.value_bindings.push(bindings);
+    context.inline_self_values.push(receiver);
     context.inline_return_types.push(return_type);
     let result = inline_value_statements(&body.stmts, process, context);
     context.inline_return_types.pop();
+    context.inline_self_values.pop();
     context.value_bindings.pop();
     context.inline_functions.remove(&function.span);
     if result.is_none() {
@@ -3032,8 +3174,23 @@ fn value_ref_with_type(
                 "event" => Some(ProcessSignalState::Event),
                 _ => None,
             };
-            if let Some((state, signals)) = state.zip(signal_reference(base, process, context)) {
-                ProcessValueKind::Signal { signals, state }
+            if let Some(kind) = state
+                .and_then(|state| inline_signal_state(base, state, context))
+                .or_else(|| {
+                    let ast::Expr::Path(path) = base.as_ref() else {
+                        return None;
+                    };
+                    state
+                        .zip(testbench_storage(path, process.owner, context))
+                        .map(|(state, storage)| ProcessValueKind::StorageState { storage, state })
+                })
+                .or_else(|| {
+                    state
+                        .zip(signal_reference(base, process, context))
+                        .map(|(state, signals)| ProcessValueKind::Signal { signals, state })
+                })
+            {
+                kind
             } else {
                 let base = value_ref(base, process, context);
                 ProcessValueKind::Attribute {
@@ -3280,6 +3437,19 @@ fn source_value_width(
                 .or_else(|| local.ty.as_ref().and_then(typed_width))
         }
         ProcessValueKind::Storage(storage) => context
+            .process_ir
+            .storages
+            .get(storage.0 as usize)?
+            .layout
+            .as_ref()?
+            .bit_width()?
+            .try_into()
+            .ok(),
+        ProcessValueKind::StorageState {
+            state: ProcessSignalState::Event,
+            ..
+        } => Some(1),
+        ProcessValueKind::StorageState { storage, .. } => context
             .process_ir
             .storages
             .get(storage.0 as usize)?
@@ -3746,7 +3916,7 @@ mod tests {
         assert!(process.blocks.iter().any(|block| matches!(
             &block.terminator,
             ProcessTerminator::Suspend {
-                operation: ProcessSuspendOp::Await,
+                operation: ProcessSuspendOp::AwaitTime,
                 arguments,
                 ..
             }

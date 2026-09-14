@@ -29,7 +29,7 @@ use siox::ir::{
 /// This is deliberately a data version rather than the compiler package
 /// version: the reusable native runtime only needs to change when one of the
 /// exported table layouts or encodings changes.
-const PROCESS_ABI_VERSION: u32 = 7;
+const PROCESS_ABI_VERSION: u32 = 8;
 
 /// A process returned normally and has no pending resume.
 const PROCESS_COMPLETED: u8 = 0;
@@ -374,6 +374,10 @@ pub(super) fn declare_state<'ctx>(context: &'ctx Context, module: &Module<'ctx>,
     let global = module.add_global(changed, None, "sx.process.storage.changed");
     global.set_initializer(&changed.const_zero());
     global.set_linkage(Linkage::Internal);
+    let dirty = context.i8_type().array_type(storage_count.max(1));
+    let global = module.add_global(dirty, None, "sx.process.storage.dirty");
+    global.set_initializer(&dirty.const_zero());
+    global.set_linkage(Linkage::Internal);
 
     module.add_function(
         "sx.process.reset",
@@ -646,6 +650,47 @@ fn state_value<'ctx>(
     )
 }
 
+fn process_storage_state_value<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    storage: ProcessStorageId,
+    state: ProcessSignalState,
+    width: u32,
+) -> Option<IntValue<'ctx>> {
+    match state {
+        ProcessSignalState::Current => None,
+        ProcessSignalState::Old => (storage_state_width(design, storage) == Some(width))
+            .then(|| state_value(context, module, builder, &storage_old_name(storage), width))?,
+        ProcessSignalState::Event if width == 1 => {
+            let changed = builder
+                .build_load(
+                    context.i8_type(),
+                    storage_changed_ptr(
+                        context,
+                        module,
+                        builder,
+                        u32::try_from(design.process_ir.storages.len()).ok()?,
+                        storage.0,
+                    ),
+                    "pv.storage.event",
+                )
+                .ok()?
+                .into_int_value();
+            builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    changed,
+                    context.i8_type().const_zero(),
+                    "pv.storage.changed",
+                )
+                .ok()
+        }
+        ProcessSignalState::Event => None,
+    }
+}
+
 fn store_state<'ctx>(
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
@@ -887,6 +932,7 @@ fn checked_process_values(design: &Design) -> Vec<bool> {
             | ProcessValueKind::String(_)
             | ProcessValueKind::Local { .. }
             | ProcessValueKind::Storage(_)
+            | ProcessValueKind::StorageState { .. }
             | ProcessValueKind::Signal { .. }
             | ProcessValueKind::Definition(_)
             | ProcessValueKind::Intrinsic(_)
@@ -1190,6 +1236,16 @@ fn process_value_layout(design: &Design, id: ProcessValueId) -> Option<&SourceLa
             .get(storage.0 as usize)?
             .layout
             .as_ref(),
+        ProcessValueKind::StorageState {
+            storage,
+            state: ProcessSignalState::Old,
+        } => design
+            .process_ir
+            .storages
+            .get(storage.0 as usize)?
+            .layout
+            .as_ref(),
+        ProcessValueKind::StorageState { .. } => None,
         ProcessValueKind::Local { process, local } => design
             .process_ir
             .processes
@@ -1769,6 +1825,11 @@ fn process_value_in_layout<'ctx>(
                 )
             })??
         }
+        ProcessValueKind::StorageState {
+            storage,
+            state: ProcessSignalState::Old,
+        } => (storage_state_width(design, *storage) == Some(width))
+            .then(|| state_value(context, module, builder, &storage_old_name(*storage), width))??,
         ProcessValueKind::Local { process, local } => {
             (local_width(design, *process, *local) == Some(width)).then(|| {
                 state_value(
@@ -2104,6 +2165,9 @@ fn process_value<'ctx>(
             &storage_state_name(*storage),
             width,
         )?,
+        ProcessValueKind::StorageState { storage, state } => {
+            process_storage_state_value(context, module, builder, design, *storage, *state, width)?
+        }
         ProcessValueKind::Default => match process_value_layout(design, id) {
             Some(layout) if layout_width(layout) == Some(width) => {
                 layout_default_value(context, builder, design, layout)?
@@ -2873,6 +2937,11 @@ fn process_value_supported_in_layout(
     match &value.kind {
         ProcessValueKind::Default => true,
         ProcessValueKind::Storage(storage) => storage_state_width(design, *storage) == Some(width),
+        ProcessValueKind::StorageState {
+            storage,
+            state: ProcessSignalState::Old,
+        } => storage_state_width(design, *storage) == Some(width),
+        ProcessValueKind::StorageState { .. } => false,
         ProcessValueKind::Local { process, local } => {
             local_width(design, *process, *local) == Some(width)
         }
@@ -3081,6 +3150,14 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                             })
                         })
             }
+            ProcessValueKind::StorageState { storage, state } => match state {
+                ProcessSignalState::Current => false,
+                ProcessSignalState::Old => storage_state_width(design, *storage) == value.bit_width,
+                ProcessSignalState::Event => {
+                    design.process_ir.storages.get(storage.0 as usize).is_some()
+                        && value.bit_width == Some(1)
+                }
+            },
             ProcessValueKind::Unary { operand, .. } | ProcessValueKind::RawResize { operand } => {
                 has(&supported, *operand)
             }
@@ -3591,16 +3668,51 @@ fn write_static_place<'ctx>(
         }
         StaticPlaceRoot::Storage(storage) => {
             let name = storage_state_name(storage);
+            let current = state_value(context, module, builder, &name, place.root_width)?;
+            let dirty_pointer = storage_dirty_ptr(
+                context,
+                module,
+                builder,
+                u32::try_from(design.process_ir.storages.len()).ok()?,
+                storage.0,
+            );
+            let dirty = builder
+                .build_load(context.i8_type(), dirty_pointer, "process.storage.dirty")
+                .ok()?
+                .into_int_value();
+            let already_dirty = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    dirty,
+                    context.i8_type().const_zero(),
+                    "process.storage.already.dirty",
+                )
+                .ok()?;
+            let old = state_value(
+                context,
+                module,
+                builder,
+                &storage_old_name(storage),
+                place.root_width,
+            )?;
+            let snapshot = builder
+                .build_select(already_dirty, old, current, "process.storage.snapshot")
+                .ok()?
+                .into_int_value();
+            store_state(
+                module,
+                builder,
+                &storage_old_name(storage),
+                place.root_width,
+                snapshot,
+            )?;
+            builder
+                .build_store(dirty_pointer, context.i8_type().const_int(1, false))
+                .ok()?;
             let value = if place.offset == 0 && place.width == place.root_width {
                 value
             } else {
-                insert_region(
-                    builder,
-                    state_value(context, module, builder, &name, place.root_width)?,
-                    value,
-                    place.offset,
-                    place.width,
-                )?
+                insert_region(builder, current, value, place.offset, place.width)?
             };
             store_state(module, builder, &name, place.root_width, value)?;
             stage_storage_value(
@@ -3762,12 +3874,13 @@ fn storage_changed_ptr<'ctx>(
     count: u32,
     storage: u32,
 ) -> PointerValue<'ctx> {
-    storage_changed_ptr_at(
+    storage_flag_ptr_at(
         context,
         module,
         builder,
         count,
         context.i32_type().const_int(u64::from(storage), false),
+        "sx.process.storage.changed",
     )
 }
 
@@ -3778,10 +3891,45 @@ fn storage_changed_ptr_at<'ctx>(
     count: u32,
     storage: IntValue<'ctx>,
 ) -> PointerValue<'ctx> {
+    storage_flag_ptr_at(
+        context,
+        module,
+        builder,
+        count,
+        storage,
+        "sx.process.storage.changed",
+    )
+}
+
+fn storage_dirty_ptr<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    count: u32,
+    storage: u32,
+) -> PointerValue<'ctx> {
+    storage_flag_ptr_at(
+        context,
+        module,
+        builder,
+        count,
+        context.i32_type().const_int(u64::from(storage), false),
+        "sx.process.storage.dirty",
+    )
+}
+
+fn storage_flag_ptr_at<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    count: u32,
+    storage: IntValue<'ctx>,
+    name: &str,
+) -> PointerValue<'ctx> {
     let byte = context.i8_type();
     let table = byte.array_type(count.max(1));
     let global = module
-        .get_global("sx.process.storage.changed")
+        .get_global(name)
         .expect("process storage change table");
     unsafe {
         builder
@@ -3872,6 +4020,12 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
         builder
             .build_store(
                 storage_changed_ptr(context, module, &builder, storage_count, storage.id.0),
+                byte.const_zero(),
+            )
+            .unwrap();
+        builder
+            .build_store(
+                storage_dirty_ptr(context, module, &builder, storage_count, storage.id.0),
                 byte.const_zero(),
             )
             .unwrap();
@@ -4019,6 +4173,7 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
             width,
         )
         .expect("declared storage state");
+        let before_observation = current;
         for binding in &storage.bindings {
             if !matches!(
                 binding.direction,
@@ -4050,14 +4205,40 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
             current,
         )
         .expect("declared storage state");
+        let dirty_pointer =
+            storage_dirty_ptr(context, module, &builder, storage_count, storage.id.0);
+        let dirty = builder
+            .build_load(byte, dirty_pointer, "process.storage.commit.dirty")
+            .unwrap()
+            .into_int_value();
+        let was_written = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                dirty,
+                byte.const_zero(),
+                "process.storage.was.written",
+            )
+            .unwrap();
+        let previous = builder
+            .build_select(
+                was_written,
+                previous,
+                before_observation,
+                "process.storage.previous",
+            )
+            .unwrap()
+            .into_int_value();
         store_state(
             module,
             &builder,
             &storage_old_name(storage.id),
             width,
-            current,
+            previous,
         )
         .expect("declared storage snapshot");
+        builder
+            .build_store(dirty_pointer, byte.const_zero())
+            .unwrap();
         let changed = builder
             .build_int_compare(
                 IntPredicate::NE,
@@ -4252,7 +4433,7 @@ fn block_is_supported(
         | ProcessTerminator::Finish { .. } => true,
         ProcessTerminator::Branch { condition, .. } => value(*condition),
         ProcessTerminator::Suspend {
-            operation: siox::ir::ProcessSuspendOp::Await,
+            operation: siox::ir::ProcessSuspendOp::AwaitTime,
             arguments,
             ..
         } => {
@@ -4272,6 +4453,11 @@ fn block_is_supported(
                             )
                     })
         }
+        ProcessTerminator::Suspend {
+            operation: siox::ir::ProcessSuspendOp::AwaitCondition,
+            arguments,
+            ..
+        } => arguments.is_empty(),
         ProcessTerminator::Suspend {
             operation: siox::ir::ProcessSuspendOp::Settle,
             arguments,
@@ -4365,6 +4551,38 @@ fn emit_timed_suspend<'ctx>(
                 i32.const_int(u64::from(process.0), false).into(),
                 i32.const_int(u64::from(resume.0), false).into(),
                 delay.into(),
+            ],
+            "",
+        )
+        .ok()?;
+    Some(())
+}
+
+fn emit_condition_suspend<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    process: ProcessId,
+    resume: siox::ir::ProcessBlockId,
+) -> Option<()> {
+    let i32 = context.i32_type();
+    let suspend = module
+        .get_function("sx_runtime_suspend_condition")
+        .unwrap_or_else(|| {
+            module.add_function(
+                "sx_runtime_suspend_condition",
+                context
+                    .void_type()
+                    .fn_type(&[i32.into(), i32.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    builder
+        .build_call(
+            suspend,
+            &[
+                i32.const_int(u64::from(process.0), false).into(),
+                i32.const_int(u64::from(resume.0), false).into(),
             ],
             "",
         )
@@ -5792,7 +6010,7 @@ fn process_entry<'ctx>(
                     .unwrap();
             }
             ProcessTerminator::Suspend {
-                operation: siox::ir::ProcessSuspendOp::Await,
+                operation: siox::ir::ProcessSuspendOp::AwaitTime,
                 arguments,
                 resume,
                 ..
@@ -5810,6 +6028,27 @@ fn process_entry<'ctx>(
                         &mut cache,
                     )
                 });
+                builder
+                    .build_return(Some(&i8.const_int(
+                        u64::from(if emitted.is_some() {
+                            PROCESS_SUSPENDED
+                        } else {
+                            PROCESS_UNSUPPORTED
+                        }),
+                        false,
+                    )))
+                    .unwrap();
+            }
+            ProcessTerminator::Suspend {
+                operation: siox::ir::ProcessSuspendOp::AwaitCondition,
+                arguments,
+                resume,
+                ..
+            } => {
+                let emitted = arguments
+                    .is_empty()
+                    .then(|| emit_condition_suspend(context, module, &builder, process.id, *resume))
+                    .flatten();
                 builder
                     .build_return(Some(&i8.const_int(
                         u64::from(if emitted.is_some() {
@@ -6335,7 +6574,7 @@ mod tests {
             ..Design::default()
         };
         let llvm = crate::llvm::emit_module_ir(&design).unwrap();
-        assert!(llvm.contains("@sx_process_abi_version = constant i32 7"));
+        assert!(llvm.contains("@sx_process_abi_version = constant i32 8"));
         assert!(llvm.contains("define i8 @sx_process_commit()"));
         assert!(llvm.contains("define i8 @sx_process_changed(i32"));
         assert!(llvm.contains("define i8 @sx_process_storage_changed(i32"));

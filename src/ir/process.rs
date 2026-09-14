@@ -441,8 +441,12 @@ pub enum ProcessTerminator {
 /// Which operation suspended a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessSuspendOp {
-    /// `await` — resume once the given time or condition is reached.
-    Await,
+    /// `await <time>` — resume after the duration on the simulation timeline.
+    AwaitTime,
+    /// Suspend until simulation state changes. Condition and edge awaits lower
+    /// their trigger to an ordinary branch around this scheduler primitive;
+    /// an edge enters the suspension before its first trigger check.
+    AwaitCondition,
     /// Publish a foreground drive, settle reactive processes to a fixed
     /// point, then resume at the same simulation time.
     Settle,
@@ -626,6 +630,15 @@ pub enum ProcessValueKind {
     },
     /// Persistent state owned by a test entity.
     Storage(ProcessStorageId),
+    /// A historical/event observation of persistent test state. Ordinary
+    /// writes continue to use [`ProcessValueKind::Storage`], so this form can
+    /// never accidentally become an assignment place.
+    StorageState {
+        /// Observed storage frame.
+        storage: ProcessStorageId,
+        /// Old or event state; current reads use `Storage`.
+        state: ProcessSignalState,
+    },
     /// One or more flattened signals making up a source value.
     Signal {
         /// Scalar leaves, in source-layout order.
@@ -1417,6 +1430,7 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
         | ProcessValueKind::String(_)
         | ProcessValueKind::Local { .. }
         | ProcessValueKind::Storage(_)
+        | ProcessValueKind::StorageState { .. }
         | ProcessValueKind::Signal { .. }
         | ProcessValueKind::Definition(_)
         | ProcessValueKind::Intrinsic(_)

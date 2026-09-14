@@ -1,8 +1,9 @@
 # The native process runtime
 
 Status: **executable migration path**. A fixed runtime now schedules time-zero
-and reactive Process IR entries through delta commits, including timed
-suspension, basic reporting operations, and resumable range/array loops, while
+and reactive Process IR entries through delta commits, including timed,
+condition, and edge suspension, basic reporting operations, and resumable
+range/array loops, while
 remaining executable instruction/value coverage is still being implemented.
 The LLVM object exports source-independent
 test/process descriptors and one callable resume entry per process. It
@@ -73,13 +74,16 @@ contract, or encoding increments `sx_process_abi_version`.
 The runtime starts a process by calling `sx_process_entries[id]` with
 `sx_process_initial_blocks[id]`. A suspended process is called again with the
 resume block recorded by the suspension service. Entry status is `0 =
-completed`, `1 = suspended`, `2 = stopped`, `3 = finish simulation`, and
-`255 = unsupported migration node`.
+completed`, `1 = suspended`, `2 = stopped`, `3 = finish simulation`, `4 =
+settling`, and `255 = unsupported migration node`.
 For a timed suspension, emitted code registers `(process, resume block, delay)`
 before returning status 1. The runtime validates that the registration came
 from the process currently executing, queues it on the same wheel as delayed
 writes, and passes the saved block back to the entry when it expires. Condition
-and edge waits require a later evaluator/dependency ABI and still return 255.
+and edge triggers are emitted as ordinary Process value/branch CFGs around a
+fixed state-change suspension. Level conditions enter the check first; edge
+waits enter the suspension first. The scheduler wakes false triggers after a
+commit and releases a true trigger only after reactive delta cycles settle.
 The last status is a temporary fail-closed guard: current entries execute
 scalar control flow, immediate scalar/packed local and persistent-storage
 writes, whole-signal staged assignments, checked-index failure latches, and
@@ -101,7 +105,8 @@ during initialization remain queued at time zero until stimulus has started.
 `runtime/process.c` and `runtime/main.c` implement the first reusable boundary:
 dynamic ready/stopped sets, sensitivity-driven delta requeueing, a dynamically
 sized time-ordered delayed-write queue, descriptor ABI validation, test
-filtering, and stable pass/fail accounting. Scheduled values are copied as an
+filtering, condition rechecks, foreground-completion detection, and stable
+pass/fail accounting. Scheduled values are copied as an
 unbounded low-word-first ABI slice and returned to an emitted site dispatcher
 when they expire, so the fixed runtime does not know design layouts. A zero
 delay is an update in the next delta at the current femtosecond. The sources are

@@ -137,6 +137,14 @@ fn direct_process_runtime_links_without_generated_design_c() {
                    value = 1;
                    value = 0 after 1ns;
                    await 2ns;
+                   await clock.rising();
+                   assert!(clock == '1', "edge await resumes on the requested edge");
+                   await clock.falling();
+                   assert!(clock == '0', "falling-edge await does not reuse a prior event");
+                   await clock == '1';
+                   assert!(clock == '1', "condition await rechecks after design changes");
+                   await clock == '1';
+                   assert!(clock == '1', "an already-true condition does not suspend");
                    value = 0;
                    packet.inner.byte = 9;
                    bytes[1] = 5;
@@ -476,6 +484,61 @@ fn direct_process_runtime_reports_assertions_without_generated_design_c() {
     );
     assert!(stderr.contains("direct assertion message"), "{stderr}");
     assert!(stderr.contains("source 0:"), "{stderr}");
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn direct_process_runtime_reports_unreachable_await_conditions() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory =
+        std::env::temp_dir().join(format!("siox_direct_await_deadlock_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("await_deadlock.siox");
+    let output = directory.join("await-deadlock-test");
+    std::fs::write(
+        &source,
+        r#"module direct_await_deadlock;
+           using std::logic::Bool;
+           #[test] entity DirectAwaitDeadlock {}
+           impl DirectAwaitDeadlock {
+               let ready: Bool = false;
+               await ready;
+               assert!(false, "unreachable after the unmet await");
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "direct await-deadlock fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output).output().unwrap();
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(!run.status.success(), "unreachable await passed");
+    assert!(
+        stderr.contains("await condition has no future event"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("unreachable after the unmet await"),
+        "{stderr}"
+    );
     let _ = std::fs::remove_dir_all(directory);
 }
 

@@ -454,7 +454,7 @@ signed main(void) {
                             id: ProcessBlockId(0),
                             instructions: vec![assignment(2)],
                             terminator: ProcessTerminator::Suspend {
-                                operation: ProcessSuspendOp::Await,
+                                operation: ProcessSuspendOp::AwaitTime,
                                 arguments: vec![],
                                 resume: ProcessBlockId(1),
                                 span,
@@ -1840,7 +1840,7 @@ signed main(void) {
                     id: ProcessBlockId(0),
                     instructions: vec![],
                     terminator: ProcessTerminator::Suspend {
-                        operation: siox::ir::ProcessSuspendOp::Await,
+                        operation: siox::ir::ProcessSuspendOp::AwaitTime,
                         arguments: vec![ProcessValueId(12)],
                         resume: ProcessBlockId(1),
                         span,

@@ -76,11 +76,13 @@ earliest pending event and advances to it:
   Each yields to the scheduler until its trigger fires, and may appear inside
   `for`/`if`. (`wait`/`tick` were removed — both now error and point at
   `await`.) During the compatibility migration the old wheel still lives in the
-  emitted C harness. The fixed runtime now executes duration waits directly:
-  `Design::process_ir` carries the explicit resume block and the runtime queues
-  it on the common time wheel. Condition and edge waits still use the
-  compatibility path until their direct evaluator/dependency ABI lands. A
-  future external-simulator adapter may own time through the same scheduler ABI.
+  emitted C harness. The opt-in fixed runtime executes all three forms directly:
+  Process IR separates timed suspension from a normalized trigger CFG. A level
+  condition is checked immediately, while an edge always suspends before its
+  first check. False triggers wake and re-evaluate after committed state changes;
+  a true trigger waits for reactive delta cycles to settle before the following
+  statement runs. A future external-simulator adapter may own time through the
+  same scheduler ABI.
 
 Native time is an unsigned 64-bit femtosecond count. A literal whose unit
 conversion cannot fit that timeline is a build error. Runtime additions

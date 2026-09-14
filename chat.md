@@ -9614,3 +9614,36 @@ previously unsupported corpus executables produced no new pass yet: each
 aggregate-heavy corpus case reaches another unsupported operation later in its
 stimulus, so this closes an IR/backend capability without overstating corpus
 coverage.
+
+### 2026-09-14 — Codex — direct condition and edge suspension
+
+Replaced the ambiguous Process `Await` terminator with explicit timed and
+state-change suspension. Condition and edge source forms now lower to ordinary
+CFGs around that primitive: level conditions check before suspending, while an
+edge suspends before its first check so a stale current event cannot satisfy a
+new await. A true trigger passes through the existing settle suspension before
+stimulus continues, ensuring downstream rising-edge hardware has completed its
+delta work.
+
+Pure receiver methods can now inline into Process values using the receiver's
+stable nominal owner key and a scoped `self` binding. This keeps
+`Bit::rising`/`falling` as std-defined `ClockLike` behavior instead of adding
+operator-name logic to the compiler. Process IR also gained explicit old/event
+reads for persistent test storage. The LLVM state frame tracks a separate dirty
+bit, snapshots old state on the first write in a delta, and exposes the committed
+event flag without losing the pre-event value.
+
+The fixed scheduler now wakes suspended conditions after state commits, reports
+an unmet condition when there are no future events, and ends a test when all
+foreground stimulus and its queued transactions have completed even if
+background clocks still have an infinite event stream. Direct regressions cover
+rising/falling edges, false and already-true conditions, downstream settling,
+and deadlock reporting.
+
+The full 183-file direct matrix improves from 94 to 110 passing executables.
+All seven former scheduler timeouts are gone, and nine previously unsupported
+files now pass (`await_forms_test`, `await_test`, `await_unmet_test`,
+`counter_test`, `generate_shape_test`, `match_pattern_test`,
+`registered_struct_test`, `saturating_accumulator_test`, and `uart_fsm_test`).
+The remaining categories are 46 unsupported, 20 semantic failures, 0 timeouts,
+0 build failures, and 7 compile-only files, with no pass regression.

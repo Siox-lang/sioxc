@@ -449,9 +449,18 @@ Remaining:
   foreground write to storage bound to a DUT `in`/`inout` port now ends its
   Process block with an explicit zero-time settle suspension; the fixed
   scheduler commits the drive, reaches reactive quiescence, and only then
-  resumes the following source statement. Dynamic strings and other runtime
-  calls, dynamic aggregate selection/update, VHDL delayed-write cancellation,
-  waveform services, and making this path the default remain.
+  resumes the following source statement. Duration, condition, and edge
+  `await` forms now share this CFG/runtime pipeline: a condition can proceed at
+  once, an edge always arms before its first check, false triggers suspend until
+  committed state changes, and a successful trigger settles downstream
+  reactive work before stimulus continues. Persistent test state retains
+  explicit current/old/event observations with a first-write-per-delta snapshot.
+  A completed foreground process drains its own delayed transactions and then
+  ends its test even when background clocks keep future events queued, while a
+  suspended condition with no future event reports a deadlock. Dynamic strings
+  and other runtime calls, dynamic aggregate
+  selection/update, VHDL delayed-write cancellation, waveform services, and
+  making this path the default remain.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
   formatting, and a software-runtime path for hosts without scalar quad

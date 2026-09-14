@@ -215,10 +215,13 @@ language-lowering path.
    at the next delta boundary. An opt-in native link path proves this pipeline
    without generating design C. Constant integer-backed `Suffix` bodies now
    normalize to ordinary Process numbers, and timed `await` registers its exact
-   process/resume block on that wheel. Delayed-write cancellation, condition
-   and edge waits, dynamic strings and other runtime calls, dynamic aggregate
-   selection/update, and waveforms are the next coverage boundary before it
-   becomes the default. Statement and expression matches already consume
+   process/resume block on that wheel. Condition and edge waits now lower their
+   triggers into ordinary Process branches around a state-change suspension;
+   edge CFGs arm before checking, and successful triggers settle downstream
+   reactive work before resuming stimulus. Delayed-write cancellation, dynamic
+   strings and other runtime calls, dynamic aggregate selection/update, and
+   waveforms are the next coverage boundary before it becomes the default.
+   Statement and expression matches already consume
    frontend-normalized exact, masked, alternative, wildcard, and
    directional-range patterns directly in LLVM; value arms may use either a
    scalar or a recursively packed struct/array layout.

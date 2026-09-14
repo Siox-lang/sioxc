@@ -11,12 +11,13 @@ enum {
     SX_PROCESS_FINISHED = 3,
     SX_PROCESS_SETTLING = 4,
     SX_PROCESS_UNSUPPORTED = 255,
-    SX_PROCESS_ABI = 7,
+    SX_PROCESS_ABI = 8,
     SX_EVENT_WRITE = 0,
     SX_EVENT_RESUME = 1,
     SX_SUSPENSION_NONE = 0,
     SX_SUSPENSION_TIME = 1,
-    SX_SUSPENSION_SETTLE = 2
+    SX_SUSPENSION_SETTLE = 2,
+    SX_SUSPENSION_CONDITION = 3
 };
 
 typedef uint8_t (*sx_process_entry)(uint32_t resume_block);
@@ -50,6 +51,7 @@ typedef struct sx_event {
     uint64_t due;
     uint64_t sequence;
     uint32_t target;
+    uint32_t process;
     uint32_t resume_block;
     uint32_t word_count;
     uint8_t kind;
@@ -64,6 +66,7 @@ static int sx_running;
 static uint32_t sx_current_process;
 static uint8_t sx_suspension_kind;
 static uint32_t sx_settle_resume_block;
+static uint32_t sx_condition_recheck_block;
 static uint32_t sx_warnings;
 static char *sx_format;
 static size_t sx_format_len;
@@ -304,6 +307,7 @@ static sx_event *sx_allocate_event(uint64_t delay, uint32_t word_count) {
     event->due = UINT64_MAX - sx_now < delay ? UINT64_MAX : sx_now + delay;
     event->sequence = sx_sequence++;
     event->target = 0;
+    event->process = UINT32_MAX;
     event->resume_block = 0;
     event->word_count = word_count;
     event->kind = SX_EVENT_WRITE;
@@ -324,6 +328,7 @@ void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
     sx_event *event = sx_allocate_event(delay, word_count);
     if (!event) return;
     event->target = site;
+    event->process = sx_current_process;
     for (uint32_t word = 0; word < word_count; ++word)
         event->words[word] = words[word];
     sx_insert_event(event);
@@ -348,6 +353,7 @@ void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
     if (!event) return;
     event->kind = SX_EVENT_RESUME;
     event->target = process;
+    event->process = process;
     event->resume_block = resume_block;
     sx_insert_event(event);
     sx_suspension_kind = SX_SUSPENSION_TIME;
@@ -369,6 +375,24 @@ void sx_runtime_settle(uint32_t process, uint32_t resume_block) {
     }
     sx_settle_resume_block = resume_block;
     sx_suspension_kind = SX_SUSPENSION_SETTLE;
+}
+
+void sx_runtime_suspend_condition(uint32_t process, uint32_t recheck_block) {
+    if (sx_error[0]) return;
+    if (!sx_running || sx_current_process == UINT32_MAX) {
+        sx_fail("process suspension registered outside a running process");
+        return;
+    }
+    if (process != sx_current_process || process >= sx_process_count) {
+        sx_fail_id("invalid suspending Process IR process", process);
+        return;
+    }
+    if (sx_suspension_kind != SX_SUSPENSION_NONE) {
+        sx_fail_id("process registered more than one suspension", process);
+        return;
+    }
+    sx_condition_recheck_block = recheck_block;
+    sx_suspension_kind = SX_SUSPENSION_CONDITION;
 }
 
 static int sx_design_failed(void) {
@@ -460,6 +484,7 @@ int sx_runtime_run_test(uint32_t test) {
     sx_current_process = UINT32_MAX;
     sx_suspension_kind = SX_SUSPENSION_NONE;
     sx_settle_resume_block = 0;
+    sx_condition_recheck_block = 0;
 
     if (sx_process_abi_version != SX_PROCESS_ABI)
         return sx_fail("unsupported Process IR runtime ABI");
@@ -539,13 +564,16 @@ int sx_runtime_run_test(uint32_t test) {
                 stopped[process] = 1;
                 finish = 1;
             } else if (status == SX_PROCESS_SUSPENDED) {
-                if (sx_suspension_kind != SX_SUSPENSION_TIME) {
+                if (sx_suspension_kind != SX_SUSPENSION_TIME &&
+                    sx_suspension_kind != SX_SUSPENSION_CONDITION) {
                     result = sx_fail_id(
-                        "process suspended without a timed runtime resume record",
+                        "process suspended without a runtime resume record",
                         process);
                     goto done;
                 }
-                suspended[process] = 1;
+                suspended[process] = sx_suspension_kind;
+                if (sx_suspension_kind == SX_SUSPENSION_CONDITION)
+                    resume_blocks[process] = sx_condition_recheck_block;
             } else if (status == SX_PROCESS_SETTLING) {
                 if (sx_suspension_kind != SX_SUSPENSION_SETTLE) {
                     result = sx_fail_id(
@@ -575,7 +603,14 @@ int sx_runtime_run_test(uint32_t test) {
             if (changed) {
                 for (uint32_t item = begin; item < end; ++item) {
                     uint32_t process = sx_test_process_ids[item];
-                    if (stopped[process] || suspended[process] || settling[process] ||
+                    if (stopped[process] || settling[process])
+                        continue;
+                    if (suspended[process] == SX_SUSPENSION_CONDITION) {
+                        suspended[process] = SX_SUSPENSION_NONE;
+                        next[process] = 1;
+                        continue;
+                    }
+                    if (suspended[process] != SX_SUSPENSION_NONE ||
                         sx_process_activations[process] != 1)
                         continue;
                     int changed_sensitivity = sx_has_changed_sensitivity(process);
@@ -624,7 +659,40 @@ int sx_runtime_run_test(uint32_t test) {
         }
         if (released_settling) continue;
 
-        if (!sx_events) break;
+        /* A completed foreground stimulus defines the end of its test after
+         * its own queued transactions have drained. Free-running reactive
+         * clocks may still have events forever, but they are implementation
+         * support rather than a reason to keep the finished test alive. */
+        int foreground_live = 0;
+        for (uint32_t item = begin; item < end; ++item) {
+            uint32_t process = sx_test_process_ids[item];
+            if (sx_process_activations[process] == 0 && !stopped[process]) {
+                foreground_live = 1;
+                break;
+            }
+        }
+        int foreground_transaction = 0;
+        for (sx_event *event = sx_events; event; event = event->next) {
+            if (event->kind == SX_EVENT_WRITE && event->process < sx_process_count &&
+                sx_process_activations[event->process] == 0) {
+                foreground_transaction = 1;
+                break;
+            }
+        }
+        if (!foreground_live && !foreground_transaction) break;
+
+        if (!sx_events) {
+            for (uint32_t item = begin; item < end; ++item) {
+                uint32_t process = sx_test_process_ids[item];
+                if (suspended[process] == SX_SUSPENSION_CONDITION) {
+                    result = sx_fail_process_block(
+                        "await condition has no future event for process",
+                        process, resume_blocks[process]);
+                    goto done;
+                }
+            }
+            break;
+        }
         sx_now = sx_events->due;
         if (sx_apply_due_events(ready, suspended, resume_blocks)) {
             result = 1;
@@ -634,7 +702,14 @@ int sx_runtime_run_test(uint32_t test) {
         if (sx_process_commit()) {
             for (uint32_t item = begin; item < end; ++item) {
                 uint32_t process = sx_test_process_ids[item];
-                if (stopped[process] || suspended[process] || settling[process] ||
+                if (stopped[process] || settling[process])
+                    continue;
+                if (suspended[process] == SX_SUSPENSION_CONDITION) {
+                    suspended[process] = SX_SUSPENSION_NONE;
+                    ready[process] = 1;
+                    continue;
+                }
+                if (suspended[process] != SX_SUSPENSION_NONE ||
                     sx_process_activations[process] != 1)
                     continue;
                 int changed_sensitivity = sx_has_changed_sensitivity(process);

@@ -45,6 +45,24 @@ impl<'a> FunctionIndex<'a> {
         self.associated.entry(key).or_insert(function);
     }
 
+    /// Look up an associated declaration after the caller has resolved the
+    /// receiver/owner type. This is used by Process lowering for ordinary
+    /// method syntax, whose callee is a field expression rather than a path.
+    pub fn get_associated(&self, owner: &str, name: &str) -> Option<&'a ast::FnDecl> {
+        self.associated.get(&format!("{owner}::{name}")).copied()
+    }
+
+    /// Stable owner key for an already-resolved nominal type. This is the
+    /// typed-expression counterpart of [`Self::type_head_key`].
+    pub fn nominal_type_key(&self, id: DefId) -> Option<String> {
+        match self.resolved.kind_of(id)? {
+            crate::resolve::DefKind::Enum => self.enum_id_key(id),
+            crate::resolve::DefKind::Struct => self.struct_id_key(id),
+            crate::resolve::DefKind::TypeAlias => self.resolved.qualified_name(id),
+            _ => self.resolved.qualified_name(id),
+        }
+    }
+
     /// Resolve a call expression to the declaration selected by name
     /// resolution, falling back to the separate associated-function registry.
     pub fn get(&self, callee: &ast::Expr) -> Option<&'a ast::FnDecl> {

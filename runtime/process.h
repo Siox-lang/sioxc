@@ -20,6 +20,10 @@ void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
 void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
                              uint64_t delay);
 
+/* Suspend until a design/storage change lets the emitted trigger block
+ * re-evaluate its normalized condition. */
+void sx_runtime_suspend_condition(uint32_t process, uint32_t recheck_block);
+
 /* Resume the current foreground process after reactive delta cycles settle. */
 void sx_runtime_settle(uint32_t process, uint32_t resume_block);
 
