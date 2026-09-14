@@ -438,7 +438,7 @@ pub fn lower(
         let root_path = hierarchy.root_path(test.root);
         let items = crate::testbench::implementation_items(modules, resolved, test.entity);
         let mut test_processes = Vec::new();
-        let mut legacy_statements = Vec::new();
+        let mut legacy_items = Vec::new();
 
         register_test_storages(
             &items,
@@ -451,6 +451,35 @@ pub fn lower(
             design,
             &mut process_ir,
         );
+
+        // The compatibility language allowed bare testbench statements and
+        // declarations to form one source-ordered implicit process. Keep a
+        // declaration before the first statement as reset state, but do not
+        // hoist a later initializer across an earlier statement/await. DUT
+        // instance declarations are not Process storage and stay outside this
+        // compatibility rule.
+        let mut saw_legacy_statement = false;
+        let mut ordered_initializers = std::collections::HashSet::new();
+        for item in &items {
+            match item {
+                ImplItem::Stmt(statement) if !crate::testbench::is_clock_statement(statement) => {
+                    saw_legacy_statement = true;
+                }
+                ImplItem::Let(declaration)
+                    if saw_legacy_statement && declaration.value.is_some() =>
+                {
+                    let Some(definition) = resolved.declared(declaration.name.span) else {
+                        continue;
+                    };
+                    if process_ir.storages.iter().any(|storage| {
+                        storage.owner == test.root && storage.source == Some(definition)
+                    }) {
+                        ordered_initializers.insert(definition);
+                    }
+                }
+                _ => {}
+            }
+        }
 
         // Initializers execute before any process starts. They use the same
         // value lowering with an empty lexical scope: persistent storage and
@@ -475,6 +504,7 @@ pub fn lower(
                 )),
                 _ => None,
             })
+            .filter(|(definition, _)| !ordered_initializers.contains(definition))
             .collect::<Vec<_>>();
         {
             let mut context = LoweringContext {
@@ -605,7 +635,14 @@ pub fn lower(
                     process_ir.processes.push(lowered);
                     test_processes.push(id);
                 }
-                ImplItem::Stmt(statement) => legacy_statements.push(statement.clone()),
+                ImplItem::Stmt(_) => legacy_items.push(*item),
+                ImplItem::Let(declaration)
+                    if resolved
+                        .declared(declaration.name.span)
+                        .is_some_and(|definition| ordered_initializers.contains(&definition)) =>
+                {
+                    legacy_items.push(*item);
+                }
                 ImplItem::Const(_)
                 | ImplItem::Fn(_)
                 | ImplItem::ModeField { .. }
@@ -613,11 +650,15 @@ pub fn lower(
             }
         }
 
-        if !legacy_statements.is_empty() {
+        if !legacy_items.is_empty() {
             let id = ProcessId(process_ir.processes.len() as u32);
-            let span = legacy_statements
+            let span = legacy_items
                 .first()
-                .map(ast::stmt_span)
+                .map(|item| match item {
+                    ImplItem::Stmt(statement) => ast::stmt_span(statement),
+                    ImplItem::Let(declaration) => declaration.span,
+                    _ => test.span,
+                })
                 .unwrap_or(test.span);
             let lowered = {
                 let mut context = LoweringContext {
@@ -635,13 +676,13 @@ pub fn lower(
                     inline_return_types: Vec::new(),
                     inline_functions: std::collections::HashSet::new(),
                 };
-                lower_process(
+                lower_legacy_process(
                     id,
                     test.root,
                     Some(format!("{root_path}::<legacy>")),
                     span,
                     ProcessActivation::TimeZero,
-                    &legacy_statements,
+                    &legacy_items,
                     &mut context,
                 )
             };
@@ -1400,6 +1441,101 @@ fn lower_process(
     process
 }
 
+/// Lower the compatibility-era implicit test process without moving a
+/// declaration initializer across an earlier bare statement. Explicit
+/// `process` blocks never use this path; their impl-level state is initialized
+/// before independently scheduled processes start.
+fn lower_legacy_process(
+    id: ProcessId,
+    owner: crate::elab::InstanceId,
+    label: Option<String>,
+    span: crate::diag::Span,
+    activation: ProcessActivation,
+    items: &[&ImplItem],
+    context: &mut LoweringContext<'_>,
+) -> ProcessCfg {
+    let mut process = ProcessCfg {
+        id,
+        root: owner,
+        owner,
+        label,
+        span,
+        activation,
+        entry: ProcessBlockId(0),
+        locals: Vec::new(),
+        blocks: vec![empty_block(ProcessBlockId(0))],
+    };
+    let mut current = Some(ProcessBlockId(0));
+    for item in items {
+        let Some(block) = current else { break };
+        current = match item {
+            ImplItem::Stmt(statement) => lower_statement(statement, context, &mut process, block),
+            ImplItem::Let(declaration) => {
+                lower_ordered_storage_initializer(declaration, context, &mut process, block)
+            }
+            _ => Some(block),
+        };
+    }
+    process
+}
+
+fn lower_ordered_storage_initializer(
+    declaration: &ast::LetDecl,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
+    let definition = context.resolved.declared(declaration.name.span)?;
+    let (storage, ty, drives_design) = context
+        .process_ir
+        .storages
+        .iter()
+        .find(|storage| storage.owner == process.owner && storage.source == Some(definition))
+        .map(|storage| {
+            (
+                storage.id,
+                storage.ty.clone(),
+                storage.bindings.iter().any(|binding| {
+                    matches!(
+                        binding.direction,
+                        LayoutDirection::In | LayoutDirection::InOut
+                    )
+                }),
+            )
+        })?;
+    let initializer = declaration.value.as_ref()?;
+    let target_kind = ProcessValueKind::Storage(storage);
+    let target_width = source_value_width(&target_kind, ty.as_ref(), process, context);
+    let target = push_value(
+        declaration.name.span,
+        ty.clone(),
+        target_width,
+        target_kind,
+        context,
+    );
+    let value = value_ref_with_type(initializer, process, context, ty.as_ref());
+    process.blocks[block.0 as usize]
+        .instructions
+        .push(ProcessInstruction::Assign {
+            semantics: ProcessAssignment::ImmediateStorage,
+            driver_context: None,
+            target,
+            value,
+            span: declaration.span,
+        });
+    if !drives_design {
+        return Some(block);
+    }
+    let resume = push_block(process);
+    process.blocks[block.0 as usize].terminator = ProcessTerminator::Suspend {
+        operation: ProcessSuspendOp::Settle,
+        arguments: Vec::new(),
+        resume,
+        span: declaration.span,
+    };
+    Some(resume)
+}
+
 /// A block with no instructions that simply returns; blocks are created
 /// empty and filled in as lowering proceeds.
 fn empty_block(id: ProcessBlockId) -> ProcessBlock {
@@ -1937,6 +2073,146 @@ fn inline_bound_value(path: &ast::Path, context: &LoweringContext<'_>) -> Option
         .iter()
         .rev()
         .find_map(|bindings| bindings.get(&definition).copied())
+}
+
+fn process_value_is_real(id: ProcessValueId, context: &LoweringContext<'_>) -> bool {
+    let layout_is_real = |layout: &crate::ir::SourceLayout| {
+        matches!(
+            layout.kind,
+            LayoutKind::Scalar {
+                domain: crate::ir::ScalarDomain::Real,
+                ..
+            }
+        )
+    };
+    let mut pending = vec![id];
+    while let Some(id) = pending.pop() {
+        let Some(value) = context.process_ir.values.get(id.0 as usize) else {
+            continue;
+        };
+        if matches!(value.ty, Some(crate::types::Ty::Real)) {
+            return true;
+        }
+        match &value.kind {
+            ProcessValueKind::Number(ProcessNumber::Real(_)) => return true,
+            ProcessValueKind::Storage(storage) => {
+                let Some(storage) = context.process_ir.storages.get(storage.0 as usize) else {
+                    continue;
+                };
+                if matches!(storage.ty, Some(crate::types::Ty::Real))
+                    || storage.layout.as_ref().is_some_and(layout_is_real)
+                {
+                    return true;
+                }
+            }
+            ProcessValueKind::Local { process, local } => {
+                let Some(local) = context
+                    .process_ir
+                    .processes
+                    .get(process.0 as usize)
+                    .and_then(|process| process.locals.get(local.0 as usize))
+                else {
+                    continue;
+                };
+                if matches!(local.ty, Some(crate::types::Ty::Real))
+                    || local.layout.as_ref().is_some_and(layout_is_real)
+                {
+                    return true;
+                }
+            }
+            ProcessValueKind::Signal { signals, .. } => {
+                if signals.iter().any(|signal| {
+                    context
+                        .design
+                        .signals
+                        .get(signal.0 as usize)
+                        .and_then(|signal| context.design.source_layouts.get(&signal.path))
+                        .is_some_and(layout_is_real)
+                }) {
+                    return true;
+                }
+            }
+            ProcessValueKind::Unary {
+                operation: ProcessUnaryOp::Neg,
+                operand,
+            } => pending.push(*operand),
+            ProcessValueKind::Binary {
+                operation:
+                    ProcessBinaryOp::FloatAdd
+                    | ProcessBinaryOp::FloatSub
+                    | ProcessBinaryOp::FloatMul
+                    | ProcessBinaryOp::FloatDiv,
+                ..
+            } => return true,
+            ProcessValueKind::Select {
+                then_value,
+                else_value,
+                ..
+            } => {
+                pending.push(*then_value);
+                pending.push(*else_value);
+            }
+            ProcessValueKind::ForeignCall {
+                float_result: true, ..
+            } => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Lower compiler-kernel conversions before they can survive as executable
+/// calls. Their resolved builtin identity, rather than the leaf spelling,
+/// distinguishes them from an ordinary user function with a similar name.
+/// `integer(real)` is a signed numeric conversion; the other currently
+/// supported kernel crossings preserve the source bits at the target width.
+fn lower_process_kernel_conversion(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let ast::Expr::Call {
+        callee,
+        type_args,
+        args,
+        bang: false,
+        span,
+    } = expression
+    else {
+        return None;
+    };
+    if !type_args.is_empty() || args.len() != 1 {
+        return None;
+    }
+    let ast::Expr::Path(path) = callee.as_ref() else {
+        return None;
+    };
+    let definition = context.resolved.resolved(path.span)?;
+    let definition = context.resolved.def(definition)?;
+    if definition.kind != crate::resolve::DefKind::Builtin {
+        return None;
+    }
+    let name = definition.name.clone();
+    let target = match name.as_str() {
+        "integer" => crate::types::Ty::Integer,
+        "Char" => crate::types::Ty::Char,
+        _ => return None,
+    };
+    let operand_type = context.typed.expr_type(ast::expr_span(&args[0])).cloned();
+    let operand = value_ref(&args[0], process, context);
+    let kind = if name == "integer"
+        && (matches!(operand_type, Some(crate::types::Ty::Real))
+            || process_value_is_real(operand, context))
+    {
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::RealToInteger,
+            operand,
+        }
+    } else {
+        ProcessValueKind::RawResize { operand }
+    };
+    let width = source_value_width(&kind, Some(&target), process, context)?;
+    Some(push_value(*span, Some(target), Some(width), kind, context))
 }
 
 /// Lower a value-transparent type application to the language's explicit raw
@@ -2482,6 +2758,9 @@ fn value_ref_with_type(
             let kind = ProcessValueKind::Number(ProcessNumber::Integer(vec![value as u64]));
             let width = source_value_width(&kind, ty.as_ref(), process, context);
             return push_value(span, ty, width, kind, context);
+        }
+        if let Some(value) = lower_process_kernel_conversion(expression, process, context) {
+            return value;
         }
         if let Some(value) = lower_process_raw_resize(expression, process, context, ty.as_ref()) {
             return value;

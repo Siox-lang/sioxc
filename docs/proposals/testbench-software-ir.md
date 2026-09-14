@@ -239,8 +239,13 @@ language-lowering path.
    recursive default value backed by retained layout metadata. Contextually
    typed string tokens for fixed digital arrays likewise become exact-width
    Process values using the declaration-owned layout, while runtime UTF-8
-   strings keep their distinct representation. Receiver
-   methods, procedure-shaped functions, runtime recursion, other non-packed
+   strings keep their distinct representation. Resolver-selected
+   `integer`/`Char` kernel conversions are now values rather than runtime
+   calls; real-to-integer conversion truncates toward zero and real negation
+   stays floating point in LLVM. The legacy implicit testbench process also
+   preserves declaration/statement source order, while explicit processes
+   continue to start after impl-state initialization. Receiver methods,
+   procedure-shaped functions, runtime recursion, other non-packed
    conversions, and general call CFGs remain before the generated-C path can
    be retired.
 7. **Run both native backends differentially.** Require identical test results,

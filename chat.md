@@ -9462,3 +9462,36 @@ the direct-runtime fixture, focused `numeric_literal_syntax_test`, and the
 `string_vector_test` move from unsupported to passing. The remaining categories
 are 62 unsupported, 22 semantic failures, 7 scheduler timeouts, 0 build
 failures, and 7 compile-only files.
+
+### 2026-09-14 — Codex — kernel conversions and legacy initializer ordering
+
+Resolved compiler-kernel `integer` and `Char` calls now lower into Process
+values instead of surviving as executable calls. `integer(real)` uses the
+existing signed, truncating `RealToInteger` operation; other supported
+crossings use the typed raw-resize value. Resolution must identify the builtin,
+so a user function with a similar spelling cannot be captured. Because the
+typed expression table can intentionally leave a bare storage path incomplete,
+real semantics are recovered from retained Process storage/local/signal layout
+and value structure. LLVM now applies floating-point negation to real operands
+instead of negating their encoded bits as integers.
+
+The failing signed-real probe exposed a separate compatibility rule: legacy
+bare testbench declarations and statements execute in one source-ordered
+implicit process. The generated-C oracle documents and implements that order,
+but the Process adapter had hoisted every valued declaration into reset. A
+valued declaration following a bare statement now initializes at its written
+point, with an explicit settle suspension when it drives a DUT input. This
+does not alter explicit `process` semantics; impl state for those processes is
+still initialized before independent scheduling begins.
+
+Verification is green under the 8 GiB cap: strict all-target/all-feature
+Clippy, frontend-only no-default checking, 425 default library tests plus all
+integration/doc tests, 407 all-feature library tests plus integrations/docs,
+the expanded direct-runtime fixtures, focused real-conversion executables, and
+the 183-file compatibility corpus. The full direct matrix improves from 85 to
+87 passing executables: `real_conversion_test` and
+`real_conversion_signed_test` move to passing. The remaining categories are 61
+unsupported, 21 semantic failures, 7 scheduler timeouts, 0 build failures, and
+7 compile-only files. `fanout_init_test` advances from a semantic failure to
+the later unsupported aggregate-initialization boundary, and no previous pass
+regresses.

@@ -415,7 +415,15 @@ Remaining:
   lower to exact-width digital array values; ordinary `string` declarations
   remain runtime UTF-8 strings. The recovered nominal identity is restricted
   to type declarations, so an equal function/local leaf cannot capture layout
-  typing.
+  typing. Resolver-selected kernel conversions no longer survive as runtime
+  calls: `integer(real)` lowers to signed truncation toward zero, and the
+  direct LLVM path preserves real negation as floating-point negation before
+  conversion; the supported non-real `integer`/`Char` crossings are explicit
+  raw resizes. Compatibility-era bare testbench declarations also retain the
+  generated-C oracle's sequential source ordering, so an initializer written
+  after a statement observes that statement instead of being hoisted into
+  reset. Explicit `process` blocks keep the normal model in which impl state is
+  initialized before independently scheduled processes begin.
   Inclusive directional range loops and source-order array loops execute as
   ordinary CFG back-edges; cursor/end state and the array snapshot live in the
   object so suspension inside a loop resumes without re-evaluating its

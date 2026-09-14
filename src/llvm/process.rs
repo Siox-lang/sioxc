@@ -1021,6 +1021,48 @@ fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bool {
     }
 }
 
+fn process_value_is_real(design: &Design, id: ProcessValueId) -> bool {
+    let Some(value) = design.process_ir.values.get(id.0 as usize) else {
+        return false;
+    };
+    if matches!(value.ty, Some(siox::types::Ty::Real))
+        || process_value_layout(design, id).is_some_and(|layout| {
+            matches!(
+                layout.kind,
+                LayoutKind::Scalar {
+                    domain: siox::ir::ScalarDomain::Real,
+                    ..
+                }
+            )
+        })
+    {
+        return true;
+    }
+    match &value.kind {
+        ProcessValueKind::Number(ProcessNumber::Real(_)) => true,
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::Neg,
+            operand,
+        } => process_value_is_real(design, *operand),
+        ProcessValueKind::Binary { operation, .. } => matches!(
+            operation,
+            ProcessBinaryOp::FloatAdd
+                | ProcessBinaryOp::FloatSub
+                | ProcessBinaryOp::FloatMul
+                | ProcessBinaryOp::FloatDiv
+        ),
+        ProcessValueKind::Select {
+            then_value,
+            else_value,
+            ..
+        } => {
+            process_value_is_real(design, *then_value) || process_value_is_real(design, *else_value)
+        }
+        ProcessValueKind::ForeignCall { float_result, .. } => *float_result,
+        _ => false,
+    }
+}
+
 fn process_type_is_signed(ty: &siox::types::Ty) -> bool {
     matches!(ty, siox::types::Ty::Integer)
         || matches!(
@@ -2240,6 +2282,7 @@ fn process_value<'ctx>(
         }
         ProcessValueKind::Unary { operation, operand } => match operation {
             ProcessUnaryOp::Neg => {
+                let operand_id = *operand;
                 let operand = process_value_at(
                     context,
                     module,
@@ -2252,7 +2295,20 @@ fn process_value<'ctx>(
                     index_sites,
                     cache,
                 )?;
-                builder.build_int_neg(operand, "pv.neg").ok()?
+                if process_value_is_real(design, operand_id) {
+                    let real = builder
+                        .build_bit_cast(operand, context.f64_type(), "pv.neg.real.bits")
+                        .ok()?
+                        .into_float_value();
+                    let negated = builder.build_float_neg(real, "pv.neg.real").ok()?;
+                    let bits = builder
+                        .build_bit_cast(negated, context.i64_type(), "pv.neg.real.result")
+                        .ok()?
+                        .into_int_value();
+                    fit(builder, bits, width)?
+                } else {
+                    builder.build_int_neg(operand, "pv.neg").ok()?
+                }
             }
             ProcessUnaryOp::Not => {
                 let operand = process_value(

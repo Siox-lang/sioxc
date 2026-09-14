@@ -110,6 +110,7 @@ fn direct_process_runtime_links_without_generated_design_c() {
                let source: unsigned[8] = 200;
                let widened: unsigned[16];
                let signed_source: signed[8] = 240;
+               let real_source: real = 3.75;
                let signed_widened: signed[16];
                let signed_shifted: signed[8];
                let nibble: unsigned[4] = 15;
@@ -167,6 +168,8 @@ fn direct_process_runtime_links_without_generated_design_c() {
                            "type construction uses recursive retained defaults");
                    assert!(unsigned[8](wrapped) == 201,
                            "nominal newtype construction preserves its value");
+                   assert!(integer(real_source) == 3,
+                           "kernel real conversion truncates toward zero");
                    assert!(pattern[3] == '1' and pattern[2] == '0' and
                                pattern[1] == '1' and pattern[0] == '0',
                            "context turns a string token into a digital array literal");
@@ -228,6 +231,57 @@ fn direct_process_runtime_links_without_generated_design_c() {
         "direct Process IR fixture failed:\n{}{}",
         report,
         warnings
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn direct_legacy_initializers_keep_source_order() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory =
+        std::env::temp_dir().join(format!("siox_direct_legacy_order_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("legacy_order.siox");
+    let output = directory.join("legacy-order-test");
+    std::fs::write(
+        &source,
+        r#"module legacy_order;
+           #[test] entity LegacyOrder {}
+           impl LegacyOrder {
+               let source: real;
+               source = 0.0 - 2.9;
+               let converted: integer = integer(source);
+               assert!(converted == -2,
+                       "a later initializer observes the earlier statement");
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "direct legacy-order fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "direct legacy-order fixture failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
     );
     let _ = std::fs::remove_dir_all(directory);
 }
