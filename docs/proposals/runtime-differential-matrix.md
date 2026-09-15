@@ -11,6 +11,25 @@ VCD/FST samples across the full default and bit-packed corpus". Running both
 backends over 176 test cases proves *aggregate* parity; this matrix is what
 identifies which service broke when a case fails.
 
+## Running it
+
+`scripts/diff-backends.sh [corpus] [--write-baseline]` performs the comparison
+below over the whole corpus. It classifies each case as `AGREE`, `DIVERGE`, or
+one of the direct-only gaps the migration already tracks
+(`DIRECT-UNSUPPORTED`, `DIRECT-SEMANTIC`, `DIRECT-TIMEOUT`,
+`DIRECT-BUILD-FAIL`), and reports an `ORACLE-FAIL` if the generated-C backend
+itself fails, since comparing against a broken oracle says nothing.
+
+With `scripts/diff-backends.baseline` present it fails only when a case that
+previously agreed stops agreeing. Closing a gap, or a gap changing shape, is
+ordinary progress and does not fail the run — during migration most
+non-agreement is expected, and only a baseline can separate that from a
+regression.
+
+It is deliberately not part of `ci-local.sh`: it roughly doubles that gate's
+runtime, and while the direct backend is incomplete its useful signal is the
+divergence list rather than a pass/fail bit.
+
 ## How to compare
 
 For every case, both backends build a test executable and it is **run**, never
