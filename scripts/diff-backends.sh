@@ -51,8 +51,20 @@ run_backend() {
     timeout "$limit" "$binary" >"$out" 2>&1
 }
 
+# A VCD records every signal at every timestamp, so it is a far stronger
+# observable than stdout for the many corpus tests that print nothing. It is
+# compared only when BOTH backends emit one; the direct runtime does not accept
+# `-o` yet, so today this is inert and will start contributing by itself.
+compare_waves() {
+    local binary=$1 out=$2
+    "$binary" -o "$out" >/dev/null 2>&1 || return 1
+    [[ -s $out ]] || return 1
+    # `$date`/`$version` are writer metadata rather than design behaviour.
+    sed -e '/^\$date/,/\$end/d' -e '/^\$version/d' "$out" >"$out.norm"
+}
+
 declare -A state
-agree=0 diverge=0 gap=0 oracle=0 skipped=0
+agree=0 diverge=0 gap=0 oracle=0 skipped=0 boilerplate=0 waved=0
 for source in "$corpus"/*.siox; do
     name=$(basename "${source%.siox}")
     grep -q '#\[test\]' "$source" || { skipped=$((skipped + 1)); continue; }
@@ -87,19 +99,36 @@ for source in "$corpus"/*.siox; do
             state[$name]=DIRECT-SEMANTIC
         fi
         gap=$((gap + 1))
-    elif cmp -s "$tmp/$name.c" "$tmp/$name.direct"; then
-        state[$name]=AGREE
-        agree=$((agree + 1))
-    else
+    elif ! cmp -s "$tmp/$name.c" "$tmp/$name.direct"; then
         state[$name]=DIVERGE
         diverge=$((diverge + 1))
-        echo "DIVERGE      $name" >&2
+        echo "DIVERGE      $name (stdout)" >&2
         diff "$tmp/$name.c" "$tmp/$name.direct" | sed 's/^/    /' >&2
+    elif compare_waves "$tmp/$name.c.bin" "$tmp/$name.c.vcd" \
+        && compare_waves "$tmp/$name.direct.bin" "$tmp/$name.direct.vcd" \
+        && ! cmp -s "$tmp/$name.c.vcd.norm" "$tmp/$name.direct.vcd.norm"; then
+        state[$name]=DIVERGE
+        diverge=$((diverge + 1))
+        echo "DIVERGE      $name (waveform)" >&2
+        diff "$tmp/$name.c.vcd.norm" "$tmp/$name.direct.vcd.norm" | head -20 | sed 's/^/    /' >&2
+    else
+        state[$name]=AGREE
+        agree=$((agree + 1))
+        [[ -s $tmp/$name.direct.vcd ]] && waved=$((waved + 1))
+        # Record how little some agreements prove: a test that prints nothing
+        # contributes only the harness banner, so "agree" there means both
+        # backends exited zero and said so in the same words.
+        grep -qvE '^$|^running |^test .* \.\.\. |^test result:' "$tmp/$name.direct" \
+            || boilerplate=$((boilerplate + 1))
     fi
 done
 
 echo
 echo "$agree agree; $diverge diverge; $gap direct-only gaps; $oracle oracle failures; $skipped without tests"
+if [[ $agree -gt 0 ]]; then
+    echo "  of those agreements, $boilerplate compared harness output only" \
+         "and $waved also compared a waveform"
+fi
 for kind in DIRECT-UNSUPPORTED DIRECT-SEMANTIC DIRECT-TIMEOUT DIRECT-BUILD-FAIL; do
     count=0
     for name in "${!state[@]}"; do [[ ${state[$name]} == "$kind" ]] && count=$((count + 1)); done
