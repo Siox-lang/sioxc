@@ -610,10 +610,15 @@ pub(super) fn packed_lookup(expr: &Expr) -> Option<(LookupTable, &Expr)> {
 
 /// One operand metavalue lowering wants to hoist into its own signal.
 pub(super) struct MetaTemp {
+    /// Id the hoisted signal will be given.
     pub(super) id: u32,
+    /// Width of the hoisted signal, in bits.
     pub(super) width: u32,
+    /// The operand expression being hoisted.
     pub(super) expr: Expr,
+    /// Driver context the hoist belongs to.
     pub(super) ctx: u32,
+    /// Declaration anchor of the write being lowered.
     pub(super) anchor: crate::diag::Span,
 }
 
@@ -628,9 +633,13 @@ pub(super) struct MetaTemps {
     /// append signals to the design; lowering then keeps the fully inlined form
     /// those paths have always produced.
     pub(super) hoist: bool,
+    /// Id the next hoisted signal takes.
     pub(super) next_id: u32,
+    /// Driver context stamped onto each hoist.
     pub(super) ctx: u32,
+    /// Declaration anchor stamped onto each hoist.
     pub(super) anchor: crate::diag::Span,
+    /// Hoists made so far, in id order.
     pub(super) made: Vec<MetaTemp>,
 }
 

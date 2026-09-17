@@ -13,8 +13,12 @@ use crate::syntax::ast;
 /// they remain in a deliberately separate `Type::name` registry whose owner
 /// is still the resolver-selected nominal type or entity identity.
 pub struct FunctionIndex<'a> {
+    /// Resolution this index was built over, for definition lookup.
     resolved: &'a Resolved,
+    /// Module-level and foreign functions, by declaration identity.
     free: HashMap<DefId, &'a ast::FnDecl>,
+    /// Static associated functions, keyed by `Type::name` because they do
+    /// not yet receive a `DefId` of their own.
     associated: HashMap<String, &'a ast::FnDecl>,
 }
 

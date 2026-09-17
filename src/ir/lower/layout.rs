@@ -474,7 +474,7 @@ impl<'a> Lowering<'a> {
 
     /// The storage width of a value-range-constrained numeric type
     /// (`integer<left..right>` / `real<left..right>`), if `ty` is one. Returns
-    /// `(width, is_real)`.
+    /// `(width, is_real, declared bounds)`.
     pub(super) fn ranged_numeric(&self, ty: &ast::Type) -> Option<NumericRangeInfo> {
         let ast::Type::Generic { base, args, .. } = ty else {
             return None;

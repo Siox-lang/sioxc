@@ -10,7 +10,13 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// libfst's core translation unit. Its absence is what the submodule
+/// check below reports on, since every other source lives beside it.
 const LIBFST: &str = "third_party/libfst/src/fstapi.c";
+/// C sources precompiled once into design-independent objects, as
+/// `(source path, object file name)` pairs. Order is irrelevant; the
+/// list is the whole contract between this script and the linker in
+/// `driver::build`.
 const RUNTIME_SOURCES: [(&str, &str); 5] = [
     ("third_party/libfst/src/fstapi.c", "fstapi.o"),
     ("third_party/libfst/src/fastlz.c", "fastlz.o"),

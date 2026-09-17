@@ -103,10 +103,16 @@ const MAX_NESTING: u32 = 128;
 /// diagnostic and resynchronizes rather than stopping, so one run reports many
 /// problems and later stages still receive a usable partial tree.
 pub struct Parser<'a> {
+    /// Source text, for slicing a token's lexeme back out.
     src: &'a str,
+    /// The token stream being consumed.
     tokens: Vec<Token>,
+    /// Index of the next token.
     pos: usize,
+    /// Where parse diagnostics are emitted.
     sink: &'a mut DiagnosticSink,
+    /// Custom operator symbol to its precedence, discovered from the
+    /// transitive import graph before this parse begins.
     custom_operators: HashMap<String, u8>,
     /// Current expression/block nesting, against `MAX_NESTING`.
     depth: u32,

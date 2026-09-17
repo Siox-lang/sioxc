@@ -50,6 +50,7 @@ impl Span {
 /// Owns the text of every source file and maps [`FileId`]s back to names.
 #[derive(Default)]
 pub struct SourceMap {
+    /// Loaded files, indexed by [`FileId`].
     files: Vec<SourceFile>,
 }
 
@@ -237,6 +238,7 @@ impl Diagnostic {
 /// the CLI renders/counts at the end.
 #[derive(Default)]
 pub struct DiagnosticSink {
+    /// Diagnostics in the order stages emitted them.
     diagnostics: Vec<Diagnostic>,
 }
 

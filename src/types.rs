@@ -78,6 +78,7 @@ impl Ty {
 /// elaborator and IR lowering.
 #[derive(Clone, Default)]
 pub struct Typed {
+    /// Checked type of each expression, keyed by its span.
     expr_types: HashMap<Span, Ty>,
 }
 
@@ -142,8 +143,12 @@ const SYS_ATTRS: &[&str] = &[
 
 /// A port as seen by the checker: its name, resolved type, and direction.
 struct PortInfo {
+    /// Port name as declared.
     name: String,
+    /// Resolved port type.
     ty: Ty,
+    /// Declared direction, or `None` when the port is view-typed and its
+    /// directions come from `view` instead.
     dir: Option<Direction>,
     /// Named directional view when this port is view-typed.
     view: Option<String>,
@@ -159,30 +164,58 @@ struct PortInfo {
 /// The value type an attribute declaration expects (spec 3.5).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AttrValueTy {
+    /// `true` / `false`.
     Bool,
+    /// A string literal.
     Str,
+    /// An integer literal.
     Integer,
+    /// Anything else, which the checker accepts without constraining.
     Other,
 }
 
+/// `(operator trait, implementing type)` to its overloads, each
+/// `(input type, output type)`.
 type OperatorSignatures = HashMap<(String, String), Vec<(Option<String>, Option<String>)>>;
+/// A generic function's declared parameters and their written types.
 type GenericFnSignature = (Vec<Param>, Vec<Option<Type>>);
+/// A method's declared non-`self` parameter types, `None` where the
+/// type was left to inference.
 type MethodParams = Vec<Option<Type>>;
+/// A trait's defaulted method: name, return type, parameters, and
+/// whether it takes `self`.
 type TraitDefaultSignature = (String, Option<Type>, MethodParams, bool);
+/// A method a type inherits from a trait: owner, name, return type,
+/// parameters, and whether it takes `self`.
 type InheritedMethodSignature = (String, String, Option<Type>, MethodParams, bool);
+/// The environment one impl body is checked in: port directions,
+/// named types in scope, and declared numeric ranges.
 type ImplEnvironment = (PortDirs, HashMap<String, Ty>, HashMap<String, (i64, i64)>);
 
+/// Where a member may be named from, resolved once at collection so
+/// every later access checks against the same answer.
 #[derive(Clone)]
 struct MemberVisibility {
+    /// Whether the member is declared `pub`.
     is_pub: bool,
     /// Inherent members and representation fields belong to the owning type.
     /// Trait methods instead inherit the trait declaration's module boundary.
     type_private: bool,
+    /// Type or trait that declares the member.
     owner: String,
+    /// Module the visibility boundary is drawn around.
     module: String,
+    /// Declaration span, so a violation can point at it.
     span: Span,
 }
 
+/// Type and kind checker for one set of resolved modules.
+///
+/// Most fields are registries collected in a first pass over every
+/// declaration, so the checking walk can answer questions about items
+/// it has not reached yet. The `Cell`/`RefCell` fields are walk state
+/// rather than registries: they track where in the tree the checker
+/// currently is, and are borrowed from `&self` methods.
 struct Checker<'a> {
     /// Entities carrying `#[test]`: testbenches, where the stimulus
     /// primitives (`await`, `assert!`, `print!`, `warn!`) are meaningful.
@@ -201,7 +234,9 @@ struct Checker<'a> {
     /// parameter is never an entity instantiation even when an entity happens
     /// to share its name — elaboration excludes them the same way.
     type_params: std::cell::RefCell<HashSet<String>>,
+    /// Where type diagnostics are emitted.
     sink: &'a mut DiagnosticSink,
+    /// Name resolution results, for definition lookup.
     resolved: &'a Resolved,
     /// Entity name -> its ports.
     entities: HashMap<String, Vec<PortInfo>>,
@@ -230,6 +265,9 @@ struct Checker<'a> {
     operator_sigs: OperatorSignatures,
     /// (`Index`/`IndexAssign`, target) -> (index type, value/output type).
     index_sigs: OperatorSignatures,
+    /// Custom operator symbol to its declared precedence and declaration
+    /// span. The span makes a conflicting redeclaration reportable at both
+    /// sites.
     operator_precedence: HashMap<String, (u8, Span)>,
     /// Enum name -> its EFFECTIVE variant names (inherited + own).
     enum_variants: HashMap<String, Vec<String>>,
@@ -311,6 +349,7 @@ struct Checker<'a> {
     /// associated call syntax are distinct and cannot substitute for each
     /// other merely because the owner/name pair exists.
     method_has_self: HashMap<(String, String), bool>,
+    /// `(type head, method name)` to where the method may be named from.
     method_visibility: HashMap<(String, String), MemberVisibility>,
     /// Entity implementation state is never part of the entity's structural
     /// interface. Keep its declaration site so `instance.hidden` is diagnosed
@@ -334,7 +373,11 @@ struct Checker<'a> {
     /// have the backing struct as `Self` but remain a distinct method owner,
     /// so privacy checks need both identities.
     current_impl_owner: std::cell::RefCell<Option<String>>,
+    /// Source file to its declared module path. Privacy belongs to the
+    /// module, never to the file that happened to hold the declaration.
     file_modules: HashMap<crate::diag::FileId, String>,
+    /// Every entity name, so a type that is not an entity is not mistaken
+    /// for an instantiation.
     entity_names: HashSet<String>,
 }
 

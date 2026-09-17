@@ -3,6 +3,10 @@
 use super::*;
 
 impl<'a> Lowering<'a> {
+    /// Record the build facts of one instance array — its declared and
+    /// populated extents — so IR diagnostics can report a partially
+    /// populated array against its declaration rather than against the
+    /// flattened leaves that survive elaboration.
     pub(super) fn collect_instance_array_facts(
         &mut self,
         hierarchy: &Hierarchy,

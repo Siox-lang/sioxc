@@ -48,10 +48,15 @@ impl TestPlan {
     }
 }
 
+/// One `#[test]` entity found during discovery, before its hierarchy
+/// is elaborated.
 #[derive(Clone, Debug)]
 struct DiscoveredTest {
+    /// The entity declaration carrying `#[test]`.
     entity: DefId,
+    /// Module-qualified name the harness reports the test under.
     qualified_name: String,
+    /// Declaration span, for diagnostics.
     span: Span,
 }
 
@@ -143,10 +148,18 @@ fn validate_process_scheduling(
     }
 }
 
+/// Whether a process is nothing but a clock generator: a single
+/// self-inverting delayed assignment. Such a process drives simulation
+/// time rather than describing hardware, so the backends give it a
+/// dedicated lowering instead of the general event-block path.
 pub(crate) fn is_clock_process(statements: &[Stmt]) -> bool {
     matches!(statements, [statement] if is_clock_statement(statement))
 }
 
+/// Whether one statement is the self-inverting delayed assignment that
+/// makes a clock (`clk <= !clk after P`). The `after` delay is
+/// required: without it the assignment is combinational and would
+/// oscillate within a single delta cycle.
 pub(crate) fn is_clock_statement(statement: &Stmt) -> bool {
     let Stmt::Assign {
         target,

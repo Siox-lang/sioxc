@@ -41,6 +41,9 @@ use crate::syntax::Module;
 /// import.
 pub const OPERATORS: &[&str] = &["Operator"];
 
+/// Trait names the compiler itself provides. They stay reachable as
+/// builtins even when std declares a trait with the same spelling, so a
+/// user module never has to import them to write an `impl`.
 const COMPILER_TRAITS: &[&str] = &[
     "Operator",
     "Prefix",
@@ -176,10 +179,16 @@ pub struct DefInfo {
     pub parent: Option<DefId>,
 }
 
+/// One `using` import, recorded so the unused-import lint can run after
+/// every reference has been resolved.
 #[derive(Clone)]
 struct ImportSite {
+    /// Span of the imported name.
     span: Span,
+    /// Definition the import names.
     id: DefId,
+    /// Whether the import passed its visibility check. An inaccessible
+    /// import is already an error, so it must not also be reported unused.
     accessible: bool,
 }
 
@@ -187,8 +196,11 @@ struct ImportSite {
 /// from every resolved name-use site (keyed by its span) to its [`DefId`].
 #[derive(Default)]
 pub struct Resolved {
+    /// Every definition, indexed by [`DefId`].
     defs: Vec<DefInfo>,
+    /// Name-use site, keyed by span, to the definition it resolves to.
     uses: HashMap<Span, DefId>,
+    /// Declaration site, keyed by span, to the definition it introduces.
     declarations: HashMap<Span, DefId>,
 }
 
@@ -362,12 +374,19 @@ fn impl_member(item: &ImplItem) -> Option<(&String, Span, &'static str)> {
 /// backing type, so both declarations participate in the identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct ImplOwner {
+    /// The named type, view or trait the impl is written against.
     nominal: DefId,
+    /// For an applied view, the type it is applied to. Two views with the
+    /// same name over different backing types are distinct owners.
     backing: Option<DefId>,
 }
 
+/// Walks the modules binding every name to a [`DefId`], reporting into
+/// `sink` and accumulating the result in `out`.
 struct Resolver<'a> {
+    /// Where resolution diagnostics are emitted.
     sink: &'a mut DiagnosticSink,
+    /// The resolution being built; returned once the walk completes.
     out: Resolved,
     /// Module-level + builtin type/value namespace.
     globals: HashMap<String, DefId>,
@@ -376,6 +395,9 @@ struct Resolver<'a> {
     builtins: HashMap<String, DefId>,
     /// Exact `(module path, leaf)` ownership for imports and qualified paths.
     module_defs: HashMap<(String, String), DefId>,
+    /// Exact `(module path, leaf)` ownership for attribute declarations,
+    /// kept apart from `module_defs` so an attribute and a type may share
+    /// a leaf name.
     module_attrs: HashMap<(String, String), DefId>,
     /// Names explicitly imported into each source module. Re-exports retain
     /// their public flag here instead of mutating the target declaration.
@@ -405,7 +427,10 @@ struct Resolver<'a> {
     /// Inside the current impl: its binder's names mapped to the declaration
     /// parameters they stand for.
     current_impl_renames: HashMap<String, DefId>,
+    /// Declaration parameters reached through the current impl's binder.
+    /// A parameter used only under its renamed spelling is still used.
     impl_used_decl_params: HashSet<DefId>,
+    /// Semantic owner of the impl currently being walked.
     current_impl_owner: Option<DefId>,
     /// Named members contributed by every inherent impl of one semantic owner.
     /// Split impl blocks share a scope, so duplicates must be rejected before
@@ -419,6 +444,7 @@ struct Resolver<'a> {
     /// Source file -> declared module path. Privacy belongs to the module,
     /// never to the physical file that happened to contain a declaration.
     file_modules: HashMap<crate::diag::FileId, String>,
+    /// Declared `module` path of the source currently being resolved.
     current_module: Option<String>,
 }
 

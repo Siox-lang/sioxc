@@ -60,7 +60,12 @@ pub use process::*;
 use query::render;
 pub use query::{read_set, IndexSite, Process, ProcessKind};
 
+/// `(operator trait, implementing type)` to the `fn` declarations that
+/// implement it, each paired with the impl's declared right-operand type
+/// (`None` reads as `Self`). Overload selection matches on that type.
 type OperatorImpls<'a> = HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>;
+/// A value-range-constrained numeric type, as
+/// `(storage width, is_real, declared bounds)`.
 type NumericRangeInfo = (u32, bool, Option<(i64, i64)>);
 
 #[cfg(test)]

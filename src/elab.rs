@@ -152,6 +152,9 @@ pub struct Hierarchy {
     pub roots: Vec<InstanceId>,
     /// Every instance, indexed by [`InstanceId`].
     pub instances: Vec<Instance>,
+    /// Checked expression types carried through from Stage 4, keyed by the
+    /// expression's span. Lowering reads them from here rather than
+    /// re-deriving types over the elaborated tree.
     pub(crate) expr_types: HashMap<Span, Ty>,
     /// Stable display/storage spelling for each entity declaration. Keeping it
     /// beside the instance forest lets downstream consumers disambiguate equal
@@ -508,8 +511,11 @@ fn elaborate_roots(
     e.out
 }
 
+/// Builds the instance forest for one resolved set of modules.
 struct Elaborator<'a> {
+    /// Where elaboration diagnostics are emitted.
     sink: &'a mut DiagnosticSink,
+    /// Name resolution results this walk looks definitions up in.
     resolved: &'a Resolved,
     /// Instances found where structural elaboration cannot reach them: inside
     /// a behavioural `if`, whose condition is not a constant and so is a
@@ -517,9 +523,11 @@ struct Elaborator<'a> {
     /// `&self`) and reported once, deduplicated by span — one entity is
     /// elaborated once per instantiation of it.
     misplaced: std::cell::RefCell<Vec<(String, Span)>>,
+    /// Entity declarations by definition, for instantiation lookup.
     entities: HashMap<DefId, &'a EntityDecl>,
     /// Entity identity -> its inherent impls (where instances live).
     impls: HashMap<DefId, Vec<&'a ImplDecl>>,
+    /// The hierarchy being built; returned once the walk completes.
     out: Hierarchy,
 }
 
@@ -1371,10 +1379,15 @@ impl<'a> Elaborator<'a> {
 
 /// An instance-construction site discovered in an impl body.
 struct InstanceSpec<'a> {
+    /// Instance name as written at the construction site.
     name: String,
+    /// Entity type being instantiated, with its generic arguments.
     ty: &'a Type,
+    /// Port connections written at this site.
     args: Vec<ConnectArg>,
+    /// Attributes attached to the instance.
     attrs: &'a [Attr],
+    /// Span of the construction site, for diagnostics.
     site: Span,
     /// Loop-variable bindings for a generated instance (`for i in 0..N`),
     /// substituted into the connection signal names (`wires[i]`).

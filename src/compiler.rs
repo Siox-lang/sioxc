@@ -378,6 +378,7 @@ impl Compilation {
 /// the crate is built without the `llvm` feature.
 #[derive(Clone, Debug)]
 pub struct Compiler {
+    /// Directory `std::` imports resolve against.
     std_root: PathBuf,
 }
 
@@ -812,8 +813,12 @@ fn select_top(
     }
 }
 
+/// One file reached through the import graph, kept with its text so the
+/// pre-parse operator scan does not have to read it twice.
 struct DependencySource {
+    /// Path the dependency was read from.
     path: PathBuf,
+    /// Full source text of the dependency.
     source: String,
 }
 

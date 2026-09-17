@@ -155,16 +155,27 @@ pub fn lower_in(
     l.out
 }
 
+/// Lowers one elaborated hierarchy to a [`Design`].
+///
+/// Most fields are registries built before the walk so lowering can
+/// resolve a name it has not reached yet; the `locals`/`local_*` maps
+/// are instead scoped to the single entity being lowered.
 struct Lowering<'a> {
+    /// Where lowering diagnostics are emitted.
     sink: &'a mut DiagnosticSink,
+    /// Name resolution results, for definition lookup.
     resolved: &'a Resolved,
+    /// Checked expression types from Stage 4, keyed by span.
     expr_types: HashMap<crate::diag::Span, crate::types::Ty>,
     /// Root for relative compile-time file reads (the source directory).
     base_dir: std::path::PathBuf,
     /// Signals given a default by a match wildcard arm — excluded from the
     /// possible-latch lint even though their lowered drivers are conditional.
     lint_defaulted: std::collections::HashSet<u32>,
+    /// Entity declarations by definition identity.
     entities: HashMap<DefId, &'a ast::EntityDecl>,
+    /// Entity identity to its impl bodies, for recursive hierarchy
+    /// lowering.
     impls: HashMap<DefId, Vec<&'a ast::ImplDecl>>,
     /// Inherent implementations keyed by their complete nominal type. Unlike
     /// `impls`, which groups entity bodies by declaration id for recursive
@@ -323,6 +334,7 @@ struct Lowering<'a> {
     /// Internal component locals eligible for W-P003. Test/top locals are
     /// externally observed by the runner and deliberately excluded.
     unused_lets: Vec<SignalId>,
+    /// The design being built; returned once the walk completes.
     out: Design,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
@@ -391,7 +403,9 @@ struct Lowering<'a> {
 /// (a struct-typed value has no single-signal representation).
 #[derive(Clone, Debug)]
 enum Val {
+    /// A single-signal value.
     Scalar(Expr),
+    /// A struct value, as one expression per flattened field.
     Fields(Vec<(String, Expr)>),
 }
 
@@ -400,18 +414,31 @@ enum Val {
 /// the concrete leaf signals.
 #[derive(Clone, Copy)]
 pub(super) enum AccessStep<'e> {
+    /// A named field step (`pkt.data`).
     Field(&'e str),
+    /// A subscript step (`xs[i]`). The source expression is kept so a
+    /// runtime index can still be lowered to a mux.
     Index(&'e ast::Expr),
 }
 
+/// One candidate leaf of a runtime-indexed write. A dynamic write
+/// lowers to a gated update per candidate, each guarded by the `hit`
+/// condition that selects it.
 enum DynamicWriteTarget {
+    /// The whole signal is the leaf.
     Whole {
+        /// Signal written when `hit` holds.
         signal: SignalId,
+        /// Condition selecting this leaf.
         hit: Expr,
     },
+    /// One bit inside a packed vector is the leaf.
     PackedBit {
+        /// Packed signal the bit lives in.
         signal: SignalId,
+        /// Bit position within that signal.
         position: u32,
+        /// Condition selecting this bit.
         hit: Expr,
     },
 }
@@ -420,15 +447,24 @@ enum DynamicWriteTarget {
 /// the value expression alone would lose its operator family and width.
 #[derive(Clone, Debug)]
 struct BlockLocal {
+    /// The bound value.
     value: Val,
+    /// Its declared type.
     ty: ast::Type,
 }
 
+/// A use of an instance slot that elaboration never populated. Kept
+/// with both spans so the diagnostic can point at the use and at the
+/// declaration it refers to.
 #[derive(Clone, Debug)]
 struct UnelaboratedInstanceUse {
+    /// Slot name as written.
     slot: String,
+    /// Path of the entity the slot belongs to.
     parent_path: String,
+    /// Span of the use.
     use_span: crate::diag::Span,
+    /// Span of the slot's declaration.
     declaration_span: crate::diag::Span,
 }
 

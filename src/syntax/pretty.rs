@@ -20,10 +20,14 @@ pub fn print_module(module: &Module) -> String {
     p.out
 }
 
+/// One level of indentation.
 const INDENT: &str = "    ";
 
+/// Accumulates printed source at the current indentation.
 struct Printer {
+    /// Printed source so far.
     out: String,
+    /// Current indentation depth, counted in levels not columns.
     indent: usize,
 }
 
@@ -639,8 +643,15 @@ fn bin_prec(op: &BinOp) -> u8 {
     }
 }
 
+/// Binding power of postfix forms (calls, indexing, field access,
+/// attributes) — tighter than anything else, so they never take
+/// parentheses.
 const POSTFIX_PREC: u8 = 200;
+/// Binding power of prefix operators, looser than postfix and tighter
+/// than every binary operator.
 const UNARY_PREC: u8 = 100;
+/// Binding power of `a..b`, looser than every binary operator, so a
+/// range's endpoints print unparenthesized.
 const RANGE_PREC: u8 = 1;
 
 /// Render an expression, adding only the parentheses precedence requires.

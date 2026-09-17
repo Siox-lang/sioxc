@@ -74,9 +74,13 @@ fn unrecognized_byte(c: u8) -> bool {
 /// diagnostic rather than stopping the scan, so the parser still receives a
 /// full token stream and can report more than the first problem.
 pub struct Lexer<'a> {
+    /// File every span this lexer produces is attributed to.
     file: FileId,
+    /// Source text being scanned.
     src: &'a str,
+    /// `src` as bytes, so scanning advances without UTF-8 decoding.
     bytes: &'a [u8],
+    /// Byte offset of the next character to scan.
     pos: usize,
 }
 
