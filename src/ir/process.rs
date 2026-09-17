@@ -26,13 +26,15 @@ pub struct ProcessStorageId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessValueId(pub u32);
 
-/// The canonical control-flow product owned by an elaborated [`Design`].
+/// The canonical control-flow product owned by an elaborated
+/// [`Design`](super::Design).
 ///
 /// The temporary `test_ir` adapter fills test CFGs from typed AST and hardware
 /// CFGs from the normalized scheduler decomposition. The representation and
 /// its invariants live here so no backend needs a second process product. The
 /// remaining migration inversion makes this arena authoritative and derives
-/// [`Driver`] / [`EventBlock`] compatibility forms from it.
+/// [`Driver`](super::Driver) / [`EventBlock`](super::EventBlock) compatibility
+/// forms from it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProcessIr {
     /// Every process control-flow graph, indexed by [`ProcessId`].
@@ -704,7 +706,7 @@ pub enum ProcessValueKind {
     /// Read one elaboration-owned constant lookup table. An out-of-range index
     /// yields zero, matching the normalized digital expression.
     TableLookup {
-        /// Table in [`Design::lookup_tables`].
+        /// Table in [`Design::lookup_tables`](super::Design::lookup_tables).
         table: LookupTableId,
         /// Runtime table index.
         index: ProcessValueId,
