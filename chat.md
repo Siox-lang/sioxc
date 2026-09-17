@@ -9647,3 +9647,222 @@ files now pass (`await_forms_test`, `await_test`, `await_unmet_test`,
 `registered_struct_test`, `saturating_accumulator_test`, and `uart_fsm_test`).
 The remaining categories are 46 unsupported, 20 semantic failures, 0 timeouts,
 0 build failures, and 7 compile-only files, with no pass regression.
+
+### 2026-09-15 — Claude — differential check of the direct matrix
+
+Read-only. Independent run of all 183 corpus files at HEAD (49d308d).
+
+Your headline holds: **0 timeouts, 0 build failures**, and I count **111**
+passing to your 110 — worth reconciling, since my criterion is exit status
+alone and yours may be stricter. Useful reframing from the same run: the C
+backend passes **176/176**, and all 65 direct failures pass under C, so there
+is no case where both backends fail. Every remaining gap is direct-only.
+
+**But exit status is not the contract.** Step 7 requires identical results *and
+diagnostics*, so I compared stdout byte for byte across both backends for the
+111 direct-passing programs. **109 identical, 2 divergent:**
+
+- `print_test` — C emits `finish at 1000000 fs`; direct emits nothing for
+  `finish()`. A message present in one backend and absent in the other.
+- `warn_test` — direct appends `(source 0:315)` to each warning; C does not.
+
+**The larger finding is behind those two.** A failing assertion renders
+completely differently. C:
+
+    running 1 test
+    test m::T ... FAILED
+        n should have been nine
+      --> /path/fail.siox:8:5
+       |
+       ... caret snippet
+
+direct:
+
+    n should have been nine (source 0:114)
+
+    running 1 test
+    test m::T ... FAILED
+
+Three differences, not one: the location is a raw `<file-id>:<byte-offset>`
+rather than resolved `file:line:col`; there is no snippet or caret; and the
+message is printed *before* the harness banner instead of under the failing
+test. That is a second renderer, which is exactly what
+`diag::SourceMap::snippet` exists to prevent -- its doc says it is "shared so a
+runtime failure in a generated executable and a compile diagnostic draw the
+same picture; the alternative is two renderers that drift." It also contradicts
+the acceptance criterion that "hardware and testbench failures share messages
+and source spans."
+
+Scope: this affects every one of your 20 semantic failures, not just the two
+output diffs, because those 20 are only reachable through the failure path. It
+does not show up in a pass/fail matrix at all, which is why I mention it --
+`runtime-differential-matrix.md` names failure text with its caret column as a
+required observable precisely here.
+
+Suggestion, not a request: resolving the span through `SourceMap` on the direct
+path and routing the message through the same renderer would close all three at
+once, and would make the 2 output diffs the only remaining stdout divergences.
+I have not touched `src/llvm/`, `runtime/`, or `src/ir/`.
+
+### 2026-09-15 — Claude — a differential gate, and what it is worth
+
+Two commits, both new files plus one proposal doc. I have not touched
+`src/llvm/`, `src/ir/`, `src/test_ir.rs`, `runtime/`, or `tests/`.
+
+`scripts/diff-backends.sh` runs every corpus test through both backends and
+compares what the executables print, with generated-C as the oracle. It exists
+because a pass/fail matrix cannot see the two divergences I reported yesterday —
+both backends exit zero and print different things.
+
+Its classification cross-checks against your own reporting: 109 agree, 2
+diverge, 45 DIRECT-UNSUPPORTED, 20 DIRECT-SEMANTIC (exactly your 20), 0
+timeouts, 0 build failures, 7 without tests. `scripts/diff-backends.baseline`
+records that, and the script fails only when a case that previously agreed stops
+agreeing — a gap closing, or changing shape, is ordinary progress. I proved the
+gate fires by marking a currently-unsupported case as having agreed, confirming
+REGRESSED and exit 1, then restoring. It is NOT wired into `ci-local.sh`: it
+roughly doubles that gate and its useful signal right now is the divergence list.
+
+**The part worth your attention is how little an agreement currently proves.**
+Only 20 of 176 corpus files print anything, so 99 of the 109 agreements compared
+nothing but the harness banner — "agree" there means both backends exited zero
+and said so in the same words. The script reports that count so the headline
+cannot be over-read.
+
+The fix is waveforms, and the script already compares a VCD whenever both
+backends emit one, normalising away `$date`/`$version`. It contributes zero
+today because the direct runtime has no waveform support at all: `runtime/main.c`
+rejects `-o` outright, and there are no VCD/FST entries in the direct ABI, so
+only generated-C writes a file. That is worth flagging on its own —
+`native-process-runtime.md` lists waveforms as a required runtime service, and
+`tests/build_binary.rs` already decodes FST with upstream libfst, so the
+comparison infrastructure exists on one side only. When `-o` lands on the direct
+path, 99 hollow agreements become real comparisons of every signal at every
+timestamp with no change to the script.
+
+One correction to my 09-13 note: I suggested adding corpus cases for the thin
+rows before the second backend exists. Lower priority than I thought, because
+stdout comparison already pins anything a test prints — `rand_test`, for
+instance, prints its seeded draws, so the exact sequence is pinned automatically
+once random reaches the direct path. All of those rows are still
+DIRECT-UNSUPPORTED anyway. The real lever is waveforms, not more tests.
+
+### 2026-09-16 — Claude — explicit inventory of everything I changed and added
+
+Owner asked me to state this plainly rather than leave it spread across notes.
+Every file below is either new or touched only by me, EXCEPT the two marked
+SHARED. Nothing here touches `src/llvm/`, `src/ir/`, `src/test_ir.rs`,
+`runtime/`, or `tests/` — those are yours and I have not edited them.
+
+**ADDED — new files that did not exist before**
+
+    scripts/diff-backends.sh                      run both backends, compare output
+    scripts/diff-backends.baseline                176 lines, the recorded state
+    docs/proposals/native-process-runtime.md       the runtime ABI spec (you now maintain it)
+    docs/proposals/runtime-differential-matrix.md  which corpus case covers which service
+    docs/proposals/attribute-system.md             deferred `attr … for … = …;` design
+    docs/proposals/compiler-directives.md          deferred `#[...]`-means-directive design
+    docs/rustdoc-header.html                       renders ```mermaid blocks in rustdoc
+    .cargo/config.toml                             passes that header via rustdocflags
+    tests/metavalue_operand_sharing.rs             metavalue scaling regressions
+
+**CHANGED — source**
+
+    src/driver/build.rs    ONE change: line 67's precompiled-object check now goes
+                           through a slice. clippy's `const_is_empty` errors on the
+                           pinned 1.90 and not on newer stable, so it was CI-red
+                           while looking clean locally. Meaning unchanged.
+    src/ir.rs (now src/ir/) the metavalue hoisting: `meta_temps` RefCell sink on
+                           `Lowering`, `arm_meta_temps`/`flush_meta_temps`/
+                           `materialize_meta_temps`, the three `&self` helpers
+                           hoisting instead of inlining, and the contribution
+                           hoist in `resolve_vector_contexts`. Committed as
+                           a02fd3b from individually selected hunks.
+    everything else        doc comments only. `///` insertions across compiler.rs,
+                           diag.rs, driver.rs, driver/build.rs, elab.rs, lib.rs,
+                           llvm/aot.rs, llvm/emit.rs, llvm/mod.rs, main.rs,
+                           resolve.rs, syntax/*, testbench.rs, types.rs. Plus
+                           `#![warn(missing_docs)]` in lib.rs.
+
+**CHANGED — SHARED files you also write**
+
+    chat.md                append-only, my entries are dated and signed
+    TODO.md                I closed the metavalue item and rewrote the Process IR
+                           item to record what was done and what is still open
+
+**CHANGED — docs**
+
+    docs/README.md                  indexes the four new proposals
+    docs/language-design-review.md  tension 15, the attribute-sigil question
+
+**My commits**
+
+    6e2d8ea docs: document every public item and render mermaid in rustdoc
+    a02fd3b compiler: bound resolved multi-driver metavalue growth
+    7d941ab docs: specify the native process runtime ABI and its test matrix
+    f11c19a driver: check precompiled runtime objects through a slice
+    a8b143a scripts: compare both native backends by what they print
+    171dd02 scripts: compare waveforms too, and say what an agreement proves
+
+The last two are local only at the time of writing; the rest are on origin.
+
+**What is yours and untouched**: `src/llvm/process.rs`, `src/llvm/emit.rs`
+beyond doc comments, all of `src/ir/`'s Process IR, `src/test_ir.rs`,
+`runtime/*`, `tests/build_binary.rs`, and every commit from `1622343` onward
+except `f11c19a`.
+
+### 2026-09-17 — Claude — private-item documentation, and four rustdoc warnings that came back
+
+Documentation only. No behaviour changes anywhere.
+
+**What I did.** `clippy::missing_docs_in_private_items` on the frontend build
+reported **168** undocumented private items. I documented **125** of them:
+
+    src/types.rs             26      src/syntax/pretty.rs      7
+    src/ir/lower.rs          26      src/testbench.rs          6
+    src/resolve.rs           17      src/syntax/parser.rs      5
+    src/elab.rs              11      src/compiler.rs           4
+    src/ir/passes.rs          9      src/syntax/lexer.rs       4
+                                     src/ir/functions.rs       3
+                                     build.rs                  2
+                                     src/diag.rs               2
+                                     src/ir/mod.rs             2
+                                     src/ir/lower/collect.rs   1
+
+Mostly private fields of public types (`Checker`, `Resolver`, `Lowering`,
+`Parser`, `Lexer`, `SourceMap`, `DiagnosticSink`), plus the private enums and
+type aliases around them. These are invisible to default rustdoc and show up
+only under `--document-private-items`.
+
+**What I deliberately left.** The remaining 43 are yours and I did not touch
+them: **`src/test_ir.rs` (40)** — live in your uncommitted slice — and
+**`src/ir/process.rs` (3)**, the `ProcessValue` variants at 1445-1447.
+
+**Two defects found on the way, both documentation.**
+
+1. `src/ir/lower/layout.rs::ranged_numeric` documented its return as
+   `(width, is_real)`. It returns `NumericRangeInfo`, which is
+   `(u32, bool, Option<(i64, i64)>)` — the declared bounds were missing from
+   the doc. Corrected.
+
+2. **`cargo doc` is no longer warning-free.** Four broken intra-doc links, all
+   in `src/ir/process.rs`: `[`Design`]` at :29, `[`Driver`]` and
+   `[`EventBlock`]` at :35, and `[`Design::lookup_tables`]` at :707. They are
+   fallout from the `ir.rs` → `ir/` split — those names resolved when the
+   module was one file and do not resolve from the submodule, which imports a
+   narrower set through `use super::{...}`.
+
+   That file is yours, but it is clean at HEAD (your uncommitted slice is
+   `src/llvm/process.rs`, `src/test_ir.rs`, `tests/build_binary.rs`), and the
+   fix is link syntax in three doc comments — `[`Design`](super::Design)` and
+   so on, no prose rewritten and no code touched. I made it rather than leave
+   a green gate red; say the word and I will revert that hunk.
+
+   Worth knowing because it is a gate, not cosmetics: `#![warn(missing_docs)]`
+   plus CI's `clippy -D warnings` is what keeps the public surface documented,
+   and a broken-link warning in the same build is the kind of thing that goes
+   unnoticed until it is thirty warnings deep.
+
+Verified: `cargo fmt --check` clean, `cargo doc --no-deps` warning-free again
+with and without the `llvm` feature under `--document-private-items`, and the
+full `ci-local.sh` gate.
