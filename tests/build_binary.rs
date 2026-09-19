@@ -437,6 +437,88 @@ fn direct_runtime_dispatches_normalized_match_patterns() {
 }
 
 #[test]
+fn direct_runtime_preserves_metavalue_comparison_rules() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory =
+        std::env::temp_dir().join(format!("siox_direct_meta_compare_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("meta_compare.siox");
+    let output = directory.join("meta-compare-test");
+    std::fs::write(
+        &source,
+        r#"module direct_meta_compare;
+           using std::bits::unsigned;
+           using std::logic::Bit;
+
+           entity Compare {
+               select: unsigned[1] in,
+               less: Bit out,
+               different: Bit out
+           }
+           impl Compare {
+               let unknown: unsigned[4] = "0X00";
+               let weak: unsigned[4] = "0H00";
+               let operand: unsigned[4];
+               operand = if select == 0 { unknown } else { weak };
+               less = if operand < 8 { '1' } else { '0' };
+               different = if operand != 8 { '1' } else { '0' };
+           }
+
+           #[test] entity DirectMetaCompare {}
+           impl DirectMetaCompare {
+               let select: unsigned[1] = 0;
+               let less: Bit;
+               let different: Bit;
+               let compare: Compare = {
+                   .select = select,
+                   .less = less,
+                   .different = different
+               };
+               for choice in 0..1 {
+                   select = choice;
+                   await 1ns;
+                   if choice == 0 {
+                       assert!(less == '0', "an unknown makes ordering false");
+                       assert!(different == '1', "an unknown is definitely unequal");
+                   } else {
+                       assert!(less == '1', "weak H remains a definite one bit");
+                       assert!(different == '1', "weak comparison uses its value plane");
+                   }
+               }
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "direct metavalue-comparison fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "direct metavalue-comparison fixture failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn direct_process_runtime_reports_assertions_without_generated_design_c() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");

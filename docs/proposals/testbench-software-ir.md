@@ -218,8 +218,12 @@ language-lowering path.
    process/resume block on that wheel. Condition and edge waits now lower their
    triggers into ordinary Process branches around a state-change suspension;
    edge CFGs arm before checking, and successful triggers settle downstream
-   reactive work before resuming stimulus. Delayed-write cancellation, dynamic
-   strings and other runtime calls, dynamic aggregate selection/update, and
+   reactive work before resuming stimulus. Finalized hardware vector
+   comparisons now read the std-described metavalue companion plane directly
+   from LLVM-emitted state: unknowns force equality/ordering false and
+   inequality true, while weak values remain definite. Testbench-owned packed
+   storage still needs its own companion plane. Delayed-write cancellation,
+   dynamic strings and other runtime calls, dynamic aggregate selection/update, and
    waveforms are the next coverage boundary before it becomes the default.
    Statement and expression matches already consume
    frontend-normalized exact, masked, alternative, wildcard, and

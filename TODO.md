@@ -380,8 +380,9 @@ Remaining:
   integer-backed suffix bodies are normalized from their std/user
   implementation, so source clock schedules, one-shot static writes, and timed
   `await` now execute on the fixed wheel. Timed suspension records and restores
-  the exact CFG resume block; condition/edge awaits remain fail-closed until
-  their dependency/evaluator ABI exists. `print!`, `assert!`, and `warn!`
+  the exact CFG resume block. Condition and edge waits use explicit
+  state-change suspension and recheck CFGs, including downstream settling and
+  deadlock detection. `print!`, `assert!`, and `warn!`
   carry frontend-normalized text/value parts and explicit display kinds in
   Process IR, so LLVM never parses format syntax or reconstructs presentation
   types from an AST. The fixed runtime renders arbitrary-width signed/unsigned
@@ -455,6 +456,15 @@ Remaining:
   committed state changes, and a successful trigger settles downstream
   reactive work before stimulus continues. Persistent test state retains
   explicit current/old/event observations with a first-write-per-delta snapshot.
+  Finalized hardware `MetaCompare` values now inspect the object-owned
+  metavalue companion plane directly in LLVM. Unknown discriminants force
+  ordering/equality false and inequality true, while weak `L`/`H` values stay
+  definite according to the std-derived `LogicEncoding`; no logic symbol or
+  discriminant is hardcoded in the backend. Process-local/path values also keep
+  their declaration-owned type when used in a narrower assignment context, so
+  an integer loop cursor can drive a packed stimulus value without changing its
+  frame width. Testbench-owned packed values still need a retained companion
+  plane before direct code can compare locally stored X/Z data.
   A completed foreground process drains its own delayed transactions and then
   ends its test even when background clocks keep future events queued, while a
   suspended condition with no future event reports a deadlock. Dynamic strings

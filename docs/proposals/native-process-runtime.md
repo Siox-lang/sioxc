@@ -93,7 +93,10 @@ operand width. Entries also execute static-string print/assert/warn calls
 and fold source-layout `length`, `left`, `right`, `high`, `low`, and
 `ascending` attributes directly into LLVM. Inclusive directional range and
 source-order array loops execute as ordinary CFGs. Loop cursor/end
-state and array snapshots remain in the object across suspension. An
+state and array snapshots remain in the object across suspension. Marked
+hardware vector comparisons consume the std-derived metavalue encoding and
+the emitted companion signals, so X/Z and weak-value rules no longer require
+the compatibility evaluator. An
 unsupported block is rejected transactionally before it performs foreign
 calls or publishes a pending write.
 

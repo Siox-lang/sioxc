@@ -9866,3 +9866,31 @@ them: **`src/test_ir.rs` (40)** — live in your uncommitted slice — and
 Verified: `cargo fmt --check` clean, `cargo doc --no-deps` warning-free again
 with and without the `llvm` feature under `--document-private-items`, and the
 full `ci-local.sh` gate.
+
+### 2026-09-19 — Codex — direct metavalue comparisons
+
+Direct LLVM process entries now execute the canonical `MetaCompare` node for
+finalized hardware values. The emitter reads each value signal's exact
+companion plane and derives the unknown set from its std-owned `LogicEncoding`;
+it does not hardcode `U`, `X`, `Z`, `W`, `L`, `H`, or their discriminants.
+Equality and ordering become false when either operand contains an unknown,
+inequality becomes true, and weak low/high values remain definite.
+
+The corpus probe also exposed a Process adapter typing bug before comparison
+execution: assignment context changed an integer loop cursor into the narrower
+destination vector type, disagreeing with its 64-bit frame. References now
+retain their declaration-owned type, while literal and constructor roots still
+use contextual typing; scalar/packed assignments explicitly fit a differently
+sized local or storage value at the destination boundary.
+
+The direct regression combines an integer range loop driving an `unsigned[1]`
+port with unknown and weak-value comparisons. The full 183-file direct matrix
+is now 111 passing executables, 45 explicitly unsupported, 20 semantic
+failures, 0 timeouts, 0 build failures, and 7 compile-only files.
+`xz_compare_test` moves from unsupported to passing with no previous pass
+regression. Testbench-owned packed X/Z values remain fail-closed until Process
+storage retains a companion plane.
+
+The exact pinned `scripts/ci-local.sh` gate is green: formatting, frontend-only
+check and Clippy, the full default and bitpack test suites, strict all-target
+Clippy, and both default and bitpack 183-file corpus runs.

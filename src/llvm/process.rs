@@ -632,6 +632,106 @@ fn signal_value<'ctx>(
     Some(value)
 }
 
+/// Whether the direct backend can recover the unknown-value plane used by a
+/// marked packed-vector comparison. Finalized hardware operands are signal
+/// reads: each value-plane signal either has a companion in `meta_of`, or is
+/// known to be two-valued. Literal numeric operands are likewise two-valued.
+/// Other Process values stay fail-closed until Process storage carries its own
+/// metavalue plane; accepting them here would silently compare only value bits.
+fn process_meta_operand_supported(design: &Design, id: ProcessValueId) -> bool {
+    let Some(value) = design.process_ir.values.get(id.0 as usize) else {
+        return false;
+    };
+    match &value.kind {
+        ProcessValueKind::Number(_)
+        | ProcessValueKind::BitString { .. }
+        | ProcessValueKind::Char(_) => true,
+        ProcessValueKind::Signal { signals, state } => {
+            !signals.is_empty()
+                && !matches!(state, ProcessSignalState::Event)
+                && signals.iter().all(|signal| {
+                    design.signals.get(signal.0 as usize).is_some()
+                        && design.meta_of.get(&signal.0).is_none_or(|companion| {
+                            design.signals.get(*companion as usize).is_some()
+                                && design
+                                    .array_element_enums
+                                    .get(&signal.0)
+                                    .and_then(|element| design.logic_encodings.get(element))
+                                    .is_some()
+                        })
+                })
+        }
+        _ => false,
+    }
+}
+
+/// Emit `true` when a comparison operand contains one of the std-declared
+/// unknown logic discriminants. Companion storage packs one discriminant nibble
+/// per value-plane bit. Weak `L`/`H` values are deliberately excluded because
+/// the `LogicEncoding` contract does not list them in `unknown`.
+fn process_meta_operand_unknown<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    id: ProcessValueId,
+) -> Option<IntValue<'ctx>> {
+    let value = design.process_ir.values.get(id.0 as usize)?;
+    let ProcessValueKind::Signal { signals, state } = &value.kind else {
+        return matches!(
+            &value.kind,
+            ProcessValueKind::Number(_)
+                | ProcessValueKind::BitString { .. }
+                | ProcessValueKind::Char(_)
+        )
+        .then(|| context.bool_type().const_zero());
+    };
+    if matches!(state, ProcessSignalState::Event) {
+        return None;
+    }
+
+    let mut any = context.bool_type().const_zero();
+    for signal in signals {
+        let Some(companion) = design.meta_of.get(&signal.0).copied() else {
+            continue;
+        };
+        let element = design.array_element_enums.get(&signal.0)?;
+        let encoding = design.logic_encodings.get(element)?;
+        let elements = design.signal_width(*signal)?;
+        let companion = SignalId(companion);
+        let companion_width = design.signal_width(companion)?;
+        if companion_width != elements.checked_mul(4)? {
+            return None;
+        }
+        let packed = signal_value(
+            context,
+            module,
+            builder,
+            design,
+            &[companion],
+            *state,
+            companion_width,
+        )?;
+        for position in 0..elements {
+            let nibble = extract_region(builder, packed, position.checked_mul(4)?, 4)?;
+            let mut unknown = context.bool_type().const_zero();
+            for discriminant in &encoding.unknown {
+                let equal = builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        nibble,
+                        nibble.get_type().const_int(*discriminant, false),
+                        "pv.meta.discriminant",
+                    )
+                    .ok()?;
+                unknown = builder.build_or(unknown, equal, "pv.meta.member").ok()?;
+            }
+            any = builder.build_or(any, unknown, "pv.meta.any").ok()?;
+        }
+    }
+    Some(any)
+}
+
 fn state_value<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
@@ -1814,33 +1914,69 @@ fn process_value_in_layout<'ctx>(
     let width = layout_width(layout)?;
     let value = design.process_ir.values.get(id.0 as usize)?;
     let emitted = match &value.kind {
-        ProcessValueKind::Storage(storage) => {
-            (storage_state_width(design, *storage) == Some(width)).then(|| {
-                state_value(
+        ProcessValueKind::Storage(storage) => match storage_state_width(design, *storage) {
+            Some(storage_width) if storage_width == width => state_value(
+                context,
+                module,
+                builder,
+                &storage_state_name(*storage),
+                width,
+            )?,
+            Some(_)
+                if matches!(
+                    layout.kind,
+                    LayoutKind::Scalar { .. } | LayoutKind::Packed { .. }
+                ) =>
+            {
+                process_value_at(
                     context,
                     module,
                     builder,
-                    &storage_state_name(*storage),
+                    design,
+                    id,
                     width,
-                )
-            })??
-        }
+                    false,
+                    active,
+                    index_sites,
+                    cache,
+                )?
+            }
+            _ => return None,
+        },
         ProcessValueKind::StorageState {
             storage,
             state: ProcessSignalState::Old,
         } => (storage_state_width(design, *storage) == Some(width))
             .then(|| state_value(context, module, builder, &storage_old_name(*storage), width))??,
-        ProcessValueKind::Local { process, local } => {
-            (local_width(design, *process, *local) == Some(width)).then(|| {
-                state_value(
+        ProcessValueKind::Local { process, local } => match local_width(design, *process, *local) {
+            Some(local_width) if local_width == width => state_value(
+                context,
+                module,
+                builder,
+                &local_state_name(*process, *local),
+                width,
+            )?,
+            Some(_)
+                if matches!(
+                    layout.kind,
+                    LayoutKind::Scalar { .. } | LayoutKind::Packed { .. }
+                ) =>
+            {
+                process_value_at(
                     context,
                     module,
                     builder,
-                    &local_state_name(*process, *local),
+                    design,
+                    id,
                     width,
-                )
-            })??
-        }
+                    false,
+                    active,
+                    index_sites,
+                    cache,
+                )?
+            }
+            _ => return None,
+        },
         ProcessValueKind::Signal { signals, state } => {
             aggregate_signal_value(context, module, builder, design, signals, *state, width)?
         }
@@ -2586,6 +2722,38 @@ fn process_value<'ctx>(
                 .ok()?
                 .into_int_value()
         }
+        ProcessValueKind::MetaCompare {
+            not_equal,
+            operands,
+            inner,
+        } => {
+            let ordinary = process_value(
+                context,
+                module,
+                builder,
+                design,
+                *inner,
+                active,
+                index_sites,
+                cache,
+            )?;
+            let ordinary = as_condition(builder, ordinary)?;
+            let mut unknown = context.bool_type().const_zero();
+            for operand in operands {
+                let operand_unknown =
+                    process_meta_operand_unknown(context, module, builder, design, *operand)?;
+                unknown = builder
+                    .build_or(unknown, operand_unknown, "pv.meta.operand")
+                    .ok()?;
+            }
+            let result = if *not_equal {
+                builder.build_or(ordinary, unknown, "pv.meta.ne").ok()?
+            } else {
+                let known = builder.build_not(unknown, "pv.meta.known").ok()?;
+                builder.build_and(ordinary, known, "pv.meta.compare").ok()?
+            };
+            fit(builder, result, width)?
+        }
         ProcessValueKind::Match { scrutinee, arms } => {
             let scrutinee_value = process_value(
                 context,
@@ -2936,15 +3104,28 @@ fn process_value_supported_in_layout(
     let has = |id: ProcessValueId| supported.get(id.0 as usize).copied().unwrap_or(false);
     match &value.kind {
         ProcessValueKind::Default => true,
-        ProcessValueKind::Storage(storage) => storage_state_width(design, *storage) == Some(width),
+        ProcessValueKind::Storage(storage) => {
+            storage_state_width(design, *storage).is_some_and(|storage_width| {
+                storage_width == width
+                    || matches!(
+                        layout.kind,
+                        LayoutKind::Scalar { .. } | LayoutKind::Packed { .. }
+                    ) && has(id)
+            })
+        }
         ProcessValueKind::StorageState {
             storage,
             state: ProcessSignalState::Old,
         } => storage_state_width(design, *storage) == Some(width),
         ProcessValueKind::StorageState { .. } => false,
-        ProcessValueKind::Local { process, local } => {
-            local_width(design, *process, *local) == Some(width)
-        }
+        ProcessValueKind::Local { process, local } => local_width(design, *process, *local)
+            .is_some_and(|local_width| {
+                local_width == width
+                    || matches!(
+                        layout.kind,
+                        LayoutKind::Scalar { .. } | LayoutKind::Packed { .. }
+                    ) && has(id)
+            }),
         ProcessValueKind::Signal { signals, state } => {
             if matches!(state, ProcessSignalState::Event) {
                 width == 1 && !signals.is_empty()
@@ -3179,6 +3360,15 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                     && has(&supported, *then_value)
                     && has(&supported, *else_value)
             }
+            ProcessValueKind::MetaCompare {
+                operands, inner, ..
+            } => {
+                has(&supported, *inner)
+                    && !operands.is_empty()
+                    && operands
+                        .iter()
+                        .all(|operand| process_meta_operand_supported(design, *operand))
+            }
             ProcessValueKind::Match { scrutinee, arms } => {
                 has(&supported, *scrutinee)
                     && !arms.is_empty()
@@ -3255,7 +3445,6 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
             | ProcessValueKind::Definition(_)
             | ProcessValueKind::Intrinsic(_)
             | ProcessValueKind::Range { .. }
-            | ProcessValueKind::MetaCompare { .. }
             | ProcessValueKind::Call { .. }
             | ProcessValueKind::Invalid => false,
         };

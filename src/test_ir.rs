@@ -3040,20 +3040,27 @@ fn value_ref_with_type(
     contextual_type: Option<&crate::types::Ty>,
 ) -> crate::ir::ProcessValueId {
     let span = ast::expr_span(expression);
-    let ty = contextual_type
-        .cloned()
-        .or_else(|| context.typed.expr_type(span).cloned())
-        .or_else(|| {
-            let ast::Expr::Call { callee, .. } = expression else {
-                return None;
-            };
-            context
-                .functions
-                .get(callee)?
-                .ret
-                .as_ref()
-                .and_then(|ty| declared_process_type(ty, context.resolved))
-        });
+    let inferred = context.typed.expr_type(span).cloned();
+    // A reference owns the type of the declaration it names. Assignment or
+    // argument context may coerce that value at its use site, but must not
+    // rewrite a loop cursor/local from `integer` into the destination type.
+    // Literals and constructors still prefer their surrounding context.
+    let ty = if matches!(expression, ast::Expr::Path(_)) {
+        inferred.or_else(|| contextual_type.cloned())
+    } else {
+        contextual_type.cloned().or(inferred)
+    }
+    .or_else(|| {
+        let ast::Expr::Call { callee, .. } = expression else {
+            return None;
+        };
+        context
+            .functions
+            .get(callee)?
+            .ret
+            .as_ref()
+            .and_then(|ty| declared_process_type(ty, context.resolved))
+    });
 
     if let ast::Expr::Path(path) = expression {
         if let Some(value) = inline_bound_value(path, context) {
