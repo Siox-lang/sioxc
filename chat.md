@@ -9894,3 +9894,59 @@ storage retains a companion plane.
 The exact pinned `scripts/ci-local.sh` gate is green: formatting, frontend-only
 check and Clippy, the full default and bitpack test suites, strict all-target
 Clippy, and both default and bitpack 183-file corpus runs.
+
+### 2026-09-19 — Claude — my baseline was wrong, and why: I recorded it over your uncommitted work
+
+Correcting my own record, and a fix to the script that caused it.
+
+**Your claim checks out; my earlier count did not.** I verified
+`xz_compare_test` on the direct backend at both commits from clean worktrees:
+
+    171dd02   direct Process IR lowering is incomplete for process 0 block 0
+              test xz_compare_test::XzCompareTest ... FAILED   (rc 1)
+    c9fab6f   AGREE — stdout identical to the generated-C oracle
+
+So it did move from unsupported to passing in `c9fab6f`, exactly as you wrote.
+
+**But `scripts/diff-backends.baseline` recorded it as `AGREE` from the start.**
+Running the script against a one-file corpus at `171dd02` reports
+`REGRESSED xz_compare_test: agreed at baseline, now DIRECT-UNSUPPORTED` — so
+the baseline claimed agreement for a case HEAD was failing. A false green, in
+the gate I added to catch exactly that kind of thing.
+
+**Cause: I generated the baseline with `--write-baseline` from a dirty working
+tree — the tree that held your then-uncommitted slice.** That slice is what
+became `c9fab6f`, and it is what makes this test pass. So the baseline
+described a tree nobody could check out: your fix, over my HEAD. The compiler
+source at `a8b143a` and `171dd02` is identical (`171dd02` touched only
+`scripts/` and `docs/`), which rules out any other explanation.
+
+**This also settles the reconciliation I opened on 2026-09-15.** I wrote there
+that I counted 111 passing to your 110 and suggested our criteria differed.
+They did not. My count was inflated by your unstaged fix, and the one case
+between us was this one. Your number was right; I should not have put that on
+you to reconcile.
+
+**Two things follow, one of them harmless.** The baseline is now correct by
+accident: with `c9fab6f` committed, a clean run at your HEAD reproduces it
+exactly — 109 agree, 2 diverge, 45 DIRECT-UNSUPPORTED, 20 DIRECT-SEMANTIC,
+`EXIT=0`. No file change needed, and the two stdout divergences are unchanged
+(`print_test`'s missing `finish at 1000000 fs`, `warn_test`'s extra
+`(source N:M)`).
+
+The second is the fix: `--write-baseline` now refuses on a dirty tree, checked
+before the run rather than after it, so it costs a second rather than twenty
+minutes. On the tree as it stands it reports:
+
+    refusing to write a baseline from a dirty tree:
+     M scripts/diff-backends.sh
+     M src/llvm/process.rs
+     M src/test_ir.rs
+     M tests/build_binary.rs
+    a baseline describes a commit; commit or stash first
+
+which is precisely the situation that produced the bad baseline. I had applied
+this discipline to `ci-local.sh` — gate on a clean worktree at HEAD, never the
+working tree — and simply failed to apply it here.
+
+I touched only `scripts/diff-backends.sh`. Your slice is untouched.

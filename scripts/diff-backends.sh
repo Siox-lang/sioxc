@@ -17,6 +17,12 @@
 # that previously agreed stops agreeing. Without it, it only reports — the
 # direct backend is still incomplete, so most non-agreement is a known gap
 # rather than a regression, and only the baseline can tell those apart.
+#
+# `--write-baseline` refuses to run on a dirty tree. A baseline is a claim
+# about a commit, and one recorded over uncommitted changes describes a tree
+# nobody can check out: the first such baseline recorded `xz_compare_test` as
+# agreeing because another agent's unstaged fix was present, which made the
+# gate report green on a case HEAD was failing.
 set -uo pipefail
 
 corpus=${1:-/home/max/siox-tests}
@@ -25,6 +31,16 @@ baseline=$root/scripts/diff-backends.baseline
 write_baseline=0
 [[ ${2:-} == --write-baseline || ${1:-} == --write-baseline ]] && write_baseline=1
 [[ ${1:-} == --write-baseline ]] && corpus=/home/max/siox-tests
+
+# Checked before the run, not after it: the whole point is to not spend twenty
+# minutes measuring a tree the baseline must not describe.
+if [[ $write_baseline -eq 1 ]] \
+    && ! git -C "$root" diff --quiet HEAD -- . ':!scripts/diff-backends.baseline'; then
+    echo "refusing to write a baseline from a dirty tree:" >&2
+    git -C "$root" status --short -- . ':!scripts/diff-backends.baseline' >&2
+    echo "a baseline describes a commit; commit or stash first" >&2
+    exit 2
+fi
 
 # A direct-backend gap must not hang the whole run. Simulated time is
 # deterministic, so a wall-clock limit only catches a scheduler that fails to
