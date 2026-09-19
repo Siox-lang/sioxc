@@ -234,6 +234,7 @@ fn direct_process_runtime_links_without_generated_design_c() {
     assert!(
         run.status.success()
             && report.contains("test direct_runtime::DirectRuntime ... ok")
+            && report.contains("finish at ")
             && report.contains("1 warning")
             && warnings.contains("warning: direct warning remains non-fatal"),
         "direct Process IR fixture failed:\n{}{}",

@@ -562,6 +562,7 @@ int sx_runtime_run_test(uint32_t test) {
                 stopped[process] = 1;
             } else if (status == SX_PROCESS_FINISHED) {
                 stopped[process] = 1;
+                printf("finish at %llu fs\n", (unsigned long long)sx_now);
                 finish = 1;
             } else if (status == SX_PROCESS_SUSPENDED) {
                 if (sx_suspension_kind != SX_SUSPENSION_TIME &&

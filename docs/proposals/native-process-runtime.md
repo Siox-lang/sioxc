@@ -109,6 +109,8 @@ The fixed scheduler has an explicit initialization phase: reset-staged storage
 bindings commit first, reactive hardware runs to a fixed point, and only then
 do time-zero foreground/test processes begin. Timed clock events registered
 during initialization remain queued at time zero until stimulus has started.
+An explicit `finish()` status prints the scheduler-owned femtosecond timestamp
+before ending the test; that observable no longer comes from generated C.
 
 `runtime/process.c` and `runtime/main.c` implement the first reusable boundary:
 dynamic ready/stopped sets, sensitivity-driven delta requeueing, a dynamically

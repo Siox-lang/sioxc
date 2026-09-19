@@ -479,7 +479,10 @@ Remaining:
   plane before direct code can compare locally stored X/Z data.
   A completed foreground process drains its own delayed transactions and then
   ends its test even when background clocks keep future events queued, while a
-  suspended condition with no future event reports a deadlock. Dynamic strings
+  suspended condition with no future event reports a deadlock. The distinct
+  `finish` status also reports the fixed scheduler's current femtosecond time,
+  preserving the executable output contract without generated harness code.
+  Dynamic strings
   and other runtime calls, dynamic aggregate
   selection/update, VHDL delayed-write cancellation, waveform services, and
   making this path the default remain.

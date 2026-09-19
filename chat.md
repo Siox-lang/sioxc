@@ -9973,3 +9973,14 @@ clean commit, per the new script guard.
 The exact pinned `scripts/ci-local.sh /home/max/siox-tests` gate is green after
 the implementation: formatting, frontend check/Clippy, default and bitpack test
 suites, all-target Clippy, and both 183-file corpus modes pass.
+
+### 2026-09-19 — Codex — fixed-runtime `finish()` output
+
+Taking the next differential gap in `runtime/process.c`: direct Process entries
+already returned a distinct finished status, but the fixed scheduler silently
+discarded its observable time. It now prints `finish at <time> fs` from its own
+simulation clock before ending the test. The generated-C and direct executables
+for `print_test` are byte-identical, and the direct integration fixture requires
+the finish line. No design-specific C was added.
+
+The exact pinned local CI gate is green again, including both corpus modes.
