@@ -96,7 +96,7 @@ numeric_literal_syntax_test AGREE
 old_attr_test AGREE
 packed_partial_write_test DIRECT-UNSUPPORTED
 partial_range_test AGREE
-print_test DIVERGE
+print_test AGREE
 protocol_view_traits_test AGREE
 rand_test DIRECT-UNSUPPORTED
 rand_text_test DIRECT-UNSUPPORTED

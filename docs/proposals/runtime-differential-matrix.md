@@ -27,7 +27,7 @@ non-agreement is expected, and only a baseline can separate that from a
 regression.
 
 **Know what an agreement is worth.** The script reports how many of them
-compared harness output only. Today that is 111 of 122, because few corpus
+compared harness output only. Today that is 111 of 123, because few corpus
 files print anything: for the rest, "agree" means both backends exited zero and
 said so in the same words, which is barely more than comparing exit status.
 

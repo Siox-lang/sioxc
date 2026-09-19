@@ -9984,3 +9984,7 @@ for `print_test` are byte-identical, and the direct integration fixture requires
 the finish line. No design-specific C was added.
 
 The exact pinned local CI gate is green again, including both corpus modes.
+
+The clean-tree differential run is now 123 agreements, 1 intentional warning-
+location divergence, 40 explicit unsupported cases, and 12 semantic gaps, with
+no oracle failure or regression. Its baseline was regenerated from `c5fdf73`.
