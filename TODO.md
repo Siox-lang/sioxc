@@ -346,7 +346,15 @@ Remaining:
   literals; current, old, and event state; fixed bit slices; integer/signed/
   floating arithmetic and comparisons; defined divide/shift corner cases;
   std-derived lookup tables; selections; packed concatenations; and scalar
-  foreign calls. Positive minimum-width literals remain positive when they
+  foreign calls. Resolver-selected bodyless `extern "C"` declarations now
+  enter Process IR from both hardware normalization and test-process lowering,
+  with explicit integer/real argument and result classes. Integer ABI operands
+  are evaluated recursively at their consumer's 64-bit width before the call,
+  rather than extending an already-wrapped minimum-width result. Process
+  signal/local/storage reads likewise load their declaration-owned physical
+  frame width and then sign- or zero-extend to the logical expression width;
+  constrained kernel integers no longer fail closed merely because their
+  storage representation is narrower. Positive minimum-width literals remain positive when they
   enter a signed operation instead of being mistaken for two's-complement
   negatives. Normalized bit slices may also exceed their source width: the
   direct emitter zero-extends ordinary values and sign-extends signed kernel
@@ -388,7 +396,11 @@ Remaining:
   types from an AST. The fixed runtime renders arbitrary-width signed/unsigned
   decimal, `real`, Unicode `Char`, static strings, and retained enum symbols;
   failed assertions and warnings format lazily and keep source locations and
-  warning accounting. Runtime-sized string values remain part of the dynamic-
+  warning accounting. Field/index projections recover their display type and
+  exact width from the declaration-owned recursive layout when expression
+  typing has no standalone result entry. Constant-folded calls also honor a
+  contextual `real` return, so an integer-spelled literal becomes an f64 value
+  rather than a widened integer bit pattern. Runtime-sized string values remain part of the dynamic-
   array boundary.
   Source-layout `length`, `left`, `right`, `high`, `low`, and `ascending`
   attributes are materialized as LLVM constants from retained Process IR

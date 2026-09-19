@@ -27,7 +27,7 @@ non-agreement is expected, and only a baseline can separate that from a
 regression.
 
 **Know what an agreement is worth.** The script reports how many of them
-compared harness output only. Today that is 99 of 109, because just 20 corpus
+compared harness output only. Today that is 111 of 122, because few corpus
 files print anything: for the rest, "agree" means both backends exited zero and
 said so in the same words, which is barely more than comparing exit status.
 
@@ -37,7 +37,7 @@ writer metadata, which is all that is not design behaviour. That currently
 contributes nothing, because the direct runtime does not accept `-o` at all
 (`runtime/main.c` rejects it, and the direct ABI has no waveform entries), so a
 VCD exists only on the generated-C side. The moment waveform output lands on the
-direct path, those 99 hollow agreements become real comparisons of every signal
+direct path, those 111 hollow agreements become real comparisons of every signal
 at every timestamp with no change to this script.
 
 It is deliberately not part of `ci-local.sh`: it roughly doubles that gate's

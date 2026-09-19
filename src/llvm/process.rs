@@ -761,8 +761,32 @@ fn process_storage_state_value<'ctx>(
 ) -> Option<IntValue<'ctx>> {
     match state {
         ProcessSignalState::Current => None,
-        ProcessSignalState::Old => (storage_state_width(design, storage) == Some(width))
-            .then(|| state_value(context, module, builder, &storage_old_name(storage), width))?,
+        ProcessSignalState::Old => {
+            let stored_width = storage_state_width(design, storage)?;
+            let value = state_value(
+                context,
+                module,
+                builder,
+                &storage_old_name(storage),
+                stored_width,
+            )?;
+            let signed = design
+                .process_ir
+                .storages
+                .get(storage.0 as usize)
+                .is_some_and(|storage| {
+                    storage.ty.as_ref().is_some_and(process_type_is_signed)
+                        || storage
+                            .layout
+                            .as_ref()
+                            .is_some_and(process_layout_is_signed)
+                });
+            if signed {
+                fit_signed(builder, value, width)
+            } else {
+                fit(builder, value, width)
+            }
+        }
         ProcessSignalState::Event if width == 1 => {
             let changed = builder
                 .build_load(
@@ -1096,6 +1120,76 @@ fn process_value_at<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
+    let value = design.process_ir.values.get(id.0 as usize)?;
+    let natural_width = value.bit_width?;
+    // Arithmetic is evaluated in the width supplied by its consumer, not
+    // necessarily in the minimum width recorded on the arena node. This is
+    // observable for kernel integers: evaluating `0 - 7` as i3 first turns it
+    // into `1`, and extending that result to the extern-C i64 ABI cannot
+    // recover `-7`. The established digital emitter has the same `emit_at`
+    // rule. Preserve explicit narrowing by taking this path only when a
+    // consumer widens the expression.
+    if width > natural_width {
+        match &value.kind {
+            ProcessValueKind::Unary {
+                operation: ProcessUnaryOp::Neg,
+                operand,
+            } if !process_value_is_real(design, id) => {
+                let operand = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    width,
+                    signed,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                return builder.build_int_neg(operand, "pv.context.neg").ok();
+            }
+            ProcessValueKind::Binary {
+                operation,
+                left,
+                right,
+            } => {
+                return process_binary(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    operation,
+                    *left,
+                    *right,
+                    width,
+                    active,
+                    index_sites,
+                    cache,
+                );
+            }
+            ProcessValueKind::Select {
+                condition,
+                then_value,
+                else_value,
+            } => {
+                return process_select(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *condition,
+                    *then_value,
+                    *else_value,
+                    width,
+                    active,
+                    index_sites,
+                    cache,
+                );
+            }
+            _ => {}
+        }
+    }
     let value = process_value(
         context,
         module,
@@ -1111,6 +1205,86 @@ fn process_value_at<'ctx>(
     } else {
         fit(builder, value, width)
     }
+}
+
+/// Emit a scalar select at its consumer's width while retaining the activity
+/// predicates that make checked expressions in an unselected arm inert.
+#[allow(clippy::too_many_arguments)]
+fn process_select<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    condition: ProcessValueId,
+    then_value: ProcessValueId,
+    else_value: ProcessValueId,
+    width: u32,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let condition = process_value(
+        context,
+        module,
+        builder,
+        design,
+        condition,
+        active,
+        index_sites,
+        cache,
+    )?;
+    let condition = as_condition(builder, condition)?;
+    let checked_arms = cache.contains_check(then_value) || cache.contains_check(else_value);
+    let (then_active, else_active) = if !checked_arms {
+        (None, None)
+    } else {
+        let then_active = match active {
+            Some(outer) => Some(
+                builder
+                    .build_and(outer, condition, "pv.select.then.active")
+                    .ok()?,
+            ),
+            None => Some(condition),
+        };
+        let not_selected = builder.build_not(condition, "pv.select.not").ok()?;
+        let else_active = match active {
+            Some(outer) => Some(
+                builder
+                    .build_and(outer, not_selected, "pv.select.else.active")
+                    .ok()?,
+            ),
+            None => Some(not_selected),
+        };
+        (then_active, else_active)
+    };
+    let then_value = process_value_at(
+        context,
+        module,
+        builder,
+        design,
+        then_value,
+        width,
+        true,
+        then_active,
+        index_sites,
+        cache,
+    )?;
+    let else_value = process_value_at(
+        context,
+        module,
+        builder,
+        design,
+        else_value,
+        width,
+        true,
+        else_active,
+        index_sites,
+        cache,
+    )?;
+    builder
+        .build_select(condition, then_value, else_value, "pv.select")
+        .ok()
+        .map(|value| value.into_int_value())
 }
 
 /// Whether a scalar arena value denotes a signed mathematical result rather
@@ -2281,26 +2455,70 @@ fn process_value<'ctx>(
         ProcessValueKind::Number(ProcessNumber::Real(bits)) => ty.const_int(*bits, false),
         ProcessValueKind::Char(character) => ty.const_int(u64::from(u32::from(*character)), false),
         ProcessValueKind::Signal { signals, state } => {
-            if signals.len() == 1 {
-                signal_value(context, module, builder, design, signals, *state, width)?
+            let stored_width = if matches!(state, ProcessSignalState::Event) {
+                1
             } else {
-                aggregate_signal_value(context, module, builder, design, signals, *state, width)?
+                signals.iter().try_fold(0u32, |total, signal| {
+                    total.checked_add(design.signal_width(*signal)?)
+                })?
+            };
+            let stored = if signals.len() == 1 {
+                signal_value(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    signals,
+                    *state,
+                    stored_width,
+                )?
+            } else {
+                aggregate_signal_value(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    signals,
+                    *state,
+                    stored_width,
+                )?
+            };
+            if process_value_is_signed(design, id) {
+                fit_signed(builder, stored, width)?
+            } else {
+                fit(builder, stored, width)?
             }
         }
-        ProcessValueKind::Local { process, local } => state_value(
-            context,
-            module,
-            builder,
-            &local_state_name(*process, *local),
-            width,
-        )?,
-        ProcessValueKind::Storage(storage) => state_value(
-            context,
-            module,
-            builder,
-            &storage_state_name(*storage),
-            width,
-        )?,
+        ProcessValueKind::Local { process, local } => {
+            let stored_width = local_width(design, *process, *local)?;
+            let stored = state_value(
+                context,
+                module,
+                builder,
+                &local_state_name(*process, *local),
+                stored_width,
+            )?;
+            if process_value_is_signed(design, id) {
+                fit_signed(builder, stored, width)?
+            } else {
+                fit(builder, stored, width)?
+            }
+        }
+        ProcessValueKind::Storage(storage) => {
+            let stored_width = storage_state_width(design, *storage)?;
+            let stored = state_value(
+                context,
+                module,
+                builder,
+                &storage_state_name(*storage),
+                stored_width,
+            )?;
+            if process_value_is_signed(design, id) {
+                fit_signed(builder, stored, width)?
+            } else {
+                fit(builder, stored, width)?
+            }
+        }
         ProcessValueKind::StorageState { storage, state } => {
             process_storage_state_value(context, module, builder, design, *storage, *state, width)?
         }
@@ -2651,77 +2869,22 @@ fn process_value<'ctx>(
             cache,
         )?,
         ProcessValueKind::Select {
-            condition: selected,
+            condition,
             then_value,
             else_value,
-        } => {
-            let selected = process_value(
-                context,
-                module,
-                builder,
-                design,
-                *selected,
-                active,
-                index_sites,
-                cache,
-            )?;
-            let selected = as_condition(builder, selected)?;
-            let checked_arms =
-                cache.contains_check(*then_value) || cache.contains_check(*else_value);
-            let (then_active, else_active) = if !checked_arms {
-                (None, None)
-            } else {
-                let then_active = match active {
-                    Some(outer) => Some(
-                        builder
-                            .build_and(outer, selected, "pv.select.then.active")
-                            .ok()?,
-                    ),
-                    None => Some(selected),
-                };
-                let not_selected = builder.build_not(selected, "pv.select.not").ok()?;
-                let else_active = match active {
-                    Some(outer) => Some(
-                        builder
-                            .build_and(outer, not_selected, "pv.select.else.active")
-                            .ok()?,
-                    ),
-                    None => Some(not_selected),
-                };
-                (then_active, else_active)
-            };
-            // LLVM `select` computes both operands in one block. Checked
-            // subgraphs include their activity predicate in the cache key;
-            // pure operands keep sharing one emitted value across both arms.
-            let then_value = process_value_at(
-                context,
-                module,
-                builder,
-                design,
-                *then_value,
-                width,
-                true,
-                then_active,
-                index_sites,
-                cache,
-            )?;
-            let else_value = process_value_at(
-                context,
-                module,
-                builder,
-                design,
-                *else_value,
-                width,
-                true,
-                else_active,
-                index_sites,
-                cache,
-            )?;
-            builder
-                .build_select(selected, then_value, else_value, "pv.select")
-                .ok()?
-                .into_int_value()
-        }
+        } => process_select(
+            context,
+            module,
+            builder,
+            design,
+            *condition,
+            *then_value,
+            *else_value,
+            width,
+            active,
+            index_sites,
+            cache,
+        )?,
         ProcessValueKind::MetaCompare {
             not_equal,
             operands,
@@ -3265,9 +3428,13 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                     && if matches!(state, ProcessSignalState::Event) {
                         value.bit_width == Some(1)
                     } else {
-                        signals.iter().try_fold(0u32, |width, signal| {
+                        let stored_width = signals.iter().try_fold(0u32, |width, signal| {
                             width.checked_add(design.signal_width(*signal)?)
-                        }) == value.bit_width
+                        });
+                        stored_width == value.bit_width
+                            || signals.len() == 1
+                                && matches!(value.ty, Some(siox::types::Ty::Integer))
+                                && stored_width.is_some()
                     }
             }
             ProcessValueKind::BitSlice { base, high, low } => {
@@ -3307,10 +3474,11 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                     && arguments.iter().all(|argument| has(&supported, *argument))
             }
             ProcessValueKind::Local { process, local } => {
-                local_width(design, *process, *local) == value.bit_width
+                local_width(design, *process, *local).is_some() && value.bit_width.is_some()
             }
             ProcessValueKind::Storage(storage) => {
-                storage_state_width(design, *storage) == value.bit_width
+                storage_state_width(design, *storage).is_some()
+                    && value.bit_width.is_some()
                     && design
                         .process_ir
                         .storages
@@ -3333,7 +3501,9 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
             }
             ProcessValueKind::StorageState { storage, state } => match state {
                 ProcessSignalState::Current => false,
-                ProcessSignalState::Old => storage_state_width(design, *storage) == value.bit_width,
+                ProcessSignalState::Old => {
+                    storage_state_width(design, *storage).is_some() && value.bit_width.is_some()
+                }
                 ProcessSignalState::Event => {
                     design.process_ir.storages.get(storage.0 as usize).is_some()
                         && value.bit_width == Some(1)

@@ -232,7 +232,10 @@ language-lowering path.
    Format strings are already
    normalized into typed Process parts; the fixed runtime renders exact-width
    signed/unsigned values, reals, characters, static strings, and enum symbols
-   without either backend consulting source syntax. Inclusive directional range loops and
+   without either backend consulting source syntax. Projected fields and array
+   elements recover that presentation type and width from their retained
+   declaration layout when the typed expression table has no standalone entry.
+   Inclusive directional range loops and
    source-order array loops keep cursor/end and iterable-snapshot state in the
    object, so a timed suspension inside their body resumes the same iteration.
    Foreground writes to storage connected to DUT inputs also carry an explicit
@@ -255,7 +258,13 @@ language-lowering path.
    strings keep their distinct representation. Resolver-selected
    `integer`/`Char` kernel conversions are now values rather than runtime
    calls; real-to-integer conversion truncates toward zero and real negation
-   stays floating point in LLVM. The legacy implicit testbench process also
+   stays floating point in LLVM. Bodyless resolver-selected `extern "C"`
+   declarations lower to explicit Process foreign-call nodes in test processes
+   too, including mixed real/integer ABI classes. Integer argument expression
+   trees are evaluated at their 64-bit ABI consumer width instead of widening
+   after a minimum-width operation has wrapped. Constant-folded calls honor a
+   contextual `real` return even when their source literal is integer-spelled.
+   The legacy implicit testbench process also
    preserves declaration/statement source order, while explicit processes
    continue to start after impl-state initialization. Receiver methods,
    procedure-shaped functions, runtime recursion, other non-packed

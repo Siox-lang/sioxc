@@ -96,7 +96,12 @@ source-order array loops execute as ordinary CFGs. Loop cursor/end
 state and array snapshots remain in the object across suspension. Marked
 hardware vector comparisons consume the std-derived metavalue encoding and
 the emitted companion signals, so X/Z and weak-value rules no longer require
-the compatibility evaluator. An
+the compatibility evaluator. Resolver-selected foreign calls from both
+hardware and test processes now carry explicit scalar ABI classes. Their
+kernel-integer expression trees evaluate at the C ABI's 64-bit consumer width,
+and declaration-width constrained integer state is sign-extended only after it
+is loaded, so a narrow physical frame does not change its mathematical value.
+An
 unsupported block is rejected transactionally before it performs foreign
 calls or publishes a pending write.
 
@@ -180,7 +185,12 @@ signatures:
    concatenation; std-derived lookup tables; and scalar foreign calls. Signal
    values wider than one ABI word are reconstructed exactly, and signed
    widening distinguishes mathematical results from positive minimum-width
-   bit patterns. `CheckedIndex` nodes retain their Process IR source domain,
+   bit patterns. Contextual widening is recursive for arithmetic and selections:
+   a foreign integer argument such as `0 - 7` is calculated at i64 instead of
+   wrapping at its three-bit literal width before extension. Constrained
+   integer signal/local/storage values are loaded at their physical layout
+   width and extended to the Process value's logical width. `CheckedIndex`
+   nodes retain their Process IR source domain,
    latch only on an evaluated selection path, and feed the existing
    `sx_index_*` failure ABI. Natural width inference also folds integer-only
    constant shift expressions in the value graph; std's signed-vector shift

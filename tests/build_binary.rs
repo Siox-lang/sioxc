@@ -244,6 +244,88 @@ fn direct_process_runtime_links_without_generated_design_c() {
 }
 
 #[test]
+fn direct_process_runtime_marshals_foreign_calls_without_generated_design_c() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory = std::env::temp_dir().join(format!(
+        "siox_direct_process_foreign_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("foreign.siox");
+    let output = directory.join("foreign-test");
+    std::fs::write(
+        &source,
+        r#"module direct_foreign;
+           using std::bits::unsigned;
+           extern "C" {
+               pub fn sqrt(value: real) -> real;
+               pub fn scalbln(value: real, exponent: integer) -> real;
+               pub fn labs(value: integer) -> integer;
+           }
+           entity ForeignHardware {
+               integer_result: unsigned[8] out,
+               mixed_result: unsigned[8] out
+           }
+           impl ForeignHardware {
+               let integer_value: integer;
+               integer_value = labs((0 - 3) * 2 - 1);
+               integer_result = unsigned[8](integer_value);
+               let mixed_value: real;
+               mixed_value = scalbln(sqrt(9.0), 4);
+               mixed_result = unsigned[8](integer(mixed_value));
+           }
+           #[test] entity DirectForeign {}
+           impl DirectForeign {
+               let integer_result: unsigned[8];
+               let mixed_result: unsigned[8];
+               let hardware: ForeignHardware = {
+                   .integer_result = integer_result,
+                   .mixed_result = mixed_result
+               };
+               await 1ns;
+               assert!(integer_result == 7,
+                       "hardware foreign integer arguments use contextual width");
+               assert!(mixed_result == 48,
+                       "hardware foreign calls preserve mixed ABI classes");
+               assert!(labs((0 - 3) * 2 - 1) == 7,
+                       "test-process foreign integer arguments use contextual width");
+               assert!(integer(scalbln(sqrt(9.0), 4)) == 48,
+                       "test-process foreign calls preserve mixed ABI classes");
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "direct foreign-call fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "direct foreign-call fixture failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn direct_legacy_initializers_keep_source_order() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");
@@ -310,16 +392,20 @@ fn direct_runtime_formats_typed_process_values() {
         r#"module direct_format;
            using std::bits::{signed, unsigned};
            enum State { Idle, Run }
+           struct Sample { pub value: real }
            fn make_char(value: integer) -> Char { return Char(value); }
+           fn one() -> real { return 1; }
            #[test] entity DirectFormat {}
            impl DirectFormat {
                let wide: unsigned[128] = 18446744073709551616;
                let negative: signed[8] = 240;
                let measured: real = 3.5;
+               let sample: Sample = { .value = 2.5 };
                let character: Char = 'é';
                let state: State = State::Run;
-               print!("wide {} signed {} real {} char {} state {} text {} made {}",
-                      wide, negative, measured, character, state, "hello", make_char(66));
+               print!("wide {} signed {} real {} field {} one {} char {} state {} text {} made {}",
+                      wide, negative, measured, sample.value, one(), character,
+                      state, "hello", make_char(66));
                warn!(false, "warning wide {}", wide);
                assert!(false, "failure signed {} state {}", negative, state);
            }"#,
@@ -348,7 +434,7 @@ fn direct_runtime_formats_typed_process_values() {
     assert!(!run.status.success(), "failing formatting fixture passed");
     assert!(
         stdout.contains(
-            "wide 18446744073709551616 signed -16 real 3.5 char é state Run text hello made B"
+            "wide 18446744073709551616 signed -16 real 3.5 field 2.5 one 1 char é state Run text hello made B"
         ),
         "{stdout}"
     );

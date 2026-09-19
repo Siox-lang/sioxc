@@ -74,8 +74,14 @@ fn process_functions<'a>(
 ) -> crate::ir::FunctionIndex<'a> {
     let mut functions = crate::ir::FunctionIndex::new(resolved);
     for item in modules.iter().flat_map(|module| &module.items) {
-        if let ast::Item::Fn(function) = item {
-            functions.insert_free(function);
+        match item {
+            ast::Item::Fn(function) => functions.insert_free(function),
+            ast::Item::ExternBlock { fns, .. } => {
+                for function in fns {
+                    functions.insert_free(function);
+                }
+            }
+            _ => {}
         }
     }
     for implementation in modules
@@ -1949,6 +1955,60 @@ fn lower_process_format(
         .collect()
 }
 
+/// Recover the recursive declaration layout of an arena projection while the
+/// temporary typed-AST adapter is still constructing Process IR. Expression
+/// typing does not retain a standalone type for every field/index expression,
+/// but the storage/local declaration does retain the authoritative layout.
+fn process_value_source_layout(
+    value: ProcessValueId,
+    process_ir: &ProcessIr,
+) -> Option<&crate::ir::SourceLayout> {
+    let value = process_ir.values.get(value.0 as usize)?;
+    match &value.kind {
+        ProcessValueKind::Storage(storage) => {
+            process_ir.storages.get(storage.0 as usize)?.layout.as_ref()
+        }
+        ProcessValueKind::StorageState {
+            storage,
+            state: ProcessSignalState::Old,
+        } => process_ir.storages.get(storage.0 as usize)?.layout.as_ref(),
+        ProcessValueKind::Local { process, local } => process_ir
+            .processes
+            .get(process.0 as usize)?
+            .locals
+            .get(local.0 as usize)?
+            .layout
+            .as_ref(),
+        ProcessValueKind::Field { base, field } => {
+            let layout = process_value_source_layout(*base, process_ir)?;
+            let LayoutKind::Struct { fields, .. } = &layout.kind else {
+                return None;
+            };
+            fields
+                .iter()
+                .find(|candidate| candidate.name == *field)
+                .map(|candidate| &candidate.layout)
+        }
+        ProcessValueKind::Index { base, .. } => {
+            let layout = process_value_source_layout(*base, process_ir)?;
+            let LayoutKind::Array { element, .. } = &layout.kind else {
+                return None;
+            };
+            Some(element)
+        }
+        ProcessValueKind::Select {
+            then_value,
+            else_value,
+            ..
+        } => {
+            let then_layout = process_value_source_layout(*then_value, process_ir)?;
+            (process_value_source_layout(*else_value, process_ir) == Some(then_layout))
+                .then_some(then_layout)
+        }
+        _ => None,
+    }
+}
+
 fn process_display_kind(
     expression: &ast::Expr,
     value: ProcessValueId,
@@ -2001,7 +2061,8 @@ fn process_display_kind(
                         .get(path)
                         .and_then(|layout| process_type_from_layout(layout, context.resolved))
                 }
-                _ => None,
+                _ => process_value_source_layout(value, context.process_ir)
+                    .and_then(|layout| process_type_from_layout(layout, context.resolved)),
             })?;
     match &ty {
         crate::types::Ty::Integer => Some(ProcessDisplayKind::Signed),
@@ -2639,6 +2700,82 @@ fn lower_process_default(
     Some(push_value(*span, Some(target), width, kind, context))
 }
 
+/// Normalize a resolver-selected `extern "C"` value call into its explicit
+/// scalar ABI. The source declaration supplies the linker-visible symbol and
+/// parameter count; checked expression types retain aliases and constraints as
+/// their kernel `integer`/`real` representation. Keeping this in Process IR
+/// prevents either native backend from revisiting an extern AST declaration.
+fn lower_process_foreign_call(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let ast::Expr::Call {
+        callee,
+        type_args,
+        args,
+        bang: false,
+        span,
+    } = expression
+    else {
+        return None;
+    };
+    if !type_args.is_empty() || !matches!(callee.as_ref(), ast::Expr::Path(_)) {
+        return None;
+    }
+    let function = context.functions.get(callee)?.clone();
+    if function.body.is_some() || function.params.iter().any(|parameter| parameter.is_self) {
+        return None;
+    }
+    let parameters = function
+        .params
+        .iter()
+        .filter(|parameter| !parameter.is_self)
+        .collect::<Vec<_>>();
+    if parameters.len() != args.len() {
+        return None;
+    }
+
+    let abi_kind = |declared: Option<&ast::Type>, actual: Option<&crate::types::Ty>| {
+        let leaf = declared.and_then(type_leaf);
+        (
+            leaf == Some("real") || matches!(actual, Some(crate::types::Ty::Real)),
+            leaf == Some("integer") || matches!(actual, Some(crate::types::Ty::Integer)),
+        )
+    };
+    let mut arguments = Vec::with_capacity(args.len());
+    let mut float_arguments = Vec::with_capacity(args.len());
+    let mut integer_arguments = Vec::with_capacity(args.len());
+    for (argument, parameter) in args.iter().zip(parameters) {
+        let actual = context.typed.expr_type(ast::expr_span(argument)).cloned();
+        let (float, integer) = abi_kind(parameter.ty.as_ref(), actual.as_ref());
+        arguments.push(value_ref_with_type(
+            argument,
+            process,
+            context,
+            actual.as_ref(),
+        ));
+        float_arguments.push(float);
+        integer_arguments.push(integer);
+    }
+    let declared_return = function.ret.as_ref();
+    let (float_result, integer_result) = abi_kind(declared_return, return_type);
+    let ty = return_type
+        .cloned()
+        .or_else(|| declared_return.and_then(|ty| declared_process_type(ty, context.resolved)));
+    let kind = ProcessValueKind::ForeignCall {
+        name: function.name.text.clone(),
+        arguments,
+        float_arguments,
+        integer_arguments,
+        float_result,
+        integer_result,
+    };
+    let width = source_value_width(&kind, ty.as_ref(), process, context);
+    Some(push_value(*span, ty, width, kind, context))
+}
+
 /// Inline a pure, value-returning Siox function into the Process value arena.
 /// Parameters and `let` bindings remain compile-time SSA aliases; control
 /// flow becomes value-level selection, so the backend never needs an AST or a
@@ -3088,7 +3225,12 @@ fn value_ref_with_type(
         if let Some(value) =
             crate::ir::eval_const_fns(expression, context.constant_integers, context.functions, 0)
         {
-            let kind = ProcessValueKind::Number(ProcessNumber::Integer(vec![value as u64]));
+            let number = if matches!(ty, Some(crate::types::Ty::Real)) {
+                ProcessNumber::Real((value as f64).to_bits())
+            } else {
+                ProcessNumber::Integer(vec![value as u64])
+            };
+            let kind = ProcessValueKind::Number(number);
             let width = source_value_width(&kind, ty.as_ref(), process, context);
             return push_value(span, ty, width, kind, context);
         }
@@ -3099,6 +3241,9 @@ fn value_ref_with_type(
             return value;
         }
         if let Some(value) = lower_process_default(expression, process, context, ty.as_ref()) {
+            return value;
+        }
+        if let Some(value) = lower_process_foreign_call(expression, process, context, ty.as_ref()) {
             return value;
         }
         if let Some(value) = inline_process_call(expression, process, context, ty.as_ref()) {
@@ -3523,12 +3668,30 @@ fn source_value_width(
         ProcessValueKind::Concat(values) | ProcessValueKind::Array(values) => values
             .iter()
             .try_fold(0u32, |total, value| total.checked_add(width(value)?)),
+        ProcessValueKind::Field { base, field } => {
+            let layout = process_value_source_layout(*base, context.process_ir)?;
+            let LayoutKind::Struct { fields, .. } = &layout.kind else {
+                return None;
+            };
+            fields
+                .iter()
+                .find(|candidate| candidate.name == *field)?
+                .layout
+                .bit_width()?
+                .try_into()
+                .ok()
+        }
+        ProcessValueKind::Index { base, .. } => {
+            match &process_value_source_layout(*base, context.process_ir)?.kind {
+                LayoutKind::Array { element, .. } => element.bit_width()?.try_into().ok(),
+                LayoutKind::Packed { .. } => Some(1),
+                _ => None,
+            }
+        }
         ProcessValueKind::Definition(_)
         | ProcessValueKind::Intrinsic(_)
         | ProcessValueKind::Default
-        | ProcessValueKind::Field { .. }
         | ProcessValueKind::Attribute { .. }
-        | ProcessValueKind::Index { .. }
         | ProcessValueKind::Range { .. }
         | ProcessValueKind::Match { .. }
         | ProcessValueKind::Call { .. }

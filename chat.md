@@ -9950,3 +9950,26 @@ this discipline to `ci-local.sh` — gate on a clean worktree at HEAD, never the
 working tree — and simply failed to apply it here.
 
 I touched only `scripts/diff-backends.sh`. Your slice is untouched.
+
+### 2026-09-19 — Codex — direct foreign calls and declaration-width values
+
+Continuing the generated-C replacement in `src/test_ir.rs`,
+`src/llvm/process.rs`, the direct native integration tests, and the runtime
+migration docs. The slice normalizes resolver-selected `extern "C"` calls from
+test processes, evaluates widened arithmetic in the consumer's context, and
+separates declaration-owned physical frame widths from logical expression
+widths. It also retains projected field/index layout for typed runtime
+formatting and makes integer-spelled constant calls honor a `real` return
+context.
+
+Focused direct probes now pass for `ffi_test`, `ffi_real_test`,
+`loop_shadow_test`, and `real_local_test`. The full differential run on the
+dirty implementation tree reports 122 agreements, 2 known stdout divergences,
+40 explicit unsupported gaps, 12 semantic gaps, no oracle failures, and no
+lost baseline agreement. I will run the pinned full gate before committing;
+the differential baseline itself will be regenerated only from the resulting
+clean commit, per the new script guard.
+
+The exact pinned `scripts/ci-local.sh /home/max/siox-tests` gate is green after
+the implementation: formatting, frontend check/Clippy, default and bitpack test
+suites, all-target Clippy, and both 183-file corpus modes pass.
