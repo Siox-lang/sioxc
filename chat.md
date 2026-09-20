@@ -10095,3 +10095,13 @@ boilerplate-only stdout cases are no longer hollow. The exact pinned local CI
 gate is green after a fixture-only direct link was updated to include the fixed
 waveform object: formatting, frontend check/Clippy, build, default and bitpack
 tests, all-target Clippy, and both 183-file corpus modes pass.
+
+### 2026-09-20 — Codex — runtime concurrency model clarified
+
+Expanded the Phase 2 runtime-parallelism TODO into the intended mini-RTOS
+model. One host thread remains the deterministic baseline: language processes
+are logically concurrent and cooperatively yield at scheduler boundaries while
+sharing simulation time. Higher configured thread counts may partition
+independent ready processes over workers, with per-run state, protected shared
+structures, worker-local transaction buffers, delta barriers, and stable
+ordered commits preserving the exact single-thread semantics and waveform.

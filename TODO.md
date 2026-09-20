@@ -128,15 +128,21 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   filename, line, snippet, and caret form. `warn_test` is the remaining known
   stdout divergence; do not remove useful source locations merely to match the
   compatibility backend.
-- 🔴 **Deterministic runtime parallelism (Phase 2 optimization).** The runtime
-  is intentionally single-threaded today. After direct single-threaded parity,
-  replace process-global scheduler state with a per-run context and evaluate
-  independent ready processes in a worker pool. Writes must stay staged in
-  worker-local transaction buffers, merge in stable process/instruction order,
-  and commit once per delta. Resolution, source-order overrides, impure foreign
-  calls, file I/O, and diagnostics remain serialized unless proven independent.
-  Require byte-identical results, diagnostics, and VCD/FST traces in default
-  and `bitpack` modes; enable threading only when benchmarks show a gain.
+- 🔴 **Scalable mini-runtime scheduler (Phase 2 optimization).** Model the
+  runtime as a small deterministic RTOS. With one configured host thread,
+  language processes are logically concurrent but cooperatively share that
+  thread: each runs until a scheduler boundary, then yields while the scheduler
+  advances delta cycles or simulation time. A higher thread count partitions
+  independent ready processes across worker threads without changing those
+  language-level semantics. Replace process-global state with a per-run context;
+  protect shared runtime structures with suitable mutexes or ownership, stage
+  signal writes and side effects in worker-local buffers, synchronize at delta
+  barriers, then merge and commit in stable process/instruction order.
+  Resolution, source-order overrides, impure foreign calls, file I/O, and
+  diagnostics remain serialized unless proven independent. Require identical
+  results, diagnostics, and VCD/FST traces for one and many host threads in
+  default and `bitpack` modes; enable extra threads only when benchmarks show a
+  gain.
 - 🔴 **Elaborated RTL design file (Phase 3).** Emit a stable, versioned,
   vendor-neutral artifact after hierarchy elaboration and synthesizable-logic
   normalization. Preserve hierarchy, ports/directions, ranges, nets/registers,
