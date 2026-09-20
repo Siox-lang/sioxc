@@ -72,34 +72,73 @@ fn link_process_runtime(design: &Design, out: &Path) -> Result<(), String> {
         // real build-configuration signal, but clippy's `const_is_empty` sees
         // only the configuration in front of it and rejects a direct
         // `CONST.is_empty()`. This is the shape the libfst objects already use.
-        let precompiled = [PROCESS_RUNTIME_O, PROCESS_MAIN_O, WAVE_RUNTIME_O]
-            .iter()
-            .all(|contents| !contents.is_empty());
+        let precompiled = [
+            PROCESS_RUNTIME_O,
+            PROCESS_MAIN_O,
+            WAVE_RUNTIME_O,
+            LIBFST_API_O,
+            LIBFST_FASTLZ_O,
+            LIBFST_LZ4_O,
+        ]
+        .iter()
+        .all(|contents| !contents.is_empty());
         let mut clang = Command::new("clang");
         clang.arg(&object);
         if precompiled {
             let scheduler = tmp.join("process_runtime.o");
             let main = tmp.join("process_main.o");
             let wave = tmp.join("wave_runtime.o");
+            let fstapi = tmp.join("fstapi.o");
+            let fastlz = tmp.join("fastlz.o");
+            let lz4 = tmp.join("lz4.o");
             std::fs::write(&scheduler, PROCESS_RUNTIME_O).map_err(|error| error.to_string())?;
             std::fs::write(&main, PROCESS_MAIN_O).map_err(|error| error.to_string())?;
             std::fs::write(&wave, WAVE_RUNTIME_O).map_err(|error| error.to_string())?;
-            clang.arg(scheduler).arg(main).arg(wave);
+            std::fs::write(&fstapi, LIBFST_API_O).map_err(|error| error.to_string())?;
+            std::fs::write(&fastlz, LIBFST_FASTLZ_O).map_err(|error| error.to_string())?;
+            std::fs::write(&lz4, LIBFST_LZ4_O).map_err(|error| error.to_string())?;
+            clang
+                .arg(scheduler)
+                .arg(main)
+                .arg(wave)
+                .arg(fstapi)
+                .arg(fastlz)
+                .arg(lz4);
         } else {
             let scheduler = tmp.join("process.c");
             let header = tmp.join("process.h");
             let main = tmp.join("main.c");
             let wave = tmp.join("wave.c");
             let wave_header = tmp.join("wave.h");
+            let fstapi = tmp.join("fstapi.c");
+            let fstapi_header = tmp.join("fstapi.h");
+            let fastlz = tmp.join("fastlz.c");
+            let fastlz_header = tmp.join("fastlz.h");
+            let lz4 = tmp.join("lz4.c");
+            let lz4_header = tmp.join("lz4.h");
             std::fs::write(&scheduler, PROCESS_RUNTIME_C).map_err(|error| error.to_string())?;
             std::fs::write(&header, PROCESS_RUNTIME_H).map_err(|error| error.to_string())?;
             std::fs::write(&main, PROCESS_MAIN_C).map_err(|error| error.to_string())?;
             std::fs::write(&wave, WAVE_RUNTIME_C).map_err(|error| error.to_string())?;
             std::fs::write(&wave_header, WAVE_RUNTIME_H).map_err(|error| error.to_string())?;
-            clang.arg(scheduler).arg(main).arg(wave).arg("-I").arg(&tmp);
+            std::fs::write(&fstapi, LIBFST_API_C).map_err(|error| error.to_string())?;
+            std::fs::write(&fstapi_header, LIBFST_API_H).map_err(|error| error.to_string())?;
+            std::fs::write(&fastlz, LIBFST_FASTLZ_C).map_err(|error| error.to_string())?;
+            std::fs::write(&fastlz_header, LIBFST_FASTLZ_H).map_err(|error| error.to_string())?;
+            std::fs::write(&lz4, LIBFST_LZ4_C).map_err(|error| error.to_string())?;
+            std::fs::write(&lz4_header, LIBFST_LZ4_H).map_err(|error| error.to_string())?;
+            clang
+                .arg(scheduler)
+                .arg(main)
+                .arg(wave)
+                .arg(fstapi)
+                .arg(fastlz)
+                .arg(lz4)
+                .arg("-I")
+                .arg(&tmp);
         }
         let output = clang
-            .args(["-O2", "-lm"])
+            .args(["-O2", "-lm", "-lz"])
             .arg("-o")
             .arg(out)
             .output()

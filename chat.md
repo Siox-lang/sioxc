@@ -10105,3 +10105,26 @@ sharing simulation time. Higher configured thread counts may partition
 independent ready processes over workers, with per-run state, protected shared
 structures, worker-local transaction buffers, delta barriers, and stable
 ordered commits preserving the exact single-thread semantics and waveform.
+
+### 2026-09-20 — Codex — fixed runtime owns FST output
+
+Completed the waveform half of the no-generated-design-C boundary. Process ABI
+v10 adds immutable scope parent/name and signal scope/name tables beside the
+existing value-kind, width, companion, and symbol metadata. The fixed
+`runtime/wave.c` now registers that hierarchy with embedded libfst and emits
+FST from the same settled samples and monotonic multi-test clock used by its
+VCD writer. The direct CLI accepts `.vcd` and non-`.vcd` outputs together, and
+the direct linker embeds libfst objects or falls back to the pinned sources.
+
+The broad value regression exposed and fixed one descriptor mistake: scalar
+`Logic` uses a four-bit enum discriminant in storage but is a one-bit
+four-state waveform variable. Focused compatibility/direct tests now exact-
+compare VCD and upstream-libfst-decoded FST for hierarchy, Logic X/Z, packed
+Logic, symbolic enums, real values, 192-bit values, and multi-test timelines.
+Both full corpus differential sweeps retain 124 agreements with 124 VCD
+comparisons, the one known warning-location divergence, 51 direct-only gaps,
+and zero oracle failures in default and `bitpack` modes. The exact local CI
+gate is green: formatting, frontend-only check/Clippy, build, default and
+`bitpack` tests, all-target Clippy, and both complete corpus modes. Its first
+run also hardened the strict standalone-runtime fixture with the POSIX feature
+test macro required when compiling libfst under `-std=c11 -Werror`.

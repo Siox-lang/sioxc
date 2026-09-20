@@ -3,7 +3,7 @@
 Status: **executable migration path**. A fixed runtime now schedules time-zero
 and reactive Process IR entries through delta commits, including timed,
 condition, and edge suspension, basic reporting operations, resumable
-range/array loops, and direct VCD output, while
+range/array loops, and direct VCD/FST output, while
 remaining executable instruction/value coverage is still being implemented.
 The LLVM object exports source-independent
 test/process descriptors and one callable resume entry per process. It
@@ -67,6 +67,11 @@ extern const uint32_t sx_wave_signal_ids[];
 extern const uint32_t sx_wave_signal_widths[];
 extern const uint8_t  sx_wave_signal_kinds[];
 extern const uint32_t sx_wave_signal_companions[];
+extern const uint32_t sx_wave_scope_count;
+extern const uint32_t sx_wave_scope_parents[];
+extern const char *const sx_wave_scope_names[];
+extern const uint32_t sx_wave_signal_scopes[];
+extern const char *const sx_wave_signal_names[];
 extern const uint32_t sx_wave_symbol_offsets[];
 extern const uint64_t sx_wave_symbol_values[];
 extern const char *const sx_wave_symbol_texts[];
@@ -137,9 +142,10 @@ dynamic ready/stopped sets, sensitivity-driven delta requeueing, a dynamically
 sized time-ordered delayed-write queue, descriptor ABI validation, test
 filtering, condition rechecks, foreground-completion detection, and stable
 pass/fail accounting. The waveform tables describe only public design signals;
-companion and materialized temporary planes remain hidden. The fixed VCD writer
-reads arbitrary-width values through `sx_read_word`, interprets Logic symbols
-from std-derived metadata, and samples only after a scheduler fixed point. Its
+companion and materialized temporary planes remain hidden. The fixed waveform
+writer reads arbitrary-width values through `sx_read_word`, interprets Logic
+symbols from std-derived metadata, and samples only after a scheduler fixed
+point. It emits VCD and libfst-backed FST from the same descriptor set and its
 multi-test time base is monotonic. Scheduled values are copied as an
 unbounded low-word-first ABI slice and returned to an emitted site dispatcher
 when they expire, so the fixed runtime does not know design layouts. A zero
@@ -152,9 +158,9 @@ the default remains the compatibility path.
 
 **Still provided by the generated C**: the AST-to-C translation of remaining
 process bodies and compatibility implementations of dynamic strings/arrays,
-file I/O, random services, FST output, and several call forms. Test discovery,
-the CLI, scheduling, formatting/reporting, and VCD output already have fixed
-runtime implementations.
+file I/O, random services, and several call forms. Test discovery, the CLI,
+scheduling, formatting/reporting, and VCD/FST output already have fixed runtime
+implementations.
 
 ## Inventory, and what each becomes
 
@@ -169,7 +175,7 @@ runtime implementations.
 | deterministic random | `sx_rand`, `sx_randint`, `sx_random_value`, `sx_uniform` | seed state must be reproducible across backends |
 | dynamic arrays | `sx_dyn_get`, `sx_dyn_get_checked`, `sx_dyn_equal_values` | heap-backed values read at run time |
 | formatting | generated `sx_decimal`, `sx_chars` | Process IR now carries normalized typed parts; fixed `sx_runtime_format_*` services render arbitrary-width decimal, real, Unicode character, static string, and enum text |
-| waveforms | fixed `runtime/wave.c` VCD; generated `sx_fst_*` remains | immutable object descriptors, writer lifetime, per-test timeline, libfst linkage |
+| waveforms | fixed `runtime/wave.c` VCD/FST | immutable object descriptors, writer lifetime, per-test timeline, libfst linkage |
 | descriptors and accounting | generated `main`, `sx_dbg_*` | count/name discovery is already object-owned; move result counting, stable output, and debug lookup into the runtime |
 
 ### Does *not* become runtime — emit it instead

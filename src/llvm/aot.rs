@@ -2079,14 +2079,27 @@ signed main(void) {
         )
         .unwrap();
         let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
+        let libfst = Path::new(env!("CARGO_MANIFEST_DIR")).join("third_party/libfst/src");
         let link = Command::new("clang")
-            .args(["-std=c11", "-Wall", "-Wextra", "-Werror"])
+            .args([
+                "-std=c11",
+                "-D_POSIX_C_SOURCE=200809L",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+            ])
             .arg(&probe)
             .arg(runtime.join("process.c"))
             .arg(runtime.join("wave.c"))
+            .arg(libfst.join("fstapi.c"))
+            .arg(libfst.join("fastlz.c"))
+            .arg(libfst.join("lz4.c"))
             .arg("-I")
             .arg(&runtime)
+            .arg("-I")
+            .arg(&libfst)
             .arg(&object)
+            .arg("-lz")
             .arg("-o")
             .arg(&binary)
             .output()

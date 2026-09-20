@@ -45,6 +45,8 @@ fn precompile_runtime(out_dir: &Path) {
                 .arg(source)
                 .arg("-I")
                 .arg(source.parent().expect("runtime source directory"))
+                .arg("-I")
+                .arg("third_party/libfst/src")
                 .arg("-o")
                 .arg(&output)
                 .status()

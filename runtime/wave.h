@@ -7,6 +7,9 @@
  * object. Zero reports an already-rendered host error. */
 int sx_wave_open_vcd(const char *path);
 
+/* Open one FST stream using the same object-owned waveform descriptors. */
+int sx_wave_open_fst(const char *path);
+
 /* Start a test on the stream's monotonic multi-test timeline. */
 void sx_wave_begin_test(void);
 

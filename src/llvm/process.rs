@@ -29,7 +29,7 @@ use siox::ir::{
 /// This is deliberately a data version rather than the compiler package
 /// version: the reusable native runtime only needs to change when one of the
 /// exported table layouts or encodings changes.
-const PROCESS_ABI_VERSION: u32 = 9;
+const PROCESS_ABI_VERSION: u32 = 10;
 
 /// A process returned normally and has no pending resume.
 const PROCESS_COMPLETED: u8 = 0;
@@ -6895,6 +6895,24 @@ fn emit_wave_scope_header(out: &mut String, name: &str, scope: &WaveScope, desig
     out.push_str("$upscope $end\n");
 }
 
+fn collect_wave_scopes(
+    scope: &WaveScope,
+    parent: Option<u32>,
+    names: &mut Vec<String>,
+    parents: &mut Vec<u32>,
+    signal_scopes: &mut HashMap<usize, (u32, String)>,
+) {
+    for (name, child) in &scope.children {
+        let id = u32::try_from(names.len()).expect("waveform scope count exceeds its ABI index");
+        names.push(name.clone());
+        parents.push(parent.unwrap_or(u32::MAX));
+        for &(signal, ref leaf) in &child.signals {
+            signal_scopes.insert(signal, (id, leaf.clone()));
+        }
+        collect_wave_scopes(child, Some(id), names, parents, signal_scopes);
+    }
+}
+
 /// Emit the design-independent waveform ABI as immutable object data.
 ///
 /// Kinds are `0 = bits`, `1 = real`, `2 = symbolic enum`, `3 = scalar Logic`,
@@ -6936,16 +6954,34 @@ fn emit_wave_metadata<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
     }
     header.push_str("$enddefinitions $end\n");
 
+    let mut scope_names = Vec::new();
+    let mut scope_parents = Vec::new();
+    let mut signal_scope_map = HashMap::new();
+    collect_wave_scopes(
+        &root,
+        None,
+        &mut scope_names,
+        &mut scope_parents,
+        &mut signal_scope_map,
+    );
+
     let mut ids = Vec::with_capacity(visible.len());
     let mut widths = Vec::with_capacity(visible.len());
     let mut kinds = Vec::with_capacity(visible.len());
     let mut companions = Vec::with_capacity(visible.len());
+    let mut signal_scopes = Vec::with_capacity(visible.len());
+    let mut signal_names = Vec::with_capacity(visible.len());
     let mut symbol_offsets = Vec::with_capacity(visible.len() + 1);
     let mut symbol_values = Vec::new();
     let mut symbol_texts = Vec::new();
     for &(id, signal) in &visible {
         ids.push(id as u32);
         widths.push(signal.width.max(1));
+        let (scope, name) = signal_scope_map
+            .get(&id)
+            .expect("visible waveform signal belongs to a scope");
+        signal_scopes.push(*scope);
+        signal_names.push(name.clone());
         let companion = design.meta_of.get(&(id as u32)).copied();
         companions.push(companion.unwrap_or(u32::MAX));
         symbol_offsets.push(symbol_values.len() as u32);
@@ -6993,6 +7029,28 @@ fn emit_wave_metadata<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
     u32_table(context, module, "sx_wave_signal_widths", &widths);
     u8_table(context, module, "sx_wave_signal_kinds", &kinds);
     u32_table(context, module, "sx_wave_signal_companions", &companions);
+    u32_global(
+        context,
+        module,
+        "sx_wave_scope_count",
+        u32::try_from(scope_names.len()).expect("waveform scope count exceeds its ABI index"),
+    );
+    u32_table(context, module, "sx_wave_scope_parents", &scope_parents);
+    string_table(
+        context,
+        module,
+        "sx_wave_scope_names",
+        "sx.wave.scope",
+        &scope_names,
+    );
+    u32_table(context, module, "sx_wave_signal_scopes", &signal_scopes);
+    string_table(
+        context,
+        module,
+        "sx_wave_signal_names",
+        "sx.wave.signal",
+        &signal_names,
+    );
     u32_table(context, module, "sx_wave_symbol_offsets", &symbol_offsets);
     u64_table(context, module, "sx_wave_symbol_values", &symbol_values);
     string_table(
@@ -7220,7 +7278,7 @@ mod tests {
             ..Design::default()
         };
         let llvm = crate::llvm::emit_module_ir(&design).unwrap();
-        assert!(llvm.contains("@sx_process_abi_version = constant i32 9"));
+        assert!(llvm.contains("@sx_process_abi_version = constant i32 10"));
         assert!(llvm.contains("define i8 @sx_process_commit()"));
         assert!(llvm.contains("define i8 @sx_process_changed(i32"));
         assert!(llvm.contains("define i8 @sx_process_storage_changed(i32"));
@@ -7246,6 +7304,11 @@ mod tests {
         assert!(llvm.contains("@sx_wave_signal_widths = constant [1 x i32] [i32 1]"));
         assert!(llvm.contains("@sx_wave_signal_kinds = constant [1 x i8] zeroinitializer"));
         assert!(llvm.contains("@sx_wave_signal_companions = constant [1 x i32] [i32 -1]"));
+        assert!(llvm.contains("@sx_wave_scope_count = constant i32 2"));
+        assert!(llvm.contains("@sx_wave_scope_parents = constant [2 x i32] [i32 -1, i32 0]"));
+        assert!(llvm.contains("@sx_wave_scope_names = constant [2 x ptr]"));
+        assert!(llvm.contains("@sx_wave_signal_scopes = constant [1 x i32] [i32 1]"));
+        assert!(llvm.contains("@sx_wave_signal_names = constant [1 x ptr]"));
         assert!(llvm.contains("@sx_wave_vcd_header = constant"));
         assert!(llvm.contains("$scope module Smoke $end"));
         assert!(llvm.contains("define internal i8 @sx.process.0(i32"));
@@ -7264,6 +7327,9 @@ mod tests {
         assert!(llvm.contains("@sx_process_activations = constant [1 x i8] zeroinitializer"));
         assert!(llvm.contains("@sx_wave_signal_count = constant i32 0"));
         assert!(llvm.contains("@sx_wave_signal_ids = constant [1 x i32] zeroinitializer"));
+        assert!(llvm.contains("@sx_wave_scope_count = constant i32 0"));
+        assert!(llvm.contains("@sx_wave_scope_names = constant [1 x ptr] zeroinitializer"));
+        assert!(llvm.contains("@sx_wave_signal_names = constant [1 x ptr] zeroinitializer"));
     }
 
     /// Resume dispatch preserves CFG block identity and emits the stable

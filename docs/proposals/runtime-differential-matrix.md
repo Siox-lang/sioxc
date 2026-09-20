@@ -34,9 +34,11 @@ signal value, and every timestamp. The fixed writer reached identical results
 in both default and `bitpack` sweeps.
 
 The script normalises away `$date`/`$version` writer metadata, which is not
-design behaviour. Everything else is compared byte for byte. FST parity remains
-separate focused coverage until the direct runtime links its fixed libfst
-consumer; corpus differential runs intentionally request `.vcd` today.
+design behaviour. Everything else is compared byte for byte. Corpus
+differential runs intentionally request `.vcd`; focused integration tests run
+both writers together and decode compatibility/direct FST through upstream
+libfst, covering hierarchy, Logic X/Z, enums, real and multiword values, and a
+monotonic multi-test timeline.
 
 It is deliberately not part of `ci-local.sh`: it roughly doubles that gate's
 runtime, and while the direct backend is incomplete its useful signal is the

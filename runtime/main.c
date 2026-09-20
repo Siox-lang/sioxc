@@ -22,6 +22,7 @@ static int sx_is_vcd(const char *path) {
 int main(int argc, char **argv) {
     const char *filter = 0;
     const char *vcd_path = 0;
+    const char *fst_path = 0;
     int list = 0;
     for (int argument = 1; argument < argc; ++argument) {
         const char *path = 0;
@@ -45,16 +46,19 @@ int main(int argc, char **argv) {
             return 2;
         }
         if (path) {
-            if (!sx_is_vcd(path)) {
-                fprintf(stderr,
-                        "the direct runtime currently requires a .vcd waveform path\n");
-                return 2;
+            if (sx_is_vcd(path)) {
+                if (vcd_path) {
+                    fprintf(stderr, "more than one VCD output was requested\n");
+                    return 2;
+                }
+                vcd_path = path;
+            } else {
+                if (fst_path) {
+                    fprintf(stderr, "more than one FST output was requested\n");
+                    return 2;
+                }
+                fst_path = path;
             }
-            if (vcd_path) {
-                fprintf(stderr, "more than one VCD output was requested\n");
-                return 2;
-            }
-            vcd_path = path;
         }
     }
 
@@ -66,6 +70,10 @@ int main(int argc, char **argv) {
     }
 
     if (vcd_path && !sx_wave_open_vcd(vcd_path)) return 2;
+    if (fst_path && !sx_wave_open_fst(fst_path)) {
+        sx_wave_close();
+        return 2;
+    }
 
     uint32_t selected = 0;
     for (uint32_t test = 0; test < sx_test_count; ++test)

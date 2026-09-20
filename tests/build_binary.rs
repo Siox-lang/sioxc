@@ -407,6 +407,8 @@ fn direct_process_runtime_vcd_matches_generated_c() {
     let direct = directory.join("direct-test");
     let compatibility_vcd = directory.join("compatibility.vcd");
     let direct_vcd = directory.join("direct.vcd");
+    let compatibility_fst = directory.join("compatibility.fst");
+    let direct_fst = directory.join("direct.fst");
     std::fs::write(
         &source,
         r#"module direct_wave;
@@ -459,17 +461,23 @@ fn direct_process_runtime_vcd_matches_generated_c() {
         String::from_utf8_lossy(&direct_build.stderr)
     );
 
-    let run = |binary: &std::path::Path, vcd: &std::path::Path| {
-        Command::new(binary).args(["-o"]).arg(vcd).output().unwrap()
+    let run = |binary: &std::path::Path, vcd: &std::path::Path, fst: &std::path::Path| {
+        Command::new(binary)
+            .args(["-o"])
+            .arg(vcd)
+            .args(["-o"])
+            .arg(fst)
+            .output()
+            .unwrap()
     };
-    let compatibility_run = run(&compatibility, &compatibility_vcd);
+    let compatibility_run = run(&compatibility, &compatibility_vcd, &compatibility_fst);
     assert!(
         compatibility_run.status.success(),
         "compatibility waveform fixture failed:\n{}{}",
         String::from_utf8_lossy(&compatibility_run.stdout),
         String::from_utf8_lossy(&compatibility_run.stderr)
     );
-    let direct_run = run(&direct, &direct_vcd);
+    let direct_run = run(&direct, &direct_vcd, &direct_fst);
     assert!(
         direct_run.status.success(),
         "direct waveform fixture failed:\n{}{}",
@@ -480,6 +488,7 @@ fn direct_process_runtime_vcd_matches_generated_c() {
     let compatibility_trace = std::fs::read_to_string(&compatibility_vcd).unwrap();
     let direct_trace = std::fs::read_to_string(&direct_vcd).unwrap();
     assert_eq!(direct_trace, compatibility_trace);
+    assert_eq!(decode_fst(&direct_fst), decode_fst(&compatibility_fst));
     assert_eq!(
         waveform_times(&direct_trace),
         vec![0, 5_000_000, 10_000_000, 15_000_000, 20_000_000, 25_000_000]
@@ -1677,9 +1686,12 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
     let root = env!("CARGO_MANIFEST_DIR");
     let stem = format!("siox_vcd_values_{}", std::process::id());
     let source = std::env::temp_dir().join(format!("{stem}.siox"));
-    let out = std::env::temp_dir().join(&stem);
-    let vcd = out.with_extension("vcd");
-    let fst = out.with_extension("fst");
+    let compatibility = std::env::temp_dir().join(format!("{stem}_compatibility"));
+    let direct = std::env::temp_dir().join(format!("{stem}_direct"));
+    let compatibility_vcd = compatibility.with_extension("vcd");
+    let compatibility_fst = compatibility.with_extension("fst");
+    let direct_vcd = direct.with_extension("vcd");
+    let direct_fst = direct.with_extension("fst");
     std::fs::write(
         &source,
         "module vcd_values;
@@ -1718,26 +1730,53 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
          }",
     )
     .unwrap();
-    let status = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .current_dir(root)
-        .args([
-            "--test",
-            source.to_str().unwrap(),
-            "-o",
-            out.to_str().unwrap(),
-        ])
-        .status()
-        .unwrap();
-    assert!(status.success(), "VCD value fixture failed to compile");
-    let run = Command::new(&out)
-        .arg("-o")
-        .arg(&vcd)
-        .arg("-o")
-        .arg(&fst)
-        .status()
-        .unwrap();
-    assert!(run.success(), "VCD value fixture failed to run");
-    let trace = std::fs::read_to_string(&vcd).unwrap();
+    let build = |output: &std::path::Path, direct_runtime: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+        if direct_runtime {
+            command.env("SIOX_DIRECT_PROCESS_RUNTIME", "1");
+        }
+        command
+            .current_dir(root)
+            .arg("--test")
+            .arg(&source)
+            .arg("-o")
+            .arg(output)
+            .output()
+            .unwrap()
+    };
+    for (output, direct_runtime) in [(&compatibility, false), (&direct, true)] {
+        let result = build(output, direct_runtime);
+        assert!(
+            result.status.success(),
+            "waveform value fixture failed to compile (direct={direct_runtime}):\n{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let run = |binary: &std::path::Path, vcd: &std::path::Path, fst: &std::path::Path| {
+        Command::new(binary)
+            .arg("-o")
+            .arg(vcd)
+            .arg("-o")
+            .arg(fst)
+            .output()
+            .unwrap()
+    };
+    for (binary, vcd, fst) in [
+        (&compatibility, &compatibility_vcd, &compatibility_fst),
+        (&direct, &direct_vcd, &direct_fst),
+    ] {
+        let result = run(binary, vcd, fst);
+        assert!(
+            result.status.success(),
+            "waveform value fixture failed to run:\n{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let compatibility_trace = std::fs::read_to_string(&compatibility_vcd).unwrap();
+    let trace = std::fs::read_to_string(&direct_vcd).unwrap();
+    assert_eq!(trace, compatibility_trace);
     assert!(
         trace.contains("zv"),
         "Logic 'Z' was not emitted as z:\n{trace}"
@@ -1756,7 +1795,8 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
         "wide VCD value was truncated:\n{trace}"
     );
     assert!(trace.contains("r2.5 "), "real VCD value was lost:\n{trace}");
-    let fst_trace = decode_fst(&fst);
+    let fst_trace = decode_fst(&direct_fst);
+    assert_eq!(fst_trace, decode_fst(&compatibility_fst));
     assert!(fst_trace.contains('z'), "FST lost Logic 'Z':\n{fst_trace}");
     assert!(
         fst_trace.contains("b1x0z "),
@@ -1776,9 +1816,16 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
     );
     assert_eq!(waveform_times(&fst_trace), waveform_times(&trace));
     let _ = std::fs::remove_file(source);
-    let _ = std::fs::remove_file(out);
-    let _ = std::fs::remove_file(vcd);
-    let _ = std::fs::remove_file(fst);
+    for path in [
+        compatibility,
+        direct,
+        compatibility_vcd,
+        compatibility_fst,
+        direct_vcd,
+        direct_fst,
+    ] {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[test]
@@ -1790,9 +1837,12 @@ fn native_fst_keeps_multiple_tests_on_one_monotonic_timeline() {
     let root = env!("CARGO_MANIFEST_DIR");
     let stem = format!("siox_fst_multitest_{}", std::process::id());
     let source = std::env::temp_dir().join(format!("{stem}.siox"));
-    let out = std::env::temp_dir().join(&stem);
-    let vcd = out.with_extension("vcd");
-    let fst = out.with_extension("fst");
+    let compatibility = std::env::temp_dir().join(format!("{stem}_compatibility"));
+    let direct = std::env::temp_dir().join(format!("{stem}_direct"));
+    let compatibility_vcd = compatibility.with_extension("vcd");
+    let compatibility_fst = compatibility.with_extension("fst");
+    let direct_vcd = direct.with_extension("vcd");
+    let direct_fst = direct.with_extension("fst");
     std::fs::write(
         &source,
         "module fst_multitest;
@@ -1817,35 +1867,50 @@ fn native_fst_keeps_multiple_tests_on_one_monotonic_timeline() {
     )
     .unwrap();
 
-    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .current_dir(root)
-        .arg("--test")
-        .arg(&source)
-        .arg("-o")
-        .arg(&out)
-        .output()
-        .unwrap();
-    assert!(
-        build.status.success(),
-        "multi-test FST fixture failed to build:\n{}",
-        String::from_utf8_lossy(&build.stderr)
-    );
-    let run = Command::new(&out)
-        .arg("-o")
-        .arg(&vcd)
-        .arg("-o")
-        .arg(&fst)
-        .output()
-        .unwrap();
-    assert!(
-        run.status.success(),
-        "multi-test FST fixture failed:\n{}{}",
-        String::from_utf8_lossy(&run.stdout),
-        String::from_utf8_lossy(&run.stderr)
-    );
+    for (output, direct_runtime) in [(&compatibility, false), (&direct, true)] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+        if direct_runtime {
+            command.env("SIOX_DIRECT_PROCESS_RUNTIME", "1");
+        }
+        let build = command
+            .current_dir(root)
+            .arg("--test")
+            .arg(&source)
+            .arg("-o")
+            .arg(output)
+            .output()
+            .unwrap();
+        assert!(
+            build.status.success(),
+            "multi-test FST fixture failed to build (direct={direct_runtime}):\n{}{}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        );
+    }
+    for (binary, vcd, fst) in [
+        (&compatibility, &compatibility_vcd, &compatibility_fst),
+        (&direct, &direct_vcd, &direct_fst),
+    ] {
+        let run = Command::new(binary)
+            .arg("-o")
+            .arg(vcd)
+            .arg("-o")
+            .arg(fst)
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "multi-test FST fixture failed:\n{}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
 
-    let vcd_trace = std::fs::read_to_string(&vcd).unwrap();
-    let fst_trace = decode_fst(&fst);
+    let compatibility_vcd_trace = std::fs::read_to_string(&compatibility_vcd).unwrap();
+    let vcd_trace = std::fs::read_to_string(&direct_vcd).unwrap();
+    assert_eq!(vcd_trace, compatibility_vcd_trace);
+    let fst_trace = decode_fst(&direct_fst);
+    assert_eq!(fst_trace, decode_fst(&compatibility_fst));
     let times = waveform_times(&fst_trace);
     assert_eq!(times, waveform_times(&vcd_trace));
     assert_eq!(times.first(), Some(&0));
@@ -1857,9 +1922,16 @@ fn native_fst_keeps_multiple_tests_on_one_monotonic_timeline() {
     assert!(fst_trace.contains("$scope module Second $end"));
 
     let _ = std::fs::remove_file(source);
-    let _ = std::fs::remove_file(out);
-    let _ = std::fs::remove_file(vcd);
-    let _ = std::fs::remove_file(fst);
+    for path in [
+        compatibility,
+        direct,
+        compatibility_vcd,
+        compatibility_fst,
+        direct_vcd,
+        direct_fst,
+    ] {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[test]

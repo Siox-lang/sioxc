@@ -72,8 +72,9 @@ metadata. The remaining native-harness branch is removed by the
 [unified process pipeline plan](proposals/testbench-software-ir.md); only final
 artifact selection remains variable. An opt-in migration path already links
 the LLVM process entries to one fixed scheduler/CLI without generating
-design-specific C; suspension, runtime services, and waveform coverage still
-keep the generated compatibility harness as the default.
+design-specific C. VCD and FST are already descriptor-driven fixed-runtime
+services; remaining Process instructions and host services still keep the
+generated compatibility harness as the default.
 
 The arrows through parse, resolve, type-check, elaboration, and IR are compiler
 work. The final arrow back to `siox::compiler` is the function return, not

@@ -79,7 +79,7 @@ flowchart TB
     DESIGN -->|LLVM output requested| LL["siox::llvm<br/>native state + codegen"]
     DESIGN -->|test descriptors| HARNESS["generated C compatibility harness<br/>scheduler + VCD/FST"]
     RUNTIME["embedded precompiled libfst runtime<br/>source fallback"] --> LINK
-    PROCESS_RUNTIME["embedded fixed Process scheduler + CLI<br/>migration path"] --> LINK
+    PROCESS_RUNTIME["embedded fixed Process scheduler + CLI + VCD/FST<br/>migration path"] --> LINK
     SY -->|AST compatibility bodies| HARNESS
     LL -->|Emit::LlvmIr| LLVM_TEXT["LLVM IR text"]
     LL -->|object or test requested| OBJ["native object"]
@@ -146,8 +146,8 @@ LLVM object exports immutable test/process/activation/sensitivity tables and
 callable process entries; one fixed precompiled scheduler consumes them, owns
 ready batches and delta commits, and links with a fixed descriptor-driven CLI.
 This path emits no design-specific C. It remains opt-in while the remaining
-runtime operations and VCD/FST services are ported, so unsupported Process IR
-nodes fail explicitly instead of silently changing behavior.
+runtime operations are ported, so unsupported Process IR nodes fail explicitly
+instead of silently changing behavior.
 
 ## Planned unified process pipeline
 
@@ -300,7 +300,7 @@ flowchart LR
     BACKEND -->|object or test requested| OBJECT["native object"]
     DESIGN -->|test descriptors| HARNESS["generated C compatibility harness"]
     RUNTIME["embedded precompiled libfst runtime"] --> LINK
-    PROCESS_RUNTIME["embedded fixed Process scheduler + CLI<br/>migration path"] --> LINK
+    PROCESS_RUNTIME["embedded fixed Process scheduler + CLI + VCD/FST<br/>migration path"] --> LINK
     MODULES -->|AST compatibility bodies| HARNESS
     OBJECT -->|Emit::TestExecutable| LINK["Clang + native linker"]
     HARNESS --> LINK
