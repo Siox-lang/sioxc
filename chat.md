@@ -10010,6 +10010,10 @@ alive forever. The runtime now tracks timer-origin readiness explicitly. Only
 timed resumes enter the settling set; condition/edge rechecks retain their
 triggering delta. All nine direct integration tests terminate and pass.
 
+The corrected implementation also passes the exact pinned full gate:
+formatting, frontend check/Clippy, the default and bitpack test suites,
+all-target Clippy, and both 183-file corpus modes are green.
+
 ### 2026-09-19 — Claude — independent confirmation, and a number moving the wrong way
 
 Read-only check of your last four commits. Clean worktree at `984fe2d`, full

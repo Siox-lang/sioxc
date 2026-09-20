@@ -327,6 +327,72 @@ fn direct_process_runtime_marshals_foreign_calls_without_generated_design_c() {
 }
 
 #[test]
+fn direct_timed_resume_observes_reactive_quiescence() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory = std::env::temp_dir().join(format!(
+        "siox_direct_timed_quiescence_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("timed_quiescence.siox");
+    let output = directory.join("timed-quiescence-test");
+    std::fs::write(
+        &source,
+        r#"module direct_timed_quiescence;
+           entity Counter { clk: Bit in, count: integer<0..10> out }
+           impl Counter {
+               let value: integer<0..10> = 0;
+               if clk.rising() { value = value + 1; }
+               count = value;
+           }
+           #[test] entity TimedQuiescence {}
+           impl TimedQuiescence {
+               let clk: Bit = '0';
+               let count: integer<0..10>;
+               let high: integer<1..10> = 10;
+               let widened: integer = 0;
+               let counter: Counter = { .clk = clk, .count = count };
+               widened = high;
+               assert!(widened == 10,
+                       "positive-only constrained integers zero-extend");
+               clk = not clk after 5ns;
+               await 25ns;
+               assert!(count == 3,
+                       "a timed resume observes the coincident reactive edge");
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "direct timed-quiescence fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "direct timed-quiescence fixture failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn direct_legacy_initializers_keep_source_order() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");

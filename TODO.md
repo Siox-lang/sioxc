@@ -354,7 +354,10 @@ Remaining:
   signal/local/storage reads likewise load their declaration-owned physical
   frame width and then sign- or zero-extend to the logical expression width;
   constrained kernel integers no longer fail closed merely because their
-  storage representation is narrower. Positive minimum-width literals remain positive when they
+  storage representation is narrower. The retained value range decides the
+  extension: a positive-only constrained integer uses every physical bit for
+  magnitude and therefore zero-extends even though its kernel type is
+  `integer`. Positive minimum-width literals remain positive when they
   enter a signed operation instead of being mistaken for two's-complement
   negatives. Normalized bit slices may also exceed their source width: the
   direct emitter zero-extends ordinary values and sign-extends signed kernel
@@ -468,6 +471,11 @@ Remaining:
   committed state changes, and a successful trigger settles downstream
   reactive work before stimulus continues. Persistent test state retains
   explicit current/old/event observations with a first-write-per-delta snapshot.
+  A timed foreground resume that expires alongside a scheduled signal update
+  is likewise held until all newly ready reactive processes reach quiescence;
+  simulation results no longer depend on Process ID iteration order. Only
+  timer resumes take that path: condition/edge rechecks remain in the event
+  delta so the following no-change commit cannot erase `'event` first.
   Finalized hardware `MetaCompare` values now inspect the object-owned
   metavalue companion plane directly in LLVM. Unknown discriminants force
   ordering/equality false and inequality true, while weak `L`/`H` values stay

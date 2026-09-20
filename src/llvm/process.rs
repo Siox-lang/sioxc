@@ -775,11 +775,10 @@ fn process_storage_state_value<'ctx>(
                 .storages
                 .get(storage.0 as usize)
                 .is_some_and(|storage| {
-                    storage.ty.as_ref().is_some_and(process_type_is_signed)
-                        || storage
-                            .layout
-                            .as_ref()
-                            .is_some_and(process_layout_is_signed)
+                    storage.layout.as_ref().map_or_else(
+                        || storage.ty.as_ref().is_some_and(process_type_is_signed),
+                        process_layout_is_signed,
+                    )
                 });
             if signed {
                 fit_signed(builder, value, width)
@@ -1307,11 +1306,20 @@ fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bool {
             ..
         }
     );
-    if !event
-        && (value.ty.as_ref().is_some_and(process_type_is_signed)
-            || process_value_layout(design, id).is_some_and(process_layout_is_signed))
-    {
-        return true;
+    if !event {
+        if let Some(layout) = process_value_layout(design, id) {
+            match layout.kind {
+                LayoutKind::Scalar {
+                    domain: siox::ir::ScalarDomain::Integer,
+                    ..
+                }
+                | LayoutKind::Packed { .. } => return process_layout_is_signed(layout),
+                _ => {}
+            }
+        }
+        if value.ty.as_ref().is_some_and(process_type_is_signed) {
+            return true;
+        }
     }
     match &value.kind {
         ProcessValueKind::Signal { signals, state } => {

@@ -101,6 +101,8 @@ hardware and test processes now carry explicit scalar ABI classes. Their
 kernel-integer expression trees evaluate at the C ABI's 64-bit consumer width,
 and declaration-width constrained integer state is sign-extended only after it
 is loaded, so a narrow physical frame does not change its mathematical value.
+Positive-only constrained integers instead zero-extend according to their
+retained value range; their highest storage bit is magnitude, not a sign bit.
 An
 unsupported block is rejected transactionally before it performs foreign
 calls or publishes a pending write.
@@ -111,6 +113,12 @@ do time-zero foreground/test processes begin. Timed clock events registered
 during initialization remain queued at time zero until stimulus has started.
 An explicit `finish()` status prints the scheduler-owned femtosecond timestamp
 before ending the test; that observable no longer comes from generated C.
+When a foreground timer and a scheduled signal update expire together, the
+scheduler carries the foreground resume into the next ready batch until every
+reactive delta caused by that update has settled. Observation ordering is thus
+independent of the numeric Process IDs. The runtime records timed readiness
+separately; condition/edge rechecks still execute in the triggering event delta
+and therefore cannot miss a transient `'event` flag.
 
 `runtime/process.c` and `runtime/main.c` implement the first reusable boundary:
 dynamic ready/stopped sets, sensitivity-driven delta requeueing, a dynamically

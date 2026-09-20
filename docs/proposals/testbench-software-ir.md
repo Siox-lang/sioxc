@@ -242,7 +242,12 @@ language-lowering path.
    zero-time settle edge: the runtime commits the drive, drains reactive work
    to a fixed point, and resumes the observer only afterward. This preserves
    sequential testbench observation without recursively entering the scheduler
-   from generated LLVM. Pure runtime-valued free/static Siox calls are now
+   from generated LLVM. Timed foreground resumes use the same quiescence rule
+   when their timer coincides with a scheduled signal update: reactive entries
+   and their delta chain run first, regardless of Process ID order. Condition
+   and edge rechecks retain their triggering-delta priority so settling cannot
+   erase the event before it is observed. Pure
+   runtime-valued free/static Siox calls are now
    inlined into the Process value graph using resolver identities for
    parameters and locals; returning `if` and enum/Logic `match` expressions
    become typed selections. Packed-family construction now lowers to an

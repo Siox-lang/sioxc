@@ -434,10 +434,26 @@ static int sx_has_changed_sensitivity(uint32_t process) {
     return 0;
 }
 
+static int sx_release_settling(uint32_t begin, uint32_t end,
+                               const uint8_t *stopped, uint8_t *settling,
+                               uint8_t *ready) {
+    int released = 0;
+    for (uint32_t item = begin; item < end; ++item) {
+        uint32_t process = sx_test_process_ids[item];
+        if (settling[process] && !stopped[process]) {
+            settling[process] = 0;
+            ready[process] = 1;
+            released = 1;
+        }
+    }
+    return released;
+}
+
 /* Apply every transaction due in the current simulation time. Delays of zero
  * are therefore staged into the update phase that follows the process batch
  * which scheduled them, before sensitivity-driven processes resume. */
 static int sx_apply_due_events(uint8_t *ready, uint8_t *suspended,
+                               uint8_t *timed_ready,
                                uint32_t *resume_blocks) {
     while (sx_events && sx_events->due == sx_now) {
         sx_event *event = sx_events;
@@ -450,6 +466,7 @@ static int sx_apply_due_events(uint8_t *ready, uint8_t *suspended,
             }
             resume_blocks[process] = event->resume_block;
             suspended[process] = 0;
+            timed_ready[process] = 1;
             ready[process] = 1;
             free(event);
             continue;
@@ -472,7 +489,7 @@ static int sx_apply_due_events(uint8_t *ready, uint8_t *suspended,
 
 int sx_runtime_run_test(uint32_t test) {
     uint8_t *ready = 0, *next = 0, *stopped = 0, *suspended = 0,
-            *settling = 0;
+            *settling = 0, *timed_ready = 0;
     uint32_t *resume_blocks = 0;
     uint32_t begin, end;
     int foreground_started = 0;
@@ -497,9 +514,10 @@ int sx_runtime_run_test(uint32_t test) {
     stopped = calloc(bytes, 1);
     suspended = calloc(bytes, 1);
     settling = calloc(bytes, 1);
+    timed_ready = calloc(bytes, 1);
     resume_blocks = calloc(bytes, sizeof(uint32_t));
     if (!ready || !next || !stopped || !suspended || !settling ||
-        !resume_blocks) {
+        !timed_ready || !resume_blocks) {
         result = sx_fail("cannot allocate Process IR ready queue");
         goto done;
     }
@@ -528,10 +546,33 @@ int sx_runtime_run_test(uint32_t test) {
     for (;;) {
         int ran = 0;
         int finish = 0;
+        int reactive_ready = 0;
+        for (uint32_t item = begin; item < end; ++item) {
+            uint32_t process = sx_test_process_ids[item];
+            if (process < sx_process_count && ready[process] &&
+                !stopped[process] && !suspended[process] &&
+                !settling[process] && sx_process_activations[process] == 1) {
+                reactive_ready = 1;
+                break;
+            }
+        }
         for (uint32_t process = 0; process < sx_process_count; ++process) {
             if (!ready[process] || stopped[process] || suspended[process] ||
                 settling[process])
                 continue;
+            /* A timed foreground resume and a scheduled signal update may
+             * expire at the same femtosecond. Reactive hardware must consume
+             * and settle that update before foreground code observes it;
+             * otherwise process-id order changes the result. Put foreground
+             * into the existing settling state: merely carrying its ready bit
+             * can starve it forever behind a free-running reactive clock. */
+            if (reactive_ready && timed_ready[process] &&
+                sx_process_activations[process] == 0) {
+                settling[process] = 1;
+                timed_ready[process] = 0;
+                continue;
+            }
+            timed_ready[process] = 0;
             ran = 1;
             sx_current_process = process;
             sx_suspension_kind = SX_SUSPENSION_NONE;
@@ -595,12 +636,18 @@ int sx_runtime_run_test(uint32_t test) {
             }
         }
         if (ran) {
-            if (sx_apply_due_events(next, suspended, resume_blocks)) {
+            if (sx_apply_due_events(next, suspended, timed_ready, resume_blocks)) {
                 result = 1;
                 goto done;
             }
             uint8_t changed = sx_process_commit();
             if (finish) break;
+            /* A no-change commit is the fixed point even if a reactive entry
+             * was conservatively queued once more from the previous delta.
+             * Release foreground observers here so a self-sensitive clock
+             * cannot keep them in the settling set forever. */
+            if (!changed)
+                (void)sx_release_settling(begin, end, stopped, settling, next);
             if (changed) {
                 for (uint32_t item = begin; item < end; ++item) {
                     uint32_t process = sx_test_process_ids[item];
@@ -649,15 +696,8 @@ int sx_runtime_run_test(uint32_t test) {
          * awakened has reached quiescence at this simulation time. Keeping
          * this separate from a zero-delay event prevents the observer and DUT
          * from running in the same pre-commit batch. */
-        int released_settling = 0;
-        for (uint32_t item = begin; item < end; ++item) {
-            uint32_t process = sx_test_process_ids[item];
-            if (settling[process] && !stopped[process]) {
-                settling[process] = 0;
-                ready[process] = 1;
-                released_settling = 1;
-            }
-        }
+        int released_settling =
+            sx_release_settling(begin, end, stopped, settling, ready);
         if (released_settling) continue;
 
         /* A completed foreground stimulus defines the end of its test after
@@ -695,7 +735,7 @@ int sx_runtime_run_test(uint32_t test) {
             break;
         }
         sx_now = sx_events->due;
-        if (sx_apply_due_events(ready, suspended, resume_blocks)) {
+        if (sx_apply_due_events(ready, suspended, timed_ready, resume_blocks)) {
             result = 1;
             goto done;
         }
@@ -729,6 +769,7 @@ done:
     sx_clear_events();
     free(resume_blocks);
     free(settling);
+    free(timed_ready);
     free(suspended);
     free(stopped);
     free(next);
