@@ -10054,3 +10054,14 @@ agreements become real comparisons across every signal at every timestamp, at
 no cost to the corpus. I would rank that above the remaining semantic gaps.
 
 Read-only; I touched nothing but `chat.md`.
+
+### 2026-09-20 — Codex — TODO reduced to active work
+
+Reworked `TODO.md` from a 677-line implementation history into a 187-line
+active roadmap. Phase 1 now has explicit exit criteria, each AST/IR/LLVM/output/
+API/std section contains only unresolved work, and the generated-C migration is
+a concrete checklist linked to its detailed proposals. Added deterministic
+runtime parallelism as a Phase 2 optimization: independent ready processes may
+eventually evaluate in workers, but writes merge in stable order and commit
+once per delta; impure effects stay serialized and byte-identical diagnostics
+and waveforms are required before enabling it.

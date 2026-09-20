@@ -1,668 +1,178 @@
 # TODO
 
 Outstanding work for the simulation-first siox compiler, organized by the
-layer that owns each change. The compiler is one regular Rust package:
+layer that owns each change:
 
 `source → AST → semantic analysis → elaboration → IR → LLVM → output`
 
-Status audited 2026-08-30 against the compiler, standard library, documentation,
-the `siox-tests` corpus, and CI.
+This file tracks active work, not implementation history. Completed migration
+details and measurements belong in [`chat.md`](chat.md) and the documents under
+[`docs/`](docs/). Status last audited 2026-09-20 against the compiler, standard
+library, `siox-tests`, and CI.
 
-Legend: 🔴 not started · 🟡 partial / constrained · ✅ implemented and covered.
+Legend: 🔴 not started · 🟡 partial / constrained.
 
-Bug-sweep status (2026-08-10): generated assignments are linted after parameter
-specialization and loop unrolling, scoped hardware locals lower completely,
-nested generic types survive the full pipeline, and concrete instance-array
-build facts now reach IR diagnostics. Nested runtime array/field access lowers
-to muxes and gated leaf writes, and runtime packed-vector indices preserve
-declared labels and Logic metavalues. Native testbench runtime-indexed writes
-now cover scalar leaves, struct fields and values, nested dimensions, packed
-bits, declared nonzero/descending labels, composite copies/spreads, and
-strict runtime bounds failures. Constant invalid indices are diagnostics;
-active dynamic invalid reads and writes fail simulation with the value, declared
-range, and source span, while untaken guarded accesses remain inactive.
-Testbench generate-loop lint parity is resolved
-without normalization: W-P014 is explicitly scoped to hardware driver
-contexts, because sequential testbench writes settle individually and can be
-observable.
-Native harness locals use an injective private C namespace, so user names and
-distinct flattened source paths cannot shadow helpers or one another; linker
-paths remain native OS paths rather than requiring UTF-8.
-File construction is unified as `read<T>`: `string` selects UTF-8, `integer`
-selects raw binary, and packed numeric types reuse that integer path followed
-by their ordinary conversion. Scalar, fixed-array, runtime, compile-time ROM,
-and arbitrary-width multiword cases are covered.
+## Phase 1 exit criteria
 
-The first-valid-version policy decisions are resolved: native test fixtures
-are runtime inputs, while hardware/top file initializers are compile-time ROM
-images. The remaining sections are capability growth beyond that baseline.
+Phase 1 is complete when:
+
+- every explicit and implicit hardware/test process lowers once into canonical
+  Process IR;
+- native objects and native test executables use the same IR-to-LLVM lowering;
+- the fixed runtime schedules all processes, time, delta cycles, and host
+  services without per-design generated C;
+- the default and `bitpack` corpus agree with the compatibility oracle in
+  results, diagnostics, time progression, resolved values, and VCD/FST output;
+- the direct path becomes the default, then the generated-C translator and the
+  temporary AST-to-Process adapter are deleted.
+
+The executable migration plan and current ABI decisions live in
+[`docs/proposals/testbench-software-ir.md`](docs/proposals/testbench-software-ir.md)
+and
+[`docs/proposals/native-process-runtime.md`](docs/proposals/native-process-runtime.md).
 
 ## AST
 
 Owns source syntax, tokens, parsing, formatting, names, types, and elaborated
-hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types.rs`, `src/elab.rs`.
+hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types.rs`, and
+`src/elab.rs`.
 
-Current baseline:
-
-- ✅ Explicit `process [name] { ... }` blocks define driver-context boundaries:
-  statements within one process retain ordered override/next-state semantics,
-  while separate processes and bare continuous assignments are parallel
-  contexts. The parser/printer retain the lexical block and optional unique
-  label; processes are restricted to inherent entity impls, structural entity
-  instances inside them are rejected, and labels survive as
-  instance-qualified IR metadata.
-
-- ✅ Partial ranges, custom operators/indexing, applied views, nested generic
-  type arguments, visibility, persistent expression types, direction checks,
-  and frontend diagnostics are implemented. Custom-operator precedence is
-  discovered from the exact transitive import graph before the full parse,
-  including local modules without admitting unrelated project files.
-- ✅ Imports and qualified paths resolve against their exact module and enforce
-  `pub`; loaded modules do not leak names into scope, import collisions are
-  rejected, and `pub using` re-exports retain visibility. `sioxc` follows
-  ordinary module imports relative to the entry source directory as well as
-  `std::` imports relative to `--std`.
-- ✅ Container-relative visibility covers module functions, extern functions,
-  type-owned struct fields and literals, type-owned inherent methods, private
-  entity implementation state, and public-interface privacy.
-  Entity ports and trait methods are inherently visible; views explicitly
-  expose backing fields. Public entity associated functions without `self` are
-  supported; receiver methods remain rejected until their generated-port and
-  cross-hierarchy scheduling semantics are implemented.
-- ✅ Inherent impls are owned by the nominal type's module. Foreign extensions
-  use traits; aliases and kernel types cannot gain inherent members; split impl
-  blocks share a coherent member namespace, including applied-view identity.
-- ✅ Entity, struct, view, trait, and function generic parameters participate
-  in unused-parameter analysis, including uses in a separate `impl`.
-- ✅ `Hierarchy` retains each concrete instance array's declared and generated
-  slots, in declaration order and with the declaration span.
-
-Remaining:
-
-- 🔴 **Simulation entity reachability and target query.** `extern "C"` and
-  runtime file I/O remain legal inside behavioral simulation entities. Infer
-  that status transitively through reachable functions and instances; native
-  simulation accepts the resulting hierarchy, while a future RTL/synthesis
-  elaboration rejects any simulation entity that remains after model
-  selection and constant folding. Expose the selected target as the std-owned
-  compile-time enum value `std::target: std::Target`, with `simulation` and
-  `elaboration` variants, so target-specific source branches can be eliminated
-  before reachability is finalized. Compile-time `read<T>` ROM construction
-  remains an elaboration input, not a reason to mark an entity simulation-only.
-- 🔴 **Comment-preserving formatting.** The canonical printer intentionally
-  declines LSP formatting when comments are present because comment trivia is
-  not attached to AST nodes. Preserve trivia and anchor comments before
-  enabling those edits.
-- 🔴 **Incremental/query interface.** Phase products are explicit and stable,
-  but compilation is pass-oriented. Add demand-driven caching only when the
-  LSP or a future project tool needs incremental multi-file recomputation.
-- 🟡 **Public entity receiver methods.** Tier 1 is complete: `pub fn` without
-  `self` is an instance-free `Entity::function(...)`, with resolved namespace
-  identity in semantic checking, IR, and native testbenches. Tiers 2 and 3
-  remain: elaborate accessors and effectful `instance.method()` calls into
-  stable generated ports, initially with one caller per method/instance, then
-  define arbitration before permitting multiple callers. Ordinary struct/view
-  methods are already complete.
-- ✅ **Fully namespaced semantic identities.** Resolution owns declarations by
-  `(module, name)`, exposes declaration-site `DefId`s, and type checking now
-  keys nominal declarations and free-function contracts by stable identity;
-  free-function lowering, const evaluation, extern dispatch, and the native
-  test harness use the same resolved identity and allow equal leaves in
-  different modules. Module constants likewise use resolved identity through
-  declared-type lookup, compile-time evaluation, IR tables, and native output,
-  including constant functions that refer to their module's constants.
-  Elaboration and IR now carry entity identity through hierarchy construction,
-  generic specialization, recursive lowering, instance connection lookup, and
-  output roots. Equal entity leaves are admitted across modules; colliding roots
-  receive qualified tree/IR paths and injective native test symbols, while an
-  ambiguous bare `--top` must be qualified. Type aliases now also retain
-  resolved identity through cycle checking, IR representation, native scalar
-  semantics, and foreign ABI classification; equal alias leaves and chains are
-  admitted across modules. Enums now retain identity through inherited
-  variants, discriminants, widths, defaults, matching, native formatting, and
-  waveform symbol metadata; colliding enum names qualify only at the output
-  boundary. Structs now retain identity through fields and privacy domains,
-  generic ownership, inheritance, layouts, defaults, constructors, constants,
-  inherent methods, flattened paths, and native aggregate storage. Applied
-  views now use the resolved view declaration together with the resolved backing
-  type through checking, IR layout metadata, method/trait ownership, and native
-  lowering. Custom traits and operator operand types likewise retain resolved
-  identity through contracts, defaults, dispatch, and native test execution;
-  only the exact builtin/`std::ops` hook declarations such as `Operator` keep
-  their canonical language key. A user trait with the same leaf remains an
-  ordinary module-qualified contract. Equal leaves in separate modules are
-  therefore admitted and cannot share semantic tables accidentally.
+- 🔴 **Simulation reachability and target query.** Infer simulation-only status
+  transitively through reachable calls and instances. Native simulation accepts
+  `extern "C"` and runtime file I/O; future RTL elaboration rejects any such
+  operation still reachable after model selection and constant folding. Expose
+  the selected target as the std-owned compile-time value
+  `std::target: std::Target` with `simulation` and `elaboration` variants.
+  Compile-time `read<T>` ROM construction remains a valid elaboration input.
+- 🔴 **Comment-preserving formatting.** Attach comment trivia to stable syntax
+  anchors before the LSP offers formatting edits on commented source.
+- 🔴 **Incremental/query interface.** Add demand-driven caching only when the
+  LSP or future project tool needs incremental multi-file recomputation; keep
+  the current explicit phase products as the public boundary.
+- 🟡 **Public entity receiver methods.** Static public entity functions work.
+  Lower `instance.method()` accessors and effectful methods to stable generated
+  ports, first with one caller per method/instance, then define arbitration
+  before allowing multiple callers. Struct/view methods already work.
 
 ## IR
 
-Owns the elaborated execution model: signals, process control flow, derived
-drivers/events, initializers, type/enum metadata, layouts, and semantic lints.
-Code: `src/ir/`; `mod.rs` is the stable facade, `lower.rs` plus
-`lower/*.rs` own frontend lowering, `passes.rs` and `query.rs` own
-analysis/normalization, and `process.rs` owns the canonical process model.
-The stable `siox::ir::*` facade is consumed by `src/driver/` and
-`src/llvm/`.
+Owns signals, canonical process control flow, initializers, layouts, enum/logic
+metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
 
-Current baseline:
+- 🟡 **Make Process IR the lowering authority.** All finalized hardware and
+  test behavior is present in `Design::process_ir`, but normalized
+  `Driver`/`EventBlock` hardware is still imported through a migration bridge.
+  Lower explicit processes and implicit continuous behavior into Process IR
+  first, then derive optimized driver/event scheduling from that one product.
+  Delete `test_ir` after it no longer performs a separate AST-to-value/CFG
+  translation.
+- 🟡 **Canonical composite sizing.** Put the checked packed width on canonical
+  aggregate values so IR consumers do not rediscover struct/array widths from
+  `SourceLayout`. Source type-cycle rejection remains the cycle boundary.
+- 🟡 **VHDL delayed-assignment semantics.** The fixed queue implements
+  transport-like one-shot writes. Add the required inertial cancellation and
+  rejection behavior, keyed by target/driver and source order, without adding
+  a backend-specific scheduling rule.
+- 🟡 **Dynamic aggregate updates.** Represent runtime-selected aggregate
+  projections and multiple partial destinations of one root as one explicit
+  pre-write-snapshot/update operation. Reads, writes, checks, and merge order
+  must be defined before either backend lowers it.
+- 🟡 **Testbench metavalue storage.** Retain a companion plane for locally
+  stored packed Logic values so direct comparisons and aggregate operations
+  preserve X/Z just like finalized hardware signals.
 
-- ✅ Combinational and event-driven processes are distinct; delta cycles,
-  derived clocks, initialized/undriven behavior, Logic metavalue companions,
-  arbitrary-width initializers/module constants, order-independent constant
-  aliases, and per-type word counts are covered.
-- ✅ W-P003 unused internal signals, W-P010 combinational loops, W-P011
-  undriven outputs/signals, W-P012 unconnected inputs, latch and driver lints
-  operate on the normalized design.
-- ✅ Scalar and vector IEEE 1076-2019 Logic behavior is represented, including
-  wide X/Z storage and propagation. Value and discriminant writes remain in
-  source order, clean overrides explicitly clear stale metadata, clocked
-  bit-string literals retain their discriminants, `'old` reads the old value
-  and old companion together, and narrowed computed arithmetic scans the full
-  operand width before slicing its poisoned result.
-- ✅ Scoped hardware block locals lower to storage-free expressions with
-  immediate reassignment, lexical shadowing, conditional selection, aggregate
-  fields/elements, packed slices, and event-block next-state separation.
-- ✅ Runtime indices traverse nested arrays and intervening struct fields.
-  Reads become nested muxes and writes become one condition per flattened leaf.
-  Every active dimension carries a checked-index site; invalid runtime reads or
-  writes fail simulation rather than selecting an implicit recovery arm.
-- ✅ Packed-vector positions may be runtime values in hardware, block-local,
-  and native testbench code. Nonzero declared labels map onto compact storage;
-  writes use arbitrary-width read-modify-write masks, and Logic value and
-  metavalue planes update together.
-- ✅ Reads and writes through an in-range but conditionally unbuilt instance
-  slot produce E-P022 at the reference, label the array declaration, and do not
-  misdiagnose unreferenced slots or unresolved generic specializations.
-- ✅ Parallel driver contexts fold without warning when their type implements
-  `Resolve`; otherwise they are an E-P014 error with contributing source spans.
-  The obsolete W-P001 category is retired.
-- ✅ Every scalar IR signal retains its source declaration span, including
-  flattened aggregate leaves and metavalue companions. Every diagnostic
-  emitted by IR lowering has a stable code and primary source span; late
-  signal lints anchor to the owning port or `let` declaration.
-- ✅ `Design::source_layouts` retains a language-neutral recursive layout for
-  every concrete declared value and leaf: nominal structs/views and view-field
-  directions, inherited and generic-substituted fields, arrays with ranges,
-  packed vector families, enums, kernel scalars, and ranged numeric domains.
-  Signal flattening and range/index lowering consume this tree, whose checked
-  width/leaf-count operations cannot silently overflow.
-- ✅ Testbench-owned values retain the same layouts without becoming hardware
-  signals. Native declaration storage, positional aggregate materialization,
-  composite choice/copy handling, ranges, scalar families, and widths consume
-  those concrete IR layouts. The remaining nominal field-order table contains
-  names only and is restricted to source syntax with no concrete value path.
-- ✅ Logic encoding is owned by `std::logic::LogicEncoding`, modeled on
-  VHDL `std_logic_1164` conversion semantics. Elaboration evaluates
-  `to_bool`, `is_binary`, `is_high_impedance`, and `to_x01` for every variant,
-  and folds the ordinary scalar `Operator` impls into `Design` truth tables.
-  IR, native packed access, and VCD/FST rendering consume that metadata rather
-  than discriminant ranges or `disc & 1`. `ULogic` now uses VHDL declaration
-  order with an explicit stable packed ABI, and the exhaustive VHDL comparison
-  corpus remains unchanged.
-- ✅ `ir::Design` owns the first canonical `ProcessIr`: dense process/block/local
-  IDs, instance-qualified labels, owning roots, time-zero/reactive activation,
-  immediate-local versus staged-signal assignment, typed source references,
-  source spans, and validated test descriptors. `if` branches, `await`
-  suspend/resume edges, structured `match` dispatch and `for` loop back-edges,
-  and return/stop/finish terminators are real CFG edges.
-  Operands live once in a dense `ProcessValue` arena and CFG nodes carry stable
-  `ProcessValueId`s; validation rejects every stale instruction/terminator ID.
-  `Compilation` no longer retains a parallel `test_ir::Program`; `test_ir` is
-  now only the temporary adapter that fills `Design::process_ir`.
-
-Remaining:
-
-- 🟡 **Complete unified Process IR lowering.** The value representation is
-  done: operands are structured `ProcessValueKind` nodes rather than rendered
-  source text, and an entity-level `let` of a test entity is now persistent
-  `ProcessStorage` rather than falling through to `Definition`. That was forced
-  rather than chosen -- `ir::lower` branches on `is_test_entity` and creates no
-  signal for such a declaration, so the storage arena is the only place it can
-  live, and "has a persisted layout under the root path" is exactly the set.
-  Validation covers the arena and its references, and `to_ir_string` shows it.
-  Storage initialization, DUT binding, write timing, and activation are also
-  explicit now: initializers use the ordinary value arena before processes
-  start; each flattened binding records its DUT-side `in`/`out`/`inout`
-  direction (including mixed-direction applied views and fan-out); storage
-  writes are immediate within the stimulus process while connected DUT-input
-  writes wait for the commit boundary; and self-toggle clocks react to their
-  storage object rather than to a nonexistent testbench signal.
-  Hardware is now present for every compiler output too: the migration bridge
-  converts the finalized scheduler decomposition and normalized digital
-  expressions into dependency-ordered Process values and explicit guarded
-  CFG assignments. Each CFG retains its elaboration root, deepest owning
-  instance, signal sensitivity, labels, and concrete signed/float/table/index/
-  foreign-call semantics; test descriptors include their nested DUT processes.
-  Using the normalized product here is deliberate -- it preserves generic and
-  generate specialization instead of re-elaborating hardware AST in the
-  temporary adapter. Remaining: invert this bridge so explicit hardware and
-  implicit continuous source processes enter Process IR first, then derive the
-  optimized `Driver`/`EventBlock` scheduler forms from those CFGs.
-- ✅ **Bound ordinary Logic/metavalue expression growth.** Per-element lowering
-  now materializes a repeated non-leaf operand once as an internal
-  combinational signal. Nested dirty-vector expressions grow linearly with
-  width rather than cloning owned expression trees as `width^depth`; the full
-  312-row NVC comparison sweep builds at about 650 MiB instead of exhausting
-  8-14 GiB scopes and retains 312/312 behavioral parity. A regression checks
-  the width-scaling shape, and VCD/FST hide the materialized operands.
-- ✅ **Close the residual metavalue scaling paths.** Resolution folding and the
-  two partial-write helpers hold only `&self` and so could not append a hoisted
-  operand. They now hoist into a `RefCell` sink on the lowering that the
-  `&mut self` caller drains immediately afterwards, and resolution additionally
-  binds each folded contribution's value and discriminant plane once instead of
-  deep-copying it per element. Two parallel drivers on a resolved `unsigned[16]`
-  went from exhausting a 6 GiB scope to 226 KB of IR, and the growth is linear
-  in width (2.01x per doubling) where it was quadratic (3.91x). Resolution
-  behaviour is unchanged: the nine-value `res.siox` sweep still matches `nvc` on
-  all 81 cells. A regression checks the width-scaling shape.
-- ✅ **Bound LLVM backend function size.** Codegen builds the combinational
-  schedule once, partitions it into internal noinline helpers of four
-  processes, and reuses those helpers at both settle sites. LLVM's measured
-  `default<O1>` pipeline retains `O2` settle throughput without its unnecessary
-  generic passes. The 312-row NVC sweep's native test build dropped from about
-  19 minutes / 650 MiB to about 27 seconds / 560 MiB, with byte-identical
-  output; smaller functions bound SelectionDAG's per-function working set
-  without adding a language limit.
-- ✅ **Compact std-derived logic lookups before LLVM.** Final IR normalization
-  recognizes the ordinary packed lookup expression produced from std operator
-  bodies, interns each distinct table in `Design`, and replaces every use with
-  a stable `TableLookup` node. LLVM emits compact constant arrays with checked
-  indexing instead of thousands of dynamic `i322` shifts. On the 312-row NVC
-  sweep, raw object generation dropped from about 20.0 seconds to 7.7 seconds,
-  the full native test build from 26.9 seconds to 14.4 seconds, and 10k settle
-  calls from roughly 0.29 seconds to 0.06 seconds, with byte-identical output.
-- ✅ **Eliminate redundant straight-line LLVM values before optimization.**
-  Each single-block combinational helper now reuses dominating state loads,
-  direct slices, comparisons, integer operations, selects, and casts. Writes
-  invalidate the affected signal and foreign calls invalidate observable
-  state. Index-diagnostic lowering first rejects expressions with no checked
-  access, avoiding dead branch-activity trees in std-generated select chains.
-  On the same 312-row sweep, raw LLVM fell from 110.5 MB to 4.0 MB and its
-  emitter peak from 809 MB to 79 MB; the full test build fell from 14.4 s /
-  589 MB to 8.3 s / 146 MB, while 10k settles improved from 58.6 ms to
-  51.8 ms and output remained byte-identical.
-- 🟡 **Canonical composite sizing.** Hardware structs and arrays still flatten
-  to leaves, while direct Process LLVM now calculates recursive `SourceLayout`
-  widths with checked arithmetic and packs each process-frame aggregate into
-  one exact-width value. Move that packed width onto the canonical aggregate
-  value itself so every later consumer shares it rather than rediscovering it
-  from layout metadata. Layouts own their children, so source type-cycle
-  rejection remains the cycle boundary instead of a backend depth limit.
-
-- 🟡 **One-shot delayed writes.** Direct Process LLVM now copies each supported
-  static target's exact-width value into the fixed runtime's dynamically sized,
-  time-ordered queue. Expiry stages the value through the ordinary commit path;
-  zero-delay writes occupy a new delta before reactive processes resume, and
-  values wider than one ABI word retain every word. Constant integer-backed
-  suffix implementations now normalize to ordinary Process numbers by
-  evaluating the resolved `Suffix` body, so source `after 1ns` reaches this
-  path without a compiler-owned unit table. The compatibility harness still
-  rejects arbitrary one-shot writes, and the direct path stays opt-in until
-  VHDL overwrite/cancellation semantics are defined. Dynamic/ranged delayed
-  targets remain fail-closed too.
 ## LLVM
 
-Owns native lowering, state layout, optimization, and the word ABI. Code:
+Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
-Current baseline:
-
-- ✅ LLVM uses each value’s semantic `iN`; unrelated expressions are not widened
-  to the design maximum.
-- ✅ Default storage is width-sized. The optional `bitpack` layout packs small
-  values, reserves consecutive words for wide values, and stores event flags in
-  a dedicated one-bit-per-signal bitset.
-- ✅ Native target optimization uses LLVM’s `default<O1>` pipeline and optional
-  host SIMD features. Dominance-safe emitter-local value reuse makes a final
-  GVN pass redundant; the measured configuration retains the broader `O2`
-  pipeline's simulation throughput at lower compile cost.
-- ✅ Cross-word add/subtract, shifts, comparisons, initializers, high-word
-  events, and the unbounded low-word-first ABI are covered.
-- ✅ LLVM obtains each flattened signal width through its persisted
-  `SourceLayout` when present. IR validation rejects aggregate layouts at leaf
-  signal paths and rejects stale `Signal::width` metadata that disagrees with
-  the layout before code generation.
-- ✅ Every advertised Cargo feature changes a real compiler boundary: `cli`
-  and `llvm` select dependencies/components, `simd` selects host target
-  features, and `bitpack` selects the alternate storage layout. Arbitrary-width
-  integers are always available; no legacy `wide` or unimplemented `f128` flag
-  is exposed.
-
-Remaining:
-
-- 🔴 **Direct Process IR lowering.** Lower unified process CFGs, suspension
-  states, and scheduler calls into the same LLVM module as signals and Siox
-  functions. Native object and test-executable builds must differ only in
-  linked runtime/entry-point packaging, not language lowering. The LLVM object
-  now exports versioned immutable test/process/activation/sensitivity tables,
-  and the compatibility executable uses their test counts/names for filtering
-  and reporting. It also exports one callable resume-block entry per process;
-  control-only CFGs return stable completed/stopped/finished statuses and every
-  not-yet-lowered executable node fails closed as unsupported. Scalar process
-  values now retain their own packed bit width in the arena, so direct LLVM
-  lowering can choose each value's exact integer type and ABI word count
-  instead of consulting a design-wide width. Instruction/value coverage,
-  suspension services, and full runtime consumption remain. Direct branch
-  terminators already evaluate exact-width integer/bit-string/character
-  literals; current, old, and event state; fixed bit slices; integer/signed/
-  floating arithmetic and comparisons; defined divide/shift corner cases;
-  std-derived lookup tables; selections; packed concatenations; and scalar
-  foreign calls. Resolver-selected bodyless `extern "C"` declarations now
-  enter Process IR from both hardware normalization and test-process lowering,
-  with explicit integer/real argument and result classes. Integer ABI operands
-  are evaluated recursively at their consumer's 64-bit width before the call,
-  rather than extending an already-wrapped minimum-width result. Process
-  signal/local/storage reads likewise load their declaration-owned physical
-  frame width and then sign- or zero-extend to the logical expression width;
-  constrained kernel integers no longer fail closed merely because their
-  storage representation is narrower. The retained value range decides the
-  extension: a positive-only constrained integer uses every physical bit for
-  magnitude and therefore zero-extends even though its kernel type is
-  `integer`. Positive minimum-width literals remain positive when they
-  enter a signed operation instead of being mistaken for two's-complement
-  negatives. Normalized bit slices may also exceed their source width: the
-  direct emitter zero-extends ordinary values and sign-extends signed kernel
-  results before slicing, matching conversion lowering without reconstructing
-  a source-level cast. Process width inference folds integer-only constant
-  shift expressions such as `1 << (WIDTH - 1)`, so std-generated signed shift
-  masks retain their natural width before LLVM emission. Whole-scalar staged
-  signal assignments also execute directly:
-  LLVM owns exact-width pending state and exported commit/change queries, while
-  the future runtime owns when a ready-process batch commits. Commit preserves
-  source-order override and updates current/old/event state across arbitrary
-  ABI words; an unsupported block performs no partial calls or writes before
-  returning status 255. Scalar/packed process locals and persistent testbench
-  storage now use exact-width object-owned frames: declarations and assignments
-  update immediately, input/inout bindings stage DUT writes, output bindings
-  mirror committed DUT values, and storage changes are exposed for reactive
-  scheduling. Direct `CheckedIndex` evaluation now records the first active
-  bounds failure through the shared diagnostic ABI (including path-sensitive
-  value-level selections), and ranged signal/storage-binding writes latch
-  their mathematical value and Process IR source site before narrowing.
-  Recursive struct/array layouts now execute as exact packed process frames:
-  constructors, defaults, spread/copy, constant field/index projections,
-  aggregate locals/storage, flattened aggregate signal reads/writes, and mixed
-  local/storage/signal concatenation targets preserve their respective
-  immediate or staged timing. Dynamic aggregate indices and mixed targets that
-  write multiple projections of the same root still fail closed until their
-  update merge is explicit. A fixed embedded scheduler/CLI now consumes the
-  descriptor and entry ABI, executes time-zero/reactive ready batches, commits
-  once per delta, and can be selected through the migration-only
-  `SIOX_DIRECT_PROCESS_RUNTIME` link path without generating design C. Runtime
-  integer-backed suffix bodies are normalized from their std/user
-  implementation, so source clock schedules, one-shot static writes, and timed
-  `await` now execute on the fixed wheel. Timed suspension records and restores
-  the exact CFG resume block. Condition and edge waits use explicit
-  state-change suspension and recheck CFGs, including downstream settling and
-  deadlock detection. `print!`, `assert!`, and `warn!`
-  carry frontend-normalized text/value parts and explicit display kinds in
-  Process IR, so LLVM never parses format syntax or reconstructs presentation
-  types from an AST. The fixed runtime renders arbitrary-width signed/unsigned
-  decimal, `real`, Unicode `Char`, static strings, and retained enum symbols;
-  failed assertions and warnings format lazily and keep source locations and
-  warning accounting. Field/index projections recover their display type and
-  exact width from the declaration-owned recursive layout when expression
-  typing has no standalone result entry. Constant-folded calls also honor a
-  contextual `real` return, so an integer-spelled literal becomes an f64 value
-  rather than a widened integer bit pattern. Runtime-sized string values remain part of the dynamic-
-  array boundary.
-  Source-layout `length`, `left`, `right`, `high`, `low`, and `ascending`
-  attributes are materialized as LLVM constants from retained Process IR
-  layout metadata, including signed and directional bounds; the backend does
-  not revisit source syntax or call a runtime service for them. Resolver-
-  selected module and std constants are inlined as ordinary Process value
-  graphs while frontend type context is still present, including enum-typed
-  character constants; LLVM never interprets a declaration `DefId`. Free and
-  inherent associated calls whose arguments are constant are likewise folded
-  through the resolver-selected Siox body before Process IR reaches LLVM.
-  Runtime-valued pure free/static calls now inline resolver-identified
-  parameters and locals into SSA values; returning `if` and enum/Logic
-  `match` expressions become typed selections while preserving integer, real,
-  signed-vector, and declared return-type semantics. Receiver methods,
-  procedure-shaped bodies, runtime recursion, and the remaining match forms
-  still need executable CFG lowering. Explicit packed-family construction is
-  represented by `RawResize`, a typed Process value that truncates or
-  zero-extends the raw bits while retaining its target family. The same node
-  now represents value-transparent nominal newtype construction such as
-  `Byte(value)`. Persistent/local initializer lowering supplies the declared
-  `let` type as context instead of retaining an incomplete expression
-  `Ty::Error`. Direct
-  comparisons now use a packed operand's declared width, selections preserve
-  signed branch values, and integer literals retain widths above the kernel
-  word instead of being clipped by their fallback type. Zero-argument type
-  construction is also explicit: `T()` and `T::new()` lower to one typed
-  `Default` value whose scalar, enum, packed, array, or struct contents come
-  from retained layout metadata instead of an unresolved runtime call.
-  Contextually typed string tokens such as
-  `let pattern: Bit[3..0] = "1010"` now use that declaration-owned layout and
-  lower to exact-width digital array values; ordinary `string` declarations
-  remain runtime UTF-8 strings. The recovered nominal identity is restricted
-  to type declarations, so an equal function/local leaf cannot capture layout
-  typing. Resolver-selected kernel conversions no longer survive as runtime
-  calls: `integer(real)` lowers to signed truncation toward zero, and the
-  direct LLVM path preserves real negation as floating-point negation before
-  conversion; the supported non-real `integer`/`Char` crossings are explicit
-  raw resizes. Imported pure calls also recover scalar/nominal return identity
-  from their resolved declaration before constant folding or symbolic inlining,
-  so a returned `Char` cannot collapse back into an untyped integer. Scalar
-  statement and value `match` now dispatch directly in LLVM from normalized
-  Process patterns: exact enum/character values, masked bit patterns,
-  alternatives, wildcards, and inclusive signed/unsigned/real ranges. Selected
-  values preserve projected signed layouts and predicate checked subgraphs by
-  arm. The same first-match selection now operates over recursively packed
-  structs and arrays, so aggregate arms retain their field layout and checked
-  accesses remain arm-predicated. Compatibility-era bare testbench declarations
-  also retain the
-  generated-C oracle's sequential source ordering, so an initializer written
-  after a statement observes that statement instead of being hoisted into
-  reset. Explicit `process` blocks keep the normal model in which impl state is
-  initialized before independently scheduled processes begin.
-  Inclusive directional range loops and source-order array loops execute as
-  ordinary CFG back-edges; cursor/end state and the array snapshot live in the
-  object so suspension inside a loop resumes without re-evaluating its
-  iterable. Runtime startup publishes reset-staged input bindings and settles
-  every reactive DUT process before releasing time-zero test stimulus, while
-  keeping clock events queued at the original simulation time. An immediate
-  foreground write to storage bound to a DUT `in`/`inout` port now ends its
-  Process block with an explicit zero-time settle suspension; the fixed
-  scheduler commits the drive, reaches reactive quiescence, and only then
-  resumes the following source statement. Duration, condition, and edge
-  `await` forms now share this CFG/runtime pipeline: a condition can proceed at
-  once, an edge always arms before its first check, false triggers suspend until
-  committed state changes, and a successful trigger settles downstream
-  reactive work before stimulus continues. Persistent test state retains
-  explicit current/old/event observations with a first-write-per-delta snapshot.
-  A timed foreground resume that expires alongside a scheduled signal update
-  is likewise held until all newly ready reactive processes reach quiescence;
-  simulation results no longer depend on Process ID iteration order. Only
-  timer resumes take that path: condition/edge rechecks remain in the event
-  delta so the following no-change commit cannot erase `'event` first.
-  Finalized hardware `MetaCompare` values now inspect the object-owned
-  metavalue companion plane directly in LLVM. Unknown discriminants force
-  ordering/equality false and inequality true, while weak `L`/`H` values stay
-  definite according to the std-derived `LogicEncoding`; no logic symbol or
-  discriminant is hardcoded in the backend. Process-local/path values also keep
-  their declaration-owned type when used in a narrower assignment context, so
-  an integer loop cursor can drive a packed stimulus value without changing its
-  frame width. Testbench-owned packed values still need a retained companion
-  plane before direct code can compare locally stored X/Z data.
-  A completed foreground process drains its own delayed transactions and then
-  ends its test even when background clocks keep future events queued, while a
-  suspended condition with no future event reports a deadlock. The distinct
-  `finish` status also reports the fixed scheduler's current femtosecond time,
-  preserving the executable output contract without generated harness code.
-  Dynamic strings
-  and other runtime calls, dynamic aggregate
-  selection/update, VHDL delayed-write cancellation, waveform services, and
-  making this path the default remain.
+- 🟡 **Complete direct Process IR lowering.** Exact-width scalar and recursive
+  packed values, branches, loops, matches, clocks, suspension, delayed writes,
+  formatting, assertions, and scalar foreign calls execute directly today.
+  Remaining executable forms are receiver methods, procedure-shaped calls,
+  runtime recursion/general call CFGs, non-packed conversions, dynamic strings,
+  and the dynamic aggregate operations defined above. Unsupported forms must
+  continue to fail transactionally before calls or staged writes become
+  observable.
+- 🟡 **Move all host services behind the fixed ABI.** Add runtime-owned UTF-8
+  strings/dynamic arrays, `read<T>` and file failures, deterministic random,
+  and any remaining simulation-only calls. LLVM emits value semantics; the
+  runtime owns allocation, persistent state, and host contact.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
-  it, add LLVM `fp128` expression lowering, constants/conversions, ABI rules,
-  formatting, and a software-runtime path for hosts without scalar quad
-  precision before exposing a Cargo feature or language type.
-- 🔴 **Optimization measurements.** Add repeatable size/runtime benchmarks for
-  default, `bitpack`, and host-SIMD builds so optimizations are justified by
-  data rather than only structural tests.
+  it, add LLVM `fp128` operations, constants/conversions, ABI rules, formatting,
+  and a software fallback before exposing a language feature.
+- 🔴 **Optimization measurements.** Maintain repeatable object-size,
+  compile-memory, compile-time, and simulation-throughput benchmarks for
+  default, `bitpack`, and host-SIMD builds. Structural simplifications alone
+  are not evidence of a speedup.
 
 ## Output
 
-Owns compiler artifacts and generated native harnesses: objects, metadata,
-source/AST/tree/IR/LLVM dumps, test executables, diagnostics, and waveforms.
-Code: `src/driver/`.
+Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
+and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
-Current baseline:
-
-- ✅ `sioxc` is compiler-only: one input produces an object, metadata/dump, or
-  native `#[test]` executable. It never executes the artifact.
-- ✅ Native tests support filtering, assertions, timing/`await`, multiple
-  clocks, arbitrary-width stimulus, symbolic values, and deterministic
-  reporting. User locals are injectively mangled outside the harness namespace,
-  and output filenames use native OS strings.
-- ✅ Design-independent libfst, LZ4, and FastLZ sources are compiled once with
-  the compiler and embedded as native objects; each test build only compiles
-  its design-specific harness and links those objects. If host precompilation
-  is unavailable, the compiler retains the source path as a fallback. On the
-  312-row NVC sweep this reduced the complete test build from 8.86 seconds /
-  179 MB to 4.84 seconds / 147 MB with byte-identical output.
-- ✅ Native Logic-element reconstruction evaluates the value bit and companion
-  discriminant once through a std-derived helper instead of repeating external
-  state reads in each generated C expression. On that sweep, harness source
-  fell 7.6%, its object text fell 5.9%, and its machine-instruction count fell
-  from 39,956 to 37,758 without changing output or measured throughput.
-- 🟡 Native process scheduling supports one foreground stimulus process plus
-  any number of canonical self-toggle clock processes. Clocks start at time
-  zero regardless of declaration order, and additional foreground processes
-  are rejected with E-P028 instead of being serialized. Clock discovery now
-  reads reactive CFG schedules and storage bindings from Process IR rather than
-  rescanning source AST, including legacy bare clock statements. General
-  independently suspending processes belong to the unified Process IR
-  scheduler.
-- ✅ Native aggregate stimulus supports runtime-indexed reads and writes across
-  declared array labels, nested dimensions, struct fields/values and packed
-  bits. Composite right-hand sides are staged before writes. Invalid dynamic
-  reads and writes fail at the source index with its value and declared range;
-  explicit untaken guards suppress the access.
-- ✅ Native test builds now create one resolved `TestPlan` after type checking,
-  elaborate exactly its enabled canonical `std::attrs::test` roots, retain the
-  plan in `Compilation`, and pass it to the generated-C compatibility harness.
-  Attribute declarations are module-qualified, so same-leaf custom/vendor
-  metadata remains inert. Type checking, elaboration, IR, and planning share
-  one identity/value predicate rather than matching the leaf `test`.
-- ✅ `top` is no longer a std declaration, compiler seed, elaboration marker,
-  or IR lint exemption. Ordinary compilation selects uninstantiated structural
-  roots and native object output accepts the sole root or an explicit `--top`.
-  Integration-declared vendor `top` attributes remain ordinary resolved
-  metadata and cannot change sioxc behavior.
-- 🟡 `test_ir` is now only a temporary frontend adapter into
-  `Design::process_ir`; the separate `Program`/`Compilation::test_ir` product
-  is gone. Remove the module after hardware and test source processes share one
-  AST-to-value/CFG lowering entry point.
-- 🔴 **Retire generated C.** First make the compatibility harness consume
-  unified Process IR instead of translating AST, then add direct LLVM process
-  lowering and a linked scheduler/test/waveform runtime. The object-side static
-  descriptor ABI, descriptor-owned test filtering/reporting, and IR-owned clock
-  discovery are complete; a temporary descriptor-index-to-C-body dispatcher
-  and statement/value execution remain. The first fixed runtime/linker path now
-  schedules direct time-zero/reactive LLVM entries and reports descriptor-owned
-  tests without generating design C, but is opt-in until suspensions, runtime
-  services, and waveforms reach parity. Differentially test both outputs before
-  deleting the C translator. The complete straight-pipeline plan is in
-  `docs/proposals/testbench-software-ir.md`.
-- ✅ Generated test executables accept `-o <path>`, choosing the format from
-  the path's extension (`.vcd` writes VCD, anything else FST), and
-  write hierarchy, femtosecond timestamps, changed arbitrary-width values,
-  Logic x/z, real values, and symbolic enums directly from the same native
-  scheduler change points. FST uses the embedded, pinned libfst writer and is
-  interoperability-tested through its reader.
-- ✅ Late lowering diagnostics retain source anchors through IR metadata;
-  compile-time file failures use E-P023 and all normalized signal lints point
-  at their declarations.
-- ✅ Native `#[test]` file services execute in the generated binary. Fixed raw
-  arrays preserve declared labels and arbitrary-width little-endian elements;
-  runtime-owned UTF-8 strings support dynamic length, indexing, iteration,
-  comparison, and formatting. Missing/invalid/oversized fixtures fail the test
-  deterministically. Hardware/top file initializers remain compile-time ROM
-  images.
-
-Remaining:
-
-- 🔴 **Elaborated RTL design file (Phase 3).** Emit a stable, vendor-neutral
-  artifact after hierarchy elaboration and synthesizable-logic normalization.
-  Vivado, Quartus, and other vendor adapters should consume it for synthesis,
-  place-and-route, and bitstream implementation. It must retain module and
-  instance hierarchy, ports and directions, logical ranges/widths, nets,
-  registers, combinational and clocked logic, clock/reset metadata, parameters,
-  initial values where synthesizable, constraints, and source-name/debug
-  mappings. Define a versioned schema plus validation/import tooling so adapters
-  do not depend on compiler-internal Rust/IR layouts; HDL and netlist renderers
-  can remain separate consumers of the same artifact. This is not a current
-  simulation milestone.
+- 🟡 **Retire generated C.** The fixed scheduler/CLI already links LLVM-emitted
+  process entries and runs 124 corpus cases in agreement without design C.
+  Finish the remaining LLVM/runtime coverage, make this path unconditional,
+  run the full default and `bitpack` differential gates, then delete the
+  AST-to-C statement/value translator and its dispatcher. Clang may remain a
+  linker driver; it must not translate siox semantics through C.
+- 🔴 **Direct VCD/FST output.** Export immutable signal/name/type/companion
+  descriptors from the LLVM object. The fixed runtime must sample settled
+  change points and write hierarchy, arbitrary-width values, Logic X/Z, real
+  values, enums, and monotonic multi-test timestamps. Once both backends emit
+  traces, make the differential matrix compare every signal at every timestamp.
+- 🟡 **Runtime diagnostic parity.** Resolve Process source IDs/offsets through
+  stable embedded source metadata so warnings and failures use the same
+  filename, line, snippet, and caret form. `warn_test` is the remaining known
+  stdout divergence; do not remove useful source locations merely to match the
+  compatibility backend.
+- 🔴 **Deterministic runtime parallelism (Phase 2 optimization).** The runtime
+  is intentionally single-threaded today. After direct single-threaded parity,
+  replace process-global scheduler state with a per-run context and evaluate
+  independent ready processes in a worker pool. Writes must stay staged in
+  worker-local transaction buffers, merge in stable process/instruction order,
+  and commit once per delta. Resolution, source-order overrides, impure foreign
+  calls, file I/O, and diagnostics remain serialized unless proven independent.
+  Require byte-identical results, diagnostics, and VCD/FST traces in default
+  and `bitpack` modes; enable threading only when benchmarks show a gain.
+- 🔴 **Elaborated RTL design file (Phase 3).** Emit a stable, versioned,
+  vendor-neutral artifact after hierarchy elaboration and synthesizable-logic
+  normalization. Preserve hierarchy, ports/directions, ranges, nets/registers,
+  combinational and clocked logic, parameters, synthesizable initial values,
+  constraints, and source mappings. Vivado, Quartus, HDL renderers, and other
+  adapters consume this schema instead of compiler-internal Rust layouts.
 
 ## API
 
-Owns stable programmatic boundaries used by editors, project tools, simulators,
+Owns stable boundaries used by editors, project tools, simulators, debuggers,
 and foreign integrations.
 
-Current baseline:
-
-- ✅ `siox-lsp` lives in its own repository and consumes this compiler through
-  a Cargo Git dependency without depending on LLVM.
-- ✅ The native design ABI exposes reset, settle, and low-word-first signal
-  get/set operations.
-- ✅ Foreign C declarations have a checked scalar ABI: `real`, signed
-  `integer`, and packed numeric values up to one 64-bit word work in
-  combinational logic, clocked logic, and native testbenches. Unsupported
-  aggregate, multiword, generic, character, and void signatures fail before
-  lowering instead of being truncated or dropped.
-- ✅ `sioxc` keeps rustc-like scope: project graphs, execution, dependency
-  management, and directory-wide testing remain outside the compiler.
-- ✅ `siox::compiler` provides the shared disk/in-memory `CompileRequest` →
-  `Compilation` boundary. It retains structured diagnostics and partial phase
-  products, separates host failures, returns typed text/file artifacts, and is
-  used by `sioxc` without requiring LLVM for frontend consumers.
-
-Remaining:
-
-- 🔴 **Multi-file user crates.** Standard-library modules load transitively,
-  while user compilation still starts from one source entry. Define module
-  discovery and crate boundaries in the future project tool, then expose the
-  loaded source set through the compiler API.
-- 🔴 **cocotb/VPI-GPI integration.** Experimental work is isolated on the
-  `feature/cocotb` branch rather than shipped by the compiler on `main`. Finish
-  and validate name→handle lookup,
-  get/put/force/release, timed callbacks, value-change callbacks, and
-  read-write/read-only phase callbacks over the native scheduler ABI.
+- 🔴 **Multi-file user crates.** Define module discovery and crate boundaries
+  in the future project tool, then expose its loaded source set through the
+  compiler API. `sioxc` continues to compile an explicit entry/input.
+- 🔴 **cocotb/VPI-GPI integration.** Finish the isolated `feature/cocotb`
+  experiment: name-to-handle lookup, get/put/force/release, timed and
+  value-change callbacks, and read-write/read-only scheduler phases.
 - 🟡 **General foreign-function ABI.** Define pointer/handle ownership,
   aggregate and multiword layouts, explicit void/side-effect scheduling, and
-  platform-aware C scalar widths. Custom library discovery and linker flags
-  belong in the future project tool; `sioxc` should consume explicit inputs,
-  not discover packages itself.
-- 🔴 **Project/test tool.** A future Cargo-like executable should discover
-  packages, cache builds, compile directories, run/filter generated tests, and
-  coordinate waveform output. None of this belongs in `sioxc`.
-- 🟡 **External HDL libraries (Phase 3).** `use <library>` should remain
-  language-neutral. A project/backend layer can locate precompiled VHDL,
-  Verilog, or vendor libraries; compiling VHDL internally is deferred.
+  platform-aware C scalar widths. Library discovery and linker flags belong in
+  the future project tool; `sioxc` consumes explicit inputs.
+- 🔴 **Project/test tool.** Build a Cargo-like executable for package discovery,
+  dependency builds, caching, directory-wide test compilation/execution,
+  filtering, and waveform coordination. Keep `sioxc` compiler-only.
+- 🟡 **External HDL libraries (Phase 3).** Keep `use <library>` language-neutral.
+  A project/backend layer locates precompiled VHDL, Verilog, or vendor
+  libraries; internal VHDL compilation is deferred.
 
 ## std
 
 Owns user-visible types, traits, operators, attributes, simulation helpers,
 math/text/file services, and reusable hardware models. Code: `std/`.
 
-Current baseline:
-
-- ✅ `std::logic`, `bits`, `ops`, `attrs`, `sim`, `assert`, `math`, `text`,
-  `fs`, and the prelude are real siox source.
-- ✅ Logic resolution/truth tables, numeric operators, custom operator
-  precedence, literal hooks, `New`, conversions, and clock helpers are visible
-  as library traits/implementations rather than hidden compiler-only surfaces.
-- ✅ The runnable conformance suite lives in
-  [Siox-lang/siox-tests](https://github.com/Siox-lang/siox-tests) and is checked
-  by CI.
-
-Remaining:
-
-- 🟡 **Library build-out.** Add canonical reusable counters, synchronizers,
-  memories, FIFOs, stream adapters, and fixed-point families with executable
-  conformance tests.
+- 🟡 **Library build-out.** Add canonical counters, synchronizers, memories,
+  FIFOs, stream adapters, and fixed-point families with executable conformance
+  tests.
 - 🟡 **API reference.** Keep [`docs/std.md`](docs/std.md) synchronized with each
   exported declaration and clearly label compiler/runtime intrinsics.
 - 🔴 **Foreign HDL packages (Phase 3).** Map external library names and entity
@@ -672,6 +182,6 @@ Remaining:
 
 - Analogue domains, `across`/`through`, `::ddt`, solvers, and mixed-signal
   bridges.
-- Schematic/layout design and place-and-route attributes.
-- Vendor synthesis backends and foreign HDL compilation.
+- Schematic/layout design and place-and-route implementation.
+- Vendor synthesis backends and foreign HDL compilation inside `sioxc`.
 - A project/package manager inside `sioxc`.
