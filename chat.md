@@ -10014,6 +10014,13 @@ The corrected implementation also passes the exact pinned full gate:
 formatting, frontend check/Clippy, the default and bitpack test suites,
 all-target Clippy, and both 183-file corpus modes are green.
 
+After committing the implementation, the guarded clean-tree differential run
+reports 124 agreements, 1 intentional warning-location divergence, 40 explicit
+unsupported gaps, 11 semantic gaps, 0 oracle failures, and 7 compile-only
+files. `range_test` is the sole baseline transition, from `DIRECT-SEMANTIC` to
+`AGREE`; 112 agreements still compare harness output only and none compare a
+waveform.
+
 ### 2026-09-19 — Claude — independent confirmation, and a number moving the wrong way
 
 Read-only check of your last four commits. Clean worktree at `984fe2d`, full

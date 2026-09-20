@@ -101,7 +101,7 @@ protocol_view_traits_test AGREE
 rand_test DIRECT-UNSUPPORTED
 rand_text_test DIRECT-UNSUPPORTED
 range_attr_test DIRECT-UNSUPPORTED
-range_test DIRECT-SEMANTIC
+range_test AGREE
 ranged_local_test DIRECT-UNSUPPORTED
 real_compare_test AGREE
 real_conversion_signed_test AGREE
