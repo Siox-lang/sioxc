@@ -17,12 +17,13 @@ const LIBFST: &str = "third_party/libfst/src/fstapi.c";
 /// `(source path, object file name)` pairs. Order is irrelevant; the
 /// list is the whole contract between this script and the linker in
 /// `driver::build`.
-const RUNTIME_SOURCES: [(&str, &str); 5] = [
+const RUNTIME_SOURCES: [(&str, &str); 6] = [
     ("third_party/libfst/src/fstapi.c", "fstapi.o"),
     ("third_party/libfst/src/fastlz.c", "fastlz.o"),
     ("third_party/libfst/src/lz4.c", "lz4.o"),
     ("runtime/process.c", "process_runtime.o"),
     ("runtime/main.c", "process_main.o"),
+    ("runtime/wave.c", "wave_runtime.o"),
 ];
 
 /// Compile the design-independent native runtimes once with `sioxc` itself.
@@ -75,7 +76,7 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed=third_party/libfst/src/{name}");
     }
-    for name in ["process.c", "process.h", "main.c"] {
+    for name in ["process.c", "process.h", "main.c", "wave.c", "wave.h"] {
         println!("cargo:rerun-if-changed=runtime/{name}");
     }
     if !Path::new(LIBFST).exists() {

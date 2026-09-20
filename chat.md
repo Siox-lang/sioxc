@@ -10065,3 +10065,33 @@ runtime parallelism as a Phase 2 optimization: independent ready processes may
 eventually evaluate in workers, but writes merge in stable order and commit
 once per delta; impure effects stay serialized and byte-identical diagnostics
 and waveforms are required before enabling it.
+
+### 2026-09-20 — Codex — direct VCD closes the hollow-agreement gap
+
+The no-generated-design-C path now accepts `-o <file.vcd>`. Process ABI v9
+exports immutable visible-signal IDs, widths, value kinds, Logic companion
+links, enum/Logic symbol ranges, and the hierarchy header from the LLVM object.
+The fixed `runtime/wave.c` consumes only those tables plus `sx_read_word`, so
+arbitrary-width values and default/bitpacked storage share one writer. It emits
+real, symbolic enum, scalar Logic, packed Logic X/Z, ordinary bit values, and a
+monotonic multi-test timeline at scheduler quiescence; implementation companion
+and materialized-temporary signals remain hidden.
+
+The first corpus waveform sweep exposed four behavior differences that stdout
+could not: nonselected hardware was not bootstrapped, every test root's storage
+bindings were published during reset, a late connected declaration settled at
+the wrong source time in the compatibility harness, and the first two made
+nonselected Logic outputs remain X. Reset now publishes only the selected
+root's persistent inputs, initial fixed-point work includes nested hardware
+across the combined object without starting other test stimuli, and generated-C
+compatibility settles a connected declaration before its following source
+item. Focused VCD output is byte-identical.
+
+Both full differential sweeps now report 124 agreements, 1 pre-existing
+warning-location stdout divergence, 40 unsupported and 11 semantic direct-only
+gaps, and no oracle failures. All 124 agreements also compare VCD hierarchy,
+every signal, and every timestamp in both default and `bitpack`; the 112
+boilerplate-only stdout cases are no longer hollow. The exact pinned local CI
+gate is green after a fixture-only direct link was updated to include the fixed
+waveform object: formatting, frontend check/Clippy, build, default and bitpack
+tests, all-target Clippy, and both 183-file corpus modes pass.

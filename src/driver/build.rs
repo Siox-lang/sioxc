@@ -40,8 +40,11 @@ const LIBFST_LZ4_O: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lz4.o"));
 const PROCESS_RUNTIME_C: &str = include_str!("../../runtime/process.c");
 const PROCESS_RUNTIME_H: &str = include_str!("../../runtime/process.h");
 const PROCESS_MAIN_C: &str = include_str!("../../runtime/main.c");
+const WAVE_RUNTIME_C: &str = include_str!("../../runtime/wave.c");
+const WAVE_RUNTIME_H: &str = include_str!("../../runtime/wave.h");
 const PROCESS_RUNTIME_O: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/process_runtime.o"));
 const PROCESS_MAIN_O: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/process_main.o"));
+const WAVE_RUNTIME_O: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wave_runtime.o"));
 
 static NATIVE_BUILD_SERIAL: AtomicU64 = AtomicU64::new(0);
 
@@ -69,7 +72,7 @@ fn link_process_runtime(design: &Design, out: &Path) -> Result<(), String> {
         // real build-configuration signal, but clippy's `const_is_empty` sees
         // only the configuration in front of it and rejects a direct
         // `CONST.is_empty()`. This is the shape the libfst objects already use.
-        let precompiled = [PROCESS_RUNTIME_O, PROCESS_MAIN_O]
+        let precompiled = [PROCESS_RUNTIME_O, PROCESS_MAIN_O, WAVE_RUNTIME_O]
             .iter()
             .all(|contents| !contents.is_empty());
         let mut clang = Command::new("clang");
@@ -77,17 +80,23 @@ fn link_process_runtime(design: &Design, out: &Path) -> Result<(), String> {
         if precompiled {
             let scheduler = tmp.join("process_runtime.o");
             let main = tmp.join("process_main.o");
+            let wave = tmp.join("wave_runtime.o");
             std::fs::write(&scheduler, PROCESS_RUNTIME_O).map_err(|error| error.to_string())?;
             std::fs::write(&main, PROCESS_MAIN_O).map_err(|error| error.to_string())?;
-            clang.arg(scheduler).arg(main);
+            std::fs::write(&wave, WAVE_RUNTIME_O).map_err(|error| error.to_string())?;
+            clang.arg(scheduler).arg(main).arg(wave);
         } else {
             let scheduler = tmp.join("process.c");
             let header = tmp.join("process.h");
             let main = tmp.join("main.c");
+            let wave = tmp.join("wave.c");
+            let wave_header = tmp.join("wave.h");
             std::fs::write(&scheduler, PROCESS_RUNTIME_C).map_err(|error| error.to_string())?;
             std::fs::write(&header, PROCESS_RUNTIME_H).map_err(|error| error.to_string())?;
             std::fs::write(&main, PROCESS_MAIN_C).map_err(|error| error.to_string())?;
-            clang.arg(scheduler).arg(main).arg("-I").arg(&tmp);
+            std::fs::write(&wave, WAVE_RUNTIME_C).map_err(|error| error.to_string())?;
+            std::fs::write(&wave_header, WAVE_RUNTIME_H).map_err(|error| error.to_string())?;
+            clang.arg(scheduler).arg(main).arg(wave).arg("-I").arg(&tmp);
         }
         let output = clang
             .args(["-O2", "-lm"])
@@ -1087,6 +1096,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
         ("fastlz.h", LIBFST_FASTLZ_H),
         ("lz4.h", LIBFST_LZ4_H),
         ("process.h", PROCESS_RUNTIME_H),
+        ("wave.h", WAVE_RUNTIME_H),
     ] {
         std::fs::write(tmp.join(name), contents).map_err(|error| error.to_string())?;
     }
@@ -1095,6 +1105,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
         ("fastlz.o", LIBFST_FASTLZ_O),
         ("lz4.o", LIBFST_LZ4_O),
         ("process_runtime.o", PROCESS_RUNTIME_O),
+        ("wave_runtime.o", WAVE_RUNTIME_O),
     ];
     let precompiled_runtime = runtime_objects
         .iter()
@@ -1109,6 +1120,7 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             ("fastlz.c", LIBFST_FASTLZ_C),
             ("lz4.c", LIBFST_LZ4_C),
             ("process.c", PROCESS_RUNTIME_C),
+            ("wave.c", WAVE_RUNTIME_C),
         ] {
             std::fs::write(tmp.join(name), contents).map_err(|error| error.to_string())?;
         }
@@ -1128,13 +1140,15 @@ static signed sx_dyn_equal_values(const sx_dyn_array *array,
             .arg(tmp.join("fstapi.o"))
             .arg(tmp.join("fastlz.o"))
             .arg(tmp.join("lz4.o"))
-            .arg(tmp.join("process_runtime.o"));
+            .arg(tmp.join("process_runtime.o"))
+            .arg(tmp.join("wave_runtime.o"));
     } else {
         clang
             .arg(tmp.join("fstapi.c"))
             .arg(tmp.join("fastlz.c"))
             .arg(tmp.join("lz4.c"))
-            .arg(tmp.join("process.c"));
+            .arg(tmp.join("process.c"))
+            .arg(tmp.join("wave.c"));
     }
     clang.args([optimization, "-lm", "-lz"]);
     if debug {
@@ -4372,6 +4386,9 @@ impl Ctx<'_> {
                     // name writes each element/field.
                     if let Some(v) = value {
                         if self.write_composite(&l.name.text, v, &mut b, "    ")? {
+                            if started {
+                                b.push_str("    sx_settle();\n");
+                            }
                             continue;
                         }
                     }
@@ -4394,6 +4411,16 @@ impl Ctx<'_> {
                                 if *a != id {
                                     b.push_str(&format!("    sx_set({}, {e});\n", a.0));
                                 }
+                            }
+                            // Once sequential stimulus has begun, a connected
+                            // declaration is an ordinary foreground drive. It
+                            // must reach reactive quiescence before the next
+                            // source item (including an `await`) observes or
+                            // advances past it. Initial declarations before the
+                            // first statement remain batched into the initial
+                            // settle.
+                            if started {
+                                b.push_str("    sx_settle();\n");
                             }
                         }
                     } else {

@@ -26,19 +26,17 @@ ordinary progress and does not fail the run — during migration most
 non-agreement is expected, and only a baseline can separate that from a
 regression.
 
-**Know what an agreement is worth.** The script reports how many of them
-compared harness output only. Today that is 112 of 124, because few corpus
-files print anything: for the rest, "agree" means both backends exited zero and
-said so in the same words, which is barely more than comparing exit status.
+**Know what an agreement is worth.** Few corpus files print anything, so 112 of
+the current 124 agreements compare only boilerplate on stdout. That metric is
+kept visible, but it is no longer the only observable: all 124 agreements also
+compare a VCD emitted independently by each backend, covering hierarchy, every
+signal value, and every timestamp. The fixed writer reached identical results
+in both default and `bitpack` sweeps.
 
-The intended remedy is the waveform row below, and the script already compares
-a VCD whenever both backends emit one — normalising away `$date`/`$version`
-writer metadata, which is all that is not design behaviour. That currently
-contributes nothing, because the direct runtime does not accept `-o` at all
-(`runtime/main.c` rejects it, and the direct ABI has no waveform entries), so a
-VCD exists only on the generated-C side. The moment waveform output lands on the
-direct path, those 112 hollow agreements become real comparisons of every signal
-at every timestamp with no change to this script.
+The script normalises away `$date`/`$version` writer metadata, which is not
+design behaviour. Everything else is compared byte for byte. FST parity remains
+separate focused coverage until the direct runtime links its fixed libfst
+consumer; corpus differential runs intentionally request `.vcd` today.
 
 It is deliberately not part of `ci-local.sh`: it roughly doubles that gate's
 runtime, and while the direct backend is incomplete its useful signal is the

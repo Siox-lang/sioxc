@@ -393,6 +393,105 @@ fn direct_timed_resume_observes_reactive_quiescence() {
 }
 
 #[test]
+fn direct_process_runtime_vcd_matches_generated_c() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory =
+        std::env::temp_dir().join(format!("siox_direct_process_vcd_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("direct_wave.siox");
+    let compatibility = directory.join("compatibility-test");
+    let direct = directory.join("direct-test");
+    let compatibility_vcd = directory.join("compatibility.vcd");
+    let direct_vcd = directory.join("direct.vcd");
+    std::fs::write(
+        &source,
+        r#"module direct_wave;
+           using std::bits::unsigned;
+           using std::logic::Bit;
+           entity Counter { clk: Bit in, count: unsigned[4] out }
+           impl Counter {
+               let value: unsigned[4] = 0;
+               if clk.rising() { value = value + 1; }
+               count = value;
+           }
+           #[test] entity Wave {}
+           impl Wave {
+               let clk: Bit = '0';
+               let count: unsigned[4];
+               let counter: Counter = { .clk = clk, .count = count };
+               process clock_source { clk = not clk after 5ns; }
+               await 25ns;
+               assert!(count == 3, "counter observes three rising edges");
+           }"#,
+    )
+    .unwrap();
+
+    let build = |output: &std::path::Path, direct_runtime: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+        if direct_runtime {
+            command.env("SIOX_DIRECT_PROCESS_RUNTIME", "1");
+        }
+        command
+            .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+            .arg("--test")
+            .arg(&source)
+            .arg("-o")
+            .arg(output)
+            .output()
+            .unwrap()
+    };
+    let compatibility_build = build(&compatibility, false);
+    assert!(
+        compatibility_build.status.success(),
+        "compatibility waveform fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&compatibility_build.stdout),
+        String::from_utf8_lossy(&compatibility_build.stderr)
+    );
+    let direct_build = build(&direct, true);
+    assert!(
+        direct_build.status.success(),
+        "direct waveform fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&direct_build.stdout),
+        String::from_utf8_lossy(&direct_build.stderr)
+    );
+
+    let run = |binary: &std::path::Path, vcd: &std::path::Path| {
+        Command::new(binary).args(["-o"]).arg(vcd).output().unwrap()
+    };
+    let compatibility_run = run(&compatibility, &compatibility_vcd);
+    assert!(
+        compatibility_run.status.success(),
+        "compatibility waveform fixture failed:\n{}{}",
+        String::from_utf8_lossy(&compatibility_run.stdout),
+        String::from_utf8_lossy(&compatibility_run.stderr)
+    );
+    let direct_run = run(&direct, &direct_vcd);
+    assert!(
+        direct_run.status.success(),
+        "direct waveform fixture failed:\n{}{}",
+        String::from_utf8_lossy(&direct_run.stdout),
+        String::from_utf8_lossy(&direct_run.stderr)
+    );
+
+    let compatibility_trace = std::fs::read_to_string(&compatibility_vcd).unwrap();
+    let direct_trace = std::fs::read_to_string(&direct_vcd).unwrap();
+    assert_eq!(direct_trace, compatibility_trace);
+    assert_eq!(
+        waveform_times(&direct_trace),
+        vec![0, 5_000_000, 10_000_000, 15_000_000, 20_000_000, 25_000_000]
+    );
+    assert!(
+        direct_trace.contains("b0011"),
+        "counter value missing:\n{direct_trace}"
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn direct_legacy_initializers_keep_source_order() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");

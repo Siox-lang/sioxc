@@ -6,7 +6,7 @@
 //! compiler. Execution entry points are added beside these tables as the
 //! Process IR emitter gains instruction coverage.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
@@ -29,7 +29,7 @@ use siox::ir::{
 /// This is deliberately a data version rather than the compiler package
 /// version: the reusable native runtime only needs to change when one of the
 /// exported table layouts or encodings changes.
-const PROCESS_ABI_VERSION: u32 = 8;
+const PROCESS_ABI_VERSION: u32 = 9;
 
 /// A process returned normally and has no pending resume.
 const PROCESS_COMPLETED: u8 = 0;
@@ -381,7 +381,9 @@ pub(super) fn declare_state<'ctx>(context: &'ctx Context, module: &Module<'ctx>,
 
     module.add_function(
         "sx.process.reset",
-        context.void_type().fn_type(&[], false),
+        context
+            .void_type()
+            .fn_type(&[context.i32_type().into()], false),
         Some(Linkage::Internal),
     );
     module.add_function(
@@ -3132,6 +3134,26 @@ fn u8_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, name: &str, val
     global.set_constant(true);
 }
 
+/// Emit an externally visible `u64[]`, retaining one zero sentinel for an
+/// empty logical table.
+fn u64_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, name: &str, values: &[u64]) {
+    let ty = context.i64_type();
+    let values = values
+        .iter()
+        .copied()
+        .map(|value| ty.const_int(value, false))
+        .collect::<Vec<_>>();
+    let fallback = [ty.const_zero()];
+    let initializer = ty.const_array(if values.is_empty() {
+        &fallback
+    } else {
+        &values
+    });
+    let global = module.add_global(initializer.get_type(), None, name);
+    global.set_initializer(&initializer);
+    global.set_constant(true);
+}
+
 /// Emit a private NUL-terminated string and return its constant address.
 fn private_string<'ctx>(
     context: &'ctx Context,
@@ -3145,6 +3167,42 @@ fn private_string<'ctx>(
     global.set_constant(true);
     global.set_linkage(Linkage::Private);
     global.as_pointer_value()
+}
+
+/// Emit an externally visible NUL-terminated string.
+fn public_string<'ctx>(context: &'ctx Context, module: &Module<'ctx>, name: &str, value: &str) {
+    let initializer = context.const_string(value.as_bytes(), true);
+    let global = module.add_global(initializer.get_type(), None, name);
+    global.set_initializer(&initializer);
+    global.set_constant(true);
+}
+
+/// Emit an externally visible `const char *const[]`. The strings themselves
+/// remain private object data; the fixed runtime consumes only their pointers.
+fn string_table<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    name: &str,
+    value_prefix: &str,
+    values: &[String],
+) {
+    let pointer = context.ptr_type(AddressSpace::default());
+    let values = values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            private_string(context, module, &format!("{value_prefix}.{index}"), value)
+        })
+        .collect::<Vec<_>>();
+    let fallback = [pointer.const_null()];
+    let initializer = pointer.const_array(if values.is_empty() {
+        &fallback
+    } else {
+        &values
+    });
+    let global = module.add_global(initializer.get_type(), None, name);
+    global.set_initializer(&initializer);
+    global.set_constant(true);
 }
 
 /// A source string carried as a Process IR operand. Runtime messages are data
@@ -4330,6 +4388,18 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
         .get_function("sx.process.reset")
         .expect("process reset declaration");
     builder.position_at_end(context.append_basic_block(reset, "entry"));
+    let selected_root = reset
+        .get_first_param()
+        .expect("process reset has a selected root")
+        .into_int_value();
+    let all_roots = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            selected_root,
+            context.i32_type().const_all_ones(),
+            "process.reset.all_roots",
+        )
+        .unwrap();
     for process in &design.process_ir.processes {
         for local in &process.locals {
             let Some(width) = local_width(design, process.id, local.id) else {
@@ -4496,6 +4566,35 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
             value,
         )
         .expect("declared process storage snapshot");
+        let drives = storage.bindings.iter().any(|binding| {
+            matches!(
+                binding.direction,
+                LayoutDirection::In | LayoutDirection::InOut
+            )
+        });
+        let next = drives.then(|| {
+            let write =
+                context.append_basic_block(reset, &format!("storage{}.bindings", storage.id.0));
+            let next = context.append_basic_block(reset, &format!("storage{}.next", storage.id.0));
+            let selected = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    selected_root,
+                    context
+                        .i32_type()
+                        .const_int(u64::from(storage.owner.0), false),
+                    "process.reset.selected_root",
+                )
+                .unwrap();
+            let enabled = builder
+                .build_or(all_roots, selected, "process.reset.binding_enabled")
+                .unwrap();
+            builder
+                .build_conditional_branch(enabled, write, next)
+                .unwrap();
+            builder.position_at_end(write);
+            next
+        });
         for binding in &storage.bindings {
             if !matches!(
                 binding.direction,
@@ -4510,6 +4609,10 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
                 .expect("validated writable storage region");
             stage_signal(module, &builder, binding.signal, staged)
                 .expect("validated storage binding signal");
+        }
+        if let Some(next) = next {
+            builder.build_unconditional_branch(next).unwrap();
+            builder.position_at_end(next);
         }
         cache.clear();
     }
@@ -6727,6 +6830,181 @@ fn process_entry_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desi
     global.set_constant(true);
 }
 
+#[derive(Default)]
+struct WaveScope {
+    children: BTreeMap<String, WaveScope>,
+    signals: Vec<(usize, String)>,
+}
+
+/// Translate a std-defined logic encoding to the four VCD states. Weak values
+/// retain their definite value bit, while every unknown and high-impedance
+/// discriminant becomes `x` or `z` respectively.
+fn wave_logic_symbols_for_type(design: &Design, name: &str) -> Option<Vec<(u64, String)>> {
+    let symbols = design.enum_syms.get(name)?;
+    let encoding = design.logic_encodings.get(name)?;
+    let mut values = symbols
+        .keys()
+        .copied()
+        .map(|discriminant| {
+            let symbol = if encoding.high_impedance.contains(&discriminant) {
+                "z"
+            } else if encoding.unknown.contains(&discriminant) {
+                "x"
+            } else if encoding.value_bits.get(&discriminant).copied()? {
+                "1"
+            } else {
+                "0"
+            };
+            Some((discriminant, symbol.to_string()))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    values.sort_by_key(|(discriminant, _)| *discriminant);
+    Some(values)
+}
+
+fn wave_logic_symbols(design: &Design, signal: &siox::ir::Signal) -> Option<Vec<(u64, String)>> {
+    wave_logic_symbols_for_type(design, signal.enum_type.as_deref()?)
+}
+
+fn emit_wave_scope_header(out: &mut String, name: &str, scope: &WaveScope, design: &Design) {
+    out.push_str(&format!("$scope module {name} $end\n"));
+    for &(id, ref signal_name) in &scope.signals {
+        let signal = &design.signals[id];
+        let logic = wave_logic_symbols(design, signal).is_some();
+        let kind = if signal.real {
+            "real"
+        } else if signal
+            .enum_type
+            .as_ref()
+            .is_some_and(|name| !logic && design.enum_syms.contains_key(name))
+        {
+            "string"
+        } else {
+            "wire"
+        };
+        let width = if kind == "string" || logic {
+            1
+        } else {
+            signal.width.max(1)
+        };
+        out.push_str(&format!("$var {kind} {width} v{id} {signal_name} $end\n"));
+    }
+    for (child_name, child) in &scope.children {
+        emit_wave_scope_header(out, child_name, child, design);
+    }
+    out.push_str("$upscope $end\n");
+}
+
+/// Emit the design-independent waveform ABI as immutable object data.
+///
+/// Kinds are `0 = bits`, `1 = real`, `2 = symbolic enum`, `3 = scalar Logic`,
+/// and `4 = packed Logic with a discriminant companion plane`. Symbol ranges
+/// map either enum discriminants to names or Logic discriminants to one VCD
+/// character. Companion and temporary metavalue planes are deliberately not
+/// visible as independent waveform signals.
+fn emit_wave_metadata<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: &Design) {
+    let hidden = design
+        .meta_of
+        .values()
+        .chain(design.metavalue_temps.iter())
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let visible = design
+        .signals
+        .iter()
+        .enumerate()
+        .filter(|(id, _)| !hidden.contains(&(*id as u32)))
+        .collect::<Vec<_>>();
+
+    let mut root = WaveScope::default();
+    for &(id, signal) in &visible {
+        let mut parts = signal.path.split('.').collect::<Vec<_>>();
+        let signal_name = parts.pop().unwrap_or("signal").to_string();
+        if parts.is_empty() {
+            parts.push("top");
+        }
+        let mut scope = &mut root;
+        for part in parts {
+            scope = scope.children.entry(part.to_string()).or_default();
+        }
+        scope.signals.push((id, signal_name));
+    }
+    let mut header =
+        String::from("$version siox native test executable $end\n$timescale 1fs $end\n");
+    for (name, scope) in &root.children {
+        emit_wave_scope_header(&mut header, name, scope, design);
+    }
+    header.push_str("$enddefinitions $end\n");
+
+    let mut ids = Vec::with_capacity(visible.len());
+    let mut widths = Vec::with_capacity(visible.len());
+    let mut kinds = Vec::with_capacity(visible.len());
+    let mut companions = Vec::with_capacity(visible.len());
+    let mut symbol_offsets = Vec::with_capacity(visible.len() + 1);
+    let mut symbol_values = Vec::new();
+    let mut symbol_texts = Vec::new();
+    for &(id, signal) in &visible {
+        ids.push(id as u32);
+        widths.push(signal.width.max(1));
+        let companion = design.meta_of.get(&(id as u32)).copied();
+        companions.push(companion.unwrap_or(u32::MAX));
+        symbol_offsets.push(symbol_values.len() as u32);
+
+        let (kind, symbols) = if signal.real {
+            (1, Vec::new())
+        } else if companion.is_some() {
+            let symbols = design
+                .array_element_enums
+                .get(&(id as u32))
+                .and_then(|name| wave_logic_symbols_for_type(design, name))
+                .unwrap_or_default();
+            (4, symbols)
+        } else if let Some(symbols) = wave_logic_symbols(design, signal) {
+            (3, symbols)
+        } else if let Some(symbols) = signal
+            .enum_type
+            .as_ref()
+            .and_then(|name| design.enum_syms.get(name))
+        {
+            let mut symbols = symbols
+                .iter()
+                .map(|(&discriminant, symbol)| (discriminant, symbol.clone()))
+                .collect::<Vec<_>>();
+            symbols.sort_by_key(|(discriminant, _)| *discriminant);
+            (2, symbols)
+        } else {
+            (0, Vec::new())
+        };
+        kinds.push(kind);
+        for (value, text) in symbols {
+            symbol_values.push(value);
+            symbol_texts.push(text);
+        }
+    }
+    symbol_offsets.push(symbol_values.len() as u32);
+
+    u32_global(
+        context,
+        module,
+        "sx_wave_signal_count",
+        visible.len() as u32,
+    );
+    u32_table(context, module, "sx_wave_signal_ids", &ids);
+    u32_table(context, module, "sx_wave_signal_widths", &widths);
+    u8_table(context, module, "sx_wave_signal_kinds", &kinds);
+    u32_table(context, module, "sx_wave_signal_companions", &companions);
+    u32_table(context, module, "sx_wave_symbol_offsets", &symbol_offsets);
+    u64_table(context, module, "sx_wave_symbol_values", &symbol_values);
+    string_table(
+        context,
+        module,
+        "sx_wave_symbol_texts",
+        "sx.wave.symbol",
+        &symbol_texts,
+    );
+    public_string(context, module, "sx_wave_vcd_header", &header);
+}
+
 /// Materialize the runtime-facing test/process descriptor tables.
 ///
 /// All lists use offset + flattened-value tables, avoiding generated symbols
@@ -6737,6 +7015,7 @@ fn process_entry_table<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desi
 pub(super) fn emit_metadata<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: &Design) {
     let process_ir = &design.process_ir;
     emit_state_helpers(context, module, design);
+    emit_wave_metadata(context, module, design);
     u32_global(
         context,
         module,
@@ -6941,7 +7220,7 @@ mod tests {
             ..Design::default()
         };
         let llvm = crate::llvm::emit_module_ir(&design).unwrap();
-        assert!(llvm.contains("@sx_process_abi_version = constant i32 8"));
+        assert!(llvm.contains("@sx_process_abi_version = constant i32 9"));
         assert!(llvm.contains("define i8 @sx_process_commit()"));
         assert!(llvm.contains("define i8 @sx_process_changed(i32"));
         assert!(llvm.contains("define i8 @sx_process_storage_changed(i32"));
@@ -6962,6 +7241,13 @@ mod tests {
             "@sx_process_sensitivity_offsets = constant [3 x i32] [i32 0, i32 0, i32 1]"
         ));
         assert!(llvm.contains("@sx_process_sensitivity_ids = constant [1 x i32] zeroinitializer"));
+        assert!(llvm.contains("@sx_wave_signal_count = constant i32 1"));
+        assert!(llvm.contains("@sx_wave_signal_ids = constant [1 x i32] zeroinitializer"));
+        assert!(llvm.contains("@sx_wave_signal_widths = constant [1 x i32] [i32 1]"));
+        assert!(llvm.contains("@sx_wave_signal_kinds = constant [1 x i8] zeroinitializer"));
+        assert!(llvm.contains("@sx_wave_signal_companions = constant [1 x i32] [i32 -1]"));
+        assert!(llvm.contains("@sx_wave_vcd_header = constant"));
+        assert!(llvm.contains("$scope module Smoke $end"));
         assert!(llvm.contains("define internal i8 @sx.process.0(i32"));
         assert!(llvm.contains("define internal i8 @sx.process.1(i32"));
     }
@@ -6976,6 +7262,8 @@ mod tests {
         assert!(llvm.contains("@sx_test_names = constant [1 x ptr] zeroinitializer"));
         assert!(llvm.contains("@sx_process_entries = constant [1 x ptr] zeroinitializer"));
         assert!(llvm.contains("@sx_process_activations = constant [1 x i8] zeroinitializer"));
+        assert!(llvm.contains("@sx_wave_signal_count = constant i32 0"));
+        assert!(llvm.contains("@sx_wave_signal_ids = constant [1 x i32] zeroinitializer"));
     }
 
     /// Resume dispatch preserves CFG block identity and emits the stable

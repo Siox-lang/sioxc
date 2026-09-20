@@ -223,8 +223,12 @@ language-lowering path.
    from LLVM-emitted state: unknowns force equality/ordering false and
    inequality true, while weak values remain definite. Testbench-owned packed
    storage still needs its own companion plane. Delayed-write cancellation,
-   dynamic strings and other runtime calls, dynamic aggregate selection/update, and
-   waveforms are the next coverage boundary before it becomes the default.
+   dynamic strings and other runtime calls, dynamic aggregate selection/update,
+   and direct FST output are the next coverage boundary before it becomes the
+   default. Direct VCD is already runtime-owned: the LLVM object exports
+   immutable signal/kind/companion/symbol tables, and the fixed writer samples
+   only quiescent scheduler points. All 124 current agreements compare exact
+   VCD output in both default and `bitpack` corpus sweeps.
    Statement and expression matches already consume
    frontend-normalized exact, masked, alternative, wildcard, and
    directional-range patterns directly in LLVM; value arms may use either a

@@ -112,16 +112,17 @@ Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
 - 🟡 **Retire generated C.** The fixed scheduler/CLI already links LLVM-emitted
-  process entries and runs 124 corpus cases in agreement without design C.
+  process entries and runs 124 corpus cases in agreement without design C;
+  all 124 also match VCD signal values and timestamps in default and `bitpack`.
   Finish the remaining LLVM/runtime coverage, make this path unconditional,
   run the full default and `bitpack` differential gates, then delete the
   AST-to-C statement/value translator and its dispatcher. Clang may remain a
   linker driver; it must not translate siox semantics through C.
-- 🔴 **Direct VCD/FST output.** Export immutable signal/name/type/companion
-  descriptors from the LLVM object. The fixed runtime must sample settled
-  change points and write hierarchy, arbitrary-width values, Logic X/Z, real
-  values, enums, and monotonic multi-test timestamps. Once both backends emit
-  traces, make the differential matrix compare every signal at every timestamp.
+- 🟡 **Direct VCD/FST output.** The LLVM object now exports immutable waveform
+  descriptors and the fixed runtime writes VCD at settled change points,
+  including hierarchy, arbitrary-width values, Logic X/Z, real values, enums,
+  and monotonic multi-test timestamps. Add the fixed libfst consumer and accept
+  non-`.vcd` output paths before removing the compatibility waveform writer.
 - 🟡 **Runtime diagnostic parity.** Resolve Process source IDs/offsets through
   stable embedded source metadata so warnings and failures use the same
   filename, line, snippet, and caret form. `warn_test` is the remaining known

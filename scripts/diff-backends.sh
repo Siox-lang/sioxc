@@ -69,8 +69,8 @@ run_backend() {
 
 # A VCD records every signal at every timestamp, so it is a far stronger
 # observable than stdout for the many corpus tests that print nothing. It is
-# compared only when BOTH backends emit one; the direct runtime does not accept
-# `-o` yet, so today this is inert and will start contributing by itself.
+# compared only when BOTH backends emit one; every currently agreeing direct
+# case does, in both default and bit-packed sweeps.
 compare_waves() {
     local binary=$1 out=$2
     "$binary" -o "$out" >/dev/null 2>&1 || return 1
@@ -142,7 +142,7 @@ done
 echo
 echo "$agree agree; $diverge diverge; $gap direct-only gaps; $oracle oracle failures; $skipped without tests"
 if [[ $agree -gt 0 ]]; then
-    echo "  of those agreements, $boilerplate compared harness output only" \
+    echo "  of those agreements, $boilerplate had only boilerplate stdout" \
          "and $waved also compared a waveform"
 fi
 for kind in DIRECT-UNSUPPORTED DIRECT-SEMANTIC DIRECT-TIMEOUT DIRECT-BUILD-FAIL; do

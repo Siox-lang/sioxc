@@ -1229,11 +1229,13 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let i32 = self.ctx.i32_type();
         let void = self.ctx.void_type();
 
-        // void sx_reset(void): signals take their declared initial values
-        // (VHDL-style); events clear.
+        // void sx_reset_test(i32 root): signals take their declared initial
+        // values (VHDL-style), events clear, and only the selected test root's
+        // persistent inputs are published. The no-argument public reset below
+        // keeps the general design ABI by selecting every root.
         let f = self
             .module
-            .add_function("sx_reset", void.fn_type(&[], false), None);
+            .add_function("sx_reset_test", void.fn_type(&[i32.into()], false), None);
         self.builder
             .position_at_end(self.ctx.append_basic_block(f, "e"));
         self.builder
@@ -1278,9 +1280,21 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 self.module
                     .get_function("sx.process.reset")
                     .expect("process reset declaration"),
-                &[],
+                &[f.get_first_param().expect("reset root").into()],
                 "",
             )
+            .unwrap();
+        self.builder.build_return(None).unwrap();
+
+        // void sx_reset(void): reset every process-storage root for external
+        // ABI consumers that are not running one test descriptor.
+        let reset = self
+            .module
+            .add_function("sx_reset", void.fn_type(&[], false), None);
+        self.builder
+            .position_at_end(self.ctx.append_basic_block(reset, "e"));
+        self.builder
+            .build_call(f, &[i32.const_all_ones().into()], "")
             .unwrap();
         self.builder.build_return(None).unwrap();
 

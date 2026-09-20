@@ -2083,6 +2083,7 @@ signed main(void) {
             .args(["-std=c11", "-Wall", "-Wextra", "-Werror"])
             .arg(&probe)
             .arg(runtime.join("process.c"))
+            .arg(runtime.join("wave.c"))
             .arg("-I")
             .arg(&runtime)
             .arg(&object)

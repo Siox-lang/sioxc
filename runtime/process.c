@@ -1,4 +1,5 @@
 #include "process.h"
+#include "wave.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,7 +12,7 @@ enum {
     SX_PROCESS_FINISHED = 3,
     SX_PROCESS_SETTLING = 4,
     SX_PROCESS_UNSUPPORTED = 255,
-    SX_PROCESS_ABI = 8,
+    SX_PROCESS_ABI = 9,
     SX_EVENT_WRITE = 0,
     SX_EVENT_RESUME = 1,
     SX_SUSPENSION_NONE = 0,
@@ -24,17 +25,20 @@ typedef uint8_t (*sx_process_entry)(uint32_t resume_block);
 
 extern const uint32_t sx_process_abi_version;
 extern const uint32_t sx_test_count;
+extern const uint32_t sx_test_roots[];
 extern const uint32_t sx_test_process_offsets[];
 extern const uint32_t sx_test_process_ids[];
 extern const uint32_t sx_process_count;
 extern sx_process_entry const sx_process_entries[];
+extern const uint32_t sx_process_roots[];
+extern const uint32_t sx_process_owners[];
 extern const uint32_t sx_process_initial_blocks[];
 extern const uint8_t sx_process_activations[];
 extern const uint32_t sx_process_sensitivity_offsets[];
 extern const uint8_t sx_process_sensitivity_kinds[];
 extern const uint32_t sx_process_sensitivity_ids[];
 
-extern void sx_reset(void);
+extern void sx_reset_test(uint32_t root);
 extern uint8_t sx_process_commit(void);
 extern uint8_t sx_process_changed(uint32_t signal);
 extern uint8_t sx_process_storage_changed(uint32_t storage);
@@ -489,7 +493,7 @@ static int sx_apply_due_events(uint8_t *ready, uint8_t *suspended,
 
 int sx_runtime_run_test(uint32_t test) {
     uint8_t *ready = 0, *next = 0, *stopped = 0, *suspended = 0,
-            *settling = 0, *timed_ready = 0;
+            *settling = 0, *timed_ready = 0, *selected = 0;
     uint32_t *resume_blocks = 0;
     uint32_t begin, end;
     int foreground_started = 0;
@@ -515,14 +519,16 @@ int sx_runtime_run_test(uint32_t test) {
     suspended = calloc(bytes, 1);
     settling = calloc(bytes, 1);
     timed_ready = calloc(bytes, 1);
+    selected = calloc(bytes, 1);
     resume_blocks = calloc(bytes, sizeof(uint32_t));
     if (!ready || !next || !stopped || !suspended || !settling ||
-        !timed_ready || !resume_blocks) {
+        !timed_ready || !selected || !resume_blocks) {
         result = sx_fail("cannot allocate Process IR ready queue");
         goto done;
     }
 
-    sx_reset();
+    sx_reset_test(sx_test_roots[test]);
+    sx_wave_begin_test();
     /* Reset initializes process storage and stages its input bindings. Publish
        those values before any reactive process reads them. The compatibility
        runner also settles the initialized design before test stimulus starts. */
@@ -539,16 +545,27 @@ int sx_runtime_run_test(uint32_t test) {
             result = sx_fail_id("test references invalid process", process);
             goto done;
         }
+        selected[process] = 1;
         resume_blocks[process] = sx_process_initial_blocks[process];
-        if (sx_process_activations[process] == 1) ready[process] = 1;
+    }
+    /* Compatibility settling initializes every hardware instance in the
+       combined design object, even when its owning test is filtered out. Run
+       those nested hardware processes during bootstrap, but never another
+       test root's foreground/clock process. */
+    for (uint32_t process = 0; process < sx_process_count; ++process) {
+        int nested_hardware = sx_process_owners[process] != sx_process_roots[process];
+        if (sx_process_activations[process] == 1 &&
+            (selected[process] || nested_hardware)) {
+            resume_blocks[process] = sx_process_initial_blocks[process];
+            ready[process] = 1;
+        }
     }
 
     for (;;) {
         int ran = 0;
         int finish = 0;
         int reactive_ready = 0;
-        for (uint32_t item = begin; item < end; ++item) {
-            uint32_t process = sx_test_process_ids[item];
+        for (uint32_t process = 0; process < sx_process_count; ++process) {
             if (process < sx_process_count && ready[process] &&
                 !stopped[process] && !suspended[process] &&
                 !settling[process] && sx_process_activations[process] == 1) {
@@ -641,16 +658,24 @@ int sx_runtime_run_test(uint32_t test) {
                 goto done;
             }
             uint8_t changed = sx_process_commit();
-            if (finish) break;
+            if (finish) {
+                sx_wave_sample(sx_now);
+                break;
+            }
             /* A no-change commit is the fixed point even if a reactive entry
              * was conservatively queued once more from the previous delta.
              * Release foreground observers here so a self-sensitive clock
              * cannot keep them in the settling set forever. */
-            if (!changed)
+            if (!changed) {
+                sx_wave_sample(sx_now);
                 (void)sx_release_settling(begin, end, stopped, settling, next);
+            }
             if (changed) {
-                for (uint32_t item = begin; item < end; ++item) {
-                    uint32_t process = sx_test_process_ids[item];
+                for (uint32_t process = 0; process < sx_process_count; ++process) {
+                    int nested_bootstrap = !foreground_started &&
+                                           sx_process_owners[process] !=
+                                               sx_process_roots[process];
+                    if (!selected[process] && !nested_bootstrap) continue;
                     if (stopped[process] || settling[process])
                         continue;
                     if (suspended[process] == SX_SUSPENSION_CONDITION) {
@@ -676,6 +701,11 @@ int sx_runtime_run_test(uint32_t test) {
                 next[process] = 0;
             continue;
         }
+
+        /* A waveform observes settled change points, never an intermediate
+           delta. Changed-value suppression in the fixed writer makes repeated
+           quiescent visits free of duplicate records. */
+        sx_wave_sample(sx_now);
 
         /* Reactive hardware starts once at time zero and reaches a fixed point
            before foreground/test processes observe it. Events registered by
@@ -768,6 +798,7 @@ done:
     sx_current_process = UINT32_MAX;
     sx_clear_events();
     free(resume_blocks);
+    free(selected);
     free(settling);
     free(timed_ready);
     free(suspended);
