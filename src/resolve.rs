@@ -1743,7 +1743,9 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(a);
                 }
             }
-            Expr::Construct { ty, args, .. } => {
+            Expr::Construct {
+                ty, args, spread, ..
+            } => {
                 if let Some(ty) = ty {
                     self.resolve_type(ty);
                 }
@@ -1751,6 +1753,9 @@ impl<'a> Resolver<'a> {
                     if let Some(v) = &c.value {
                         self.resolve_expr(v);
                     }
+                }
+                if let Some(spread) = spread {
+                    self.resolve_expr(spread);
                 }
             }
             Expr::Concat { parts, .. } => {

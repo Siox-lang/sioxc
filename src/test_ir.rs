@@ -3458,8 +3458,10 @@ fn value_ref_with_type(
                 let base = value_ref(base, process, context);
                 let index_span = ast::expr_span(index);
                 let index = value_ref(index, process, context);
-                let range = process_value_source_layout(base, context.process_ir)
-                    .and_then(crate::ir::SourceLayout::index_range);
+                let base_layout = process_value_source_layout(base, context.process_ir);
+                let packed = base_layout
+                    .is_some_and(|layout| matches!(&layout.kind, LayoutKind::Packed { .. }));
+                let range = base_layout.and_then(crate::ir::SourceLayout::index_range);
                 let index = range.map_or(index, |range| {
                     checked_process_index(index, index_span, range, context)
                 });
@@ -3479,7 +3481,11 @@ fn value_ref_with_type(
                 let ty = ty
                     .filter(|ty| !matches!(ty, crate::types::Ty::Error))
                     .or(recovered);
-                let width = source_value_width(&kind, ty.as_ref(), process, context);
+                let width = if packed {
+                    Some(1)
+                } else {
+                    source_value_width(&kind, ty.as_ref(), process, context)
+                };
                 return push_value(span, ty, width, kind, context);
             }
         }

@@ -73,10 +73,11 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   transport-like one-shot writes. Add the required inertial cancellation and
   rejection behavior, keyed by target/driver and source order, without adding
   a backend-specific scheduling rule.
-- 🟡 **Dynamic aggregate updates.** Represent runtime-selected aggregate
-  projections and multiple partial destinations of one root as one explicit
-  pre-write-snapshot/update operation. Reads, writes, checks, and merge order
-  must be defined before either backend lowers it.
+- 🟡 **Canonicalize dynamic aggregate updates.** Process assignments already
+  retain runtime-selected projections, and direct LLVM evaluates every index
+  and right-hand leaf before one packed root merge. Make that pre-write
+  snapshot/update invariant explicit in Process IR validation or a dedicated
+  operation before deleting the temporary typed-AST adapter.
 - 🟡 **Testbench metavalue storage.** Retain a companion plane for locally
   stored packed Logic values so direct comparisons and aggregate operations
   preserve X/Z just like finalized hardware signals.
@@ -90,8 +91,8 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   packed values, branches, loops, matches, clocks, suspension, delayed writes,
   formatting, assertions, and scalar foreign calls execute directly today.
   Remaining executable forms are receiver methods, procedure-shaped calls,
-  runtime recursion/general call CFGs, non-packed conversions, dynamic strings,
-  and the dynamic aggregate updates defined above. Unsupported forms must
+  runtime recursion/general call CFGs, non-packed conversions, and dynamic
+  strings. Unsupported forms must
   continue to fail transactionally before calls or staged writes become
   observable.
 - 🟡 **Move all host services behind the fixed ABI.** Add runtime-owned UTF-8
@@ -112,8 +113,8 @@ Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
 - 🟡 **Retire generated C.** The fixed scheduler/CLI already links LLVM-emitted
-  process entries and runs 126 corpus cases in agreement without design C;
-  all 126 also match VCD signal values and timestamps in default and `bitpack`,
+  process entries and runs 131 corpus cases in agreement without design C;
+  all 131 also match VCD signal values and timestamps in default and `bitpack`,
   while focused tests establish decoded FST parity for hierarchy, all value
   kinds, multiword values, and monotonic multi-test timelines.
   Finish the remaining LLVM/runtime coverage, make this path unconditional,

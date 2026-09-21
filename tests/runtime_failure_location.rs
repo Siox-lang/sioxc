@@ -19,14 +19,22 @@ use std::process::Command;
 
 /// Build `src` as a test executable, run it, and return everything it printed.
 fn run(name: &str, src: &str) -> String {
+    run_backend(name, src, false)
+}
+
+fn run_backend(name: &str, src: &str, direct: bool) -> String {
     let dir = std::env::temp_dir().join(format!("siox_failloc_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join(format!("{name}.siox"));
     std::fs::write(&file, src).unwrap();
     let bin: PathBuf = dir.join(format!("{name}.bin"));
     let _ = std::fs::remove_file(&bin);
-    let built = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+    command.args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")]);
+    if direct {
+        command.env("SIOX_DIRECT_PROCESS_RUNTIME", "1");
+    }
+    let built = command
         .arg("--test")
         .arg(&file)
         .arg("-o")
@@ -114,6 +122,27 @@ fn a_native_index_violation_is_not_a_silent_write() {
     assert!(
         out.contains("index_native.siox:7:12"),
         "the runtime write index should be blamed, got:\n{out}"
+    );
+}
+
+#[test]
+fn a_direct_process_index_violation_is_not_a_poisoned_write() {
+    let src = "module m;\n\
+               using std::bits::{unsigned};\n\
+               #[test] entity T {}\n\
+               impl T {\n\
+               \x20   let values: unsigned[8][4..2] = [10, 20, 30];\n\
+               \x20   let index: integer = 9;\n\
+               \x20   values[index] = 99;\n\
+               }\n";
+    let out = run_backend("index_direct", src, true);
+    assert!(
+        out.contains("index 9 is outside declared range 4..2"),
+        "a direct write should report its checked Process index, got:\n{out}"
+    );
+    assert!(
+        out.contains("index_direct.siox:7:12"),
+        "the direct write should blame the index before its bounded recovery merge, got:\n{out}"
     );
 }
 

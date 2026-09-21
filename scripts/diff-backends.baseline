@@ -16,7 +16,7 @@ char_fn_return_test AGREE
 char_read_test DIRECT-UNSUPPORTED
 complex_test DIRECT-SEMANTIC
 compose_nested_test DIRECT-UNSUPPORTED
-composite_self_assign_test DIRECT-UNSUPPORTED
+composite_self_assign_test AGREE
 concat_test DIRECT-UNSUPPORTED
 connect_forms_test DIRECT-SEMANTIC
 connected_struct_initializer_test AGREE
@@ -36,7 +36,7 @@ entity_associated_fn_test AGREE
 enum_const_test AGREE
 enum_inline_display_test DIRECT-UNSUPPORTED
 family_test AGREE
-fanout_init_test DIRECT-UNSUPPORTED
+fanout_init_test AGREE
 ffi_real_test AGREE
 ffi_test AGREE
 fifo_test AGREE
@@ -114,7 +114,7 @@ registered_struct_test AGREE
 resolve_table_test DIRECT-SEMANTIC
 riscv_alu_test AGREE
 riscv_decode_test AGREE
-runtime_vector_index_test DIRECT-UNSUPPORTED
+runtime_vector_index_test AGREE
 saturating_accumulator_test AGREE
 shift_edge_test DIRECT-SEMANTIC
 signed_branch_expr_test AGREE
@@ -148,12 +148,12 @@ struct_literal_test AGREE
 struct_port_literal_test DIRECT-SEMANTIC
 struct_state_test AGREE
 struct_test AGREE
-struct_value_test DIRECT-UNSUPPORTED
+struct_value_test AGREE
 struct_valued_call_test DIRECT-UNSUPPORTED
 testbench_bus_link_test AGREE
 testbench_composite_test DIRECT-UNSUPPORTED
 testbench_const_test DIRECT-UNSUPPORTED
-testbench_dynamic_array_write_test DIRECT-UNSUPPORTED
+testbench_dynamic_array_write_test AGREE
 testbench_lint_scope_test AGREE
 time_frequency_test DIRECT-UNSUPPORTED
 timeline_edge_test AGREE

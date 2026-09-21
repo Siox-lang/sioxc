@@ -17,9 +17,9 @@ use inkwell::AddressSpace;
 use inkwell::{FloatPredicate, IntPredicate};
 
 use siox::ir::{
-    Design, IndexSite, LayoutDirection, LayoutKind, ProcessActivation, ProcessAssignment,
-    ProcessBinaryOp, ProcessCfg, ProcessDisplayKind, ProcessFormatPart, ProcessId,
-    ProcessInstruction, ProcessLocalId, ProcessNumber, ProcessPattern, ProcessRuntimeOp,
+    Design, IndexSite, LayoutDirection, LayoutKind, LayoutRange, ProcessActivation,
+    ProcessAssignment, ProcessBinaryOp, ProcessCfg, ProcessDisplayKind, ProcessFormatPart,
+    ProcessId, ProcessInstruction, ProcessLocalId, ProcessNumber, ProcessPattern, ProcessRuntimeOp,
     ProcessSensitivity, ProcessSignalState, ProcessStorageId, ProcessTerminator, ProcessUnaryOp,
     ProcessValueId, ProcessValueKind, SignalId, SourceLayout,
 };
@@ -509,6 +509,48 @@ fn insert_region<'ctx>(
             .ok()?
     };
     builder.build_or(cleared, part, "pv.aggregate.insert").ok()
+}
+
+/// Variable-offset counterpart of [`insert_region`]. `offset` is already
+/// bounded by the place layout, so neither shift can reach the root width.
+fn insert_dynamic_region<'ctx>(
+    builder: &Builder<'ctx>,
+    base: IntValue<'ctx>,
+    part: IntValue<'ctx>,
+    offset: IntValue<'ctx>,
+    width: u32,
+) -> Option<IntValue<'ctx>> {
+    let total = base.get_type().get_bit_width();
+    if width == 0 || width > total || offset.get_type() != base.get_type() {
+        return None;
+    }
+    let ty = base.get_type();
+    let low_mask = builder
+        .build_right_shift(
+            ty.const_all_ones(),
+            ty.const_int(u64::from(total - width), false),
+            false,
+            "pv.dynamic.low_mask",
+        )
+        .ok()?;
+    let mask = builder
+        .build_left_shift(low_mask, offset, "pv.dynamic.mask")
+        .ok()?;
+    let cleared = builder
+        .build_and(
+            base,
+            builder.build_not(mask, "pv.dynamic.keep").ok()?,
+            "pv.dynamic.clear",
+        )
+        .ok()?;
+    let part = fit(builder, part, total)?;
+    let part = builder
+        .build_and(part, low_mask, "pv.dynamic.part.masked")
+        .ok()?;
+    let placed = builder
+        .build_left_shift(part, offset, "pv.dynamic.place")
+        .ok()?;
+    builder.build_or(cleared, placed, "pv.dynamic.insert").ok()
 }
 
 /// Build the recursive language default into the same packed frame used for
@@ -2087,12 +2129,66 @@ fn aggregate_signal_value<'ctx>(
     (offset == width).then_some(packed)
 }
 
+/// Convert a checked logical index into a bounded zero-based storage position.
+/// The modulo is semantically inert for a valid index and keeps later LLVM
+/// shifts defined on an invalid path while the checked operand latches the
+/// source diagnostic.
+#[allow(clippy::too_many_arguments)]
+fn dynamic_index_position<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    index: ProcessValueId,
+    range: LayoutRange,
+    source_order: bool,
+    arithmetic_width: u32,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let count = u32::try_from(range.len()?).ok()?;
+    if count == 0 {
+        return None;
+    }
+    let index = process_value_at(
+        context,
+        module,
+        builder,
+        design,
+        index,
+        arithmetic_width,
+        false,
+        active,
+        index_sites,
+        cache,
+    )?;
+    let ty = index.get_type();
+    let origin = if source_order && !range.ascending() {
+        range.left
+    } else {
+        range.left.min(range.right)
+    };
+    let origin = ty.const_int(origin as u64, true);
+    let position = if source_order && !range.ascending() {
+        builder
+            .build_int_sub(origin, index, "pv.index.position")
+            .ok()?
+    } else {
+        builder
+            .build_int_sub(index, origin, "pv.index.position")
+            .ok()?
+    };
+    builder
+        .build_int_unsigned_rem(
+            position,
+            ty.const_int(u64::from(count), false),
+            "pv.index.safe_position",
+        )
+        .ok()
+}
+
 /// Select one runtime-indexed region from a recursively packed process value.
-/// The index has already been wrapped in `CheckedIndex` by source lowering, so
-/// evaluating it records an out-of-domain diagnostic. Reducing the physical
-/// position modulo the element count keeps the LLVM shift defined on that
-/// failing path; the runtime reports the latched error before the value can be
-/// observed by a successful test.
 #[allow(clippy::too_many_arguments)]
 fn dynamic_index_region<'ctx>(
     context: &'ctx Context,
@@ -2121,45 +2217,20 @@ fn dynamic_index_region<'ctx>(
     if element_width != result_width {
         return None;
     }
-    let count = u32::try_from(range.len()?).ok()?;
-    if count == 0 {
-        return None;
-    }
-    let index = process_value_at(
+    let safe_position = dynamic_index_position(
         context,
         module,
         builder,
         design,
         index,
+        range,
+        source_order,
         base_width,
-        false,
         active,
         index_sites,
         cache,
     )?;
-    let ty = index.get_type();
-    let origin = if source_order && !range.ascending() {
-        range.left
-    } else {
-        range.left.min(range.right)
-    };
-    let origin = ty.const_int(origin as u64, true);
-    let position = if source_order && !range.ascending() {
-        builder
-            .build_int_sub(origin, index, "pv.index.position")
-            .ok()?
-    } else {
-        builder
-            .build_int_sub(index, origin, "pv.index.position")
-            .ok()?
-    };
-    let safe_position = builder
-        .build_int_unsigned_rem(
-            position,
-            ty.const_int(u64::from(count), false),
-            "pv.index.safe_position",
-        )
-        .ok()?;
+    let ty = safe_position.get_type();
     let offset = if element_width == 1 {
         safe_position
     } else {
@@ -3949,6 +4020,23 @@ struct StaticPlace {
     width: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct DynamicPlaceIndex {
+    value: ProcessValueId,
+    range: LayoutRange,
+    stride: u32,
+    source_order: bool,
+}
+
+#[derive(Clone, Debug)]
+struct DynamicPlace {
+    root: StaticPlaceRoot,
+    root_width: u32,
+    constant_offset: u32,
+    width: u32,
+    indices: Vec<DynamicPlaceIndex>,
+}
+
 #[derive(Clone, Copy)]
 struct ScheduleSite {
     id: u32,
@@ -4089,20 +4177,160 @@ fn static_place(design: &Design, id: ProcessValueId) -> Option<StaticPlace> {
     }
 }
 
+/// Resolve an assignment place whose root is static but one or more aggregate
+/// projections are selected at runtime. Constant and dynamic contributions
+/// remain separate so codegen can evaluate every index before performing one
+/// read/modify/write of the root storage object.
+fn dynamic_place(design: &Design, id: ProcessValueId) -> Option<DynamicPlace> {
+    fn walk(design: &Design, id: ProcessValueId) -> Option<DynamicPlace> {
+        let value = design.process_ir.values.get(id.0 as usize)?;
+        match &value.kind {
+            ProcessValueKind::Local { process, local } => {
+                let width = local_width(design, *process, *local)?;
+                (value.bit_width == Some(width)).then_some(DynamicPlace {
+                    root: StaticPlaceRoot::Local(*process, *local),
+                    root_width: width,
+                    constant_offset: 0,
+                    width,
+                    indices: Vec::new(),
+                })
+            }
+            ProcessValueKind::Storage(storage) => {
+                let width = storage_state_width(design, *storage)?;
+                (value.bit_width == Some(width)).then_some(DynamicPlace {
+                    root: StaticPlaceRoot::Storage(*storage),
+                    root_width: width,
+                    constant_offset: 0,
+                    width,
+                    indices: Vec::new(),
+                })
+            }
+            ProcessValueKind::Signal { signals, state } => {
+                let [signal] = signals.as_slice() else {
+                    return None;
+                };
+                if !matches!(state, ProcessSignalState::Current) {
+                    return None;
+                }
+                let width = design.signal_width(*signal)?;
+                (value.bit_width == Some(width)).then_some(DynamicPlace {
+                    root: StaticPlaceRoot::Signal(*signal),
+                    root_width: width,
+                    constant_offset: 0,
+                    width,
+                    indices: Vec::new(),
+                })
+            }
+            ProcessValueKind::Field { base, field } => {
+                let mut place = walk(design, *base)?;
+                let selected = field_slice(process_value_layout(design, *base)?, field)?;
+                place.constant_offset = place.constant_offset.checked_add(selected.offset)?;
+                place.width = selected.width;
+                value
+                    .bit_width
+                    .is_none_or(|width| width == selected.width)
+                    .then_some(place)
+            }
+            ProcessValueKind::Index { base, index } => {
+                let mut place = walk(design, *base)?;
+                let base_layout = process_value_layout(design, *base)?;
+                if let Some(index) = process_constant_i64(design, *index) {
+                    let (offset, width) = match &base_layout.kind {
+                        LayoutKind::Array { .. } => {
+                            let selected = array_slice(base_layout, index)?;
+                            (selected.offset, selected.width)
+                        }
+                        LayoutKind::Packed {
+                            range: Some(range), ..
+                        } => {
+                            let low = range.left.min(range.right);
+                            (u32::try_from(index.checked_sub(low)?).ok()?, 1)
+                        }
+                        _ => return None,
+                    };
+                    place.constant_offset = place.constant_offset.checked_add(offset)?;
+                    place.width = width;
+                } else {
+                    let (range, stride, source_order) = match &base_layout.kind {
+                        LayoutKind::Array {
+                            range: Some(range),
+                            element,
+                        } => (*range, layout_width(element)?, true),
+                        LayoutKind::Packed {
+                            range: Some(range), ..
+                        } => (*range, 1, false),
+                        _ => return None,
+                    };
+                    place.indices.push(DynamicPlaceIndex {
+                        value: *index,
+                        range,
+                        stride,
+                        source_order,
+                    });
+                    place.width = stride;
+                }
+                (value.bit_width == Some(place.width)).then_some(place)
+            }
+            _ => None,
+        }
+    }
+
+    let place = walk(design, id)?;
+    if place.indices.is_empty() {
+        return None;
+    }
+    let maximum_offset =
+        place
+            .indices
+            .iter()
+            .try_fold(place.constant_offset, |offset, projection| {
+                let count = u32::try_from(projection.range.len()?).ok()?;
+                offset.checked_add(count.checked_sub(1)?.checked_mul(projection.stride)?)
+            })?;
+    (maximum_offset.checked_add(place.width)? <= place.root_width).then_some(place)
+}
+
 fn place_has_semantics(place: StaticPlace, owner: ProcessId, semantics: ProcessAssignment) -> bool {
+    root_has_semantics(place.root, owner, semantics)
+}
+
+fn root_has_semantics(
+    root: StaticPlaceRoot,
+    owner: ProcessId,
+    semantics: ProcessAssignment,
+) -> bool {
     matches!(
-        (place.root, semantics),
+        (root, semantics),
         (
             StaticPlaceRoot::Local(process, _),
             ProcessAssignment::ImmediateLocal
         ) if process == owner
     ) || matches!(
-        (place.root, semantics),
+        (root, semantics),
         (
             StaticPlaceRoot::Storage(_),
             ProcessAssignment::ImmediateStorage
         ) | (StaticPlaceRoot::Signal(_), ProcessAssignment::StagedSignal)
     )
+}
+
+fn assignment_place_supported(
+    design: &Design,
+    target: ProcessValueId,
+    owner: ProcessId,
+    semantics: ProcessAssignment,
+    supported_values: &[bool],
+) -> bool {
+    static_place(design, target).is_some_and(|place| place_has_semantics(place, owner, semantics))
+        || dynamic_place(design, target).is_some_and(|place| {
+            root_has_semantics(place.root, owner, semantics)
+                && place.indices.iter().all(|index| {
+                    supported_values
+                        .get(index.value.0 as usize)
+                        .copied()
+                        .unwrap_or(false)
+                })
+        })
 }
 
 fn place_class(place: StaticPlace, owner: ProcessId) -> Option<u8> {
@@ -4412,6 +4640,234 @@ fn write_static_place<'ctx>(
             stage_signal(module, builder, signal, value)
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dynamic_place_offset<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    place: &DynamicPlace,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(place.root_width)?)
+        .ok()?;
+    let mut offset = ty.const_int(u64::from(place.constant_offset), false);
+    for projection in &place.indices {
+        let position = dynamic_index_position(
+            context,
+            module,
+            builder,
+            design,
+            projection.value,
+            projection.range,
+            projection.source_order,
+            place.root_width,
+            None,
+            index_sites,
+            cache,
+        )?;
+        let contribution = if projection.stride == 1 {
+            position
+        } else {
+            builder
+                .build_int_mul(
+                    position,
+                    ty.const_int(u64::from(projection.stride), false),
+                    "process.place.stride",
+                )
+                .ok()?
+        };
+        offset = builder
+            .build_int_add(offset, contribution, "process.place.offset")
+            .ok()?;
+    }
+    Some(offset)
+}
+
+/// Apply one runtime-selected write as a single root read/modify/write. The
+/// right-hand value and every index have been evaluated before publication, so
+/// overlapping aggregate copies observe the pre-write snapshot.
+#[allow(clippy::too_many_arguments)]
+fn write_dynamic_place<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    place: &DynamicPlace,
+    value: IntValue<'ctx>,
+    span: siox::diag::Span,
+    index_sites: &HashMap<IndexSite, u32>,
+    range_sites: &HashMap<siox::diag::Span, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<()> {
+    let value = fit(builder, value, place.width)?;
+    let offset = dynamic_place_offset(context, module, builder, design, place, index_sites, cache)?;
+    match place.root {
+        StaticPlaceRoot::Local(process, local) => {
+            let name = local_state_name(process, local);
+            let current = state_value(context, module, builder, &name, place.root_width)?;
+            let value = insert_dynamic_region(builder, current, value, offset, place.width)?;
+            store_state(module, builder, &name, place.root_width, value)
+        }
+        StaticPlaceRoot::Storage(storage) => {
+            let name = storage_state_name(storage);
+            let current = state_value(context, module, builder, &name, place.root_width)?;
+            let dirty_pointer = storage_dirty_ptr(
+                context,
+                module,
+                builder,
+                u32::try_from(design.process_ir.storages.len()).ok()?,
+                storage.0,
+            );
+            let dirty = builder
+                .build_load(context.i8_type(), dirty_pointer, "process.storage.dirty")
+                .ok()?
+                .into_int_value();
+            let already_dirty = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    dirty,
+                    context.i8_type().const_zero(),
+                    "process.storage.already.dirty",
+                )
+                .ok()?;
+            let old = state_value(
+                context,
+                module,
+                builder,
+                &storage_old_name(storage),
+                place.root_width,
+            )?;
+            let snapshot = builder
+                .build_select(already_dirty, old, current, "process.storage.snapshot")
+                .ok()?
+                .into_int_value();
+            store_state(
+                module,
+                builder,
+                &storage_old_name(storage),
+                place.root_width,
+                snapshot,
+            )?;
+            builder
+                .build_store(dirty_pointer, context.i8_type().const_int(1, false))
+                .ok()?;
+            let value = insert_dynamic_region(builder, current, value, offset, place.width)?;
+            store_state(module, builder, &name, place.root_width, value)?;
+            stage_storage_value(
+                context,
+                module,
+                builder,
+                design,
+                storage,
+                value,
+                span,
+                range_sites,
+            )
+        }
+        StaticPlaceRoot::Signal(signal) => {
+            let current = signal_value(
+                context,
+                module,
+                builder,
+                design,
+                &[signal],
+                ProcessSignalState::Current,
+                place.root_width,
+            )?;
+            let value = insert_dynamic_region(builder, current, value, offset, place.width)?;
+            if design.signals.get(signal.0 as usize)?.range.is_some() {
+                let checked_width = place.root_width.max(64);
+                let checked = if design.signals.get(signal.0 as usize)?.integer {
+                    fit_signed(builder, value, checked_width)?
+                } else {
+                    fit(builder, value, checked_width)?
+                };
+                latch_range_failure(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    signal,
+                    checked,
+                    span,
+                    range_sites,
+                )?;
+            }
+            stage_signal(module, builder, signal, value)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_place_assignment<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    owner: ProcessId,
+    semantics: ProcessAssignment,
+    target: ProcessValueId,
+    assigned: ProcessValueId,
+    span: siox::diag::Span,
+    index_sites: &HashMap<IndexSite, u32>,
+    range_sites: &HashMap<siox::diag::Span, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<()> {
+    if let Some(place) =
+        static_place(design, target).filter(|place| place_has_semantics(*place, owner, semantics))
+    {
+        let value = assignment_value(
+            context,
+            module,
+            builder,
+            design,
+            target,
+            assigned,
+            place.width,
+            index_sites,
+            cache,
+        )?;
+        return write_static_place(
+            context,
+            module,
+            builder,
+            design,
+            place,
+            value,
+            span,
+            range_sites,
+        );
+    }
+    let place = dynamic_place(design, target)
+        .filter(|place| root_has_semantics(place.root, owner, semantics))?;
+    let value = assignment_value(
+        context,
+        module,
+        builder,
+        design,
+        target,
+        assigned,
+        place.width,
+        index_sites,
+        cache,
+    )?;
+    write_dynamic_place(
+        context,
+        module,
+        builder,
+        design,
+        &place,
+        value,
+        span,
+        index_sites,
+        range_sites,
+        cache,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5058,9 +5514,13 @@ fn block_is_supported(
                 value: assigned,
                 ..
             } => {
-                static_place(design, *target).is_some_and(|place| {
-                    place_has_semantics(place, process.id, ProcessAssignment::ImmediateLocal)
-                }) && assignment_supported(*target, *assigned)
+                assignment_place_supported(
+                    design,
+                    *target,
+                    process.id,
+                    ProcessAssignment::ImmediateLocal,
+                    values,
+                ) && assignment_supported(*target, *assigned)
             }
             ProcessInstruction::Assign {
                 semantics: ProcessAssignment::ImmediateStorage,
@@ -5068,9 +5528,13 @@ fn block_is_supported(
                 value: assigned,
                 ..
             } => {
-                static_place(design, *target).is_some_and(|place| {
-                    place_has_semantics(place, process.id, ProcessAssignment::ImmediateStorage)
-                }) && assignment_supported(*target, *assigned)
+                assignment_place_supported(
+                    design,
+                    *target,
+                    process.id,
+                    ProcessAssignment::ImmediateStorage,
+                    values,
+                ) && assignment_supported(*target, *assigned)
             }
             ProcessInstruction::Assign {
                 semantics: ProcessAssignment::StagedSignal,
@@ -5079,9 +5543,13 @@ fn block_is_supported(
                 ..
             } => {
                 (staged_signal_group(design, *target).is_some()
-                    || static_place(design, *target).is_some_and(|place| {
-                        place_has_semantics(place, process.id, ProcessAssignment::StagedSignal)
-                    }))
+                    || assignment_place_supported(
+                        design,
+                        *target,
+                        process.id,
+                        ProcessAssignment::StagedSignal,
+                        values,
+                    ))
                     && assignment_supported(*target, *assigned)
             }
             ProcessInstruction::Assign {
@@ -6370,66 +6838,40 @@ fn process_entry<'ctx>(
                     value,
                     span,
                     ..
-                } => static_place(design, *target)
-                    .filter(|place| {
-                        place_has_semantics(*place, process.id, ProcessAssignment::ImmediateLocal)
-                    })
-                    .and_then(|place| {
-                        let value = assignment_value(
-                            context,
-                            module,
-                            &builder,
-                            design,
-                            *target,
-                            *value,
-                            place.width,
-                            index_sites,
-                            &mut cache,
-                        )?;
-                        write_static_place(
-                            context,
-                            module,
-                            &builder,
-                            design,
-                            place,
-                            value,
-                            *span,
-                            range_sites,
-                        )
-                    }),
+                } => emit_place_assignment(
+                    context,
+                    module,
+                    &builder,
+                    design,
+                    process.id,
+                    ProcessAssignment::ImmediateLocal,
+                    *target,
+                    *value,
+                    *span,
+                    index_sites,
+                    range_sites,
+                    &mut cache,
+                ),
                 ProcessInstruction::Assign {
                     semantics: ProcessAssignment::ImmediateStorage,
                     target,
                     value,
                     span,
                     ..
-                } => static_place(design, *target)
-                    .filter(|place| {
-                        place_has_semantics(*place, process.id, ProcessAssignment::ImmediateStorage)
-                    })
-                    .and_then(|place| {
-                        let value = assignment_value(
-                            context,
-                            module,
-                            &builder,
-                            design,
-                            *target,
-                            *value,
-                            place.width,
-                            index_sites,
-                            &mut cache,
-                        )?;
-                        write_static_place(
-                            context,
-                            module,
-                            &builder,
-                            design,
-                            place,
-                            value,
-                            *span,
-                            range_sites,
-                        )
-                    }),
+                } => emit_place_assignment(
+                    context,
+                    module,
+                    &builder,
+                    design,
+                    process.id,
+                    ProcessAssignment::ImmediateStorage,
+                    *target,
+                    *value,
+                    *span,
+                    index_sites,
+                    range_sites,
+                    &mut cache,
+                ),
                 ProcessInstruction::Assign {
                     semantics: ProcessAssignment::StagedSignal,
                     target,
@@ -6498,29 +6940,19 @@ fn process_entry<'ctx>(
                             range_sites,
                         )
                     } else {
-                        let place = static_place(design, *target).filter(|place| {
-                            place_has_semantics(*place, process.id, ProcessAssignment::StagedSignal)
-                        })?;
-                        let value = assignment_value(
+                        emit_place_assignment(
                             context,
                             module,
                             &builder,
                             design,
+                            process.id,
+                            ProcessAssignment::StagedSignal,
                             *target,
                             *value,
-                            place.width,
-                            index_sites,
-                            &mut cache,
-                        )?;
-                        write_static_place(
-                            context,
-                            module,
-                            &builder,
-                            design,
-                            place,
-                            value,
                             *span,
+                            index_sites,
                             range_sites,
+                            &mut cache,
                         )
                     }
                 })(),

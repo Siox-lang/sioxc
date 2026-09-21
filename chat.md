@@ -10169,3 +10169,28 @@ from fail-closed to exact agreement, including negative and descending labels.
 The differential matrix is now **126 agree, 0 diverge, 50 direct-only gaps, 0
 oracle failures, 7 without tests**; all 126 agreements compare VCD, and the
 complete default/`bitpack` local CI gate is green.
+
+### 2026-09-21 — Codex — direct runtime merges dynamic destinations
+
+Direct Process LLVM now resolves runtime-selected local, persistent-storage,
+and signal destinations to one static root plus checked dynamic offset terms.
+It evaluates the right-hand side and every index first, takes one old-storage
+snapshot, then performs one variable-offset packed merge. That preserves
+source ordering for overlapping copies, struct swaps, spread overrides,
+nested arrays, and a packed bit below a runtime-selected aggregate element.
+Both ascending and descending nonzero labels use the retained `SourceLayout`.
+
+The migration exposed two frontend defects rather than backend exceptions:
+construct spread expressions were type-checked but never visited by name
+resolution, and a packed element's enum type was incorrectly allowed to
+replace its one-bit storage width. Resolution now visits the spread base and
+the adapter retains the enum identity separately from packed width. The direct
+integration fixture covers scalar, loop, field, whole-struct, overlapping
+spread, nested-array, and packed-bit updates.
+
+Five corpus gaps close with exact output and waveform parity:
+`composite_self_assign_test`, `fanout_init_test`,
+`runtime_vector_index_test`, `struct_value_test`, and
+`testbench_dynamic_array_write_test`. The differential matrix is now **131
+agree, 0 diverge, 45 direct-only gaps, 0 oracle failures, 7 without tests**;
+all 131 agreements compare VCD in both storage modes.
