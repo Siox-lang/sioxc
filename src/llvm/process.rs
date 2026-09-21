@@ -3043,25 +3043,24 @@ fn process_value<'ctx>(
                 }
             }
             ProcessUnaryOp::Not => {
-                let operand = process_value(
+                let operand = process_value_at(
                     context,
                     module,
                     builder,
                     design,
                     *operand,
+                    width,
+                    false,
                     active,
                     index_sites,
                     cache,
                 )?;
-                let inverted = builder
-                    .build_int_compare(
-                        IntPredicate::EQ,
-                        operand,
-                        operand.get_type().const_zero(),
-                        "pv.not",
-                    )
-                    .ok()?;
-                fit(builder, inverted, width)?
+                // `not` is Boolean per bit: on a scalar Bool/Bit this is the
+                // familiar truth complement, while a packed vector inverts
+                // every element. Width-one values make both descriptions the
+                // same operation. Comparing the whole operand with zero was a
+                // scalar-only shortcut that turned `not 0b11001000` into 0.
+                builder.build_not(operand, "pv.not").ok()?
             }
             ProcessUnaryOp::RealToInteger => {
                 let operand = process_value_at(

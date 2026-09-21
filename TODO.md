@@ -89,10 +89,10 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
 
 - 🟡 **Complete direct Process IR lowering.** Exact-width scalar and recursive
   packed values, branches, loops, matches, clocks, suspension, delayed writes,
-  formatting, assertions, and scalar foreign calls execute directly today.
-  Remaining executable forms are receiver methods, procedure-shaped calls,
-  runtime recursion/general call CFGs, non-packed conversions, and dynamic
-  strings. Unsupported forms must
+  formatting, assertions, scalar foreign calls, and source-defined operator
+  impls execute directly today. Remaining executable forms are receiver
+  methods, procedure-shaped calls, runtime recursion/general call CFGs,
+  non-packed conversions, and dynamic strings. Unsupported forms must
   continue to fail transactionally before calls or staged writes become
   observable.
 - 🟡 **Move all host services behind the fixed ABI.** Add runtime-owned UTF-8
@@ -113,8 +113,8 @@ Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
 - 🟡 **Retire generated C.** The fixed scheduler/CLI already links LLVM-emitted
-  process entries and runs 131 corpus cases in agreement without design C;
-  all 131 also match VCD signal values and timestamps in default and `bitpack`,
+  process entries and runs 133 corpus cases in agreement without design C;
+  all 133 also match VCD signal values and timestamps in default and `bitpack`,
   while focused tests establish decoded FST parity for hierarchy, all value
   kinds, multiword values, and monotonic multi-test timelines.
   Finish the remaining LLVM/runtime coverage, make this path unconditional,

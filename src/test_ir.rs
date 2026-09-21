@@ -92,6 +92,7 @@ fn process_functions<'a>(
             _ => None,
         })
     {
+        functions.insert_operator_impl(implementation);
         let Some(owner) = functions.type_head_key(&implementation.target) else {
             continue;
         };
@@ -2886,6 +2887,7 @@ fn inline_process_call(
     let ast::Expr::Call { callee, args, .. } = expression else {
         return None;
     };
+    let first_value = context.process_ir.values.len();
     let (function, receiver) = match callee.as_ref() {
         ast::Expr::Field { base, field, .. } => {
             let receiver = value_ref(base, process, context);
@@ -2902,6 +2904,35 @@ fn inline_process_call(
         }
         _ => (context.functions.get(callee)?, None),
     };
+    let arguments = args
+        .iter()
+        .map(|argument| value_ref(argument, process, context))
+        .collect::<Vec<_>>();
+    let result = inline_process_function(
+        function,
+        receiver,
+        &arguments,
+        process,
+        context,
+        return_type,
+    );
+    if result.is_none() {
+        context.process_ir.values.truncate(first_value);
+    }
+    result
+}
+
+/// Inline one already-selected Siox function over already-lowered operands.
+/// Calls and operators share this implementation so receiver binding,
+/// overload bodies, recursion recovery, and result typing cannot drift.
+fn inline_process_function(
+    function: &ast::FnDecl,
+    receiver: Option<ProcessValueId>,
+    arguments: &[ProcessValueId],
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
     let body = function.body.as_ref()?;
     if function.ret.is_none()
         || function.params.iter().any(|parameter| parameter.is_self) != receiver.is_some()
@@ -2913,29 +2944,17 @@ fn inline_process_call(
         .iter()
         .filter(|parameter| !parameter.is_self)
         .collect::<Vec<_>>();
-    if parameters.len() != args.len() {
+    if parameters.len() != arguments.len() {
         return None;
     }
 
-    let first_value = context.process_ir.values.len();
-    let arguments = args
-        .iter()
-        .map(|argument| value_ref(argument, process, context))
-        .collect::<Vec<_>>();
     let mut bindings = std::collections::HashMap::new();
-    for (parameter, argument) in parameters.into_iter().zip(arguments) {
-        let Some(name) = parameter.name.as_ref() else {
-            context.process_ir.values.truncate(first_value);
-            return None;
-        };
-        let Some(definition) = context.resolved.declared(name.span) else {
-            context.process_ir.values.truncate(first_value);
-            return None;
-        };
+    for (parameter, argument) in parameters.into_iter().zip(arguments.iter().copied()) {
+        let name = parameter.name.as_ref()?;
+        let definition = context.resolved.declared(name.span)?;
         bindings.insert(definition, argument);
     }
     if !context.inline_functions.insert(function.span) {
-        context.process_ir.values.truncate(first_value);
         return None;
     }
 
@@ -2953,6 +2972,83 @@ fn inline_process_call(
     context.inline_self_values.pop();
     context.value_bindings.pop();
     context.inline_functions.remove(&function.span);
+    result
+}
+
+/// Inline a binary operator's selected `Operator::apply` body. Symbols remain
+/// frontend metadata only: a successful inline leaves ordinary Process value
+/// nodes, while a recursion guard deliberately falls through to the primitive
+/// node used inside std wrappers such as `unsigned + unsigned`.
+fn inline_process_binary_operator(
+    operator: &ast::BinOp,
+    lhs: &ast::Expr,
+    rhs: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let checked_type = |expression: &ast::Expr| {
+        context
+            .typed
+            .expr_type(ast::expr_span(expression))
+            .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+            .cloned()
+    };
+    let left_type = checked_type(lhs)?;
+    let right_type = checked_type(rhs);
+    let owner = process_type_key(&left_type, context)?;
+    let input = right_type
+        .as_ref()
+        .and_then(|ty| process_type_key(ty, context));
+    let symbol = crate::syntax::pretty::bin_op(operator);
+    let function = context
+        .functions
+        .get_binary_operator(symbol, &owner, input.as_deref())?;
+
+    let first_value = context.process_ir.values.len();
+    let left = value_ref_with_type(lhs, process, context, Some(&left_type));
+    let right_context = right_type.as_ref().or(Some(&left_type));
+    let right = value_ref_with_type(rhs, process, context, right_context);
+    let result = inline_process_function(
+        function,
+        Some(left),
+        &[right],
+        process,
+        context,
+        return_type,
+    );
+    if result.is_none() {
+        context.process_ir.values.truncate(first_value);
+    }
+    result
+}
+
+/// Unary counterpart of [`inline_process_binary_operator`]. Only a concrete
+/// receiver implementation is considered; plain numeric/vector primitives
+/// keep their compact native Process operation when no such impl exists.
+fn inline_process_unary_operator(
+    operator: &ast::UnOp,
+    rhs: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let operand_type = context
+        .typed
+        .expr_type(ast::expr_span(rhs))
+        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+        .cloned()?;
+    let owner = process_type_key(&operand_type, context)?;
+    let symbol = match operator {
+        ast::UnOp::Neg => "-",
+        ast::UnOp::Not => "not",
+    };
+    let function = context.functions.get_unary_operator(symbol, &owner)?;
+
+    let first_value = context.process_ir.values.len();
+    let operand = value_ref_with_type(rhs, process, context, Some(&operand_type));
+    let result =
+        inline_process_function(function, Some(operand), &[], process, context, return_type);
     if result.is_none() {
         context.process_ir.values.truncate(first_value);
     }
@@ -3346,6 +3442,27 @@ fn value_ref_with_type(
         if let Some(value) = inline_process_call(expression, process, context, ty.as_ref()) {
             return value;
         }
+    }
+
+    // Resolve operator dispatch while declarations and checked nominal types
+    // are still available. Backends receive only the inlined semantic value
+    // graph; an arbitrary source symbol must never become an LLVM opcode.
+    match expression {
+        ast::Expr::Binary { op, lhs, rhs, .. } => {
+            if let Some(value) =
+                inline_process_binary_operator(op, lhs, rhs, process, context, ty.as_ref())
+            {
+                return value;
+            }
+        }
+        ast::Expr::Unary { op, rhs, .. } => {
+            if let Some(value) =
+                inline_process_unary_operator(op, rhs, process, context, ty.as_ref())
+            {
+                return value;
+            }
+        }
+        _ => {}
     }
 
     let kind = match expression {

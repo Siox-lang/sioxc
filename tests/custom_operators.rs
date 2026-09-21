@@ -164,3 +164,34 @@ fn custom_operators_run_in_native_harness() {
     let _ = std::fs::remove_file(&bin);
     assert!(run.success(), "custom operator native test failed");
 }
+
+#[test]
+fn custom_operators_run_in_direct_process_runtime() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+    let root = env!("CARGO_MANIFEST_DIR");
+    let bin = std::env::temp_dir().join(format!("siox_custom_ops_direct_{}", std::process::id()));
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
+        .args(["--test", FIXTURE, "--std", "std", "-o"])
+        .arg(&bin)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "custom operator direct build failed:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&bin).output().unwrap();
+    let _ = std::fs::remove_file(&bin);
+    assert!(
+        run.status.success(),
+        "custom operator direct execution failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}

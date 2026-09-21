@@ -10203,3 +10203,32 @@ and a user-selected larger thread count distributes a ready epoch across
 workers. The contract will make worker-local effect buffers, deterministic
 barrier commits, shared-state synchronization, and single-/multi-thread trace
 equivalence explicit.
+
+### 2026-09-21 — Codex — lowering operator impls into Process IR
+
+Continuing the generated-C replacement in `src/ir/functions.rs` and
+`src/test_ir.rs`. The direct path currently leaves arbitrary operators as
+`ProcessBinaryOp::Custom`, which LLVM intentionally rejects because symbols do
+not define semantics. I am indexing concrete `Operator<symbol, Input, Output>`
+impls by resolved owner/input identity and reusing the existing pure-function
+inliner so `apply` bodies become ordinary Process values before codegen. This
+also keeps standard-symbol overloads and user-defined symbols on one path.
+
+Added a root `AGENTS.md` as the automatic entry point for coding agents. It
+deliberately points to `HOUSERULES.md` as the single authoritative rulebook,
+then requires a status/latest-chat/TODO check; it does not clone the rules into
+a second document that could drift.
+
+Operator bodies now lower through the same recursion-safe symbolic function
+inliner as ordinary calls. Selection keys on the resolved owner and declared
+input type, preserves input overloads, and contextual integer coercion; LLVM
+never interprets a custom symbol. This also exposed and fixed direct unary
+`not`: it compared a whole operand with zero, but the language operation is a
+per-bit complement, with the same result only at width one. A direct integration
+test covers arbitrary word/punctuation operators and overload selection.
+
+The complete differential matrix is **133 agree, 0 diverge, 43 direct-only
+gaps, 0 oracle failures, 7 without tests**; all 133 agreements compare VCD.
+`logic_ninevalue_test` and `logic_table_test` move from fail-closed to exact
+agreement, and the custom-operator fixture also executes through the direct
+runtime.

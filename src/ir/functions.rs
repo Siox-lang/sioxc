@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use crate::resolve::{is_compiler_trait, DefId, Resolved};
 use crate::syntax::ast;
 
+use super::OperatorImpls;
+
 /// Functions available to lowering and constant evaluation.
 ///
 /// Module-level and foreign functions use the resolver's stable declaration
@@ -20,6 +22,11 @@ pub struct FunctionIndex<'a> {
     /// Static associated functions, keyed by `Type::name` because they do
     /// not yet receive a `DefId` of their own.
     associated: HashMap<String, &'a ast::FnDecl>,
+    /// Concrete operator implementations, keyed by source symbol and resolved
+    /// owner type. Each candidate retains the impl's declared input type for
+    /// overload selection; the function body remains ordinary Siox source and
+    /// is inlined by the IR consumer that selected it.
+    operators: OperatorImpls<'a>,
 }
 
 impl<'a> FunctionIndex<'a> {
@@ -29,6 +36,7 @@ impl<'a> FunctionIndex<'a> {
             resolved,
             free: HashMap::new(),
             associated: HashMap::new(),
+            operators: HashMap::new(),
         }
     }
 
@@ -47,6 +55,124 @@ impl<'a> FunctionIndex<'a> {
     /// Register an inherited static default unless the impl overrides it.
     pub fn insert_associated_default(&mut self, key: String, function: &'a ast::FnDecl) {
         self.associated.entry(key).or_insert(function);
+    }
+
+    /// Register the executable `apply` body of one concrete `Operator` impl.
+    /// Blanket `T[]` implementations may enter under their generic owner but
+    /// cannot collide with a concrete nominal key; their loop-shaped lifting
+    /// remains an IR-lowering concern rather than a function lookup rule.
+    pub fn insert_operator_impl(&mut self, implementation: &'a ast::ImplDecl) {
+        let Some(trait_path) = implementation.trait_.as_ref() else {
+            return;
+        };
+        if self.trait_path_key(trait_path).as_deref() != Some("Operator") {
+            return;
+        }
+        let Some(owner) = self.type_head_key(&implementation.target) else {
+            return;
+        };
+        let Some(symbol) = implementation
+            .trait_args
+            .first()
+            .and_then(|argument| match argument {
+                ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => Some(text.clone()),
+                _ => None,
+            })
+        else {
+            return;
+        };
+        let input = implementation
+            .trait_args
+            .get(1)
+            .and_then(|argument| match argument {
+                ast::GenericArg::Positional(ast::Expr::Path(path)) => self.type_path_key(path),
+                ast::GenericArg::PositionalType(ty) => self.type_head_key(ty),
+                _ => None,
+            });
+        for item in &implementation.items {
+            let ast::ImplItem::Fn(function) = item else {
+                continue;
+            };
+            if function.name.text == "apply" {
+                self.operators
+                    .entry((symbol.clone(), owner.clone()))
+                    .or_default()
+                    .push((function, input.clone()));
+            }
+        }
+    }
+
+    /// Select a binary operator body by exact right-operand type. A kernel
+    /// integer literal may adopt the owner type, matching the type checker's
+    /// contextual literal rule. A missing actual type is accepted only when
+    /// the owner has one candidate, so ambiguity never depends on declaration
+    /// order.
+    pub fn get_binary_operator(
+        &self,
+        symbol: &str,
+        owner: &str,
+        input: Option<&str>,
+    ) -> Option<&'a ast::FnDecl> {
+        let candidates = self
+            .operators
+            .get(&(symbol.to_string(), owner.to_string()))?;
+        let declared_input = |function: &ast::FnDecl, input: &Option<String>| {
+            input.clone().or_else(|| {
+                function
+                    .params
+                    .iter()
+                    .find(|parameter| !parameter.is_self)
+                    .and_then(|parameter| parameter.ty.as_ref())
+                    .and_then(|ty| self.type_head_key(ty))
+            })
+        };
+        let matches = |function: &ast::FnDecl, declared: &Option<String>, wanted: &str| {
+            declared_input(function, declared)
+                .map(|input| {
+                    if input == "Self" {
+                        owner.to_string()
+                    } else {
+                        input
+                    }
+                })
+                .as_deref()
+                == Some(wanted)
+        };
+        match input {
+            Some(input) => candidates
+                .iter()
+                .find(|(function, declared)| matches(function, declared, input))
+                .or_else(|| {
+                    if input == "integer" {
+                        candidates
+                            .iter()
+                            .find(|(function, declared)| matches(function, declared, owner))
+                    } else {
+                        None
+                    }
+                })
+                .map(|(function, _)| *function),
+            None if candidates.len() == 1 => candidates.first().map(|(function, _)| *function),
+            None => None,
+        }
+    }
+
+    /// Select the receiver-only `apply(self)` implementation of a unary
+    /// operator. Input/output trait parameters describe its contract but do
+    /// not add a runtime argument.
+    pub fn get_unary_operator(&self, symbol: &str, owner: &str) -> Option<&'a ast::FnDecl> {
+        self.operators
+            .get(&(symbol.to_string(), owner.to_string()))?
+            .iter()
+            .find_map(|(function, _)| {
+                (function
+                    .params
+                    .iter()
+                    .filter(|parameter| !parameter.is_self)
+                    .count()
+                    == 0)
+                    .then_some(*function)
+            })
     }
 
     /// Look up an associated declaration after the caller has resolved the
