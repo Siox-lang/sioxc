@@ -1543,8 +1543,15 @@ fn process_value_layout(design: &Design, id: ProcessValueId) -> Option<&SourceLa
             field_slice(process_value_layout(design, *base)?, field).map(|slice| slice.layout)
         }
         ProcessValueKind::Index { base, index } => {
-            let index = process_constant_i64(design, *index)?;
-            array_slice(process_value_layout(design, *base)?, index).map(|slice| slice.layout)
+            let layout = process_value_layout(design, *base)?;
+            let LayoutKind::Array { element, .. } = &layout.kind else {
+                return None;
+            };
+            if let Some(index) = process_constant_i64(design, *index) {
+                array_slice(layout, index).map(|slice| slice.layout)
+            } else {
+                Some(element)
+            }
         }
         ProcessValueKind::Select {
             then_value,
@@ -1594,15 +1601,19 @@ fn process_layout_attribute(design: &Design, base: ProcessValueId, attribute: &s
 }
 
 fn process_constant_i64(design: &Design, id: ProcessValueId) -> Option<i64> {
-    let ProcessValueKind::Number(ProcessNumber::Integer(words)) =
-        &design.process_ir.values.get(id.0 as usize)?.kind
-    else {
-        return None;
-    };
-    let [word] = words.as_slice() else {
-        return None;
-    };
-    Some(*word as i64)
+    match &design.process_ir.values.get(id.0 as usize)?.kind {
+        ProcessValueKind::Number(ProcessNumber::Integer(words)) => {
+            let [word] = words.as_slice() else {
+                return None;
+            };
+            Some(*word as i64)
+        }
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::Neg,
+            operand,
+        } => process_constant_i64(design, *operand)?.checked_neg(),
+        _ => None,
+    }
 }
 
 /// Convert an arbitrary-width scalar to the one-bit condition domain.
@@ -2076,6 +2087,107 @@ fn aggregate_signal_value<'ctx>(
     (offset == width).then_some(packed)
 }
 
+/// Select one runtime-indexed region from a recursively packed process value.
+/// The index has already been wrapped in `CheckedIndex` by source lowering, so
+/// evaluating it records an out-of-domain diagnostic. Reducing the physical
+/// position modulo the element count keeps the LLVM shift defined on that
+/// failing path; the runtime reports the latched error before the value can be
+/// observed by a successful test.
+#[allow(clippy::too_many_arguments)]
+fn dynamic_index_region<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    base: ProcessValueId,
+    index: ProcessValueId,
+    layout: &SourceLayout,
+    result_width: u32,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let base_width = layout_width(layout)?;
+    let (range, element_width, source_order) = match &layout.kind {
+        LayoutKind::Array {
+            range: Some(range),
+            element,
+        } => (*range, layout_width(element)?, true),
+        LayoutKind::Packed {
+            range: Some(range), ..
+        } => (*range, 1, false),
+        _ => return None,
+    };
+    if element_width != result_width {
+        return None;
+    }
+    let count = u32::try_from(range.len()?).ok()?;
+    if count == 0 {
+        return None;
+    }
+    let index = process_value_at(
+        context,
+        module,
+        builder,
+        design,
+        index,
+        base_width,
+        false,
+        active,
+        index_sites,
+        cache,
+    )?;
+    let ty = index.get_type();
+    let origin = if source_order && !range.ascending() {
+        range.left
+    } else {
+        range.left.min(range.right)
+    };
+    let origin = ty.const_int(origin as u64, true);
+    let position = if source_order && !range.ascending() {
+        builder
+            .build_int_sub(origin, index, "pv.index.position")
+            .ok()?
+    } else {
+        builder
+            .build_int_sub(index, origin, "pv.index.position")
+            .ok()?
+    };
+    let safe_position = builder
+        .build_int_unsigned_rem(
+            position,
+            ty.const_int(u64::from(count), false),
+            "pv.index.safe_position",
+        )
+        .ok()?;
+    let offset = if element_width == 1 {
+        safe_position
+    } else {
+        builder
+            .build_int_mul(
+                safe_position,
+                ty.const_int(u64::from(element_width), false),
+                "pv.index.offset",
+            )
+            .ok()?
+    };
+    let base = process_value_in_layout(
+        context,
+        module,
+        builder,
+        design,
+        base,
+        layout,
+        active,
+        index_sites,
+        cache,
+    )?;
+    let shifted = builder
+        .build_right_shift(base, offset, false, "pv.index.extract")
+        .ok()?;
+    fit(builder, shifted, result_width)
+}
+
 /// Emit a value using an expected recursive layout. Aggregates have no LLVM
 /// ABI of their own; they are packed only inside the design object so field
 /// reads, copies, and bindings share one exact-width representation.
@@ -2186,22 +2298,77 @@ fn process_value_in_layout<'ctx>(
         }
         ProcessValueKind::Index { base, index } => {
             let base_layout = process_value_layout(design, *base)?;
-            let selected = array_slice(base_layout, process_constant_i64(design, *index)?)?;
-            if selected.width != width {
+            if let Some(index) = process_constant_i64(design, *index) {
+                let selected = array_slice(base_layout, index)?;
+                if selected.width != width {
+                    return None;
+                }
+                let base = process_value_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *base,
+                    base_layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                extract_region(builder, base, selected.offset, selected.width)?
+            } else {
+                dynamic_index_region(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *base,
+                    *index,
+                    base_layout,
+                    width,
+                    active,
+                    index_sites,
+                    cache,
+                )?
+            }
+        }
+        ProcessValueKind::String(text) => {
+            let LayoutKind::Array {
+                range: Some(range),
+                element,
+            } = &layout.kind
+            else {
+                return None;
+            };
+            let characters = text.chars().collect::<Vec<_>>();
+            if usize::try_from(range.len()?).ok()? != characters.len()
+                || !matches!(
+                    element.kind,
+                    LayoutKind::Scalar {
+                        domain: siox::ir::ScalarDomain::Character,
+                        ..
+                    }
+                )
+            {
                 return None;
             }
-            let base = process_value_in_layout(
-                context,
-                module,
-                builder,
-                design,
-                *base,
-                base_layout,
-                active,
-                index_sites,
-                cache,
-            )?;
-            extract_region(builder, base, selected.offset, selected.width)?
+            let element_width = layout_width(element)?;
+            let ty = context
+                .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+                .ok()?;
+            let element_ty = context
+                .custom_width_int_type(std::num::NonZeroU32::new(element_width)?)
+                .ok()?;
+            let mut aggregate = ty.const_zero();
+            for (position, character) in characters.into_iter().enumerate() {
+                aggregate = insert_region(
+                    builder,
+                    aggregate,
+                    element_ty.const_int(u64::from(u32::from(character)), false),
+                    u32::try_from(position).ok()?.checked_mul(element_width)?,
+                    element_width,
+                )?;
+            }
+            aggregate
         }
         ProcessValueKind::Construct { fields, spread, .. } => {
             let LayoutKind::Struct {
@@ -3020,26 +3187,41 @@ fn process_value<'ctx>(
                 LayoutKind::Packed {
                     range: Some(range), ..
                 } if width == 1 => {
-                    let index = process_constant_i64(design, *index)?;
-                    let low = range.left.min(range.right);
-                    let offset = u32::try_from(index.checked_sub(low)?).ok()?;
-                    let base_width = layout_width(base_layout)?;
-                    if offset >= base_width {
-                        return None;
+                    if let Some(index) = process_constant_i64(design, *index) {
+                        let low = range.left.min(range.right);
+                        let offset = u32::try_from(index.checked_sub(low)?).ok()?;
+                        let base_width = layout_width(base_layout)?;
+                        if offset >= base_width {
+                            return None;
+                        }
+                        let base = process_value_at(
+                            context,
+                            module,
+                            builder,
+                            design,
+                            *base,
+                            base_width,
+                            false,
+                            active,
+                            index_sites,
+                            cache,
+                        )?;
+                        extract_region(builder, base, offset, 1)?
+                    } else {
+                        dynamic_index_region(
+                            context,
+                            module,
+                            builder,
+                            design,
+                            *base,
+                            *index,
+                            base_layout,
+                            width,
+                            active,
+                            index_sites,
+                            cache,
+                        )?
                     }
-                    let base = process_value_at(
-                        context,
-                        module,
-                        builder,
-                        design,
-                        *base,
-                        base_width,
-                        false,
-                        active,
-                        index_sites,
-                        cache,
-                    )?;
-                    extract_region(builder, base, offset, 1)?
                 }
                 _ => return None,
             }
@@ -3377,12 +3559,41 @@ fn process_value_supported_in_layout(
             let Some(base_layout) = process_value_layout(design, *base) else {
                 return false;
             };
-            process_constant_i64(design, *index)
-                .and_then(|index| array_slice(base_layout, index))
-                .is_some_and(|selected| {
+            let selected = match process_constant_i64(design, *index) {
+                Some(index) => array_slice(base_layout, index),
+                None => match &base_layout.kind {
+                    LayoutKind::Array { element, .. } => Some(LayoutSlice {
+                        layout: element,
+                        offset: 0,
+                        width: layout_width(element).unwrap_or(0),
+                    }),
+                    _ => None,
+                },
+            };
+            has(*index)
+                && selected.is_some_and(|selected| {
                     selected.width == width
                         && process_value_supported_in_layout(design, *base, base_layout, supported)
                 })
+        }
+        ProcessValueKind::String(text) => {
+            let LayoutKind::Array {
+                range: Some(range),
+                element,
+            } = &layout.kind
+            else {
+                return false;
+            };
+            range.len().and_then(|length| usize::try_from(length).ok())
+                == Some(text.chars().count())
+                && matches!(
+                    element.kind,
+                    LayoutKind::Scalar {
+                        domain: siox::ir::ScalarDomain::Character,
+                        ..
+                    }
+                )
+                && layout_width(element).is_some()
         }
         ProcessValueKind::Construct { fields, spread, .. } => {
             let LayoutKind::Struct {
@@ -3642,7 +3853,16 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                                 kind: LayoutKind::Array { .. },
                                 ..
                             },
-                        ) => selected.is_some_and(|index| array_slice(layout, index).is_some()),
+                        ) => selected.map_or_else(
+                            || {
+                                matches!(
+                                    &layout.kind,
+                                    LayoutKind::Array { element, .. }
+                                        if layout_width(element) == value.bit_width
+                                )
+                            },
+                            |index| array_slice(layout, index).is_some(),
+                        ),
                         Some(SourceLayout {
                             kind:
                                 LayoutKind::Packed {
@@ -3650,7 +3870,7 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                                 },
                             ..
                         }) => {
-                            selected.is_some_and(|index| {
+                            selected.is_none_or(|index| {
                                 (range.left.min(range.right)..=range.left.max(range.right))
                                     .contains(&index)
                             }) && value.bit_width == Some(1)

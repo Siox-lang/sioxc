@@ -10150,3 +10150,22 @@ The exact local CI gate is also green after updating two fixture assertions
 that intentionally depended on the retired generic range wording and stderr
 failure stream: formatting, frontend checks, both Rust test modes, all-target
 Clippy, and both complete corpus modes pass.
+
+### 2026-09-21 — Codex — direct runtime indexes recursive layouts
+
+The typed-AST migration adapter now wraps nonconstant process indices in the
+same declared-domain predicate used by digital lowering, so Process IR owns
+the source range and failure site before it reaches a backend. Direct LLVM can
+select runtime-indexed packed bits and recursive array elements in either
+range direction; invalid paths latch the existing source diagnostic while a
+bounded physical offset keeps LLVM shifts defined. Constant negative labels
+are folded as constants rather than mistaken for runtime expressions.
+
+Index result types are also recovered from declaration layouts when the
+temporary type product contains `Ty::Error`. That makes contextual character
+literals use the selected enum (for example `Bit`) instead of comparing a
+one-bit value with the Unicode code point for `'1'`. `ranged_local_test` moves
+from fail-closed to exact agreement, including negative and descending labels.
+The differential matrix is now **126 agree, 0 diverge, 50 direct-only gaps, 0
+oracle failures, 7 without tests**; all 126 agreements compare VCD, and the
+complete default/`bitpack` local CI gate is green.

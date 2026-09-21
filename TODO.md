@@ -91,7 +91,7 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   formatting, assertions, and scalar foreign calls execute directly today.
   Remaining executable forms are receiver methods, procedure-shaped calls,
   runtime recursion/general call CFGs, non-packed conversions, dynamic strings,
-  and the dynamic aggregate operations defined above. Unsupported forms must
+  and the dynamic aggregate updates defined above. Unsupported forms must
   continue to fail transactionally before calls or staged writes become
   observable.
 - 🟡 **Move all host services behind the fixed ABI.** Add runtime-owned UTF-8
@@ -112,8 +112,8 @@ Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
 - 🟡 **Retire generated C.** The fixed scheduler/CLI already links LLVM-emitted
-  process entries and runs 125 corpus cases in agreement without design C;
-  all 125 also match VCD signal values and timestamps in default and `bitpack`,
+  process entries and runs 126 corpus cases in agreement without design C;
+  all 126 also match VCD signal values and timestamps in default and `bitpack`,
   while focused tests establish decoded FST parity for hierarchy, all value
   kinds, multiword values, and monotonic multi-test timelines.
   Finish the remaining LLVM/runtime coverage, make this path unconditional,

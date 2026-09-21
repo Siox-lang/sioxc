@@ -2009,6 +2009,103 @@ fn process_value_source_layout(
     }
 }
 
+/// Preserve the declared domain on a source-level runtime index. The digital
+/// lowering uses the same equality-set predicate: it works for negative
+/// labels, unsigned index values, and either range direction without making a
+/// backend reinterpret the source type as signed or unsigned.
+fn checked_process_index(
+    index: ProcessValueId,
+    span: crate::diag::Span,
+    range: crate::ir::LayoutRange,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    if arena_constant_integer(index, &context.process_ir.values).is_some()
+        || matches!(
+            context
+                .process_ir
+                .values
+                .get(index.0 as usize)
+                .map(|value| &value.kind),
+            Some(ProcessValueKind::Range { .. })
+        )
+    {
+        return index;
+    }
+    let Some((ty, width)) = context
+        .process_ir
+        .values
+        .get(index.0 as usize)
+        .map(|value| (value.ty.clone(), value.bit_width))
+    else {
+        return index;
+    };
+    let Some(width) = width else {
+        return index;
+    };
+
+    let mut valid = None;
+    let mut label = range.left;
+    loop {
+        let literal = push_value(
+            span,
+            ty.clone(),
+            Some(width),
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![label as u64])),
+            context,
+        );
+        let equal = push_value(
+            span,
+            None,
+            Some(1),
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Eq,
+                left: index,
+                right: literal,
+            },
+            context,
+        );
+        valid = Some(match valid {
+            None => equal,
+            Some(previous) => push_value(
+                span,
+                None,
+                Some(1),
+                ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::Or,
+                    left: previous,
+                    right: equal,
+                },
+                context,
+            ),
+        });
+        if label == range.right {
+            break;
+        }
+        let Some(next) = (if range.ascending() {
+            label.checked_add(1)
+        } else {
+            label.checked_sub(1)
+        }) else {
+            return index;
+        };
+        label = next;
+    }
+
+    push_value(
+        span,
+        ty,
+        Some(width),
+        ProcessValueKind::CheckedIndex {
+            index,
+            valid: valid.expect("a layout range contains at least one label"),
+            left: range.left,
+            right: range.right,
+            span,
+        },
+        context,
+    )
+}
+
 fn process_display_kind(
     expression: &ast::Expr,
     value: ProcessValueId,
@@ -3359,8 +3456,31 @@ fn value_ref_with_type(
                 }
             } else {
                 let base = value_ref(base, process, context);
+                let index_span = ast::expr_span(index);
                 let index = value_ref(index, process, context);
-                ProcessValueKind::Index { base, index }
+                let range = process_value_source_layout(base, context.process_ir)
+                    .and_then(crate::ir::SourceLayout::index_range);
+                let index = range.map_or(index, |range| {
+                    checked_process_index(index, index_span, range, context)
+                });
+                let kind = ProcessValueKind::Index { base, index };
+                let recovered =
+                    process_value_source_layout(base, context.process_ir).and_then(|layout| {
+                        match &layout.kind {
+                            LayoutKind::Array { element, .. } => {
+                                process_type_from_layout(element, context.resolved)
+                            }
+                            LayoutKind::Packed { element_enum, .. } => element_enum
+                                .as_deref()
+                                .and_then(|name| nominal_type_from_name(name, context.resolved)),
+                            _ => None,
+                        }
+                    });
+                let ty = ty
+                    .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                    .or(recovered);
+                let width = source_value_width(&kind, ty.as_ref(), process, context);
+                return push_value(span, ty, width, kind, context);
             }
         }
         ast::Expr::Range { lo, hi, .. } => ProcessValueKind::Range {
@@ -3387,18 +3507,46 @@ fn value_ref_with_type(
             // records the counterpart but deliberately keeps the literal's
             // standalone `Char` identity, so retain the counterpart here
             // before its declaration identity disappears.
-            let left_context = matches!(lhs.as_ref(), ast::Expr::CharLit { .. })
-                .then(|| context.typed.expr_type(ast::expr_span(rhs)).cloned())
-                .flatten();
-            let right_context = matches!(rhs.as_ref(), ast::Expr::CharLit { .. })
-                .then(|| context.typed.expr_type(ast::expr_span(lhs)).cloned())
-                .flatten();
-            let left_type = context.typed.expr_type(ast::expr_span(lhs));
-            let right_type = context.typed.expr_type(ast::expr_span(rhs));
+            let checked_type = |ty: Option<&crate::types::Ty>| {
+                ty.filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                    .cloned()
+            };
+            let mut left_type = checked_type(context.typed.expr_type(ast::expr_span(lhs)));
+            let mut right_type = checked_type(context.typed.expr_type(ast::expr_span(rhs)));
+            let (left, right) = if matches!(rhs.as_ref(), ast::Expr::CharLit { .. }) {
+                let left = value_ref_with_type(lhs, process, context, None);
+                left_type = left_type.or_else(|| {
+                    context
+                        .process_ir
+                        .values
+                        .get(left.0 as usize)
+                        .and_then(|value| value.ty.clone())
+                        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                });
+                let right = value_ref_with_type(rhs, process, context, left_type.as_ref());
+                (left, right)
+            } else if matches!(lhs.as_ref(), ast::Expr::CharLit { .. }) {
+                let right = value_ref_with_type(rhs, process, context, None);
+                right_type = right_type.or_else(|| {
+                    context
+                        .process_ir
+                        .values
+                        .get(right.0 as usize)
+                        .and_then(|value| value.ty.clone())
+                        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                });
+                let left = value_ref_with_type(lhs, process, context, right_type.as_ref());
+                (left, right)
+            } else {
+                (
+                    value_ref_with_type(lhs, process, context, None),
+                    value_ref_with_type(rhs, process, context, None),
+                )
+            };
             ProcessValueKind::Binary {
-                operation: lower_binary_operator(op, left_type, right_type),
-                left: value_ref_with_type(lhs, process, context, left_context.as_ref()),
-                right: value_ref_with_type(rhs, process, context, right_context.as_ref()),
+                operation: lower_binary_operator(op, left_type.as_ref(), right_type.as_ref()),
+                left,
+                right,
             }
         }
         ast::Expr::IfExpr {

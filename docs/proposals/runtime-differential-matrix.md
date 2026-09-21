@@ -26,9 +26,9 @@ ordinary progress and does not fail the run — during migration most
 non-agreement is expected, and only a baseline can separate that from a
 regression.
 
-**Know what an agreement is worth.** Few corpus files print anything, so 112 of
-the current 125 agreements compare only boilerplate on stdout. That metric is
-kept visible, but it is no longer the only observable: all 125 agreements also
+**Know what an agreement is worth.** Few corpus files print anything, so 113 of
+the current 126 agreements compare only boilerplate on stdout. That metric is
+kept visible, but it is no longer the only observable: all 126 agreements also
 compare a VCD emitted independently by each backend, covering hierarchy, every
 signal value, and every timestamp. The fixed writer reached identical results
 in both default and `bitpack` sweeps.
