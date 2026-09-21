@@ -162,7 +162,7 @@ uart_fsm_test AGREE
 user_operator_test DIRECT-UNSUPPORTED
 vector_resolve_test DIRECT-SEMANTIC
 view_bus_test AGREE
-warn_test DIVERGE
+warn_test AGREE
 where_test AGREE
 wide_const_test AGREE
 wide_literal_test AGREE
