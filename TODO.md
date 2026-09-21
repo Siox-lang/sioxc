@@ -121,21 +121,34 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   run the full default and `bitpack` differential gates, then delete the
   AST-to-C statement/value translator and its dispatcher. Clang may remain a
   linker driver; it must not translate siox semantics through C.
-- 🔴 **Scalable mini-runtime scheduler (Phase 2 optimization).** Model the
-  runtime as a small deterministic RTOS. With one configured host thread,
-  language processes are logically concurrent but cooperatively share that
-  thread: each runs until a scheduler boundary, then yields while the scheduler
-  advances delta cycles or simulation time. A higher thread count partitions
-  independent ready processes across worker threads without changing those
-  language-level semantics. Replace process-global state with a per-run context;
-  protect shared runtime structures with suitable mutexes or ownership, stage
-  signal writes and side effects in worker-local buffers, synchronize at delta
-  barriers, then merge and commit in stable process/instruction order.
-  Resolution, source-order overrides, impure foreign calls, file I/O, and
-  diagnostics remain serialized unless proven independent. Require identical
-  results, diagnostics, and VCD/FST traces for one and many host threads in
-  default and `bitpack` modes; enable extra threads only when benchmarks show a
-  gain.
+- 🔴 **Scalable mini-runtime scheduler (Phase 2 optimization).** Build a small
+  deterministic runtime that acts like an RTOS for simulation processes. With
+  the default thread count of one, language processes are logically concurrent
+  but cooperatively time-share one host thread: a ready process runs until a
+  scheduler boundary (`wait`, suspension, or completion), then yields so the
+  runtime can run the next process and advance delta cycles or simulation time.
+  With a user-selected thread count greater than one, split each independent
+  ready epoch over that many persistent worker threads without changing the
+  language-level execution model or the result of the simulation.
+
+  Replace process-global state with a per-run context and give each process
+  exclusively owned continuation/local state. Use worker-local buffers for
+  scheduled signal writes, future events, diagnostics, waveform changes, and
+  other externally visible effects. Workers synchronize at deterministic delta
+  barriers; the runtime then merges and commits buffered effects in stable
+  process/instruction order before any process observes the next epoch. Protect
+  genuinely shared queues, signal/driver state, host-service state, and output
+  sinks with ownership transfer, mutexes, channels, or bounded buffers as
+  appropriate—never with unsynchronized shared mutation. Resolution,
+  source-order overrides, impure foreign calls, file I/O, and nondeterministic
+  host services remain serialized unless independence is proven.
+
+  Add a runtime thread-count setting without making `sioxc` a project runner.
+  Verify that one thread and several thread counts produce byte-identical
+  results, diagnostics, and VCD/FST traces in default and `bitpack` modes,
+  including races on resolved/unresolved signals and simultaneous timed events.
+  Enable multiple threads as an opt-in until benchmarks show a real throughput
+  gain; process count alone must not imply that parallel execution is faster.
 - 🔴 **Elaborated RTL design file (Phase 3).** Emit a stable, versioned,
   vendor-neutral artifact after hierarchy elaboration and synthesizable-logic
   normalization. Preserve hierarchy, ports/directions, ranges, nets/registers,

@@ -10194,3 +10194,12 @@ Five corpus gaps close with exact output and waveform parity:
 `testbench_dynamic_array_write_test`. The differential matrix is now **131
 agree, 0 diverge, 45 direct-only gaps, 0 oracle failures, 7 without tests**;
 all 131 agreements compare VCD in both storage modes.
+
+### 2026-09-21 — Codex — refining the scalable runtime TODO
+
+Updating the Output roadmap's mini-runtime item with the agreed execution
+model: language processes are cooperative RTOS-style tasks on one host thread,
+and a user-selected larger thread count distributes a ready epoch across
+workers. The contract will make worker-local effect buffers, deterministic
+barrier commits, shared-state synchronization, and single-/multi-thread trace
+equivalence explicit.
