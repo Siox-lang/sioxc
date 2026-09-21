@@ -14,7 +14,7 @@ mod aot;
 mod emit;
 mod process;
 
-pub use aot::emit_object;
+pub use aot::{emit_object, emit_object_with_sources};
 pub use emit::emit_module_ir;
 
 /// Width of one word in the generated native harness ABI.

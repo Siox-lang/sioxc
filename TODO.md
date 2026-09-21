@@ -112,19 +112,14 @@ Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
 - 🟡 **Retire generated C.** The fixed scheduler/CLI already links LLVM-emitted
-  process entries and runs 124 corpus cases in agreement without design C;
-  all 124 also match VCD signal values and timestamps in default and `bitpack`,
+  process entries and runs 125 corpus cases in agreement without design C;
+  all 125 also match VCD signal values and timestamps in default and `bitpack`,
   while focused tests establish decoded FST parity for hierarchy, all value
   kinds, multiword values, and monotonic multi-test timelines.
   Finish the remaining LLVM/runtime coverage, make this path unconditional,
   run the full default and `bitpack` differential gates, then delete the
   AST-to-C statement/value translator and its dispatcher. Clang may remain a
   linker driver; it must not translate siox semantics through C.
-- 🟡 **Runtime diagnostic parity.** Resolve Process source IDs/offsets through
-  stable embedded source metadata so warnings and failures use the same
-  filename, line, snippet, and caret form. `warn_test` is the remaining known
-  stdout divergence; do not remove useful source locations merely to match the
-  compatibility backend.
 - 🔴 **Scalable mini-runtime scheduler (Phase 2 optimization).** Model the
   runtime as a small deterministic RTOS. With one configured host thread,
   language processes are logically concurrent but cooperatively share that

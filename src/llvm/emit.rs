@@ -193,6 +193,16 @@ pub(crate) fn build_module<'ctx>(
     ctx: &'ctx Context,
     design: &Design,
 ) -> Result<Module<'ctx>, String> {
+    build_module_with_sources(ctx, design, None)
+}
+
+/// Build and verify a module, optionally embedding runtime diagnostic
+/// locations from the compilation's retained source map.
+pub(crate) fn build_module_with_sources<'ctx>(
+    ctx: &'ctx Context,
+    design: &Design,
+    sources: Option<&siox::diag::SourceMap>,
+) -> Result<Module<'ctx>, String> {
     // Reject IR a backend can't compile (bad ids, Unknown, unknown widths)
     // with a clear message rather than emitting malformed LLVM (B0).
     let issues = design.validate();
@@ -240,7 +250,7 @@ pub(crate) fn build_module<'ctx>(
     let cg = Codegen::new(ctx, design);
     super::process::declare_state(ctx, &cg.module, design);
     cg.build();
-    super::process::emit_metadata(ctx, &cg.module, design);
+    super::process::emit_metadata(ctx, &cg.module, design, sources);
     // LLVM's own verifier — a well-formedness net beyond textual checks.
     if let Err(e) = cg.module.verify() {
         return Err(format!(

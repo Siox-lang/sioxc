@@ -501,6 +501,83 @@ fn direct_process_runtime_vcd_matches_generated_c() {
 }
 
 #[test]
+fn direct_runtime_diagnostics_match_generated_c() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory = std::env::temp_dir().join(format!(
+        "siox_direct_diagnostic_parity_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("diagnostics.siox");
+    let compatibility = directory.join("compatibility-test");
+    let direct = directory.join("direct-test");
+    std::fs::write(
+        &source,
+        r#"module diagnostic_parity;
+           using std::bits::unsigned;
+           entity Lookup { index: integer in, value: unsigned[8] out }
+           impl Lookup {
+               let values: unsigned[8][4..2] = [10, 20, 30];
+               value = values[index];
+           }
+           #[test] entity Warnings {}
+           impl Warnings {
+               warn!(false, "first warning");
+               warn!(false, "second warning");
+           }
+           #[test] entity Failure {}
+           impl Failure {
+               assert!(false, "intentional failure");
+           }
+           #[test] entity IndexFailure {}
+           impl IndexFailure {
+               let index: integer = 9;
+               let value: unsigned[8];
+               let lookup: Lookup = { .index = index, .value = value };
+           }"#,
+    )
+    .unwrap();
+
+    for (output, direct_runtime) in [(&compatibility, false), (&direct, true)] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+        if direct_runtime {
+            command.env("SIOX_DIRECT_PROCESS_RUNTIME", "1");
+        }
+        let build = command
+            .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+            .arg("--test")
+            .arg(&source)
+            .arg("-o")
+            .arg(output)
+            .output()
+            .unwrap();
+        assert!(
+            build.status.success(),
+            "diagnostic fixture failed to build (direct={direct_runtime}):\n{}{}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        );
+    }
+
+    for filter in [
+        "diagnostic_parity::Warnings",
+        "diagnostic_parity::Failure",
+        "diagnostic_parity::IndexFailure",
+    ] {
+        let compatibility_run = Command::new(&compatibility).arg(filter).output().unwrap();
+        let direct_run = Command::new(&direct).arg(filter).output().unwrap();
+        assert_eq!(direct_run.status.code(), compatibility_run.status.code());
+        assert_eq!(direct_run.stdout, compatibility_run.stdout);
+        assert_eq!(direct_run.stderr, compatibility_run.stderr);
+    }
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn direct_legacy_initializers_keep_source_order() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");
@@ -618,8 +695,10 @@ fn direct_runtime_formats_typed_process_values() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("failure signed -16 state Run (source 0:"),
-        "{stderr}"
+        stdout.contains("failure signed -16 state Run\n  -->")
+            && stdout.contains("format.siox:")
+            && stdout.contains('^'),
+        "{stdout}"
     );
     let _ = std::fs::remove_dir_all(directory);
 }
@@ -825,8 +904,12 @@ fn direct_process_runtime_reports_assertions_without_generated_design_c() {
         stdout.contains("test direct_assert::DirectAssert ... FAILED"),
         "{stdout}"
     );
-    assert!(stderr.contains("direct assertion message"), "{stderr}");
-    assert!(stderr.contains("source 0:"), "{stderr}");
+    assert!(stdout.contains("direct assertion message"), "{stdout}");
+    assert!(
+        stdout.contains("--> ") && stdout.contains("assert.siox:") && stdout.contains('^'),
+        "{stdout}"
+    );
+    assert!(stderr.is_empty(), "unexpected stderr:\n{stderr}");
     let _ = std::fs::remove_dir_all(directory);
 }
 
@@ -872,16 +955,18 @@ fn direct_process_runtime_reports_unreachable_await_conditions() {
     );
 
     let run = Command::new(&output).output().unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(!run.status.success(), "unreachable await passed");
     assert!(
-        stderr.contains("await condition has no future event"),
-        "{stderr}"
+        stdout.contains("await condition has no future event"),
+        "{stdout}"
     );
     assert!(
-        !stderr.contains("unreachable after the unmet await"),
-        "{stderr}"
+        !stdout.contains("unreachable after the unmet await"),
+        "{stdout}"
     );
+    assert!(stderr.is_empty(), "unexpected stderr:\n{stderr}");
     let _ = std::fs::remove_dir_all(directory);
 }
 

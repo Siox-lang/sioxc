@@ -14,9 +14,10 @@ use inkwell::targets::{
 };
 use inkwell::OptimizationLevel;
 
+use siox::diag::SourceMap;
 use siox::ir::Design;
 
-use super::emit::build_module;
+use super::emit::{build_module, build_module_with_sources};
 
 /// The `(cpu, features)` the target machine is built for. With the `simd`
 /// feature it is the host's own CPU and native feature set — so the backend may
@@ -63,9 +64,29 @@ pub fn host_target_machine() -> Result<TargetMachine, String> {
 /// Emit `design` as a native object file at `path` (`.o`). The object exports
 /// `sx_reset`/`sx_set`/`sx_read`/`sx_settle`.
 pub fn emit_object(design: &Design, path: &Path) -> Result<(), String> {
+    emit_object_module(design, None, path)
+}
+
+/// Emit an object with the source locations needed by its fixed runtime.
+pub fn emit_object_with_sources(
+    design: &Design,
+    sources: &SourceMap,
+    path: &Path,
+) -> Result<(), String> {
+    emit_object_module(design, Some(sources), path)
+}
+
+fn emit_object_module(
+    design: &Design,
+    sources: Option<&SourceMap>,
+    path: &Path,
+) -> Result<(), String> {
     let tm = host_target_machine()?;
     let ctx = Context::create();
-    let module = build_module(&ctx, design)?;
+    let module = match sources {
+        Some(sources) => build_module_with_sources(&ctx, design, Some(sources))?,
+        None => build_module(&ctx, design)?,
+    };
     super::emit::optimize_module(&module, &tm)?;
     tm.write_to_file(&module, FileType::Object, path)
         .map_err(|e| format!("object emission failed: {e}"))
@@ -2061,7 +2082,7 @@ signed main(void) {
     if (sx_runtime_error()) return 2;
     if (sx_read(1) != 1) return 3;
     if (!sx_runtime_run_test(1)) return 4;
-    if (!sx_runtime_error() || !strstr(sx_runtime_error(), "range failure")) return 5;
+    if (!sx_runtime_error() || !strstr(sx_runtime_error(), "left its range")) return 5;
     if (sx_runtime_run_test(2)) return 6;
     if (sx_runtime_now() != 42) return 7;
     if (sx_read_word(3, 0) != 0x0123456789abcdefULL) return 8;

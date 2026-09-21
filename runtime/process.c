@@ -1,6 +1,7 @@
 #include "process.h"
 #include "wave.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,7 +13,7 @@ enum {
     SX_PROCESS_FINISHED = 3,
     SX_PROCESS_SETTLING = 4,
     SX_PROCESS_UNSUPPORTED = 255,
-    SX_PROCESS_ABI = 10,
+    SX_PROCESS_ABI = 11,
     SX_EVENT_WRITE = 0,
     SX_EVENT_RESUME = 1,
     SX_SUSPENSION_NONE = 0,
@@ -37,6 +38,21 @@ extern const uint8_t sx_process_activations[];
 extern const uint32_t sx_process_sensitivity_offsets[];
 extern const uint8_t sx_process_sensitivity_kinds[];
 extern const uint32_t sx_process_sensitivity_ids[];
+extern const uint32_t sx_source_location_count;
+extern const uint32_t sx_source_location_files[];
+extern const uint32_t sx_source_location_offsets[];
+extern const char *const sx_source_location_texts[];
+extern const uint32_t sx_index_site_count;
+extern const int64_t sx_index_site_left[];
+extern const int64_t sx_index_site_right[];
+extern const char *const sx_index_site_locations[];
+extern const uint32_t sx_range_site_count;
+extern const char *const sx_range_site_locations[];
+extern const uint32_t sx_range_signal_count;
+extern const char *const sx_range_signal_names[];
+extern const int64_t sx_range_signal_left[];
+extern const int64_t sx_range_signal_right[];
+extern const char *const sx_range_signal_locations[];
 
 extern void sx_reset_test(uint32_t root);
 extern uint8_t sx_process_commit(void);
@@ -62,7 +78,8 @@ typedef struct sx_event {
     uint64_t words[];
 } sx_event;
 
-static char sx_error[192];
+static char *sx_error;
+static char sx_error_fallback[] = "cannot allocate runtime error message";
 static sx_event *sx_events;
 static uint64_t sx_now;
 static uint64_t sx_sequence;
@@ -76,12 +93,50 @@ static char *sx_format;
 static size_t sx_format_len;
 static size_t sx_format_cap;
 
-const char *sx_runtime_error(void) { return sx_error[0] ? sx_error : 0; }
+const char *sx_runtime_error(void) { return sx_error; }
 uint64_t sx_runtime_now(void) { return sx_now; }
 uint32_t sx_runtime_warning_count(void) { return sx_warnings; }
 
+static void sx_clear_error(void) {
+    if (sx_error != sx_error_fallback) free(sx_error);
+    sx_error = 0;
+}
+
+static void sx_set_error(const char *format, ...) {
+    if (sx_error) return;
+    va_list arguments;
+    va_start(arguments, format);
+    va_list measured;
+    va_copy(measured, arguments);
+    int length = vsnprintf(0, 0, format, measured);
+    va_end(measured);
+    if (length >= 0) {
+        sx_error = malloc((size_t)length + 1);
+        if (sx_error)
+            vsnprintf(sx_error, (size_t)length + 1, format, arguments);
+    }
+    va_end(arguments);
+    if (!sx_error) sx_error = sx_error_fallback;
+}
+
+static void sx_append_error_location(const char *location) {
+    if (!location || !*location || !sx_error || sx_error == sx_error_fallback)
+        return;
+    size_t message_length = strlen(sx_error);
+    size_t location_length = strlen(location);
+    static const char prefix[] = "\n  --> ";
+    if (message_length > SIZE_MAX - sizeof(prefix) - location_length) return;
+    size_t length = message_length + sizeof(prefix) - 1 + location_length + 1;
+    char *grown = realloc(sx_error, length);
+    if (!grown) return;
+    sx_error = grown;
+    memcpy(sx_error + message_length, prefix, sizeof(prefix) - 1);
+    memcpy(sx_error + message_length + sizeof(prefix) - 1, location,
+           location_length + 1);
+}
+
 static int sx_fail(const char *message) {
-    if (!sx_error[0]) snprintf(sx_error, sizeof sx_error, "%s", message);
+    sx_set_error("%s", message);
     return 1;
 }
 
@@ -116,7 +171,7 @@ void sx_runtime_format_begin(void) {
 }
 
 void sx_runtime_format_text(const char *text) {
-    if (!text || sx_error[0]) return;
+    if (!text || sx_error) return;
     size_t length = strlen(text);
     if (!sx_format_reserve(length)) return;
     memcpy(sx_format + sx_format_len, text, length + 1);
@@ -126,7 +181,7 @@ void sx_runtime_format_text(const char *text) {
 static void sx_runtime_format_integer(const uint64_t *words,
                                       uint32_t word_count, uint32_t width,
                                       uint8_t is_signed) {
-    if (sx_error[0]) return;
+    if (sx_error) return;
     if (!words || !word_count || !width ||
         word_count != (width - 1u) / 64u + 1u) {
         sx_fail("invalid runtime integer format value");
@@ -238,26 +293,36 @@ const char *sx_runtime_format_end(void) {
 }
 
 static int sx_fail_id(const char *message, uint32_t id) {
-    if (!sx_error[0])
-        snprintf(sx_error, sizeof sx_error, "%s %u", message, (unsigned)id);
+    sx_set_error("%s %u", message, (unsigned)id);
     return 1;
 }
 
 static int sx_fail_process_block(const char *message, uint32_t process,
                                  uint32_t block) {
-    if (!sx_error[0])
-        snprintf(sx_error, sizeof sx_error, "%s %u block %u", message,
-                 (unsigned)process, (unsigned)block);
+    sx_set_error("%s %u block %u", message, (unsigned)process,
+                 (unsigned)block);
     return 1;
+}
+
+static const char *sx_source_location(uint32_t file, uint32_t offset) {
+    for (uint32_t location = 0; location < sx_source_location_count;
+         ++location)
+        if (sx_source_location_files[location] == file &&
+            sx_source_location_offsets[location] == offset)
+            return sx_source_location_texts[location];
+    return 0;
 }
 
 uint8_t sx_runtime_assert(uint8_t condition, const char *message,
                           uint32_t file, uint32_t offset) {
     if (condition) return 0;
     if (!message || !*message) message = "assertion failed";
-    if (!sx_error[0])
-        snprintf(sx_error, sizeof sx_error, "%s (source %u:%u)", message,
-                 (unsigned)file, (unsigned)offset);
+    const char *location = sx_source_location(file, offset);
+    if (location)
+        sx_set_error("%s\n  --> %s", message, location);
+    else
+        sx_set_error("%s (source %u:%u)", message, (unsigned)file,
+                     (unsigned)offset);
     return 1;
 }
 
@@ -265,8 +330,13 @@ void sx_runtime_warn(uint8_t condition, const char *message,
                      uint32_t file, uint32_t offset) {
     if (condition) return;
     if (!message || !*message) message = "warning";
-    fprintf(stderr, "warning: %s (source %u:%u)\n", message,
-            (unsigned)file, (unsigned)offset);
+    const char *location = sx_source_location(file, offset);
+    fprintf(stderr, "warning: %s\n", message);
+    if (location)
+        fprintf(stderr, "  --> %s\n", location);
+    else
+        fprintf(stderr, "  --> source %u:%u\n", (unsigned)file,
+                (unsigned)offset);
     sx_warnings++;
 }
 
@@ -320,7 +390,7 @@ static sx_event *sx_allocate_event(uint64_t delay, uint32_t word_count) {
 
 void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
                          uint32_t word_count) {
-    if (sx_error[0]) return;
+    if (sx_error) return;
     if (!sx_running) {
         sx_fail("delayed write scheduled outside a running test");
         return;
@@ -340,7 +410,7 @@ void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
 
 void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
                              uint64_t delay) {
-    if (sx_error[0]) return;
+    if (sx_error) return;
     if (!sx_running || sx_current_process == UINT32_MAX) {
         sx_fail("process suspension registered outside a running process");
         return;
@@ -364,7 +434,7 @@ void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
 }
 
 void sx_runtime_settle(uint32_t process, uint32_t resume_block) {
-    if (sx_error[0]) return;
+    if (sx_error) return;
     if (!sx_running || sx_current_process == UINT32_MAX) {
         sx_fail("process settle registered outside a running process");
         return;
@@ -382,7 +452,7 @@ void sx_runtime_settle(uint32_t process, uint32_t resume_block) {
 }
 
 void sx_runtime_suspend_condition(uint32_t process, uint32_t recheck_block) {
-    if (sx_error[0]) return;
+    if (sx_error) return;
     if (!sx_running || sx_current_process == UINT32_MAX) {
         sx_fail("process suspension registered outside a running process");
         return;
@@ -402,20 +472,40 @@ void sx_runtime_suspend_condition(uint32_t process, uint32_t recheck_block) {
 static int sx_design_failed(void) {
     uint32_t index = sx_index_error();
     if (index) {
-        if (!sx_error[0])
-            snprintf(sx_error, sizeof sx_error,
-                     "runtime index failure at site %u: index %lld",
-                     (unsigned)(index - 1), (long long)sx_index_value());
+        uint32_t site = index - 1;
+        if (site < sx_index_site_count) {
+            sx_set_error("index %lld is outside declared range %lld..%lld",
+                         (long long)sx_index_value(),
+                         (long long)sx_index_site_left[site],
+                         (long long)sx_index_site_right[site]);
+            sx_append_error_location(sx_index_site_locations[site]);
+        } else {
+            sx_set_error("runtime index failure at site %u: index %lld",
+                         (unsigned)site, (long long)sx_index_value());
+        }
         return 1;
     }
     uint32_t signal = sx_range_error();
     if (signal) {
         uint32_t site = sx_range_site();
-        if (!sx_error[0])
-            snprintf(sx_error, sizeof sx_error,
-                     "runtime range failure for signal %u at site %u: value %lld",
-                     (unsigned)(signal - 1), (unsigned)(site ? site - 1 : 0),
+        uint32_t id = signal - 1;
+        if (id >= sx_range_signal_count) {
+            sx_set_error(
+                "runtime range failure for invalid signal %u at site %u: value %lld",
+                (unsigned)id, (unsigned)(site ? site - 1 : 0),
+                (long long)sx_range_value());
+            return 1;
+        }
+        sx_set_error("`%s` left its range %lld..%lld (it was %lld)",
+                     sx_range_signal_names[id],
+                     (long long)sx_range_signal_left[id],
+                     (long long)sx_range_signal_right[id],
                      (long long)sx_range_value());
+        const char *location = sx_range_signal_locations[id];
+        if (site && site <= sx_range_site_count &&
+            sx_range_site_locations[site - 1][0])
+            location = sx_range_site_locations[site - 1];
+        sx_append_error_location(location);
         return 1;
     }
     return 0;
@@ -499,7 +589,7 @@ int sx_runtime_run_test(uint32_t test) {
     int foreground_started = 0;
     int result = 0;
     sx_clear_events();
-    sx_error[0] = 0;
+    sx_clear_error();
     sx_now = 0;
     sx_sequence = 0;
     sx_current_process = UINT32_MAX;
@@ -600,7 +690,7 @@ int sx_runtime_run_test(uint32_t test) {
             }
             uint8_t status = entry(resume_blocks[process]);
             sx_current_process = UINT32_MAX;
-            if (sx_error[0]) {
+            if (sx_error) {
                 result = 1;
                 goto done;
             }

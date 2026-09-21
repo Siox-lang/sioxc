@@ -60,12 +60,16 @@ fn native_build_dir(kind: &str) -> PathBuf {
 /// never text translated from a design. The environment switch in [`build`]
 /// keeps it opt-in until all Process IR runtime operations and suspend forms
 /// have direct implementations.
-fn link_process_runtime(design: &Design, out: &Path) -> Result<(), String> {
+fn link_process_runtime(
+    design: &Design,
+    sources: &siox::diag::SourceMap,
+    out: &Path,
+) -> Result<(), String> {
     let tmp = native_build_dir("process_runtime");
     std::fs::create_dir_all(&tmp).map_err(|error| error.to_string())?;
     let object = tmp.join("design.o");
     let result = (|| {
-        siox::llvm::emit_object(design, &object)?;
+        siox::llvm::emit_object_with_sources(design, sources, &object)?;
 
         // Checked through a slice rather than directly: `build.rs` writes an
         // empty placeholder when clang could not precompile, so emptiness is a
@@ -159,16 +163,7 @@ fn link_process_runtime(design: &Design, out: &Path) -> Result<(), String> {
 ///
 /// Shared by every runtime failure so they all name their source the same way.
 fn span_location(sources: &siox::diag::SourceMap, span: siox::diag::Span) -> Option<String> {
-    let file = sources.get(span.file)?;
-    let (line, column) = sources.line_col(span.file, span.start);
-    let head = format!("{}:{line}:{column}", file.name);
-    // The snippet is rendered here, at emit time, and embedded: the running
-    // executable never reads the source, so it stays correct even if the tree
-    // has moved on, and there is no file to find at failure time.
-    match sources.snippet(span.file, span.start) {
-        Some(snippet) => Some(format!("{head}\n{snippet}")),
-        None => Some(head),
-    }
+    sources.location(span)
 }
 
 /// Build a native simulator binary that runs *all* `#[test]` entities, like
@@ -293,7 +288,7 @@ pub(super) fn build(request: BuildRequest<'_>) -> Result<(), String> {
                     .into(),
             );
         }
-        return link_process_runtime(design, out);
+        return link_process_runtime(design, sources, out);
     }
 
     let mut fns = FunctionIndex::new(resolved);
@@ -5811,9 +5806,16 @@ impl Ctx<'_> {
                 let cond = args.first().ok_or("warn needs a condition")?;
                 let c = self.expr(cond)?;
                 let set = self.c_message(args, 1, "warning")?;
+                let at = self
+                    .set_location(ast::expr_span(callee))
+                    .map(|location| format!(" {location}"))
+                    .unwrap_or_default();
                 b.push_str(&format!(
                     "{ind}{{ signed _ok = !!({c}); if (g_range_failed) return 1; \
-                     if (!_ok) {{ {set} fprintf(stderr, \"warning: %s\\n\", g_msg); g_warnings++; }} }}\n"
+                     if (!_ok) {{ {set} g_loc = 0;{at} \
+                     fprintf(stderr, \"warning: %s\\n\", g_msg); \
+                     if (g_loc) fprintf(stderr, \"  --> %s\\n\", g_loc); \
+                     g_warnings++; }} }}\n"
                 ));
             }
             // A method call in statement position (`r.set(7)`): the callee is

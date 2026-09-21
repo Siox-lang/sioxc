@@ -29,7 +29,7 @@ use siox::ir::{
 /// This is deliberately a data version rather than the compiler package
 /// version: the reusable native runtime only needs to change when one of the
 /// exported table layouts or encodings changes.
-const PROCESS_ABI_VERSION: u32 = 10;
+const PROCESS_ABI_VERSION: u32 = 11;
 
 /// A process returned normally and has no pending resume.
 const PROCESS_COMPLETED: u8 = 0;
@@ -7063,6 +7063,159 @@ fn emit_wave_metadata<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
     public_string(context, module, "sx_wave_vcd_header", &header);
 }
 
+/// Embed only source locations referenced by Process runtime operations.
+///
+/// The fixed runtime performs a `(file, offset)` lookup and never reads source
+/// files from disk. Keeping the rendered location in object data also makes it
+/// byte-identical to the compatibility harness, which uses the same
+/// [`SourceMap`] renderer.
+fn emit_source_locations<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    design: &Design,
+    sources: Option<&siox::diag::SourceMap>,
+) {
+    let mut locations = BTreeMap::new();
+    if let Some(sources) = sources {
+        for process in &design.process_ir.processes {
+            for block in &process.blocks {
+                for instruction in &block.instructions {
+                    if let ProcessInstruction::Runtime { span, .. } = instruction {
+                        if let Some(location) = sources.location(*span) {
+                            locations.insert((span.file.0, span.start), location);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let files = locations.keys().map(|(file, _)| *file).collect::<Vec<_>>();
+    let offsets = locations
+        .keys()
+        .map(|(_, offset)| *offset)
+        .collect::<Vec<_>>();
+    let texts = locations.into_values().collect::<Vec<_>>();
+    u32_global(
+        context,
+        module,
+        "sx_source_location_count",
+        u32::try_from(texts.len()).expect("runtime source location count exceeds its ABI index"),
+    );
+    u32_table(context, module, "sx_source_location_files", &files);
+    u32_table(context, module, "sx_source_location_offsets", &offsets);
+    string_table(
+        context,
+        module,
+        "sx_source_location_texts",
+        "sx.source.location",
+        &texts,
+    );
+
+    let index_sites = design.index_sites();
+    let index_left = index_sites
+        .iter()
+        .map(|site| site.left as u64)
+        .collect::<Vec<_>>();
+    let index_right = index_sites
+        .iter()
+        .map(|site| site.right as u64)
+        .collect::<Vec<_>>();
+    let index_locations = index_sites
+        .iter()
+        .map(|site| {
+            sources
+                .and_then(|sources| sources.location(site.span))
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    u32_global(
+        context,
+        module,
+        "sx_index_site_count",
+        u32::try_from(index_sites.len()).expect("runtime index site count exceeds its ABI index"),
+    );
+    u64_table(context, module, "sx_index_site_left", &index_left);
+    u64_table(context, module, "sx_index_site_right", &index_right);
+    string_table(
+        context,
+        module,
+        "sx_index_site_locations",
+        "sx.index.location",
+        &index_locations,
+    );
+
+    let range_sites = design.range_sites();
+    let range_locations = range_sites
+        .iter()
+        .map(|span| {
+            sources
+                .and_then(|sources| sources.location(*span))
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    u32_global(
+        context,
+        module,
+        "sx_range_site_count",
+        u32::try_from(range_sites.len()).expect("runtime range site count exceeds its ABI index"),
+    );
+    string_table(
+        context,
+        module,
+        "sx_range_site_locations",
+        "sx.range.location",
+        &range_locations,
+    );
+
+    let signal_names = design
+        .signals
+        .iter()
+        .map(|signal| signal.path.clone())
+        .collect::<Vec<_>>();
+    let signal_left = design
+        .signals
+        .iter()
+        .map(|signal| signal.range.unwrap_or_default().0 as u64)
+        .collect::<Vec<_>>();
+    let signal_right = design
+        .signals
+        .iter()
+        .map(|signal| signal.range.unwrap_or_default().1 as u64)
+        .collect::<Vec<_>>();
+    let signal_locations = design
+        .signals
+        .iter()
+        .map(|signal| {
+            sources
+                .and_then(|sources| sources.location(signal.declaration_span))
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    u32_global(
+        context,
+        module,
+        "sx_range_signal_count",
+        u32::try_from(design.signals.len())
+            .expect("runtime range signal count exceeds its ABI index"),
+    );
+    string_table(
+        context,
+        module,
+        "sx_range_signal_names",
+        "sx.range.signal.name",
+        &signal_names,
+    );
+    u64_table(context, module, "sx_range_signal_left", &signal_left);
+    u64_table(context, module, "sx_range_signal_right", &signal_right);
+    string_table(
+        context,
+        module,
+        "sx_range_signal_locations",
+        "sx.range.signal.location",
+        &signal_locations,
+    );
+}
+
 /// Materialize the runtime-facing test/process descriptor tables.
 ///
 /// All lists use offset + flattened-value tables, avoiding generated symbols
@@ -7070,10 +7223,16 @@ fn emit_wave_metadata<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
 /// `0 = signal` and `1 = persistent storage`; process activation is `0 = once
 /// at time zero`, `1 = reactive`. The counts make the sentinel elements of
 /// logically empty arrays unobservable.
-pub(super) fn emit_metadata<'ctx>(context: &'ctx Context, module: &Module<'ctx>, design: &Design) {
+pub(super) fn emit_metadata<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    design: &Design,
+    sources: Option<&siox::diag::SourceMap>,
+) {
     let process_ir = &design.process_ir;
     emit_state_helpers(context, module, design);
     emit_wave_metadata(context, module, design);
+    emit_source_locations(context, module, design, sources);
     u32_global(
         context,
         module,
@@ -7278,7 +7437,7 @@ mod tests {
             ..Design::default()
         };
         let llvm = crate::llvm::emit_module_ir(&design).unwrap();
-        assert!(llvm.contains("@sx_process_abi_version = constant i32 10"));
+        assert!(llvm.contains("@sx_process_abi_version = constant i32 11"));
         assert!(llvm.contains("define i8 @sx_process_commit()"));
         assert!(llvm.contains("define i8 @sx_process_changed(i32"));
         assert!(llvm.contains("define i8 @sx_process_storage_changed(i32"));
@@ -7310,6 +7469,8 @@ mod tests {
         assert!(llvm.contains("@sx_wave_signal_scopes = constant [1 x i32] [i32 1]"));
         assert!(llvm.contains("@sx_wave_signal_names = constant [1 x ptr]"));
         assert!(llvm.contains("@sx_wave_vcd_header = constant"));
+        assert!(llvm.contains("@sx_source_location_count = constant i32 0"));
+        assert!(llvm.contains("@sx_source_location_texts = constant [1 x ptr] zeroinitializer"));
         assert!(llvm.contains("$scope module Smoke $end"));
         assert!(llvm.contains("define internal i8 @sx.process.0(i32"));
         assert!(llvm.contains("define internal i8 @sx.process.1(i32"));

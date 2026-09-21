@@ -87,7 +87,7 @@ int main(int argc, char **argv) {
         if (sx_runtime_run_test(test)) {
             const char *error = sx_runtime_error();
             printf("test %s ... FAILED\n", name);
-            if (error) fprintf(stderr, "%s\n", error);
+            if (error) printf("    %s\n", error);
             failed++;
         } else {
             printf("test %s ... ok\n", name);

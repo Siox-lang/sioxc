@@ -76,6 +76,16 @@ extern const uint32_t sx_wave_symbol_offsets[];
 extern const uint64_t sx_wave_symbol_values[];
 extern const char *const sx_wave_symbol_texts[];
 extern const char sx_wave_vcd_header[];
+
+extern const uint32_t sx_source_location_count;
+extern const uint32_t sx_source_location_files[];
+extern const uint32_t sx_source_location_offsets[];
+extern const char *const sx_source_location_texts[];
+extern const uint32_t sx_index_site_count;
+extern const int64_t sx_index_site_left[], sx_index_site_right[];
+extern const char *const sx_index_site_locations[];
+extern const uint32_t sx_range_site_count;
+extern const char *const sx_range_site_locations[];
 ```
 
 Offsets use the usual half-open flattened-table representation. Activation is
@@ -135,6 +145,15 @@ reactive delta caused by that update has settled. Observation ordering is thus
 independent of the numeric Process IDs. The runtime records timed readiness
 separately; condition/edge rechecks still execute in the triggering event delta
 and therefore cannot miss a transient `'event` flag.
+
+Runtime diagnostics use object-owned source metadata, not files on the host.
+Only locations referenced by runtime operations are embedded, already rendered
+through the compiler's shared `SourceMap` formatter. Assertions, warnings,
+checked indices, and constrained-range failures therefore retain the same
+filename, line/column, source line, and caret after the source tree moves. The
+fixed runtime's error buffer grows with the message instead of truncating at a
+global constant, and its CLI reports failures on the same stream and in the
+same order as the compatibility harness.
 
 `runtime/process.c`, `runtime/main.c`, and `runtime/wave.c` implement the first
 reusable boundary:

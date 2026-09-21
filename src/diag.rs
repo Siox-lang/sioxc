@@ -116,6 +116,21 @@ impl SourceMap {
         ))
     }
 
+    /// Render the stable runtime location for `span`.
+    ///
+    /// Native executables embed this text so diagnostics do not need to read
+    /// source files after compilation and every backend uses the same
+    /// filename, line/column, snippet, and caret layout.
+    pub fn location(&self, span: Span) -> Option<String> {
+        let file = self.get(span.file)?;
+        let (line, column) = self.line_col(span.file, span.start);
+        let head = format!("{}:{line}:{column}", file.name);
+        Some(match self.snippet(span.file, span.start) {
+            Some(snippet) => format!("{head}\n{snippet}"),
+            None => head,
+        })
+    }
+
     /// 1-based `(line, column)` for a byte offset, for diagnostic rendering.
     ///
     /// Columns count bytes within the line (good enough for ASCII source).

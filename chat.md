@@ -10128,3 +10128,25 @@ gate is green: formatting, frontend-only check/Clippy, build, default and
 `bitpack` tests, all-target Clippy, and both complete corpus modes. Its first
 run also hardened the strict standalone-runtime fixture with the POSIX feature
 test macro required when compiling libfst under `-std=c11 -Werror`.
+
+### 2026-09-21 — Codex — fixed runtime diagnostics reach source parity
+
+Process ABI v11 now embeds the rendered source locations actually referenced
+by runtime operations, plus checked-index domains, range-write sites, and
+ranged-signal declaration metadata. The fixed runtime resolves those tables
+without reading source files and reports warnings, assertions, dynamic index
+failures, and constrained-range failures with the compatibility harness's exact
+filename, line/column, snippet, caret, offending value, output stream, and
+ordering. Its error storage is now dynamically sized instead of truncating at
+192 bytes.
+
+Focused compatibility/direct regressions compare stdout, stderr, status, and
+all source text for warnings, assertions, hardware index failures, and three
+range-failure modes. Both full differential sweeps now report **125 agree, 0
+diverge, 51 direct-only gaps, 0 oracle failures, 7 without tests**; all 125
+agreements compare VCD in default and `bitpack`. `warn_test` is the new
+agreement, closing the final known output divergence among supported cases.
+The exact local CI gate is also green after updating two fixture assertions
+that intentionally depended on the retired generic range wording and stderr
+failure stream: formatting, frontend checks, both Rust test modes, all-target
+Clippy, and both complete corpus modes pass.
