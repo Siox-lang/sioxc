@@ -71,8 +71,8 @@ iterate_test AGREE
 lfsr_test DIRECT-SEMANTIC
 logic_default_test AGREE
 logic_match_test AGREE
-logic_ninevalue_test DIRECT-UNSUPPORTED
-logic_table_test DIRECT-UNSUPPORTED
+logic_ninevalue_test AGREE
+logic_table_test AGREE
 logic_test AGREE
 loop_in_process_test AGREE
 loop_shadow_test AGREE
