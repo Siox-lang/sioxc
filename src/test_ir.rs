@@ -3802,6 +3802,7 @@ fn source_value_width(
     process: &ProcessCfg,
     context: &LoweringContext<'_>,
 ) -> Option<u32> {
+    let value_width = |id: &ProcessValueId| context.process_ir.values.get(id.0 as usize)?.bit_width;
     let typed_width = |ty: &crate::types::Ty| {
         ty.bit_width()
             .or_else(|| {
@@ -3844,10 +3845,51 @@ fn source_value_width(
                 .map_or(natural, |contextual| natural.max(contextual)),
         );
     }
-    if let Some(width) = ty.and_then(&typed_width).filter(|width| *width != 0) {
-        return Some(width);
+    if let Some(contextual) = ty.and_then(&typed_width).filter(|width| *width != 0) {
+        // `integer` is mathematically unbounded even though its ordinary ABI
+        // floor is one word. Preserve a wider operand through value-producing
+        // expressions so a multiword literal is not truncated merely because
+        // the checker correctly names the result `integer`. Fixed-width
+        // families and explicit `integer(value)` conversions deliberately do
+        // not take this path.
+        let natural = if matches!(ty, Some(crate::types::Ty::Integer)) {
+            match kind {
+                ProcessValueKind::Unary {
+                    operation: ProcessUnaryOp::Neg,
+                    operand,
+                } => value_width(operand),
+                ProcessValueKind::Binary {
+                    operation:
+                        ProcessBinaryOp::Add
+                        | ProcessBinaryOp::Sub
+                        | ProcessBinaryOp::Mul
+                        | ProcessBinaryOp::Div
+                        | ProcessBinaryOp::SignedAdd
+                        | ProcessBinaryOp::SignedSub
+                        | ProcessBinaryOp::SignedMul
+                        | ProcessBinaryOp::SignedDiv
+                        | ProcessBinaryOp::Shr
+                        | ProcessBinaryOp::ArithmeticShr,
+                    left,
+                    right,
+                } => Some(value_width(left)?.max(value_width(right)?)),
+                ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::Shl,
+                    left,
+                    right,
+                } => shifted_width(value_width(left)?, *right, context),
+                ProcessValueKind::Select {
+                    then_value,
+                    else_value,
+                    ..
+                } => Some(value_width(then_value)?.max(value_width(else_value)?)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        return Some(natural.map_or(contextual, |natural| contextual.max(natural)));
     }
-    let width = |id: &ProcessValueId| context.process_ir.values.get(id.0 as usize)?.bit_width;
     let width = match kind {
         ProcessValueKind::Number(ProcessNumber::Integer(words)) => integer_words_width(words),
         ProcessValueKind::Number(ProcessNumber::Real(_)) | ProcessValueKind::ForeignCall { .. } => {
@@ -3901,7 +3943,7 @@ fn source_value_width(
             })
         }
         ProcessValueKind::BitSlice { high, low, .. } => high.checked_sub(*low)?.checked_add(1),
-        ProcessValueKind::CheckedIndex { index, .. } => width(index),
+        ProcessValueKind::CheckedIndex { index, .. } => value_width(index),
         ProcessValueKind::TableLookup { table, .. } => context
             .design
             .lookup_tables
@@ -3909,9 +3951,9 @@ fn source_value_width(
             .map(|table| table.element_width),
         ProcessValueKind::Unary { operation, operand } => match operation {
             ProcessUnaryOp::RealToInteger => Some(64),
-            ProcessUnaryOp::Neg | ProcessUnaryOp::Not => width(operand),
+            ProcessUnaryOp::Neg | ProcessUnaryOp::Not => value_width(operand),
         },
-        ProcessValueKind::RawResize { operand } => width(operand),
+        ProcessValueKind::RawResize { operand } => value_width(operand),
         ProcessValueKind::Binary {
             operation,
             left,
@@ -3937,18 +3979,18 @@ fn source_value_width(
             | ProcessBinaryOp::FloatSub
             | ProcessBinaryOp::FloatMul
             | ProcessBinaryOp::FloatDiv => Some(64),
-            ProcessBinaryOp::Shl => shifted_width(width(left)?, *right, context),
-            _ => Some(width(left)?.max(width(right)?)),
+            ProcessBinaryOp::Shl => shifted_width(value_width(left)?, *right, context),
+            _ => Some(value_width(left)?.max(value_width(right)?)),
         },
         ProcessValueKind::Select {
             then_value,
             else_value,
             ..
-        } => Some(width(then_value)?.max(width(else_value)?)),
+        } => Some(value_width(then_value)?.max(value_width(else_value)?)),
         ProcessValueKind::MetaCompare { .. } => Some(1),
         ProcessValueKind::Concat(values) | ProcessValueKind::Array(values) => values
             .iter()
-            .try_fold(0u32, |total, value| total.checked_add(width(value)?)),
+            .try_fold(0u32, |total, value| total.checked_add(value_width(value)?)),
         ProcessValueKind::Field { base, field } => {
             let layout = process_value_source_layout(*base, context.process_ir)?;
             let LayoutKind::Struct { fields, .. } = &layout.kind else {
@@ -4273,6 +4315,7 @@ mod tests {
                    Mode::On => { print!(\"on\"); }\n\
                  }\n\
                  assert!(wrapped == Wrap(12), \"constructor without assignment context\");\n\
+                 assert!((18446744073709551616 + 1) != 1, \"wide integer expression\");\n\
                  print!(\"before loop\");\n\
                  for i in 0..2 { print!(\"loop {}\", i); }\n\
                  i = 7;\n\
@@ -4331,6 +4374,35 @@ mod tests {
             value.kind,
             ProcessValueKind::Definition(_) | ProcessValueKind::Call { .. }
         )));
+        let wide_literal = design
+            .process_ir
+            .values
+            .iter()
+            .position(|value| {
+                matches!(
+                    &value.kind,
+                    ProcessValueKind::Number(ProcessNumber::Integer(words))
+                        if words == &[0, 1]
+                )
+            })
+            .map(|index| ProcessValueId(index as u32))
+            .expect("wide integer literal");
+        let wide_add = design
+            .process_ir
+            .values
+            .iter()
+            .find(|value| {
+                matches!(
+                    value.kind,
+                    ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::SignedAdd,
+                        left,
+                        ..
+                    } if left == wide_literal
+                )
+            })
+            .expect("wide integer addition");
+        assert_eq!(wide_add.bit_width, Some(65));
         assert_eq!(design.process_ir.tests.len(), 1);
         assert_eq!(design.process_ir.processes.len(), 3);
         assert!(!design.process_ir.values.is_empty());

@@ -10289,3 +10289,22 @@ all 138 agreements compare VCD values and timestamps. In addition to the two
 focused cases above, `user_operator_test` moves to exact agreement. The array
 case now passes its earlier instance-port character comparisons and reaches
 the separate testbench array-`not` gap.
+
+### 2026-09-22 — Codex — retaining wide kernel-integer expressions
+
+Continuing Process-IR execution in `src/test_ir.rs`. A multiword literal keeps
+its natural width, but its enclosing arithmetic currently takes the checked
+`integer` type's 64-bit ABI width before consulting its operands. That turns
+`18446744073709551616 + 1` into `1` before LLVM can preserve the high word. I
+am making the kernel width a minimum for value-preserving integer expressions,
+while fixed-width vector families and explicit conversions remain exact-width.
+The regression will cover the lowered arena width and the direct native corpus
+case before the parity baseline changes.
+
+The adapter now treats `integer`'s 64-bit width as a floor for arithmetic,
+shifts, unary negation, and selects, inheriting a larger natural width from
+their operands without changing fixed-width families or explicit conversion.
+The focused native `shift_edge_test` passes. Default and `bitpack` differential
+matrices each report **139 agree, 0 diverge, 37 direct-only gaps, 0 oracle
+failures, 7 without tests**; all 139 agreements compare VCD values and
+timestamps.
