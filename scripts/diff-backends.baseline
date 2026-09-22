@@ -17,7 +17,7 @@ char_read_test DIRECT-UNSUPPORTED
 complex_test DIRECT-SEMANTIC
 compose_nested_test DIRECT-UNSUPPORTED
 composite_self_assign_test AGREE
-concat_test DIRECT-UNSUPPORTED
+concat_test AGREE
 connect_forms_test DIRECT-SEMANTIC
 connected_struct_initializer_test AGREE
 const_array_test DIRECT-UNSUPPORTED
@@ -124,7 +124,7 @@ signed_divide_test AGREE
 signed_fn_arg_test AGREE
 signed_inline_expr_test AGREE
 signed_local_test AGREE
-signed_port_test DIRECT-SEMANTIC
+signed_port_test AGREE
 signed_print_test AGREE
 signed_struct_field_test AGREE
 signed_test AGREE
