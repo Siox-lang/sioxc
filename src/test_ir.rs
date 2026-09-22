@@ -2992,6 +2992,205 @@ fn inline_process_function(
     result
 }
 
+/// Materialize one source-array operand as element projections in its written
+/// order. Array layout keeps labels and direction even though checked `Ty`
+/// intentionally records only the element count.
+fn process_array_elements(
+    value: ProcessValueId,
+    ty: &crate::types::Ty,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+) -> Option<Vec<ProcessValueId>> {
+    let crate::types::Ty::Array {
+        elem,
+        len,
+        family: None,
+    } = ty
+    else {
+        return None;
+    };
+    let (range, element_width) = {
+        let layout = process_value_source_layout(value, context.process_ir)?;
+        let LayoutKind::Array {
+            range: Some(range),
+            element,
+        } = &layout.kind
+        else {
+            return None;
+        };
+        if u32::try_from(range.len()?).ok()? != *len {
+            return None;
+        }
+        (*range, u32::try_from(element.bit_width()?).ok()?)
+    };
+
+    let mut elements = Vec::with_capacity(usize::try_from(*len).ok()?);
+    let mut label = range.left;
+    for position in 0..*len {
+        let index = push_value(
+            span,
+            Some(crate::types::Ty::Integer),
+            Some(64),
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![label as u64])),
+            context,
+        );
+        elements.push(push_value(
+            span,
+            Some((**elem).clone()),
+            Some(element_width),
+            ProcessValueKind::Index { base: value, index },
+            context,
+        ));
+        if position + 1 != *len {
+            label = if range.ascending() {
+                label.checked_add(1)?
+            } else {
+                label.checked_sub(1)?
+            };
+        }
+    }
+    Some(elements)
+}
+
+/// Rebuild element-wise operator results as one canonical source array. The
+/// consumer supplies its concrete recursive layout, so identical element
+/// counts with different written ranges do not lose their direction here.
+fn push_process_array(
+    span: crate::diag::Span,
+    ty: crate::types::Ty,
+    elements: Vec<ProcessValueId>,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let width = elements.iter().try_fold(0u32, |total, element| {
+        total.checked_add(
+            context
+                .process_ir
+                .values
+                .get(element.0 as usize)?
+                .bit_width?,
+        )
+    })?;
+    Some(push_value(
+        span,
+        Some(ty),
+        Some(width),
+        ProcessValueKind::Array(elements),
+        context,
+    ))
+}
+
+/// Retain a failed source-declared lowering as an explicit unsupported value
+/// rather than silently falling back to a packed primitive with different
+/// semantics.
+fn unsupported_process_value(
+    span: crate::diag::Span,
+    ty: Option<&crate::types::Ty>,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    push_value(span, ty.cloned(), None, ProcessValueKind::Invalid, context)
+}
+
+/// Expand a source-declared blanket binary array operator by position, then
+/// inline the concrete element implementation selected by its nominal type.
+#[allow(clippy::too_many_arguments)]
+fn inline_process_array_binary_operator(
+    symbol: &str,
+    lhs: &ast::Expr,
+    rhs: &ast::Expr,
+    left_type: &crate::types::Ty,
+    right_type: &crate::types::Ty,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    if !context.functions.has_blanket_array_operator(symbol, 1) {
+        return None;
+    }
+    let (
+        crate::types::Ty::Array {
+            elem: left_element,
+            len: left_len,
+            family: None,
+        },
+        crate::types::Ty::Array {
+            elem: right_element,
+            len: right_len,
+            family: None,
+        },
+    ) = (left_type, right_type)
+    else {
+        return None;
+    };
+    if left_len != right_len {
+        return None;
+    }
+    let owner = process_type_key(left_element, context)?;
+    let input = process_type_key(right_element, context)?;
+    let function = context
+        .functions
+        .get_binary_operator(symbol, &owner, Some(&input))?;
+    let span = ast::expr_span(lhs);
+    let left = value_ref_with_type(lhs, process, context, Some(left_type));
+    let right = value_ref_with_type(rhs, process, context, Some(right_type));
+    let left = process_array_elements(left, left_type, span, context)?;
+    let right = process_array_elements(right, right_type, ast::expr_span(rhs), context)?;
+    let elements = left
+        .into_iter()
+        .zip(right)
+        .map(|(left, right)| {
+            inline_process_function(
+                function,
+                Some(left),
+                &[right],
+                process,
+                context,
+                Some(left_element),
+            )
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let result_type = return_type
+        .filter(|ty| matches!(ty, crate::types::Ty::Array { family: None, .. }))
+        .cloned()
+        .unwrap_or_else(|| left_type.clone());
+    push_process_array(span, result_type, elements, context)
+}
+
+/// Unary counterpart of [`inline_process_array_binary_operator`].
+fn inline_process_array_unary_operator(
+    symbol: &str,
+    rhs: &ast::Expr,
+    operand_type: &crate::types::Ty,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    if !context.functions.has_blanket_array_operator(symbol, 0) {
+        return None;
+    }
+    let crate::types::Ty::Array {
+        elem, family: None, ..
+    } = operand_type
+    else {
+        return None;
+    };
+    let owner = process_type_key(elem, context)?;
+    let function = context.functions.get_unary_operator(symbol, &owner)?;
+    let span = ast::expr_span(rhs);
+    let operand = value_ref_with_type(rhs, process, context, Some(operand_type));
+    let operands = process_array_elements(operand, operand_type, span, context)?;
+    let elements = operands
+        .into_iter()
+        .map(|operand| {
+            inline_process_function(function, Some(operand), &[], process, context, Some(elem))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let result_type = return_type
+        .filter(|ty| matches!(ty, crate::types::Ty::Array { family: None, .. }))
+        .cloned()
+        .unwrap_or_else(|| operand_type.clone());
+    push_process_array(span, result_type, elements, context)
+}
+
 /// Inline a binary operator's selected `Operator::apply` body. Symbols remain
 /// frontend metadata only: a successful inline leaves ordinary Process value
 /// nodes, while a recursion guard deliberately falls through to the primitive
@@ -3013,11 +3212,35 @@ fn inline_process_binary_operator(
     };
     let left_type = checked_type(lhs)?;
     let right_type = checked_type(rhs);
+    let symbol = crate::syntax::pretty::bin_op(operator);
+    if matches!(left_type, crate::types::Ty::Array { family: None, .. })
+        && right_type
+            .as_ref()
+            .is_some_and(|ty| matches!(ty, crate::types::Ty::Array { family: None, .. }))
+        && context.functions.has_blanket_array_operator(symbol, 1)
+    {
+        let first_value = context.process_ir.values.len();
+        let result = inline_process_array_binary_operator(
+            symbol,
+            lhs,
+            rhs,
+            &left_type,
+            right_type.as_ref()?,
+            process,
+            context,
+            return_type,
+        );
+        if result.is_none() {
+            context.process_ir.values.truncate(first_value);
+        }
+        return Some(result.unwrap_or_else(|| {
+            unsupported_process_value(ast::expr_span(lhs), return_type, context)
+        }));
+    }
     let owner = process_type_key(&left_type, context)?;
     let input = right_type
         .as_ref()
         .and_then(|ty| process_type_key(ty, context));
-    let symbol = crate::syntax::pretty::bin_op(operator);
     let function = context
         .functions
         .get_binary_operator(symbol, &owner, input.as_deref())?;
@@ -3055,11 +3278,30 @@ fn inline_process_unary_operator(
         .expr_type(ast::expr_span(rhs))
         .filter(|ty| !matches!(ty, crate::types::Ty::Error))
         .cloned()?;
-    let owner = process_type_key(&operand_type, context)?;
     let symbol = match operator {
         ast::UnOp::Neg => "-",
         ast::UnOp::Not => "not",
     };
+    if matches!(operand_type, crate::types::Ty::Array { family: None, .. })
+        && context.functions.has_blanket_array_operator(symbol, 0)
+    {
+        let first_value = context.process_ir.values.len();
+        let result = inline_process_array_unary_operator(
+            symbol,
+            rhs,
+            &operand_type,
+            process,
+            context,
+            return_type,
+        );
+        if result.is_none() {
+            context.process_ir.values.truncate(first_value);
+        }
+        return Some(result.unwrap_or_else(|| {
+            unsupported_process_value(ast::expr_span(rhs), return_type, context)
+        }));
+    }
+    let owner = process_type_key(&operand_type, context)?;
     let function = context.functions.get_unary_operator(symbol, &owner)?;
 
     let first_value = context.process_ir.values.len();
@@ -4290,6 +4532,13 @@ mod tests {
         let sources = [
             "module tests;\n\
              enum Mode { Off, On }\n\
+             enum Cell { Low, High }\n\
+             impl Operator<\"not\", Cell, Cell> for Cell {\n\
+               fn apply(self) -> Cell {\n\
+                 if self == Cell::Low { return Cell::High; }\n\
+                 return Cell::Low;\n\
+               }\n\
+             }\n\
              struct Wrap(integer);\n\
              impl Operator<\"<=>\", Wrap, std::ops::Ordering> for Wrap {\n\
                fn apply(self, rhs: Wrap) -> std::ops::Ordering { return std::ops::Ordering::Equal; }\n\
@@ -4304,6 +4553,8 @@ mod tests {
                let wrapped: Wrap = Wrap(12);\n\
                let concat_high: Bool = false;\n\
                let concat_low: Bool = false;\n\
+               let cells: Cell[2] = [Cell::Low, Cell::High];\n\
+               let flipped: Cell[2] = not cells;\n\
                let dut: Device = { .input = flag, .output = observed };\n\
                process clock { flag = not flag after 1ns; }\n\
                process stimulus {\n\
@@ -4336,6 +4587,9 @@ mod tests {
              pub trait Operator<op: string, input, output> { fn apply(self, rhs: input) -> output {} } \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } } \
              impl Operator<\"not\", Bool, Bool> for Bool { fn apply(self) -> Bool { return self; } } \
+             impl<T: Operator<\"not\", T, T>> Operator<\"not\", T, T> for T[] { \
+               fn apply(self) -> T[] { let result: T[] = self; \
+                 for i in self'range { result[i] = not self[i]; } return result; } } \
              pub trait Suffix<symbol: string, input> { fn suffix(data: input) {} }",
             "module std::prelude; pub using std::logic::{Bool}; pub using std::attrs::{test}; \
              pub using std::ops::{Boolean, Operator};",
@@ -4374,6 +4628,17 @@ mod tests {
             value.kind,
             ProcessValueKind::Definition(_) | ProcessValueKind::Call { .. }
         )));
+        assert!(
+            design.process_ir.values.iter().any(|value| matches!(
+                &value.kind,
+                ProcessValueKind::Array(elements)
+                    if elements.len() == 2 && elements.iter().all(|element| matches!(
+                        design.process_ir.values[element.0 as usize].kind,
+                        ProcessValueKind::Select { .. }
+                    ))
+            )),
+            "blanket array operators should inline each element's source implementation"
+        );
         let wide_literal = design
             .process_ir
             .values

@@ -27,6 +27,10 @@ pub struct FunctionIndex<'a> {
     /// overload selection; the function body remains ordinary Siox source and
     /// is inlined by the IR consumer that selected it.
     operators: OperatorImpls<'a>,
+    /// Source-declared `Operator` implementations over unconstrained `T[]`.
+    /// Their loop-shaped bodies are expanded by Process lowering, while each
+    /// element still dispatches through its concrete source implementation.
+    blanket_array_operators: HashMap<String, &'a ast::FnDecl>,
 }
 
 impl<'a> FunctionIndex<'a> {
@@ -37,6 +41,7 @@ impl<'a> FunctionIndex<'a> {
             free: HashMap::new(),
             associated: HashMap::new(),
             operators: HashMap::new(),
+            blanket_array_operators: HashMap::new(),
         }
     }
 
@@ -57,10 +62,10 @@ impl<'a> FunctionIndex<'a> {
         self.associated.entry(key).or_insert(function);
     }
 
-    /// Register the executable `apply` body of one concrete `Operator` impl.
-    /// Blanket `T[]` implementations may enter under their generic owner but
-    /// cannot collide with a concrete nominal key; their loop-shaped lifting
-    /// remains an IR-lowering concern rather than a function lookup rule.
+    /// Register the executable `apply` body of one `Operator` impl. Blanket
+    /// `T[]` declarations are indexed separately from concrete nominal owners;
+    /// Process lowering expands their loop shape before selecting element
+    /// implementations.
     pub fn insert_operator_impl(&mut self, implementation: &'a ast::ImplDecl) {
         let Some(trait_path) = implementation.trait_.as_ref() else {
             return;
@@ -68,9 +73,6 @@ impl<'a> FunctionIndex<'a> {
         if self.trait_path_key(trait_path).as_deref() != Some("Operator") {
             return;
         }
-        let Some(owner) = self.type_head_key(&implementation.target) else {
-            return;
-        };
         let Some(symbol) = implementation
             .trait_args
             .first()
@@ -79,6 +81,18 @@ impl<'a> FunctionIndex<'a> {
                 _ => None,
             })
         else {
+            return;
+        };
+        if is_blanket_array_impl(implementation) {
+            if let Some(function) = implementation.items.iter().find_map(|item| match item {
+                ast::ImplItem::Fn(function) if function.name.text == "apply" => Some(function),
+                _ => None,
+            }) {
+                self.blanket_array_operators.insert(symbol, function);
+            }
+            return;
+        }
+        let Some(owner) = self.type_head_key(&implementation.target) else {
             return;
         };
         let input = implementation
@@ -172,6 +186,22 @@ impl<'a> FunctionIndex<'a> {
                     .count()
                     == 0)
                     .then_some(*function)
+            })
+    }
+
+    /// Whether source declares an unconstrained-array lift with this runtime
+    /// arity. The body establishes availability; Process lowering expands its
+    /// element loop and then executes concrete element `apply` bodies.
+    pub fn has_blanket_array_operator(&self, symbol: &str, argument_count: usize) -> bool {
+        self.blanket_array_operators
+            .get(symbol)
+            .is_some_and(|function| {
+                function
+                    .params
+                    .iter()
+                    .filter(|parameter| !parameter.is_self)
+                    .count()
+                    == argument_count
             })
     }
 
@@ -536,4 +566,26 @@ impl<'a> FunctionIndex<'a> {
             )),
         }
     }
+}
+
+/// Whether an implementation targets an unconstrained array of one of its
+/// own type parameters, as in `impl<T: Operator<...>> Operator<...> for T[]`.
+fn is_blanket_array_impl(implementation: &ast::ImplDecl) -> bool {
+    let ast::Type::Indexed {
+        base, index: None, ..
+    } = &implementation.target
+    else {
+        return false;
+    };
+    let ast::Type::Path(path) = base.as_ref() else {
+        return false;
+    };
+    let [name] = path.segments.as_slice() else {
+        return false;
+    };
+    implementation
+        .params
+        .params
+        .iter()
+        .any(|parameter| parameter.name.text == name.text)
 }

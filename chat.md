@@ -10308,3 +10308,25 @@ The focused native `shift_edge_test` passes. Default and `bitpack` differential
 matrices each report **139 agree, 0 diverge, 37 direct-only gaps, 0 oracle
 failures, 7 without tests**; all 139 agreements compare VCD values and
 timestamps.
+
+### 2026-09-22 — Codex — lowering blanket array operators into Process IR
+
+Continuing generated-C retirement in `src/{test_ir,ir/functions}.rs`. Std
+declares element-wise `Operator` implementations for unconstrained `T[]`, but
+the temporary Process adapter cannot symbolically execute their mutable
+loop-shaped bodies. It therefore falls back to one packed unary/binary LLVM
+operation; that is observably wrong for multi-bit enum elements such as
+`Logic[3]`. I am indexing the source-declared blanket availability separately
+from concrete element implementations, expanding an accepted array operation
+by source position, inlining each element's concrete `apply`, and rebuilding a
+canonical Process array value. This keeps std in charge of which operators and
+truth tables exist while removing another generated-C-only behavior path.
+
+Blanket availability is now indexed from the source declaration, separately
+from concrete nominal implementations. Process lowering projects each operand
+in its own written range order, inlines the concrete element `apply`, and
+rebuilds a source array for the consumer's recursive layout; failure remains
+explicitly unsupported rather than taking a packed primitive shortcut. The
+embedded IR regression and direct `array_operator_test` pass. Default and
+`bitpack` matrices each report **140 agree, 0 diverge, 36 direct-only gaps, 0
+oracle failures, 7 without tests**, with VCD parity for all 140 agreements.
