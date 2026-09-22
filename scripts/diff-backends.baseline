@@ -1,7 +1,7 @@
 aggregate_event_test AGREE
 array_init_rom_test DIRECT-UNSUPPORTED
 array_literal_test AGREE
-array_operator_test DIRECT-SEMANTIC
+array_operator_test AGREE
 array_test AGREE
 assoc_fn_test AGREE
 await_forms_test AGREE
