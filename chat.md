@@ -10330,3 +10330,33 @@ explicitly unsupported rather than taking a packed primitive shortcut. The
 embedded IR regression and direct `array_operator_test` pass. Default and
 `bitpack` matrices each report **140 agree, 0 diverge, 36 direct-only gaps, 0
 oracle failures, 7 without tests**, with VCD parity for all 140 agreements.
+
+### 2026-09-23 — Codex — preserving display value types in Process IR
+
+Continuing generated-C retirement in `src/test_ir.rs` as one coordinated
+display/type-persistence batch. Range attributes, enum values that pass through
+storage/selects, and indexed character values currently lose enough source
+type information that the direct runtime cannot choose their source-defined
+display representation. I am centralizing recovery for these derived values,
+adding focused regressions for all three forms, and will defer the expensive
+two-layout differential and full CI matrices until the complete batch passes
+its focused native checks.
+
+The indexed-character case exposed the upstream shape loss: alias expansion
+correctly reaches `string = Char[]`, but source-layout construction treated an
+unconstrained ordinary array as a zero-width `Char` scalar because `array_of`
+only recognizes an already constrained index. I am fixing that canonical IR
+layout boundary as part of the same batch, then applying the type checker's
+initializer-inferred length to test storage. This also gives the direct backend
+a principled fixed `Char[N]` representation for string indexing, assignment,
+connections, and formatting.
+
+The completed batch retains result types on range attributes, resolved enum
+variants, common-typed selects, and indexed array elements. Unconstrained
+ordinary arrays now remain arrays in canonical source layouts, test storage
+applies the checker-inferred literal length, fixed character arrays format
+directly through the runtime ABI, and empty strings append no characters.
+`range_attr_test`, `enum_inline_display_test`, `array_init_rom_test`, and
+`format_test` now pass directly. Default and `bitpack` differential matrices
+each report **144 agree, 0 diverge, 32 direct-only gaps, 0 oracle failures, 7
+without tests**; all 144 agreements compare VCD values and timestamps.

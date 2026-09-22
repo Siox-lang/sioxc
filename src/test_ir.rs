@@ -273,6 +273,29 @@ fn process_type_from_layout(
     }
 }
 
+/// Apply a checked array length to an otherwise unconstrained declaration
+/// layout. The type checker infers `let s: string = "hello"` as `Char[5]`;
+/// retaining `Char[]` here would discard that fixed native storage shape after
+/// semantic analysis had already established it.
+fn process_layout_with_type(
+    layout: &crate::ir::SourceLayout,
+    ty: Option<&crate::types::Ty>,
+) -> crate::ir::SourceLayout {
+    let mut concrete = layout.clone();
+    if let (LayoutKind::Array { range, element }, Some(crate::types::Ty::Array { elem, len, .. })) =
+        (&mut concrete.kind, ty)
+    {
+        if range.is_none() && *len != 0 {
+            *range = Some(crate::ir::LayoutRange {
+                left: 0,
+                right: i64::from(*len) - 1,
+            });
+        }
+        **element = process_layout_with_type(element, Some(elem));
+    }
+    concrete
+}
+
 fn constant_suffixes(
     modules: &[Module],
     resolved: &Resolved,
@@ -1252,6 +1275,7 @@ fn register_test_storages(
                     .filter(|ty| !matches!(ty, crate::types::Ty::Error))
                     .cloned()
             });
+        let layout = process_layout_with_type(layout, ty.as_ref());
         process_ir.storages.push(ProcessStorage {
             id,
             owner: root,
@@ -1259,7 +1283,7 @@ fn register_test_storages(
             source: resolved.declared(declaration.name.span),
             span: declaration.span,
             ty,
-            layout: Some(layout.clone()),
+            layout: Some(layout),
             initializer: None,
             bindings: testbench_bindings(
                 name, modules, resolved, hierarchy, root, root_path, design,
@@ -2154,6 +2178,113 @@ fn process_display_kind(
     }
 }
 
+/// The source enum that owns a resolved variant. Variant paths lower to their
+/// elaborated number, so this must be captured before the `DefId` disappears.
+fn enum_variant_type(
+    definition: crate::resolve::DefId,
+    resolved: &Resolved,
+) -> Option<crate::types::Ty> {
+    let variant = resolved.def(definition)?;
+    (variant.kind == crate::resolve::DefKind::EnumVariant)
+        .then_some(variant.parent?)
+        .map(crate::types::Ty::Named)
+}
+
+/// Result type of a layout attribute. Attributes are compiler primitives, but
+/// their Boolean values and symbols remain owned by `std::logic::Bool`.
+fn process_attribute_type(
+    attribute: &str,
+    base: ProcessValueId,
+    context: &LoweringContext<'_>,
+) -> Option<crate::types::Ty> {
+    match attribute {
+        "old" => process_value_type(base, context),
+        "event" | "ascending" => nominal_type_from_name("std::logic::Bool", context.resolved),
+        "left" | "right" | "high" | "low" | "length" => Some(crate::types::Ty::Integer),
+        _ => None,
+    }
+}
+
+/// Element type selected by intrinsic indexing. Prefer the concrete recursive
+/// layout, then fall back to the base value's checked array type for unsized
+/// values such as a runtime `string`.
+fn process_index_type(
+    base: ProcessValueId,
+    context: &LoweringContext<'_>,
+) -> Option<crate::types::Ty> {
+    process_value_source_layout(base, context.process_ir)
+        .and_then(|layout| match &layout.kind {
+            LayoutKind::Array { element, .. } => {
+                process_type_from_layout(element, context.resolved)
+            }
+            LayoutKind::Packed { element_enum, .. } => element_enum
+                .as_deref()
+                .and_then(|name| nominal_type_from_name(name, context.resolved)),
+            _ => None,
+        })
+        .or_else(|| match process_value_type(base, context)? {
+            crate::types::Ty::Array { elem, .. } => Some(*elem),
+            _ => None,
+        })
+}
+
+/// Recover a result type from already-lowered children when the typed AST has
+/// no standalone entry for a derived expression.
+fn process_kind_type(
+    kind: &ProcessValueKind,
+    context: &LoweringContext<'_>,
+) -> Option<crate::types::Ty> {
+    match kind {
+        ProcessValueKind::StorageState {
+            storage,
+            state: ProcessSignalState::Old,
+        } => process_value_type_for_storage(*storage, context),
+        ProcessValueKind::StorageState {
+            state: ProcessSignalState::Event,
+            ..
+        }
+        | ProcessValueKind::Signal {
+            state: ProcessSignalState::Event,
+            ..
+        } => nominal_type_from_name("std::logic::Bool", context.resolved),
+        ProcessValueKind::Definition(definition) => {
+            enum_variant_type(*definition, context.resolved)
+        }
+        ProcessValueKind::Attribute { base, attribute } => {
+            process_attribute_type(attribute, *base, context)
+        }
+        ProcessValueKind::Index { base, .. } => process_index_type(*base, context),
+        ProcessValueKind::Select {
+            then_value,
+            else_value,
+            ..
+        } => {
+            let then_type = process_value_type(*then_value, context)?;
+            (process_value_type(*else_value, context).as_ref() == Some(&then_type))
+                .then_some(then_type)
+        }
+        _ => None,
+    }
+}
+
+fn process_value_type_for_storage(
+    storage: ProcessStorageId,
+    context: &LoweringContext<'_>,
+) -> Option<crate::types::Ty> {
+    context
+        .process_ir
+        .storages
+        .get(storage.0 as usize)
+        .and_then(|storage| {
+            storage.ty.clone().or_else(|| {
+                storage
+                    .layout
+                    .as_ref()
+                    .and_then(|layout| process_type_from_layout(layout, context.resolved))
+            })
+        })
+}
+
 /// Recover the source type of an already-lowered Process value from its own
 /// annotation or its canonical storage/signal layout. The temporary typed AST
 /// omits types for projections such as `instance.port`; every consumer must
@@ -2171,18 +2302,14 @@ fn process_value_type(
         .filter(usable)
         .cloned()
         .or_else(|| match &process_value.kind {
-            ProcessValueKind::Storage(storage) => context
-                .process_ir
-                .storages
-                .get(storage.0 as usize)
-                .and_then(|storage| {
-                    storage.ty.clone().or_else(|| {
-                        storage
-                            .layout
-                            .as_ref()
-                            .and_then(|layout| process_type_from_layout(layout, context.resolved))
-                    })
-                }),
+            ProcessValueKind::Storage(storage) => process_value_type_for_storage(*storage, context),
+            ProcessValueKind::StorageState { storage, state } => match state {
+                ProcessSignalState::Old => process_value_type_for_storage(*storage, context),
+                ProcessSignalState::Event => {
+                    nominal_type_from_name("std::logic::Bool", context.resolved)
+                }
+                ProcessSignalState::Current => None,
+            },
             ProcessValueKind::Local { process, local } => context
                 .process_ir
                 .processes
@@ -2196,6 +2323,10 @@ fn process_value_type(
                             .and_then(|layout| process_type_from_layout(layout, context.resolved))
                     })
                 }),
+            ProcessValueKind::Signal {
+                state: ProcessSignalState::Event,
+                ..
+            } => nominal_type_from_name("std::logic::Bool", context.resolved),
             ProcessValueKind::Signal { signals, .. } => {
                 let [signal] = signals.as_slice() else {
                     return None;
@@ -2207,8 +2338,10 @@ fn process_value_type(
                     .get(path)
                     .and_then(|layout| process_type_from_layout(layout, context.resolved))
             }
-            _ => process_value_source_layout(value, context.process_ir)
-                .and_then(|layout| process_type_from_layout(layout, context.resolved)),
+            kind => process_kind_type(kind, context).or_else(|| {
+                process_value_source_layout(value, context.process_ir)
+                    .and_then(|layout| process_type_from_layout(layout, context.resolved))
+            }),
         })
 }
 
@@ -3641,7 +3774,7 @@ fn value_ref_with_type(
     // argument context may coerce that value at its use site, but must not
     // rewrite a loop cursor/local from `integer` into the destination type.
     // Literals and constructors still prefer their surrounding context.
-    let ty = if matches!(expression, ast::Expr::Path(_)) {
+    let mut ty = if matches!(expression, ast::Expr::Path(_)) {
         inferred.or(contextual)
     } else {
         contextual.or(inferred)
@@ -3656,6 +3789,13 @@ fn value_ref_with_type(
             .ret
             .as_ref()
             .and_then(|ty| declared_process_type(ty, context.resolved))
+    })
+    .or_else(|| {
+        let ast::Expr::Path(path) = expression else {
+            return None;
+        };
+        let definition = context.resolved.resolved(path.span)?;
+        enum_variant_type(definition, context.resolved)
     });
 
     if let ast::Expr::Path(path) = expression {
@@ -3849,18 +3989,7 @@ fn value_ref_with_type(
                     checked_process_index(index, index_span, range, context)
                 });
                 let kind = ProcessValueKind::Index { base, index };
-                let recovered =
-                    process_value_source_layout(base, context.process_ir).and_then(|layout| {
-                        match &layout.kind {
-                            LayoutKind::Array { element, .. } => {
-                                process_type_from_layout(element, context.resolved)
-                            }
-                            LayoutKind::Packed { element_enum, .. } => element_enum
-                                .as_deref()
-                                .and_then(|name| nominal_type_from_name(name, context.resolved)),
-                            _ => None,
-                        }
-                    });
+                let recovered = process_index_type(base, context);
                 let ty = ty
                     .filter(|ty| !matches!(ty, crate::types::Ty::Error))
                     .or(recovered);
@@ -4013,6 +4142,7 @@ fn value_ref_with_type(
         ),
     };
 
+    ty = ty.or_else(|| process_kind_type(&kind, context));
     let width = source_value_width(&kind, ty.as_ref(), process, context);
     push_value(span, ty, width, kind, context)
 }
@@ -4932,6 +5062,113 @@ mod tests {
                 "value %{index} is not in dependency order: {value:?}"
             );
         }
+    }
+
+    #[test]
+    /// Display metadata belongs to the derived Process value, not to the AST
+    /// spelling that happened to produce it. Attributes, enum variants and
+    /// selects, and an indexed runtime string must therefore retain their
+    /// respective Bool/enum/Char identities.
+    fn derived_display_values_retain_source_types() {
+        let sources = [
+            "module tests;\n\
+             enum State { Idle, Run, Done }\n\
+             #[std::attrs::test] entity Smoke {}\n\
+             impl Smoke {\n\
+               let flags: Bool[0..1] = [false, true];\n\
+               let state: State = State::Run;\n\
+               let text: string = \"hello\";\n\
+               process run {\n\
+                 print!(\"{} {} {} {}\", flags'ascending, state, State::Done,\n\
+                   if true { state } else { State::Idle });\n\
+                 print!(\"{} {}\", text, text[2]);\n\
+               }\n\
+             }",
+            "module std::logic; pub enum Bool { false, true }",
+            "module std::attrs; using std::logic::{Bool}; pub attr test: Bool for entity;",
+            "module std::ops; using std::logic::{Bool}; pub trait Boolean { fn as_bool(self) -> Bool; } \
+             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+            "module std::text; pub using string = Char[];",
+            "module std::prelude; pub using std::logic::{Bool}; pub using std::attrs::{test}; \
+             pub using std::ops::{Boolean}; pub using std::text::{string};",
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+            })
+            .collect::<Vec<_>>();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let (hierarchy, plan) = crate::testbench::elaborate(&modules, &resolved, &typed, &mut sink);
+        let mut design = crate::ir::lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+
+        lower(
+            &modules,
+            &resolved,
+            &typed,
+            &hierarchy,
+            Some(&plan),
+            &mut design,
+        );
+
+        let formatted = design
+            .process_ir
+            .processes
+            .iter()
+            .flat_map(|process| &process.blocks)
+            .flat_map(|block| &block.instructions)
+            .filter_map(|instruction| match instruction {
+                ProcessInstruction::Runtime {
+                    format: Some(format),
+                    ..
+                } => Some(format),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|part| match part {
+                ProcessFormatPart::Value { value, kind } => Some((*value, kind)),
+                ProcessFormatPart::Text(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(formatted.len(), 6, "{formatted:#?}");
+        assert!(
+            formatted.iter().any(|(value, kind)| {
+                matches!(kind, ProcessDisplayKind::String)
+                    && process_value_source_layout(*value, &design.process_ir)
+                        .and_then(crate::ir::SourceLayout::index_range)
+                        .and_then(crate::ir::LayoutRange::len)
+                        == Some(5)
+            }),
+            "formatted={formatted:#?} storages={:#?}",
+            design.process_ir.storages
+        );
+        assert!(formatted.iter().any(|(value, kind)| {
+            matches!(kind, ProcessDisplayKind::Character)
+                && design.process_ir.values[value.0 as usize].bit_width == Some(32)
+        }));
+        assert!(formatted.iter().any(|(value, kind)| {
+            matches!(kind, ProcessDisplayKind::Enum(name) if name.ends_with("Bool"))
+                && design.process_ir.values[value.0 as usize].bit_width == Some(1)
+        }));
+        assert_eq!(
+            formatted
+                .iter()
+                .filter(|(value, kind)| {
+                    matches!(kind, ProcessDisplayKind::Enum(name) if name.ends_with("State"))
+                        && design.process_ir.values[value.0 as usize].bit_width == Some(2)
+                })
+                .count(),
+            3,
+            "{formatted:#?}"
+        );
+        assert!(design
+            .process_ir
+            .validate(design.signals.len() as u32)
+            .is_empty());
     }
 
     #[test]

@@ -273,6 +273,31 @@ impl<'a> Lowering<'a> {
             };
         }
 
+        // An unconstrained ordinary array still has an array shape even though
+        // its concrete range comes from a declaration use or initializer.
+        // `array_of` intentionally handles only `index: Some(_)`; falling
+        // through here used to turn `string = Char[]` into a zero-width Char
+        // scalar and discarded the very dimension later stages must constrain.
+        if let ast::Type::Indexed {
+            base, index: None, ..
+        } = &ty
+        {
+            let base_is_family = matches!(base.as_ref(), ast::Type::Path(_))
+                && self
+                    .free_fns
+                    .type_head_key(base)
+                    .is_some_and(|head| self.array_families.contains(&head));
+            if !is_int_type(base) && !base_is_family {
+                return SourceLayout {
+                    span,
+                    kind: LayoutKind::Array {
+                        range: None,
+                        element: Box::new(self.source_layout_at(base, env, expanding)),
+                    },
+                };
+            }
+        }
+
         if let Some((element, indices)) = array_of(
             &ty,
             env,

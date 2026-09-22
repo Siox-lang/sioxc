@@ -1636,10 +1636,22 @@ fn process_layout_attribute(design: &Design, base: ProcessValueId, attribute: &s
         "right" => range.right,
         "high" => range.left.max(range.right),
         "low" => range.left.min(range.right),
-        "ascending" => return Some(u64::from(range.ascending())),
+        "ascending" => return process_bool_discriminant(design, range.ascending()),
         _ => return None,
     };
     Some(u64::from_ne_bytes(signed.to_ne_bytes()))
+}
+
+/// Resolve a Boolean through the elaborated std enum table. The compiler may
+/// name `Bool`, but its source declaration owns both discriminants.
+fn process_bool_discriminant(design: &Design, value: bool) -> Option<u64> {
+    let symbol = if value { "true" } else { "false" };
+    design
+        .enum_syms
+        .get("std::logic::Bool")
+        .or_else(|| design.enum_syms.get("Bool"))?
+        .iter()
+        .find_map(|(discriminant, candidate)| (candidate == symbol).then_some(*discriminant))
 }
 
 fn process_constant_i64(design: &Design, id: ProcessValueId) -> Option<i64> {
@@ -3467,9 +3479,65 @@ fn process_string(design: &Design, id: ProcessValueId) -> Option<&str> {
     }
 }
 
-/// Assertions and warnings have a deliberately small fixed ABI. Formatting
-/// operands remain unsupported until the runtime formatting service can render
-/// their type metadata without consulting the source AST.
+/// A fixed `Char[N]` value can use the formatting ABI directly without a
+/// runtime-owned dynamic string object. Return its element/count only when the
+/// recursive layout proves every packed slice is one character.
+fn process_fixed_string_layout(layout: &SourceLayout) -> Option<(&SourceLayout, u32)> {
+    let LayoutKind::Array {
+        range: Some(range),
+        element,
+    } = &layout.kind
+    else {
+        return None;
+    };
+    if !matches!(
+        element.kind,
+        LayoutKind::Scalar {
+            domain: siox::ir::ScalarDomain::Character,
+            ..
+        }
+    ) {
+        return None;
+    }
+    let length = u32::try_from(range.len()?).ok()?;
+    (layout_width(element)? <= 32).then_some((element, length))
+}
+
+/// Empty arrays have no nonzero LLVM integer frame. They are nevertheless a
+/// complete string value and formatting them correctly means appending no
+/// characters rather than rejecting the enclosing runtime instruction.
+fn process_empty_string(design: &Design, id: ProcessValueId) -> bool {
+    let value = match design.process_ir.values.get(id.0 as usize) {
+        Some(value) => value,
+        None => return false,
+    };
+    let ty = value.ty.as_ref().or_else(|| match &value.kind {
+        ProcessValueKind::Storage(storage) => design
+            .process_ir
+            .storages
+            .get(storage.0 as usize)
+            .and_then(|storage| storage.ty.as_ref()),
+        ProcessValueKind::Local { process, local } => design
+            .process_ir
+            .processes
+            .get(process.0 as usize)
+            .and_then(|process| process.locals.get(local.0 as usize))
+            .and_then(|local| local.ty.as_ref()),
+        _ => None,
+    });
+    matches!(
+        ty,
+        Some(siox::types::Ty::Array {
+            elem,
+            len: 0,
+            family: None,
+        }) if matches!(elem.as_ref(), siox::types::Ty::Char)
+    )
+}
+
+/// Assertions, warnings, and prints use a deliberately small fixed ABI.
+/// Accept formatting only when finalized Process metadata is sufficient to
+/// render the value without consulting source syntax.
 fn runtime_instruction_supported(
     design: &Design,
     operation: &ProcessRuntimeOp,
@@ -3483,7 +3551,14 @@ fn runtime_instruction_supported(
             ProcessFormatPart::Value {
                 value,
                 kind: ProcessDisplayKind::String,
-            } => process_string(design, *value).is_some(),
+            } => {
+                process_string(design, *value).is_some()
+                    || process_empty_string(design, *value)
+                    || values.get(value.0 as usize).copied().unwrap_or(false)
+                        && process_value_layout(design, *value)
+                            .and_then(process_fixed_string_layout)
+                            .is_some()
+            }
             ProcessFormatPart::Value { value, kind } => {
                 values.get(value.0 as usize).copied().unwrap_or(false)
                     && design
@@ -5861,6 +5936,28 @@ fn emit_format_integer<'ctx>(
     Some(())
 }
 
+fn emit_format_character<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    value: IntValue<'ctx>,
+) -> Option<()> {
+    let value = fit(builder, value, 32)?;
+    let runtime = module
+        .get_function("sx_runtime_format_char")
+        .unwrap_or_else(|| {
+            module.add_function(
+                "sx_runtime_format_char",
+                context
+                    .void_type()
+                    .fn_type(&[context.i32_type().into()], false),
+                Some(Linkage::External),
+            )
+        });
+    builder.build_call(runtime, &[value.into()], "").ok()?;
+    Some(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_process_format<'ctx>(
     context: &'ctx Context,
@@ -5971,18 +6068,7 @@ fn emit_process_format<'ctx>(
                     index_sites,
                     cache,
                 )?;
-                let runtime = module
-                    .get_function("sx_runtime_format_char")
-                    .unwrap_or_else(|| {
-                        module.add_function(
-                            "sx_runtime_format_char",
-                            context
-                                .void_type()
-                                .fn_type(&[context.i32_type().into()], false),
-                            Some(Linkage::External),
-                        )
-                    });
-                builder.build_call(runtime, &[value.into()], "").ok()?;
+                emit_format_character(context, module, builder, value)?;
             }
             ProcessDisplayKind::Enum(name) => {
                 let value = process_value_at(
@@ -6036,7 +6122,34 @@ fn emit_process_format<'ctx>(
                     .build_call(append_text, &[selected.into()], "")
                     .ok()?;
             }
-            ProcessDisplayKind::String => return None,
+            ProcessDisplayKind::String => {
+                if process_empty_string(design, *value) {
+                    continue;
+                }
+                let layout = process_value_layout(design, *value)?;
+                let (element, length) = process_fixed_string_layout(layout)?;
+                let element_width = layout_width(element)?;
+                let aggregate = process_value_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *value,
+                    layout,
+                    None,
+                    index_sites,
+                    cache,
+                )?;
+                for position in 0..length {
+                    let character = extract_region(
+                        builder,
+                        aggregate,
+                        position.checked_mul(element_width)?,
+                        element_width,
+                    )?;
+                    emit_format_character(context, module, builder, character)?;
+                }
+            }
         }
     }
     let end = module
