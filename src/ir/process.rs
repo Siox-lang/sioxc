@@ -269,9 +269,9 @@ pub enum ProcessAssignment {
     ImmediateStorage,
     /// Signals stage a driver write for end-of-step resolution/commit.
     StagedSignal,
-    /// A concatenation whose destination leaves have different storage
-    /// classes. Each leaf keeps its own local/storage/signal timing while the
-    /// right-hand value is evaluated once before any write is applied.
+    /// A concatenated destination. Each leaf keeps its own
+    /// local/storage/signal timing while the right-hand value is evaluated
+    /// once before any write is applied.
     PerPlace,
 }
 
@@ -1016,7 +1016,7 @@ impl ProcessIr {
                                         self.values.get(target.0 as usize).map(|value| &value.kind),
                                         Some(ProcessValueKind::Concat(_))
                                     ) && process_place_classes(self, *target)
-                                        .is_some_and(|classes| classes.len() > 1)
+                                        .is_some_and(|classes| !classes.is_empty())
                                 }
                             };
                             if !valid {

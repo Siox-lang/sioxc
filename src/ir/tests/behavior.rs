@@ -63,6 +63,51 @@ fn lowers_nested_instances_with_connections() {
 }
 
 #[test]
+/// A testbench literal connected directly to a DUT input is hardware input
+/// semantics, not private setup performed by one native-test backend.
+fn testbench_value_connections_become_canonical_drivers() {
+    let source = "module m;
+         entity Echo { input: unsigned[12] in, output: unsigned[12] out }
+         impl Echo { output = input; }
+         #[test] entity T {}
+         impl T {
+           let source: unsigned[12] = 7;
+           let observed: unsigned[12];
+           let dut: Echo = { .input = 0xA5C, .output = observed };
+           let dynamic: Echo = { .input = source + 1 };
+         }";
+    let diagnostics = lower_diags(source);
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.contains("no value named `source`")),
+        "testbench-dependent connections must not enter hardware lowering: {diagnostics:#?}"
+    );
+    let design = lower_src(source);
+    let input = design
+        .signals
+        .iter()
+        .position(|signal| signal.path == "T.dut.input")
+        .map(|index| SignalId(index as u32))
+        .expect("DUT input signal");
+    let driver = design
+        .drivers
+        .iter()
+        .find(|driver| driver.target == input)
+        .expect("literal input connection must become a driver");
+
+    assert!(matches!(driver.expr, Expr::Const(0xA5C)));
+    assert!(
+        !design
+            .drivers
+            .iter()
+            .any(|driver| { design.signals[driver.target.0 as usize].path == "T.dynamic.input" }),
+        "a connection reading testbench storage stays with Process IR"
+    );
+    assert!(design.validate().is_empty(), "{:#?}", design.validate());
+}
+
+#[test]
 /// An `if` expression lowers to a select rather than a branch.
 fn if_expression_lowers_to_select() {
     let d = lower_src(

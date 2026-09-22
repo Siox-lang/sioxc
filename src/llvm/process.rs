@@ -4363,20 +4363,18 @@ fn supported_per_place_assignment(
     let Some(places) = per_place_targets(design, target) else {
         return false;
     };
-    let mut classes = std::collections::HashSet::new();
     let Some(width) = places.iter().try_fold(0u32, |width, place| {
-        classes.insert(place_class(*place, owner)?);
+        place_class(*place, owner)?;
         width.checked_add(place.width)
     }) else {
         return false;
     };
-    classes.len() > 1
-        && design
-            .process_ir
-            .values
-            .get(value.0 as usize)
-            .and_then(|value| value.bit_width)
-            == Some(width)
+    design
+        .process_ir
+        .values
+        .get(value.0 as usize)
+        .and_then(|value| value.bit_width)
+        == Some(width)
 }
 
 #[allow(clippy::too_many_arguments)]

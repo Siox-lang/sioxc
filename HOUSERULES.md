@@ -127,6 +127,10 @@ detail — don't "migrate" them.
 
 - The message describes what the commit **actually contains** — verify with
   `git show --stat` before pushing, especially after a combined commit.
+- Every commit message body includes a `Completion estimate:` line naming the
+  roadmap phase or active goal, a percentage, and the evidence behind it (for
+  example corpus parity and remaining gaps). It is an engineering estimate,
+  not a promise or substitute for the actual completion gate.
 - **Amend freely while local**, never after pushing.
 - **Push is a separate, explicit decision.** Don't push another agent's
   unreviewed work.

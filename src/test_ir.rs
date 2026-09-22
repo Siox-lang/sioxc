@@ -1734,16 +1734,12 @@ fn assignment_semantics(
     process: &ProcessCfg,
     context: &LoweringContext<'_>,
 ) -> ProcessAssignment {
-    if let ast::Expr::Concat { parts, .. } = target {
-        let mut parts = parts
-            .iter()
-            .map(|part| assignment_semantics(part, process, context));
-        let first = parts.next().unwrap_or(ProcessAssignment::PerPlace);
-        return if parts.all(|semantics| semantics == first) {
-            first
-        } else {
-            ProcessAssignment::PerPlace
-        };
+    if matches!(target, ast::Expr::Concat { .. }) {
+        // A concat is never one place, even when every leaf has the same
+        // storage class. The RHS must be evaluated once and split before any
+        // leaf write becomes visible; PerPlace preserves that invariant while
+        // letting each local/storage/signal keep its own publication timing.
+        return ProcessAssignment::PerPlace;
     }
     let path = assignment_base(target);
     let target = path.and_then(|path| context.resolved.resolved(path.span));
@@ -4245,6 +4241,8 @@ mod tests {
                let flag: Bool = true;\n\
                let i: integer = 9;\n\
                let observed: Bool;\n\
+               let concat_high: Bool = false;\n\
+               let concat_low: Bool = false;\n\
                let dut: Device = { .input = flag, .output = observed };\n\
                process clock { flag = not flag after 1ns; }\n\
                process stimulus {\n\
@@ -4259,6 +4257,7 @@ mod tests {
                  for i in 0..2 { print!(\"loop {}\", i); }\n\
                  i = 7;\n\
                  seen = false;\n\
+                 { concat_high, concat_low } = 2;\n\
                  flag = false after 1;\n\
                  flag = false;\n\
                  await 2ns;\n\
@@ -4467,6 +4466,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(assignments.contains(&ProcessAssignment::ImmediateLocal));
         assert!(assignments.contains(&ProcessAssignment::ImmediateStorage));
+        assert!(assignments.contains(&ProcessAssignment::PerPlace));
         let post_loop_i = process
             .blocks
             .iter()

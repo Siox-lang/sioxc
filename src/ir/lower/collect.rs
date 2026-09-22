@@ -407,7 +407,8 @@ impl<'a> Lowering<'a> {
 
     /// Lower each `let inst: Sub = { .. }` DUT of a testbench into its own
     /// namespace `<testbench>.<inst>.*` (with the DUT's internal logic and
-    /// sub-instances). No testbench signals, statements, or top connections.
+    /// sub-instances). Testbench storage and statements remain in Process IR;
+    /// direct constant input connections become canonical drivers here.
     pub(super) fn lower_testbench_duts(
         &mut self,
         entity_id: DefId,
@@ -442,9 +443,48 @@ impl<'a> Lowering<'a> {
                                 false,
                             );
                             for (port, value) in self.norm_conns(&args, sub) {
-                                // The testbench name the port binds to; a
-                                // literal/expression connection has no name.
-                                let Some(tbname) = expr_path(&value) else {
+                                // A testbench place binds persistent storage
+                                // to the port. A value that depends only on
+                                // compile-time data is instead a canonical
+                                // combinational driver. Keep expressions that
+                                // read testbench storage with the stimulus
+                                // adapter until Process IR owns that dataflow;
+                                // attempting ordinary hardware lowering on
+                                // `a + 1` here would report the testbench local
+                                // `a` as an unknown hardware signal.
+                                let tbname = expr_path(&value);
+                                if connection_value_is_static(&value, self.resolved) {
+                                    // A scalar input connected directly to a
+                                    // value is a constant combinational driver,
+                                    // not test-harness setup. Keeping it in the
+                                    // canonical driver graph lets generated-C
+                                    // and Process IR consume the same normalized
+                                    // semantics. Expressions that still depend
+                                    // on testbench-only state lower to Unknown
+                                    // here and remain with the stimulus adapter
+                                    // until that state is canonical Process IR.
+                                    let Some(&(signal, direction)) = sub_ports.get(&port) else {
+                                        continue;
+                                    };
+                                    if direction == Some(ast::Direction::Out) {
+                                        continue;
+                                    }
+                                    let expression = self.lower_expr(&value);
+                                    if matches!(expression, Expr::Unknown) {
+                                        continue;
+                                    }
+                                    let ctx = self.next_ctx_at(ast::expr_span(&value));
+                                    self.out.drivers.push(Driver {
+                                        span: Some(ast::expr_span(&value)),
+                                        target: signal,
+                                        cond: None,
+                                        expr: expression,
+                                        meta: None,
+                                        ctx,
+                                    });
+                                    continue;
+                                }
+                                let Some(tbname) = tbname else {
                                     continue;
                                 };
                                 if let Some(&(sig, dir)) = sub_ports.get(&port) {
@@ -697,5 +737,74 @@ impl<'a> Lowering<'a> {
         env: &HashMap<String, i64>,
     ) -> Option<i64> {
         eval_const_fns(expression, env, &self.free_fns, 0)
+    }
+}
+
+/// Whether a testbench connection can enter the hardware driver graph without
+/// reading testbench-owned runtime storage. This is deliberately conservative:
+/// calls and aggregate construction remain with the Process adapter until
+/// their purity and value shape are explicit in canonical IR.
+fn connection_value_is_static(expression: &ast::Expr, resolved: &Resolved) -> bool {
+    match expression {
+        ast::Expr::Int { .. }
+        | ast::Expr::SuffixLit { .. }
+        | ast::Expr::BitStrLit { .. }
+        | ast::Expr::CharLit { .. }
+        | ast::Expr::StrLit { .. } => true,
+        ast::Expr::Path(path) => resolved
+            .resolved(path.span)
+            .and_then(|id| resolved.kind_of(id))
+            .is_some_and(|kind| {
+                matches!(
+                    kind,
+                    crate::resolve::DefKind::Const
+                        | crate::resolve::DefKind::EnumVariant
+                        | crate::resolve::DefKind::Param
+                )
+            }),
+        ast::Expr::Field { base, .. } | ast::Expr::SysAttr { base, .. } => {
+            connection_value_is_static(base, resolved)
+        }
+        ast::Expr::Index { base, index, .. } => {
+            connection_value_is_static(base, resolved)
+                && connection_value_is_static(index, resolved)
+        }
+        ast::Expr::Range { lo, hi, .. } => {
+            connection_value_is_static(lo, resolved) && connection_value_is_static(hi, resolved)
+        }
+        ast::Expr::PartialRange { lo, hi, .. } => {
+            lo.as_deref()
+                .is_none_or(|bound| connection_value_is_static(bound, resolved))
+                && hi
+                    .as_deref()
+                    .is_none_or(|bound| connection_value_is_static(bound, resolved))
+        }
+        ast::Expr::Unary { rhs, .. } => connection_value_is_static(rhs, resolved),
+        ast::Expr::Binary { lhs, rhs, .. } => {
+            connection_value_is_static(lhs, resolved) && connection_value_is_static(rhs, resolved)
+        }
+        ast::Expr::IfExpr {
+            cond, then, els, ..
+        } => {
+            connection_value_is_static(cond, resolved)
+                && connection_value_is_static(then, resolved)
+                && connection_value_is_static(els, resolved)
+        }
+        ast::Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            connection_value_is_static(scrutinee, resolved)
+                && arms.iter().all(|arm| {
+                    arm.value_expr()
+                        .is_some_and(|value| connection_value_is_static(value, resolved))
+                })
+        }
+        ast::Expr::Concat { parts, .. } => parts
+            .iter()
+            .all(|part| connection_value_is_static(part, resolved)),
+        ast::Expr::Array { elems, .. } => elems
+            .iter()
+            .all(|element| connection_value_is_static(element, resolved)),
+        ast::Expr::Call { .. } | ast::Expr::Construct { .. } => false,
     }
 }

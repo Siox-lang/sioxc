@@ -10232,3 +10232,40 @@ gaps, 0 oracle failures, 7 without tests**; all 133 agreements compare VCD.
 `logic_ninevalue_test` and `logic_table_test` move from fail-closed to exact
 agreement, and the custom-operator fixture also executes through the direct
 runtime.
+
+### 2026-09-22 — Codex — canonicalizing concatenated destinations
+
+Continuing direct Process execution in `src/{test_ir,ir/process}.rs` and
+`src/llvm/process.rs`. A concat destination was classified by the common class
+of its leaves, so `{high, low} = value` over two testbench storages claimed to
+be one `ImmediateStorage` place and failed closed. Every concat lvalue is
+intrinsically a multi-place update regardless of whether its leaves are all
+locals, all storages, all signals, or mixed; lowering and validation will use
+`PerPlace` consistently, while direct LLVM retains its distinct-root guard and
+evaluates the right-hand side once before applying the split writes.
+
+Executing the newly supported concat reached an older boundary: a DUT input
+connected directly to a literal was seeded only by the generated-C harness, so
+the direct scheduler correctly ran the DUT but read zero. I am moving scalar
+value-valued input connections into the canonical digital driver graph in
+`src/ir/lower/collect.rs`. The imported Process CFG and compatibility backend
+will then consume one normalized constant driver; no direct-only AST scan or
+runtime exception is needed.
+
+The canonical driver import now distinguishes compile-time connection values
+from expressions that read testbench storage. Literals, bit strings, character
+values, constants, parameters, and pure expression trees can feed scalar DUT
+inputs through the ordinary driver graph; a connection such as `.a = a + 1`
+stays with the testbench Process adapter and no longer creates a false hardware
+"unknown name" diagnostic. Focused IR coverage locks down both sides.
+
+Direct LLVM accepts every non-aliasing concatenated place with a matching total
+width, evaluates the right-hand side once, and splits it most-significant part
+first while preserving each leaf's local/storage/signal publication semantics.
+`concat_test` and `signed_port_test` move to exact agreement. Both full storage
+modes report **135 agree, 0 diverge, 41 direct-only gaps, 0 oracle failures, 7
+without tests**; all 135 agreements compare VCD values and timestamps.
+
+Per the project owner's request, `HOUSERULES.md` now requires every commit body
+to state an evidence-backed completion estimate for its roadmap phase or active
+goal.
