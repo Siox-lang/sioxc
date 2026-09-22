@@ -116,7 +116,7 @@ riscv_alu_test AGREE
 riscv_decode_test AGREE
 runtime_vector_index_test AGREE
 saturating_accumulator_test AGREE
-shift_edge_test DIRECT-SEMANTIC
+shift_edge_test AGREE
 signed_branch_expr_test AGREE
 signed_conversion_test AGREE
 signed_differential_test AGREE
