@@ -2113,51 +2113,12 @@ fn process_display_kind(
     if matches!(process_value.kind, ProcessValueKind::String(_)) {
         return Some(ProcessDisplayKind::String);
     }
-    let ty =
-        context
-            .typed
-            .expr_type(ast::expr_span(expression))
-            .filter(usable)
-            .cloned()
-            .or_else(|| process_value.ty.as_ref().filter(usable).cloned())
-            .or_else(|| match &process_value.kind {
-                ProcessValueKind::Storage(storage) => context
-                    .process_ir
-                    .storages
-                    .get(storage.0 as usize)
-                    .and_then(|storage| {
-                        storage.ty.clone().or_else(|| {
-                            storage.layout.as_ref().and_then(|layout| {
-                                process_type_from_layout(layout, context.resolved)
-                            })
-                        })
-                    }),
-                ProcessValueKind::Local { process, local } => context
-                    .process_ir
-                    .processes
-                    .get(process.0 as usize)
-                    .and_then(|process| process.locals.get(local.0 as usize))
-                    .and_then(|local| {
-                        local.ty.clone().or_else(|| {
-                            local.layout.as_ref().and_then(|layout| {
-                                process_type_from_layout(layout, context.resolved)
-                            })
-                        })
-                    }),
-                ProcessValueKind::Signal { signals, .. } => {
-                    let [signal] = signals.as_slice() else {
-                        return None;
-                    };
-                    let path = &context.design.signals.get(signal.0 as usize)?.path;
-                    context
-                        .design
-                        .source_layouts
-                        .get(path)
-                        .and_then(|layout| process_type_from_layout(layout, context.resolved))
-                }
-                _ => process_value_source_layout(value, context.process_ir)
-                    .and_then(|layout| process_type_from_layout(layout, context.resolved)),
-            })?;
+    let ty = context
+        .typed
+        .expr_type(ast::expr_span(expression))
+        .filter(usable)
+        .cloned()
+        .or_else(|| process_value_type(value, context))?;
     match &ty {
         crate::types::Ty::Integer => Some(ProcessDisplayKind::Signed),
         crate::types::Ty::Real => Some(ProcessDisplayKind::Real),
@@ -2191,6 +2152,64 @@ fn process_display_kind(
         }
         crate::types::Ty::Void | crate::types::Ty::Error => None,
     }
+}
+
+/// Recover the source type of an already-lowered Process value from its own
+/// annotation or its canonical storage/signal layout. The temporary typed AST
+/// omits types for projections such as `instance.port`; every consumer must
+/// use the same recovery rule so character literals, formatting, and operator
+/// selection cannot disagree about the value's enum domain.
+fn process_value_type(
+    value: ProcessValueId,
+    context: &LoweringContext<'_>,
+) -> Option<crate::types::Ty> {
+    let usable = |ty: &&crate::types::Ty| !matches!(ty, crate::types::Ty::Error);
+    let process_value = context.process_ir.values.get(value.0 as usize)?;
+    process_value
+        .ty
+        .as_ref()
+        .filter(usable)
+        .cloned()
+        .or_else(|| match &process_value.kind {
+            ProcessValueKind::Storage(storage) => context
+                .process_ir
+                .storages
+                .get(storage.0 as usize)
+                .and_then(|storage| {
+                    storage.ty.clone().or_else(|| {
+                        storage
+                            .layout
+                            .as_ref()
+                            .and_then(|layout| process_type_from_layout(layout, context.resolved))
+                    })
+                }),
+            ProcessValueKind::Local { process, local } => context
+                .process_ir
+                .processes
+                .get(process.0 as usize)
+                .and_then(|process| process.locals.get(local.0 as usize))
+                .and_then(|local| {
+                    local.ty.clone().or_else(|| {
+                        local
+                            .layout
+                            .as_ref()
+                            .and_then(|layout| process_type_from_layout(layout, context.resolved))
+                    })
+                }),
+            ProcessValueKind::Signal { signals, .. } => {
+                let [signal] = signals.as_slice() else {
+                    return None;
+                };
+                let path = &context.design.signals.get(signal.0 as usize)?.path;
+                context
+                    .design
+                    .source_layouts
+                    .get(path)
+                    .and_then(|layout| process_type_from_layout(layout, context.resolved))
+            }
+            _ => process_value_source_layout(value, context.process_ir)
+                .and_then(|layout| process_type_from_layout(layout, context.resolved)),
+        })
 }
 
 /// Lower an `if` chain into a two-way branch plus a join block, returning
@@ -2713,17 +2732,19 @@ fn lower_process_raw_resize(
             })
         })?,
         ast::Expr::Path(path) => {
-            let target = target?.clone();
-            let crate::types::Ty::Named(target_definition) = target else {
-                return None;
-            };
             let definition = context.resolved.resolved(path.span)?;
-            if definition != target_definition
-                || context.resolved.def(definition)?.kind != crate::resolve::DefKind::Struct
-            {
+            if context.resolved.def(definition)?.kind != crate::resolve::DefKind::Struct {
                 return None;
             }
-            crate::types::Ty::Named(target_definition)
+            match target {
+                Some(crate::types::Ty::Named(target_definition))
+                    if *target_definition == definition =>
+                {
+                    crate::types::Ty::Named(definition)
+                }
+                None | Some(crate::types::Ty::Error) => crate::types::Ty::Named(definition),
+                _ => return None,
+            }
         }
         _ => return None,
     };
@@ -3366,15 +3387,22 @@ fn value_ref_with_type(
     contextual_type: Option<&crate::types::Ty>,
 ) -> crate::ir::ProcessValueId {
     let span = ast::expr_span(expression);
-    let inferred = context.typed.expr_type(span).cloned();
+    let inferred = context
+        .typed
+        .expr_type(span)
+        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+        .cloned();
+    let contextual = contextual_type
+        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+        .cloned();
     // A reference owns the type of the declaration it names. Assignment or
     // argument context may coerce that value at its use site, but must not
     // rewrite a loop cursor/local from `integer` into the destination type.
     // Literals and constructors still prefer their surrounding context.
     let ty = if matches!(expression, ast::Expr::Path(_)) {
-        inferred.or_else(|| contextual_type.cloned())
+        inferred.or(contextual)
     } else {
-        contextual_type.cloned().or(inferred)
+        contextual.or(inferred)
     }
     .or_else(|| {
         let ast::Expr::Call { callee, .. } = expression else {
@@ -3634,26 +3662,12 @@ fn value_ref_with_type(
             let mut right_type = checked_type(context.typed.expr_type(ast::expr_span(rhs)));
             let (left, right) = if matches!(rhs.as_ref(), ast::Expr::CharLit { .. }) {
                 let left = value_ref_with_type(lhs, process, context, None);
-                left_type = left_type.or_else(|| {
-                    context
-                        .process_ir
-                        .values
-                        .get(left.0 as usize)
-                        .and_then(|value| value.ty.clone())
-                        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
-                });
+                left_type = left_type.or_else(|| process_value_type(left, context));
                 let right = value_ref_with_type(rhs, process, context, left_type.as_ref());
                 (left, right)
             } else if matches!(lhs.as_ref(), ast::Expr::CharLit { .. }) {
                 let right = value_ref_with_type(rhs, process, context, None);
-                right_type = right_type.or_else(|| {
-                    context
-                        .process_ir
-                        .values
-                        .get(right.0 as usize)
-                        .and_then(|value| value.ty.clone())
-                        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
-                });
+                right_type = right_type.or_else(|| process_value_type(right, context));
                 let left = value_ref_with_type(lhs, process, context, right_type.as_ref());
                 (left, right)
             } else {
@@ -4234,6 +4248,10 @@ mod tests {
         let sources = [
             "module tests;\n\
              enum Mode { Off, On }\n\
+             struct Wrap(integer);\n\
+             impl Operator<\"<=>\", Wrap, std::ops::Ordering> for Wrap {\n\
+               fn apply(self, rhs: Wrap) -> std::ops::Ordering { return std::ops::Ordering::Equal; }\n\
+             }\n\
              entity Device { input: Bool in, output: Bool out }\n\
              impl Device { output = input; }\n\
              #[std::attrs::test] entity Smoke {}\n\
@@ -4241,6 +4259,7 @@ mod tests {
                let flag: Bool = true;\n\
                let i: integer = 9;\n\
                let observed: Bool;\n\
+               let wrapped: Wrap = Wrap(12);\n\
                let concat_high: Bool = false;\n\
                let concat_low: Bool = false;\n\
                let dut: Device = { .input = flag, .output = observed };\n\
@@ -4253,6 +4272,7 @@ mod tests {
                    Mode::Off => { warn!(true, \"off\"); }\n\
                    Mode::On => { print!(\"on\"); }\n\
                  }\n\
+                 assert!(wrapped == Wrap(12), \"constructor without assignment context\");\n\
                  print!(\"before loop\");\n\
                  for i in 0..2 { print!(\"loop {}\", i); }\n\
                  i = 7;\n\
@@ -4268,7 +4288,7 @@ mod tests {
              }",
             "module std::logic; pub enum Bool { false, true }",
             "module std::attrs; using std::logic::{Bool}; pub attr test: Bool for entity;",
-            "module std::ops; using std::logic::{Bool}; \
+            "module std::ops; using std::logic::{Bool}; pub enum Ordering { Less, Equal, Greater } \
              pub trait Boolean { fn as_bool(self) -> Bool; } \
              pub trait Operator<op: string, input, output> { fn apply(self, rhs: input) -> output {} } \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } } \
@@ -4307,6 +4327,10 @@ mod tests {
             .process_ir
             .validate(design.signals.len() as u32)
             .is_empty());
+        assert!(design.process_ir.values.iter().all(|value| !matches!(
+            value.kind,
+            ProcessValueKind::Definition(_) | ProcessValueKind::Call { .. }
+        )));
         assert_eq!(design.process_ir.tests.len(), 1);
         assert_eq!(design.process_ir.processes.len(), 3);
         assert!(!design.process_ir.values.is_empty());

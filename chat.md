@@ -10269,3 +10269,23 @@ without tests**; all 135 agreements compare VCD values and timestamps.
 Per the project owner's request, `HOUSERULES.md` now requires every commit body
 to state an evidence-backed completion estimate for its roadmap phase or active
 goal.
+
+### 2026-09-22 — Codex — recovering Process value source types
+
+Continuing the generated-C replacement in `src/test_ir.rs`. Typed-AST entries
+for instance-port projections and context-free struct constructors can be
+missing or carry `Ty::Error`, even though canonical Process signal/storage
+layouts retain the source type. I am centralizing Process-value type recovery
+so character literals, display selection, and operator/constructor lowering
+use the same enum or nominal type rather than falling back to Unicode or an
+unlowered call. Focused direct runs currently move `lfsr_test` and
+`resolve_table_test` to passing; `array_operator_test` exposes a later operator
+result mismatch, and `generic_struct_method_test` reaches the already separate
+procedure-call boundary.
+
+The completed default and `bitpack` differential matrices each report **138
+agree, 0 diverge, 38 direct-only gaps, 0 oracle failures, 7 without tests**;
+all 138 agreements compare VCD values and timestamps. In addition to the two
+focused cases above, `user_operator_test` moves to exact agreement. The array
+case now passes its earlier instance-port character comparisons and reaches
+the separate testbench array-`not` gap.

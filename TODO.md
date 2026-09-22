@@ -113,8 +113,8 @@ Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
 - 🟡 **Retire generated C.** The fixed scheduler/CLI already links LLVM-emitted
-  process entries and runs 135 corpus cases in agreement without design C;
-  all 135 also match VCD signal values and timestamps in default and `bitpack`,
+  process entries and runs 138 corpus cases in agreement without design C;
+  all 138 also match VCD signal values and timestamps in default and `bitpack`,
   while focused tests establish decoded FST parity for hierarchy, all value
   kinds, multiword values, and monotonic multi-test timelines.
   Finish the remaining LLVM/runtime coverage, make this path unconditional,
