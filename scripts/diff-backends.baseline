@@ -54,7 +54,7 @@ generate_struct_connection_test AGREE
 generate_test AGREE
 generic_binder_test AGREE
 generic_standalone_test AGREE
-generic_struct_method_test DIRECT-SEMANTIC
+generic_struct_method_test DIRECT-UNSUPPORTED
 generic_test AGREE
 hardware_shape_test AGREE
 hierarchy_test AGREE
@@ -68,7 +68,7 @@ instances_test DIRECT-UNSUPPORTED
 integer_hw_test DIRECT-UNSUPPORTED
 integer_param_signed_test AGREE
 iterate_test AGREE
-lfsr_test DIRECT-SEMANTIC
+lfsr_test AGREE
 logic_default_test AGREE
 logic_match_test AGREE
 logic_ninevalue_test AGREE
@@ -111,7 +111,7 @@ regfile_test AGREE
 register_test AGREE
 registered_array_test AGREE
 registered_struct_test AGREE
-resolve_table_test DIRECT-SEMANTIC
+resolve_table_test AGREE
 riscv_alu_test AGREE
 riscv_decode_test AGREE
 runtime_vector_index_test AGREE
@@ -159,7 +159,7 @@ time_frequency_test DIRECT-UNSUPPORTED
 timeline_edge_test AGREE
 trait_default_test DIRECT-UNSUPPORTED
 uart_fsm_test AGREE
-user_operator_test DIRECT-UNSUPPORTED
+user_operator_test AGREE
 vector_resolve_test DIRECT-SEMANTIC
 view_bus_test AGREE
 warn_test AGREE
