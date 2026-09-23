@@ -1,5 +1,5 @@
 aggregate_event_test AGREE
-array_init_rom_test DIRECT-UNSUPPORTED
+array_init_rom_test AGREE
 array_literal_test AGREE
 array_operator_test AGREE
 array_test AGREE
@@ -34,7 +34,7 @@ dynamic_struct_write_test AGREE
 engine_differential_test DIRECT-UNSUPPORTED
 entity_associated_fn_test AGREE
 enum_const_test AGREE
-enum_inline_display_test DIRECT-UNSUPPORTED
+enum_inline_display_test AGREE
 family_test AGREE
 fanout_init_test AGREE
 ffi_real_test AGREE
@@ -43,7 +43,7 @@ fifo_test AGREE
 fn_local_test AGREE
 fn_return_type_test AGREE
 fn_test AGREE
-format_test DIRECT-UNSUPPORTED
+format_test AGREE
 from_test AGREE
 fs_test DIRECT-UNSUPPORTED
 fsm_test AGREE
@@ -100,7 +100,7 @@ print_test AGREE
 protocol_view_traits_test AGREE
 rand_test DIRECT-UNSUPPORTED
 rand_text_test DIRECT-UNSUPPORTED
-range_attr_test DIRECT-UNSUPPORTED
+range_attr_test AGREE
 range_test AGREE
 ranged_local_test AGREE
 real_compare_test AGREE
