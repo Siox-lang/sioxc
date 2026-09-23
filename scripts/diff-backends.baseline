@@ -81,7 +81,7 @@ match_numeric_exhaustive_test AGREE
 match_pattern_test AGREE
 match_struct_value_test AGREE
 math_test AGREE
-metavalue_state_test DIRECT-UNSUPPORTED
+metavalue_state_test AGREE
 method_in_process_test AGREE
 multiclock_test AGREE
 mux_test AGREE
@@ -94,7 +94,7 @@ newtype_vector_test AGREE
 numeric_boundary_test AGREE
 numeric_literal_syntax_test AGREE
 old_attr_test AGREE
-packed_partial_write_test DIRECT-UNSUPPORTED
+packed_partial_write_test AGREE
 partial_range_test AGREE
 print_test AGREE
 protocol_view_traits_test AGREE
@@ -130,7 +130,7 @@ signed_struct_field_test AGREE
 signed_test AGREE
 signed_widen_test DIRECT-UNSUPPORTED
 slice_assign_test AGREE
-slice_direction_test DIRECT-UNSUPPORTED
+slice_direction_test AGREE
 slice_write_test AGREE
 spi_test AGREE
 std_numeric_test AGREE
@@ -168,9 +168,9 @@ wide_const_test AGREE
 wide_literal_test AGREE
 wide_test AGREE
 xz_compare_test AGREE
-xz_copy_chain_test DIRECT-UNSUPPORTED
+xz_copy_chain_test AGREE
 xz_logical_test AGREE
 xz_poison_test AGREE
-xz_vector_ops_test DIRECT-UNSUPPORTED
+xz_vector_ops_test DIRECT-SEMANTIC
 xz_vector_test AGREE
 xz_wide_test AGREE
