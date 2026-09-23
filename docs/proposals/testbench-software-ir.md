@@ -222,12 +222,14 @@ language-lowering path.
    comparisons now read the std-described metavalue companion plane directly
    from LLVM-emitted state: unknowns force equality/ordering false and
    inequality true, while weak values remain definite. Testbench-owned packed
-   storage still needs its own companion plane. Delayed-write cancellation,
-   dynamic strings, and other runtime calls are the next coverage boundary
-   before it becomes the
+   storage and process locals now carry the same companion representation;
+   observations, copies, directional slices, partial writes, logic tables,
+   shifts, and arithmetic keep both planes synchronized. Delayed-write
+   cancellation, dynamic strings, and other runtime calls are the next
+   coverage boundary before it becomes the
    default. Direct VCD/FST is already runtime-owned: the LLVM object exports
    immutable hierarchy/signal/kind/companion/symbol tables, and the fixed
-   writer samples only quiescent scheduler points. All 155 current agreements
+   writer samples only quiescent scheduler points. All 159 current agreements
    compare exact VCD output in both default and `bitpack` corpus sweeps;
    focused tests decode both backends' FST output through upstream libfst and
    compare every value kind plus multi-test timelines.

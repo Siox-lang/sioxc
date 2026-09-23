@@ -122,7 +122,10 @@ source-order array loops execute as ordinary CFGs. Loop cursor/end
 state and array snapshots remain in the object across suspension. Marked
 hardware vector comparisons consume the std-derived metavalue encoding and
 the emitted companion signals, so X/Z and weak-value rules no longer require
-the compatibility evaluator. Resolver-selected foreign calls from both
+the compatibility evaluator. Packed testbench storage and process locals use
+the same discriminant companion representation, including directional slices,
+partial writes, logical truth tables, shifts, and arithmetic poisoning.
+Resolver-selected foreign calls from both
 hardware and test processes now carry explicit scalar ABI classes. Their
 kernel-integer expression trees evaluate at the C ABI's 64-bit consumer width,
 and declaration-width constrained integer state is sign-extended only after it

@@ -1330,6 +1330,10 @@ fn normalized_value_width(
         } => Some(1),
         ProcessValueKind::Signal { signals, .. } => signal_width(signals),
         ProcessValueKind::BitSlice { high, low, .. } => high.checked_sub(*low)?.checked_add(1),
+        ProcessValueKind::PackedSlice { left, right, .. } => left
+            .abs_diff(*right)
+            .checked_add(1)
+            .and_then(|width| u32::try_from(width).ok()),
         ProcessValueKind::CheckedIndex { index, .. } => width(index),
         ProcessValueKind::TableLookup { table, .. } => design
             .lookup_tables
@@ -2365,6 +2369,66 @@ fn process_value_source_layout(
     }
 }
 
+/// Resolve the written endpoints of a packed slice while source syntax still
+/// distinguishes a full from a partial range. Missing endpoints inherit the
+/// packed declaration's own left/right bounds.
+fn packed_slice_bounds(
+    index: &ast::Expr,
+    layout: &crate::ir::SourceLayout,
+    context: &LoweringContext<'_>,
+) -> Option<(i64, i64)> {
+    let LayoutKind::Packed {
+        range: Some(declared),
+        ..
+    } = &layout.kind
+    else {
+        return None;
+    };
+    let evaluate = |expression: &ast::Expr| {
+        crate::ir::eval_const_fns(expression, context.constant_integers, context.functions, 0)
+    };
+    match index {
+        ast::Expr::Range { lo, hi, .. } => Some((evaluate(lo)?, evaluate(hi)?)),
+        ast::Expr::PartialRange { lo, hi, .. } => {
+            let left = match lo.as_deref() {
+                Some(left) => evaluate(left)?,
+                None => declared.left,
+            };
+            let right = match hi.as_deref() {
+                Some(right) => evaluate(right)?,
+                None => declared.right,
+            };
+            Some((left, right))
+        }
+        _ => None,
+    }
+}
+
+fn packed_slice_layout(
+    layout: &crate::ir::SourceLayout,
+    left: i64,
+    right: i64,
+    span: crate::diag::Span,
+) -> Option<crate::ir::SourceLayout> {
+    let LayoutKind::Packed {
+        family,
+        element_enum,
+        ..
+    } = &layout.kind
+    else {
+        return None;
+    };
+    Some(crate::ir::SourceLayout {
+        span,
+        kind: LayoutKind::Packed {
+            width: u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?,
+            family: family.clone(),
+            range: Some(crate::ir::LayoutRange { left, right }),
+            element_enum: element_enum.clone(),
+        },
+    })
+}
+
 /// Preserve the declared domain on a source-level runtime index. The digital
 /// lowering uses the same equality-set predicate: it works for negative
 /// labels, unsigned index values, and either range direction without making a
@@ -2877,6 +2941,30 @@ fn lower_for(
 
 /// Add a local to the process, recording its resolved declaration so that
 /// equal spellings in nested scopes stay distinct.
+fn process_local_layout(
+    declaration: &ast::LetDecl,
+    ty: Option<&crate::types::Ty>,
+    context: &LoweringContext<'_>,
+) -> Option<crate::ir::SourceLayout> {
+    let mut layout = process_layout_for_type(ty?, declaration.span, context)?;
+    let Some(ast::Type::Indexed {
+        index: Some(index), ..
+    }) = declaration.ty.as_ref()
+    else {
+        return Some(layout);
+    };
+    let ast::Expr::Range { lo, hi, .. } = index.as_ref() else {
+        return Some(layout);
+    };
+    let left = crate::ir::eval_const_fns(lo, context.constant_integers, context.functions, 0)?;
+    let right = crate::ir::eval_const_fns(hi, context.constant_integers, context.functions, 0)?;
+    if let LayoutKind::Packed { width, range, .. } = &mut layout.kind {
+        *width = u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?;
+        *range = Some(crate::ir::LayoutRange { left, right });
+    }
+    Some(layout)
+}
+
 fn push_local(
     process: &mut ProcessCfg,
     declaration: &ast::LetDecl,
@@ -2895,17 +2983,14 @@ fn push_local(
                 .as_ref()
                 .and_then(|ty| process_declared_type(ty, context))
         });
+    let layout = process_local_layout(declaration, ty.as_ref(), context);
     process.locals.push(ProcessLocal {
         id,
         name: declaration.name.text.clone(),
         source: context.resolved.declared(declaration.name.span),
         span: declaration.span,
         ty,
-        // Process-local aggregate storage still needs a declaration-layout
-        // lowering path that preserves written labels and direction. `Ty`
-        // alone is intentionally insufficient (`Bit[3..0]` and `Bit[0..3]`
-        // have the same checked type), so do not manufacture a false layout.
-        layout: None,
+        layout,
     });
     id
 }
@@ -4350,12 +4435,64 @@ fn value_ref_with_type(
                 }
             } else {
                 let base = value_ref(base, process, context);
+                let base_layout = process_value_source_layout(base, context.process_ir)
+                    .cloned()
+                    .or_else(|| {
+                        let ProcessValueKind::Local {
+                            process: owner,
+                            local,
+                        } = &context.process_ir.values.get(base.0 as usize)?.kind
+                        else {
+                            return None;
+                        };
+                        (*owner == process.id)
+                            .then(|| process.locals.get(local.0 as usize)?.layout.clone())?
+                    });
+                if let Some((left, right)) = base_layout
+                    .as_ref()
+                    .and_then(|layout| packed_slice_bounds(index, layout, context))
+                {
+                    if left == right {
+                        let index_span = ast::expr_span(index);
+                        let index = push_value(
+                            index_span,
+                            Some(crate::types::Ty::Integer),
+                            Some(64),
+                            ProcessValueKind::Number(ProcessNumber::Integer(vec![left as u64])),
+                            context,
+                        );
+                        let range = base_layout
+                            .as_ref()
+                            .and_then(crate::ir::SourceLayout::index_range);
+                        let index = range.map_or(index, |range| {
+                            checked_process_index(index, index_span, range, context)
+                        });
+                        let kind = ProcessValueKind::Index { base, index };
+                        let ty = ty
+                            .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                            .or_else(|| process_index_type(base, context));
+                        let width = source_value_width(&kind, ty.as_ref(), process, context);
+                        return push_value(span, ty, width, kind, context);
+                    }
+                    let kind = ProcessValueKind::PackedSlice { base, left, right };
+                    let width = left
+                        .abs_diff(right)
+                        .checked_add(1)
+                        .and_then(|width| u32::try_from(width).ok());
+                    let id = push_value(span, ty, width, kind, context);
+                    context.process_ir.value_layouts[id.0 as usize] = base_layout
+                        .as_ref()
+                        .and_then(|layout| packed_slice_layout(layout, left, right, span));
+                    return id;
+                }
                 let index_span = ast::expr_span(index);
                 let index = value_ref(index, process, context);
-                let base_layout = process_value_source_layout(base, context.process_ir);
                 let packed = base_layout
+                    .as_ref()
                     .is_some_and(|layout| matches!(&layout.kind, LayoutKind::Packed { .. }));
-                let range = base_layout.and_then(crate::ir::SourceLayout::index_range);
+                let range = base_layout
+                    .as_ref()
+                    .and_then(crate::ir::SourceLayout::index_range);
                 let index = range.map_or(index, |range| {
                     checked_process_index(index, index_span, range, context)
                 });
@@ -4365,7 +4502,9 @@ fn value_ref_with_type(
                     .filter(|ty| !matches!(ty, crate::types::Ty::Error))
                     .or(recovered);
                 let width = if packed {
-                    Some(1)
+                    ty.as_ref()
+                        .and_then(crate::types::Ty::bit_width)
+                        .or(Some(1))
                 } else {
                     source_value_width(&kind, ty.as_ref(), process, context)
                 };
@@ -4737,6 +4876,10 @@ fn source_value_width(
             })
         }
         ProcessValueKind::BitSlice { high, low, .. } => high.checked_sub(*low)?.checked_add(1),
+        ProcessValueKind::PackedSlice { left, right, .. } => left
+            .abs_diff(*right)
+            .checked_add(1)
+            .and_then(|width| u32::try_from(width).ok()),
         ProcessValueKind::CheckedIndex { index, .. } => value_width(index),
         ProcessValueKind::TableLookup { table, .. } => context
             .design

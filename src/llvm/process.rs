@@ -59,6 +59,18 @@ fn storage_old_name(storage: ProcessStorageId) -> String {
     format!("sx.process.storage.old.{}", storage.0)
 }
 
+fn storage_meta_name(storage: ProcessStorageId) -> String {
+    format!("sx.process.storage.meta.{}", storage.0)
+}
+
+fn storage_meta_old_name(storage: ProcessStorageId) -> String {
+    format!("sx.process.storage.meta.old.{}", storage.0)
+}
+
+fn local_meta_name(process: ProcessId, local: ProcessLocalId) -> String {
+    format!("sx.process.local.meta.{}.{}", process.0, local.0)
+}
+
 fn loop_active_name(process: ProcessId, block: siox::ir::ProcessBlockId) -> String {
     format!("sx.process.loop.active.{}.{}", process.0, block.0)
 }
@@ -226,6 +238,997 @@ fn array_slice(layout: &SourceLayout, index: i64) -> Option<LayoutSlice<'_>> {
     })
 }
 
+fn packed_label_position(range: LayoutRange, label: i64) -> Option<u32> {
+    let low = range.left.min(range.right);
+    let high = range.left.max(range.right);
+    (low..=high)
+        .contains(&label)
+        .then(|| u32::try_from(label.checked_sub(low)?).ok())?
+}
+
+fn reverse_bits<'ctx>(builder: &Builder<'ctx>, value: IntValue<'ctx>) -> Option<IntValue<'ctx>> {
+    let width = value.get_type().get_bit_width();
+    let mut reversed = value.get_type().const_zero();
+    for source in 0..width {
+        let bit = extract_region(builder, value, source, 1)?;
+        reversed = insert_region(builder, reversed, bit, width.checked_sub(source + 1)?, 1)?;
+    }
+    Some(reversed)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn packed_slice_value<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    base: ProcessValueId,
+    left: i64,
+    right: i64,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let layout = process_value_layout(design, base)?;
+    let LayoutKind::Packed {
+        width: base_width,
+        range: Some(range),
+        ..
+    } = layout.kind
+    else {
+        return None;
+    };
+    let width = u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?;
+    let source = process_value_at(
+        context,
+        module,
+        builder,
+        design,
+        base,
+        base_width,
+        false,
+        active,
+        index_sites,
+        cache,
+    )?;
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    let mut result = ty.const_zero();
+    let step = if left <= right { 1i64 } else { -1i64 };
+    let mut label = left;
+    for position in 0..width {
+        let source_position = packed_label_position(range, label)?;
+        let destination = width.checked_sub(position + 1)?;
+        let bit = extract_region(builder, source, source_position, 1)?;
+        result = insert_region(builder, result, bit, destination, 1)?;
+        if position + 1 != width {
+            label = label.checked_add(step)?;
+        }
+    }
+    Some(result)
+}
+
+fn packed_string_meta<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    text: &str,
+    width: u32,
+    element: &str,
+    encoding: &siox::ir::LogicEncoding,
+) -> Option<IntValue<'ctx>> {
+    let symbols = design.enum_syms.get(element)?;
+    let characters = text.chars().collect::<Vec<_>>();
+    if u32::try_from(characters.len()).ok()? != width {
+        return None;
+    }
+    let meta_width = width.checked_mul(4)?;
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(meta_width)?)
+        .ok()?;
+    let nibble = context
+        .custom_width_int_type(std::num::NonZeroU32::new(4)?)
+        .ok()?;
+    let mut result = ty.const_zero();
+    for (position, character) in characters.into_iter().enumerate() {
+        let quoted = format!("'{character}'");
+        let discriminant = symbols.iter().find_map(|(discriminant, symbol)| {
+            (symbol == &quoted || symbol == &character.to_string()).then_some(*discriminant)
+        })?;
+        if encoding.binary.contains(&discriminant) {
+            continue;
+        }
+        let source_position = u32::try_from(position).ok()?;
+        let element_position = width.checked_sub(source_position.checked_add(1)?)?;
+        result = insert_region(
+            builder,
+            result,
+            nibble.const_int(discriminant, false),
+            element_position.checked_mul(4)?,
+            4,
+        )?;
+    }
+    Some(result)
+}
+
+fn packed_meta_unknown<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    metadata: IntValue<'ctx>,
+    elements: u32,
+    encoding: &siox::ir::LogicEncoding,
+) -> Option<IntValue<'ctx>> {
+    let mut any = context.bool_type().const_zero();
+    for position in 0..elements {
+        let discriminant = extract_region(builder, metadata, position.checked_mul(4)?, 4)?;
+        for unknown in &encoding.unknown {
+            let equal = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    discriminant,
+                    discriminant.get_type().const_int(*unknown, false),
+                    "pv.meta.unknown.member",
+                )
+                .ok()?;
+            any = builder.build_or(any, equal, "pv.meta.unknown.any").ok()?;
+        }
+    }
+    Some(any)
+}
+
+fn packed_unknown_meta<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    elements: u32,
+    encoding: &siox::ir::LogicEncoding,
+) -> Option<IntValue<'ctx>> {
+    let width = elements.checked_mul(4)?;
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    let nibble = context
+        .custom_width_int_type(std::num::NonZeroU32::new(4)?)
+        .ok()?;
+    let unknown = encoding.canonical_unknown()?;
+    let mut result = ty.const_zero();
+    for position in 0..elements {
+        result = insert_region(
+            builder,
+            result,
+            nibble.const_int(unknown, false),
+            position.checked_mul(4)?,
+            4,
+        )?;
+    }
+    Some(result)
+}
+
+fn logic_binary_discriminant<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    table: &HashMap<(u64, u64), u64>,
+    left: IntValue<'ctx>,
+    right: IntValue<'ctx>,
+) -> Option<IntValue<'ctx>> {
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(4)?)
+        .ok()?;
+    let mut entries = table.iter().collect::<Vec<_>>();
+    entries.sort_by_key(|((left, right), _)| (*left, *right));
+    let mut result = ty.const_zero();
+    for (&(left_value, right_value), &output) in entries.into_iter().rev() {
+        let left_matches = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                left,
+                ty.const_int(left_value, false),
+                "pv.logic.table.left",
+            )
+            .ok()?;
+        let right_matches = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                right,
+                ty.const_int(right_value, false),
+                "pv.logic.table.right",
+            )
+            .ok()?;
+        let matches = builder
+            .build_and(left_matches, right_matches, "pv.logic.table.match")
+            .ok()?;
+        result = builder
+            .build_select(
+                matches,
+                ty.const_int(output, false),
+                result,
+                "pv.logic.table.result",
+            )
+            .ok()?
+            .into_int_value();
+    }
+    Some(result)
+}
+
+fn logic_unary_discriminant<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    table: &HashMap<u64, u64>,
+    operand: IntValue<'ctx>,
+) -> Option<IntValue<'ctx>> {
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(4)?)
+        .ok()?;
+    let mut entries = table.iter().collect::<Vec<_>>();
+    entries.sort_by_key(|(operand, _)| **operand);
+    let mut result = ty.const_zero();
+    for (&input, &output) in entries.into_iter().rev() {
+        let matches = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                operand,
+                ty.const_int(input, false),
+                "pv.logic.table.operand",
+            )
+            .ok()?;
+        result = builder
+            .build_select(
+                matches,
+                ty.const_int(output, false),
+                result,
+                "pv.logic.table.result",
+            )
+            .ok()?
+            .into_int_value();
+    }
+    Some(result)
+}
+
+fn process_value_meta_free(design: &Design, id: ProcessValueId) -> bool {
+    let Some(value) = design.process_ir.values.get(id.0 as usize) else {
+        return false;
+    };
+    let free = |id| process_value_meta_free(design, id);
+    match &value.kind {
+        ProcessValueKind::Number(_)
+        | ProcessValueKind::Suffixed { .. }
+        | ProcessValueKind::BitString { .. }
+        | ProcessValueKind::Char(_)
+        | ProcessValueKind::Default
+        | ProcessValueKind::Attribute { .. }
+        | ProcessValueKind::TableLookup { .. }
+        | ProcessValueKind::ForeignCall { .. }
+        | ProcessValueKind::MetaCompare { .. } => true,
+        ProcessValueKind::Signal { signals, state } => {
+            !matches!(state, ProcessSignalState::Event)
+                && signals
+                    .iter()
+                    .all(|signal| !design.meta_of.contains_key(&signal.0))
+        }
+        ProcessValueKind::Local { process, local } => {
+            local_meta_width(design, *process, *local).is_none()
+        }
+        ProcessValueKind::Storage(storage) | ProcessValueKind::StorageState { storage, .. } => {
+            storage_meta_width(design, *storage).is_none()
+        }
+        ProcessValueKind::Unary { operand, .. }
+        | ProcessValueKind::RawResize { operand }
+        | ProcessValueKind::Field { base: operand, .. }
+        | ProcessValueKind::BitSlice { base: operand, .. }
+        | ProcessValueKind::PackedSlice { base: operand, .. } => free(*operand),
+        ProcessValueKind::CheckedIndex { index, valid, .. } => free(*index) && free(*valid),
+        ProcessValueKind::Binary { left, right, .. } => free(*left) && free(*right),
+        ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } => free(*condition) && free(*then_value) && free(*else_value),
+        ProcessValueKind::Match { scrutinee, arms } => {
+            free(*scrutinee) && arms.iter().all(|arm| free(arm.value))
+        }
+        ProcessValueKind::Construct { fields, spread, .. } => {
+            spread.is_none_or(free) && fields.iter().all(|field| field.value.is_none_or(free))
+        }
+        ProcessValueKind::Array(values) | ProcessValueKind::Concat(values) => {
+            values.iter().all(|value| free(*value))
+        }
+        ProcessValueKind::Index { base, index } => free(*base) && free(*index),
+        ProcessValueKind::String(_)
+        | ProcessValueKind::Definition(_)
+        | ProcessValueKind::Intrinsic(_)
+        | ProcessValueKind::Range { .. }
+        | ProcessValueKind::Call { .. }
+        | ProcessValueKind::Invalid => false,
+    }
+}
+
+/// Emit the exact discriminant plane for one packed Process value. A zero
+/// nibble is the compact representation of an ordinary binary element: reads
+/// reconstruct its source-defined `0`/`1` discriminant from the value plane.
+#[allow(clippy::too_many_arguments)]
+fn process_packed_meta_in_layout<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    id: ProcessValueId,
+    layout: &SourceLayout,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let (width, encoding) = packed_logic_layout(design, layout)?;
+    let meta_width = width.checked_mul(4)?;
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(meta_width)?)
+        .ok()?;
+    let value = design.process_ir.values.get(id.0 as usize)?;
+    let scalar_logic = (width == 1)
+        .then(|| process_value_layout(design, id))
+        .flatten()
+        .is_some_and(|layout| {
+            matches!(
+                &layout.kind,
+                LayoutKind::Scalar {
+                    domain: siox::ir::ScalarDomain::Enum(name),
+                    ..
+                } if design.logic_encodings.contains_key(name)
+            )
+        });
+    if scalar_logic {
+        let value = process_value_at(
+            context,
+            module,
+            builder,
+            design,
+            id,
+            value.bit_width?,
+            false,
+            active,
+            index_sites,
+            cache,
+        )?;
+        return compact_discriminant(context, builder, encoding, value);
+    }
+    if process_value_meta_free(design, id) {
+        return Some(ty.const_zero());
+    }
+    match &value.kind {
+        ProcessValueKind::Number(_)
+        | ProcessValueKind::BitString { .. }
+        | ProcessValueKind::Default => Some(ty.const_zero()),
+        ProcessValueKind::String(text) => {
+            let LayoutKind::Packed {
+                element_enum: Some(element),
+                ..
+            } = &layout.kind
+            else {
+                return None;
+            };
+            packed_string_meta(context, builder, design, text, width, element, encoding)
+        }
+        ProcessValueKind::Storage(storage) => {
+            (storage_meta_width(design, *storage) == Some(meta_width)).then(|| {
+                state_value(
+                    context,
+                    module,
+                    builder,
+                    &storage_meta_name(*storage),
+                    meta_width,
+                )
+            })?
+        }
+        ProcessValueKind::StorageState {
+            storage,
+            state: ProcessSignalState::Old,
+        } => (storage_meta_width(design, *storage) == Some(meta_width)).then(|| {
+            state_value(
+                context,
+                module,
+                builder,
+                &storage_meta_old_name(*storage),
+                meta_width,
+            )
+        })?,
+        ProcessValueKind::Local { process, local } => {
+            (local_meta_width(design, *process, *local) == Some(meta_width)).then(|| {
+                state_value(
+                    context,
+                    module,
+                    builder,
+                    &local_meta_name(*process, *local),
+                    meta_width,
+                )
+            })?
+        }
+        ProcessValueKind::Signal { signals, state }
+            if !matches!(state, ProcessSignalState::Event) =>
+        {
+            let mut result = ty.const_zero();
+            let mut offset = 0u32;
+            for signal in signals {
+                let signal_width = design.signal_width(*signal)?;
+                if let Some(companion) = design.meta_of.get(&signal.0).copied() {
+                    let companion_width = signal_width.checked_mul(4)?;
+                    let companion = signal_value(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        &[SignalId(companion)],
+                        *state,
+                        companion_width,
+                    )?;
+                    result = insert_region(
+                        builder,
+                        result,
+                        companion,
+                        offset.checked_mul(4)?,
+                        companion_width,
+                    )?;
+                }
+                offset = offset.checked_add(signal_width)?;
+            }
+            (offset == width).then_some(result)
+        }
+        ProcessValueKind::Unary { operation, operand } => match operation {
+            ProcessUnaryOp::Not => {
+                let table = encoding.unary_ops.get("not")?;
+                let operand_meta = process_packed_meta_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let operand_value = process_value_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let mut result = ty.const_zero();
+                for position in 0..width {
+                    let bit = extract_region(builder, operand_value, position, 1)?;
+                    let metadata =
+                        extract_region(builder, operand_meta, position.checked_mul(4)?, 4)?;
+                    let discriminant =
+                        packed_discriminant(context, builder, encoding, bit, Some(metadata), 4)?;
+                    let output = logic_unary_discriminant(context, builder, table, discriminant)?;
+                    let compact = compact_discriminant(context, builder, encoding, output)?;
+                    result = insert_region(builder, result, compact, position.checked_mul(4)?, 4)?;
+                }
+                Some(result)
+            }
+            ProcessUnaryOp::Neg => {
+                let operand = process_packed_meta_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let unknown = packed_meta_unknown(context, builder, operand, width, encoding)?;
+                let poisoned = packed_unknown_meta(context, builder, width, encoding)?;
+                builder
+                    .build_select(unknown, poisoned, ty.const_zero(), "pv.meta.arithmetic")
+                    .ok()
+                    .map(|value| value.into_int_value())
+            }
+            ProcessUnaryOp::RealToInteger => None,
+        },
+        ProcessValueKind::Binary {
+            operation,
+            left,
+            right,
+        } => match operation {
+            ProcessBinaryOp::And | ProcessBinaryOp::Or | ProcessBinaryOp::Xor => {
+                let symbol = match operation {
+                    ProcessBinaryOp::And => "and",
+                    ProcessBinaryOp::Or => "or",
+                    ProcessBinaryOp::Xor => "xor",
+                    _ => unreachable!(),
+                };
+                let table = encoding.binary_ops.get(symbol)?;
+                let left_meta = process_packed_meta_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *left,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let right_meta = process_packed_meta_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *right,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let left_value = process_value_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *left,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let right_value = process_value_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *right,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let mut result = ty.const_zero();
+                for position in 0..width {
+                    let left_disc = packed_discriminant(
+                        context,
+                        builder,
+                        encoding,
+                        extract_region(builder, left_value, position, 1)?,
+                        Some(extract_region(
+                            builder,
+                            left_meta,
+                            position.checked_mul(4)?,
+                            4,
+                        )?),
+                        4,
+                    )?;
+                    let right_disc = packed_discriminant(
+                        context,
+                        builder,
+                        encoding,
+                        extract_region(builder, right_value, position, 1)?,
+                        Some(extract_region(
+                            builder,
+                            right_meta,
+                            position.checked_mul(4)?,
+                            4,
+                        )?),
+                        4,
+                    )?;
+                    let output =
+                        logic_binary_discriminant(context, builder, table, left_disc, right_disc)?;
+                    let compact = compact_discriminant(context, builder, encoding, output)?;
+                    result = insert_region(builder, result, compact, position.checked_mul(4)?, 4)?;
+                }
+                Some(result)
+            }
+            ProcessBinaryOp::Add
+            | ProcessBinaryOp::Sub
+            | ProcessBinaryOp::Mul
+            | ProcessBinaryOp::Div
+            | ProcessBinaryOp::SignedAdd
+            | ProcessBinaryOp::SignedSub
+            | ProcessBinaryOp::SignedMul
+            | ProcessBinaryOp::SignedDiv => {
+                let left = process_packed_meta_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *left,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let right = process_packed_meta_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *right,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let left_unknown = packed_meta_unknown(context, builder, left, width, encoding)?;
+                let right_unknown = packed_meta_unknown(context, builder, right, width, encoding)?;
+                let unknown = builder
+                    .build_or(left_unknown, right_unknown, "pv.meta.arithmetic.unknown")
+                    .ok()?;
+                let poisoned = packed_unknown_meta(context, builder, width, encoding)?;
+                builder
+                    .build_select(unknown, poisoned, ty.const_zero(), "pv.meta.arithmetic")
+                    .ok()
+                    .map(|value| value.into_int_value())
+            }
+            ProcessBinaryOp::Shl | ProcessBinaryOp::Shr => {
+                let left = process_packed_meta_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *left,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let shift_width = design.process_ir.values.get(right.0 as usize)?.bit_width?;
+                let shift = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *right,
+                    shift_width,
+                    false,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let shift = builder
+                    .build_int_mul(
+                        shift,
+                        shift.get_type().const_int(4, false),
+                        "pv.meta.shift.amount",
+                    )
+                    .ok()?;
+                let shift = fit(builder, shift, meta_width)?;
+                match operation {
+                    ProcessBinaryOp::Shl => {
+                        builder.build_left_shift(left, shift, "pv.meta.shl").ok()
+                    }
+                    ProcessBinaryOp::Shr => builder
+                        .build_right_shift(left, shift, false, "pv.meta.shr")
+                        .ok(),
+                    _ => unreachable!(),
+                }
+            }
+            ProcessBinaryOp::ArithmeticShr => {
+                let left = process_packed_meta_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *left,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let shift = u32::try_from(process_constant_i64(design, *right)?).ok()?;
+                let selected = shift.min(width);
+                let mut result = if selected == 0 {
+                    left
+                } else {
+                    builder
+                        .build_right_shift(
+                            left,
+                            left.get_type()
+                                .const_int(u64::from(selected.checked_mul(4)?), false),
+                            false,
+                            "pv.meta.ashr",
+                        )
+                        .ok()?
+                };
+                let sign = extract_region(builder, left, width.checked_sub(1)?.checked_mul(4)?, 4)?;
+                for position in width.checked_sub(selected)?..width {
+                    result = insert_region(builder, result, sign, position.checked_mul(4)?, 4)?;
+                }
+                Some(result)
+            }
+            _ => None,
+        },
+        ProcessValueKind::PackedSlice { base, left, right } => {
+            let base_layout = process_value_layout(design, *base)?;
+            let (base_width, _) = packed_logic_layout(design, base_layout)?;
+            let base_meta = process_packed_meta_in_layout(
+                context,
+                module,
+                builder,
+                design,
+                *base,
+                base_layout,
+                active,
+                index_sites,
+                cache,
+            )?;
+            let LayoutKind::Packed {
+                range: Some(range), ..
+            } = base_layout.kind
+            else {
+                return None;
+            };
+            if base_meta.get_type().get_bit_width() != base_width.checked_mul(4)? {
+                return None;
+            }
+            let nibble = context
+                .custom_width_int_type(std::num::NonZeroU32::new(4)?)
+                .ok()?;
+            let mut result = ty.const_zero();
+            let step = if left <= right { 1i64 } else { -1i64 };
+            let mut label = *left;
+            for position in 0..width {
+                let source = packed_label_position(range, label)?.checked_mul(4)?;
+                let destination = width
+                    .checked_sub(position.checked_add(1)?)?
+                    .checked_mul(4)?;
+                let discriminant = extract_region(builder, base_meta, source, 4)?;
+                result = insert_region(
+                    builder,
+                    result,
+                    fit(builder, discriminant, 4).unwrap_or_else(|| nibble.const_zero()),
+                    destination,
+                    4,
+                )?;
+                if position + 1 != width {
+                    label = label.checked_add(step)?;
+                }
+            }
+            Some(result)
+        }
+        ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } => {
+            let condition = process_value_at(
+                context,
+                module,
+                builder,
+                design,
+                *condition,
+                1,
+                false,
+                active,
+                index_sites,
+                cache,
+            )?;
+            let then_value = process_packed_meta_in_layout(
+                context,
+                module,
+                builder,
+                design,
+                *then_value,
+                layout,
+                active,
+                index_sites,
+                cache,
+            )?;
+            let else_value = process_packed_meta_in_layout(
+                context,
+                module,
+                builder,
+                design,
+                *else_value,
+                layout,
+                active,
+                index_sites,
+                cache,
+            )?;
+            builder
+                .build_select(condition, then_value, else_value, "pv.meta.select")
+                .ok()
+                .map(|value| value.into_int_value())
+        }
+        ProcessValueKind::Match { scrutinee, arms } => {
+            let scrutinee_value = process_value(
+                context,
+                module,
+                builder,
+                design,
+                *scrutinee,
+                active,
+                index_sites,
+                cache,
+            )?;
+            let eligible = process_match_eligibility(
+                context,
+                builder,
+                design,
+                *scrutinee,
+                scrutinee_value,
+                arms,
+            )?;
+            let mut result = None;
+            for (arm, eligible) in arms.iter().zip(eligible).rev() {
+                let value = process_packed_meta_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    arm.value,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                result = Some(match result {
+                    Some(other) => builder
+                        .build_select(eligible, value, other, "pv.meta.match")
+                        .ok()?
+                        .into_int_value(),
+                    None => value,
+                });
+            }
+            result
+        }
+        ProcessValueKind::Concat(parts) => {
+            let LayoutKind::Packed {
+                family,
+                element_enum,
+                ..
+            } = &layout.kind
+            else {
+                return None;
+            };
+            let mut result = ty.const_zero();
+            let mut offset = meta_width;
+            for part in parts {
+                let part_width = design.process_ir.values.get(part.0 as usize)?.bit_width?;
+                let part_meta_width = part_width.checked_mul(4)?;
+                offset = offset.checked_sub(part_meta_width)?;
+                let part_layout = SourceLayout {
+                    span: design.process_ir.values.get(part.0 as usize)?.span,
+                    kind: LayoutKind::Packed {
+                        width: part_width,
+                        family: family.clone(),
+                        range: Some(LayoutRange {
+                            left: 0,
+                            right: i64::from(part_width).checked_sub(1)?,
+                        }),
+                        element_enum: element_enum.clone(),
+                    },
+                };
+                let metadata = process_packed_meta_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *part,
+                    &part_layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                result = insert_region(builder, result, metadata, offset, part_meta_width)?;
+            }
+            (offset == 0).then_some(result)
+        }
+        ProcessValueKind::RawResize { operand } => {
+            let operand_layout = process_value_layout(design, *operand)?;
+            let (operand_width, _) = packed_logic_layout(design, operand_layout)?;
+            let operand = process_packed_meta_in_layout(
+                context,
+                module,
+                builder,
+                design,
+                *operand,
+                operand_layout,
+                active,
+                index_sites,
+                cache,
+            )?;
+            let fitted = fit(builder, operand, meta_width)?;
+            (operand_width != 0).then_some(fitted)
+        }
+        _ => None,
+    }
+}
+
+fn packed_discriminant<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    encoding: &siox::ir::LogicEncoding,
+    value_bit: IntValue<'ctx>,
+    metadata: Option<IntValue<'ctx>>,
+    width: u32,
+) -> Option<IntValue<'ctx>> {
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    let low = ty.const_int(encoding.binary_value(false)?, false);
+    let high = ty.const_int(encoding.binary_value(true)?, false);
+    let clean = builder
+        .build_select(value_bit, high, low, "pv.logic.binary")
+        .ok()?
+        .into_int_value();
+    let Some(metadata) = metadata else {
+        return Some(clean);
+    };
+    let metadata = fit(builder, metadata, width)?;
+    let mut binary = context.bool_type().const_zero();
+    for discriminant in &encoding.binary {
+        let member = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                metadata,
+                ty.const_int(*discriminant, false),
+                "pv.logic.binary.member",
+            )
+            .ok()?;
+        binary = builder
+            .build_or(binary, member, "pv.logic.binary.any")
+            .ok()?;
+    }
+    builder
+        .build_select(binary, clean, metadata, "pv.logic.discriminant")
+        .ok()
+        .map(|value| value.into_int_value())
+}
+
+fn compact_discriminant<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    encoding: &siox::ir::LogicEncoding,
+    value: IntValue<'ctx>,
+) -> Option<IntValue<'ctx>> {
+    let nibble = context
+        .custom_width_int_type(std::num::NonZeroU32::new(4)?)
+        .ok()?;
+    let value = fit(builder, value, 4)?;
+    let mut binary = context.bool_type().const_zero();
+    for discriminant in &encoding.binary {
+        let member = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                value,
+                nibble.const_int(*discriminant, false),
+                "pv.logic.compact.member",
+            )
+            .ok()?;
+        binary = builder
+            .build_or(binary, member, "pv.logic.compact.binary")
+            .ok()?;
+    }
+    builder
+        .build_select(binary, nibble.const_zero(), value, "pv.logic.compact")
+        .ok()
+        .map(|value| value.into_int_value())
+}
+
+fn reverse_meta_elements<'ctx>(
+    builder: &Builder<'ctx>,
+    value: IntValue<'ctx>,
+) -> Option<IntValue<'ctx>> {
+    let width = value.get_type().get_bit_width();
+    if !width.is_multiple_of(4) {
+        return None;
+    }
+    let mut reversed = value.get_type().const_zero();
+    let elements = width / 4;
+    for source in 0..elements {
+        let discriminant = extract_region(builder, value, source.checked_mul(4)?, 4)?;
+        let destination = elements
+            .checked_sub(source.checked_add(1)?)?
+            .checked_mul(4)?;
+        reversed = insert_region(builder, reversed, discriminant, destination, 4)?;
+    }
+    Some(reversed)
+}
+
 /// Follow a flattened storage-binding suffix such as `.payload[2].valid`.
 fn projection_slice<'a>(layout: &'a SourceLayout, projection: &str) -> Option<LayoutSlice<'a>> {
     let mut selected = LayoutSlice {
@@ -282,6 +1285,47 @@ fn storage_state_width(design: &Design, storage: ProcessStorageId) -> Option<u32
                 .is_some_and(|(_, selected)| design.signal_width(binding.signal) == Some(selected))
         })
         .then_some(width)
+}
+
+fn packed_logic_layout<'a>(
+    design: &'a Design,
+    layout: &'a SourceLayout,
+) -> Option<(u32, &'a siox::ir::LogicEncoding)> {
+    let LayoutKind::Packed {
+        width,
+        element_enum: Some(element),
+        ..
+    } = &layout.kind
+    else {
+        return None;
+    };
+    let encoding = design.logic_encodings.get(element)?;
+    Some((*width, encoding))
+}
+
+fn storage_meta_width(design: &Design, storage: ProcessStorageId) -> Option<u32> {
+    let storage = design.process_ir.storages.get(storage.0 as usize)?;
+    let layout = storage.layout.as_ref().or_else(|| {
+        storage
+            .ty
+            .as_ref()
+            .and_then(|ty| layout_for_type(design, ty))
+    })?;
+    packed_logic_layout(design, layout)?.0.checked_mul(4)
+}
+
+fn local_meta_width(design: &Design, process: ProcessId, local: ProcessLocalId) -> Option<u32> {
+    let local = design
+        .process_ir
+        .processes
+        .get(process.0 as usize)?
+        .locals
+        .get(local.0 as usize)?;
+    let layout = local
+        .layout
+        .as_ref()
+        .or_else(|| local.ty.as_ref().and_then(|ty| layout_for_type(design, ty)))?;
+    packed_logic_layout(design, layout)?.0.checked_mul(4)
 }
 
 fn layout_default(design: &Design, layout: Option<&siox::ir::SourceLayout>) -> u64 {
@@ -342,11 +1386,18 @@ pub(super) fn declare_state<'ctx>(context: &'ctx Context, module: &Module<'ctx>,
             add_state(&storage_state_name(storage.id), width);
             add_state(&storage_old_name(storage.id), width);
         }
+        if let Some(width) = storage_meta_width(design, storage.id) {
+            add_state(&storage_meta_name(storage.id), width);
+            add_state(&storage_meta_old_name(storage.id), width);
+        }
     }
     for process in &design.process_ir.processes {
         for local in &process.locals {
             if let Some(width) = local_width(design, process.id, local.id) {
                 add_state(&local_state_name(process.id, local.id), width);
+            }
+            if let Some(width) = local_meta_width(design, process.id, local.id) {
+                add_state(&local_meta_name(process.id, local.id), width);
             }
         }
         for block in &process.blocks {
@@ -682,7 +1733,7 @@ fn signal_value<'ctx>(
 /// known to be two-valued. Literal numeric operands are likewise two-valued.
 /// Other Process values stay fail-closed until Process storage carries its own
 /// metavalue plane; accepting them here would silently compare only value bits.
-fn process_meta_operand_supported(design: &Design, id: ProcessValueId) -> bool {
+fn process_meta_operand_supported(design: &Design, id: ProcessValueId, supported: &[bool]) -> bool {
     let Some(value) = design.process_ir.values.get(id.0 as usize) else {
         return false;
     };
@@ -705,7 +1756,8 @@ fn process_meta_operand_supported(design: &Design, id: ProcessValueId) -> bool {
                         })
                 })
         }
-        _ => false,
+        _ => process_value_layout(design, id)
+            .is_some_and(|layout| process_packed_meta_supported(design, id, layout, supported)),
     }
 }
 
@@ -713,65 +1765,55 @@ fn process_meta_operand_supported(design: &Design, id: ProcessValueId) -> bool {
 /// unknown logic discriminants. Companion storage packs one discriminant nibble
 /// per value-plane bit. Weak `L`/`H` values are deliberately excluded because
 /// the `LogicEncoding` contract does not list them in `unknown`.
+#[allow(clippy::too_many_arguments)]
 fn process_meta_operand_unknown<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     design: &Design,
     id: ProcessValueId,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
     let value = design.process_ir.values.get(id.0 as usize)?;
-    let ProcessValueKind::Signal { signals, state } = &value.kind else {
-        return matches!(
-            &value.kind,
-            ProcessValueKind::Number(_)
-                | ProcessValueKind::BitString { .. }
-                | ProcessValueKind::Char(_)
-        )
-        .then(|| context.bool_type().const_zero());
-    };
-    if matches!(state, ProcessSignalState::Event) {
-        return None;
+    if matches!(
+        &value.kind,
+        ProcessValueKind::Number(_)
+            | ProcessValueKind::BitString { .. }
+            | ProcessValueKind::Char(_)
+    ) {
+        return Some(context.bool_type().const_zero());
     }
-
+    let layout = process_value_layout(design, id)?;
+    let (elements, encoding) = packed_logic_layout(design, layout)?;
+    let packed = process_packed_meta_in_layout(
+        context,
+        module,
+        builder,
+        design,
+        id,
+        layout,
+        active,
+        index_sites,
+        cache,
+    )?;
     let mut any = context.bool_type().const_zero();
-    for signal in signals {
-        let Some(companion) = design.meta_of.get(&signal.0).copied() else {
-            continue;
-        };
-        let element = design.array_element_enums.get(&signal.0)?;
-        let encoding = design.logic_encodings.get(element)?;
-        let elements = design.signal_width(*signal)?;
-        let companion = SignalId(companion);
-        let companion_width = design.signal_width(companion)?;
-        if companion_width != elements.checked_mul(4)? {
-            return None;
+    for position in 0..elements {
+        let nibble = extract_region(builder, packed, position.checked_mul(4)?, 4)?;
+        let mut unknown = context.bool_type().const_zero();
+        for discriminant in &encoding.unknown {
+            let equal = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    nibble,
+                    nibble.get_type().const_int(*discriminant, false),
+                    "pv.meta.discriminant",
+                )
+                .ok()?;
+            unknown = builder.build_or(unknown, equal, "pv.meta.member").ok()?;
         }
-        let packed = signal_value(
-            context,
-            module,
-            builder,
-            design,
-            &[companion],
-            *state,
-            companion_width,
-        )?;
-        for position in 0..elements {
-            let nibble = extract_region(builder, packed, position.checked_mul(4)?, 4)?;
-            let mut unknown = context.bool_type().const_zero();
-            for discriminant in &encoding.unknown {
-                let equal = builder
-                    .build_int_compare(
-                        IntPredicate::EQ,
-                        nibble,
-                        nibble.get_type().const_int(*discriminant, false),
-                        "pv.meta.discriminant",
-                    )
-                    .ok()?;
-                unknown = builder.build_or(unknown, equal, "pv.meta.member").ok()?;
-            }
-            any = builder.build_or(any, unknown, "pv.meta.any").ok()?;
-        }
+        any = builder.build_or(any, unknown, "pv.meta.any").ok()?;
     }
     Some(any)
 }
@@ -1045,6 +2087,7 @@ fn checked_process_values(design: &Design) -> Vec<bool> {
             ProcessValueKind::CheckedIndex { .. } => true,
             ProcessValueKind::Field { base, .. }
             | ProcessValueKind::BitSlice { base, .. }
+            | ProcessValueKind::PackedSlice { base, .. }
             | ProcessValueKind::TableLookup { index: base, .. }
             | ProcessValueKind::Unary { operand: base, .. }
             | ProcessValueKind::RawResize { operand: base } => has(&checked, *base),
@@ -1564,30 +2607,40 @@ fn process_value_layout(design: &Design, id: ProcessValueId) -> Option<&SourceLa
     }
     let value = design.process_ir.values.get(id.0 as usize)?;
     match &value.kind {
-        ProcessValueKind::Storage(storage) => design
-            .process_ir
-            .storages
-            .get(storage.0 as usize)?
-            .layout
-            .as_ref(),
+        ProcessValueKind::Storage(storage) => {
+            let storage = design.process_ir.storages.get(storage.0 as usize)?;
+            storage.layout.as_ref().or_else(|| {
+                storage
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| layout_for_type(design, ty))
+            })
+        }
         ProcessValueKind::StorageState {
             storage,
             state: ProcessSignalState::Old,
-        } => design
-            .process_ir
-            .storages
-            .get(storage.0 as usize)?
-            .layout
-            .as_ref(),
+        } => {
+            let storage = design.process_ir.storages.get(storage.0 as usize)?;
+            storage.layout.as_ref().or_else(|| {
+                storage
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| layout_for_type(design, ty))
+            })
+        }
         ProcessValueKind::StorageState { .. } => None,
-        ProcessValueKind::Local { process, local } => design
-            .process_ir
-            .processes
-            .get(process.0 as usize)?
-            .locals
-            .get(local.0 as usize)?
-            .layout
-            .as_ref(),
+        ProcessValueKind::Local { process, local } => {
+            let local = design
+                .process_ir
+                .processes
+                .get(process.0 as usize)?
+                .locals
+                .get(local.0 as usize)?;
+            local
+                .layout
+                .as_ref()
+                .or_else(|| local.ty.as_ref().and_then(|ty| layout_for_type(design, ty)))
+        }
         ProcessValueKind::Signal { signals, .. } => signal_layout(design, signals),
         ProcessValueKind::Field { base, field } => {
             field_slice(process_value_layout(design, *base)?, field).map(|slice| slice.layout)
@@ -2279,6 +3332,81 @@ fn dynamic_index_region<'ctx>(
     fit(builder, shifted, result_width)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn packed_index_discriminant<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    base: ProcessValueId,
+    index: ProcessValueId,
+    layout: &SourceLayout,
+    result_width: u32,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let (base_width, encoding) = packed_logic_layout(design, layout)?;
+    let range = layout.index_range()?;
+    let value_bit = dynamic_index_region(
+        context,
+        module,
+        builder,
+        design,
+        base,
+        index,
+        layout,
+        1,
+        active,
+        index_sites,
+        cache,
+    )?;
+    let metadata = process_packed_meta_in_layout(
+        context,
+        module,
+        builder,
+        design,
+        base,
+        layout,
+        active,
+        index_sites,
+        cache,
+    )?;
+    let position = dynamic_index_position(
+        context,
+        module,
+        builder,
+        design,
+        index,
+        range,
+        false,
+        base_width,
+        active,
+        index_sites,
+        cache,
+    )?;
+    let offset = builder
+        .build_int_mul(
+            position,
+            position.get_type().const_int(4, false),
+            "pv.meta.index.offset",
+        )
+        .ok()?;
+    let offset = fit(builder, offset, metadata.get_type().get_bit_width())?;
+    let shifted = builder
+        .build_right_shift(metadata, offset, false, "pv.meta.index.extract")
+        .ok()?;
+    let metadata = fit(builder, shifted, 4)?;
+    packed_discriminant(
+        context,
+        builder,
+        encoding,
+        value_bit,
+        Some(metadata),
+        result_width,
+    )
+}
+
 /// Emit a value using an expected recursive layout. Aggregates have no LLVM
 /// ABI of their own; they are packed only inside the design object so field
 /// reads, copies, and bindings share one exact-width representation.
@@ -2423,43 +3551,81 @@ fn process_value_in_layout<'ctx>(
             }
         }
         ProcessValueKind::String(text) => {
-            let LayoutKind::Array {
-                range: Some(range),
-                element,
+            if let LayoutKind::Packed {
+                width: packed_width,
+                element_enum: Some(element),
+                ..
             } = &layout.kind
-            else {
-                return None;
-            };
-            let characters = text.chars().collect::<Vec<_>>();
-            if usize::try_from(range.len()?).ok()? != characters.len()
-                || !matches!(
-                    element.kind,
-                    LayoutKind::Scalar {
-                        domain: siox::ir::ScalarDomain::Character,
-                        ..
-                    }
-                )
             {
-                return None;
+                let encoding = design.logic_encodings.get(element)?;
+                let symbols = design.enum_syms.get(element)?;
+                let characters = text.chars().collect::<Vec<_>>();
+                if u32::try_from(characters.len()).ok()? != *packed_width {
+                    return None;
+                }
+                let ty = context
+                    .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+                    .ok()?;
+                let mut packed = ty.const_zero();
+                for (position, character) in characters.into_iter().enumerate() {
+                    let quoted = format!("'{character}'");
+                    let discriminant = symbols.iter().find_map(|(discriminant, symbol)| {
+                        (symbol == &quoted || symbol == &character.to_string())
+                            .then_some(*discriminant)
+                    })?;
+                    if encoding.value_bit(discriminant)? == 0 {
+                        continue;
+                    }
+                    let position = u32::try_from(position).ok()?;
+                    let destination = packed_width.checked_sub(position.checked_add(1)?)?;
+                    packed = insert_region(
+                        builder,
+                        packed,
+                        context.bool_type().const_int(1, false),
+                        destination,
+                        1,
+                    )?;
+                }
+                packed
+            } else {
+                let LayoutKind::Array {
+                    range: Some(range),
+                    element,
+                } = &layout.kind
+                else {
+                    return None;
+                };
+                let characters = text.chars().collect::<Vec<_>>();
+                if usize::try_from(range.len()?).ok()? != characters.len()
+                    || !matches!(
+                        element.kind,
+                        LayoutKind::Scalar {
+                            domain: siox::ir::ScalarDomain::Character,
+                            ..
+                        }
+                    )
+                {
+                    return None;
+                }
+                let element_width = layout_width(element)?;
+                let ty = context
+                    .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+                    .ok()?;
+                let element_ty = context
+                    .custom_width_int_type(std::num::NonZeroU32::new(element_width)?)
+                    .ok()?;
+                let mut aggregate = ty.const_zero();
+                for (position, character) in characters.into_iter().enumerate() {
+                    aggregate = insert_region(
+                        builder,
+                        aggregate,
+                        element_ty.const_int(u64::from(u32::from(character)), false),
+                        u32::try_from(position).ok()?.checked_mul(element_width)?,
+                        element_width,
+                    )?;
+                }
+                aggregate
             }
-            let element_width = layout_width(element)?;
-            let ty = context
-                .custom_width_int_type(std::num::NonZeroU32::new(width)?)
-                .ok()?;
-            let element_ty = context
-                .custom_width_int_type(std::num::NonZeroU32::new(element_width)?)
-                .ok()?;
-            let mut aggregate = ty.const_zero();
-            for (position, character) in characters.into_iter().enumerate() {
-                aggregate = insert_region(
-                    builder,
-                    aggregate,
-                    element_ty.const_int(u64::from(u32::from(character)), false),
-                    u32::try_from(position).ok()?.checked_mul(element_width)?,
-                    element_width,
-                )?;
-            }
-            aggregate
         }
         ProcessValueKind::Construct { fields, spread, .. } => {
             let LayoutKind::Struct {
@@ -2866,6 +4032,18 @@ fn process_value<'ctx>(
                 fit(builder, shifted, width)?
             }
         }
+        ProcessValueKind::PackedSlice { base, left, right } => packed_slice_value(
+            context,
+            module,
+            builder,
+            design,
+            *base,
+            *left,
+            *right,
+            active,
+            index_sites,
+            cache,
+        )?,
         ProcessValueKind::CheckedIndex {
             index,
             valid,
@@ -3192,8 +4370,16 @@ fn process_value<'ctx>(
             let ordinary = as_condition(builder, ordinary)?;
             let mut unknown = context.bool_type().const_zero();
             for operand in operands {
-                let operand_unknown =
-                    process_meta_operand_unknown(context, module, builder, design, *operand)?;
+                let operand_unknown = process_meta_operand_unknown(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
                 unknown = builder
                     .build_or(unknown, operand_unknown, "pv.meta.operand")
                     .ok()?;
@@ -3297,44 +4483,35 @@ fn process_value<'ctx>(
                     )?
                 }
                 LayoutKind::Packed {
-                    range: Some(range), ..
-                } if width == 1 => {
-                    if let Some(index) = process_constant_i64(design, *index) {
-                        let low = range.left.min(range.right);
-                        let offset = u32::try_from(index.checked_sub(low)?).ok()?;
-                        let base_width = layout_width(base_layout)?;
-                        if offset >= base_width {
-                            return None;
-                        }
-                        let base = process_value_at(
-                            context,
-                            module,
-                            builder,
-                            design,
-                            *base,
-                            base_width,
-                            false,
-                            active,
-                            index_sites,
-                            cache,
-                        )?;
-                        extract_region(builder, base, offset, 1)?
-                    } else {
-                        dynamic_index_region(
-                            context,
-                            module,
-                            builder,
-                            design,
-                            *base,
-                            *index,
-                            base_layout,
-                            width,
-                            active,
-                            index_sites,
-                            cache,
-                        )?
-                    }
-                }
+                    element_enum: Some(_),
+                    range: Some(_),
+                    ..
+                } => packed_index_discriminant(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *base,
+                    *index,
+                    base_layout,
+                    width,
+                    active,
+                    index_sites,
+                    cache,
+                )?,
+                LayoutKind::Packed { range: Some(_), .. } if width == 1 => dynamic_index_region(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *base,
+                    *index,
+                    base_layout,
+                    width,
+                    active,
+                    index_sites,
+                    cache,
+                )?,
                 _ => return None,
             }
         }
@@ -3770,6 +4947,23 @@ fn process_value_supported_in_layout(
                 })
         }
         ProcessValueKind::String(text) => {
+            if let LayoutKind::Packed {
+                width,
+                element_enum: Some(element),
+                ..
+            } = &layout.kind
+            {
+                return u32::try_from(text.chars().count()).ok() == Some(*width)
+                    && design.logic_encodings.contains_key(element)
+                    && design.enum_syms.get(element).is_some_and(|symbols| {
+                        text.chars().all(|character| {
+                            let quoted = format!("'{character}'");
+                            symbols
+                                .values()
+                                .any(|symbol| symbol == &quoted || symbol == &character.to_string())
+                        })
+                    });
+            }
             let LayoutKind::Array {
                 range: Some(range),
                 element,
@@ -3860,16 +5054,214 @@ fn process_value_supported_in_layout(
     }
 }
 
+fn process_packed_meta_supported(
+    design: &Design,
+    id: ProcessValueId,
+    layout: &SourceLayout,
+    supported: &[bool],
+) -> bool {
+    let Some((width, _)) = packed_logic_layout(design, layout) else {
+        return false;
+    };
+    let Some(value) = design.process_ir.values.get(id.0 as usize) else {
+        return false;
+    };
+    if width == 1
+        && process_value_layout(design, id).is_some_and(|layout| {
+            matches!(
+                &layout.kind,
+                LayoutKind::Scalar {
+                    domain: siox::ir::ScalarDomain::Enum(name),
+                    ..
+                } if design.logic_encodings.contains_key(name)
+            )
+        })
+    {
+        return supported.get(id.0 as usize).copied().unwrap_or(false);
+    }
+    if process_value_meta_free(design, id) {
+        return true;
+    }
+    match &value.kind {
+        ProcessValueKind::Number(_)
+        | ProcessValueKind::BitString { .. }
+        | ProcessValueKind::Default => true,
+        ProcessValueKind::String(text) => {
+            let LayoutKind::Packed {
+                element_enum: Some(element),
+                ..
+            } = &layout.kind
+            else {
+                return false;
+            };
+            u32::try_from(text.chars().count()).ok() == Some(width)
+                && design.logic_encodings.contains_key(element)
+                && design.enum_syms.get(element).is_some_and(|symbols| {
+                    text.chars().all(|character| {
+                        let quoted = format!("'{character}'");
+                        symbols
+                            .values()
+                            .any(|symbol| symbol == &quoted || symbol == &character.to_string())
+                    })
+                })
+        }
+        ProcessValueKind::Storage(storage) => {
+            storage_meta_width(design, *storage) == width.checked_mul(4)
+        }
+        ProcessValueKind::StorageState {
+            storage,
+            state: ProcessSignalState::Old,
+        } => storage_meta_width(design, *storage) == width.checked_mul(4),
+        ProcessValueKind::Local { process, local } => {
+            local_meta_width(design, *process, *local) == width.checked_mul(4)
+        }
+        ProcessValueKind::Signal { signals, state } => {
+            !matches!(state, ProcessSignalState::Event)
+                && signals.iter().try_fold(0u32, |total, signal| {
+                    total.checked_add(design.signal_width(*signal)?)
+                }) == Some(width)
+        }
+        ProcessValueKind::Unary { operation, operand } => {
+            matches!(operation, ProcessUnaryOp::Not | ProcessUnaryOp::Neg)
+                && process_packed_meta_supported(design, *operand, layout, supported)
+        }
+        ProcessValueKind::Binary {
+            operation,
+            left,
+            right,
+        } => match operation {
+            ProcessBinaryOp::And
+            | ProcessBinaryOp::Or
+            | ProcessBinaryOp::Xor
+            | ProcessBinaryOp::Add
+            | ProcessBinaryOp::Sub
+            | ProcessBinaryOp::Mul
+            | ProcessBinaryOp::Div
+            | ProcessBinaryOp::SignedAdd
+            | ProcessBinaryOp::SignedSub
+            | ProcessBinaryOp::SignedMul
+            | ProcessBinaryOp::SignedDiv => {
+                process_packed_meta_supported(design, *left, layout, supported)
+                    && process_packed_meta_supported(design, *right, layout, supported)
+            }
+            ProcessBinaryOp::Shl | ProcessBinaryOp::Shr => {
+                process_packed_meta_supported(design, *left, layout, supported)
+                    && supported.get(right.0 as usize).copied().unwrap_or(false)
+            }
+            ProcessBinaryOp::ArithmeticShr => {
+                process_packed_meta_supported(design, *left, layout, supported)
+                    && process_constant_i64(design, *right).is_some_and(|right| right >= 0)
+            }
+            _ => false,
+        },
+        ProcessValueKind::PackedSlice { base, .. } => process_value_layout(design, *base)
+            .is_some_and(|base_layout| {
+                process_packed_meta_supported(design, *base, base_layout, supported)
+            }),
+        ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } => {
+            supported
+                .get(condition.0 as usize)
+                .copied()
+                .unwrap_or(false)
+                && process_packed_meta_supported(design, *then_value, layout, supported)
+                && process_packed_meta_supported(design, *else_value, layout, supported)
+        }
+        ProcessValueKind::Match { scrutinee, arms } => {
+            supported
+                .get(scrutinee.0 as usize)
+                .copied()
+                .unwrap_or(false)
+                && !arms.is_empty()
+                && arms.iter().all(|arm| {
+                    process_pattern_supported(&arm.pattern)
+                        && process_packed_meta_supported(design, arm.value, layout, supported)
+                })
+        }
+        ProcessValueKind::Concat(parts) => {
+            let LayoutKind::Packed {
+                family,
+                element_enum,
+                ..
+            } = &layout.kind
+            else {
+                return false;
+            };
+            parts.iter().all(|part| {
+                let Some(part_value) = design.process_ir.values.get(part.0 as usize) else {
+                    return false;
+                };
+                let Some(part_width) = part_value.bit_width else {
+                    return false;
+                };
+                let part_layout = SourceLayout {
+                    span: part_value.span,
+                    kind: LayoutKind::Packed {
+                        width: part_width,
+                        family: family.clone(),
+                        range: Some(LayoutRange {
+                            left: 0,
+                            right: i64::from(part_width) - 1,
+                        }),
+                        element_enum: element_enum.clone(),
+                    },
+                };
+                process_packed_meta_supported(design, *part, &part_layout, supported)
+            })
+        }
+        ProcessValueKind::RawResize { operand } => process_value_layout(design, *operand)
+            .is_some_and(|operand_layout| {
+                process_packed_meta_supported(design, *operand, operand_layout, supported)
+            }),
+        _ => false,
+    }
+}
+
 fn process_value_supported_for_target(
     design: &Design,
     target: ProcessValueId,
     assigned: ProcessValueId,
     supported: &[bool],
 ) -> bool {
-    match process_value_layout(design, target) {
+    let value_supported = match process_value_layout(design, target) {
         Some(layout) => process_value_supported_in_layout(design, assigned, layout, supported),
         None => supported.get(assigned.0 as usize).copied().unwrap_or(false),
+    };
+    if !value_supported {
+        return false;
     }
+    let root = static_place(design, target)
+        .map(|place| place.root)
+        .or_else(|| dynamic_place(design, target).map(|place| place.root));
+    let Some(root @ (StaticPlaceRoot::Local(_, _) | StaticPlaceRoot::Storage(_))) = root else {
+        return true;
+    };
+    let Some(root_layout) = place_root_layout(design, root) else {
+        return true;
+    };
+    if packed_logic_layout(design, root_layout).is_none() {
+        return true;
+    }
+    if matches!(
+        design
+            .process_ir
+            .values
+            .get(target.0 as usize)
+            .map(|value| &value.kind),
+        Some(ProcessValueKind::Index { .. })
+    ) {
+        return design
+            .process_ir
+            .values
+            .get(assigned.0 as usize)
+            .and_then(|value| value.bit_width)
+            .is_some_and(|width| width != 0 && width <= 4);
+    }
+    process_value_layout(design, target)
+        .is_some_and(|layout| process_packed_meta_supported(design, assigned, layout, supported))
 }
 
 fn supported_process_values(design: &Design) -> Vec<bool> {
@@ -3914,6 +5306,19 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                         .checked_sub(*low)
                         .and_then(|width| width.checked_add(1))
                         == value.bit_width
+            }
+            ProcessValueKind::PackedSlice { base, left, right } => {
+                let width = left
+                    .abs_diff(*right)
+                    .checked_add(1)
+                    .and_then(|width| u32::try_from(width).ok());
+                has(&supported, *base)
+                    && width == value.bit_width
+                    && process_value_layout(design, *base).is_some_and(|layout| {
+                        matches!(layout.kind, LayoutKind::Packed { range: Some(range), .. }
+                            if packed_label_position(range, *left).is_some()
+                                && packed_label_position(range, *right).is_some())
+                    })
             }
             ProcessValueKind::CheckedIndex { index, valid, .. } => {
                 has(&supported, *index)
@@ -3963,7 +5368,13 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                                             initializer,
                                             layout,
                                             &supported,
-                                        )
+                                        ) && (packed_logic_layout(design, layout).is_none()
+                                            || process_packed_meta_supported(
+                                                design,
+                                                initializer,
+                                                layout,
+                                                &supported,
+                                            ))
                                     },
                                 )
                             })
@@ -4008,7 +5419,7 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                     && !operands.is_empty()
                     && operands
                         .iter()
-                        .all(|operand| process_meta_operand_supported(design, *operand))
+                        .all(|operand| process_meta_operand_supported(design, *operand, &supported))
             }
             ProcessValueKind::Match { scrutinee, arms } => {
                 has(&supported, *scrutinee)
@@ -4060,14 +5471,29 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                         Some(SourceLayout {
                             kind:
                                 LayoutKind::Packed {
-                                    range: Some(range), ..
+                                    range: Some(range),
+                                    element_enum,
+                                    ..
                                 },
                             ..
                         }) => {
                             selected.is_none_or(|index| {
                                 (range.left.min(range.right)..=range.left.max(range.right))
                                     .contains(&index)
-                            }) && value.bit_width == Some(1)
+                            }) && match element_enum {
+                                Some(element) => {
+                                    value.bit_width.is_some_and(|width| width != 0)
+                                        && design.logic_encodings.contains_key(element)
+                                        && process_value_layout(design, *base).is_some_and(
+                                            |layout| {
+                                                process_packed_meta_supported(
+                                                    design, *base, layout, &supported,
+                                                )
+                                            },
+                                        )
+                                }
+                                None => value.bit_width == Some(1),
+                            }
                         }
                         _ => false,
                     }
@@ -4144,6 +5570,7 @@ struct StaticPlace {
     root_width: u32,
     offset: u32,
     width: u32,
+    reverse: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -4240,6 +5667,7 @@ fn static_place(design: &Design, id: ProcessValueId) -> Option<StaticPlace> {
                 root_width: width,
                 offset: 0,
                 width,
+                reverse: false,
             })
         }
         ProcessValueKind::Storage(storage) => {
@@ -4249,6 +5677,7 @@ fn static_place(design: &Design, id: ProcessValueId) -> Option<StaticPlace> {
                 root_width: width,
                 offset: 0,
                 width,
+                reverse: false,
             })
         }
         ProcessValueKind::Signal { signals, state } => {
@@ -4264,6 +5693,7 @@ fn static_place(design: &Design, id: ProcessValueId) -> Option<StaticPlace> {
                 root_width: width,
                 offset: 0,
                 width,
+                reverse: false,
             })
         }
         ProcessValueKind::Field { base, field } => {
@@ -4296,6 +5726,29 @@ fn static_place(design: &Design, id: ProcessValueId) -> Option<StaticPlace> {
             };
             place.offset = place.offset.checked_add(offset)?;
             place.width = width;
+            let value_width_matches = match &base_layout.kind {
+                LayoutKind::Packed { .. } => value.bit_width.is_some(),
+                _ => value.bit_width == Some(width),
+            };
+            (place.offset.checked_add(width)? <= place.root_width && value_width_matches)
+                .then_some(place)
+        }
+        ProcessValueKind::PackedSlice { base, left, right } => {
+            let mut place = static_place(design, *base)?;
+            let layout = process_value_layout(design, *base)?;
+            let LayoutKind::Packed {
+                range: Some(range), ..
+            } = layout.kind
+            else {
+                return None;
+            };
+            let left = packed_label_position(range, *left)?;
+            let right = packed_label_position(range, *right)?;
+            let low = left.min(right);
+            let width = left.abs_diff(right).checked_add(1)?;
+            place.offset = place.offset.checked_add(low)?;
+            place.width = width;
+            place.reverse = left < right;
             (place.offset.checked_add(width)? <= place.root_width && value.bit_width == Some(width))
                 .then_some(place)
         }
@@ -4546,6 +5999,100 @@ fn assignment_value<'ctx>(
     }
 }
 
+fn place_root_layout(design: &Design, root: StaticPlaceRoot) -> Option<&SourceLayout> {
+    match root {
+        StaticPlaceRoot::Local(process, local) => design
+            .process_ir
+            .processes
+            .get(process.0 as usize)?
+            .locals
+            .get(local.0 as usize)
+            .and_then(|local| {
+                local
+                    .layout
+                    .as_ref()
+                    .or_else(|| local.ty.as_ref().and_then(|ty| layout_for_type(design, ty)))
+            }),
+        StaticPlaceRoot::Storage(storage) => design
+            .process_ir
+            .storages
+            .get(storage.0 as usize)
+            .and_then(|storage| {
+                storage.layout.as_ref().or_else(|| {
+                    storage
+                        .ty
+                        .as_ref()
+                        .and_then(|ty| layout_for_type(design, ty))
+                })
+            }),
+        StaticPlaceRoot::Signal(signal) => signal_layout(design, &[signal]),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assignment_metadata<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    root: StaticPlaceRoot,
+    target: ProcessValueId,
+    assigned: ProcessValueId,
+    width: u32,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<Option<IntValue<'ctx>>> {
+    if matches!(root, StaticPlaceRoot::Signal(_)) {
+        return Some(None);
+    }
+    let Some(root_layout) = place_root_layout(design, root) else {
+        return Some(None);
+    };
+    let Some((_, encoding)) = packed_logic_layout(design, root_layout) else {
+        return Some(None);
+    };
+    let target_kind = &design.process_ir.values.get(target.0 as usize)?.kind;
+    if matches!(target_kind, ProcessValueKind::Index { .. }) {
+        if width != 1 {
+            return None;
+        }
+        let assigned_width = design
+            .process_ir
+            .values
+            .get(assigned.0 as usize)?
+            .bit_width?;
+        let assigned = process_value_at(
+            context,
+            module,
+            builder,
+            design,
+            assigned,
+            assigned_width,
+            false,
+            None,
+            index_sites,
+            cache,
+        )?;
+        return compact_discriminant(context, builder, encoding, assigned).map(Some);
+    }
+    let layout = process_value_layout(design, target)?;
+    if packed_logic_layout(design, layout)?.0 != width {
+        return None;
+    }
+    process_packed_meta_in_layout(
+        context,
+        module,
+        builder,
+        design,
+        assigned,
+        layout,
+        None,
+        index_sites,
+        cache,
+    )
+    .map(Some)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn stage_storage_value<'ctx>(
     context: &'ctx Context,
@@ -4592,6 +6139,32 @@ fn stage_storage_value<'ctx>(
             fit(builder, part, signal_width)?
         };
         stage_signal(module, builder, signal, staged)?;
+    }
+    Some(())
+}
+
+fn stage_storage_metadata<'ctx>(
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    storage: ProcessStorageId,
+    metadata: IntValue<'ctx>,
+) -> Option<()> {
+    let storage = design.process_ir.storages.get(storage.0 as usize)?;
+    for binding in &storage.bindings {
+        if !matches!(
+            binding.direction,
+            LayoutDirection::In | LayoutDirection::InOut
+        ) {
+            continue;
+        }
+        let Some(companion) = design.meta_of.get(&binding.signal.0).copied() else {
+            continue;
+        };
+        let (offset, width) = storage_binding_slice(design, storage.id, &binding.projection)?;
+        let width = width.checked_mul(4)?;
+        let value = extract_region(builder, metadata, offset.checked_mul(4)?, width)?;
+        stage_signal(module, builder, SignalId(companion), value)?;
     }
     Some(())
 }
@@ -4643,10 +6216,16 @@ fn write_static_place<'ctx>(
     design: &Design,
     place: StaticPlace,
     value: IntValue<'ctx>,
+    metadata: Option<IntValue<'ctx>>,
     span: siox::diag::Span,
     range_sites: &HashMap<siox::diag::Span, u32>,
 ) -> Option<()> {
     let value = fit(builder, value, place.width)?;
+    let value = if place.reverse {
+        reverse_bits(builder, value)?
+    } else {
+        value
+    };
     match place.root {
         StaticPlaceRoot::Local(process, local) => {
             let name = local_state_name(process, local);
@@ -4661,7 +6240,34 @@ fn write_static_place<'ctx>(
                     place.width,
                 )?
             };
-            store_state(module, builder, &name, place.root_width, value)
+            store_state(module, builder, &name, place.root_width, value)?;
+            if let Some(meta_width) = local_meta_width(design, process, local) {
+                let name = local_meta_name(process, local);
+                let current = state_value(context, module, builder, &name, meta_width)?;
+                let region_width = place.width.checked_mul(4)?;
+                let metadata = metadata
+                    .and_then(|metadata| fit(builder, metadata, region_width))
+                    .unwrap_or_else(|| {
+                        context
+                            .custom_width_int_type(std::num::NonZeroU32::new(region_width).unwrap())
+                            .expect("validated local metadata region")
+                            .const_zero()
+                    });
+                let metadata = if place.reverse {
+                    reverse_meta_elements(builder, metadata)?
+                } else {
+                    metadata
+                };
+                let updated = insert_region(
+                    builder,
+                    current,
+                    metadata,
+                    place.offset.checked_mul(4)?,
+                    region_width,
+                )?;
+                store_state(module, builder, &name, meta_width, updated)?;
+            }
+            Some(())
         }
         StaticPlaceRoot::Storage(storage) => {
             let name = storage_state_name(storage);
@@ -4703,6 +6309,40 @@ fn write_static_place<'ctx>(
                 place.root_width,
                 snapshot,
             )?;
+            let metadata = storage_meta_width(design, storage).and_then(|meta_width| {
+                let name = storage_meta_name(storage);
+                let old_name = storage_meta_old_name(storage);
+                let current = state_value(context, module, builder, &name, meta_width)?;
+                let old = state_value(context, module, builder, &old_name, meta_width)?;
+                let snapshot = builder
+                    .build_select(already_dirty, old, current, "process.storage.meta.snapshot")
+                    .ok()?
+                    .into_int_value();
+                store_state(module, builder, &old_name, meta_width, snapshot)?;
+                let region_width = place.width.checked_mul(4)?;
+                let region = metadata
+                    .and_then(|metadata| fit(builder, metadata, region_width))
+                    .unwrap_or_else(|| {
+                        context
+                            .custom_width_int_type(std::num::NonZeroU32::new(region_width).unwrap())
+                            .expect("validated storage metadata region")
+                            .const_zero()
+                    });
+                let region = if place.reverse {
+                    reverse_meta_elements(builder, region)?
+                } else {
+                    region
+                };
+                let updated = insert_region(
+                    builder,
+                    current,
+                    region,
+                    place.offset.checked_mul(4)?,
+                    region_width,
+                )?;
+                store_state(module, builder, &name, meta_width, updated)?;
+                Some(updated)
+            });
             builder
                 .build_store(dirty_pointer, context.i8_type().const_int(1, false))
                 .ok()?;
@@ -4721,7 +6361,11 @@ fn write_static_place<'ctx>(
                 value,
                 span,
                 range_sites,
-            )
+            )?;
+            if let Some(metadata) = metadata {
+                stage_storage_metadata(module, builder, design, storage, metadata)?;
+            }
+            Some(())
         }
         StaticPlaceRoot::Signal(signal) => {
             let value = if place.offset == 0 && place.width == place.root_width {
@@ -4823,6 +6467,7 @@ fn write_dynamic_place<'ctx>(
     design: &Design,
     place: &DynamicPlace,
     value: IntValue<'ctx>,
+    metadata: Option<IntValue<'ctx>>,
     span: siox::diag::Span,
     index_sites: &HashMap<IndexSite, u32>,
     range_sites: &HashMap<siox::diag::Span, u32>,
@@ -4835,7 +6480,32 @@ fn write_dynamic_place<'ctx>(
             let name = local_state_name(process, local);
             let current = state_value(context, module, builder, &name, place.root_width)?;
             let value = insert_dynamic_region(builder, current, value, offset, place.width)?;
-            store_state(module, builder, &name, place.root_width, value)
+            store_state(module, builder, &name, place.root_width, value)?;
+            if let Some(meta_width) = local_meta_width(design, process, local) {
+                let name = local_meta_name(process, local);
+                let current = state_value(context, module, builder, &name, meta_width)?;
+                let region_width = place.width.checked_mul(4)?;
+                let region = metadata
+                    .and_then(|metadata| fit(builder, metadata, region_width))
+                    .unwrap_or_else(|| {
+                        context
+                            .custom_width_int_type(std::num::NonZeroU32::new(region_width).unwrap())
+                            .expect("validated local metadata region")
+                            .const_zero()
+                    });
+                let meta_offset = builder
+                    .build_int_mul(
+                        offset,
+                        offset.get_type().const_int(4, false),
+                        "process.place.meta.offset",
+                    )
+                    .ok()?;
+                let meta_offset = fit(builder, meta_offset, meta_width)?;
+                let updated =
+                    insert_dynamic_region(builder, current, region, meta_offset, region_width)?;
+                store_state(module, builder, &name, meta_width, updated)?;
+            }
+            Some(())
         }
         StaticPlaceRoot::Storage(storage) => {
             let name = storage_state_name(storage);
@@ -4877,6 +6547,38 @@ fn write_dynamic_place<'ctx>(
                 place.root_width,
                 snapshot,
             )?;
+            let metadata = storage_meta_width(design, storage).and_then(|meta_width| {
+                let name = storage_meta_name(storage);
+                let old_name = storage_meta_old_name(storage);
+                let current = state_value(context, module, builder, &name, meta_width)?;
+                let old = state_value(context, module, builder, &old_name, meta_width)?;
+                let snapshot = builder
+                    .build_select(already_dirty, old, current, "process.storage.meta.snapshot")
+                    .ok()?
+                    .into_int_value();
+                store_state(module, builder, &old_name, meta_width, snapshot)?;
+                let region_width = place.width.checked_mul(4)?;
+                let region = metadata
+                    .and_then(|metadata| fit(builder, metadata, region_width))
+                    .unwrap_or_else(|| {
+                        context
+                            .custom_width_int_type(std::num::NonZeroU32::new(region_width).unwrap())
+                            .expect("validated storage metadata region")
+                            .const_zero()
+                    });
+                let meta_offset = builder
+                    .build_int_mul(
+                        offset,
+                        offset.get_type().const_int(4, false),
+                        "process.place.meta.offset",
+                    )
+                    .ok()?;
+                let meta_offset = fit(builder, meta_offset, meta_width)?;
+                let updated =
+                    insert_dynamic_region(builder, current, region, meta_offset, region_width)?;
+                store_state(module, builder, &name, meta_width, updated)?;
+                Some(updated)
+            });
             builder
                 .build_store(dirty_pointer, context.i8_type().const_int(1, false))
                 .ok()?;
@@ -4891,7 +6593,11 @@ fn write_dynamic_place<'ctx>(
                 value,
                 span,
                 range_sites,
-            )
+            )?;
+            if let Some(metadata) = metadata {
+                stage_storage_metadata(module, builder, design, storage, metadata)?;
+            }
+            Some(())
         }
         StaticPlaceRoot::Signal(signal) => {
             let current = signal_value(
@@ -4956,6 +6662,18 @@ fn emit_place_assignment<'ctx>(
             index_sites,
             cache,
         )?;
+        let metadata = assignment_metadata(
+            context,
+            module,
+            builder,
+            design,
+            place.root,
+            target,
+            assigned,
+            place.width,
+            index_sites,
+            cache,
+        )?;
         return write_static_place(
             context,
             module,
@@ -4963,6 +6681,7 @@ fn emit_place_assignment<'ctx>(
             design,
             place,
             value,
+            metadata,
             span,
             range_sites,
         );
@@ -4980,6 +6699,18 @@ fn emit_place_assignment<'ctx>(
         index_sites,
         cache,
     )?;
+    let metadata = assignment_metadata(
+        context,
+        module,
+        builder,
+        design,
+        place.root,
+        target,
+        assigned,
+        place.width,
+        index_sites,
+        cache,
+    )?;
     write_dynamic_place(
         context,
         module,
@@ -4987,6 +6718,7 @@ fn emit_place_assignment<'ctx>(
         design,
         &place,
         value,
+        metadata,
         span,
         index_sites,
         range_sites,
@@ -5216,6 +6948,19 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
                 ty.const_zero(),
             )
             .expect("declared process local state");
+            if let Some(meta_width) = local_meta_width(design, process.id, local.id) {
+                let meta_ty = context
+                    .custom_width_int_type(std::num::NonZeroU32::new(meta_width).unwrap())
+                    .expect("validated local metadata width");
+                store_state(
+                    module,
+                    &builder,
+                    &local_meta_name(process.id, local.id),
+                    meta_width,
+                    meta_ty.const_zero(),
+                )
+                .expect("declared process local metadata");
+            }
         }
         for block in &process.blocks {
             let ProcessTerminator::For { iterable, .. } = &block.terminator else {
@@ -5328,6 +7073,31 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
         } else {
             ty.const_int(storage_default(design, storage.id), false)
         };
+        let meta_width = storage_meta_width(design, storage.id);
+        let mut metadata = meta_width.map(|meta_width| {
+            storage
+                .initializer
+                .zip(storage.layout.as_ref())
+                .and_then(|(initializer, layout)| {
+                    process_packed_meta_in_layout(
+                        context,
+                        module,
+                        &builder,
+                        design,
+                        initializer,
+                        layout,
+                        None,
+                        &index_sites,
+                        &mut cache,
+                    )
+                })
+                .unwrap_or_else(|| {
+                    context
+                        .custom_width_int_type(std::num::NonZeroU32::new(meta_width).unwrap())
+                        .expect("validated storage metadata width")
+                        .const_zero()
+                })
+        });
         // Pure output fields are observations, not reset-time drivers. Read
         // their already-reset DUT leaves into the packed storage object.
         for binding in &storage.bindings {
@@ -5349,6 +7119,43 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
             .expect("validated observed storage binding");
             value = insert_region(&builder, value, observed, offset, binding_width)
                 .expect("validated observed storage region");
+            if let Some(meta) = metadata.as_mut() {
+                let binding_meta_width = binding_width
+                    .checked_mul(4)
+                    .expect("validated observed metadata width");
+                let observed = design
+                    .meta_of
+                    .get(&binding.signal.0)
+                    .copied()
+                    .map(|companion| {
+                        signal_value(
+                            context,
+                            module,
+                            &builder,
+                            design,
+                            &[SignalId(companion)],
+                            ProcessSignalState::Current,
+                            binding_meta_width,
+                        )
+                        .expect("validated observed metadata binding")
+                    })
+                    .unwrap_or_else(|| {
+                        context
+                            .custom_width_int_type(
+                                std::num::NonZeroU32::new(binding_meta_width).unwrap(),
+                            )
+                            .expect("validated observed metadata type")
+                            .const_zero()
+                    });
+                *meta = insert_region(
+                    &builder,
+                    *meta,
+                    observed,
+                    offset.checked_mul(4).expect("validated metadata offset"),
+                    binding_meta_width,
+                )
+                .expect("validated observed metadata region");
+            }
         }
         store_state(
             module,
@@ -5366,6 +7173,24 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
             value,
         )
         .expect("declared process storage snapshot");
+        if let (Some(meta_width), Some(metadata)) = (meta_width, metadata) {
+            store_state(
+                module,
+                &builder,
+                &storage_meta_name(storage.id),
+                meta_width,
+                metadata,
+            )
+            .expect("declared process storage metadata");
+            store_state(
+                module,
+                &builder,
+                &storage_meta_old_name(storage.id),
+                meta_width,
+                metadata,
+            )
+            .expect("declared process storage metadata snapshot");
+        }
         let drives = storage.bindings.iter().any(|binding| {
             matches!(
                 binding.direction,
@@ -5409,6 +7234,22 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
                 .expect("validated writable storage region");
             stage_signal(module, &builder, binding.signal, staged)
                 .expect("validated storage binding signal");
+            if let (Some(metadata), Some(companion)) =
+                (metadata, design.meta_of.get(&binding.signal.0).copied())
+            {
+                let binding_meta_width = binding_width
+                    .checked_mul(4)
+                    .expect("validated writable metadata width");
+                let staged = extract_region(
+                    &builder,
+                    metadata,
+                    offset.checked_mul(4).expect("validated metadata offset"),
+                    binding_meta_width,
+                )
+                .expect("validated writable metadata region");
+                stage_signal(module, &builder, SignalId(companion), staged)
+                    .expect("validated storage metadata binding");
+            }
         }
         if let Some(next) = next {
             builder.build_unconditional_branch(next).unwrap();
@@ -5444,6 +7285,28 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
         )
         .expect("declared storage state");
         let before_observation = current;
+        let meta_width = storage_meta_width(design, storage.id);
+        let meta_previous = meta_width.map(|meta_width| {
+            state_value(
+                context,
+                module,
+                &builder,
+                &storage_meta_old_name(storage.id),
+                meta_width,
+            )
+            .expect("declared storage metadata snapshot")
+        });
+        let mut meta_current = meta_width.map(|meta_width| {
+            state_value(
+                context,
+                module,
+                &builder,
+                &storage_meta_name(storage.id),
+                meta_width,
+            )
+            .expect("declared storage metadata")
+        });
+        let meta_before_observation = meta_current;
         for binding in &storage.bindings {
             if !matches!(
                 binding.direction,
@@ -5466,6 +7329,43 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
             .expect("validated observed storage binding");
             current = insert_region(&builder, current, observed, offset, binding_width)
                 .expect("validated observed storage region");
+            if let Some(metadata) = meta_current.as_mut() {
+                let binding_meta_width = binding_width
+                    .checked_mul(4)
+                    .expect("validated observed metadata width");
+                let observed = design
+                    .meta_of
+                    .get(&binding.signal.0)
+                    .copied()
+                    .map(|companion| {
+                        signal_value(
+                            context,
+                            module,
+                            &builder,
+                            design,
+                            &[SignalId(companion)],
+                            ProcessSignalState::Current,
+                            binding_meta_width,
+                        )
+                        .expect("validated observed metadata binding")
+                    })
+                    .unwrap_or_else(|| {
+                        context
+                            .custom_width_int_type(
+                                std::num::NonZeroU32::new(binding_meta_width).unwrap(),
+                            )
+                            .expect("validated observed metadata type")
+                            .const_zero()
+                    });
+                *metadata = insert_region(
+                    &builder,
+                    *metadata,
+                    observed,
+                    offset.checked_mul(4).expect("validated metadata offset"),
+                    binding_meta_width,
+                )
+                .expect("validated observed metadata region");
+            }
         }
         store_state(
             module,
@@ -5475,6 +7375,16 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
             current,
         )
         .expect("declared storage state");
+        if let (Some(meta_width), Some(metadata)) = (meta_width, meta_current) {
+            store_state(
+                module,
+                &builder,
+                &storage_meta_name(storage.id),
+                meta_width,
+                metadata,
+            )
+            .expect("declared storage metadata");
+        }
         let dirty_pointer =
             storage_dirty_ptr(context, module, &builder, storage_count, storage.id.0);
         let dirty = builder
@@ -5506,10 +7416,33 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
             previous,
         )
         .expect("declared storage snapshot");
+        let meta_previous = match (meta_width, meta_previous, meta_before_observation) {
+            (Some(meta_width), Some(previous), Some(before_observation)) => {
+                let previous = builder
+                    .build_select(
+                        was_written,
+                        previous,
+                        before_observation,
+                        "process.storage.meta.previous",
+                    )
+                    .unwrap()
+                    .into_int_value();
+                store_state(
+                    module,
+                    &builder,
+                    &storage_meta_old_name(storage.id),
+                    meta_width,
+                    previous,
+                )
+                .expect("declared storage metadata snapshot");
+                Some(previous)
+            }
+            _ => None,
+        };
         builder
             .build_store(dirty_pointer, byte.const_zero())
             .unwrap();
-        let changed = builder
+        let value_changed = builder
             .build_int_compare(
                 IntPredicate::NE,
                 previous,
@@ -5517,6 +7450,26 @@ fn emit_state_helpers<'ctx>(context: &'ctx Context, module: &Module<'ctx>, desig
                 "process.storage.changed",
             )
             .unwrap();
+        let changed = match (meta_previous, meta_current) {
+            (Some(previous), Some(current)) => {
+                let meta_changed = builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        previous,
+                        current,
+                        "process.storage.meta.changed",
+                    )
+                    .unwrap();
+                builder
+                    .build_or(
+                        value_changed,
+                        meta_changed,
+                        "process.storage.changed.any_plane",
+                    )
+                    .unwrap()
+            }
+            _ => value_changed,
+        };
         builder
             .build_store(
                 storage_changed_ptr(context, module, &builder, storage_count, storage.id.0),
@@ -5606,10 +7559,8 @@ fn block_is_supported(
     let value = |id: ProcessValueId| values.get(id.0 as usize).copied().unwrap_or(false);
     let assignment_supported =
         |target, assigned| process_value_supported_for_target(design, target, assigned, values);
-    let instructions = block
-        .instructions
-        .iter()
-        .all(|instruction| match instruction {
+    let instructions = block.instructions.iter().all(|instruction| {
+        let supported = match instruction {
             ProcessInstruction::Declare {
                 local, initializer, ..
             } => {
@@ -5627,7 +7578,13 @@ fn block_is_supported(
                                         initializer,
                                         layout,
                                         values,
-                                    )
+                                    ) && (packed_logic_layout(design, layout).is_none()
+                                        || process_packed_meta_supported(
+                                            design,
+                                            initializer,
+                                            layout,
+                                            values,
+                                        ))
                                 },
                             )
                     })
@@ -5707,7 +7664,9 @@ fn block_is_supported(
                 format,
                 ..
             } => runtime_instruction_supported(design, operation, arguments, format, values),
-        });
+        };
+        supported
+    });
     let terminator = match &block.terminator {
         ProcessTerminator::Return { value: None, .. }
         | ProcessTerminator::Goto(_)
@@ -6986,13 +8945,44 @@ fn process_entry<'ctx>(
                             }
                         }
                     };
+                    let metadata = metadata.layout.as_ref().and_then(|layout| {
+                        let meta_width = local_meta_width(design, process.id, *local)?;
+                        let value = match initializer {
+                            Some(initializer) => process_packed_meta_in_layout(
+                                context,
+                                module,
+                                &builder,
+                                design,
+                                *initializer,
+                                layout,
+                                None,
+                                index_sites,
+                                &mut cache,
+                            )?,
+                            None => context
+                                .custom_width_int_type(std::num::NonZeroU32::new(meta_width)?)
+                                .ok()?
+                                .const_zero(),
+                        };
+                        Some((meta_width, value))
+                    });
                     store_state(
                         module,
                         &builder,
                         &local_state_name(process.id, *local),
                         width,
                         value,
-                    )
+                    )?;
+                    if let Some((meta_width, metadata)) = metadata {
+                        store_state(
+                            module,
+                            &builder,
+                            &local_meta_name(process.id, *local),
+                            meta_width,
+                            metadata,
+                        )?;
+                    }
+                    Some(())
                 }),
                 ProcessInstruction::Assign {
                     semantics: ProcessAssignment::ImmediateLocal,
@@ -7151,6 +9141,7 @@ fn process_entry<'ctx>(
                             design,
                             place,
                             part,
+                            None,
                             *span,
                             range_sites,
                         )?;
@@ -7575,6 +9566,7 @@ fn emit_scheduled_apply<'ctx>(
                     design,
                     place,
                     value,
+                    None,
                     site.span,
                     range_sites,
                 )

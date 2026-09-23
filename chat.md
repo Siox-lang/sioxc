@@ -10413,3 +10413,29 @@ ranges so `Bit[3..0]` cannot be rewritten as `Bit[0..3]` by its checked `Ty`.
 tests pass, and default plus `bitpack` differential matrices each report
 **155 agree, 0 diverge, 21 direct-only gaps, 0 oracle failures, 7 without
 tests**; all 155 agreements compare VCD values and timestamps.
+
+### 2026-09-23 — Codex — carrying testbench metavalue state in Process IR
+
+Continuing generated-C retirement as one metavalue batch across
+`src/{ir/process,test_ir,llvm/process}.rs`. Finalized hardware already owns an
+exact Logic discriminant companion plane, but persistent Process storage keeps
+only value bits. A DUT output containing `U/X/Z` therefore loses its identity
+when observed through a testbench local, and a one-element packed projection
+is emitted as a Boolean bit even though its checked type is the element enum.
+I am adding frontend-independent companion metadata/state for packed Process
+storage, binding it to hardware companion signals, and reconstructing scalar
+element discriminants from that state before rerunning the metavalue/resolution
+cluster and the two full differential layouts.
+
+The completed batch adds source-labelled directional packed slices, retains
+declared ranges on process locals, and carries a four-bit discriminant plane
+beside packed testbench storage and locals. Reset/commit, DUT bindings, copies,
+scalar reconstruction, constant and runtime-selected partial writes, selects,
+matches, concatenation, shifts, source-defined logic tables, and arithmetic
+poisoning now update the value and metadata planes together. `slice_direction`,
+`packed_partial_write`, `metavalue_state`, and `xz_copy_chain` move to exact
+agreement. Default and `bitpack` differential sweeps each report **159 agree,
+0 diverge, 17 direct-only gaps, 0 oracle failures, and 7 without tests**; every
+agreement also compares VCD values and timestamps. The remaining
+`xz_vector_ops` and `vector_resolve` failures are later std/hardware resolution
+semantics rather than lost testbench metadata.

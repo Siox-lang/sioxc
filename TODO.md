@@ -78,10 +78,6 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   and right-hand leaf before one packed root merge. Make that pre-write
   snapshot/update invariant explicit in Process IR validation or a dedicated
   operation before deleting the temporary typed-AST adapter.
-- 🟡 **Testbench metavalue storage.** Retain a companion plane for locally
-  stored packed Logic values so direct comparisons and aggregate operations
-  preserve X/Z just like finalized hardware signals.
-
 ## LLVM
 
 Owns exact-width native code generation and the object-side runtime ABI. Code:
@@ -113,8 +109,8 @@ Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
 - 🟡 **Retire generated C.** The fixed scheduler/CLI already links LLVM-emitted
-  process entries and runs 155 corpus cases in agreement without design C;
-  all 155 also match VCD signal values and timestamps in default and `bitpack`,
+  process entries and runs 159 corpus cases in agreement without design C;
+  all 159 also match VCD signal values and timestamps in default and `bitpack`,
   while focused tests establish decoded FST parity for hierarchy, all value
   kinds, multiword values, and monotonic multi-test timelines.
   Finish the remaining LLVM/runtime coverage, make this path unconditional,

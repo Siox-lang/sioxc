@@ -695,6 +695,17 @@ pub enum ProcessValueKind {
         /// Inclusive low storage bit.
         low: u32,
     },
+    /// A source-labelled packed slice. Unlike [`Self::BitSlice`], endpoints
+    /// retain their written order, so `value[7..4]` and `value[4..7]` select
+    /// the same storage bits with opposite result significance.
+    PackedSlice {
+        /// Packed source value.
+        base: ProcessValueId,
+        /// Written left endpoint.
+        left: i64,
+        /// Written right endpoint.
+        right: i64,
+    },
     /// A checked runtime index. Evaluation latches a bounds failure when the
     /// validity predicate is false on the active control-flow path.
     CheckedIndex {
@@ -1408,6 +1419,7 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
         ProcessValueKind::Field { base, .. }
         | ProcessValueKind::Attribute { base, .. }
         | ProcessValueKind::BitSlice { base, .. }
+        | ProcessValueKind::PackedSlice { base, .. }
         | ProcessValueKind::TableLookup { index: base, .. }
         | ProcessValueKind::Unary { operand: base, .. }
         | ProcessValueKind::RawResize { operand: base } => vec![*base],
@@ -1482,9 +1494,10 @@ fn process_place_classes(ir: &ProcessIr, value: ProcessValueId) -> Option<Vec<Pr
             state: ProcessSignalState::Current,
             ..
         } => Some(vec![ProcessPlaceClass::Signal]),
-        ProcessValueKind::Field { base, .. } | ProcessValueKind::Index { base, .. } => {
-            process_place_classes(ir, *base)
-        }
+        ProcessValueKind::Field { base, .. }
+        | ProcessValueKind::Index { base, .. }
+        | ProcessValueKind::BitSlice { base, .. }
+        | ProcessValueKind::PackedSlice { base, .. } => process_place_classes(ir, *base),
         ProcessValueKind::Concat(values) => {
             let mut classes = Vec::new();
             for value in values {
