@@ -160,7 +160,7 @@ timeline_edge_test AGREE
 trait_default_test DIRECT-UNSUPPORTED
 uart_fsm_test AGREE
 user_operator_test AGREE
-vector_resolve_test DIRECT-SEMANTIC
+vector_resolve_test AGREE
 view_bus_test AGREE
 warn_test AGREE
 where_test AGREE
@@ -171,6 +171,6 @@ xz_compare_test AGREE
 xz_copy_chain_test AGREE
 xz_logical_test AGREE
 xz_poison_test AGREE
-xz_vector_ops_test DIRECT-SEMANTIC
+xz_vector_ops_test AGREE
 xz_vector_test AGREE
 xz_wide_test AGREE

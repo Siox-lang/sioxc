@@ -1115,7 +1115,9 @@ fn import_hardware_processes(hierarchy: &Hierarchy, design: &Design, process_ir:
         let Some(primary) = primary else {
             continue;
         };
-        let Some(location) = signal_location(primary, design, &locations) else {
+        let Some(location) =
+            hardware_process_location(primary, &scheduled.reads, design, &locations)
+        else {
             continue;
         };
         let id = ProcessId(process_ir.processes.len() as u32);
@@ -1551,6 +1553,25 @@ fn signal_location<'a>(
                     .is_some_and(|rest| rest.starts_with('.'))
         })
         .max_by_key(|location| location.path.len())
+}
+
+/// Recover the owning elaborated instance for one normalized hardware
+/// process. Most targets retain their flattened hierarchy path. Internal
+/// signals introduced by lowering (notably `$metatmp*` companion helpers) do
+/// not: their stable names are deliberately independent of any source
+/// instance. Such a process still reads instance-owned signals, so inherit
+/// that root/owner instead of silently dropping the helper driver.
+fn hardware_process_location<'a>(
+    primary: SignalId,
+    reads: &[SignalId],
+    design: &Design,
+    locations: &'a [InstanceLocation],
+) -> Option<&'a InstanceLocation> {
+    signal_location(primary, design, locations).or_else(|| {
+        reads
+            .iter()
+            .find_map(|signal| signal_location(*signal, design, locations))
+    })
 }
 
 /// Best source extent for a normalized hardware process.
@@ -6073,6 +6094,47 @@ mod tests {
             .process_ir
             .validate(design.signals.len() as u32)
             .is_empty());
+    }
+
+    #[test]
+    /// Lowering-only helper signals have no hierarchy prefix of their own,
+    /// but must execute in the same elaborated instance as the signals they
+    /// read. Dropping these processes resets nested X/Z operators to binary
+    /// zero even though the final companion expression still references them.
+    fn internal_hardware_process_inherits_read_owner() {
+        let span = crate::diag::Span::new(FileId(0), 0..1);
+        let signal = |path: &str| crate::ir::Signal {
+            path: path.to_string(),
+            declaration_span: span,
+            width: 1,
+            real: false,
+            integer: false,
+            char: false,
+            range: None,
+            init: vec![0],
+            enum_type: None,
+        };
+        let design = Design {
+            signals: vec![signal("$metatmp0"), signal("Bench.dut.input")],
+            ..Design::default()
+        };
+        let locations = vec![
+            InstanceLocation {
+                id: crate::elab::InstanceId(0),
+                root: crate::elab::InstanceId(0),
+                path: "Bench".to_string(),
+            },
+            InstanceLocation {
+                id: crate::elab::InstanceId(1),
+                root: crate::elab::InstanceId(0),
+                path: "Bench.dut".to_string(),
+            },
+        ];
+
+        let location = hardware_process_location(SignalId(0), &[SignalId(1)], &design, &locations)
+            .expect("internal helper should inherit an owner from its read set");
+        assert_eq!(location.id, crate::elab::InstanceId(1));
+        assert_eq!(location.root, crate::elab::InstanceId(0));
     }
 
     #[test]

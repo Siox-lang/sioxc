@@ -10439,3 +10439,21 @@ agreement. Default and `bitpack` differential sweeps each report **159 agree,
 agreement also compares VCD values and timestamps. The remaining
 `xz_vector_ops` and `vector_resolve` failures are later std/hardware resolution
 semantics rather than lost testbench metadata.
+
+### 2026-09-23 — Codex — aligning packed logic operators and resolution
+
+Continuing generated-C retirement across the two remaining X/Z semantic gaps.
+Metavalue lowering correctly materializes nested operators and resolution folds
+as `$metatmp*` signals, but those intentionally instance-neutral names failed
+the hardware Process importer's hierarchy-path lookup. Their drivers were
+silently omitted while final companion processes still read them as reset
+zero. Internal processes now inherit root/instance ownership from their
+instance-qualified read set, with a focused ownership regression. This keeps
+the std's established width-aware numeric formulas unchanged and imports the
+already-normalized value/discriminant graph without duplicating its semantics.
+
+`xz_vector_ops_test` and `vector_resolve_test` now pass directly, including
+nested X/Z logic and idle-Z multi-driver resolution. Default and `bitpack`
+differential sweeps report **161 agreements, 0 divergences, 15 direct-only
+gaps, 0 oracle failures, and 7 files without tests**; all 161 agreements compare
+VCD values and timestamps as well as process output.
