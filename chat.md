@@ -10360,3 +10360,26 @@ directly through the runtime ABI, and empty strings append no characters.
 `format_test` now pass directly. Default and `bitpack` differential matrices
 each report **144 agree, 0 diverge, 32 direct-only gaps, 0 oracle failures, 7
 without tests**; all 144 agreements compare VCD values and timestamps.
+
+### 2026-09-23 — Codex — executing fixed character arrays as values
+
+Continuing generated-C retirement across the remaining string cases. Canonical
+Process storage now has a concrete `Char[N]` layout, but a string literal is
+still accepted only when an aggregate consumer supplies that layout; ordinary
+comparisons see an unsupported `String` arena node, and the direct backend
+therefore cannot yet execute fixed-string equality, copies, or the element
+writes exercised by `string_test`, `char_read_test`, and `string_local_test`.
+I am treating nonempty source strings as their exact packed character value in
+the scalar Process emitter, retaining empty strings as the zero-element special
+case, and then addressing the remaining fixed-array place operations as one
+coherent batch before another full differential matrix.
+
+Nonempty string literals now lower as exact packed Unicode scalar arrays in
+ordinary Process expressions, so comparisons and assignments share the same
+value path as any other fixed aggregate. Equality and inequality over two
+zero-element strings fold without inventing zero-width LLVM state. The direct
+runtime now passes `string_test`, `char_read_test`, and `string_local_test`; the
+same recursive support also moves `compose_nested_test` and
+`nested_array_local_test` to agreement. Default and `bitpack` matrices each
+report **149 agree, 0 diverge, 27 direct-only gaps, 0 oracle failures, 7 without
+tests**, with matching VCD for all 149 agreements.

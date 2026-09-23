@@ -2714,6 +2714,25 @@ fn process_value<'ctx>(
         | ProcessValueKind::BitString { words, .. } => ty.const_int_arbitrary_precision(words),
         ProcessValueKind::Number(ProcessNumber::Real(bits)) => ty.const_int(*bits, false),
         ProcessValueKind::Char(character) => ty.const_int(u64::from(u32::from(*character)), false),
+        ProcessValueKind::String(text) => {
+            let characters = text.chars().collect::<Vec<_>>();
+            let expected = u32::try_from(characters.len()).ok()?.checked_mul(32)?;
+            if expected != width || width == 0 {
+                return None;
+            }
+            let character_ty = context.i32_type();
+            let mut aggregate = ty.const_zero();
+            for (position, character) in characters.into_iter().enumerate() {
+                aggregate = insert_region(
+                    builder,
+                    aggregate,
+                    character_ty.const_int(u64::from(u32::from(character)), false),
+                    u32::try_from(position).ok()?.checked_mul(32)?,
+                    32,
+                )?;
+            }
+            aggregate
+        }
         ProcessValueKind::Signal { signals, state } => {
             let stored_width = if matches!(state, ProcessSignalState::Event) {
                 1
@@ -3114,19 +3133,22 @@ fn process_value<'ctx>(
             operation,
             left,
             right,
-        } => process_binary(
-            context,
-            module,
-            builder,
-            design,
-            operation,
-            *left,
-            *right,
-            width,
-            active,
-            index_sites,
-            cache,
-        )?,
+        } => match process_empty_string_comparison(design, operation, *left, *right) {
+            Some(result) => ty.const_int(u64::from(result), false),
+            None => process_binary(
+                context,
+                module,
+                builder,
+                design,
+                operation,
+                *left,
+                *right,
+                width,
+                active,
+                index_sites,
+                cache,
+            )?,
+        },
         ProcessValueKind::Select {
             condition,
             then_value,
@@ -3535,6 +3557,24 @@ fn process_empty_string(design: &Design, id: ProcessValueId) -> bool {
     )
 }
 
+/// Equality over two zero-element character arrays is a complete constant
+/// operation even though neither operand has a nonzero LLVM storage frame.
+fn process_empty_string_comparison(
+    design: &Design,
+    operation: &ProcessBinaryOp,
+    left: ProcessValueId,
+    right: ProcessValueId,
+) -> Option<bool> {
+    if !process_empty_string(design, left) || !process_empty_string(design, right) {
+        return None;
+    }
+    match operation {
+        ProcessBinaryOp::Eq => Some(true),
+        ProcessBinaryOp::Ne => Some(false),
+        _ => None,
+    }
+}
+
 /// Assertions, warnings, and prints use a deliberately small fixed ABI.
 /// Accept formatting only when finalized Process metadata is sufficient to
 /// render the value without consulting source syntax.
@@ -3939,9 +3979,10 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                 left,
                 right,
             } => {
-                !matches!(operation, ProcessBinaryOp::Custom(_))
-                    && has(&supported, *left)
-                    && has(&supported, *right)
+                process_empty_string_comparison(design, operation, *left, *right).is_some()
+                    || !matches!(operation, ProcessBinaryOp::Custom(_))
+                        && has(&supported, *left)
+                        && has(&supported, *right)
             }
             ProcessValueKind::Select {
                 condition,
@@ -4041,8 +4082,11 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                         width.checked_add(design.process_ir.values.get(part.0 as usize)?.bit_width?)
                     }) == value.bit_width
             }
+            ProcessValueKind::String(text) => u32::try_from(text.chars().count())
+                .ok()
+                .and_then(|length| length.checked_mul(32))
+                .is_some_and(|width| width != 0 && value.bit_width == Some(width)),
             ProcessValueKind::Suffixed { .. }
-            | ProcessValueKind::String(_)
             | ProcessValueKind::Definition(_)
             | ProcessValueKind::Intrinsic(_)
             | ProcessValueKind::Range { .. }
@@ -8117,9 +8161,9 @@ mod tests {
     use siox::diag::{FileId, Span};
     use siox::elab::InstanceId;
     use siox::ir::{
-        ProcessBlock, ProcessBlockId, ProcessCfg, ProcessId, ProcessIr, ProcessSignalState,
-        ProcessTerminator, ProcessTest, ProcessValue, ProcessValueId, ProcessValueKind, Signal,
-        SignalId,
+        ProcessBinaryOp, ProcessBlock, ProcessBlockId, ProcessCfg, ProcessId, ProcessIr,
+        ProcessSignalState, ProcessTerminator, ProcessTest, ProcessValue, ProcessValueId,
+        ProcessValueKind, Signal, SignalId,
     };
     use siox::resolve::DefId;
 
@@ -8253,6 +8297,119 @@ mod tests {
         assert!(llvm.contains("@sx_wave_scope_count = constant i32 0"));
         assert!(llvm.contains("@sx_wave_scope_names = constant [1 x ptr] zeroinitializer"));
         assert!(llvm.contains("@sx_wave_signal_names = constant [1 x ptr] zeroinitializer"));
+    }
+
+    /// Fixed strings are ordinary packed Process values, while equality over
+    /// two zero-element strings remains executable without inventing a
+    /// one-bit storage object for either empty array.
+    #[test]
+    fn fixed_and_empty_strings_are_executable_process_values() {
+        let string_type = |len| siox::types::Ty::Array {
+            elem: Box::new(siox::types::Ty::Char),
+            len,
+            family: None,
+        };
+        let values = vec![
+            ProcessValue {
+                span: span(),
+                ty: Some(string_type(2)),
+                bit_width: Some(64),
+                kind: ProcessValueKind::String("hé".into()),
+            },
+            ProcessValue {
+                span: span(),
+                ty: Some(string_type(2)),
+                bit_width: Some(64),
+                kind: ProcessValueKind::String("hé".into()),
+            },
+            ProcessValue {
+                span: span(),
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::Eq,
+                    left: ProcessValueId(0),
+                    right: ProcessValueId(1),
+                },
+            },
+            ProcessValue {
+                span: span(),
+                ty: Some(string_type(0)),
+                bit_width: None,
+                kind: ProcessValueKind::String(String::new()),
+            },
+            ProcessValue {
+                span: span(),
+                ty: Some(string_type(0)),
+                bit_width: None,
+                kind: ProcessValueKind::String(String::new()),
+            },
+            ProcessValue {
+                span: span(),
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::Eq,
+                    left: ProcessValueId(3),
+                    right: ProcessValueId(4),
+                },
+            },
+            ProcessValue {
+                span: span(),
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::And,
+                    left: ProcessValueId(2),
+                    right: ProcessValueId(5),
+                },
+            },
+        ];
+        let process_ir = ProcessIr {
+            processes: vec![ProcessCfg {
+                id: ProcessId(0),
+                root: InstanceId(0),
+                owner: InstanceId(0),
+                label: Some("string-values".into()),
+                span: span(),
+                activation: ProcessActivation::TimeZero,
+                entry: ProcessBlockId(0),
+                locals: vec![],
+                blocks: vec![
+                    ProcessBlock {
+                        id: ProcessBlockId(0),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Branch {
+                            condition: ProcessValueId(6),
+                            then_block: ProcessBlockId(1),
+                            else_block: ProcessBlockId(2),
+                        },
+                    },
+                    ProcessBlock {
+                        id: ProcessBlockId(1),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Stop { span: span() },
+                    },
+                    ProcessBlock {
+                        id: ProcessBlockId(2),
+                        instructions: vec![],
+                        terminator: ProcessTerminator::Stop { span: span() },
+                    },
+                ],
+            }],
+            values,
+            ..ProcessIr::default()
+        };
+        let design = Design {
+            process_ir,
+            ..Design::default()
+        };
+
+        let supported = supported_process_values(&design);
+        assert_eq!(supported, [true, true, true, false, false, true, true]);
+        let llvm = crate::llvm::emit_module_ir(&design).expect("fixed string Process values lower");
+        assert!(llvm.contains("define internal i8 @sx.process.0(i32"));
+        assert!(llvm.contains("br i1"), "{llvm}");
     }
 
     /// Resume dispatch preserves CFG block identity and emits the stable
