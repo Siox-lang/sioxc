@@ -13,9 +13,9 @@ bus_test AGREE
 cdc_test AGREE
 chain_test AGREE
 char_fn_return_test AGREE
-char_read_test DIRECT-UNSUPPORTED
+char_read_test AGREE
 complex_test DIRECT-SEMANTIC
-compose_nested_test DIRECT-UNSUPPORTED
+compose_nested_test AGREE
 composite_self_assign_test AGREE
 concat_test AGREE
 connect_forms_test DIRECT-SEMANTIC
@@ -88,7 +88,7 @@ mux_test AGREE
 named_struct_literal_test AGREE
 namespaced_identity_test DIRECT-UNSUPPORTED
 nested_aggregate_read_test AGREE
-nested_array_local_test DIRECT-UNSUPPORTED
+nested_array_local_test AGREE
 nested_dynamic_access_test AGREE
 newtype_vector_test AGREE
 numeric_boundary_test AGREE
@@ -137,8 +137,8 @@ std_numeric_test AGREE
 std_test AGREE
 stream_bus_test AGREE
 stream_test AGREE
-string_local_test DIRECT-UNSUPPORTED
-string_test DIRECT-UNSUPPORTED
+string_local_test AGREE
+string_test AGREE
 string_to_array_test AGREE
 string_vector_test AGREE
 struct_argument_test AGREE
