@@ -3,6 +3,50 @@
 use super::*;
 
 impl<'a> Lowering<'a> {
+    /// Fold constants owned by one entity implementation into the active
+    /// instance environment. Callers snapshot the constant tables around this
+    /// operation because equal leaf names in different impls are independent.
+    pub(super) fn fold_impl_constants(&mut self, entity_id: DefId, env: &mut HashMap<String, i64>) {
+        let body_consts: Vec<&ast::ConstDecl> = self
+            .impls
+            .get(&entity_id)
+            .map(|impls| {
+                impls
+                    .iter()
+                    .flat_map(|im| &im.items)
+                    .filter_map(|item| match item {
+                        ast::ImplItem::Const(constant) => Some(constant),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for constant in &body_consts {
+            let name = &constant.name.text;
+            self.consts.remove(name);
+            self.const_values.remove(name);
+            self.const_arrays.remove(name);
+            self.consts_real.remove(name);
+            self.const_ranges.remove(name);
+        }
+        for _ in 0..=body_consts.len() {
+            let mut progressed = false;
+            for constant in &body_consts {
+                let mut scope = self.consts.clone();
+                scope.extend(env.iter().map(|(name, value)| (name.clone(), *value)));
+                if self.fold_const(&constant.name.text, constant, &scope) {
+                    progressed = true;
+                    if let Some(&value) = self.consts.get(&constant.name.text) {
+                        env.insert(constant.name.text.clone(), value);
+                    }
+                }
+            }
+            if !progressed {
+                break;
+            }
+        }
+    }
+
     /// Lower an entity's impl body: declarations, processes and concurrent
     /// statements.
     pub(super) fn lower_body(
@@ -74,40 +118,10 @@ impl<'a> Lowering<'a> {
         // with no elements at all.
         let saved_consts = self.consts.clone();
         let saved_const_values = self.const_values.clone();
-        {
-            let body_consts: Vec<&ast::ConstDecl> = self
-                .impls
-                .get(&entity_id)
-                .map(|impls| {
-                    impls
-                        .iter()
-                        .flat_map(|im| &im.items)
-                        .filter_map(|item| match item {
-                            ast::ImplItem::Const(c) => Some(c),
-                            _ => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            for _ in 0..=body_consts.len() {
-                let mut progressed = false;
-                for c in &body_consts {
-                    let mut scope = self.consts.clone();
-                    scope.extend(renamed.iter().map(|(k, v)| (k.clone(), *v)));
-                    if self.fold_const(&c.name.text, c, &scope) {
-                        progressed = true;
-                        // Array sizes and slice bounds resolve through the
-                        // env, so an integer constant has to reach it too.
-                        if let Some(&value) = self.consts.get(&c.name.text) {
-                            renamed.insert(c.name.text.clone(), value);
-                        }
-                    }
-                }
-                if !progressed {
-                    break;
-                }
-            }
-        }
+        let saved_const_arrays = self.const_arrays.clone();
+        let saved_consts_real = self.consts_real.clone();
+        let saved_const_ranges = self.const_ranges.clone();
+        self.fold_impl_constants(entity_id, &mut renamed);
         let env = &renamed;
         let type_env = &renamed_types;
         let saved_env = std::mem::replace(&mut self.cur_env, env.clone());
@@ -805,6 +819,9 @@ impl<'a> Lowering<'a> {
         self.cur_type_env = saved_type_env;
         self.consts = saved_consts;
         self.const_values = saved_const_values;
+        self.const_arrays = saved_const_arrays;
+        self.consts_real = saved_consts_real;
+        self.const_ranges = saved_const_ranges;
         self.cur_instance_path = saved_instance_path;
         ports
     }

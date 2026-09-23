@@ -227,7 +227,7 @@ language-lowering path.
    before it becomes the
    default. Direct VCD/FST is already runtime-owned: the LLVM object exports
    immutable hierarchy/signal/kind/companion/symbol tables, and the fixed
-   writer samples only quiescent scheduler points. All 131 current agreements
+   writer samples only quiescent scheduler points. All 155 current agreements
    compare exact VCD output in both default and `bitpack` corpus sweeps;
    focused tests decode both backends' FST output through upstream libfst and
    compare every value kind plus multi-test timelines.

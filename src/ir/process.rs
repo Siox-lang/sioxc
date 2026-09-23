@@ -47,6 +47,12 @@ pub struct ProcessIr {
     /// Arena-owned process operands. CFG nodes carry only stable IDs, so
     /// cloning a block or edge never clones frontend type/text payloads.
     pub values: Vec<ProcessValue>,
+    /// Recursive source layout retained for arena values that have an
+    /// aggregate representation independent of a storage/local declaration.
+    ///
+    /// Transitional hand-built fixtures may leave this empty. Production
+    /// lowering keeps it index-aligned with [`Self::values`].
+    pub value_layouts: Vec<Option<SourceLayout>>,
 }
 
 /// Persistent state declared in a test entity implementation.
@@ -920,6 +926,9 @@ impl ProcessIr {
             bit_width: None,
             kind,
         });
+        if !self.value_layouts.is_empty() {
+            self.value_layouts.push(None);
+        }
         id
     }
 
@@ -929,6 +938,14 @@ impl ProcessIr {
         let mut test_names = HashSet::new();
         let mut test_roots = HashSet::new();
         let value_count = self.values.len() as u32;
+
+        if !self.value_layouts.is_empty() && self.value_layouts.len() != self.values.len() {
+            issues.push(format!(
+                "process value layout arena has {} entries for {} values",
+                self.value_layouts.len(),
+                self.values.len()
+            ));
+        }
 
         for (index, process) in self.processes.iter().enumerate() {
             if process.id != ProcessId(index as u32) {

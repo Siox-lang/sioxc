@@ -1554,6 +1554,14 @@ fn signal_layout<'a>(design: &'a Design, signals: &[SignalId]) -> Option<&'a Sou
 /// Recursive layout carried by one arena value. This is intentionally based
 /// only on finalized IR metadata: backends never consult source syntax.
 fn process_value_layout(design: &Design, id: ProcessValueId) -> Option<&SourceLayout> {
+    if let Some(layout) = design
+        .process_ir
+        .value_layouts
+        .get(id.0 as usize)
+        .and_then(Option::as_ref)
+    {
+        return Some(layout);
+    }
     let value = design.process_ir.values.get(id.0 as usize)?;
     match &value.kind {
         ProcessValueKind::Storage(storage) => design
@@ -8226,6 +8234,7 @@ mod tests {
             }],
             storages: vec![],
             values: vec![],
+            value_layouts: vec![],
         };
         let design = Design {
             signals: vec![siox::ir::Signal {

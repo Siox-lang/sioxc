@@ -47,23 +47,35 @@ struct LoweringContext<'a> {
     inline_functions: std::collections::HashSet<crate::diag::Span>,
 }
 
-/// Module constants indexed by resolver identity. Their initializers are
-/// lowered at each use while syntax and type information are still available,
-/// so no backend has to interpret a frontend `Definition` node.
-fn module_constants<'a>(
+/// Source constants indexed by resolver identity. Module and impl-scoped
+/// declarations use the same arena aliasing rule; keeping both here also lets
+/// two test entities declare the same leaf name without colliding.
+fn source_constants<'a>(
     modules: &'a [Module],
     resolved: &Resolved,
 ) -> std::collections::HashMap<crate::resolve::DefId, &'a ast::Expr> {
-    modules
-        .iter()
-        .flat_map(|module| &module.items)
-        .filter_map(|item| {
-            let ast::Item::Const(constant) = item else {
-                return None;
-            };
-            Some((resolved.declared(constant.name.span)?, &constant.value))
-        })
-        .collect()
+    let mut constants = std::collections::HashMap::new();
+    for item in modules.iter().flat_map(|module| &module.items) {
+        match item {
+            ast::Item::Const(constant) => {
+                if let Some(definition) = resolved.declared(constant.name.span) {
+                    constants.insert(definition, &constant.value);
+                }
+            }
+            ast::Item::Impl(implementation) => {
+                for constant in implementation.items.iter().filter_map(|item| match item {
+                    ImplItem::Const(constant) => Some(constant),
+                    _ => None,
+                }) {
+                    if let Some(definition) = resolved.declared(constant.name.span) {
+                        constants.insert(definition, &constant.value);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    constants
 }
 
 /// Functions whose bodies may be evaluated while their arguments are constant
@@ -186,6 +198,102 @@ fn declared_process_type(ty: &ast::Type, resolved: &Resolved) -> Option<crate::t
     }
 }
 
+/// Recover a concrete checked type from a function/local declaration while
+/// the temporary AST adapter still has access to source syntax. Stage 4 does
+/// not persist a type for every contextual aggregate literal, so call
+/// arguments such as `[1, 2]` and `{ .a = 1 }` must inherit the signature's
+/// recursive shape before that signature disappears from Process IR.
+fn process_declared_type(
+    ty: &ast::Type,
+    context: &LoweringContext<'_>,
+) -> Option<crate::types::Ty> {
+    match ty {
+        ast::Type::Path(path) => {
+            let name = context
+                .resolved
+                .resolved(path.span)
+                .and_then(|definition| context.resolved.qualified_name(definition))
+                .unwrap_or_else(|| path_name(path));
+            let exact = context
+                .design
+                .array_element_of_family
+                .keys()
+                .find(|family| family.as_str() == name)
+                .cloned();
+            let family = exact.or_else(|| {
+                let leaf = name.rsplit("::").next()?;
+                let mut candidates = context
+                    .design
+                    .array_element_of_family
+                    .keys()
+                    .filter(|family| family.rsplit("::").next() == Some(leaf));
+                let first = candidates.next()?.clone();
+                candidates.next().is_none().then_some(first)
+            });
+            family.map(|family| {
+                let element = context
+                    .design
+                    .array_element_of_family
+                    .get(&family)
+                    .and_then(|element| nominal_type_from_name(element, context.resolved))
+                    .unwrap_or(crate::types::Ty::Error);
+                crate::types::Ty::Array {
+                    elem: Box::new(element),
+                    len: 0,
+                    family: Some(family),
+                }
+            })
+        }
+        .or_else(|| declared_process_type(ty, context.resolved)),
+        ast::Type::Indexed { base, index, .. } => {
+            let base = process_declared_type(base, context)?;
+            let length = match index.as_deref() {
+                None => 0,
+                Some(ast::Expr::Range { lo, hi, .. }) => {
+                    let left = crate::ir::eval_const_fns(
+                        lo,
+                        context.constant_integers,
+                        context.functions,
+                        0,
+                    )?;
+                    let right = crate::ir::eval_const_fns(
+                        hi,
+                        context.constant_integers,
+                        context.functions,
+                        0,
+                    )?;
+                    u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?
+                }
+                Some(index) => u32::try_from(crate::ir::eval_const_fns(
+                    index,
+                    context.constant_integers,
+                    context.functions,
+                    0,
+                )?)
+                .ok()?,
+            };
+            match base {
+                crate::types::Ty::Array {
+                    elem,
+                    len: 0,
+                    family: Some(family),
+                } => Some(crate::types::Ty::Array {
+                    elem,
+                    len: length,
+                    family: Some(family),
+                }),
+                element => Some(crate::types::Ty::Array {
+                    elem: Box::new(element),
+                    len: length,
+                    family: None,
+                }),
+            }
+        }
+        ast::Type::Generic { base, .. } => process_declared_type(base, context),
+        ast::Type::View { target, .. } => process_declared_type(target, context),
+    }
+}
+
 fn nominal_type_from_name(name: &str, resolved: &Resolved) -> Option<crate::types::Ty> {
     let type_definition = |definition: &&crate::resolve::DefInfo| {
         matches!(
@@ -294,6 +402,223 @@ fn process_layout_with_type(
         **element = process_layout_with_type(element, Some(elem));
     }
     concrete
+}
+
+/// Compare source layouts as representations rather than diagnostic anchors.
+/// Equal types commonly acquire different use-site spans; those spans must not
+/// make an otherwise unique aggregate shape look ambiguous.
+fn process_layout_same_shape(
+    left: &crate::ir::SourceLayout,
+    right: &crate::ir::SourceLayout,
+) -> bool {
+    match (&left.kind, &right.kind) {
+        (
+            LayoutKind::Scalar {
+                width: left_width,
+                domain: left_domain,
+                nominal: left_nominal,
+                value_range: left_range,
+            },
+            LayoutKind::Scalar {
+                width: right_width,
+                domain: right_domain,
+                nominal: right_nominal,
+                value_range: right_range,
+            },
+        ) => {
+            left_width == right_width
+                && left_domain == right_domain
+                && left_nominal == right_nominal
+                && left_range == right_range
+        }
+        (
+            LayoutKind::Packed {
+                width: left_width,
+                family: left_family,
+                range: left_range,
+                element_enum: left_element,
+            },
+            LayoutKind::Packed {
+                width: right_width,
+                family: right_family,
+                range: right_range,
+                element_enum: right_element,
+            },
+        ) => {
+            left_width == right_width
+                && left_family == right_family
+                && left_range == right_range
+                && left_element == right_element
+        }
+        (
+            LayoutKind::Array {
+                range: left_range,
+                element: left_element,
+            },
+            LayoutKind::Array {
+                range: right_range,
+                element: right_element,
+            },
+        ) => left_range == right_range && process_layout_same_shape(left_element, right_element),
+        (
+            LayoutKind::Struct {
+                name: left_name,
+                view: left_view,
+                fields: left_fields,
+            },
+            LayoutKind::Struct {
+                name: right_name,
+                view: right_view,
+                fields: right_fields,
+            },
+        ) => {
+            left_name == right_name
+                && left_view == right_view
+                && left_fields.len() == right_fields.len()
+                && left_fields.iter().zip(right_fields).all(|(left, right)| {
+                    left.name == right.name
+                        && left.direction == right.direction
+                        && process_layout_same_shape(&left.layout, &right.layout)
+                })
+        }
+        (
+            LayoutKind::Opaque {
+                name: left_name,
+                width: left_width,
+            },
+            LayoutKind::Opaque {
+                name: right_name,
+                width: right_width,
+            },
+        ) => left_name == right_name && left_width == right_width,
+        _ => false,
+    }
+}
+
+/// Build or recover the canonical recursive representation of a checked type.
+/// Arrays and packed families are fully described by `Ty`; named structs reuse
+/// an already elaborated declaration layout after proving all candidates share
+/// one representation.
+fn process_layout_for_type(
+    ty: &crate::types::Ty,
+    span: crate::diag::Span,
+    context: &LoweringContext<'_>,
+) -> Option<crate::ir::SourceLayout> {
+    let kind = match ty {
+        crate::types::Ty::Integer => LayoutKind::Scalar {
+            width: 64,
+            domain: crate::ir::ScalarDomain::Integer,
+            nominal: None,
+            value_range: None,
+        },
+        crate::types::Ty::Real => LayoutKind::Scalar {
+            width: 64,
+            domain: crate::ir::ScalarDomain::Real,
+            nominal: None,
+            value_range: None,
+        },
+        crate::types::Ty::Char => LayoutKind::Scalar {
+            width: 32,
+            domain: crate::ir::ScalarDomain::Character,
+            nominal: None,
+            value_range: None,
+        },
+        crate::types::Ty::Array {
+            elem: _,
+            len,
+            family: Some(family),
+        } => {
+            let element_enum = context
+                .design
+                .array_element_of_family
+                .get(family)
+                .or_else(|| {
+                    family
+                        .rsplit("::")
+                        .next()
+                        .and_then(|leaf| context.design.array_element_of_family.get(leaf))
+                })
+                .cloned();
+            LayoutKind::Packed {
+                width: *len,
+                family: family.clone(),
+                range: (*len != 0).then(|| crate::ir::LayoutRange {
+                    left: 0,
+                    right: i64::from(*len) - 1,
+                }),
+                element_enum,
+            }
+        }
+        crate::types::Ty::Array {
+            elem,
+            len,
+            family: None,
+        } => LayoutKind::Array {
+            range: (*len != 0).then(|| crate::ir::LayoutRange {
+                left: 0,
+                right: i64::from(*len) - 1,
+            }),
+            element: Box::new(process_layout_for_type(elem, span, context)?),
+        },
+        crate::types::Ty::Named(definition) => {
+            let info = context.resolved.def(*definition)?;
+            if info.kind == crate::resolve::DefKind::Enum {
+                let qualified = context.resolved.qualified_name(*definition);
+                let key = qualified
+                    .filter(|name| context.design.enum_syms.contains_key(name))
+                    .or_else(|| {
+                        context
+                            .design
+                            .enum_syms
+                            .contains_key(&info.name)
+                            .then(|| info.name.clone())
+                    })?;
+                let highest = context
+                    .design
+                    .enum_syms
+                    .get(&key)?
+                    .keys()
+                    .copied()
+                    .max()
+                    .unwrap_or(0);
+                LayoutKind::Scalar {
+                    width: (u64::BITS - highest.leading_zeros()).max(1),
+                    domain: crate::ir::ScalarDomain::Enum(key.clone()),
+                    nominal: Some(key),
+                    value_range: None,
+                }
+            } else if info.kind == crate::resolve::DefKind::Struct {
+                let mut candidates = context
+                    .process_ir
+                    .storages
+                    .iter()
+                    .filter(|storage| storage.ty.as_ref() == Some(ty))
+                    .filter_map(|storage| storage.layout.as_ref())
+                    .chain(context.design.source_layouts.values().filter(|layout| {
+                        process_type_from_layout(layout, context.resolved).as_ref() == Some(ty)
+                    }));
+                let first = candidates.next()?.clone();
+                return candidates
+                    .all(|candidate| process_layout_same_shape(&first, candidate))
+                    .then_some(first);
+            } else {
+                return None;
+            }
+        }
+        crate::types::Ty::Void | crate::types::Ty::Error => return None,
+    };
+    Some(crate::ir::SourceLayout { span, kind })
+}
+
+fn process_aggregate_layout_for_type(
+    ty: &crate::types::Ty,
+    span: crate::diag::Span,
+    context: &LoweringContext<'_>,
+) -> Option<crate::ir::SourceLayout> {
+    let aggregate = matches!(ty, crate::types::Ty::Array { .. })
+        || matches!(ty, crate::types::Ty::Named(definition)
+            if context.resolved.kind_of(*definition) == Some(crate::resolve::DefKind::Struct));
+    aggregate.then(|| process_layout_for_type(ty, span, context))?
 }
 
 fn constant_suffixes(
@@ -484,7 +809,7 @@ pub fn lower(
 ) {
     let mut process_ir = ProcessIr::default();
     let suffixes = constant_suffixes(modules, resolved);
-    let constants = module_constants(modules, resolved);
+    let constants = source_constants(modules, resolved);
     let functions = process_functions(modules, resolved);
     let constant_integers = module_constant_integers(modules, &functions);
 
@@ -935,6 +1260,9 @@ fn append_digital_assignment(
             state: ProcessSignalState::Current,
         },
     });
+    if !process_ir.value_layouts.is_empty() {
+        process_ir.value_layouts.push(None);
+    }
     let value = push_normalized_value(process_ir, expression, span, design);
     process.blocks[assignment.0 as usize]
         .instructions
@@ -1984,6 +2312,13 @@ fn process_value_source_layout(
     value: ProcessValueId,
     process_ir: &ProcessIr,
 ) -> Option<&crate::ir::SourceLayout> {
+    if let Some(layout) = process_ir
+        .value_layouts
+        .get(value.0 as usize)
+        .and_then(Option::as_ref)
+    {
+        return Some(layout);
+    }
     let value = process_ir.values.get(value.0 as usize)?;
     match &value.kind {
         ProcessValueKind::Storage(storage) => {
@@ -2548,18 +2883,28 @@ fn push_local(
     context: &LoweringContext<'_>,
 ) -> ProcessLocalId {
     let id = ProcessLocalId(process.locals.len() as u32);
+    let ty = declaration
+        .value
+        .as_ref()
+        .and_then(|value| context.typed.expr_type(ast::expr_span(value)))
+        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+        .cloned()
+        .or_else(|| {
+            declaration
+                .ty
+                .as_ref()
+                .and_then(|ty| process_declared_type(ty, context))
+        });
     process.locals.push(ProcessLocal {
         id,
         name: declaration.name.text.clone(),
         source: context.resolved.declared(declaration.name.span),
         span: declaration.span,
-        ty: declaration
-            .value
-            .as_ref()
-            .and_then(|value| context.typed.expr_type(ast::expr_span(value)))
-            .filter(|ty| !matches!(ty, crate::types::Ty::Error))
-            .cloned()
-            .or_else(|| declared_nominal_type(declaration.ty.as_ref(), context.resolved)),
+        ty,
+        // Process-local aggregate storage still needs a declaration-layout
+        // lowering path that preserves written labels and direction. `Ty`
+        // alone is intentionally insufficient (`Bit[3..0]` and `Bit[0..3]`
+        // have the same checked type), so do not manufacture a false layout.
         layout: None,
     });
     id
@@ -3054,9 +3399,26 @@ fn inline_process_call(
         }
         _ => (context.functions.get(callee)?, None),
     };
+    let parameter_types = function
+        .params
+        .iter()
+        .filter(|parameter| !parameter.is_self)
+        .map(|parameter| {
+            parameter
+                .ty
+                .as_ref()
+                .and_then(|ty| process_declared_type(ty, context))
+        })
+        .collect::<Vec<_>>();
+    if args.len() != parameter_types.len() {
+        return None;
+    }
     let arguments = args
         .iter()
-        .map(|argument| value_ref(argument, process, context))
+        .zip(&parameter_types)
+        .map(|(argument, parameter)| {
+            value_ref_with_type(argument, process, context, parameter.as_ref())
+        })
         .collect::<Vec<_>>();
     let result = inline_process_function(
         function,
@@ -3067,7 +3429,7 @@ fn inline_process_call(
         return_type,
     );
     if result.is_none() {
-        context.process_ir.values.truncate(first_value);
+        truncate_process_values(context, first_value);
     }
     result
 }
@@ -3364,7 +3726,7 @@ fn inline_process_binary_operator(
             return_type,
         );
         if result.is_none() {
-            context.process_ir.values.truncate(first_value);
+            truncate_process_values(context, first_value);
         }
         return Some(result.unwrap_or_else(|| {
             unsupported_process_value(ast::expr_span(lhs), return_type, context)
@@ -3391,7 +3753,7 @@ fn inline_process_binary_operator(
         return_type,
     );
     if result.is_none() {
-        context.process_ir.values.truncate(first_value);
+        truncate_process_values(context, first_value);
     }
     result
 }
@@ -3428,7 +3790,7 @@ fn inline_process_unary_operator(
             return_type,
         );
         if result.is_none() {
-            context.process_ir.values.truncate(first_value);
+            truncate_process_values(context, first_value);
         }
         return Some(result.unwrap_or_else(|| {
             unsupported_process_value(ast::expr_span(rhs), return_type, context)
@@ -3442,7 +3804,7 @@ fn inline_process_unary_operator(
     let result =
         inline_process_function(function, Some(operand), &[], process, context, return_type);
     if result.is_none() {
-        context.process_ir.values.truncate(first_value);
+        truncate_process_values(context, first_value);
     }
     result
 }
@@ -3470,7 +3832,16 @@ fn inline_value_statements(
             ))
         }
         Stmt::Let(declaration) => {
-            let value = value_ref(declaration.value.as_ref()?, process, context);
+            let declared = declaration
+                .ty
+                .as_ref()
+                .and_then(|ty| process_declared_type(ty, context));
+            let value = value_ref_with_type(
+                declaration.value.as_ref()?,
+                process,
+                context,
+                declared.as_ref(),
+            );
             let definition = context.resolved.declared(declaration.name.span)?;
             context.value_bindings.last_mut()?.insert(definition, value);
             inline_value_statements(rest, process, context)
@@ -4128,6 +4499,27 @@ fn value_ref_with_type(
                 spread,
             }
         }
+        ast::Expr::Concat { parts, .. }
+            if matches!(
+                ty.as_ref(),
+                Some(crate::types::Ty::Named(definition))
+                    if context.resolved.kind_of(*definition)
+                        == Some(crate::resolve::DefKind::Struct)
+            ) =>
+        {
+            ProcessValueKind::Construct {
+                ty: ty.clone(),
+                fields: parts
+                    .iter()
+                    .map(|part| ProcessAggregateField {
+                        name: None,
+                        value: Some(value_ref(part, process, context)),
+                        span: ast::expr_span(part),
+                    })
+                    .collect(),
+                spread: None,
+            }
+        }
         ast::Expr::Concat { parts, .. } => ProcessValueKind::Concat(
             parts
                 .iter()
@@ -4148,6 +4540,11 @@ fn value_ref_with_type(
 }
 
 /// Insert one already-lowered value node.
+fn truncate_process_values(context: &mut LoweringContext<'_>, length: usize) {
+    context.process_ir.values.truncate(length);
+    context.process_ir.value_layouts.truncate(length);
+}
+
 fn push_value(
     span: crate::diag::Span,
     ty: Option<crate::types::Ty>,
@@ -4156,6 +4553,31 @@ fn push_value(
     context: &mut LoweringContext<'_>,
 ) -> crate::ir::ProcessValueId {
     let id = crate::ir::ProcessValueId(context.process_ir.values.len() as u32);
+    // Places and projections already have a declaration-owned layout whose
+    // labels and direction are more precise than `Ty` (which stores only an
+    // array length). Retain a type-derived layout only for values that own
+    // their aggregate representation; otherwise `Bit[3..0]` would silently
+    // become `Bit[0..3]` merely because it was read into the arena.
+    let owns_layout = matches!(
+        &kind,
+        ProcessValueKind::Array(_)
+            | ProcessValueKind::Construct { .. }
+            | ProcessValueKind::String(_)
+            | ProcessValueKind::Default
+    );
+    let layout = owns_layout
+        .then(|| {
+            ty.as_ref()
+                .and_then(|ty| process_aggregate_layout_for_type(ty, span, context))
+        })
+        .flatten();
+    let width = width.or_else(|| {
+        layout
+            .as_ref()
+            .and_then(|layout| layout.bit_width()?.try_into().ok())
+    });
+    context.process_ir.value_layouts.resize(id.0 as usize, None);
+    context.process_ir.value_layouts.push(layout);
     context.process_ir.values.push(ProcessValue {
         span,
         ty,
@@ -5062,6 +5484,25 @@ mod tests {
                 "value %{index} is not in dependency order: {value:?}"
             );
         }
+        assert_eq!(
+            design.process_ir.value_layouts.len(),
+            design.process_ir.values.len(),
+            "production lowering keeps aggregate metadata arena-aligned"
+        );
+        assert!(design
+            .process_ir
+            .values
+            .iter()
+            .enumerate()
+            .any(|(index, value)| {
+                matches!(value.kind, ProcessValueKind::Array(_))
+                    && matches!(
+                        design.process_ir.value_layouts[index]
+                            .as_ref()
+                            .map(|layout| &layout.kind),
+                        Some(LayoutKind::Array { .. })
+                    )
+            }));
     }
 
     #[test]
@@ -5403,6 +5844,95 @@ mod tests {
     }
 
     #[test]
+    /// Aggregate values which exist only as constants, call arguments, or
+    /// process-local initializers retain the recursive source layout required
+    /// by a direct backend. Function signatures provide the context for
+    /// anonymous array and struct literals before the AST is discarded.
+    fn aggregate_only_values_retain_recursive_layouts() {
+        let sources = [
+            "module tests; \
+             struct Pair { pub a: integer, pub b: integer } \
+             fn first(values: integer[2]) -> integer { return values[0]; } \
+             fn first_pair(value: Pair) -> integer { return value.a; } \
+             #[std::attrs::test] entity Smoke {} \
+             impl Smoke { \
+               const VALUES: integer[2] = [7, 8]; \
+               let seed: Pair = { .a = 0, .b = 0 }; \
+               let result: integer = 0; \
+               process run { \
+                 let local: integer[2] = [1, 2]; \
+                 result = first(local); \
+                 result = first(VALUES); \
+                 result = first_pair({ .a = 3, .b = 4 }); \
+               } \
+             }",
+            "module std::logic; pub enum Bool { false, true }",
+            "module std::attrs; using std::logic::{Bool}; pub attr test: Bool for entity;",
+            "module std::ops; using std::logic::{Bool}; \
+             pub trait Boolean { fn as_bool(self) -> Bool; } \
+             impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+            })
+            .collect::<Vec<_>>();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let (hierarchy, plan) = crate::testbench::elaborate(&modules, &resolved, &typed, &mut sink);
+        let mut design = crate::ir::lower(&modules, &resolved, &hierarchy, &mut sink);
+        assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+
+        lower(
+            &modules,
+            &resolved,
+            &typed,
+            &hierarchy,
+            Some(&plan),
+            &mut design,
+        );
+
+        assert_eq!(
+            design.process_ir.value_layouts.len(),
+            design.process_ir.values.len()
+        );
+        let has_layout = |predicate: fn(&ProcessValueKind) -> bool,
+                          layout: fn(&LayoutKind) -> bool| {
+            design
+                .process_ir
+                .values
+                .iter()
+                .zip(&design.process_ir.value_layouts)
+                .any(|(value, retained)| {
+                    predicate(&value.kind)
+                        && retained
+                            .as_ref()
+                            .is_some_and(|retained| layout(&retained.kind))
+                })
+        };
+        assert!(has_layout(
+            |kind| matches!(kind, ProcessValueKind::Array(_)),
+            |layout| matches!(layout, LayoutKind::Array { .. })
+        ));
+        assert!(has_layout(
+            |kind| matches!(kind, ProcessValueKind::Construct { .. }),
+            |layout| matches!(layout, LayoutKind::Struct { .. })
+        ));
+        assert!(design
+            .process_ir
+            .values
+            .iter()
+            .all(|value| !matches!(value.kind, ProcessValueKind::Definition(_))));
+        assert!(design
+            .process_ir
+            .validate(design.signals.len() as u32)
+            .is_empty());
+    }
+
+    #[test]
     /// Validation must reject a process whose owner or entry block does not
     /// exist, since neither backend could execute one.
     fn design_validator_rejects_invalid_process_ownership_and_entry() {
@@ -5441,6 +5971,7 @@ mod tests {
                     processes: vec![ProcessId(0)],
                 }],
                 values: Vec::new(),
+                value_layouts: vec![None],
             },
             ..Design::default()
         };
@@ -5459,6 +5990,12 @@ mod tests {
         );
         assert!(
             issues.iter().any(|issue| issue.contains("invalid value")),
+            "{issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("value layout arena")),
             "{issues:?}"
         );
     }

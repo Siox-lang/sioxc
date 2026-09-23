@@ -330,8 +330,19 @@ impl<'a> Lowering<'a> {
             // values still need concrete layouts: the native runner consumes
             // the finished IR rather than independently specializing AST
             // declarations.
+            let saved_consts = self.consts.clone();
+            let saved_const_values = self.const_values.clone();
+            let saved_const_arrays = self.const_arrays.clone();
+            let saved_consts_real = self.consts_real.clone();
+            let saved_const_ranges = self.const_ranges.clone();
+            self.fold_impl_constants(entity_id, &mut env);
             self.persist_testbench_layouts(entity_id, root_path, &env);
             self.lower_testbench_duts(entity_id, root_path, &env);
+            self.consts = saved_consts;
+            self.const_values = saved_const_values;
+            self.const_arrays = saved_const_arrays;
+            self.consts_real = saved_consts_real;
+            self.const_ranges = saved_const_ranges;
             return;
         }
         // A top-level DUT: signals are entity-qualified (`Counter.count`), and

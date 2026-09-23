@@ -10383,3 +10383,33 @@ same recursive support also moves `compose_nested_test` and
 `nested_array_local_test` to agreement. Default and `bitpack` matrices each
 report **149 agree, 0 diverge, 27 direct-only gaps, 0 oracle failures, 7 without
 tests**, with matching VCD for all 149 agreements.
+
+### 2026-09-23 — Codex — retaining layouts on aggregate-only values
+
+Continuing generated-C retirement across aggregate constants and computed
+composites. Direct LLVM can already execute recursive arrays and structs when
+a storage/local declaration supplies their `SourceLayout`, but array constants,
+struct constants, and some struct/array call results exist only in the Process
+value arena. Their checked `Ty` has width or nominal identity but
+`layout_for_type` deliberately finds layouts only through declarations, so an
+otherwise valid `Array`, `Construct`, `Field`, or `Index` fails closed. I am
+auditing the canonical layout boundary and will retain or intern concrete
+aggregate layout metadata on values themselves, then use it for impl-scoped
+constants and computed call results as one batch.
+
+The completed batch gives arena-only arrays/structs an index-aligned recursive
+layout, supplies anonymous call arguments with their declared parameter type,
+inlines both module- and impl-scoped constants by resolver identity, and folds
+test-entity implementation constants before persisting storage layouts. All
+constant tables are now isolated across entity implementations, and failed
+symbolic inlining rolls back values and layouts together. Layout metadata is
+deliberately retained only on values that own their representation: storage,
+local, signal, field, and index nodes continue to inherit declaration-owned
+ranges so `Bit[3..0]` cannot be rewritten as `Bit[0..3]` by its checked `Ty`.
+
+`const_array_test`, `struct_const_test`, `struct_init_test`,
+`struct_valued_call_test`, `testbench_const_test`, and
+`testbench_composite_test` now pass directly. The nine focused Process-IR unit
+tests pass, and default plus `bitpack` differential matrices each report
+**155 agree, 0 diverge, 21 direct-only gaps, 0 oracle failures, 7 without
+tests**; all 155 agreements compare VCD values and timestamps.

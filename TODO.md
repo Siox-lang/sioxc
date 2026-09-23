@@ -7,7 +7,7 @@ layer that owns each change:
 
 This file tracks active work, not implementation history. Completed migration
 details and measurements belong in [`chat.md`](chat.md) and the documents under
-[`docs/`](docs/). Status last audited 2026-09-20 against the compiler, standard
+[`docs/`](docs/). Status last audited 2026-09-23 against the compiler, standard
 library, `siox-tests`, and CI.
 
 Legend: 🔴 not started · 🟡 partial / constrained.
@@ -113,8 +113,8 @@ Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
 - 🟡 **Retire generated C.** The fixed scheduler/CLI already links LLVM-emitted
-  process entries and runs 149 corpus cases in agreement without design C;
-  all 149 also match VCD signal values and timestamps in default and `bitpack`,
+  process entries and runs 155 corpus cases in agreement without design C;
+  all 155 also match VCD signal values and timestamps in default and `bitpack`,
   while focused tests establish decoded FST parity for hierarchy, all value
   kinds, multiword values, and monotonic multi-test timelines.
   Finish the remaining LLVM/runtime coverage, make this path unconditional,

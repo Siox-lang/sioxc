@@ -812,6 +812,7 @@ signed main(void) {
                 ],
             }],
             values,
+            value_layouts: vec![],
             tests: vec![],
         };
         let design = Design {
