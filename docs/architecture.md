@@ -38,9 +38,28 @@ The IR module is directory-backed and split by responsibility:
   contract by identity, diagnostics, behavior, value/layout, and control-flow
   concerns.
 
-This file split is an internal ownership boundary, not another pipeline stage.
-Consumers continue to use the stable `siox::ir::*` paths rather than depending
-on implementation submodules.
+The type checker is directory-backed the same way:
+
+- `mod.rs` is the stable `siox::types::*` facade (`Ty`, `Typed`, `check`) and
+  owns the private `Checker` state, so its fields stay private to the stage;
+- `collect.rs` builds the declaration registries before checking begins;
+- `items.rs`, `impls.rs`, and `members.rs` check items, trait contracts and
+  impl bodies, and field/method access;
+- `statements.rs`, `assignments.rs`, `patterns.rs`, `calls.rs`, `indexing.rs`,
+  `operators.rs`, `literals.rs`, and `expressions.rs` check each construct,
+  with `inference.rs` computing expression types;
+- `keys.rs`, `ast_types.rs`, and `helpers.rs` hold registry keys, AST-to-`Ty`
+  mapping with diagnostic emission, and free helpers;
+- `tests.rs` contains shared fixtures and `tests/` groups the checks by
+  visibility, declarations, attributes, writes, operators, calls, matches, and
+  statements.
+
+Each file carries one `impl Checker` run; methods are `pub(super)` so siblings
+can call them, and nothing outside `types` can.
+
+These file splits are internal ownership boundaries, not additional pipeline
+stages. Consumers continue to use the stable `siox::ir::*` and
+`siox::types::*` paths rather than depending on implementation submodules.
 
 The separate `Siox-lang/siox-lsp` repository references this compiler through
 Cargo Git and depends only on the backend-independent `siox` crate.

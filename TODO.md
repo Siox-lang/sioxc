@@ -34,7 +34,7 @@ and
 ## AST
 
 Owns source syntax, tokens, parsing, formatting, names, types, and elaborated
-hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types.rs`, and
+hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
 `src/elab.rs`.
 
 - 🔴 **Simulation reachability and target query.** Infer simulation-only status
