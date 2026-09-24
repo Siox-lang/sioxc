@@ -31,7 +31,7 @@ derive_test AGREE
 derived_clock_test AGREE
 division_zero_test AGREE
 dynamic_struct_write_test AGREE
-engine_differential_test DIRECT-UNSUPPORTED
+engine_differential_test AGREE
 entity_associated_fn_test AGREE
 enum_const_test AGREE
 enum_inline_display_test AGREE
@@ -86,7 +86,7 @@ method_in_process_test AGREE
 multiclock_test AGREE
 mux_test AGREE
 named_struct_literal_test AGREE
-namespaced_identity_test DIRECT-UNSUPPORTED
+namespaced_identity_test AGREE
 nested_aggregate_read_test AGREE
 nested_array_local_test AGREE
 nested_dynamic_access_test AGREE
@@ -155,9 +155,9 @@ testbench_composite_test AGREE
 testbench_const_test AGREE
 testbench_dynamic_array_write_test AGREE
 testbench_lint_scope_test AGREE
-time_frequency_test DIRECT-UNSUPPORTED
+time_frequency_test AGREE
 timeline_edge_test AGREE
-trait_default_test DIRECT-UNSUPPORTED
+trait_default_test AGREE
 uart_fsm_test AGREE
 user_operator_test AGREE
 vector_resolve_test AGREE

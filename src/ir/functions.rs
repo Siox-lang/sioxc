@@ -223,6 +223,29 @@ impl<'a> FunctionIndex<'a> {
         }
     }
 
+    /// Canonicalize a checked nominal name through the same collision policy
+    /// used when implementation declarations enter this index. Checked array
+    /// families may retain their fully qualified identity
+    /// (`std::bits::unsigned`) while the unique std declaration deliberately
+    /// keeps the compact `unsigned` dispatch key; both spellings must select
+    /// the same source implementation.
+    pub fn canonical_type_key(&self, key: &str) -> String {
+        if !key.contains("::") {
+            return key.to_string();
+        }
+        self.resolved
+            .defs()
+            .iter()
+            .enumerate()
+            .find_map(|(index, _definition)| {
+                let id = DefId(u32::try_from(index).ok()?);
+                (self.resolved.qualified_name(id).as_deref() == Some(key))
+                    .then(|| self.nominal_type_key(id))
+                    .flatten()
+            })
+            .unwrap_or_else(|| key.to_string())
+    }
+
     /// Resolve a call expression to the declaration selected by name
     /// resolution, falling back to the separate associated-function registry.
     pub fn get(&self, callee: &ast::Expr) -> Option<&'a ast::FnDecl> {

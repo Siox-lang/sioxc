@@ -27,7 +27,14 @@ use crate::types::Typed;
 struct ConstantSuffix {
     target: String,
     parameter: String,
+    domain: SuffixDomain,
     body: ast::Block,
+}
+
+#[derive(Clone, Copy)]
+enum SuffixDomain {
+    Integer,
+    Real,
 }
 
 struct LoweringContext<'a> {
@@ -85,6 +92,16 @@ fn process_functions<'a>(
     resolved: &'a Resolved,
 ) -> crate::ir::FunctionIndex<'a> {
     let mut functions = crate::ir::FunctionIndex::new(resolved);
+    let trait_declarations = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            ast::Item::Trait(declaration) => {
+                Some((functions.trait_decl_key(&declaration.name), declaration))
+            }
+            _ => None,
+        })
+        .collect::<std::collections::HashMap<_, _>>();
     for item in modules.iter().flat_map(|module| &module.items) {
         match item {
             ast::Item::Fn(function) => functions.insert_free(function),
@@ -113,6 +130,29 @@ fn process_functions<'a>(
                 functions.insert_associated(format!("{owner}::{}", function.name.text), function);
             }
         }
+    }
+    let inherited = modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            ast::Item::Impl(implementation) => Some(implementation),
+            _ => None,
+        })
+        .filter_map(|implementation| {
+            let owner = functions.type_head_key(&implementation.target)?;
+            let trait_key = functions.trait_path_key(implementation.trait_.as_ref()?)?;
+            Some((owner, *trait_declarations.get(&trait_key)?))
+        })
+        .flat_map(|(owner, declaration)| {
+            declaration
+                .items
+                .iter()
+                .filter(|function| function.body.is_some())
+                .map(move |function| (owner.clone(), function))
+        })
+        .collect::<Vec<_>>();
+    for (owner, function) in inherited {
+        functions.insert_associated_default(format!("{owner}::{}", function.name.text), function);
     }
     functions
 }
@@ -661,9 +701,11 @@ fn constant_suffixes(
             else {
                 continue;
             };
-            if parameter.ty.as_ref().and_then(type_leaf) != Some("integer") {
-                continue;
-            }
+            let domain = match parameter.ty.as_ref().and_then(type_leaf) {
+                Some("integer") => SuffixDomain::Integer,
+                Some("real") => SuffixDomain::Real,
+                _ => continue,
+            };
             let Some(parameter_name) = parameter.name.as_ref() else {
                 continue;
             };
@@ -673,6 +715,7 @@ fn constant_suffixes(
                 .push(ConstantSuffix {
                     target: target.to_string(),
                     parameter: parameter_name.text.clone(),
+                    domain,
                     body: body.clone(),
                 });
         }
@@ -776,6 +819,98 @@ fn eval_suffix_block(block: &ast::Block, suffix: &ConstantSuffix, input: u64) ->
     None
 }
 
+fn real_literal(text: &str) -> Option<f64> {
+    text.replace('_', "").parse().ok()
+}
+
+fn eval_real_suffix_expr(
+    expression: &ast::Expr,
+    suffix: &ConstantSuffix,
+    input: f64,
+) -> Option<f64> {
+    match expression {
+        ast::Expr::Int { text, .. } => real_literal(text),
+        ast::Expr::Path(path)
+            if path.segments.len() == 1 && path.segments[0].text == suffix.parameter =>
+        {
+            Some(input)
+        }
+        ast::Expr::Call { callee, args, .. }
+            if callee_name(callee) == suffix.target && args.len() == 1 =>
+        {
+            eval_real_suffix_expr(&args[0], suffix, input)
+        }
+        ast::Expr::IfExpr {
+            cond, then, els, ..
+        } => {
+            if eval_real_suffix_expr(cond, suffix, input)? != 0.0 {
+                eval_real_suffix_expr(then, suffix, input)
+            } else {
+                eval_real_suffix_expr(els, suffix, input)
+            }
+        }
+        ast::Expr::Unary {
+            op: ast::UnOp::Neg,
+            rhs,
+            ..
+        } => Some(-eval_real_suffix_expr(rhs, suffix, input)?),
+        ast::Expr::Unary {
+            op: ast::UnOp::Not,
+            rhs,
+            ..
+        } => Some(f64::from(u8::from(
+            eval_real_suffix_expr(rhs, suffix, input)? == 0.0,
+        ))),
+        ast::Expr::Binary { op, lhs, rhs, .. } => {
+            let left = eval_real_suffix_expr(lhs, suffix, input)?;
+            let right = eval_real_suffix_expr(rhs, suffix, input)?;
+            match op {
+                ast::BinOp::Add => Some(left + right),
+                ast::BinOp::Sub => Some(left - right),
+                ast::BinOp::Mul => Some(left * right),
+                ast::BinOp::Div => Some(left / right),
+                ast::BinOp::Eq => Some(f64::from(u8::from(left == right))),
+                ast::BinOp::Ne => Some(f64::from(u8::from(left != right))),
+                ast::BinOp::Lt => Some(f64::from(u8::from(left < right))),
+                ast::BinOp::Le => Some(f64::from(u8::from(left <= right))),
+                ast::BinOp::Gt => Some(f64::from(u8::from(left > right))),
+                ast::BinOp::Ge => Some(f64::from(u8::from(left >= right))),
+                ast::BinOp::And => Some(f64::from(u8::from(left != 0.0 && right != 0.0))),
+                ast::BinOp::Or => Some(f64::from(u8::from(left != 0.0 || right != 0.0))),
+                ast::BinOp::Shl | ast::BinOp::Shr | ast::BinOp::Custom { .. } => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn eval_real_suffix_block(block: &ast::Block, suffix: &ConstantSuffix, input: f64) -> Option<f64> {
+    for statement in &block.stmts {
+        match statement {
+            ast::Stmt::Return {
+                value: Some(value), ..
+            } => return eval_real_suffix_expr(value, suffix, input),
+            ast::Stmt::If(branch) => {
+                let selected = if eval_real_suffix_expr(&branch.cond, suffix, input)? != 0.0 {
+                    Some(&branch.then)
+                } else {
+                    match branch.else_.as_deref() {
+                        Some(ast::ElseBranch::Block(block)) => Some(block),
+                        _ => None,
+                    }
+                };
+                if let Some(value) =
+                    selected.and_then(|block| eval_real_suffix_block(block, suffix, input))
+                {
+                    return Some(value);
+                }
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn normalized_suffix(
     text: &str,
     symbol: &str,
@@ -784,12 +919,22 @@ fn normalized_suffix(
     let [suffix] = context.suffixes.get(symbol)?.as_slice() else {
         return None;
     };
-    let input = integer_literal_u64(text)?;
-    Some(ProcessNumber::Integer(vec![eval_suffix_block(
-        &suffix.body,
-        suffix,
-        input,
-    )?]))
+    match suffix.domain {
+        SuffixDomain::Integer => {
+            let input = integer_literal_u64(text)?;
+            Some(ProcessNumber::Integer(vec![eval_suffix_block(
+                &suffix.body,
+                suffix,
+                input,
+            )?]))
+        }
+        SuffixDomain::Real => {
+            let input = real_literal(text)?;
+            Some(ProcessNumber::Real(
+                eval_real_suffix_block(&suffix.body, suffix, input)?.to_bits(),
+            ))
+        }
+    }
 }
 
 /// Fill the canonical process product from normalized hardware plus an
@@ -1494,6 +1639,9 @@ fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]) -> Option
                 else_value
             };
             arena_constant_integer(*selected, values)
+        }
+        ProcessValueKind::Attribute { base, attribute } if attribute == "length" => {
+            values.get(base.0 as usize)?.bit_width.map(i128::from)
         }
         _ => None,
     }
@@ -3094,7 +3242,7 @@ fn process_type_key(ty: &crate::types::Ty, context: &LoweringContext<'_>) -> Opt
         crate::types::Ty::Array {
             family: Some(family),
             ..
-        } => Some(family.clone()),
+        } => Some(context.functions.canonical_type_key(family)),
         crate::types::Ty::Array { family: None, .. }
         | crate::types::Ty::Void
         | crate::types::Ty::Error => None,
@@ -3263,11 +3411,11 @@ fn lower_process_kernel_conversion(
     Some(push_value(*span, Some(target), Some(width), kind, context))
 }
 
-/// Lower a value-transparent type application to the language's explicit raw
-/// resize operation. Packed families (`unsigned[N](value)`) and nominal
-/// one-field newtypes (`Byte(value)`) both preserve the operand's bits while
-/// changing its declared type/width; resizing itself always truncates or
-/// zero-extends.
+/// Lower a value-transparent conversion to the language's explicit raw resize
+/// operation. Packed families (`unsigned[N](value)`), nominal one-field
+/// newtypes (`Byte(value)`), and the family-preserving `resize(value, width)`
+/// intrinsic all preserve the operand's bits while changing its declared
+/// type/width; resizing itself always truncates or zero-extends.
 fn lower_process_raw_resize(
     expression: &ast::Expr,
     process: &ProcessCfg,
@@ -3284,7 +3432,54 @@ fn lower_process_raw_resize(
     else {
         return None;
     };
-    if !type_args.is_empty() || args.len() != 1 {
+    if !type_args.is_empty() {
+        return None;
+    }
+    if let ast::Expr::Path(path) = callee.as_ref() {
+        let intrinsic_resize = path.segments.len() == 1
+            && path.segments[0].text == "resize"
+            && context
+                .resolved
+                .resolved(path.span)
+                .is_none_or(|definition| {
+                    context.resolved.def(definition).is_some_and(|definition| {
+                        definition.kind == crate::resolve::DefKind::Builtin
+                            && definition.name == "resize"
+                    })
+                });
+        if intrinsic_resize {
+            let [operand, width] = args.as_slice() else {
+                return None;
+            };
+            let operand = value_ref(operand, process, context);
+            let first_width_value = context.process_ir.values.len();
+            let width =
+                value_ref_with_type(width, process, context, Some(&crate::types::Ty::Integer));
+            let width = arena_constant_integer(width, &context.process_ir.values)
+                .and_then(|width| u32::try_from(width).ok())
+                .filter(|width| *width != 0)?;
+            truncate_process_values(context, first_width_value);
+
+            let operand_type = process_value_type(operand, context);
+            let target = match operand_type {
+                Some(crate::types::Ty::Array { elem, family, .. }) => crate::types::Ty::Array {
+                    elem,
+                    family,
+                    len: width,
+                },
+                Some(operand_type) => target.cloned().unwrap_or(operand_type),
+                None => target.cloned()?,
+            };
+            return Some(push_value(
+                *span,
+                Some(target),
+                Some(width),
+                ProcessValueKind::RawResize { operand },
+                context,
+            ));
+        }
+    }
+    if args.len() != 1 {
         return None;
     }
     let target = match callee.as_ref() {
@@ -3848,7 +4043,18 @@ fn inline_process_binary_operator(
 
     let first_value = context.process_ir.values.len();
     let left = value_ref_with_type(lhs, process, context, Some(&left_type));
-    let right_context = right_type.as_ref().or(Some(&left_type));
+    // Operator selection lets a kernel integer adopt the receiver family.
+    // Bind the value under that same contextual type: source implementations
+    // legitimately inspect `rhs'length`, and keeping a literal/expression as
+    // an unbounded integer here would make the selected `signed[N]` contract
+    // disappear between overload resolution and body inlining.
+    let right_context = if matches!(right_type, Some(crate::types::Ty::Integer))
+        && !matches!(left_type, crate::types::Ty::Integer)
+    {
+        Some(&left_type)
+    } else {
+        right_type.as_ref().or(Some(&left_type))
+    };
     let right = value_ref_with_type(rhs, process, context, right_context);
     let result = inline_process_function(
         function,
@@ -6094,6 +6300,71 @@ mod tests {
             .process_ir
             .validate(design.signals.len() as u32)
             .is_empty());
+    }
+
+    #[test]
+    /// Checked nominal families and source implementation declarations use
+    /// one canonical dispatch key, and a trait implementation inherits every
+    /// default body it did not override.
+    fn process_function_index_canonicalizes_families_and_defaults() {
+        let sources = [
+            "module std::bits; pub struct unsigned(integer);",
+            "module tests; trait Meter { fn label(self) -> integer { return 7; } } \
+             struct Plain(integer); impl Meter for Plain {}",
+        ];
+        let mut sink = DiagnosticSink::new();
+        let modules = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                crate::syntax::parse_module(FileId(index as u32), source, &mut sink)
+            })
+            .collect::<Vec<_>>();
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+
+        let functions = process_functions(&modules, &resolved);
+        assert_eq!(
+            functions.canonical_type_key("std::bits::unsigned"),
+            "unsigned"
+        );
+        assert_eq!(
+            functions
+                .get_associated("Plain", "label")
+                .map(|function| function.name.text.as_str()),
+            Some("label")
+        );
+    }
+
+    #[test]
+    /// A suffix implementation over `real` is folded from its std source body
+    /// just like integer time units, retaining the exact IEEE-754 payload in
+    /// canonical Process IR.
+    fn real_suffix_body_folds_to_process_number() {
+        let source = "module units; struct frequency(real); \
+            impl Suffix<\"MHz\", real> for frequency { \
+                fn suffix(value: real) -> frequency { \
+                    return frequency(value * 1000000.0); \
+                } \
+            }";
+        let mut sink = DiagnosticSink::new();
+        let modules = vec![crate::syntax::parse_module(FileId(0), source, &mut sink)];
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+
+        let suffixes = constant_suffixes(&modules, &resolved);
+        let [suffix] = suffixes
+            .get("MHz")
+            .map(Vec::as_slice)
+            .expect("MHz suffix implementation")
+        else {
+            panic!("expected exactly one MHz suffix implementation");
+        };
+        assert!(matches!(suffix.domain, SuffixDomain::Real));
+        assert_eq!(
+            eval_real_suffix_block(&suffix.body, suffix, 2.5),
+            Some(2_500_000.0)
+        );
     }
 
     #[test]

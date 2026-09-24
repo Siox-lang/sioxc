@@ -710,18 +710,27 @@ fn process_packed_meta_in_layout<'ctx>(
                 Some(result)
             }
             ProcessUnaryOp::Neg => {
+                let operand_layout = packed_arithmetic_operand_layout(design, layout, *operand)?;
+                let (operand_width, operand_encoding) =
+                    packed_logic_layout(design, &operand_layout)?;
                 let operand = process_packed_meta_in_layout(
                     context,
                     module,
                     builder,
                     design,
                     *operand,
-                    layout,
+                    &operand_layout,
                     active,
                     index_sites,
                     cache,
                 )?;
-                let unknown = packed_meta_unknown(context, builder, operand, width, encoding)?;
+                let unknown = packed_meta_unknown(
+                    context,
+                    builder,
+                    operand,
+                    operand_width,
+                    operand_encoding,
+                )?;
                 let poisoned = packed_unknown_meta(context, builder, width, encoding)?;
                 builder
                     .build_select(unknown, poisoned, ty.const_zero(), "pv.meta.arithmetic")
@@ -830,13 +839,17 @@ fn process_packed_meta_in_layout<'ctx>(
             | ProcessBinaryOp::SignedSub
             | ProcessBinaryOp::SignedMul
             | ProcessBinaryOp::SignedDiv => {
+                let left_layout = packed_arithmetic_operand_layout(design, layout, *left)?;
+                let right_layout = packed_arithmetic_operand_layout(design, layout, *right)?;
+                let (left_width, left_encoding) = packed_logic_layout(design, &left_layout)?;
+                let (right_width, right_encoding) = packed_logic_layout(design, &right_layout)?;
                 let left = process_packed_meta_in_layout(
                     context,
                     module,
                     builder,
                     design,
                     *left,
-                    layout,
+                    &left_layout,
                     active,
                     index_sites,
                     cache,
@@ -847,13 +860,15 @@ fn process_packed_meta_in_layout<'ctx>(
                     builder,
                     design,
                     *right,
-                    layout,
+                    &right_layout,
                     active,
                     index_sites,
                     cache,
                 )?;
-                let left_unknown = packed_meta_unknown(context, builder, left, width, encoding)?;
-                let right_unknown = packed_meta_unknown(context, builder, right, width, encoding)?;
+                let left_unknown =
+                    packed_meta_unknown(context, builder, left, left_width, left_encoding)?;
+                let right_unknown =
+                    packed_meta_unknown(context, builder, right, right_width, right_encoding)?;
                 let unknown = builder
                     .build_or(left_unknown, right_unknown, "pv.meta.arithmetic.unknown")
                     .ok()?;
@@ -864,17 +879,19 @@ fn process_packed_meta_in_layout<'ctx>(
                     .map(|value| value.into_int_value())
             }
             ProcessBinaryOp::Shl | ProcessBinaryOp::Shr => {
+                let left_layout = packed_arithmetic_operand_layout(design, layout, *left)?;
                 let left = process_packed_meta_in_layout(
                     context,
                     module,
                     builder,
                     design,
                     *left,
-                    layout,
+                    &left_layout,
                     active,
                     index_sites,
                     cache,
                 )?;
+                let left = fit(builder, left, meta_width)?;
                 let shift_width = design.process_ir.values.get(right.0 as usize)?.bit_width?;
                 let shift = process_value_at(
                     context,
@@ -907,17 +924,25 @@ fn process_packed_meta_in_layout<'ctx>(
                 }
             }
             ProcessBinaryOp::ArithmeticShr => {
+                let left_layout = packed_arithmetic_operand_layout(design, layout, *left)?;
+                let (left_width, _) = packed_logic_layout(design, &left_layout)?;
                 let left = process_packed_meta_in_layout(
                     context,
                     module,
                     builder,
                     design,
                     *left,
-                    layout,
+                    &left_layout,
                     active,
                     index_sites,
                     cache,
                 )?;
+                let source_sign =
+                    extract_region(builder, left, left_width.checked_sub(1)?.checked_mul(4)?, 4)?;
+                let mut left = fit(builder, left, meta_width)?;
+                for position in left_width..width {
+                    left = insert_region(builder, left, source_sign, position.checked_mul(4)?, 4)?;
+                }
                 let shift = u32::try_from(process_constant_i64(design, *right)?).ok()?;
                 let selected = shift.min(width);
                 let mut result = if selected == 0 {
@@ -988,6 +1013,24 @@ fn process_packed_meta_in_layout<'ctx>(
                 }
             }
             Some(result)
+        }
+        ProcessValueKind::Index { base, index } if width == 1 => {
+            let base_layout = process_value_layout(design, *base)?;
+            packed_logic_layout(design, base_layout)?;
+            let discriminant = packed_index_discriminant(
+                context,
+                module,
+                builder,
+                design,
+                *base,
+                *index,
+                base_layout,
+                4,
+                active,
+                index_sites,
+                cache,
+            )?;
+            compact_discriminant(context, builder, encoding, discriminant)
         }
         ProcessValueKind::Select {
             condition,
@@ -1118,15 +1161,15 @@ fn process_packed_meta_in_layout<'ctx>(
             (offset == 0).then_some(result)
         }
         ProcessValueKind::RawResize { operand } => {
-            let operand_layout = process_value_layout(design, *operand)?;
-            let (operand_width, _) = packed_logic_layout(design, operand_layout)?;
+            let operand_layout = packed_operand_layout(design, layout, *operand)?;
+            let (operand_width, _) = packed_logic_layout(design, &operand_layout)?;
             let operand = process_packed_meta_in_layout(
                 context,
                 module,
                 builder,
                 design,
                 *operand,
-                operand_layout,
+                &operand_layout,
                 active,
                 index_sites,
                 cache,
@@ -1301,6 +1344,73 @@ fn packed_logic_layout<'a>(
     };
     let encoding = design.logic_encodings.get(element)?;
     Some((*width, encoding))
+}
+
+/// Give a resize operand the packed element contract of its destination while
+/// retaining the operand's own element count. Conversion syntax may wrap a
+/// scalar element or an untyped concatenation, neither of which owns a packed
+/// `SourceLayout`; their value graph still carries the exact width and the
+/// destination supplies the element enum needed for metadata propagation.
+fn packed_resize_operand_layout(
+    target: &SourceLayout,
+    width: u32,
+    span: siox::diag::Span,
+) -> Option<SourceLayout> {
+    let LayoutKind::Packed {
+        family,
+        element_enum: Some(element_enum),
+        ..
+    } = &target.kind
+    else {
+        return None;
+    };
+    (width != 0).then(|| SourceLayout {
+        span,
+        kind: LayoutKind::Packed {
+            width,
+            family: family.clone(),
+            range: Some(LayoutRange {
+                left: 0,
+                right: i64::from(width) - 1,
+            }),
+            element_enum: Some(element_enum.clone()),
+        },
+    })
+}
+
+/// Select the concrete packed contract an operand already owns, or derive one
+/// from the result's element enum when the value is an untyped numeric
+/// intermediate. Source-defined numeric operators intentionally mix a fixed
+/// vector (`self`) with kernel-width arithmetic (`0 - self`); metadata only
+/// needs each operand's own width to detect a non-binary element before the
+/// result is poisoned at its destination width.
+fn packed_operand_layout(
+    design: &Design,
+    target: &SourceLayout,
+    operand: ProcessValueId,
+) -> Option<SourceLayout> {
+    let value = design.process_ir.values.get(operand.0 as usize)?;
+    process_value_layout(design, operand)
+        .filter(|layout| packed_logic_layout(design, layout).is_some_and(|(width, _)| width != 0))
+        .cloned()
+        .or_else(|| packed_resize_operand_layout(target, value.bit_width?, value.span))
+}
+
+/// Give an arithmetic dependency its declaration-owned packed layout when it
+/// has one, otherwise evaluate the unsized intermediate in the result
+/// context. A raw resize needs the operand's exact width; arithmetic instead
+/// inherits context width while fixed locals, signals, and storage must still
+/// read their own metadata planes.
+fn packed_arithmetic_operand_layout(
+    design: &Design,
+    target: &SourceLayout,
+    operand: ProcessValueId,
+) -> Option<SourceLayout> {
+    packed_logic_layout(design, target)?;
+    process_value_layout(design, operand)
+        .filter(|layout| packed_logic_layout(design, layout).is_some_and(|(width, _)| width != 0))
+        .cloned()
+        .or_else(|| Some(target.clone()))
 }
 
 fn storage_meta_width(design: &Design, storage: ProcessStorageId) -> Option<u32> {
@@ -2678,6 +2788,15 @@ fn process_value_layout(design: &Design, id: ProcessValueId) -> Option<&SourceLa
 /// elaboration metadata, so direct process code materializes a constant rather
 /// than calling the simulation runtime.
 fn process_layout_attribute(design: &Design, base: ProcessValueId, attribute: &str) -> Option<u64> {
+    if attribute == "length" {
+        if let Some(value) = design.process_ir.values.get(base.0 as usize) {
+            if let Some(siox::types::Ty::Array { len, .. }) = value.ty.as_ref() {
+                return (*len != 0)
+                    .then_some(u64::from(*len))
+                    .or_else(|| value.bit_width.map(u64::from));
+            }
+        }
+    }
     let layout = process_value_layout(design, base)?;
     if attribute == "length" {
         return match &layout.kind {
@@ -5121,19 +5240,32 @@ fn process_packed_meta_supported(
                     total.checked_add(design.signal_width(*signal)?)
                 }) == Some(width)
         }
-        ProcessValueKind::Unary { operation, operand } => {
-            matches!(operation, ProcessUnaryOp::Not | ProcessUnaryOp::Neg)
-                && process_packed_meta_supported(design, *operand, layout, supported)
-        }
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::Not,
+            operand,
+        } => process_packed_meta_supported(design, *operand, layout, supported),
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::Neg,
+            operand,
+        } => packed_arithmetic_operand_layout(design, layout, *operand).is_some_and(
+            |operand_layout| {
+                process_packed_meta_supported(design, *operand, &operand_layout, supported)
+            },
+        ),
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::RealToInteger,
+            ..
+        } => false,
         ProcessValueKind::Binary {
             operation,
             left,
             right,
         } => match operation {
-            ProcessBinaryOp::And
-            | ProcessBinaryOp::Or
-            | ProcessBinaryOp::Xor
-            | ProcessBinaryOp::Add
+            ProcessBinaryOp::And | ProcessBinaryOp::Or | ProcessBinaryOp::Xor => {
+                process_packed_meta_supported(design, *left, layout, supported)
+                    && process_packed_meta_supported(design, *right, layout, supported)
+            }
+            ProcessBinaryOp::Add
             | ProcessBinaryOp::Sub
             | ProcessBinaryOp::Mul
             | ProcessBinaryOp::Div
@@ -5141,16 +5273,23 @@ fn process_packed_meta_supported(
             | ProcessBinaryOp::SignedSub
             | ProcessBinaryOp::SignedMul
             | ProcessBinaryOp::SignedDiv => {
-                process_packed_meta_supported(design, *left, layout, supported)
-                    && process_packed_meta_supported(design, *right, layout, supported)
+                packed_arithmetic_operand_layout(design, layout, *left).is_some_and(|left_layout| {
+                    process_packed_meta_supported(design, *left, &left_layout, supported)
+                }) && packed_arithmetic_operand_layout(design, layout, *right).is_some_and(
+                    |right_layout| {
+                        process_packed_meta_supported(design, *right, &right_layout, supported)
+                    },
+                )
             }
             ProcessBinaryOp::Shl | ProcessBinaryOp::Shr => {
-                process_packed_meta_supported(design, *left, layout, supported)
-                    && supported.get(right.0 as usize).copied().unwrap_or(false)
+                packed_arithmetic_operand_layout(design, layout, *left).is_some_and(|left_layout| {
+                    process_packed_meta_supported(design, *left, &left_layout, supported)
+                }) && supported.get(right.0 as usize).copied().unwrap_or(false)
             }
             ProcessBinaryOp::ArithmeticShr => {
-                process_packed_meta_supported(design, *left, layout, supported)
-                    && process_constant_i64(design, *right).is_some_and(|right| right >= 0)
+                packed_arithmetic_operand_layout(design, layout, *left).is_some_and(|left_layout| {
+                    process_packed_meta_supported(design, *left, &left_layout, supported)
+                }) && process_constant_i64(design, *right).is_some_and(|right| right >= 0)
             }
             _ => false,
         },
@@ -5158,6 +5297,13 @@ fn process_packed_meta_supported(
             .is_some_and(|base_layout| {
                 process_packed_meta_supported(design, *base, base_layout, supported)
             }),
+        ProcessValueKind::Index { base, index } if width == 1 => {
+            supported.get(index.0 as usize).copied().unwrap_or(false)
+                && process_value_layout(design, *base).is_some_and(|base_layout| {
+                    packed_logic_layout(design, base_layout).is_some()
+                        && process_packed_meta_supported(design, *base, base_layout, supported)
+                })
+        }
         ProcessValueKind::Select {
             condition,
             then_value,
@@ -5212,9 +5358,9 @@ fn process_packed_meta_supported(
                 process_packed_meta_supported(design, *part, &part_layout, supported)
             })
         }
-        ProcessValueKind::RawResize { operand } => process_value_layout(design, *operand)
+        ProcessValueKind::RawResize { operand } => packed_operand_layout(design, layout, *operand)
             .is_some_and(|operand_layout| {
-                process_packed_meta_supported(design, *operand, operand_layout, supported)
+                process_packed_meta_supported(design, *operand, &operand_layout, supported)
             }),
         _ => false,
     }

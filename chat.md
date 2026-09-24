@@ -10457,3 +10457,30 @@ nested X/Z logic and idle-Z multi-driver resolution. Default and `bitpack`
 differential sweeps report **161 agreements, 0 divergences, 15 direct-only
 gaps, 0 oracle failures, and 7 files without tests**; all 161 agreements compare
 VCD values and timestamps as well as process output.
+
+### 2026-09-23 — Codex — clustering the remaining direct-runtime gaps
+
+Continuing generated-C retirement by classifying all 15 remaining corpus gaps
+from their actual unsupported Process blocks or semantic outputs. I will take
+the largest shared representation/runtime boundary as one implementation batch
+before another full matrix, rather than testing after each isolated case.
+
+### 2026-09-24 — Codex — source dispatch, suffixes, and packed resize metadata
+
+Completed the 15-gap cluster announced above as one source-semantics batch.
+Process lowering now canonicalizes qualified checked family names to the
+resolver-selected implementation key, inherits concrete trait default bodies,
+and folds real-valued suffix constructors as well as integer suffixes. The
+temporary AST adapter also normalizes the std `resize(value, width)` intrinsic,
+including widths derived from `self'length`, and binds contextual integer
+operator operands under the owner family selected by overload resolution.
+
+Direct LLVM reconstructs metadata for indexed packed elements and carries
+non-binary state through raw resize, mixed-width arithmetic, and shifts using
+each declaration-owned metadata plane. The first full sweep caught a broad
+index-layout attempt regressing five signed cases; that annotation was removed
+and the representation boundary was fixed locally instead. The nine focused
+custom/default/suffix/signed executables pass. Default and `bitpack`
+differential sweeps each report **165 agreements, 0 divergences, 11 direct-only
+gaps, 0 oracle failures, and 7 files without tests**; 146 agreements have only
+boilerplate stdout and all 165 independently compare normalized VCD output.
