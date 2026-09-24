@@ -180,9 +180,9 @@ the default remains the compatibility path.
 
 **Still provided by the generated C**: the AST-to-C translation of remaining
 process bodies and compatibility implementations of dynamic strings/arrays,
-file I/O, random services, and several call forms. Test discovery, the CLI,
-scheduling, formatting/reporting, and VCD/FST output already have fixed runtime
-implementations.
+file I/O, and several call forms. Test discovery, the CLI, scheduling,
+formatting/reporting, deterministic random services, and VCD/FST output already
+have fixed runtime implementations.
 
 ## Inventory, and what each becomes
 
@@ -194,7 +194,7 @@ implementations.
 | failure record | `sx_check_ranges`, `sx_checked_index`, `sx_io_fail` | first-failure wins, with value, declared range and source location |
 | file services | `sx_read_file`, `sx_read_text`, `sx_read_values`, `sx_io_alloc`, `sx_io_reset` | buffers and lifetime |
 | UTF-8 | `sx_utf8`, `sx_utf8_next` | decode/encode across the string boundary |
-| deterministic random | `sx_rand`, `sx_randint`, `sx_random_value`, `sx_uniform` | seed state must be reproducible across backends |
+| deterministic random | fixed `sx_runtime_seed`, `sx_runtime_rand`, `sx_runtime_randint`, `sx_runtime_uniform` | explicit Process IR host operations preserve the compatibility xorshift sequence and unbiased inclusive range mapping, including the full-u64 interval |
 | dynamic arrays | `sx_dyn_get`, `sx_dyn_get_checked`, `sx_dyn_equal_values` | heap-backed values read at run time |
 | formatting | generated `sx_decimal`, `sx_chars` | Process IR now carries normalized typed parts; fixed `sx_runtime_format_*` services render arbitrary-width decimal, real, Unicode character, static string, and enum text |
 | waveforms | fixed `runtime/wave.c` VCD/FST | immutable object descriptors, writer lifetime, per-test timeline, libfst linkage |

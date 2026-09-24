@@ -19,9 +19,9 @@ use inkwell::{FloatPredicate, IntPredicate};
 use siox::ir::{
     Design, IndexSite, LayoutDirection, LayoutKind, LayoutRange, ProcessActivation,
     ProcessAssignment, ProcessBinaryOp, ProcessCfg, ProcessDisplayKind, ProcessFormatPart,
-    ProcessId, ProcessInstruction, ProcessLocalId, ProcessNumber, ProcessPattern, ProcessRuntimeOp,
-    ProcessSensitivity, ProcessSignalState, ProcessStorageId, ProcessTerminator, ProcessUnaryOp,
-    ProcessValueId, ProcessValueKind, SignalId, SourceLayout,
+    ProcessHostValueOp, ProcessId, ProcessInstruction, ProcessLocalId, ProcessNumber,
+    ProcessPattern, ProcessRuntimeOp, ProcessSensitivity, ProcessSignalState, ProcessStorageId,
+    ProcessTerminator, ProcessUnaryOp, ProcessValueId, ProcessValueKind, SignalId, SourceLayout,
 };
 
 /// Version of the native process metadata ABI emitted into every object.
@@ -498,6 +498,7 @@ fn process_value_meta_free(design: &Design, id: ProcessValueId) -> bool {
         | ProcessValueKind::Attribute { .. }
         | ProcessValueKind::TableLookup { .. }
         | ProcessValueKind::ForeignCall { .. }
+        | ProcessValueKind::HostCall { .. }
         | ProcessValueKind::MetaCompare { .. } => true,
         ProcessValueKind::Signal { signals, state } => {
             !matches!(state, ProcessSignalState::Event)
@@ -2234,7 +2235,8 @@ fn checked_process_values(design: &Design) -> Vec<bool> {
             } => std::iter::once(*callee)
                 .chain(arguments.iter().copied())
                 .any(|value| has(&checked, value)),
-            ProcessValueKind::ForeignCall { arguments, .. } => {
+            ProcessValueKind::ForeignCall { arguments, .. }
+            | ProcessValueKind::HostCall { arguments, .. } => {
                 arguments.iter().any(|value| has(&checked, *value))
             }
             ProcessValueKind::Construct { fields, spread, .. } => fields
@@ -2598,6 +2600,10 @@ fn process_value_is_real(design: &Design, id: ProcessValueId) -> bool {
             process_value_is_real(design, *then_value) || process_value_is_real(design, *else_value)
         }
         ProcessValueKind::ForeignCall { float_result, .. } => *float_result,
+        ProcessValueKind::HostCall {
+            operation: ProcessHostValueOp::Uniform,
+            ..
+        } => true,
         _ => false,
     }
 }
@@ -4348,6 +4354,58 @@ fn process_value<'ctx>(
                 fit(builder, returned, width)?
             }
         }
+        ProcessValueKind::HostCall {
+            operation,
+            arguments,
+        } => {
+            use inkwell::values::BasicMetadataValueEnum as MetadataValue;
+
+            let mut emitted = Vec::<MetadataValue>::with_capacity(arguments.len());
+            for argument in arguments {
+                emitted.push(
+                    process_value_at(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        *argument,
+                        64,
+                        false,
+                        active,
+                        index_sites,
+                        cache,
+                    )?
+                    .into(),
+                );
+            }
+            let (name, signature) = match operation {
+                ProcessHostValueOp::Random => {
+                    ("sx_runtime_rand", context.i64_type().fn_type(&[], false))
+                }
+                ProcessHostValueOp::RandomRange => (
+                    "sx_runtime_randint",
+                    context.i64_type().fn_type(
+                        &[context.i64_type().into(), context.i64_type().into()],
+                        false,
+                    ),
+                ),
+                ProcessHostValueOp::Uniform => {
+                    ("sx_runtime_uniform", context.i64_type().fn_type(&[], false))
+                }
+            };
+            let function = module
+                .get_function(name)
+                .unwrap_or_else(|| module.add_function(name, signature, Some(Linkage::External)));
+            let returned = match builder
+                .build_call(function, &emitted, "pv.host")
+                .ok()?
+                .try_as_basic_value()
+            {
+                inkwell::values::ValueKind::Basic(value) => value.into_int_value(),
+                _ => return None,
+            };
+            fit(builder, returned, width)?
+        }
         ProcessValueKind::Unary { operation, operand } => match operation {
             ProcessUnaryOp::Neg => {
                 let operand_id = *operand;
@@ -4950,6 +5008,19 @@ fn runtime_instruction_supported(
             || arguments.len() == 1 && process_string(design, arguments[0]).is_some(),
             |format| format_supported(format),
         ),
+        ProcessRuntimeOp::Seed => {
+            format.is_none()
+                && arguments.len() == 1
+                && arguments.first().is_some_and(|argument| {
+                    values.get(argument.0 as usize).copied().unwrap_or(false)
+                        && design
+                            .process_ir
+                            .values
+                            .get(argument.0 as usize)
+                            .and_then(|value| value.bit_width)
+                            .is_some_and(|width| (1..=64).contains(&width))
+                })
+        }
         ProcessRuntimeOp::Call(_) => false,
     }
 }
@@ -5493,6 +5564,25 @@ fn supported_process_values(design: &Design) -> Vec<bool> {
                 arguments.len() == float_arguments.len()
                     && arguments.len() == integer_arguments.len()
                     && arguments.iter().all(|argument| has(&supported, *argument))
+            }
+            ProcessValueKind::HostCall {
+                operation,
+                arguments,
+            } => {
+                let arity = match operation {
+                    ProcessHostValueOp::Random | ProcessHostValueOp::Uniform => 0,
+                    ProcessHostValueOp::RandomRange => 2,
+                };
+                arguments.len() == arity
+                    && arguments.iter().all(|argument| {
+                        has(&supported, *argument)
+                            && design
+                                .process_ir
+                                .values
+                                .get(argument.0 as usize)
+                                .and_then(|argument| argument.bit_width)
+                                .is_some_and(|width| (1..=64).contains(&width))
+                    })
             }
             ProcessValueKind::Local { process, local } => {
                 local_width(design, *process, *local).is_some() && value.bit_width.is_some()
@@ -8387,6 +8477,33 @@ fn emit_runtime_instruction<'ctx>(
         return Some(());
     }
 
+    if matches!(operation, ProcessRuntimeOp::Seed) {
+        let [seed] = arguments else { return None };
+        let seed = process_value_at(
+            context,
+            module,
+            builder,
+            design,
+            *seed,
+            64,
+            false,
+            None,
+            index_sites,
+            cache,
+        )?;
+        let runtime = module.get_function("sx_runtime_seed").unwrap_or_else(|| {
+            module.add_function(
+                "sx_runtime_seed",
+                context
+                    .void_type()
+                    .fn_type(&[context.i64_type().into()], false),
+                Some(Linkage::External),
+            )
+        });
+        builder.build_call(runtime, &[seed.into()], "").ok()?;
+        return Some(());
+    }
+
     let condition = process_value(
         context,
         module,
@@ -8423,7 +8540,9 @@ fn emit_runtime_instruction<'ctx>(
     let fallback = match operation {
         ProcessRuntimeOp::Assert => "assertion failed",
         ProcessRuntimeOp::Warn => "warning",
-        ProcessRuntimeOp::Print | ProcessRuntimeOp::Call(_) => return None,
+        ProcessRuntimeOp::Print | ProcessRuntimeOp::Seed | ProcessRuntimeOp::Call(_) => {
+            return None;
+        }
     };
     let message = match format {
         Some(format) => emit_process_format(
@@ -8527,7 +8646,9 @@ fn emit_runtime_instruction<'ctx>(
                 builder.position_at_end(continuation);
             }
         }
-        ProcessRuntimeOp::Print | ProcessRuntimeOp::Call(_) => return None,
+        ProcessRuntimeOp::Print | ProcessRuntimeOp::Seed | ProcessRuntimeOp::Call(_) => {
+            return None;
+        }
     }
     Some(())
 }

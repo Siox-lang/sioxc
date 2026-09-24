@@ -92,10 +92,45 @@ static uint32_t sx_warnings;
 static char *sx_format;
 static size_t sx_format_len;
 static size_t sx_format_cap;
+static uint64_t sx_random_state = UINT64_C(0x9E3779B97F4A7C15);
 
 const char *sx_runtime_error(void) { return sx_error; }
 uint64_t sx_runtime_now(void) { return sx_now; }
 uint32_t sx_runtime_warning_count(void) { return sx_warnings; }
+
+void sx_runtime_seed(uint64_t seed) { sx_random_state = seed ? seed : 1; }
+
+uint64_t sx_runtime_rand(void) {
+    sx_random_state ^= sx_random_state >> 12;
+    sx_random_state ^= sx_random_state << 25;
+    sx_random_state ^= sx_random_state >> 27;
+    return sx_random_state * UINT64_C(0x2545F4914F6CDD1D);
+}
+
+uint64_t sx_runtime_randint(uint64_t left, uint64_t right) {
+    if (right < left) {
+        uint64_t swap = left;
+        left = right;
+        right = swap;
+    }
+    uint64_t span = right - left;
+    if (span == UINT64_MAX) return left + sx_runtime_rand();
+    uint64_t range = span + 1;
+    uint64_t threshold = (UINT64_C(0) - range) % range;
+    uint64_t draw;
+    do {
+        draw = sx_runtime_rand();
+    } while (draw < threshold);
+    return left + draw % range;
+}
+
+uint64_t sx_runtime_uniform(void) {
+    double value = (double)(sx_runtime_rand() >> 11) /
+                   (double)(UINT64_C(1) << 53);
+    uint64_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
 
 static void sx_clear_error(void) {
     if (sx_error != sx_error_fallback) free(sx_error);

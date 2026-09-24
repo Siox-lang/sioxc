@@ -48,6 +48,96 @@ fn waveform_times(trace: &str) -> Vec<u64> {
 }
 
 #[test]
+fn direct_runtime_matches_deterministic_random_services() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let directory =
+        std::env::temp_dir().join(format!("siox_direct_random_runtime_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("random.siox");
+    let compatibility = directory.join("random-compatibility");
+    let direct = directory.join("random-direct");
+    std::fs::write(
+        &source,
+        r#"module direct_random_runtime;
+           using std::bits::unsigned;
+           #[test] entity RandomRuntime {}
+           impl RandomRuntime {
+               seed(7);
+               let first: unsigned[64] = rand();
+               let second: unsigned[64] = rand();
+               seed(7);
+               let repeated: unsigned[64] = rand();
+               assert!(first == repeated, "seed reproduces a draw");
+               assert!(first != second, "random state advances");
+
+               let bounded: unsigned[8] = randint(20, 10);
+               assert!(bounded >= 10, "descending range lower bound");
+               assert!(bounded <= 20, "descending range upper bound");
+
+               seed(9);
+               let full: unsigned[64] = randint(0, 18446744073709551615);
+               seed(9);
+               let raw: unsigned[64] = rand();
+               assert!(full == raw, "full-u64 range is one raw draw");
+
+               let unit: real = uniform();
+               assert!((unit >= 0.0) and (unit < 1.0), "uniform is in 0.0..1.0");
+               print!("{} {} {}", first, bounded, unit);
+           }"#,
+    )
+    .unwrap();
+
+    let build = |output: &std::path::Path, direct_runtime: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+        if direct_runtime {
+            command.env("SIOX_DIRECT_PROCESS_RUNTIME", "1");
+        }
+        command
+            .current_dir(root)
+            .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+            .arg("--test")
+            .arg(&source)
+            .arg("-o")
+            .arg(output)
+            .output()
+            .unwrap()
+    };
+    for (output, direct_runtime) in [(&compatibility, false), (&direct, true)] {
+        let result = build(output, direct_runtime);
+        assert!(
+            result.status.success(),
+            "random fixture failed to compile (direct={direct_runtime}):\n{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    let compatibility_run = Command::new(&compatibility).output().unwrap();
+    let direct_run = Command::new(&direct).output().unwrap();
+    assert!(
+        compatibility_run.status.success(),
+        "compatibility random fixture failed:\n{}{}",
+        String::from_utf8_lossy(&compatibility_run.stdout),
+        String::from_utf8_lossy(&compatibility_run.stderr)
+    );
+    assert!(
+        direct_run.status.success(),
+        "direct random fixture failed:\n{}{}",
+        String::from_utf8_lossy(&direct_run.stdout),
+        String::from_utf8_lossy(&direct_run.stderr)
+    );
+    assert_eq!(direct_run.stdout, compatibility_run.stdout);
+    assert_eq!(direct_run.stderr, compatibility_run.stderr);
+
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn direct_process_runtime_links_without_generated_design_c() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");

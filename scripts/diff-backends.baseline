@@ -98,8 +98,8 @@ packed_partial_write_test AGREE
 partial_range_test AGREE
 print_test AGREE
 protocol_view_traits_test AGREE
-rand_test DIRECT-UNSUPPORTED
-rand_text_test DIRECT-UNSUPPORTED
+rand_test AGREE
+rand_text_test AGREE
 range_attr_test AGREE
 range_test AGREE
 ranged_local_test AGREE

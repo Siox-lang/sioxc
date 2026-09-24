@@ -10484,3 +10484,22 @@ custom/default/suffix/signed executables pass. Default and `bitpack`
 differential sweeps each report **165 agreements, 0 divergences, 11 direct-only
 gaps, 0 oracle failures, and 7 files without tests**; 146 agreements have only
 boilerplate stdout and all 165 independently compare normalized VCD output.
+
+### 2026-09-24 — Codex — moving deterministic random behind the fixed ABI
+
+Continuing generated-C retirement across the simulation host-service boundary.
+The two random corpus gaps both leave `seed` as a generic runtime instruction
+and `rand`/`randint` as generic value calls, although the fixed scheduler is the
+correct owner of reproducible state. I am normalizing those operations in
+Process IR and exposing the compatibility xorshift/range mapping through the
+design-independent runtime ABI, including the full-u64 inclusive interval.
+
+Completed as one host-service batch. Process IR now distinguishes statement
+seeding from value-producing random services; direct LLVM emits the fixed
+`sx_runtime_*` ABI and the reusable runtime owns the exact compatibility
+xorshift64* state, rejection-sampled inclusive ranges, descending bounds, the
+full-u64 interval, and IEEE-754 `uniform()` bits. A native differential
+integration test covers those boundaries. `rand_test` and `rand_text_test` now
+agree exactly, raising both default and `bitpack` sweeps to **167 agreements,
+0 divergences, 9 direct-only gaps, 0 oracle failures, and 7 files without
+tests**; all 167 agreements compare normalized VCD output.

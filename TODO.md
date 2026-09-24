@@ -91,10 +91,12 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   non-packed conversions, and dynamic strings. Unsupported forms must
   continue to fail transactionally before calls or staged writes become
   observable.
-- 🟡 **Move all host services behind the fixed ABI.** Add runtime-owned UTF-8
-  strings/dynamic arrays, `read<T>` and file failures, deterministic random,
-  and any remaining simulation-only calls. LLVM emits value semantics; the
-  runtime owns allocation, persistent state, and host contact.
+- 🟡 **Move all host services behind the fixed ABI.** Deterministic
+  `seed`/`rand`/`randint`/`uniform` now use explicit Process IR operations and
+  fixed runtime state. Add runtime-owned UTF-8 strings/dynamic arrays,
+  `read<T>` and file failures, and any remaining simulation-only calls. LLVM
+  emits value semantics; the runtime owns allocation, persistent state, and
+  host contact.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` operations, constants/conversions, ABI rules, formatting,
   and a software fallback before exposing a language feature.
@@ -109,8 +111,8 @@ Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
 - 🟡 **Retire generated C.** The fixed scheduler/CLI already links LLVM-emitted
-  process entries and runs 165 corpus cases in agreement without design C;
-  all 165 also match VCD signal values and timestamps in default and `bitpack`,
+  process entries and runs 167 corpus cases in agreement without design C;
+  all 167 also match VCD signal values and timestamps in default and `bitpack`,
   while focused tests establish decoded FST parity for hierarchy, all value
   kinds, multiword values, and monotonic multi-test timelines.
   Finish the remaining LLVM/runtime coverage, make this path unconditional,

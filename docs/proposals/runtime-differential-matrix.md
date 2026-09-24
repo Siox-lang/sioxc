@@ -27,8 +27,8 @@ non-agreement is expected, and only a baseline can separate that from a
 regression.
 
 **Know what an agreement is worth.** Few corpus files print anything, so 146 of
-the current 165 agreements compare only boilerplate on stdout. That metric is
-kept visible, but it is no longer the only observable: all 165 agreements also
+the current 167 agreements compare only boilerplate on stdout. That metric is
+kept visible, but it is no longer the only observable: all 167 agreements also
 compare a VCD emitted independently by each backend, covering hierarchy, every
 signal value, and every timestamp. The fixed writer reached identical results
 in both default and `bitpack` sweeps.
@@ -72,7 +72,7 @@ Byte-identical stdout is achievable and has precedent: the NVC stress build's
 | formatting | 20 using `print!` | byte-identical stdout, including width and sign of arbitrary-width decimals |
 | strings and UTF-8 | 14 | decoded characters, including multi-byte |
 | file services | `fs_test`, `protocol_view_traits_test` | file contents read back, and the `sx_io_fail` message on a missing path |
-| deterministic random | `rand_test` | the exact sequence — a differing seed or stride is a divergence, not noise |
+| deterministic random | `rand_test`, `rand_text_test`, and `tests/build_binary.rs` | the exact sequence, reseeding, descending and full-u64 inclusive ranges, and `uniform()` bounds |
 | foreign calls | `ffi_test`, `ffi_real_test`, `real_local_test`, `attr_test` | returned values, and `real` bit patterns rather than printed rounding |
 | dynamic arrays, checked index | `runtime_vector_index_test`, `nested_array_local_test` | the bounds-failure report: offending value, declared range, direction |
 | metavalues and resolution | 52 cases mentioning `Logic` | per-element nine-value output; the `res.siox` sweep against `nvc` remains the external oracle |
@@ -82,19 +82,16 @@ Byte-identical stdout is achievable and has precedent: the NVC stress build's
 
 ## Gaps worth closing before step 7
 
-The matrix is only as good as its thinnest row. Three services are covered by
-one or two cases each, which is too little to trust a backend swap:
+The matrix is only as good as its thinnest row. Two services are still covered
+by only a few cases, which is too little to trust a backend swap:
 
-- **deterministic random** — one case (`rand_test`). A backend could differ in
-  seed, stride, or range mapping and still pass it.
 - **file services** — two cases, neither of which exercises a failure path; the
   `sx_io_fail` message is untested end to end.
 - **foreign calls** — four cases, all scalar. No aggregate or wide operand.
 
-These belong in `Siox-lang/siox-tests` rather than here, and should be added
-before the second backend exists, so both are held to the same cases from the
-start rather than the new one being validated against whatever the old one
-happens to do.
+These belong in `Siox-lang/siox-tests` rather than here, so both backends are
+held to the same cases rather than the direct path being validated against
+whatever the compatibility path happens to do.
 
 ## What this matrix does not cover
 

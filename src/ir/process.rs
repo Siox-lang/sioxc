@@ -290,8 +290,21 @@ pub enum ProcessRuntimeOp {
     Warn,
     /// `print!` — write to the test binary's output.
     Print,
+    /// Replace the deterministic simulation random-generator state.
+    Seed,
     /// Call a named function that lowering did not inline.
     Call(String),
+}
+
+/// A value returned by a design-independent simulation host service.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessHostValueOp {
+    /// One raw deterministic 64-bit random word.
+    Random,
+    /// One deterministic integer in an inclusive, order-independent range.
+    RandomRange,
+    /// One deterministic IEEE-754 value in the half-open interval `0.0..1.0`.
+    Uniform,
 }
 
 /// One normalized piece of a runtime message.
@@ -811,6 +824,13 @@ pub enum ProcessValueKind {
         /// Whether the non-float result is a signed kernel integer.
         integer_result: bool,
     },
+    /// A value-producing operation owned by the fixed simulation runtime.
+    HostCall {
+        /// Service selected before source syntax is discarded.
+        operation: ProcessHostValueOp,
+        /// Normalized service arguments in source order.
+        arguments: Vec<ProcessValueId>,
+    },
     /// A struct/entity aggregate literal.
     Construct {
         /// Concrete result type, when type checking supplied one.
@@ -1225,6 +1245,20 @@ impl ProcessIr {
                         id
                     ));
                 }
+                ProcessValueKind::HostCall {
+                    operation,
+                    arguments,
+                } if arguments.len()
+                    != match operation {
+                        ProcessHostValueOp::Random | ProcessHostValueOp::Uniform => 0,
+                        ProcessHostValueOp::RandomRange => 2,
+                    } =>
+                {
+                    issues.push(format!(
+                        "process value {:?} has the wrong host-service arity",
+                        id
+                    ));
+                }
                 ProcessValueKind::Invalid => {
                     issues.push(format!("process value {:?} is invalid", id));
                 }
@@ -1447,7 +1481,8 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
         } => std::iter::once(*callee)
             .chain(arguments.iter().copied())
             .collect(),
-        ProcessValueKind::ForeignCall { arguments, .. } => arguments.clone(),
+        ProcessValueKind::ForeignCall { arguments, .. }
+        | ProcessValueKind::HostCall { arguments, .. } => arguments.clone(),
         ProcessValueKind::Construct { fields, spread, .. } => fields
             .iter()
             .filter_map(|field| field.value)

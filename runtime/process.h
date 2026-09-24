@@ -48,4 +48,11 @@ void sx_runtime_format_char(uint32_t value);
 const char *sx_runtime_format_end(void);
 uint32_t sx_runtime_warning_count(void);
 
+/* Reproducible testbench randomization. Values cross the fixed ABI as raw
+ * words; `uniform` returns the IEEE-754 bit representation of an f64. */
+void sx_runtime_seed(uint64_t seed);
+uint64_t sx_runtime_rand(void);
+uint64_t sx_runtime_randint(uint64_t left, uint64_t right);
+uint64_t sx_runtime_uniform(void);
+
 #endif

@@ -11,11 +11,11 @@ use crate::elab::Hierarchy;
 use crate::ir::{
     Design, LayoutDirection, LayoutKind, ProcessActivation, ProcessAggregateField,
     ProcessAssignment, ProcessBinaryOp, ProcessBlock, ProcessBlockId, ProcessCfg,
-    ProcessDisplayKind, ProcessFormatPart, ProcessId, ProcessInstruction, ProcessIr, ProcessLocal,
-    ProcessLocalId, ProcessMatchArm, ProcessNumber, ProcessPattern, ProcessRuntimeOp,
-    ProcessSensitivity, ProcessSignalState, ProcessStorage, ProcessStorageBinding,
-    ProcessStorageId, ProcessSuspendOp, ProcessTerminator, ProcessTest, ProcessUnaryOp,
-    ProcessValue, ProcessValueId, ProcessValueKind, ProcessValueMatchArm, SignalId,
+    ProcessDisplayKind, ProcessFormatPart, ProcessHostValueOp, ProcessId, ProcessInstruction,
+    ProcessIr, ProcessLocal, ProcessLocalId, ProcessMatchArm, ProcessNumber, ProcessPattern,
+    ProcessRuntimeOp, ProcessSensitivity, ProcessSignalState, ProcessStorage,
+    ProcessStorageBinding, ProcessStorageId, ProcessSuspendOp, ProcessTerminator, ProcessTest,
+    ProcessUnaryOp, ProcessValue, ProcessValueId, ProcessValueKind, ProcessValueMatchArm, SignalId,
 };
 use crate::resolve::Resolved;
 use crate::syntax::ast::{self, ElseBranch, ImplItem, Stmt};
@@ -1462,9 +1462,9 @@ fn normalized_value_width(
     };
     let width = match &value.kind {
         ProcessValueKind::Number(ProcessNumber::Integer(words)) => integer_words_width(words),
-        ProcessValueKind::Number(ProcessNumber::Real(_)) | ProcessValueKind::ForeignCall { .. } => {
-            Some(64)
-        }
+        ProcessValueKind::Number(ProcessNumber::Real(_))
+        | ProcessValueKind::ForeignCall { .. }
+        | ProcessValueKind::HostCall { .. } => Some(64),
         ProcessValueKind::BitString { width, .. } => Some(*width),
         ProcessValueKind::Char(_) => Some(1),
         ProcessValueKind::Signal {
@@ -2431,6 +2431,7 @@ fn lower_call(
                 "assert" => ProcessRuntimeOp::Assert,
                 "warn" => ProcessRuntimeOp::Warn,
                 "print" => ProcessRuntimeOp::Print,
+                "seed" if builtin_callee_is(callee, "seed", context) => ProcessRuntimeOp::Seed,
                 _ => ProcessRuntimeOp::Call(name),
             };
             let format = lower_process_format(&operation, arguments, &lowered_arguments, context);
@@ -2456,7 +2457,7 @@ fn lower_process_format(
     let message_index = match operation {
         ProcessRuntimeOp::Print => 0,
         ProcessRuntimeOp::Assert | ProcessRuntimeOp::Warn => 1,
-        ProcessRuntimeOp::Call(_) => return None,
+        ProcessRuntimeOp::Seed | ProcessRuntimeOp::Call(_) => return None,
     };
     let ast::Expr::StrLit { text, .. } = arguments.get(message_index)? else {
         return None;
@@ -3351,6 +3352,10 @@ fn process_value_is_real(id: ProcessValueId, context: &LoweringContext<'_>) -> b
             ProcessValueKind::ForeignCall {
                 float_result: true, ..
             } => return true,
+            ProcessValueKind::HostCall {
+                operation: ProcessHostValueOp::Uniform,
+                ..
+            } => return true,
             _ => {}
         }
     }
@@ -3665,6 +3670,58 @@ fn lower_process_foreign_call(
         integer_arguments,
         float_result,
         integer_result,
+    };
+    let width = source_value_width(&kind, ty.as_ref(), process, context);
+    Some(push_value(*span, ty, width, kind, context))
+}
+
+/// Normalize deterministic randomization before it can become a generic
+/// source call. Resolved same-named user functions remain ordinary calls;
+/// these runtime primitives themselves intentionally have no declaration.
+fn lower_process_host_call(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let ast::Expr::Call {
+        callee,
+        type_args,
+        args,
+        bang: false,
+        span,
+    } = expression
+    else {
+        return None;
+    };
+    if !type_args.is_empty() {
+        return None;
+    }
+    let (operation, arity) = if builtin_callee_is(callee, "rand", context) {
+        (ProcessHostValueOp::Random, 0)
+    } else if builtin_callee_is(callee, "randint", context) {
+        (ProcessHostValueOp::RandomRange, 2)
+    } else if builtin_callee_is(callee, "uniform", context) {
+        (ProcessHostValueOp::Uniform, 0)
+    } else {
+        return None;
+    };
+    if args.len() != arity {
+        return None;
+    }
+    let arguments = args
+        .iter()
+        .map(|argument| value_ref_with_type(argument, process, context, None))
+        .collect();
+    let ty = return_type.cloned().or(match operation {
+        ProcessHostValueOp::Uniform => Some(crate::types::Ty::Real),
+        ProcessHostValueOp::Random | ProcessHostValueOp::RandomRange => {
+            Some(crate::types::Ty::Integer)
+        }
+    });
+    let kind = ProcessValueKind::HostCall {
+        operation,
+        arguments,
     };
     let width = source_value_width(&kind, ty.as_ref(), process, context);
     Some(push_value(*span, ty, width, kind, context))
@@ -4525,6 +4582,9 @@ fn value_ref_with_type(
         if let Some(value) = lower_process_default(expression, process, context, ty.as_ref()) {
             return value;
         }
+        if let Some(value) = lower_process_host_call(expression, process, context, ty.as_ref()) {
+            return value;
+        }
         if let Some(value) = lower_process_foreign_call(expression, process, context, ty.as_ref()) {
             return value;
         }
@@ -5052,9 +5112,9 @@ fn source_value_width(
     }
     let width = match kind {
         ProcessValueKind::Number(ProcessNumber::Integer(words)) => integer_words_width(words),
-        ProcessValueKind::Number(ProcessNumber::Real(_)) | ProcessValueKind::ForeignCall { .. } => {
-            Some(64)
-        }
+        ProcessValueKind::Number(ProcessNumber::Real(_))
+        | ProcessValueKind::ForeignCall { .. }
+        | ProcessValueKind::HostCall { .. } => Some(64),
         ProcessValueKind::Suffixed { number, .. } => match number {
             ProcessNumber::Integer(_) | ProcessNumber::Real(_) => Some(64),
         },
@@ -5440,6 +5500,27 @@ fn callee_name(callee: &ast::Expr) -> String {
             .join("::"),
         _ => crate::syntax::pretty::expr_string(callee),
     }
+}
+
+/// Whether a path names one compiler-provided intrinsic. Runtime primitives
+/// deliberately have no declaration; a resolved same-named path is accepted
+/// only for a builtin fallback and otherwise belongs to the user.
+fn builtin_callee_is(callee: &ast::Expr, expected: &str, context: &LoweringContext<'_>) -> bool {
+    let ast::Expr::Path(path) = callee else {
+        return false;
+    };
+    path.segments
+        .last()
+        .is_some_and(|leaf| leaf.text == expected)
+        && context
+            .resolved
+            .resolved(path.span)
+            .is_none_or(|definition| {
+                context.resolved.def(definition).is_some_and(|definition| {
+                    definition.kind == crate::resolve::DefKind::Builtin
+                        && definition.name == expected
+                })
+            })
 }
 
 #[cfg(test)]
