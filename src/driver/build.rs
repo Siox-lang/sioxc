@@ -7067,6 +7067,15 @@ impl Ctx<'_> {
                         .and_then(|ty| resolved_type_name(ty, self.type_aliases, self.fns))
                 {
                     types.insert(n.text.clone(), head.clone());
+                    // A character literal for a `Char` parameter is its code
+                    // point; rendered through `self.expr` it became a `Logic`
+                    // discriminant, so `unicode('A')` returned 0.
+                    if head == "Char" {
+                        if let ast::Expr::CharLit { ch, .. } = a {
+                            env.insert(n.text.clone(), format!("{}ULL", *ch as u32));
+                            continue;
+                        }
+                    }
                     if head == "real" {
                         env.insert(
                             n.text.clone(),
@@ -7508,6 +7517,13 @@ impl Ctx<'_> {
                             // denormal.
                             let d = self.c_real_operand(arg)?;
                             return Ok(format!("((sx_value)(int64_t)({d}))"));
+                        }
+                        // A bare character literal is a `Char`, so its value is
+                        // its code point: `integer('A')` is 65. `self.expr`
+                        // renders a literal as a `Logic` discriminant, which
+                        // read 0 for every character outside `Logic`.
+                        if let ast::Expr::CharLit { ch, .. } = arg {
+                            return Ok(format!("{}ULL", *ch as u32));
                         }
                         return Ok(format!("({v})"));
                     }
@@ -8867,7 +8883,15 @@ fn index_values(
                 Some((0..count).collect())
             }
         }
-        _ => None,
+        // Any other constant count (`unsigned[2 + 1]`, `unsigned[clog2(8)]`)
+        // goes through the same evaluator the hardware side uses. Only literal
+        // and named counts were read here, so a testbench local declared with
+        // a computed width had no width at all, and `w'length` failed the
+        // build while the direct runtime and hardware both read 3.
+        other => {
+            let count = const_index_bound(other, consts, fns)?;
+            (count >= 0).then(|| (0..count).collect())
+        }
     }
 }
 
