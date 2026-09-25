@@ -8883,7 +8883,15 @@ fn index_values(
                 Some((0..count).collect())
             }
         }
-        _ => None,
+        // Any other constant count (`unsigned[2 + 1]`, `unsigned[clog2(8)]`)
+        // goes through the same evaluator the hardware side uses. Only literal
+        // and named counts were read here, so a testbench local declared with
+        // a computed width had no width at all, and `w'length` failed the
+        // build while the direct runtime and hardware both read 3.
+        other => {
+            let count = const_index_bound(other, consts, fns)?;
+            (count >= 0).then(|| (0..count).collect())
+        }
     }
 }
 
