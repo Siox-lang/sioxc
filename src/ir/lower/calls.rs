@@ -252,7 +252,16 @@ impl<'a> Lowering<'a> {
                 // parameter bound no fields and the body's `p.a` reported
                 // having no hardware form.
                 let a = &self.as_struct_literal(p.ty.as_ref(), a);
-                fenv.insert(n.text.clone(), self.lower_val_env(a, env));
+                // ...and a character literal for a `Char` parameter is its
+                // code point, not the logic-literal placeholder, which would
+                // otherwise resolve to `Logic` and read 0 for `'A'`.
+                let value = match self.lower_val_env(a, env) {
+                    Val::Scalar(v) => Val::Scalar(
+                        self.resolve_char_literal(p.ty.as_ref().and_then(type_head_name), v),
+                    ),
+                    other => other,
+                };
+                fenv.insert(n.text.clone(), value);
                 fenv.insert(
                     format!("{}::length", n.text),
                     Val::Scalar(Expr::Const(self.ast_width(a) as u64)),
@@ -489,7 +498,16 @@ impl<'a> Lowering<'a> {
                 // parameter bound no fields and the body's `p.a` reported
                 // having no hardware form.
                 let a = &self.as_struct_literal(p.ty.as_ref(), a);
-                fenv.insert(n.text.clone(), self.lower_val_env(a, env));
+                // ...and a character literal for a `Char` parameter is its
+                // code point, not the logic-literal placeholder, which would
+                // otherwise resolve to `Logic` and read 0 for `'A'`.
+                let value = match self.lower_val_env(a, env) {
+                    Val::Scalar(v) => Val::Scalar(
+                        self.resolve_char_literal(p.ty.as_ref().and_then(type_head_name), v),
+                    ),
+                    other => other,
+                };
+                fenv.insert(n.text.clone(), value);
                 fenv.insert(
                     format!("{}::length", n.text),
                     Val::Scalar(Expr::Const(
@@ -772,6 +790,15 @@ impl<'a> Lowering<'a> {
         // Conversions are a raw resize (zero-extend / truncate). Signed
         // widening is the library `std::bits::sext`, not the compiler's job.
         let mut v = self.lower_scalar_env(arg, env);
+        // A bare character literal is a `Char` (the checker types it so), so
+        // the kernel conversions read its code point: `integer('A')` is 65.
+        // Left as the logic-literal placeholder it resolved against `Logic`,
+        // and every character outside `Logic` read 0.
+        if matches!(callee, ast::Expr::Path(p) if p.segments.len() == 1
+            && matches!(p.segments[0].text.as_str(), "integer" | "Char"))
+        {
+            v = self.resolve_char_literal(Some("Char"), v);
+        }
         // ...except crossing out of `real`, which is a value conversion: the
         // operand carries f64 bits, and resizing them keeps a mantissa slice
         // rather than the number.
