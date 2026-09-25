@@ -942,3 +942,39 @@ fn testbench_locals_persist_layouts_without_becoming_hardware_signals() {
         .iter()
         .all(|signal| !signal.path.contains("pairs")));
 }
+
+/// A character literal the checker typed `Char` is its Unicode code point in
+/// every value position. Only initializers (`let c: Char = 'A'`) and
+/// comparison operands (`c == 'A'`) knew that; everywhere else the literal
+/// fell through to the logic-literal placeholder, and `'A'` -- no `Logic`
+/// value -- resolved to 0. So `integer('A')` read 0, and `std::text`'s
+/// `unicode('A')`/`ascii('A')` returned 0 in hardware.
+#[test]
+fn a_char_literal_is_its_code_point_in_any_value_position() {
+    let d = lower_src(
+        "module m;\n\
+         fn code(c: Char) -> integer { return integer(c); }\n\
+         entity H { a: integer out, b: integer out, l: Logic out }\n\
+         impl H {\n\
+             a = integer('A');\n\
+             b = code('B');\n\
+             l = '1';\n\
+         }",
+    );
+    let ir = d.to_ir_string();
+    let driver = |name: &str| {
+        ir.lines()
+            .find(|l| l.trim_start().starts_with(&format!("driver H.{name} =")))
+            .unwrap_or_else(|| panic!("no driver for {name} in:\n{ir}"))
+            .to_string()
+    };
+    assert!(
+        driver("a").ends_with("= 65"),
+        "integer('A'): {}",
+        driver("a")
+    );
+    assert!(driver("b").ends_with("= 66"), "code('B'): {}", driver("b"));
+    // A literal in a `Logic` context is still the logic value, not its code
+    // point (49).
+    assert!(!driver("l").ends_with("= 49"), "l = '1': {}", driver("l"));
+}

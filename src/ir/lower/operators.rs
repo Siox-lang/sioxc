@@ -191,6 +191,21 @@ impl<'a> Lowering<'a> {
 
     /// Coerce a driven value to the target's representation: integer
     /// constants become f64 bits when the target signal is `real`.
+    /// Resolve a character-literal placeholder against the declared type that
+    /// consumes it. A literal has no type of its own, so it lowers to
+    /// `Expr::Logic(c)` and whoever uses it decides: `Char` reads it through
+    /// the Unicode table (its code point), and an enum with that character as
+    /// a variant takes the variant's position. Anything else is left for the
+    /// default logic-literal resolution.
+    pub(super) fn resolve_char_literal(&self, ty: Option<&str>, v: Expr) -> Expr {
+        let Expr::Logic(c) = v else { return v };
+        match ty {
+            Some("Char") => Expr::Const(c as u32 as u64),
+            Some(en) => self.char_disc(c, en).map_or(Expr::Logic(c), Expr::Const),
+            None => Expr::Logic(c),
+        }
+    }
+
     pub(super) fn coerce_to_target(&self, target: SignalId, expr: Expr) -> Expr {
         let sig = &self.out.signals[target.0 as usize];
         // A char literal assigned to an enum-typed signal takes that variant's
