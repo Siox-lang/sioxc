@@ -474,25 +474,94 @@ impl<'a> Lowering<'a> {
                                     // on testbench-only state lower to Unknown
                                     // here and remain with the stimulus adapter
                                     // until that state is canonical Process IR.
-                                    let Some(&(signal, direction)) = sub_ports.get(&port) else {
-                                        continue;
-                                    };
-                                    if direction == Some(ast::Direction::Out) {
+                                    if let Some(&(signal, direction)) = sub_ports.get(&port) {
+                                        if direction != Some(ast::Direction::Out) {
+                                            let expression = self.lower_expr(&value);
+                                            if !matches!(expression, Expr::Unknown) {
+                                                let ctx = self.next_ctx_at(ast::expr_span(&value));
+                                                self.out.drivers.push(Driver {
+                                                    span: Some(ast::expr_span(&value)),
+                                                    target: signal,
+                                                    cond: None,
+                                                    expr: expression,
+                                                    meta: None,
+                                                    ctx,
+                                                });
+                                            }
+                                        }
                                         continue;
                                     }
-                                    let expression = self.lower_expr(&value);
-                                    if matches!(expression, Expr::Unknown) {
-                                        continue;
+
+                                    // Composite ports have no signal at the
+                                    // port root. A constant aggregate still
+                                    // belongs in the canonical hardware graph:
+                                    // flatten it against the child's retained
+                                    // leaves instead of silently dropping it.
+                                    if let ast::Expr::Construct {
+                                        args, spread: None, ..
+                                    } = &value
+                                    {
+                                        let mut fields = HashMap::new();
+                                        literal_leaves(args, "", &mut fields);
+                                        for (name, &(signal, direction)) in &sub_ports {
+                                            let Some(suffix) = name.strip_prefix(&port) else {
+                                                continue;
+                                            };
+                                            if direction == Some(ast::Direction::Out) {
+                                                continue;
+                                            }
+                                            let Some(field) = fields.get(suffix) else {
+                                                continue;
+                                            };
+                                            let expression = self.lower_expr(field);
+                                            if matches!(expression, Expr::Unknown) {
+                                                continue;
+                                            }
+                                            let ctx = self.next_ctx_at(ast::expr_span(field));
+                                            self.out.drivers.push(Driver {
+                                                span: Some(ast::expr_span(field)),
+                                                target: signal,
+                                                cond: None,
+                                                expr: expression,
+                                                meta: None,
+                                                ctx,
+                                            });
+                                        }
+                                    } else if let ast::Expr::Array { elems, .. } = &value {
+                                        let prefix = format!("{port}[");
+                                        let mut leaves = sub_ports
+                                            .iter()
+                                            .filter_map(|(name, &(signal, direction))| {
+                                                let label = name
+                                                    .strip_prefix(&prefix)?
+                                                    .strip_suffix(']')?
+                                                    .parse::<i64>()
+                                                    .ok()?;
+                                                Some((label, signal, direction))
+                                            })
+                                            .collect::<Vec<_>>();
+                                        leaves.sort_by_key(|(label, _, _)| *label);
+                                        for ((_, signal, direction), element) in
+                                            leaves.into_iter().zip(elems)
+                                        {
+                                            if direction == Some(ast::Direction::Out) {
+                                                continue;
+                                            }
+                                            let expression = self.lower_expr(element);
+                                            if matches!(expression, Expr::Unknown) {
+                                                continue;
+                                            }
+                                            let ctx = self.next_ctx_at(ast::expr_span(element));
+                                            self.out.drivers.push(Driver {
+                                                span: Some(ast::expr_span(element)),
+                                                target: signal,
+                                                cond: None,
+                                                expr: expression,
+                                                meta: None,
+                                                ctx,
+                                            });
+                                        }
                                     }
-                                    let ctx = self.next_ctx_at(ast::expr_span(&value));
-                                    self.out.drivers.push(Driver {
-                                        span: Some(ast::expr_span(&value)),
-                                        target: signal,
-                                        cond: None,
-                                        expr: expression,
-                                        meta: None,
-                                        ctx,
-                                    });
                                     continue;
                                 }
                                 let Some(tbname) = tbname else {
@@ -816,6 +885,17 @@ fn connection_value_is_static(expression: &ast::Expr, resolved: &Resolved) -> bo
         ast::Expr::Array { elems, .. } => elems
             .iter()
             .all(|element| connection_value_is_static(element, resolved)),
-        ast::Expr::Call { .. } | ast::Expr::Construct { .. } => false,
+        ast::Expr::Construct {
+            args, spread: None, ..
+        } => args.iter().all(|field| {
+            field
+                .value
+                .as_ref()
+                .is_some_and(|value| connection_value_is_static(value, resolved))
+        }),
+        ast::Expr::Call { .. }
+        | ast::Expr::Construct {
+            spread: Some(_), ..
+        } => false,
     }
 }

@@ -10503,3 +10503,38 @@ integration test covers those boundaries. `rand_test` and `rand_text_test` now
 agree exactly, raising both default and `bitpack` sweeps to **167 agreements,
 0 divergences, 9 direct-only gaps, 0 oracle failures, and 7 files without
 tests**; all 167 agreements compare normalized VCD output.
+
+### 2026-09-24 — Codex — closing the remaining direct semantic gaps
+
+Taking the four wrong-answer cases as one Process semantics batch before the
+next matrix. The measured faults are undersized signed literal arithmetic,
+lost real-field context in aggregate literals, missing settle boundaries for
+direct instance-port writes, and testbench aggregate port initializers not
+reaching their flattened bindings. I will fix these at the shared lowering /
+storage-binding boundaries rather than special-case their corpus entities.
+
+### 2026-09-26 — Codex — four direct semantic gaps closed
+
+Completed the 2026-09-24 Process-semantics batch without adding another
+runtime-specific source interpreter:
+
+- aggregate literals now pass recursive field/element type context into
+  Process values, including integer-spelled values consumed as `real`;
+- source-ordered testbench entity connections lower runtime expressions to
+  staged instance-port writes followed by an explicit settle boundary;
+- constant struct/array port connections flatten into the canonical hardware
+  driver graph leaf by leaf;
+- direct instance-port assignments settle before a following observation;
+- LLVM evaluates a normalized bit-slice operand at the selected width, so a
+  folded negative kernel value is not truncated in its positive literal's
+  minimum width. The initial broad integer-width rule regressed packed signed
+  comparison; the full matrix caught it, and the final contextual rule keeps
+  both cases correct.
+
+`complex_test`, `connect_forms_test`, `generate_negative_test`, and
+`struct_port_literal_test` now agree. Both the default and `bitpack`
+differential sweeps report **173 agree, 0 diverge, 5 fail-closed direct-only
+gaps, 0 oracle failures, and 7 files without tests**; all 173 agreements also
+compare normalized VCD output. The remaining gaps are `fs_test`,
+`generic_struct_method_test`, `instances_test`, `integer_hw_test`, and
+`signed_widen_test`.

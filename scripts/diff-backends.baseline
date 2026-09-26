@@ -13,12 +13,13 @@ bus_test AGREE
 cdc_test AGREE
 chain_test AGREE
 char_fn_return_test AGREE
+char_literal_test AGREE
 char_read_test AGREE
-complex_test DIRECT-SEMANTIC
+complex_test AGREE
 compose_nested_test AGREE
 composite_self_assign_test AGREE
 concat_test AGREE
-connect_forms_test DIRECT-SEMANTIC
+connect_forms_test AGREE
 connected_struct_initializer_test AGREE
 const_array_test AGREE
 const_fold_test AGREE
@@ -48,7 +49,7 @@ from_test AGREE
 fs_test DIRECT-UNSUPPORTED
 fsm_test AGREE
 generate_if_test AGREE
-generate_negative_test DIRECT-SEMANTIC
+generate_negative_test AGREE
 generate_shape_test AGREE
 generate_struct_connection_test AGREE
 generate_test AGREE
@@ -68,6 +69,7 @@ instances_test DIRECT-UNSUPPORTED
 integer_hw_test DIRECT-UNSUPPORTED
 integer_param_signed_test AGREE
 iterate_test AGREE
+length_expr_test AGREE
 lfsr_test AGREE
 logic_default_test AGREE
 logic_match_test AGREE
@@ -145,7 +147,7 @@ struct_argument_test AGREE
 struct_const_test AGREE
 struct_init_test AGREE
 struct_literal_test AGREE
-struct_port_literal_test DIRECT-SEMANTIC
+struct_port_literal_test AGREE
 struct_state_test AGREE
 struct_test AGREE
 struct_value_test AGREE

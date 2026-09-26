@@ -4111,20 +4111,30 @@ fn process_value<'ctx>(
         }
         ProcessValueKind::BitSlice { base, high, low } => {
             let signed = process_value_is_signed(design, *base);
-            let base = process_value(
+            if high < low {
+                return None;
+            }
+            // A normalized kernel conversion is represented as a slice of
+            // its mathematical operand. Evaluate that operand in at least
+            // the selected width before slicing: computing `-5` in its
+            // positive literal's natural i3 first produces `3`, which no
+            // later extension can recover. `process_value_at` preserves an
+            // already-wide packed operand and only re-evaluates arithmetic
+            // when the slice genuinely asks for more bits.
+            let required = high.checked_add(1)?;
+            let base = process_value_at(
                 context,
                 module,
                 builder,
                 design,
                 *base,
+                required,
+                signed,
                 active,
                 index_sites,
                 cache,
             )?;
             let base_width = base.get_type().get_bit_width();
-            if high < low {
-                return None;
-            }
             if *low >= base_width {
                 if !signed {
                     return Some(ty.const_zero());

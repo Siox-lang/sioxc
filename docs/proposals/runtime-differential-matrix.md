@@ -8,7 +8,7 @@ between the generated-C harness and direct LLVM lowering.
 Step 7 of the [unified process pipeline](testbench-software-ir.md) requires
 "identical test results, diagnostics, time progression, resolved values, and
 VCD/FST samples across the full default and bit-packed corpus". Running both
-backends over 176 test cases proves *aggregate* parity; this matrix is what
+backends over 178 test cases proves *aggregate* parity; this matrix is what
 identifies which service broke when a case fails.
 
 ## Running it
@@ -26,9 +26,9 @@ ordinary progress and does not fail the run — during migration most
 non-agreement is expected, and only a baseline can separate that from a
 regression.
 
-**Know what an agreement is worth.** Few corpus files print anything, so 146 of
-the current 167 agreements compare only boilerplate on stdout. That metric is
-kept visible, but it is no longer the only observable: all 167 agreements also
+**Know what an agreement is worth.** Few corpus files print anything, so 152 of
+the current 173 agreements compare only boilerplate on stdout. That metric is
+kept visible, but it is no longer the only observable: all 173 agreements also
 compare a VCD emitted independently by each backend, covering hierarchy, every
 signal value, and every timestamp. The fixed writer reached identical results
 in both default and `bitpack` sweeps.
@@ -66,16 +66,16 @@ Byte-identical stdout is achievable and has precedent: the NVC stress build's
 
 | service | corpus cases | observable to compare |
 | ------- | ------------ | --------------------- |
-| scheduler, delta cycles | 143 cases using `await` | stdout order across suspensions; total simulated time reached |
+| scheduler, delta cycles | 145 cases using `await` | stdout order across suspensions; total simulated time reached |
 | time wheel, clocks | 108 using `clk.rising()`, 22 using `after`/`'event` | edge count and the timestamp of each print |
-| assertions and failure text | 176 (`assert!`) | message, code, and caret column of the first failure |
+| assertions and failure text | 178 (`assert!`) | message, code, and caret column of the first failure |
 | formatting | 20 using `print!` | byte-identical stdout, including width and sign of arbitrary-width decimals |
 | strings and UTF-8 | 14 | decoded characters, including multi-byte |
 | file services | `fs_test`, `protocol_view_traits_test` | file contents read back, and the `sx_io_fail` message on a missing path |
 | deterministic random | `rand_test`, `rand_text_test`, and `tests/build_binary.rs` | the exact sequence, reseeding, descending and full-u64 inclusive ranges, and `uniform()` bounds |
 | foreign calls | `ffi_test`, `ffi_real_test`, `real_local_test`, `attr_test` | returned values, and `real` bit patterns rather than printed rounding |
 | dynamic arrays, checked index | `runtime_vector_index_test`, `nested_array_local_test` | the bounds-failure report: offending value, declared range, direction |
-| metavalues and resolution | 52 cases mentioning `Logic` | per-element nine-value output; the `res.siox` sweep against `nvc` remains the external oracle |
+| metavalues and resolution | 53 cases mentioning `Logic` | per-element nine-value output; the `res.siox` sweep against `nvc` remains the external oracle |
 | wide values | `wide_const_test`, `string_vector_test` | values above one ABI word, low-word-first |
 | waveforms | `tests/build_binary.rs` decodes FST with upstream libfst | signal set, value changes, timestamps |
 | descriptors and filtering | any multi-test file | which tests run under a name filter, and the result tally |

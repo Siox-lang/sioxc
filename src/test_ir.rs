@@ -38,9 +38,11 @@ enum SuffixDomain {
 }
 
 struct LoweringContext<'a> {
+    modules: &'a [Module],
     resolved: &'a Resolved,
     typed: &'a Typed,
     design: &'a Design,
+    hierarchy: &'a Hierarchy,
     root_path: &'a str,
     process_ir: &'a mut ProcessIr,
     suffixes: &'a std::collections::HashMap<String, Vec<ConstantSuffix>>,
@@ -1032,9 +1034,11 @@ pub fn lower(
             .collect::<Vec<_>>();
         {
             let mut context = LoweringContext {
+                modules,
                 resolved,
                 typed,
                 design,
+                hierarchy,
                 root_path: &root_path,
                 process_ir: &mut process_ir,
                 suffixes: &suffixes,
@@ -1088,9 +1092,11 @@ pub fn lower(
                     );
                     let lowered = {
                         let mut context = LoweringContext {
+                            modules,
                             resolved,
                             typed,
                             design,
+                            hierarchy,
                             root_path: &root_path,
                             process_ir: &mut process_ir,
                             suffixes: &suffixes,
@@ -1134,9 +1140,11 @@ pub fn lower(
                     );
                     let lowered = {
                         let mut context = LoweringContext {
+                            modules,
                             resolved,
                             typed,
                             design,
+                            hierarchy,
                             root_path: &root_path,
                             process_ir: &mut process_ir,
                             suffixes: &suffixes,
@@ -1164,6 +1172,11 @@ pub fn lower(
                 }
                 ImplItem::Stmt(_) => legacy_items.push(*item),
                 ImplItem::Let(declaration)
+                    if instance_has_runtime_connections(declaration, resolved) =>
+                {
+                    legacy_items.push(*item);
+                }
+                ImplItem::Let(declaration)
                     if resolved
                         .declared(declaration.name.span)
                         .is_some_and(|definition| ordered_initializers.contains(&definition)) =>
@@ -1189,9 +1202,11 @@ pub fn lower(
                 .unwrap_or(test.span);
             let lowered = {
                 let mut context = LoweringContext {
+                    modules,
                     resolved,
                     typed,
                     design,
+                    hierarchy,
                     root_path: &root_path,
                     process_ir: &mut process_ir,
                     suffixes: &suffixes,
@@ -2035,6 +2050,9 @@ fn lower_legacy_process(
         let Some(block) = current else { break };
         current = match item {
             ImplItem::Stmt(statement) => lower_statement(statement, context, &mut process, block),
+            ImplItem::Let(declaration) if declaration_is_entity(declaration, context.resolved) => {
+                lower_ordered_instance_connections(declaration, context, &mut process, block)
+            }
             ImplItem::Let(declaration) => {
                 lower_ordered_storage_initializer(declaration, context, &mut process, block)
             }
@@ -2042,6 +2060,272 @@ fn lower_legacy_process(
         };
     }
     process
+}
+
+/// Resolve the declaration's annotated type through generic/index wrappers.
+fn declaration_type_definition(
+    ty: &ast::Type,
+    resolved: &Resolved,
+) -> Option<crate::resolve::DefId> {
+    match ty {
+        ast::Type::Path(path) => resolved.resolved(path.span),
+        ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => {
+            declaration_type_definition(base, resolved)
+        }
+        ast::Type::View { target, .. } => declaration_type_definition(target, resolved),
+    }
+}
+
+fn declaration_is_entity(declaration: &ast::LetDecl, resolved: &Resolved) -> bool {
+    declaration
+        .ty
+        .as_ref()
+        .and_then(|ty| declaration_type_definition(ty, resolved))
+        .is_some_and(|definition| {
+            resolved.kind_of(definition) == Some(crate::resolve::DefKind::Entity)
+        })
+}
+
+/// Whether a connection expression is independent of testbench runtime
+/// storage. Those values already enter the canonical hardware driver graph;
+/// only the remaining expressions belong in the source-ordered test process.
+fn process_connection_is_static(expression: &ast::Expr, resolved: &Resolved) -> bool {
+    match expression {
+        ast::Expr::Int { .. }
+        | ast::Expr::SuffixLit { .. }
+        | ast::Expr::BitStrLit { .. }
+        | ast::Expr::CharLit { .. }
+        | ast::Expr::StrLit { .. } => true,
+        ast::Expr::Path(path) => resolved
+            .resolved(path.span)
+            .and_then(|definition| resolved.kind_of(definition))
+            .is_some_and(|kind| {
+                matches!(
+                    kind,
+                    crate::resolve::DefKind::Const
+                        | crate::resolve::DefKind::EnumVariant
+                        | crate::resolve::DefKind::Param
+                )
+            }),
+        ast::Expr::Field { base, .. } | ast::Expr::SysAttr { base, .. } => {
+            process_connection_is_static(base, resolved)
+        }
+        ast::Expr::Index { base, index, .. } => {
+            process_connection_is_static(base, resolved)
+                && process_connection_is_static(index, resolved)
+        }
+        ast::Expr::Range { lo, hi, .. } => {
+            process_connection_is_static(lo, resolved) && process_connection_is_static(hi, resolved)
+        }
+        ast::Expr::PartialRange { lo, hi, .. } => {
+            lo.as_deref()
+                .is_none_or(|bound| process_connection_is_static(bound, resolved))
+                && hi
+                    .as_deref()
+                    .is_none_or(|bound| process_connection_is_static(bound, resolved))
+        }
+        ast::Expr::Unary { rhs, .. } => process_connection_is_static(rhs, resolved),
+        ast::Expr::Binary { lhs, rhs, .. } => {
+            process_connection_is_static(lhs, resolved)
+                && process_connection_is_static(rhs, resolved)
+        }
+        ast::Expr::IfExpr {
+            cond, then, els, ..
+        } => {
+            process_connection_is_static(cond, resolved)
+                && process_connection_is_static(then, resolved)
+                && process_connection_is_static(els, resolved)
+        }
+        ast::Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            process_connection_is_static(scrutinee, resolved)
+                && arms.iter().all(|arm| {
+                    arm.value_expr()
+                        .is_some_and(|value| process_connection_is_static(value, resolved))
+                })
+        }
+        ast::Expr::Concat { parts, .. } => parts
+            .iter()
+            .all(|part| process_connection_is_static(part, resolved)),
+        ast::Expr::Array { elems, .. } => elems
+            .iter()
+            .all(|element| process_connection_is_static(element, resolved)),
+        ast::Expr::Construct {
+            args, spread: None, ..
+        } => args.iter().all(|field| {
+            field
+                .value
+                .as_ref()
+                .is_some_and(|value| process_connection_is_static(value, resolved))
+        }),
+        ast::Expr::Call { .. }
+        | ast::Expr::Construct {
+            spread: Some(_), ..
+        } => false,
+    }
+}
+
+fn instance_has_runtime_connections(declaration: &ast::LetDecl, resolved: &Resolved) -> bool {
+    if !declaration_is_entity(declaration, resolved) {
+        return false;
+    }
+    let values = match declaration.value.as_ref() {
+        Some(ast::Expr::Construct { args, .. }) => args
+            .iter()
+            .filter_map(|argument| argument.value.as_ref())
+            .collect::<Vec<_>>(),
+        Some(ast::Expr::Concat { parts, .. }) => parts.iter().collect(),
+        _ => return false,
+    };
+    values.into_iter().any(|value| {
+        !process_connection_is_place(value) && !process_connection_is_static(value, resolved)
+    })
+}
+
+fn process_connection_is_place(expression: &ast::Expr) -> bool {
+    match expression {
+        ast::Expr::Path(_) => true,
+        ast::Expr::Field { base, .. } | ast::Expr::Index { base, .. } => {
+            process_connection_is_place(base)
+        }
+        _ => false,
+    }
+}
+
+/// Execute value-carrying DUT connections at the declaration's source-order
+/// position. Plain names remain persistent storage bindings and static values
+/// are canonical hardware drivers; this path covers expressions such as
+/// `.a = source + 1` that depend on current testbench state.
+fn lower_ordered_instance_connections(
+    declaration: &ast::LetDecl,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
+    let Some(child) = context
+        .hierarchy
+        .instance(process.owner)
+        .children
+        .iter()
+        .map(|child| context.hierarchy.instance(*child))
+        .find(|child| child.name == declaration.name.text)
+    else {
+        return Some(block);
+    };
+    let Some(value) = declaration.value.as_ref() else {
+        return Some(block);
+    };
+    let pairs = match value {
+        ast::Expr::Construct { args, .. } => args
+            .iter()
+            .enumerate()
+            .filter_map(|(index, argument)| {
+                let value = argument.value.as_ref()?;
+                let port = argument
+                    .field
+                    .as_ref()
+                    .map(|field| field.text.clone())
+                    .or_else(|| {
+                        child
+                            .connections
+                            .get(index)
+                            .map(|connection| connection.port.clone())
+                    })?;
+                Some((port, value))
+            })
+            .collect::<Vec<_>>(),
+        ast::Expr::Concat { parts, .. } => parts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| Some((child.connections.get(index)?.port.clone(), value)))
+            .collect(),
+        _ => return Some(block),
+    };
+    let mut wrote = false;
+    for (port, value) in pairs {
+        if process_connection_is_place(value)
+            || process_connection_is_static(value, context.resolved)
+        {
+            continue;
+        }
+        let path = format!("{}.{}.{}", context.root_path, declaration.name.text, port);
+        if !matches!(
+            port_direction(
+                context.modules,
+                context.resolved,
+                child.entity_id,
+                &port,
+                "",
+                &path,
+                context.design,
+            ),
+            Some(LayoutDirection::In | LayoutDirection::InOut)
+        ) {
+            continue;
+        }
+        let Some((index, signal)) = context
+            .design
+            .signals
+            .iter()
+            .enumerate()
+            .find(|(_, signal)| signal.path == path)
+        else {
+            continue;
+        };
+        let Ok(index) = u32::try_from(index) else {
+            continue;
+        };
+        let signal_id = SignalId(index);
+        if is_representation_signal(context.design, signal_id.0) {
+            continue;
+        }
+        let target_type = context
+            .design
+            .source_layouts
+            .get(&signal.path)
+            .and_then(|layout| process_type_from_layout(layout, context.resolved))
+            .or_else(|| {
+                context
+                    .typed
+                    .expr_type(ast::expr_span(value))
+                    .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                    .cloned()
+            });
+        let width = context.design.signal_width(signal_id);
+        let target = push_value(
+            declaration.span,
+            target_type.clone(),
+            width,
+            ProcessValueKind::Signal {
+                signals: vec![signal_id],
+                state: ProcessSignalState::Current,
+            },
+            context,
+        );
+        let assigned = value_ref_with_type(value, process, context, target_type.as_ref());
+        process.blocks[block.0 as usize]
+            .instructions
+            .push(ProcessInstruction::Assign {
+                semantics: ProcessAssignment::StagedSignal,
+                driver_context: Some(process.id.0),
+                target,
+                value: assigned,
+                span: ast::expr_span(value),
+            });
+        wrote = true;
+    }
+    if !wrote {
+        return Some(block);
+    }
+    let resume = push_block(process);
+    process.blocks[block.0 as usize].terminator = ProcessTerminator::Suspend {
+        operation: ProcessSuspendOp::Settle,
+        arguments: Vec::new(),
+        resume,
+        span: declaration.span,
+    };
+    Some(resume)
 }
 
 fn lower_ordered_storage_initializer(
@@ -2308,6 +2592,13 @@ fn assignment_drives_design(
         return parts
             .iter()
             .any(|part| assignment_drives_design(part, process, context));
+    }
+    // A direct instance-port place is already a flattened hardware signal,
+    // rather than testbench storage with an explicit binding. A foreground
+    // write to it still needs the same commit/reactive fixed point before the
+    // next source statement observes a dependent output.
+    if signal_reference(target, process, context).is_some() {
+        return true;
     }
     assignment_base(target)
         .and_then(|path| testbench_storage(path, process.owner, context))
@@ -3399,8 +3690,12 @@ fn lower_process_kernel_conversion(
         "Char" => crate::types::Ty::Char,
         _ => return None,
     };
-    let operand_type = context.typed.expr_type(ast::expr_span(&args[0])).cloned();
-    let operand = value_ref(&args[0], process, context);
+    let operand_type = context
+        .typed
+        .expr_type(ast::expr_span(&args[0]))
+        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+        .cloned();
+    let operand = value_ref_with_type(&args[0], process, context, operand_type.as_ref());
     let kind = if name == "integer"
         && (matches!(operand_type, Some(crate::types::Ty::Real))
             || process_value_is_real(operand, context))
@@ -3456,7 +3751,12 @@ fn lower_process_raw_resize(
             let [operand, width] = args.as_slice() else {
                 return None;
             };
-            let operand = value_ref(operand, process, context);
+            let operand_type = context
+                .typed
+                .expr_type(ast::expr_span(operand))
+                .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                .cloned();
+            let operand = value_ref_with_type(operand, process, context, operand_type.as_ref());
             let first_width_value = context.process_ir.values.len();
             let width =
                 value_ref_with_type(width, process, context, Some(&crate::types::Ty::Integer));
@@ -3541,7 +3841,12 @@ fn lower_process_raw_resize(
     ) {
         return None;
     }
-    let operand = value_ref(&args[0], process, context);
+    let operand_type = context
+        .typed
+        .expr_type(ast::expr_span(&args[0]))
+        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+        .cloned();
+    let operand = value_ref_with_type(&args[0], process, context, operand_type.as_ref());
     let kind = ProcessValueKind::RawResize { operand };
     let width = source_value_width(&kind, Some(&target), process, context)?;
     Some(push_value(*span, Some(target), Some(width), kind, context))
@@ -4828,7 +5133,19 @@ fn value_ref_with_type(
             };
             let mut left_type = checked_type(context.typed.expr_type(ast::expr_span(lhs)));
             let mut right_type = checked_type(context.typed.expr_type(ast::expr_span(rhs)));
-            let (left, right) = if matches!(rhs.as_ref(), ast::Expr::CharLit { .. }) {
+            let (left, right) = if matches!(left_type, Some(crate::types::Ty::Real))
+                || matches!(right_type, Some(crate::types::Ty::Real))
+            {
+                // Integer literals in a real arithmetic/comparison context
+                // are real values, not integer bit patterns. Paths retain
+                // their declaration type inside `value_ref_with_type`, while
+                // literals and aggregate projections adopt this context.
+                let real = crate::types::Ty::Real;
+                (
+                    value_ref_with_type(lhs, process, context, Some(&real)),
+                    value_ref_with_type(rhs, process, context, Some(&real)),
+                )
+            } else if matches!(rhs.as_ref(), ast::Expr::CharLit { .. }) {
                 let left = value_ref_with_type(lhs, process, context, None);
                 left_type = left_type.or_else(|| process_value_type(left, context));
                 let right = value_ref_with_type(rhs, process, context, left_type.as_ref());
@@ -4905,20 +5222,46 @@ fn value_ref_with_type(
             }
         }
         ast::Expr::Construct { args, spread, .. } => {
+            let layout_fields = ty
+                .as_ref()
+                .and_then(|ty| process_aggregate_layout_for_type(ty, span, context))
+                .and_then(|layout| match layout.kind {
+                    LayoutKind::Struct { fields, .. } => Some(fields),
+                    _ => None,
+                });
+            let mut positional = 0usize;
             let fields = args
                 .iter()
-                .map(|field| ProcessAggregateField {
-                    name: field.field.as_ref().map(|name| name.text.clone()),
-                    value: field
-                        .value
-                        .as_ref()
-                        .map(|value| value_ref(value, process, context)),
-                    span: field.span,
+                .map(|field| {
+                    let field_index = match &field.field {
+                        Some(name) => layout_fields.as_ref().and_then(|fields| {
+                            fields
+                                .iter()
+                                .position(|candidate| candidate.name == name.text)
+                        }),
+                        None => {
+                            let index = positional;
+                            positional = positional.saturating_add(1);
+                            Some(index)
+                        }
+                    };
+                    let field_type = field_index
+                        .and_then(|index| layout_fields.as_ref()?.get(index))
+                        .and_then(|field| {
+                            process_type_from_layout(&field.layout, context.resolved)
+                        });
+                    ProcessAggregateField {
+                        name: field.field.as_ref().map(|name| name.text.clone()),
+                        value: field.value.as_ref().map(|value| {
+                            value_ref_with_type(value, process, context, field_type.as_ref())
+                        }),
+                        span: field.span,
+                    }
                 })
                 .collect();
             let spread = spread
                 .as_deref()
-                .map(|value| value_ref(value, process, context));
+                .map(|value| value_ref_with_type(value, process, context, ty.as_ref()));
             ProcessValueKind::Construct {
                 ty: ty.clone(),
                 fields,
@@ -4933,14 +5276,35 @@ fn value_ref_with_type(
                         == Some(crate::resolve::DefKind::Struct)
             ) =>
         {
+            let layout_fields = ty
+                .as_ref()
+                .and_then(|ty| process_aggregate_layout_for_type(ty, span, context))
+                .and_then(|layout| match layout.kind {
+                    LayoutKind::Struct { fields, .. } => Some(fields),
+                    _ => None,
+                });
             ProcessValueKind::Construct {
                 ty: ty.clone(),
                 fields: parts
                     .iter()
-                    .map(|part| ProcessAggregateField {
-                        name: None,
-                        value: Some(value_ref(part, process, context)),
-                        span: ast::expr_span(part),
+                    .enumerate()
+                    .map(|(index, part)| {
+                        let field_type = layout_fields
+                            .as_ref()
+                            .and_then(|fields| fields.get(index))
+                            .and_then(|field| {
+                                process_type_from_layout(&field.layout, context.resolved)
+                            });
+                        ProcessAggregateField {
+                            name: None,
+                            value: Some(value_ref_with_type(
+                                part,
+                                process,
+                                context,
+                                field_type.as_ref(),
+                            )),
+                            span: ast::expr_span(part),
+                        }
                     })
                     .collect(),
                 spread: None,
@@ -4952,12 +5316,20 @@ fn value_ref_with_type(
                 .map(|part| value_ref(part, process, context))
                 .collect(),
         ),
-        ast::Expr::Array { elems, .. } => ProcessValueKind::Array(
-            elems
-                .iter()
-                .map(|element| value_ref(element, process, context))
-                .collect(),
-        ),
+        ast::Expr::Array { elems, .. } => {
+            let element_type = match ty.as_ref() {
+                Some(crate::types::Ty::Array { elem, .. }) => Some(elem.as_ref().clone()),
+                _ => None,
+            };
+            ProcessValueKind::Array(
+                elems
+                    .iter()
+                    .map(|element| {
+                        value_ref_with_type(element, process, context, element_type.as_ref())
+                    })
+                    .collect(),
+            )
+        }
     };
 
     ty = ty.or_else(|| process_kind_type(&kind, context));
