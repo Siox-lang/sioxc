@@ -831,16 +831,30 @@ impl<'a> Resolver<'a> {
                     // "no `Inc` in `mylib`" — blaming the import list for a
                     // file the compiler had never opened.
                     if !base.segments.is_empty() && !self.loaded_modules.contains(&base_str) {
+                        // Say which file the path maps to. The old help said only
+                        // `std::` paths are read from disk, which stopped being
+                        // true when imports began loading sibling files.
+                        let names: Vec<&str> =
+                            base.segments.iter().map(|s| s.text.as_str()).collect();
+                        let help = match names.split_first() {
+                            Some((&"std", rest)) if !rest.is_empty() => format!(
+                                "`std::` paths are read from the `--std` directory: \
+                                 `{}.siox` there was not found, or declares a different \
+                                 `module`",
+                                rest.join("/")
+                            ),
+                            _ => format!(
+                                "a module path is read from the file it names, beside the \
+                                 entry file: `{}.siox` was not found, or declares a \
+                                 different `module`",
+                                names.join("/")
+                            ),
+                        };
                         self.sink.emit(
                             Diagnostic::error(format!("no module `{base_str}` was loaded"))
                                 .with_code(codes::UNRESOLVED_IMPORT)
                                 .at(base.span)
-                                .help(
-                                    "a compilation is one source file plus the standard \
-                                     library: only `std::` paths are read from disk (via \
-                                     `--std <dir>`), so a module declared in another file \
-                                     is not visible here",
-                                ),
+                                .help(help),
                         );
                         continue;
                     }
@@ -2515,9 +2529,11 @@ mod tests {
         (resolved, sink.error_count())
     }
 
-    /// Only `std::` paths are read from disk, so importing from a module in
-    /// another file named one that was never opened. Reporting it as "no `Inc`
-    /// in `mylib`" blamed the import list for a file the compiler had not read.
+    /// Importing from a module that no loaded file declares names that
+    /// module. Reporting it as "no `Inc` in `mylib`" blamed the import list
+    /// for a file the compiler had not read. The help names the file the path
+    /// maps to; it used to claim only `std::` paths are read from disk, which
+    /// stopped being true when imports began loading sibling files.
     #[test]
     fn importing_from_an_unloaded_module_says_so() {
         let sink = diagnostics("module m;\nusing mylib::{Inc};\n");
@@ -2531,7 +2547,9 @@ mod tests {
             "{:?}",
             d.message
         );
-        assert!(d.help.as_ref().is_some_and(|h| h.contains("--std")));
+        let help = d.help.as_deref().unwrap_or("");
+        assert!(help.contains("`mylib.siox`"), "{help}");
+        assert!(!help.contains("only `std::` paths"), "{help}");
     }
 
     /// A module that *was* loaded and lacks the name keeps the message that
