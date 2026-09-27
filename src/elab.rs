@@ -473,6 +473,7 @@ fn elaborate_roots(
         sink,
         resolved,
         misplaced: std::cell::RefCell::new(Vec::new()),
+        collisions: std::cell::RefCell::new(Vec::new()),
         entities: HashMap::new(),
         impls: HashMap::new(),
         out: Hierarchy::default(),
@@ -508,6 +509,7 @@ fn elaborate_roots(
         }
     }
     e.report_misplaced();
+    e.report_collisions();
     e.out
 }
 
@@ -523,6 +525,10 @@ struct Elaborator<'a> {
     /// `&self`) and reported once, deduplicated by span — one entity is
     /// elaborated once per instantiation of it.
     misplaced: std::cell::RefCell<Vec<(String, Span)>>,
+    /// Two instances elaborated to one name in one parent, as
+    /// `(name, later site, first site)`. Recorded while gathering (which
+    /// borrows `&self`) and reported once per site, like `misplaced`.
+    collisions: std::cell::RefCell<Vec<(String, Span, Span)>>,
     /// Entity declarations by definition, for instantiation lookup.
     entities: HashMap<DefId, &'a EntityDecl>,
     /// Entity identity -> its inherent impls (where instances live).
@@ -745,12 +751,31 @@ impl<'a> Elaborator<'a> {
             for im in impls {
                 for item in &im.items {
                     match item {
-                        ImplItem::Let(l) => self.gather_let(l, env, &tparams, &mut specs),
-                        ImplItem::Stmt(s) => self.gather_stmt(s, env, &tparams, &mut specs),
+                        ImplItem::Let(l) => self.gather_let(l, env, &[], &tparams, &mut specs),
+                        ImplItem::Stmt(s) => self.gather_stmt(s, env, &[], &tparams, &mut specs),
                         ImplItem::Process(process) => self.note_misplaced(&process.body, &tparams),
                         _ => {}
                     }
                 }
+            }
+        }
+        // A generated name (`s_0`) shares the parent's namespace with declared
+        // ones, and two loops can generate the same name. Recorded here and
+        // reported once per site by `report_collisions`.
+        // Only entity constructions are instances: `r = Pkt { .. }` on a struct
+        // value is gathered here too, and dropped later by `build`, so a
+        // reassigned struct is not a second instance named `r`.
+        let mut first: HashMap<&str, Span> = HashMap::new();
+        let is_instance = |spec: &InstanceSpec<'_>| {
+            type_def_id(spec.ty, self.resolved).is_some_and(|id| self.entities.contains_key(&id))
+        };
+        for spec in specs.iter().filter(|spec| is_instance(spec)) {
+            if let Some(&earlier) = first.get(spec.name.as_str()) {
+                self.collisions
+                    .borrow_mut()
+                    .push((spec.name.clone(), spec.site, earlier));
+            } else {
+                first.insert(&spec.name, spec.site);
             }
         }
         specs
@@ -904,16 +929,20 @@ impl<'a> Elaborator<'a> {
         &self,
         l: &'a LetDecl,
         env: &HashMap<String, i64>,
+        loop_path: &[i64],
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
     ) {
         if let Some((ty, args, span)) = self.instance_let(l, tparams) {
-            // A generated instance gets the loop index appended for a unique
-            // name; a plain one keeps its declared name.
-            let name = if env.is_empty() {
+            // A generated instance gets its loop indices appended, outermost
+            // loop first; a plain one keeps its declared name. The suffix used
+            // to come from `env`, which also holds the generic parameters and
+            // iterates in `HashMap` order, so names varied between builds and
+            // disagreed with the IR, which already used this ordered path.
+            let name = if loop_path.is_empty() {
                 l.name.text.clone()
             } else {
-                let idx: Vec<String> = env.values().map(|v| v.to_string()).collect();
+                let idx: Vec<String> = loop_path.iter().map(|v| v.to_string()).collect();
                 format!("{}_{}", l.name.text, idx.join("_"))
             };
             out.push(InstanceSpec {
@@ -933,11 +962,12 @@ impl<'a> Elaborator<'a> {
         &self,
         s: &'a Stmt,
         env: &HashMap<String, i64>,
+        loop_path: &[i64],
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
     ) {
         match s {
-            Stmt::Let(l) => self.gather_let(l, env, tparams, out),
+            Stmt::Let(l) => self.gather_let(l, env, loop_path, tparams, out),
             // Instance-array element construction: `stage[i] = Sub { .. }`. The
             // target renders to the element name (`stage[1]`) with the loop
             // index evaluated, so `stage[i].port` reads resolve to it.
@@ -973,8 +1003,10 @@ impl<'a> Elaborator<'a> {
                     for i in loop_range(a, b) {
                         let mut e = env.clone();
                         e.insert(var.text.clone(), i);
+                        let mut path = loop_path.to_vec();
+                        path.push(i);
                         for st in &body.stmts {
-                            self.gather_stmt(st, &e, tparams, out);
+                            self.gather_stmt(st, &e, &path, tparams, out);
                         }
                     }
                 }
@@ -982,8 +1014,28 @@ impl<'a> Elaborator<'a> {
             // `if <const> { .. } else { .. }`: a generate-if. The condition is
             // constant-folded; only the taken branch's instances are gathered.
             // A non-constant condition is a behavioral `if`, not a generate-if.
-            Stmt::If(iff) => self.gather_if(iff, env, tparams, out),
+            Stmt::If(iff) => self.gather_if(iff, env, loop_path, tparams, out),
             _ => {}
+        }
+    }
+
+    /// Emit one error per pair of instances that elaborated to the same name.
+    fn report_collisions(&mut self) {
+        let mut seen: Vec<(String, Span, Span)> = self.collisions.borrow().clone();
+        seen.sort_by_key(|(_, span, _)| (span.file.0, span.start));
+        seen.dedup_by_key(|(_, span, _)| (span.file.0, span.start));
+        for (name, span, first) in seen {
+            self.sink.emit(
+                Diagnostic::error(format!("two instances are both named `{name}`"))
+                    .with_code(codes::DUPLICATE_ITEM)
+                    .at(span)
+                    .label(first, format!("the first `{name}` is here"))
+                    .help(
+                        "an instance inside a generate `for` is named after its loop \
+                         indices (`s` becomes `s_0`, `s_1`, …), in the same namespace \
+                         as every other instance here; rename one of them",
+                    ),
+            );
         }
     }
 
@@ -1062,6 +1114,7 @@ impl<'a> Elaborator<'a> {
         &self,
         iff: &'a IfStmt,
         env: &HashMap<String, i64>,
+        loop_path: &[i64],
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
     ) {
@@ -1069,15 +1122,15 @@ impl<'a> Elaborator<'a> {
             ParamValue::Int(0) => match iff.else_.as_deref() {
                 Some(ElseBranch::Block(b)) => {
                     for st in &b.stmts {
-                        self.gather_stmt(st, env, tparams, out);
+                        self.gather_stmt(st, env, loop_path, tparams, out);
                     }
                 }
-                Some(ElseBranch::If(inner)) => self.gather_if(inner, env, tparams, out),
+                Some(ElseBranch::If(inner)) => self.gather_if(inner, env, loop_path, tparams, out),
                 None => {}
             },
             ParamValue::Int(_) => {
                 for st in &iff.then.stmts {
-                    self.gather_stmt(st, env, tparams, out);
+                    self.gather_stmt(st, env, loop_path, tparams, out);
                 }
             }
             // A non-constant condition is behavioural — a process, not a
@@ -2295,5 +2348,106 @@ mod tests {
         let mem = hier.instance(root.children[0]);
         assert!(mem.is_extern);
         assert!(mem.children.is_empty());
+    }
+
+    /// Instance names of every `Cell` in elaboration order.
+    fn cell_names(hier: &Hierarchy) -> Vec<String> {
+        hier.instances
+            .iter()
+            .filter(|instance| instance.entity == "Cell")
+            .map(|instance| instance.name.clone())
+            .collect()
+    }
+
+    /// A generated instance is suffixed with its loop indices only, outermost
+    /// loop first. The suffix came from iterating the whole binding map, which
+    /// also holds the entity's generic parameters, in `HashMap` order: nested
+    /// loops named `c_1_0` for row 1 in some builds and for column 1 in
+    /// others, and a plain instance in `Wrap<8>` was named `only_8`. The IR
+    /// already used the ordered loop path, so the tree disagreed with the
+    /// waveform and the debugger about the same instance.
+    #[test]
+    fn generated_instance_names_use_loop_indices_in_nesting_order() {
+        let src = "module m;\n\
+             entity Cell { o: Bit out }\n\
+             impl Cell { o = '1'; }\n\
+             entity Wrap<W: integer> { y: unsigned[W] out }\n\
+             impl<W: integer> Wrap<W> {\n\
+                 let only: Cell = {};\n\
+                 for row in 0..1 {\n\
+                     for col in 0..2 {\n\
+                         let c: Cell = {};\n\
+                     }\n\
+                 }\n\
+                 y = 0;\n\
+             }\n\
+             entity Top { y: unsigned[8] out }\n\
+             impl Top { let w: Wrap<8> = { .y = y }; }";
+        // The binding map's iteration order changes with every map, so repeat:
+        // one lucky order must not pass.
+        for _ in 0..20 {
+            let (hier, errors) = elaborate_src(src);
+            assert_eq!(errors, 0);
+            assert_eq!(
+                cell_names(&hier),
+                ["only", "c_0_0", "c_0_1", "c_0_2", "c_1_0", "c_1_1", "c_1_2"],
+            );
+        }
+    }
+
+    /// A generated name shares the parent's namespace, so it can collide
+    /// with a declared instance or with another loop's instance. Nothing
+    /// said so: two instances got the same path, the IR had two signals named
+    /// `T.c.s_0.i`, and the VCD folded both into one scope.
+    #[test]
+    fn a_generated_instance_name_collision_is_an_error() {
+        let with_declared = "module m;\n\
+             entity Cell { o: Bit out }\n\
+             impl Cell { o = '1'; }\n\
+             entity Top {}\n\
+             impl Top {\n\
+                 for k in 0..1 { let s: Cell = {}; }\n\
+                 let s_0: Cell = {};\n\
+             }";
+        assert_eq!(elaborate_src(with_declared).1, 1, "loop vs declared name");
+
+        let two_loops = "module m;\n\
+             entity Cell { o: Bit out }\n\
+             impl Cell { o = '1'; }\n\
+             entity Top {}\n\
+             impl Top {\n\
+                 for k in 0..1 { let s: Cell = {}; }\n\
+                 for j in 1..2 { let s: Cell = {}; }\n\
+             }";
+        assert_eq!(
+            elaborate_src(two_loops).1,
+            1,
+            "two loops, overlapping index"
+        );
+
+        let distinct = "module m;\n\
+             entity Cell { o: Bit out }\n\
+             impl Cell { o = '1'; }\n\
+             entity Top {}\n\
+             impl Top {\n\
+                 for k in 0..1 { let s: Cell = {}; }\n\
+                 let s_2: Cell = {};\n\
+             }";
+        assert_eq!(elaborate_src(distinct).1, 0, "no collision, no error");
+
+        // A struct value is not an instance, however often it is constructed:
+        // `r = Pkt { .. }` after `let r: Pkt = Pkt { .. }` is a reassignment.
+        let struct_value = "module m;\n\
+             struct Pkt { pub a: unsigned[8], pub b: unsigned[8] }\n\
+             entity Top {}\n\
+             impl Top {\n\
+                 let r: Pkt = Pkt { 5, 6 };\n\
+                 r = Pkt { 12, 13 };\n\
+             }";
+        assert_eq!(
+            elaborate_src(struct_value).1,
+            0,
+            "a struct value is not an instance"
+        );
     }
 }
