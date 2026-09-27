@@ -440,6 +440,10 @@ impl Compiler {
         // and avoids cloning every token before the parser takes ownership.
         result.entry_tokens = Lexer::new(file, &source).tokenize(&mut DiagnosticSink::new());
         result.modules.push(entry);
+        // A module/path mismatch is found while parsing but is a resolution
+        // error, not a parse error: it is held back past the parse gate so
+        // resolution still runs and reports everything else, best-effort.
+        let mut mismatches = Vec::new();
         for dependency in dependencies {
             let file = result.sources.add(
                 dependency.path.display().to_string(),
@@ -449,6 +453,37 @@ impl Compiler {
             let module = parser::Parser::new(&dependency.source, tokens, &mut result.diagnostics)
                 .with_custom_operators(&operators)
                 .parse_module();
+            // The import chose this file by its path, so the file must declare
+            // that module. Otherwise its declarations land under another name
+            // and the import only reports "no module was loaded", pointing at
+            // the import rather than at the declaration that is wrong.
+            let declared: Vec<&str> = module
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect();
+            if declared != dependency.module {
+                let expected = dependency.module.join("::");
+                let found = if declared.is_empty() {
+                    "no module".to_string()
+                } else {
+                    format!("`module {}`", declared.join("::"))
+                };
+                mismatches.push(
+                    Diagnostic::error(format!(
+                        "`{}` is loaded as module `{expected}` but declares {found}",
+                        dependency.path.display()
+                    ))
+                    .with_code(crate::diag::codes::UNRESOLVED_IMPORT)
+                    .at(module.path.span)
+                    .help(format!(
+                        "`using {expected}::…` reads this file because of its path; \
+                         declare `module {expected};` here, or move the file to match \
+                         the module it declares"
+                    )),
+                );
+            }
             result.modules.push(module);
         }
         result.stats.entry_items = result.entry().map_or(0, |module| module.items.len());
@@ -473,6 +508,9 @@ impl Compiler {
             _ => {}
         }
 
+        for mismatch in mismatches {
+            result.diagnostics.emit(mismatch);
+        }
         let resolved = crate::resolve::resolve(&result.modules, &mut result.diagnostics);
         result.stats.definitions = Some(resolved.defs().len());
         let typed = crate::types::check(&result.modules, &resolved, &mut result.diagnostics);
@@ -818,6 +856,9 @@ fn select_top(
 struct DependencySource {
     /// Path the dependency was read from.
     path: PathBuf,
+    /// The module path an import asked for, which chose `path`. The file's
+    /// own `module` declaration must match it.
+    module: Vec<String>,
     /// Full source text of the dependency.
     source: String,
 }
@@ -871,7 +912,11 @@ fn discover_dependencies(
         let tokens = Lexer::new(FileId(0), &source).tokenize(&mut discovery_sink);
         operators.extend(parser::discover_custom_operators(&source, &tokens));
         queue.extend(discover_import_modules(&source, &tokens));
-        dependencies.push(DependencySource { path, source });
+        dependencies.push(DependencySource {
+            path,
+            module,
+            source,
+        });
     }
     dependencies
 }
