@@ -3,13 +3,16 @@
 Status: **proposal**. Nothing here is implemented. It replaces the current
 `process <name> { … }` spelling with a VHDL-style label, `<label>: process
 { … }`, and extends the same label to the structural `for` and `if`
-constructs of an entity implementation, so that the architecture a design
-elaborates into can be navigated by name.
+constructs of an entity implementation and to any assignment, so that the
+architecture a design elaborates into can be navigated by name.
+
+A label is **for the user, not for the compiler**. Nothing ever requires one,
+and adding or removing one never changes what a design does.
 
 ## Decision
 
-A **label** is an identifier and a colon written before a concurrent construct
-at the top level of an entity implementation:
+A **label** is an identifier and a colon written before a process, a
+structural `for` or `if`, or an assignment:
 
 ```siox
 impl Pipeline {
@@ -23,13 +26,25 @@ impl Pipeline {
 
     debug_tap: if DEBUG {
         let tap: Probe = { .i = w[3] };
+    } else {
+        let tap: Stub = { .i = w[3] };
+    }
+
+    sum: y = a + b;                      // a concurrent assignment
+
+    count: process {
+        if rst == '1' { n = 0; }         // `for`/`if` inside a process take no label
+        step: n = n + 1;                 // a sequential assignment
     }
 }
 ```
 
-- Three constructs take a label: `process`, and the structural `for` and `if`
-  that generate hardware outside any process.
-- A label is optional everywhere. An unlabelled `process { … }` stays valid.
+- Four constructs take a label: `process`; the structural `for` and `if` that
+  generate hardware outside any process; and any assignment, concurrent or
+  inside a process (including indexed, field, and `after`-delayed targets).
+  `let` declarations already carry their own name and take no label.
+- **A label is never required.** Unlabelled `process { … }`, `for`, `if` and
+  assignments stay valid and keep their current behaviour.
 - `process update { … }` is removed. It becomes an error that names the
   replacement (`write \`update: process { … }\``), the same treatment `wait`
   received when `await` replaced it.
@@ -110,7 +125,8 @@ the generate's own scope and can no longer collide with the parent's.
 
 **Namespace.** A label shares the entity implementation's member namespace
 with `let` declarations, instances and functions, exactly as a process name
-does today. A duplicate is `E-P002`.
+does today. A duplicate is `E-P002`. Labels inside one process share that
+process's namespace.
 
 **Processes.** A process label means what a process name means today. It is
 the driver context's identity in the IR (`Design::process_labels`), and it
@@ -137,9 +153,21 @@ That spelling flows unchanged to `--emit tree`, VCD/FST scopes, IR signal
 names, runtime diagnostics, and the `sx_dbg_get` debugger paths. A descending
 or negative range keys its children by the actual loop values.
 
-**Labelled `if`.** The label names one scope, present only when the condition
-holds: `c.debug_tap.tap`. Whether an `else` branch shares the label's scope or
-needs its own is listed under open questions.
+**Labelled `if`.** The label covers the whole `if`/`else` statement and names
+one scope, filled by whichever branch the condition selects: `c.debug_tap.tap`
+is a `Probe` when `DEBUG` holds and a `Stub` otherwise. The path is the same
+either way, so a waveform view or a debugger script keeps working when the
+condition changes.
+
+**Labelled assignment.** The label names that one assignment. It creates no
+scope, and the signal keeps its name. It identifies the assignment in the IR
+and in diagnostics about it: a conflicting-driver error, a range violation, a
+possible-latch warning, or an override inside a process can say "assignment
+`sum`" instead of pointing only at a line.
+
+**Iterations are indexed with square brackets.** A labelled `for` produces an
+array of scopes, so its children are spelled like array elements everywhere:
+`stages[0]`, `stages[1]`, in the tree, the waveform and the debugger.
 
 **Unlabelled generates** keep today's flat naming, so existing designs are
 unchanged. They still need the collision diagnostic described above.
@@ -158,8 +186,10 @@ matching VHDL's `attribute keep of update : label is true`.
 ```text
 impl-item   := label? ( "process" block
                       | "for" pattern "in" expr block
-                      | "if" expr block ( "else" … )? )
+                      | "if" expr block ( "else" … )?
+                      | assignment )
              | …
+statement   := label? assignment | …          (inside a process)
 label       := IDENT ":"
 ```
 
@@ -170,9 +200,11 @@ decides it. The existing single-`:` lookaheads in the parser are elsewhere:
 inside `<…>` generic binders, and the deprecated `struct B : A` form at module
 level.
 
-Labels are accepted only at impl-item level. `for` and `if` inside a process
-are sequential control flow, not structure, and siox has no `break`/`next` a
-label could target.
+`for` and `if` take a label only at impl-item level. Inside a process they are
+sequential control flow, not structure, and siox has no `break`/`next` a label
+could target. Assignments take one in both places. An assignment's target is
+itself a name, so `sum: y = …` is decided the same way: an identifier followed
+by a single `:`.
 
 ## Implementation sketch
 
@@ -180,14 +212,15 @@ label could target.
   `for` and `if`. `process IDENT {` becomes an error with the replacement text,
   and parsing continues so later diagnostics still appear.
 - **AST.** `ProcessDecl.name` becomes `label`. The structural `for` and `if`
-  items gain an optional label.
+  items and the assignment statement gain an optional label.
 - **Resolve.** Labels enter the entity member namespace; duplicates are
   `E-P002`, as today.
 - **Elaboration.** A labelled generate pushes a path segment (`stages[k]` or
   `debug_tap`) onto the instance paths it creates. Everything downstream
   (IR names, waveforms, diagnostics, the debugger table) already consumes
   those paths.
-- **Printer.** Prints `label: process {`, `label: for …` and `label: if …`.
+- **Printer.** Prints `label: process {`, `label: for …`, `label: if …` and
+  `label: target = …;`.
   `sioxc --emit source` becomes the migration tool.
 - **Docs.** `language.md` §3.11 and the structural-generate text; the
   `siox-lsp` outline can list labels as document symbols.
@@ -200,24 +233,25 @@ label could target.
 2. Accept labels on structural `for` and `if`, with hierarchy scopes.
 3. Independently of both, and first, diagnose the generate-name collision.
 
+## Decided
+
+- **No label is ever required**, including on generates that create
+  instances. Labels exist for the reader and the tools the reader uses.
+- **Iteration scopes use square brackets** (`stages[0]`): a labelled `for` is
+  an array of scopes and is spelled like one.
+- **One label covers a whole `if`/`else`**, and the scope is filled by
+  whichever branch is taken.
+- **Any assignment can be labelled**, concurrent or inside a process.
+
 ## Open questions
 
-- **Should a generate that creates instances require a label?** VHDL makes
-  generate labels mandatory. Requiring them would guarantee a navigable
-  hierarchy, but it would break the 13 unlabelled structural `for` loops
-  (in 5 files) the corpus has today.
-- **Waveform spelling of an iteration scope:** `stages[0]` (siox index syntax),
-  `stages(0)` (VHDL tools), or `stages_0`. VCD scope names accept brackets, but
-  viewers treat them inconsistently.
-- **`else` under a labelled `if`:** one scope for whichever branch was taken,
-  or a separate label per branch as VHDL-2008's `case`/`if generate`
-  alternatives allow.
-- **Labels on concurrent assignments** (`sum: y = a + b;`), which VHDL also
-  allows, would name the driver context of a bare assignment for diagnostics.
-  Not proposed here.
+- **Waveform viewers and brackets.** VCD scope names accept `[` and `]`, but
+  some viewers read a trailing `[n]` on a *variable* as a bit select. Scope
+  names are not variables, so this is expected to be safe; confirm it in
+  Surfer and GTKWave before implementation.
 
 ## Non-goals
 
-- Labels on sequential statements inside a process.
+- Labels on `for`/`if` inside a process (assignments there can be labelled).
 - Hierarchical references that read another instance's internals.
 - Closing labels.
