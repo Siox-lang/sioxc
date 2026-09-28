@@ -255,7 +255,7 @@ pub(super) fn emit_wave_metadata<'ctx>(
 ///
 /// The fixed runtime performs a `(file, offset)` lookup and never reads source
 /// files from disk. Keeping the rendered location in object data makes runtime
-/// diagnostics use the same [`SourceMap`] rendering as compiler diagnostics.
+/// diagnostics use the same [`SourceMap`](crate::diag::SourceMap) rendering as compiler diagnostics.
 pub(super) fn emit_source_locations<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
