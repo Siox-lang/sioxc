@@ -503,7 +503,12 @@ impl<'a> Lowering<'a> {
                                     {
                                         let mut fields = HashMap::new();
                                         literal_leaves(args, "", &mut fields);
-                                        for (name, &(signal, direction)) in &sub_ports {
+                                        // `sub_ports` is a `HashMap`: drive the
+                                        // leaves in name order, as the entity
+                                        // path does, so builds are identical.
+                                        let mut ports: Vec<_> = sub_ports.iter().collect();
+                                        ports.sort_by(|a, b| a.0.cmp(b.0));
+                                        for (name, &(signal, direction)) in ports {
                                             let Some(suffix) = name.strip_prefix(&port) else {
                                                 continue;
                                             };
@@ -598,6 +603,11 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
+        // `bindings` is a `HashMap`; link in name order so the drivers (and
+        // every Process IR value numbered after them) come out the same in
+        // every build.
+        let mut bindings: Vec<_> = bindings.into_iter().collect();
+        bindings.sort_by(|a, b| a.0.cmp(&b.0));
         for (tbname, ports) in &bindings {
             // A tristate net needs one shared node that folds each driver's
             // *expression*; the entity path builds one, this path has no
