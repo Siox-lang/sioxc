@@ -72,9 +72,7 @@ pub(super) fn array_loop_shape(
 }
 
 pub(super) fn layout_width(layout: &siox::ir::SourceLayout) -> Option<u32> {
-    u32::try_from(layout.bit_width()?)
-        .ok()
-        .filter(|width| *width != 0)
+    layout.packed_width()
 }
 
 /// Dynamic UTF-8 strings cross the fixed runtime ABI as opaque handles. Their

@@ -535,6 +535,28 @@ pub(super) fn process_value_layout(design: &Design, id: ProcessValueId) -> Optio
     }
 }
 
+/// Width to use while emitting one value through an expected source layout.
+///
+/// Recursive arrays and structs are represented as one packed Process value,
+/// so their canonical width belongs to the value itself. The layout remains
+/// necessary for field/element offsets, but must not manufacture a missing
+/// aggregate width. Scalar and packed-vector layouts may still provide a
+/// consumer width for the ordinary widening/coercion path.
+pub(super) fn process_value_width_in_layout(
+    design: &Design,
+    id: ProcessValueId,
+    layout: &SourceLayout,
+) -> Option<u32> {
+    match layout.kind {
+        LayoutKind::Array { .. } | LayoutKind::Struct { .. } => {
+            design.process_ir.values.get(id.0 as usize)?.bit_width
+        }
+        LayoutKind::Scalar { .. } | LayoutKind::Packed { .. } | LayoutKind::Opaque { .. } => {
+            layout_width(layout)
+        }
+    }
+}
+
 /// Evaluate a source-layout attribute without consulting the AST. These are
 /// elaboration metadata, so direct process code materializes a constant rather
 /// than calling the simulation runtime.

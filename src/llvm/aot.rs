@@ -952,7 +952,7 @@ signed main(void) {
         let construct = |left, right| ProcessValue {
             span,
             ty: Some(pair_ty.clone()),
-            bit_width: None,
+            bit_width: Some(16),
             kind: ProcessValueKind::Construct {
                 ty: Some(pair_ty.clone()),
                 fields: vec![

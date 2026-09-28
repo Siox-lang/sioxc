@@ -17,7 +17,7 @@ pub(super) fn process_value_in_layout<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
-    let width = layout_width(layout)?;
+    let width = process_value_width_in_layout(design, id, layout)?;
     let cache_key = cache.key(id, active, Some(width));
     if let Some(value) = cache.emitted.get(&cache_key).copied() {
         return (value.get_type().get_bit_width() == width).then_some(value);

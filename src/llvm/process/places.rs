@@ -568,8 +568,8 @@ pub(super) fn assignment_value<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
-    if let Some(layout) =
-        process_value_layout(design, target).filter(|layout| layout_width(layout) == Some(width))
+    if let Some(layout) = process_value_layout(design, target)
+        .filter(|layout| process_value_width_in_layout(design, target, layout) == Some(width))
     {
         process_value_in_layout(
             context,

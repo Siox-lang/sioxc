@@ -132,7 +132,7 @@ pub(super) fn process_value_supported_in_layout(
     layout: &SourceLayout,
     supported: &[bool],
 ) -> bool {
-    let Some(width) = layout_width(layout) else {
+    let Some(width) = process_value_width_in_layout(design, id, layout) else {
         return false;
     };
     if width > super::super::emit::LLVM_MAX_INT_BITS {
@@ -568,12 +568,9 @@ pub(super) fn supported_process_values(design: &Design) -> Vec<bool> {
     };
     for (index, value) in design.process_ir.values.iter().enumerate() {
         let id = ProcessValueId(index as u32);
-        let scalar_width = value
+        let packed_width = value
             .bit_width
             .is_some_and(|width| width != 0 && width <= super::super::emit::LLVM_MAX_INT_BITS);
-        let aggregate_width = process_value_layout(design, id)
-            .and_then(layout_width)
-            .is_some_and(|width| width <= super::super::emit::LLVM_MAX_INT_BITS);
         let shape = match &value.kind {
             ProcessValueKind::Number(_)
             | ProcessValueKind::BitString { .. }
@@ -863,7 +860,7 @@ pub(super) fn supported_process_values(design: &Design) -> Vec<bool> {
             | ProcessValueKind::Call { .. }
             | ProcessValueKind::Invalid => false,
         };
-        supported.push((scalar_width || aggregate_width) && shape);
+        supported.push(packed_width && shape);
     }
     supported
 }

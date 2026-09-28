@@ -10869,3 +10869,24 @@ Generic bodies now lower with their arguments' types, which they did not:
   result its argument's family and width; a generic parameter bound to a
   kernel integer joins `param_integers`; `inline_unary` picks the
   receiver-only impl, since `-` keys `Sub` and `Neg` alike.
+
+### 2026-09-28 — Codex — canonical packed aggregate widths
+
+Taking ownership of `src/ir/layout.rs`, Process-value construction and
+validation, and the LLVM Process aggregate consumers. I am making
+`ProcessValue::bit_width` the checked packed-width authority for canonical
+aggregate values while retaining `SourceLayout` only for recursive shape and
+offsets. Validation will reject missing or contradictory widths before LLVM,
+and focused plus full native/corpus gates will cover the migration.
+
+### 2026-09-28 — Codex — canonical packed aggregate widths complete
+
+Static array and struct values now always carry their checked packed width on
+`ProcessValue`; declaration-backed locals/storage obey the same invariant.
+`SourceLayout::packed_width` centralizes the checked `u64`-to-`u32` boundary,
+Process validation rejects absent/contradictory widths, and LLVM no longer
+accepts a layout-derived aggregate width as a fallback. The aggregate native
+fixture now states its canonical width explicitly. Focused validation and
+native aggregate execution tests pass. The full pinned gate is green: frontend
+checks, normal and `bitpack` Rust tests, all-target Clippy, both 185-program
+corpora, and a separately emitted counter-test executable all passed.

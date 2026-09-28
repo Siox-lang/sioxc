@@ -518,9 +518,11 @@ pub struct ProcessValue {
     pub span: crate::diag::Span,
     /// Its frontend type, where one was inferred.
     pub ty: Option<crate::types::Ty>,
-    /// Concrete packed width when this value has one scalar machine
-    /// representation. Aggregate/range/runtime-handle values may leave this
-    /// absent until their dedicated lowering represents their shape.
+    /// Concrete packed width when this value has a machine representation.
+    /// This is authoritative for both scalar values and statically sized
+    /// aggregates; [`ProcessIr::value_layouts`] describes aggregate shape and
+    /// offsets but does not supply a missing Process-value width. Ranges and
+    /// values with no packed representation leave it absent.
     pub bit_width: Option<u32>,
     /// Executable meaning of the value.
     pub kind: ProcessValueKind,
@@ -1147,6 +1149,28 @@ impl ProcessIr {
             ));
         }
 
+        for (index, value) in self.values.iter().enumerate() {
+            let retained = (self.value_layouts.len() == self.values.len())
+                .then(|| self.value_layouts[index].as_ref())
+                .flatten();
+            if let Some(layout) = retained.or_else(|| process_value_declaration_layout(self, value))
+            {
+                match (layout.bit_width(), layout.packed_width()) {
+                    (Some(_), None) => issues.push(format!(
+                        "process value {:?} has a layout without a representable packed width",
+                        ProcessValueId(index as u32)
+                    )),
+                    (_, Some(width)) if value.bit_width != Some(width) => issues.push(format!(
+                        "process value {:?} declares packed width {:?}, but its layout requires {}",
+                        ProcessValueId(index as u32),
+                        value.bit_width,
+                        width
+                    )),
+                    _ => {}
+                }
+            }
+        }
+
         for (index, process) in self.processes.iter().enumerate() {
             if process.id != ProcessId(index as u32) {
                 issues.push(format!(
@@ -1580,6 +1604,30 @@ impl ProcessIr {
             output.push_str("}\n");
         }
         output
+    }
+}
+
+/// Declaration-owned layout for a state-reference value. Aggregate literals
+/// carry their own entry in `value_layouts`; locals and persistent storage
+/// deliberately share the declaration's single recursive layout instead.
+fn process_value_declaration_layout<'a>(
+    process_ir: &'a ProcessIr,
+    value: &ProcessValue,
+) -> Option<&'a SourceLayout> {
+    match &value.kind {
+        ProcessValueKind::Storage(storage)
+        | ProcessValueKind::StorageState {
+            storage,
+            state: ProcessSignalState::Old,
+        } => process_ir.storages.get(storage.0 as usize)?.layout.as_ref(),
+        ProcessValueKind::Local { process, local } => process_ir
+            .processes
+            .get(process.0 as usize)?
+            .locals
+            .get(local.0 as usize)?
+            .layout
+            .as_ref(),
+        _ => None,
     }
 }
 

@@ -72,9 +72,6 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   2. derive optimized `Driver`/`EventBlock` scheduling forms from Process IR;
   3. delete the normalized-hardware importer once default and `bitpack`
      native/corpus behavior remains unchanged.
-- 🟡 **Canonical composite sizing.** Put the checked packed width on canonical
-  aggregate values so IR consumers do not rediscover struct/array widths from
-  `SourceLayout`. Source type-cycle rejection remains the cycle boundary.
 - 🟡 **Canonicalize dynamic aggregate updates.** Process assignments already
   retain runtime-selected projections, and direct LLVM evaluates every index
   and right-hand leaf before one packed root merge. Make that pre-write

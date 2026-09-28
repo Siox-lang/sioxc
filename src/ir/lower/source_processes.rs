@@ -15,7 +15,7 @@ use crate::ir::{
     ProcessMatchArm, ProcessNumber, ProcessPattern, ProcessRuntimeOp, ProcessSensitivity,
     ProcessSignalState, ProcessStorage, ProcessStorageBinding, ProcessStorageId, ProcessSuspendOp,
     ProcessTerminator, ProcessTest, ProcessUnaryOp, ProcessValue, ProcessValueId, ProcessValueKind,
-    ProcessValueMatchArm, SignalId,
+    ProcessValueMatchArm, SignalId, SourceLayout,
 };
 use crate::resolve::Resolved;
 use crate::syntax::ast::{self, ElseBranch, ImplItem, Stmt};
@@ -4260,7 +4260,7 @@ fn process_array_elements(
         if u32::try_from(range.len()?).ok()? != *len {
             return None;
         }
-        (*range, u32::try_from(element.bit_width()?).ok()?)
+        (*range, element.packed_width()?)
     };
 
     let mut elements = Vec::with_capacity(usize::try_from(*len).ok()?);
@@ -5722,11 +5722,7 @@ fn push_value(
             .and_then(|ty| process_aggregate_layout_for_type(ty, span, context)),
         _ => None,
     };
-    let width = width.or_else(|| {
-        layout
-            .as_ref()
-            .and_then(|layout| layout.bit_width()?.try_into().ok())
-    });
+    let width = width.or_else(|| layout.as_ref().and_then(SourceLayout::packed_width));
     context.process_ir.value_layouts.resize(id.0 as usize, None);
     context.process_ir.value_layouts.push(layout);
     context.process_ir.values.push(ProcessValue {
@@ -5794,7 +5790,7 @@ fn source_value_width(
                             .filter(|local| local.ty.as_ref() == Some(ty))
                             .filter_map(|local| local.layout.as_ref()),
                     )
-                    .filter_map(|layout| layout.bit_width()?.try_into().ok());
+                    .filter_map(SourceLayout::packed_width);
                 let first = widths.next()?;
                 widths.all(|width| width == first).then_some(first)
             })
@@ -5809,7 +5805,7 @@ fn source_value_width(
             return local
                 .layout
                 .as_ref()
-                .and_then(|layout| layout.bit_width()?.try_into().ok())
+                .and_then(SourceLayout::packed_width)
                 .or_else(|| runtime_handle_width(local.layout.as_ref()))
                 .or_else(|| local.ty.as_ref().and_then(typed_width))
                 .filter(|width| *width != 0);
@@ -5819,7 +5815,7 @@ fn source_value_width(
             return storage
                 .layout
                 .as_ref()
-                .and_then(|layout| layout.bit_width()?.try_into().ok())
+                .and_then(SourceLayout::packed_width)
                 // A named alias may deliberately retain an opaque source
                 // layout while the checked storage type already names its
                 // concrete scalar representation. Prefer any declared layout
@@ -5838,7 +5834,7 @@ fn source_value_width(
             return storage
                 .layout
                 .as_ref()
-                .and_then(|layout| layout.bit_width()?.try_into().ok())
+                .and_then(SourceLayout::packed_width)
                 .or_else(|| runtime_handle_width(storage.layout.as_ref()))
                 .or_else(|| storage.ty.as_ref().and_then(typed_width))
                 .filter(|width| *width != 0);
@@ -5984,13 +5980,11 @@ fn source_value_width(
                 .iter()
                 .find(|candidate| candidate.name == *field)?
                 .layout
-                .bit_width()?
-                .try_into()
-                .ok()
+                .packed_width()
         }
         ProcessValueKind::Index { base, .. } => {
             match &process_value_source_layout(*base, context.process_ir)?.kind {
-                LayoutKind::Array { element, .. } => element.bit_width()?.try_into().ok(),
+                LayoutKind::Array { element, .. } => element.packed_width(),
                 LayoutKind::Packed { .. } => Some(1),
                 _ => None,
             }
@@ -7105,6 +7099,15 @@ mod tests {
             |kind| matches!(kind, ProcessValueKind::Construct { .. }),
             |layout| matches!(layout, LayoutKind::Struct { .. })
         ));
+        assert!(design
+            .process_ir
+            .values
+            .iter()
+            .zip(&design.process_ir.value_layouts)
+            .all(|(value, layout)| layout
+                .as_ref()
+                .and_then(SourceLayout::packed_width)
+                .is_none_or(|width| value.bit_width == Some(width))));
         assert!(design
             .process_ir
             .values

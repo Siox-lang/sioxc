@@ -158,6 +158,19 @@ impl SourceLayout {
         }
     }
 
+    /// Packed width accepted by canonical Process IR values.
+    ///
+    /// [`Self::bit_width`] deliberately uses `u64` so layout arithmetic stays
+    /// wider than the Process-value boundary. Process values and LLVM integer
+    /// types use `u32` widths, so this is the single checked conversion at that
+    /// boundary. Zero-width and over-wide layouts have no canonical packed
+    /// representation.
+    pub fn packed_width(&self) -> Option<u32> {
+        u32::try_from(self.bit_width()?)
+            .ok()
+            .filter(|width| *width != 0)
+    }
+
     /// Number of scalar storage leaves after recursive aggregate flattening.
     pub fn leaf_count(&self) -> Option<u64> {
         match &self.kind {

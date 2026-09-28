@@ -163,7 +163,11 @@ root/instance ownership, while a test plan additionally contributes storage,
 clocks, and stimulus. Branch, suspend/resume, structured match/for
 control, termination, assignment semantics, activation, labels, and spans
 already live there. Operands are arena-owned once and referenced from CFG nodes
-by stable `ProcessValueId`. The LLVM object exports immutable test, process,
+by stable `ProcessValueId`. Every statically packed operand, including an array
+or struct, carries its checked width on `ProcessValue`; its optional
+`SourceLayout` supplies recursive field/element shape and offsets, never a
+fallback width. Process IR validation rejects a missing or contradictory width
+before LLVM emission. The LLVM object exports immutable test, process,
 activation, sensitivity, waveform, and source-location tables plus callable
 process entries. One fixed scheduler consumes them, owns ready batches and
 delta commits, and edits delayed writes as driver/scalar-subelement projected
@@ -390,10 +394,12 @@ struct/applied-view identity and view-field directions, ordered recursively-subs
 fields, ordinary versus packed arrays, written range direction, scalar domains,
 value constraints, and source spans. IR signal flattening traverses this
 tree rather than reconstructing shape from AST declarations; checked recursive
-width and leaf-count queries define the same boundary for native consumers.
+width and leaf-count queries validate the concrete shape at the IR boundary.
 Testbench locals retain layouts without becoming hardware signals, so Process
 IR and LLVM use the already-specialized tree for native storage and positional
-aggregate writes. LLVM obtains flattened signal widths through
+aggregate writes. The packed width of each canonical Process value lives on
+that value; LLVM consults `SourceLayout` only for structure, projections, and
+offsets. LLVM obtains flattened signal widths through
 the corresponding leaf layouts; IR validation rejects a stale duplicated
 signal width or an aggregate layout attached directly to a leaf signal. A
 names-only nominal field-order index remains for positional syntax in constants

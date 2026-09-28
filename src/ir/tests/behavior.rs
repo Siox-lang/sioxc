@@ -512,6 +512,77 @@ fn process_storage_identity_is_validated() {
 }
 
 #[test]
+/// A statically sized aggregate is one packed Process value. Its recursive
+/// layout describes labels and offsets, but cannot substitute for the value's
+/// canonical width or silently disagree with it.
+fn process_aggregate_layout_requires_canonical_packed_width() {
+    let span = crate::diag::Span::new(FileId(0), 0..1);
+    let byte = SourceLayout {
+        span,
+        kind: LayoutKind::Scalar {
+            width: 8,
+            domain: ScalarDomain::Bits,
+            nominal: None,
+            value_range: None,
+        },
+    };
+    let pair = SourceLayout {
+        span,
+        kind: LayoutKind::Array {
+            range: Some(LayoutRange { left: 1, right: 0 }),
+            element: Box::new(byte),
+        },
+    };
+    assert_eq!(pair.bit_width(), Some(16));
+    assert_eq!(pair.packed_width(), Some(16));
+
+    let mut ir = ProcessIr {
+        values: vec![ProcessValue {
+            span,
+            ty: None,
+            bit_width: None,
+            kind: ProcessValueKind::Default,
+        }],
+        value_layouts: vec![Some(pair)],
+        ..ProcessIr::default()
+    };
+    assert!(ir
+        .validate(0)
+        .iter()
+        .any(|issue| issue.contains("declares packed width None")));
+
+    ir.values[0].bit_width = Some(15);
+    assert!(ir
+        .validate(0)
+        .iter()
+        .any(|issue| issue.contains("layout requires 16")));
+
+    ir.values[0].bit_width = Some(16);
+    assert!(ir.validate(0).is_empty());
+
+    let overwide = SourceLayout {
+        span,
+        kind: LayoutKind::Array {
+            range: Some(LayoutRange {
+                left: 0,
+                right: i64::from(u32::MAX),
+            }),
+            element: Box::new(SourceLayout {
+                span,
+                kind: LayoutKind::Scalar {
+                    width: 1,
+                    domain: ScalarDomain::Bits,
+                    nominal: None,
+                    value_range: None,
+                },
+            }),
+        },
+    };
+    assert_eq!(overwide.bit_width(), Some(u64::from(u32::MAX) + 1));
+    assert_eq!(overwide.packed_width(), None);
+}
+
+#[test]
 /// Validation accepts well-formed IR and flags each malformed shape.
 fn validate_accepts_good_and_flags_bad_ir() {
     // A lowered counter is well-formed.
