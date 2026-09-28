@@ -399,7 +399,7 @@ impl<'a> Lowering<'a> {
                     if l.value.is_none() && !is_instance_array && !is_root {
                         let dot = format!("{}.", l.name.text);
                         let idx = format!("{}[", l.name.text);
-                        let leaves: Vec<SignalId> = self
+                        let mut leaves: Vec<SignalId> = self
                             .locals
                             .iter()
                             .filter(|(k, _)| {
@@ -407,19 +407,24 @@ impl<'a> Lowering<'a> {
                             })
                             .map(|(_, &id)| id)
                             .collect();
+                        // `locals` is a `HashMap`; declaration order keeps the
+                        // warnings these lists feed in one order every build.
+                        leaves.sort_unstable_by_key(|id| id.0);
                         self.undriven_lets.extend(leaves);
                     }
                     if !is_instance_array && !is_root {
                         let dot = format!("{}.", l.name.text);
                         let idx = format!("{}[", l.name.text);
-                        self.unused_lets.extend(
-                            self.locals
-                                .iter()
-                                .filter(|(k, _)| {
-                                    **k == l.name.text || k.starts_with(&dot) || k.starts_with(&idx)
-                                })
-                                .map(|(_, &id)| id),
-                        );
+                        let mut leaves: Vec<SignalId> = self
+                            .locals
+                            .iter()
+                            .filter(|(k, _)| {
+                                **k == l.name.text || k.starts_with(&dot) || k.starts_with(&idx)
+                            })
+                            .map(|(_, &id)| id)
+                            .collect();
+                        leaves.sort_unstable_by_key(|id| id.0);
+                        self.unused_lets.extend(leaves);
                     }
                     // A typed file constructor is owned by elaboration here:
                     // text decodes UTF-8 into Char leaves, while binary packs
@@ -633,6 +638,11 @@ impl<'a> Lowering<'a> {
                     .filter(|(k, _)| **k == *field || k.starts_with(&dot) || k.starts_with(&idx))
                     .map(|(k, &(id, d))| (k.clone(), id, d))
                     .collect();
+                // `sub_ports` is a `HashMap`. Sort once here so every path below
+                // emits its drivers in one order; the struct-literal path used
+                // the hash order, so the same connection compiled differently
+                // from build to build.
+                leaves.sort_by(|a, b| a.0.cmp(&b.0));
                 if leaves.is_empty() {
                     continue;
                 }

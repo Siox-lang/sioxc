@@ -295,9 +295,13 @@ pub(super) fn bit(e: &Expr, i: u32) -> Expr {
 /// A test for membership in a discriminant set, emitted as a comparison
 /// chain rather than a table read.
 pub(super) fn logic_disc_in(discriminant: Expr, members: &std::collections::HashSet<u64>) -> Expr {
+    // In discriminant order: iterating the set directly followed its per-map
+    // hash seed, so the same design compiled to `m == 0 or m == 1` in one build
+    // and `m == 1 or m == 0` in the next, renumbering everything after it.
+    let mut members: Vec<u64> = members.iter().copied().collect();
+    members.sort_unstable();
     members
-        .iter()
-        .copied()
+        .into_iter()
         .map(|member| Expr::Binary {
             op: BinOp::Eq,
             lhs: Box::new(discriminant.clone()),
