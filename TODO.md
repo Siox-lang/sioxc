@@ -60,6 +60,11 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   `Driver`/`EventBlock` hardware is still imported through a migration bridge.
   `test_ir` is only an input adapter—there is no second execution IR or
   backend—but it still owns separate typed-AST-to-value/CFG translation.
+  The dependency-closed hardware importer now lives in
+  `src/ir/lower/hardware_processes.rs`, and common CFG/constant-width builders
+  live with canonical Process IR; `test_ir` temporarily invokes that importer
+  after test CFG construction to preserve existing Process IDs and scheduler
+  order.
   Complete this migration in order:
 
   1. move reusable expression, value, call, place, and CFG builders into

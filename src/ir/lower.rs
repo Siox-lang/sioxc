@@ -12,6 +12,7 @@ mod collect;
 mod control;
 mod diagnostics;
 mod expressions;
+mod hardware_processes;
 mod initializers;
 mod layout;
 mod metavalue;
@@ -19,6 +20,8 @@ mod operators;
 mod resolution;
 mod values;
 mod writes;
+
+pub(crate) use hardware_processes::import_hardware_processes;
 
 /// A design ready to simulate: signals, combinational drivers, and event blocks.
 /// `(operator, left type, right type, span)` for an unmatched operator.

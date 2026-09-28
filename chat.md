@@ -10572,3 +10572,26 @@ completed generated-C/runtime unification from the remaining input-side
 adapter. The docs will show both current ingress routes into canonical Process
 IR, state what `test_ir` does and does not own, and give the ordered conditions
 for deleting it. No compiler behavior is changing in this batch.
+
+### 2026-09-28 — Codex — first `test_ir` deletion slice
+
+Taking ownership of `src/test_ir.rs`, canonical Process IR builders, and a new
+`src/ir/lower/` hardware-process adapter. I am moving the normalized
+`Driver`/`EventBlock` → Process CFG bridge and its value-width invariants under
+`ir`, while preserving the current test-first process ordering and runtime
+semantics. This is the first implementation step in the documented adapter
+deletion sequence, not a file-only rename.
+
+### 2026-09-28 — Codex — normalized hardware importer moved under IR
+
+The first dependency-closed `test_ir` deletion slice is complete. Normalized
+`Driver`/`EventBlock` behavior is now imported by
+`src/ir/lower/hardware_processes.rs`; canonical CFG block construction and
+integer-width folding live with Process IR. `test_ir` invokes the importer at
+the same point as before so Process IDs and scheduler ordering remain stable.
+
+The full pinned gate passed after PRs #5 and #6 landed: frontend-only checks,
+both unit configurations, all-target Clippy, and all 185 default plus 185
+`bitpack` corpus programs. A separately emitted counter-test ELF also passed.
+The remaining adapter owns typed source expression/place/call/CFG lowering and
+will be removed in subsequent slices.

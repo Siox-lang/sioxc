@@ -144,6 +144,15 @@ pub struct ProcessCfg {
     pub blocks: Vec<ProcessBlock>,
 }
 
+impl ProcessCfg {
+    /// Append one empty block and return its dense id.
+    pub(crate) fn push_block(&mut self) -> ProcessBlockId {
+        let id = ProcessBlockId(self.blocks.len() as u32);
+        self.blocks.push(ProcessBlock::empty(id));
+        id
+    }
+}
+
 /// When a process runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProcessActivation {
@@ -201,6 +210,20 @@ pub struct ProcessBlock {
     pub instructions: Vec<ProcessInstruction>,
     /// How control leaves the block.
     pub terminator: ProcessTerminator,
+}
+
+impl ProcessBlock {
+    /// Construct an open lowering block whose default terminator returns.
+    pub(crate) fn empty(id: ProcessBlockId) -> Self {
+        Self {
+            id,
+            instructions: Vec::new(),
+            terminator: ProcessTerminator::Return {
+                value: None,
+                span: None,
+            },
+        }
+    }
 }
 
 /// A non-branching action inside a [`ProcessBlock`].
@@ -861,6 +884,108 @@ pub enum ProcessValueKind {
     /// Error-recovery value copied from an invalid normalized digital
     /// expression. Validation rejects it before any backend runs.
     Invalid,
+}
+
+/// Natural width of an arbitrary-precision little-endian integer literal.
+///
+/// Both source Process values and values imported from normalized hardware use
+/// this rule, so it belongs with the canonical arena rather than either input
+/// adapter.
+pub(crate) fn integer_words_width(words: &[u64]) -> Option<u32> {
+    let high = words.last().copied().unwrap_or(0);
+    let high_width = (64 - high.leading_zeros()).max(1);
+    let lower = u32::try_from(words.len().saturating_sub(1))
+        .ok()?
+        .checked_mul(64)?;
+    lower.checked_add(high_width)
+}
+
+/// Natural result width for a left shift whose count may fold in the arena.
+pub(crate) fn shifted_arena_width(
+    left: u32,
+    right: ProcessValueId,
+    values: &[ProcessValue],
+) -> Option<u32> {
+    let Some(shift) = arena_constant_integer(right, values).and_then(|value| value.try_into().ok())
+    else {
+        return Some(left);
+    };
+    left.checked_add(shift)
+}
+
+/// Conservatively fold an integer-only Process value graph.
+///
+/// Dependencies precede their users, so no recursion guard is needed. Values
+/// outside this closed integer subset deliberately return `None`.
+pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]) -> Option<i128> {
+    let value = values.get(id.0 as usize)?;
+    match &value.kind {
+        ProcessValueKind::Number(ProcessNumber::Integer(words)) => {
+            let mut result = 0i128;
+            for &word in words.iter().rev() {
+                result = result.checked_shl(64)?.checked_add(i128::from(word))?;
+            }
+            Some(result)
+        }
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::Neg,
+            operand,
+        } => arena_constant_integer(*operand, values)?.checked_neg(),
+        ProcessValueKind::Binary {
+            operation,
+            left,
+            right,
+        } => {
+            let left = arena_constant_integer(*left, values)?;
+            let right = arena_constant_integer(*right, values)?;
+            match operation {
+                ProcessBinaryOp::Add | ProcessBinaryOp::SignedAdd => left.checked_add(right),
+                ProcessBinaryOp::Sub | ProcessBinaryOp::SignedSub => left.checked_sub(right),
+                ProcessBinaryOp::Mul | ProcessBinaryOp::SignedMul => left.checked_mul(right),
+                ProcessBinaryOp::Div | ProcessBinaryOp::SignedDiv => left.checked_div(right),
+                ProcessBinaryOp::Shl => left.checked_shl(right.try_into().ok()?),
+                ProcessBinaryOp::Shr | ProcessBinaryOp::ArithmeticShr => {
+                    left.checked_shr(right.try_into().ok()?)
+                }
+                ProcessBinaryOp::And => Some(left & right),
+                ProcessBinaryOp::Or => Some(left | right),
+                ProcessBinaryOp::Xor => Some(left ^ right),
+                ProcessBinaryOp::Eq => Some(i128::from(left == right)),
+                ProcessBinaryOp::Ne => Some(i128::from(left != right)),
+                ProcessBinaryOp::Lt | ProcessBinaryOp::SignedLt => Some(i128::from(left < right)),
+                ProcessBinaryOp::Le | ProcessBinaryOp::SignedLe => Some(i128::from(left <= right)),
+                ProcessBinaryOp::Gt | ProcessBinaryOp::SignedGt => Some(i128::from(left > right)),
+                ProcessBinaryOp::Ge | ProcessBinaryOp::SignedGe => Some(i128::from(left >= right)),
+                ProcessBinaryOp::FloatAdd
+                | ProcessBinaryOp::FloatSub
+                | ProcessBinaryOp::FloatMul
+                | ProcessBinaryOp::FloatDiv
+                | ProcessBinaryOp::FloatEq
+                | ProcessBinaryOp::FloatNe
+                | ProcessBinaryOp::FloatLt
+                | ProcessBinaryOp::FloatLe
+                | ProcessBinaryOp::FloatGt
+                | ProcessBinaryOp::FloatGe
+                | ProcessBinaryOp::Custom(_) => None,
+            }
+        }
+        ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } => {
+            let selected = if arena_constant_integer(*condition, values)? != 0 {
+                then_value
+            } else {
+                else_value
+            };
+            arena_constant_integer(*selected, values)
+        }
+        ProcessValueKind::Attribute { base, attribute } if attribute == "length" => {
+            values.get(base.0 as usize)?.bit_width.map(i128::from)
+        }
+        _ => None,
+    }
 }
 
 impl ProcessIr {

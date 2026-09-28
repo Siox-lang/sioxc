@@ -207,10 +207,11 @@ optimizations of Process IR rather than a separate hardware input path.
 backend. The canonical `ProcessIr`, CFG, value, storage, descriptor, and
 validation types all live under `src/ir/` and are owned by `ir::Design`.
 `test_ir` is an input adapter invoked after `ir::lower_in` by
-`Compiler::compile`; it currently performs two jobs:
+`Compiler::compile`; it currently coordinates two jobs:
 
-1. import normalized hardware `Driver`/`EventBlock` scheduler units as
-   reactive Process CFGs;
+1. invoke the IR-owned `src/ir/lower/hardware_processes.rs` bridge, which
+   imports normalized `Driver`/`EventBlock` scheduler units as reactive Process
+   CFGs after test CFGs so existing Process IDs and scheduler order stay stable;
 2. lower typed testbench expressions, control flow, storage, clocks, and
    `TestPlan` descriptors into the same Process IR.
 
@@ -221,8 +222,9 @@ not part of the completed generated-C retirement.
 
 Delete `test_ir` only after these steps are complete, in order:
 
-1. move its reusable expression, value, call, place, and CFG builders under
-   `src/ir/lower/` without introducing a second process product;
+1. move its remaining reusable typed expression, value, call, place, and CFG
+   builders under `src/ir/lower/` without introducing a second process product
+   (the normalized-hardware bridge and common CFG/width helpers have moved);
 2. lower explicit processes, implicit concurrent behavior, clocks, and test
    stimulus directly into `Design::process_ir` from the shared typed/elaborated
    source context;

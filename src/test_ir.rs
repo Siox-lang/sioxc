@@ -9,13 +9,14 @@
 
 use crate::elab::Hierarchy;
 use crate::ir::{
-    Design, LayoutDirection, LayoutKind, ProcessActivation, ProcessAggregateField,
-    ProcessAssignment, ProcessBinaryOp, ProcessBlock, ProcessBlockId, ProcessCfg,
-    ProcessDisplayKind, ProcessFormatPart, ProcessHostValueOp, ProcessId, ProcessInstruction,
-    ProcessIr, ProcessLocal, ProcessLocalId, ProcessMatchArm, ProcessNumber, ProcessPattern,
-    ProcessRuntimeOp, ProcessSensitivity, ProcessSignalState, ProcessStorage,
-    ProcessStorageBinding, ProcessStorageId, ProcessSuspendOp, ProcessTerminator, ProcessTest,
-    ProcessUnaryOp, ProcessValue, ProcessValueId, ProcessValueKind, ProcessValueMatchArm, SignalId,
+    arena_constant_integer, integer_words_width, shifted_arena_width, Design, LayoutDirection,
+    LayoutKind, ProcessActivation, ProcessAggregateField, ProcessAssignment, ProcessBinaryOp,
+    ProcessBlock, ProcessBlockId, ProcessCfg, ProcessDisplayKind, ProcessFormatPart,
+    ProcessHostValueOp, ProcessId, ProcessInstruction, ProcessIr, ProcessLocal, ProcessLocalId,
+    ProcessMatchArm, ProcessNumber, ProcessPattern, ProcessRuntimeOp, ProcessSensitivity,
+    ProcessSignalState, ProcessStorage, ProcessStorageBinding, ProcessStorageId, ProcessSuspendOp,
+    ProcessTerminator, ProcessTest, ProcessUnaryOp, ProcessValue, ProcessValueId, ProcessValueKind,
+    ProcessValueMatchArm, SignalId,
 };
 use crate::resolve::Resolved;
 use crate::syntax::ast::{self, ElseBranch, ImplItem, Stmt};
@@ -1242,518 +1243,9 @@ pub fn lower(
         });
     }
 
-    import_hardware_processes(hierarchy, design, &mut process_ir);
+    crate::ir::import_hardware_processes(hierarchy, design, &mut process_ir);
 
     design.process_ir = process_ir;
-}
-
-/// One elaborated instance together with the root and path that own its
-/// flattened signals.
-struct InstanceLocation {
-    id: crate::elab::InstanceId,
-    root: crate::elab::InstanceId,
-    path: String,
-}
-
-/// Convert the normalized hardware scheduler decomposition into ordinary
-/// Process IR CFGs. This bridge consumes elaborated digital expressions, not
-/// hardware AST, so generic substitution, generate unrolling, std operator
-/// evaluation, resolution, and metavalue lowering remain shared with the
-/// normalized hardware product during the Process-first migration.
-fn import_hardware_processes(hierarchy: &Hierarchy, design: &Design, process_ir: &mut ProcessIr) {
-    let locations = hierarchy_locations(hierarchy);
-    for scheduled in design.processes() {
-        let primary = match &scheduled.kind {
-            crate::ir::ProcessKind::Comb { target, .. } => Some(*target),
-            crate::ir::ProcessKind::Event { block } => design
-                .event_blocks
-                .get(*block)
-                .and_then(|event| event.updates.first())
-                .map(|update| update.target)
-                .or_else(|| scheduled.reads.first().copied()),
-        };
-        let Some(primary) = primary else {
-            continue;
-        };
-        let Some(location) =
-            hardware_process_location(primary, &scheduled.reads, design, &locations)
-        else {
-            continue;
-        };
-        let id = ProcessId(process_ir.processes.len() as u32);
-        let span = hardware_process_span(&scheduled.kind, primary, design);
-        let label = if scheduled.labels.is_empty() {
-            Some(format!(
-                "{}::<hardware:{}>",
-                location.path, design.signals[primary.0 as usize].path
-            ))
-        } else {
-            Some(scheduled.labels.join(" + "))
-        };
-        let activation = ProcessActivation::Reactive {
-            sensitivity: scheduled
-                .reads
-                .iter()
-                .copied()
-                .map(ProcessSensitivity::Signal)
-                .collect(),
-        };
-        let mut process = ProcessCfg {
-            id,
-            root: location.root,
-            owner: location.id,
-            label,
-            span,
-            activation,
-            entry: ProcessBlockId(0),
-            locals: Vec::new(),
-            blocks: vec![empty_block(ProcessBlockId(0))],
-        };
-        match scheduled.kind {
-            crate::ir::ProcessKind::Comb { drivers, .. } => {
-                let mut tail = ProcessBlockId(0);
-                for driver in drivers {
-                    let Some(driver) = design.drivers.get(driver) else {
-                        continue;
-                    };
-                    let assignment_span = driver.span.unwrap_or(span);
-                    tail = append_digital_assignment(
-                        process_ir,
-                        &mut process,
-                        tail,
-                        design,
-                        ImportedAssignment {
-                            signal: driver.target,
-                            expression: &driver.expr,
-                            condition: driver.cond.as_ref(),
-                            driver_context: driver.ctx,
-                            span: assignment_span,
-                        },
-                    );
-                }
-            }
-            crate::ir::ProcessKind::Event { block } => {
-                let Some(event) = design.event_blocks.get(block) else {
-                    continue;
-                };
-                let body = push_block(&mut process);
-                let exit = push_block(&mut process);
-                let condition = push_normalized_value(process_ir, &event.condition, span, design);
-                process.blocks[0].terminator = ProcessTerminator::Branch {
-                    condition,
-                    then_block: body,
-                    else_block: exit,
-                };
-                let mut tail = body;
-                for update in &event.updates {
-                    tail = append_digital_assignment(
-                        process_ir,
-                        &mut process,
-                        tail,
-                        design,
-                        ImportedAssignment {
-                            signal: update.target,
-                            expression: &update.expr,
-                            condition: update.cond.as_ref(),
-                            driver_context: event.ctx,
-                            span: update.span.unwrap_or(span),
-                        },
-                    );
-                }
-                process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(exit);
-            }
-        }
-        process_ir.processes.push(process);
-        if let Some(test) = process_ir
-            .tests
-            .iter_mut()
-            .find(|test| test.root == location.root)
-        {
-            test.processes.push(id);
-        }
-    }
-}
-
-/// One assignment imported from the normalized digital scheduler product.
-struct ImportedAssignment<'a> {
-    signal: SignalId,
-    expression: &'a crate::ir::Expr,
-    condition: Option<&'a crate::ir::Expr>,
-    driver_context: u32,
-    span: crate::diag::Span,
-}
-
-/// Append one normalized signal assignment, spelling a guard as an explicit
-/// branch so the resulting CFG needs no special conditional-write operation.
-fn append_digital_assignment(
-    process_ir: &mut ProcessIr,
-    process: &mut ProcessCfg,
-    tail: ProcessBlockId,
-    design: &Design,
-    assignment: ImportedAssignment<'_>,
-) -> ProcessBlockId {
-    let ImportedAssignment {
-        signal,
-        expression,
-        condition,
-        driver_context,
-        span,
-    } = assignment;
-    let (assignment, next) = if let Some(condition) = condition {
-        let assignment = push_block(process);
-        let next = push_block(process);
-        let condition = push_normalized_value(process_ir, condition, span, design);
-        process.blocks[tail.0 as usize].terminator = ProcessTerminator::Branch {
-            condition,
-            then_block: assignment,
-            else_block: next,
-        };
-        (assignment, Some(next))
-    } else {
-        (tail, None)
-    };
-    let target = ProcessValueId(process_ir.values.len() as u32);
-    process_ir.values.push(ProcessValue {
-        span,
-        ty: None,
-        bit_width: design.signal_width(signal),
-        kind: ProcessValueKind::Signal {
-            signals: vec![signal],
-            state: ProcessSignalState::Current,
-        },
-    });
-    if !process_ir.value_layouts.is_empty() {
-        process_ir.value_layouts.push(None);
-    }
-    let value = push_normalized_value(process_ir, expression, span, design);
-    process.blocks[assignment.0 as usize]
-        .instructions
-        .push(ProcessInstruction::Assign {
-            semantics: ProcessAssignment::StagedSignal,
-            driver_context: Some(driver_context),
-            target,
-            value,
-            span,
-        });
-    if let Some(next) = next {
-        process.blocks[assignment.0 as usize].terminator = ProcessTerminator::Goto(next);
-        next
-    } else {
-        assignment
-    }
-}
-
-/// Append one already-normalized digital expression and annotate every new
-/// arena node with its natural packed width. Normalized expressions have no
-/// frontend `Ty`, so retaining this here lets Process IR consumers operate per
-/// value rather than falling back to a design-wide machine width.
-fn push_normalized_value(
-    process_ir: &mut ProcessIr,
-    expression: &crate::ir::Expr,
-    span: crate::diag::Span,
-    design: &Design,
-) -> ProcessValueId {
-    let first = process_ir.values.len();
-    let value = process_ir.push_digital_expr(expression, span);
-    for index in first..process_ir.values.len() {
-        let width = normalized_value_width(process_ir, ProcessValueId(index as u32), design);
-        process_ir.values[index].bit_width = width;
-    }
-    value
-}
-
-/// Natural width of one dependency-ordered normalized value.
-fn normalized_value_width(
-    process_ir: &ProcessIr,
-    id: ProcessValueId,
-    design: &Design,
-) -> Option<u32> {
-    let value = process_ir.values.get(id.0 as usize)?;
-    let width = |id: &ProcessValueId| process_ir.values.get(id.0 as usize)?.bit_width;
-    let signal_width = |signals: &[SignalId]| {
-        signals.iter().try_fold(0u32, |total, signal| {
-            total.checked_add(design.signal_width(*signal)?)
-        })
-    };
-    let width = match &value.kind {
-        ProcessValueKind::Number(ProcessNumber::Integer(words)) => integer_words_width(words),
-        ProcessValueKind::Number(ProcessNumber::Real(_))
-        | ProcessValueKind::ForeignCall { .. }
-        | ProcessValueKind::HostCall { .. } => Some(64),
-        ProcessValueKind::BitString { width, .. } => Some(*width),
-        ProcessValueKind::Char(_) => Some(1),
-        ProcessValueKind::Signal {
-            state: ProcessSignalState::Event,
-            ..
-        } => Some(1),
-        ProcessValueKind::StorageState {
-            state: ProcessSignalState::Event,
-            ..
-        } => Some(1),
-        ProcessValueKind::Signal { signals, .. } => signal_width(signals),
-        ProcessValueKind::BitSlice { high, low, .. } => high.checked_sub(*low)?.checked_add(1),
-        ProcessValueKind::PackedSlice { left, right, .. } => left
-            .abs_diff(*right)
-            .checked_add(1)
-            .and_then(|width| u32::try_from(width).ok()),
-        ProcessValueKind::CheckedIndex { index, .. } => width(index),
-        ProcessValueKind::TableLookup { table, .. } => design
-            .lookup_tables
-            .get(table.0)
-            .map(|table| table.element_width),
-        ProcessValueKind::Unary { operation, operand } => match operation {
-            ProcessUnaryOp::RealToInteger => Some(64),
-            ProcessUnaryOp::Neg | ProcessUnaryOp::Not => width(operand),
-        },
-        ProcessValueKind::RawResize { operand } => width(operand),
-        ProcessValueKind::Binary {
-            operation,
-            left,
-            right,
-        } => match operation {
-            ProcessBinaryOp::Eq
-            | ProcessBinaryOp::Ne
-            | ProcessBinaryOp::Lt
-            | ProcessBinaryOp::Le
-            | ProcessBinaryOp::Gt
-            | ProcessBinaryOp::Ge
-            | ProcessBinaryOp::SignedLt
-            | ProcessBinaryOp::SignedLe
-            | ProcessBinaryOp::SignedGt
-            | ProcessBinaryOp::SignedGe
-            | ProcessBinaryOp::FloatEq
-            | ProcessBinaryOp::FloatNe
-            | ProcessBinaryOp::FloatLt
-            | ProcessBinaryOp::FloatLe
-            | ProcessBinaryOp::FloatGt
-            | ProcessBinaryOp::FloatGe => Some(1),
-            ProcessBinaryOp::FloatAdd
-            | ProcessBinaryOp::FloatSub
-            | ProcessBinaryOp::FloatMul
-            | ProcessBinaryOp::FloatDiv => Some(64),
-            ProcessBinaryOp::Shl => shifted_arena_width(width(left)?, *right, &process_ir.values),
-            _ => Some(width(left)?.max(width(right)?)),
-        },
-        ProcessValueKind::Select {
-            then_value,
-            else_value,
-            ..
-        } => Some(width(then_value)?.max(width(else_value)?)),
-        ProcessValueKind::MetaCompare { .. } => Some(1),
-        ProcessValueKind::Concat(values) => values
-            .iter()
-            .try_fold(0u32, |total, value| total.checked_add(width(value)?)),
-        ProcessValueKind::Suffixed { .. }
-        | ProcessValueKind::String(_)
-        | ProcessValueKind::Local { .. }
-        | ProcessValueKind::Storage(_)
-        | ProcessValueKind::StorageState { .. }
-        | ProcessValueKind::Definition(_)
-        | ProcessValueKind::Intrinsic(_)
-        | ProcessValueKind::Default
-        | ProcessValueKind::Field { .. }
-        | ProcessValueKind::Attribute { .. }
-        | ProcessValueKind::Index { .. }
-        | ProcessValueKind::Range { .. }
-        | ProcessValueKind::Match { .. }
-        | ProcessValueKind::Call { .. }
-        | ProcessValueKind::Construct { .. }
-        | ProcessValueKind::Array(_)
-        | ProcessValueKind::Invalid => None,
-    };
-    width.filter(|width| *width != 0)
-}
-
-/// Width of an arbitrary-precision little-endian integer literal.
-fn integer_words_width(words: &[u64]) -> Option<u32> {
-    let high = words.last().copied().unwrap_or(0);
-    let high_width = (64 - high.leading_zeros()).max(1);
-    let lower = u32::try_from(words.len().saturating_sub(1))
-        .ok()?
-        .checked_mul(64)?;
-    lower.checked_add(high_width)
-}
-
-/// Natural width after a possibly constant left shift in an arena value graph.
-fn shifted_arena_width(left: u32, right: ProcessValueId, values: &[ProcessValue]) -> Option<u32> {
-    let Some(shift) = arena_constant_integer(right, values).and_then(|value| value.try_into().ok())
-    else {
-        return Some(left);
-    };
-    left.checked_add(shift)
-}
-
-/// Conservatively fold an integer-only Process IR value graph. This exists to
-/// retain the natural width of normalized expressions such as
-/// `1 << (WIDTH - 1)`: treating a constant expression as a dynamic shift would
-/// truncate the result before native Process lowering ever sees it.
-///
-/// Dependencies precede their users in the arena, so generated Process IR is
-/// acyclic. Values outside the integer subset deliberately return `None` and
-/// keep the dynamic-shift width rule.
-fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]) -> Option<i128> {
-    let value = values.get(id.0 as usize)?;
-    match &value.kind {
-        ProcessValueKind::Number(ProcessNumber::Integer(words)) => {
-            let mut result = 0i128;
-            for &word in words.iter().rev() {
-                result = result.checked_shl(64)?.checked_add(i128::from(word))?;
-            }
-            Some(result)
-        }
-        ProcessValueKind::Unary {
-            operation: ProcessUnaryOp::Neg,
-            operand,
-        } => arena_constant_integer(*operand, values)?.checked_neg(),
-        ProcessValueKind::Binary {
-            operation,
-            left,
-            right,
-        } => {
-            let left = arena_constant_integer(*left, values)?;
-            let right = arena_constant_integer(*right, values)?;
-            match operation {
-                ProcessBinaryOp::Add | ProcessBinaryOp::SignedAdd => left.checked_add(right),
-                ProcessBinaryOp::Sub | ProcessBinaryOp::SignedSub => left.checked_sub(right),
-                ProcessBinaryOp::Mul | ProcessBinaryOp::SignedMul => left.checked_mul(right),
-                ProcessBinaryOp::Div | ProcessBinaryOp::SignedDiv => left.checked_div(right),
-                ProcessBinaryOp::Shl => left.checked_shl(right.try_into().ok()?),
-                ProcessBinaryOp::Shr | ProcessBinaryOp::ArithmeticShr => {
-                    left.checked_shr(right.try_into().ok()?)
-                }
-                ProcessBinaryOp::And => Some(left & right),
-                ProcessBinaryOp::Or => Some(left | right),
-                ProcessBinaryOp::Xor => Some(left ^ right),
-                ProcessBinaryOp::Eq => Some(i128::from(left == right)),
-                ProcessBinaryOp::Ne => Some(i128::from(left != right)),
-                ProcessBinaryOp::Lt | ProcessBinaryOp::SignedLt => Some(i128::from(left < right)),
-                ProcessBinaryOp::Le | ProcessBinaryOp::SignedLe => Some(i128::from(left <= right)),
-                ProcessBinaryOp::Gt | ProcessBinaryOp::SignedGt => Some(i128::from(left > right)),
-                ProcessBinaryOp::Ge | ProcessBinaryOp::SignedGe => Some(i128::from(left >= right)),
-                ProcessBinaryOp::FloatAdd
-                | ProcessBinaryOp::FloatSub
-                | ProcessBinaryOp::FloatMul
-                | ProcessBinaryOp::FloatDiv
-                | ProcessBinaryOp::FloatEq
-                | ProcessBinaryOp::FloatNe
-                | ProcessBinaryOp::FloatLt
-                | ProcessBinaryOp::FloatLe
-                | ProcessBinaryOp::FloatGt
-                | ProcessBinaryOp::FloatGe
-                | ProcessBinaryOp::Custom(_) => None,
-            }
-        }
-        ProcessValueKind::Select {
-            condition,
-            then_value,
-            else_value,
-        } => {
-            let selected = if arena_constant_integer(*condition, values)? != 0 {
-                then_value
-            } else {
-                else_value
-            };
-            arena_constant_integer(*selected, values)
-        }
-        ProcessValueKind::Attribute { base, attribute } if attribute == "length" => {
-            values.get(base.0 as usize)?.bit_width.map(i128::from)
-        }
-        _ => None,
-    }
-}
-
-/// Flatten hierarchy ownership into stable instance paths.
-fn hierarchy_locations(hierarchy: &Hierarchy) -> Vec<InstanceLocation> {
-    fn visit(
-        hierarchy: &Hierarchy,
-        id: crate::elab::InstanceId,
-        root: crate::elab::InstanceId,
-        path: String,
-        output: &mut Vec<InstanceLocation>,
-    ) {
-        output.push(InstanceLocation {
-            id,
-            root,
-            path: path.clone(),
-        });
-        for &child in &hierarchy.instance(id).children {
-            visit(
-                hierarchy,
-                child,
-                root,
-                format!("{path}.{}", hierarchy.instance(child).name),
-                output,
-            );
-        }
-    }
-
-    let mut output = Vec::new();
-    for &root in &hierarchy.roots {
-        visit(
-            hierarchy,
-            root,
-            root,
-            hierarchy.root_path(root),
-            &mut output,
-        );
-    }
-    output
-}
-
-/// Find the deepest instance path containing one flattened signal.
-fn signal_location<'a>(
-    signal: SignalId,
-    design: &Design,
-    locations: &'a [InstanceLocation],
-) -> Option<&'a InstanceLocation> {
-    let path = &design.signals.get(signal.0 as usize)?.path;
-    locations
-        .iter()
-        .filter(|location| {
-            path == &location.path
-                || path
-                    .strip_prefix(&location.path)
-                    .is_some_and(|rest| rest.starts_with('.'))
-        })
-        .max_by_key(|location| location.path.len())
-}
-
-/// Recover the owning elaborated instance for one normalized hardware
-/// process. Most targets retain their flattened hierarchy path. Internal
-/// signals introduced by lowering (notably `$metatmp*` companion helpers) do
-/// not: their stable names are deliberately independent of any source
-/// instance. Such a process still reads instance-owned signals, so inherit
-/// that root/owner instead of silently dropping the helper driver.
-fn hardware_process_location<'a>(
-    primary: SignalId,
-    reads: &[SignalId],
-    design: &Design,
-    locations: &'a [InstanceLocation],
-) -> Option<&'a InstanceLocation> {
-    signal_location(primary, design, locations).or_else(|| {
-        reads
-            .iter()
-            .find_map(|signal| signal_location(*signal, design, locations))
-    })
-}
-
-/// Best source extent for a normalized hardware process.
-fn hardware_process_span(
-    kind: &crate::ir::ProcessKind,
-    primary: SignalId,
-    design: &Design,
-) -> crate::diag::Span {
-    match kind {
-        crate::ir::ProcessKind::Comb { drivers, .. } => drivers
-            .iter()
-            .filter_map(|index| design.drivers.get(*index)?.span)
-            .next(),
-        crate::ir::ProcessKind::Event { block } => design
-            .event_blocks
-            .get(*block)
-            .and_then(|event| event.updates.iter().find_map(|update| update.span)),
-    }
-    .unwrap_or(design.signals[primary.0 as usize].declaration_span)
 }
 
 /// Register persistent state declared by one test root and connect each
@@ -2015,7 +1507,7 @@ fn lower_process(
         activation,
         entry: ProcessBlockId(0),
         locals: Vec::new(),
-        blocks: vec![empty_block(ProcessBlockId(0))],
+        blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
     };
     lower_statements(statements, context, &mut process, ProcessBlockId(0));
     process
@@ -2043,7 +1535,7 @@ fn lower_legacy_process(
         activation,
         entry: ProcessBlockId(0),
         locals: Vec::new(),
-        blocks: vec![empty_block(ProcessBlockId(0))],
+        blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
     };
     let mut current = Some(ProcessBlockId(0));
     for item in items {
@@ -2318,7 +1810,7 @@ fn lower_ordered_instance_connections(
     if !wrote {
         return Some(block);
     }
-    let resume = push_block(process);
+    let resume = process.push_block();
     process.blocks[block.0 as usize].terminator = ProcessTerminator::Suspend {
         operation: ProcessSuspendOp::Settle,
         arguments: Vec::new(),
@@ -2375,7 +1867,7 @@ fn lower_ordered_storage_initializer(
     if !drives_design {
         return Some(block);
     }
-    let resume = push_block(process);
+    let resume = process.push_block();
     process.blocks[block.0 as usize].terminator = ProcessTerminator::Suspend {
         operation: ProcessSuspendOp::Settle,
         arguments: Vec::new(),
@@ -2383,26 +1875,6 @@ fn lower_ordered_storage_initializer(
         span: declaration.span,
     };
     Some(resume)
-}
-
-/// A block with no instructions that simply returns; blocks are created
-/// empty and filled in as lowering proceeds.
-fn empty_block(id: ProcessBlockId) -> ProcessBlock {
-    ProcessBlock {
-        id,
-        instructions: Vec::new(),
-        terminator: ProcessTerminator::Return {
-            value: None,
-            span: None,
-        },
-    }
-}
-
-/// Append a fresh empty block and return its id.
-fn push_block(process: &mut ProcessCfg) -> ProcessBlockId {
-    let id = ProcessBlockId(process.blocks.len() as u32);
-    process.blocks.push(empty_block(id));
-    id
 }
 
 /// Returns the still-open tail block. `None` means control terminated and
@@ -2492,7 +1964,7 @@ fn lower_statement(
                 .instructions
                 .push(instruction);
             if settle {
-                let resume = push_block(process);
+                let resume = process.push_block();
                 process.blocks[block.0 as usize].terminator = ProcessTerminator::Suspend {
                     operation: ProcessSuspendOp::Settle,
                     arguments: Vec::new(),
@@ -2725,7 +2197,7 @@ fn lower_call(
                 .first()
                 .is_some_and(|argument| await_is_time(argument, context))
             {
-                let resume = push_block(process);
+                let resume = process.push_block();
                 process.blocks[block.0 as usize].terminator = ProcessTerminator::Suspend {
                     operation: ProcessSuspendOp::AwaitTime,
                     arguments: lowered_arguments,
@@ -2736,10 +2208,10 @@ fn lower_call(
             }
 
             let condition = *lowered_arguments.first()?;
-            let check = push_block(process);
-            let wait = push_block(process);
-            let settle = push_block(process);
-            let resume = push_block(process);
+            let check = process.push_block();
+            let wait = process.push_block();
+            let settle = process.push_block();
+            let resume = process.push_block();
             process.blocks[block.0 as usize].terminator =
                 ProcessTerminator::Goto(if arguments.first().is_some_and(await_is_event) {
                     wait
@@ -3435,8 +2907,8 @@ fn lower_if(
     process: &mut ProcessCfg,
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
-    let then_block = push_block(process);
-    let else_block = push_block(process);
+    let then_block = process.push_block();
+    let else_block = process.push_block();
     process.blocks[block.0 as usize].terminator = ProcessTerminator::Branch {
         condition: value_ref(&statement.cond, process, context),
         then_block,
@@ -3455,7 +2927,7 @@ fn lower_if(
     if then_tail.is_none() && else_tail.is_none() {
         return None;
     }
-    let join = push_block(process);
+    let join = process.push_block();
     if let Some(tail) = then_tail {
         process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(join);
     }
@@ -3482,7 +2954,7 @@ fn lower_match(
     for arm in &statement.arms {
         arms.push(ProcessMatchArm {
             pattern: lower_pattern(&arm.pattern, scrutinee_type.as_ref(), context),
-            block: push_block(process),
+            block: process.push_block(),
             span: arm.span,
         });
     }
@@ -3490,7 +2962,7 @@ fn lower_match(
         .arms
         .iter()
         .any(|arm| pattern_has_wildcard(&arm.pattern));
-    let fallback = (!exhaustive).then(|| push_block(process));
+    let fallback = (!exhaustive).then(|| process.push_block());
     let scrutinee = value_ref(&statement.scrutinee, process, context);
     process.blocks[block.0 as usize].terminator = ProcessTerminator::Match {
         scrutinee,
@@ -3511,7 +2983,7 @@ fn lower_match(
         return None;
     }
 
-    let join = push_block(process);
+    let join = process.push_block();
     for tail in tails {
         process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(join);
     }
@@ -3605,9 +3077,9 @@ fn lower_for(
     // Keep the loop control on a dedicated header. Reusing `block` here makes
     // the body back-edge replay every instruction that appeared before the
     // loop in that source block.
-    let header = push_block(process);
-    let body_block = push_block(process);
-    let exit = push_block(process);
+    let header = process.push_block();
+    let body_block = process.push_block();
+    let exit = process.push_block();
     process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(header);
     process.blocks[header.0 as usize].terminator = ProcessTerminator::For {
         local,
@@ -7152,51 +6624,6 @@ mod tests {
     }
 
     #[test]
-    /// An event is one Boolean regardless of the observed signal's packed
-    /// width; treating it as the signal width would inflate direct operations.
-    fn event_process_values_are_one_bit() {
-        let span = crate::diag::Span::new(FileId(0), 0..0);
-        let process_ir = ProcessIr {
-            values: vec![ProcessValue {
-                span,
-                ty: None,
-                bit_width: None,
-                kind: ProcessValueKind::Signal {
-                    signals: vec![SignalId(0)],
-                    state: ProcessSignalState::Event,
-                },
-            }],
-            ..ProcessIr::default()
-        };
-        assert_eq!(
-            normalized_value_width(&process_ir, ProcessValueId(0), &Design::default()),
-            Some(1)
-        );
-    }
-
-    #[test]
-    /// Constant arithmetic in a shift count must contribute to the shifted
-    /// value's natural width. Signed-vector std code builds its fill mask as
-    /// `1 << (width - 1)`, so losing this width changes runtime behavior.
-    fn normalized_shift_width_folds_integer_expression() {
-        let span = crate::diag::Span::new(FileId(0), 0..0);
-        let mut process_ir = ProcessIr::default();
-        let expression = crate::ir::Expr::Binary {
-            op: crate::ir::BinOp::Shl,
-            lhs: Box::new(crate::ir::Expr::Const(1)),
-            rhs: Box::new(crate::ir::Expr::Binary {
-                op: crate::ir::BinOp::Sub,
-                lhs: Box::new(crate::ir::Expr::Const(8)),
-                rhs: Box::new(crate::ir::Expr::Const(1)),
-            }),
-        };
-
-        let shifted = push_normalized_value(&mut process_ir, &expression, span, &Design::default());
-
-        assert_eq!(process_ir.values[shifted.0 as usize].bit_width, Some(8));
-    }
-
-    #[test]
     /// Resolver-selected constants become their executable initializer graph;
     /// a backend must never need the frontend declaration behind a `DefId`.
     fn module_constants_do_not_survive_as_definitions() {
@@ -7414,47 +6841,6 @@ mod tests {
             eval_real_suffix_block(&suffix.body, suffix, 2.5),
             Some(2_500_000.0)
         );
-    }
-
-    #[test]
-    /// Lowering-only helper signals have no hierarchy prefix of their own,
-    /// but must execute in the same elaborated instance as the signals they
-    /// read. Dropping these processes resets nested X/Z operators to binary
-    /// zero even though the final companion expression still references them.
-    fn internal_hardware_process_inherits_read_owner() {
-        let span = crate::diag::Span::new(FileId(0), 0..1);
-        let signal = |path: &str| crate::ir::Signal {
-            path: path.to_string(),
-            declaration_span: span,
-            width: 1,
-            real: false,
-            integer: false,
-            char: false,
-            range: None,
-            init: vec![0],
-            enum_type: None,
-        };
-        let design = Design {
-            signals: vec![signal("$metatmp0"), signal("Bench.dut.input")],
-            ..Design::default()
-        };
-        let locations = vec![
-            InstanceLocation {
-                id: crate::elab::InstanceId(0),
-                root: crate::elab::InstanceId(0),
-                path: "Bench".to_string(),
-            },
-            InstanceLocation {
-                id: crate::elab::InstanceId(1),
-                root: crate::elab::InstanceId(0),
-                path: "Bench.dut".to_string(),
-            },
-        ];
-
-        let location = hardware_process_location(SignalId(0), &[SignalId(1)], &design, &locations)
-            .expect("internal helper should inherit an owner from its read set");
-        assert_eq!(location.id, crate::elab::InstanceId(1));
-        assert_eq!(location.root, crate::elab::InstanceId(0));
     }
 
     #[test]

@@ -73,11 +73,11 @@ source-located diagnostics, and host services consume descriptors and metadata
 emitted in the design object.
 
 The input side is not completely straight-line yet. `test_ir` is a temporary
-adapter, not a second IR or backend: it imports normalized hardware
-`Driver`/`EventBlock` behavior and lowers typed test expressions into the
-`ProcessIr` owned by `ir::Design`. The intended Phase 1 endpoint lowers source
-processes directly into that owned Process IR, derives optimized digital
-scheduler forms from it, and deletes the adapter. See
+adapter, not a second IR or backend: it still coordinates the IR-owned
+normalized-hardware importer with its typed-test expression lowering, filling
+the `ProcessIr` owned by `ir::Design`. The intended Phase 1 endpoint lowers
+source processes directly into that owned Process IR, derives optimized
+digital scheduler forms from it, and deletes the adapter. See
 [the current `test_ir` boundary](architecture.md#current-test_ir-boundary).
 
 The arrows through parse, resolve, type-check, elaboration, and IR are compiler
