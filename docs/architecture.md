@@ -57,6 +57,27 @@ The type checker is directory-backed the same way:
 Each file carries one `impl Checker` run; methods are `pub(super)` so siblings
 can call them, and nothing outside `types` can.
 
+The LLVM lowering of Process IR, `src/llvm/process/`, is split the same way:
+
+- `mod.rs` holds the process ABI constants and re-exports the two entry
+  points the rest of the backend calls, `declare_state` and `emit_metadata`;
+- `names.rs`, `slices.rs`, `bindings.rs`, and `state.rs` cover the emitted
+  state: global names and widths, layout slices, storage bindings and
+  defaults, and state declaration, reads, stores, and range checks;
+- `logic.rs` owns Logic discriminants and metavalue companion planes;
+- `value_types.rs`, `binary.rs`, and `values.rs` lower Process values:
+  signedness and layout queries, binary operators and dynamic indexing, and
+  value lowering itself;
+- `tables.rs` emits constant tables and strings, and `support.rs` holds the
+  fail-closed support checks;
+- `places.rs`, `writes.rs`, and `flags.rs` handle assignment places, writes
+  and schedule calls, and change/dirty flags with the emitted state helpers;
+- `blocks.rs`, `instructions.rs`, `loops.rs`, and `entry.rs` lower control:
+  suspension points, formatted output and runtime instructions, loops and
+  `match`, and process entry points with their table;
+- `metadata.rs` writes waveform and source-location metadata and the tables
+  the runtime discovers.
+
 These file splits are internal ownership boundaries, not additional pipeline
 stages. Consumers continue to use the stable `siox::ir::*` and
 `siox::types::*` paths rather than depending on implementation submodules.
