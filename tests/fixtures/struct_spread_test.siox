@@ -1,5 +1,5 @@
 // Struct spread-update `{ ..base, .x = v }` in a testbench local and in
-// hardware in the native harness.
+// hardware in the native Process runtime.
 module struct_spread;
 
 using std::bits::unsigned;

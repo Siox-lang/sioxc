@@ -446,8 +446,8 @@ pub fn elaborate_top(
 ///
 /// Native test discovery uses this entry point after resolving the canonical
 /// `std::attrs::test` applications. Keeping selection outside elaboration
-/// prevents this stage, the compatibility C harness, and the future software
-/// IR emitter from each rediscovering roots by attribute spelling.
+/// prevents this stage and Process-IR lowering from independently
+/// rediscovering roots by attribute spelling.
 pub fn elaborate_entities(
     modules: &[Module],
     resolved: &Resolved,

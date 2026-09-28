@@ -11,7 +11,7 @@ impl<'a> Checker<'a> {
     /// scan, so the common `default then override` shapes never trip it.
     pub(super) fn lint_dead_assignments<'s>(&mut self, stmts: impl Iterator<Item = &'s Stmt>) {
         // Testbench assignments are sequential stimulus, not declarative
-        // drivers. The native harness settles after every connected-signal
+        // drivers. The native runtime settles after every connected-signal
         // write, so even adjacent `clk = '1'; clk = '0';` assignments can be
         // observed by an edge-triggered process. Applying the hardware
         // source-order override rule here is therefore a false positive.

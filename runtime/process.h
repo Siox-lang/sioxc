@@ -35,6 +35,9 @@ uint8_t sx_runtime_assert(uint8_t condition, const char *message,
 void sx_runtime_warn(uint8_t condition, const char *message,
                      uint32_t file, uint32_t offset);
 void sx_runtime_print(const char *message);
+/* Attach a source location to an error raised while evaluating a declaration
+ * initializer. A successful initializer leaves the runtime untouched. */
+void sx_runtime_note_location(uint32_t file, uint32_t offset);
 /* Build a typed runtime message without design-specific generated source.
  * Numeric words are little-endian and `width` is the exact logical width. */
 void sx_runtime_format_begin(void);
@@ -54,5 +57,23 @@ void sx_runtime_seed(uint64_t seed);
 uint64_t sx_runtime_rand(void);
 uint64_t sx_runtime_randint(uint64_t left, uint64_t right);
 uint64_t sx_runtime_uniform(void);
+
+/* Runtime-owned UTF-8 strings and raw file values. Handles are nonzero and remain valid until
+ * the current test finishes; the scheduler releases every allocation between
+ * tests. Fixed values use the same low-word-first, low-byte-first packing on
+ * every host. Paths have already been resolved against the source directory
+ * by Process lowering. */
+uint64_t sx_runtime_read_utf8(const char *path);
+uint8_t sx_runtime_read_utf8_fixed(const char *path, uint64_t *words,
+                                   uint32_t word_count,
+                                   uint32_t character_capacity);
+uint8_t sx_runtime_read_binary(const char *path, uint64_t *words,
+                               uint32_t word_count, uint32_t byte_capacity);
+uint64_t sx_runtime_file_exists(const char *path);
+uint64_t sx_runtime_string_length(uint64_t handle);
+uint64_t sx_runtime_string_index(uint64_t handle, uint64_t index);
+uint64_t sx_runtime_string_index_at(uint64_t handle, uint64_t index,
+                                    uint32_t file, uint32_t offset);
+uint64_t sx_runtime_string_equals_utf8(uint64_t handle, const char *text);
 
 #endif

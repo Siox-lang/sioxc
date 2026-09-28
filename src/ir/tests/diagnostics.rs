@@ -227,9 +227,9 @@ fn deep_acyclic_type_derivation_has_no_magic_depth_limit() {
     assert_eq!(d.signals.iter().find(|s| s.path == "E.y").unwrap().width, 1);
 }
 
-/// A struct-literal initializer on an entity-level `let` silently powered
-/// on at 0 — the testbench interpreter honoured it, hardware lowering did
-/// not, so the two engines disagreed about the same declaration.
+/// A struct-literal initializer on an entity-level `let` once silently powered
+/// on at 0 because hardware lowering dropped an initializer that the source
+/// model retained.
 #[test]
 fn struct_literal_initializer_seeds_field_inits() {
     let d = lower_src(

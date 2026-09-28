@@ -967,7 +967,7 @@ pub enum GenericArg {
 
 /// The source span of a statement.
 ///
-/// Used to attribute generated code back to the line that produced it, so a
+/// Used to attribute lowered native code back to the line that produced it, so a
 /// debugger and a runtime failure both name the source rather than the
 /// intermediate the compiler emitted.
 pub fn stmt_span(s: &Stmt) -> Span {

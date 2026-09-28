@@ -1026,6 +1026,16 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             global.set_initializer(&bytes.const_zero());
             global.set_linkage(Linkage::Internal);
         }
+        let values = self.ctx.i64_type().array_type(self.n.max(1));
+        let global = self
+            .module
+            .add_global(values, None, "sx.process.range.value");
+        global.set_initializer(&values.const_zero());
+        global.set_linkage(Linkage::Internal);
+        let sites = self.ctx.i32_type().array_type(self.n.max(1));
+        let global = self.module.add_global(sites, None, "sx.process.range.site");
+        global.set_initializer(&sites.const_zero());
+        global.set_linkage(Linkage::Internal);
     }
 
     /// Address one process-staging flag by its compile-time signal id.
@@ -1051,6 +1061,51 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     global.as_pointer_value(),
                     &[self.ctx.i32_type().const_zero(), signal],
                     "process.flag",
+                )
+                .unwrap()
+        }
+    }
+
+    /// Address the pre-narrowed value and source site staged for a ranged
+    /// signal. These follow pending-write overwrite semantics: only the last
+    /// write in a delta is checked when that value commits.
+    fn process_range_value_ptr(&self, signal: u32) -> PointerValue<'ctx> {
+        let ty = self.ctx.i64_type().array_type(self.n.max(1));
+        let global = self
+            .module
+            .get_global("sx.process.range.value")
+            .expect("process range value global");
+        unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    ty,
+                    global.as_pointer_value(),
+                    &[
+                        self.ctx.i32_type().const_zero(),
+                        self.ctx.i32_type().const_int(u64::from(signal), false),
+                    ],
+                    "process.range.value",
+                )
+                .unwrap()
+        }
+    }
+
+    fn process_range_site_ptr(&self, signal: u32) -> PointerValue<'ctx> {
+        let ty = self.ctx.i32_type().array_type(self.n.max(1));
+        let global = self
+            .module
+            .get_global("sx.process.range.site")
+            .expect("process range site global");
+        unsafe {
+            self.builder
+                .build_in_bounds_gep(
+                    ty,
+                    global.as_pointer_value(),
+                    &[
+                        self.ctx.i32_type().const_zero(),
+                        self.ctx.i32_type().const_int(u64::from(signal), false),
+                    ],
+                    "process.range.site",
                 )
                 .unwrap()
         }
@@ -1089,6 +1144,32 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 )
                 .unwrap();
             self.builder.build_return(None).unwrap();
+
+            if self.design.signals[signal as usize].range.is_some() {
+                let function = self.module.add_function(
+                    &format!("sx.process.stage.range.{signal}"),
+                    void.fn_type(
+                        &[self.ctx.i64_type().into(), self.ctx.i32_type().into()],
+                        false,
+                    ),
+                    Some(Linkage::Internal),
+                );
+                self.builder
+                    .position_at_end(self.ctx.append_basic_block(function, "entry"));
+                self.builder
+                    .build_store(
+                        self.process_range_value_ptr(signal),
+                        function.get_nth_param(0).expect("range value argument"),
+                    )
+                    .unwrap();
+                self.builder
+                    .build_store(
+                        self.process_range_site_ptr(signal),
+                        function.get_nth_param(1).expect("range site argument"),
+                    )
+                    .unwrap();
+                self.builder.build_return(None).unwrap();
+            }
         }
 
         // uint8_t sx_process_commit(void)
@@ -1126,6 +1207,130 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 .builder
                 .build_int_compare(IntPredicate::NE, previous, next, "process.changed")
                 .unwrap();
+
+            if let Some((left, right)) = self.design.signals[signal as usize].range {
+                let checked = self
+                    .builder
+                    .build_load(
+                        self.ctx.i64_type(),
+                        self.process_range_value_ptr(signal),
+                        "process.range.checked",
+                    )
+                    .unwrap()
+                    .into_int_value();
+                let below = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        checked,
+                        self.ctx.i64_type().const_int(left.min(right) as u64, true),
+                        "process.range.below",
+                    )
+                    .unwrap();
+                let above = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::SGT,
+                        checked,
+                        self.ctx.i64_type().const_int(left.max(right) as u64, true),
+                        "process.range.above",
+                    )
+                    .unwrap();
+                let violation = self
+                    .builder
+                    .build_or(below, above, "process.range.violation")
+                    .unwrap();
+                let empty = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        self.builder
+                            .build_load(
+                                self.ctx.i32_type(),
+                                self.range_error_ptr(),
+                                "process.range.previous",
+                            )
+                            .unwrap()
+                            .into_int_value(),
+                        self.ctx.i32_type().const_zero(),
+                        "process.range.empty",
+                    )
+                    .unwrap();
+                let record = self
+                    .builder
+                    .build_and(
+                        valid,
+                        self.builder
+                            .build_and(empty, violation, "process.range.new")
+                            .unwrap(),
+                        "process.range.record",
+                    )
+                    .unwrap();
+                let select = |yes, no, name| {
+                    self.builder
+                        .build_select(record, yes, no, name)
+                        .unwrap()
+                        .into_int_value()
+                };
+                let previous_error = self
+                    .builder
+                    .build_load(
+                        self.ctx.i32_type(),
+                        self.range_error_ptr(),
+                        "process.range.error.previous",
+                    )
+                    .unwrap()
+                    .into_int_value();
+                self.builder
+                    .build_store(
+                        self.range_error_ptr(),
+                        select(
+                            self.ctx.i32_type().const_int(u64::from(signal) + 1, false),
+                            previous_error,
+                            "process.range.error.next",
+                        ),
+                    )
+                    .unwrap();
+                let previous_value = self
+                    .builder
+                    .build_load(
+                        self.ctx.i64_type(),
+                        self.range_value_ptr(),
+                        "process.range.value.previous",
+                    )
+                    .unwrap()
+                    .into_int_value();
+                self.builder
+                    .build_store(
+                        self.range_value_ptr(),
+                        select(checked, previous_value, "process.range.value.next"),
+                    )
+                    .unwrap();
+                let site = self
+                    .builder
+                    .build_load(
+                        self.ctx.i32_type(),
+                        self.process_range_site_ptr(signal),
+                        "process.range.site.staged",
+                    )
+                    .unwrap()
+                    .into_int_value();
+                let previous_site = self
+                    .builder
+                    .build_load(
+                        self.ctx.i32_type(),
+                        self.range_site_ptr(),
+                        "process.range.site.previous",
+                    )
+                    .unwrap()
+                    .into_int_value();
+                self.builder
+                    .build_store(
+                        self.range_site_ptr(),
+                        select(site, previous_site, "process.range.site.next"),
+                    )
+                    .unwrap();
+            }
 
             // `old` is the state immediately before this commit. Event is one
             // bit regardless of the signal's packed width.
@@ -1284,6 +1489,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     i8.const_zero(),
                 )
                 .unwrap();
+            self.builder
+                .build_store(self.process_range_value_ptr(id), i64.const_zero())
+                .unwrap();
+            self.builder
+                .build_store(self.process_range_site_ptr(id), i32.const_zero())
+                .unwrap();
         }
         self.builder
             .build_call(
@@ -1400,7 +1611,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             self.builder.position_at_end(*bb);
             self.record_range_value(SignalId(id as u32), val, None, 0);
             // Mask to the signal's width, exactly like the interpreter's
-            // `set` — outside writers (runner, native harness, FFI) may hand
+            // `set` — outside writers (runtime or FFI) may hand
             // in a value wider than the signal.
             let w = self.signal_width(SignalId(id as u32));
             let stored = if w > 0 && w < 64 {
@@ -2610,7 +2821,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         };
         if matches!(op, BinOp::Shl | BinOp::Shr | BinOp::AShr) {
             // LLVM shifts are poison when the count is at least the operation
-            // width. Hardware and the native harness define those cases as
+            // width. Siox hardware semantics define those cases as
             // zero, so compare at a width that preserves the entire count,
             // substitute a safe zero count, then select the defined result.
             let shift_width = operand_width.max(self.expr_width(rhs)).max(1);

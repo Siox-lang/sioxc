@@ -467,10 +467,10 @@ impl<'a> Lowering<'a> {
                                 if connection_value_is_static(&value, self.resolved) {
                                     // A scalar input connected directly to a
                                     // value is a constant combinational driver,
-                                    // not test-harness setup. Keeping it in the
-                                    // canonical driver graph lets generated-C
-                                    // and Process IR consume the same normalized
-                                    // semantics. Expressions that still depend
+                                    // not testbench setup. Keeping it in the
+                                    // canonical driver graph gives Process IR
+                                    // the same normalized semantics as hardware
+                                    // lowering. Expressions that still depend
                                     // on testbench-only state lower to Unknown
                                     // here and remain with the stimulus adapter
                                     // until that state is canonical Process IR.

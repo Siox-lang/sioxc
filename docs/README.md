@@ -21,9 +21,6 @@ synthesis layer yet (those are Phase 2 and 3 — see
 | [interoperability.md](interoperability.md) | **Interop and embedding** — the public compiler API, `extern "C"` functions, file I/O, and the `siox-lsp` editor server. |
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
 | [proposals/](proposals/) | Designs that are **not** implemented yet. Once something lands, its record moves into the document it belongs to and the proposal goes away, so this folder only ever lists outstanding work. |
-| [Unified process pipeline](proposals/testbench-software-ir.md) | Accepted migration plan for one Process IR, direct LLVM scheduling, and removal of the generated-C/TestIR split. |
-| [Native process runtime](proposals/native-process-runtime.md) | Inventory of the services still emitted as C, and the fixed ABI direct LLVM lowering must call. |
-| [Runtime differential matrix](proposals/runtime-differential-matrix.md) | Which corpus cases cover each runtime service, and the exact observable to compare between backends. |
 | [Declarative attributes](proposals/attribute-system.md) | Proposed `attr … for … = …;` declaration and binding for metadata, with defaults and readback through `'`. |
 | [`#[...]` as compiler directives](proposals/compiler-directives.md) | Proposed rule that `#[...]` marks only what changes compilation — `#[test]` today, lint control next. |
 | [../TODO.md](../TODO.md) | The **outstanding-work list** — post-baseline capability growth by compiler area. |
@@ -52,11 +49,10 @@ flowchart LR
 
     IR --> FRONT["frontend artifact<br/>metadata / dumps"]
     IR --> LLVM["LLVM backend"]
-    IR --> HARNESS["native test harness"]
     LLVM --> OBJ["native object"]
-    OBJ --> TEST["test executable"]
-    HARNESS --> TEST
-    FIXED["fixed Process scheduler + CLI<br/>migration path"] --> TEST
+    OBJ --> LINK["native linker"]
+    FIXED["fixed Process scheduler + CLI<br/>VCD / FST runtime"] --> LINK
+    LINK --> TEST["test executable"]
 
     FRONT --> RESULT["Compilation<br/>diagnostics + retained phase products<br/>statistics + optional artifact or failure"]
     OBJ --> RESULT
@@ -64,18 +60,14 @@ flowchart LR
     RESULT -->|returns Compilation| API
 ```
 
-This diagram is the current implementation. Now that `process` is the common
-sequential/scheduling boundary, the planned endpoint is one semantic track:
+This diagram is the current implementation. `process` is the common
+sequential/scheduling boundary, giving one semantic track:
 `source → AST → resolve → typecheck → elaborate → Process IR → target
 validation → optimization → output`. `#[test]` only adds root/descriptor
-metadata. The remaining native-harness branch is removed by the
-[unified process pipeline plan](proposals/testbench-software-ir.md); only final
-artifact selection remains variable. An opt-in migration path already links
-the LLVM process entries to one fixed scheduler/CLI without generating
-design-specific C. VCD and FST are already descriptor-driven fixed-runtime
-services, and runtime diagnostics resolve object-owned source metadata;
-remaining Process instructions and host services still keep the generated
-compatibility harness as the default.
+metadata; only final artifact selection varies. Native tests link the LLVM
+process entries to one fixed scheduler/CLI without generating design-specific
+C. VCD/FST, source-located diagnostics, and host services consume descriptors
+and metadata emitted in the design object.
 
 The arrows through parse, resolve, type-check, elaboration, and IR are compiler
 work. The final arrow back to `siox::compiler` is the function return, not
@@ -86,7 +78,7 @@ artifact or host failure.
 `diag` (spans, diagnostics, source map) underpins every stage, and
 `siox::compiler` wires them together behind a disk/in-memory request/result
 API. **`siox::llvm` is the native backend**; `sioxc` is a thin CLI over that
-same API, including native `#[test]` harness generation.
+same API, including native `#[test]` executable generation.
 The separate `siox-lsp` repository uses the core through Cargo Git and therefore
 builds without LLVM.
 
@@ -122,12 +114,12 @@ cargo run --bin sioxc -- --test <file> -o tests # compile native #[test] executa
 A bare `sioxc <file>` compiles the sole uninstantiated entity to a native
 object (like `rustc foo.rs`); multiple structural roots require
 `--top <qualified-entity>`. LLVM 22 is the selected native backend. Creating a
-native `#[test]` executable additionally invokes Clang on the generated C
-compatibility harness and links the compiler's prebuilt FST runtime plus zlib.
-The replacement path instead links the same LLVM object with prebuilt,
-design-independent Process scheduler and CLI objects; it is not yet the
-default. A frontend-only API/LSP build with `default-features = false` needs
-neither LLVM nor these native-output tools.
+native `#[test]` executable normally invokes Clang only as a linker for the LLVM
+design object and the prebuilt, design-independent Process scheduler, CLI, and
+FST runtime objects plus zlib. If host precompilation was unavailable, Clang
+compiles the same fixed runtime sources as a fallback. A frontend-only API/LSP
+build with `default-features = false` needs neither LLVM nor these native-output
+tools.
 
 | Command | Does |
 | ------- | ---- |

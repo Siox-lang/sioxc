@@ -21,8 +21,8 @@
 use std::process::Command;
 
 /// Compile a testbench-only source and return the diagnostics. Testbench code
-/// is emitted as C by a separate backend, so a rule enforced only in hardware
-/// lowering does not reach it.
+/// reaches Process lowering without a hardware driver, so a rule enforced only
+/// while lowering hardware assignments does not reach it.
 fn testbench_diagnostics(name: &str, body: &str) -> String {
     let src = format!(
         "module m;\n\
@@ -160,12 +160,11 @@ fn a_vector_conversion_is_untouched() {
 }
 
 #[test]
-fn the_testbench_engine_refuses_the_same_conversions() {
-    // The two engines disagreed on the same line. Hardware lowering rejects
-    // `Bit(l)`; the testbench emitter passed *any* `EnumName(x)` straight
-    // through, because its guard checked only that the target was an enum
-    // while its comment claimed a derivation chain. `'X'` therefore arrived
-    // in a `Bit`, which has nowhere to put it, and printed as `?`.
+fn native_test_lowering_refuses_the_same_conversions() {
+    // This used to disagree with hardware lowering on the same line: the old
+    // test harness passed *any* `EnumName(x)` straight through because its
+    // guard checked only that the target was an enum. The shared frontend must
+    // now reject the invalid conversion before Process lowering.
     for body in [
         "let l: Logic = 'X'; let o: Bit; o = Bit(l);",
         "let l: Logic = '1'; let o: Bit; o = Bit(l);",

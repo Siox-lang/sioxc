@@ -7,7 +7,7 @@ fn text(output: &Output) -> String {
 }
 
 #[test]
-fn generated_tests_own_and_read_the_current_runtime_files() {
+fn native_tests_own_and_read_the_current_runtime_files() {
     let dir = std::env::temp_dir().join(format!("siox_runtime_io_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let source = dir.join("runtime_io.siox");

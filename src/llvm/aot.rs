@@ -1,10 +1,9 @@
 //! Ahead-of-time object emission (stage B5).
 //!
 //! Emits the design module as a native object file via `TargetMachine`. The
-//! object exports the `sx_*` C ABI, so a runtime `main` (generated from the
-//! testbench, or hand-written) links against it to form a
-//! standalone native simulator. Compiling the testbench stimulus into that
-//! `main` is the follow-on increment.
+//! object exports the fixed `sx_*` runtime ABI, so the design-independent
+//! scheduler, command-line entry point, and waveform runtime can link it into
+//! a standalone native simulator.
 
 use std::path::Path;
 
@@ -1654,8 +1653,8 @@ signed main(void) {
     sx_reset();
     if (sx_process_entries[1](sx_process_initial_blocks[1]) != 0) return 6;
     if (sx_index_error() != 1 || sx_index_value() != 7) return 7;
-    if (sx_range_error() != 1 || sx_range_value() != 7 || sx_range_site() != 2) return 8;
-    if (sx_process_commit() != 1 || sx_read(0) != 7) return 9;
+    if (sx_process_commit() != 1 || sx_read(0) != 7) return 8;
+    if (sx_range_error() != 1 || sx_range_value() != 7 || sx_range_site() != 2) return 9;
     return 0;
 }
 "#,

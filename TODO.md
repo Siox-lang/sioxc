@@ -7,7 +7,7 @@ layer that owns each change:
 
 This file tracks active work, not implementation history. Completed migration
 details and measurements belong in [`chat.md`](chat.md) and the documents under
-[`docs/`](docs/). Status last audited 2026-09-26 against the compiler, standard
+[`docs/`](docs/). Status last audited 2026-09-27 against the compiler, standard
 library, `siox-tests`, and CI.
 
 Legend: 🔴 not started · 🟡 partial / constrained.
@@ -21,15 +21,11 @@ Phase 1 is complete when:
 - native objects and native test executables use the same IR-to-LLVM lowering;
 - the fixed runtime schedules all processes, time, delta cycles, and host
   services without per-design generated C;
-- the default and `bitpack` corpus agree with the compatibility oracle in
-  results, diagnostics, time progression, resolved values, and VCD/FST output;
-- the direct path becomes the default, then the generated-C translator and the
-  temporary AST-to-Process adapter are deleted.
-
-The executable migration plan and current ABI decisions live in
-[`docs/proposals/testbench-software-ir.md`](docs/proposals/testbench-software-ir.md)
-and
-[`docs/proposals/native-process-runtime.md`](docs/proposals/native-process-runtime.md).
+- the default and `bitpack` corpus pass through the fixed Process runtime with
+  correct results, diagnostics, time progression, resolved values, and
+  VCD/FST output;
+- the temporary AST-to-Process adapter is deleted after source constructs
+  lower directly into canonical Process IR.
 
 ## AST
 
@@ -85,18 +81,18 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
 
 - 🟡 **Complete direct Process IR lowering.** Exact-width scalar and recursive
   packed values, branches, loops, matches, clocks, suspension, delayed writes,
-  formatting, assertions, scalar foreign calls, and source-defined operator
-  impls execute directly today. Remaining executable forms are receiver
-  methods, procedure-shaped calls, runtime recursion/general call CFGs,
-  non-packed conversions, and dynamic strings. Unsupported forms must
-  continue to fail transactionally before calls or staged writes become
+  formatting, assertions, scalar foreign calls, straight-line receiver/free
+  procedures, dynamic UTF-8 strings/file probes, and source-defined operator
+  impls execute directly today. Remaining executable forms are runtime
+  recursion/general call CFGs and non-packed conversions. Unsupported forms
+  must continue to fail transactionally before calls or staged writes become
   observable.
 - 🟡 **Move all host services behind the fixed ABI.** Deterministic
-  `seed`/`rand`/`randint`/`uniform` now use explicit Process IR operations and
-  fixed runtime state. Add runtime-owned UTF-8 strings/dynamic arrays,
-  `read<T>` and file failures, and any remaining simulation-only calls. LLVM
-  emits value semantics; the runtime owns allocation, persistent state, and
-  host contact.
+  `seed`/`rand`/`randint`/`uniform`, runtime UTF-8 `read<string>`, string
+  indexing/length/equality, and `exists` use explicit Process IR operations
+  and fixed runtime state. Add general runtime-owned dynamic arrays and
+  non-string `read<T>` forms. LLVM emits value semantics; the runtime owns
+  allocation, persistent state, and host contact.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` operations, constants/conversions, ABI rules, formatting,
   and a software fallback before exposing a language feature.
@@ -110,18 +106,10 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
 Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
-- 🟡 **Retire generated C.** The fixed scheduler/CLI already links LLVM-emitted
-  process entries and runs 173 of 178 corpus tests in agreement without design
-  C; all 173 also match VCD signal values and timestamps in default and
-  `bitpack`,
-  while focused tests establish decoded FST parity for hierarchy, all value
-  kinds, multiword values, and monotonic multi-test timelines.
-  The five fail-closed gaps are `fs_test`, `generic_struct_method_test`,
-  `instances_test`, `integer_hw_test`, and `signed_widen_test`. Finish their
-  LLVM/runtime coverage, make this path unconditional, rerun both full
-  differential gates, then delete the AST-to-C statement/value translator and
-  its dispatcher. Clang may remain a linker driver; it must not translate siox
-  semantics through C.
+- 🔴 **Native source debug metadata.** Emit direct DWARF locations and a stable
+  signal/process inspection surface from LLVM Process entries. Until that is
+  implemented, `sioxc --test -g` fails explicitly; it must never resurrect a
+  per-design C translation merely to obtain `#line` metadata.
 - 🔴 **Scalable mini-runtime scheduler (Phase 2 optimization).** Build a small
   deterministic runtime that acts like an RTOS for simulation processes. With
   the default thread count of one, language processes are logically concurrent

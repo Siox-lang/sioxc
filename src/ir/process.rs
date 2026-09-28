@@ -234,7 +234,7 @@ pub enum ProcessInstruction {
     },
     /// Queue a signal write for a later simulation time. Delayed writes are a
     /// scheduler operation rather than a flavour of immediate assignment, so
-    /// native backends never have to infer scheduling from an optional field.
+    /// native lowering never has to infer scheduling from an optional field.
     Schedule {
         /// Compatibility driver identity, with the same meaning as on
         /// [`ProcessInstruction::Assign`]. Testbench storage clocks have none.
@@ -305,6 +305,20 @@ pub enum ProcessHostValueOp {
     RandomRange,
     /// One deterministic IEEE-754 value in the half-open interval `0.0..1.0`.
     Uniform,
+    /// Decode one UTF-8 file into a runtime-owned string and return its handle.
+    ReadUtf8,
+    /// Decode UTF-8 directly into a fixed `Char[N]` Process value.
+    ReadUtf8Fixed,
+    /// Read raw bytes into the exact-width Process value supplied by context.
+    ReadBinary,
+    /// Test whether a filesystem path exists without raising an I/O failure.
+    FileExists,
+    /// Return the Unicode scalar count of a runtime-owned string handle.
+    StringLength,
+    /// Read one Unicode scalar from a runtime-owned string handle.
+    StringIndex,
+    /// Compare a runtime-owned string handle with a retained UTF-8 literal.
+    StringEqualsUtf8,
 }
 
 /// One normalized piece of a runtime message.
@@ -970,6 +984,33 @@ impl ProcessIr {
         let mut test_roots = HashSet::new();
         let value_count = self.values.len() as u32;
 
+        let invalid_native_duration = |value: ProcessValueId| -> Option<&'static str> {
+            let value = self.values.get(value.0 as usize)?;
+            match &value.kind {
+                ProcessValueKind::Suffixed {
+                    number: ProcessNumber::Integer(words),
+                    ..
+                } if words
+                    .get(1..)
+                    .is_some_and(|rest| rest.iter().any(|word| *word != 0)) =>
+                {
+                    Some("does not fit the native 64-bit femtosecond timeline")
+                }
+                ProcessValueKind::Suffixed {
+                    number: ProcessNumber::Integer(_),
+                    ..
+                } => Some("exceeds the native 64-bit femtosecond timeline"),
+                ProcessValueKind::Number(ProcessNumber::Integer(words))
+                    if words
+                        .get(1..)
+                        .is_some_and(|rest| rest.iter().any(|word| *word != 0)) =>
+                {
+                    Some("does not fit the native 64-bit femtosecond timeline")
+                }
+                _ => None,
+            }
+        };
+
         if !self.value_layouts.is_empty() && self.value_layouts.len() != self.values.len() {
             issues.push(format!(
                 "process value layout arena has {} entries for {} values",
@@ -1074,7 +1115,7 @@ impl ProcessIr {
                                 ));
                             }
                         }
-                        ProcessInstruction::Schedule { target, .. } => {
+                        ProcessInstruction::Schedule { target, delay, .. } => {
                             if !process_place_classes(self, *target).is_some_and(|classes| {
                                 classes.iter().all(|class| {
                                     matches!(
@@ -1086,6 +1127,12 @@ impl ProcessIr {
                                 issues.push(format!(
                                     "process {:?} block {:?} schedules non-storage/signal place {:?}",
                                     process.id, block.id, target
+                                ));
+                            }
+                            if let Some(problem) = invalid_native_duration(*delay) {
+                                issues.push(format!(
+                                    "process {:?} block {:?} delayed assignment duration {problem}",
+                                    process.id, block.id
                                 ));
                             }
                         }
@@ -1105,6 +1152,22 @@ impl ProcessIr {
                         issues.push(format!(
                             "process {:?} block {:?} terminator references invalid value {:?}",
                             process.id, block.id, value
+                        ));
+                    }
+                }
+                if let ProcessTerminator::Suspend {
+                    operation: ProcessSuspendOp::AwaitTime,
+                    arguments,
+                    ..
+                } = &block.terminator
+                {
+                    if let Some(problem) = arguments
+                        .first()
+                        .and_then(|delay| invalid_native_duration(*delay))
+                    {
+                        issues.push(format!(
+                            "process {:?} block {:?} await duration {problem}",
+                            process.id, block.id
                         ));
                     }
                 }
@@ -1252,6 +1315,12 @@ impl ProcessIr {
                     != match operation {
                         ProcessHostValueOp::Random | ProcessHostValueOp::Uniform => 0,
                         ProcessHostValueOp::RandomRange => 2,
+                        ProcessHostValueOp::ReadUtf8
+                        | ProcessHostValueOp::ReadUtf8Fixed
+                        | ProcessHostValueOp::ReadBinary
+                        | ProcessHostValueOp::FileExists
+                        | ProcessHostValueOp::StringLength => 1,
+                        ProcessHostValueOp::StringIndex | ProcessHostValueOp::StringEqualsUtf8 => 2,
                     } =>
                 {
                     issues.push(format!(

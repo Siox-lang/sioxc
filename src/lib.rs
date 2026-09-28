@@ -30,16 +30,17 @@
 //!     types["types<br/>type & kind check"] --> elab
 //!     elab["elab<br/>instances, parameters"] --> ir
 //!     ir["ir<br/>digital simulation IR"] --> tb
-//!     ir --> emit
-//!     tb["testbench + test_ir<br/>process descriptors"] --> build
-//!     emit["llvm::emit<br/>design to LLVM IR"] --> aot
+//!     tb["testbench + test_ir<br/>process descriptors"] --> emit
+//!     emit["llvm::emit<br/>design + processes to LLVM IR"] --> aot
 //!     aot["llvm::aot"] --> obj["native object"]
-//!     build["driver::build<br/>generated C + libfst"] --> exe["test executable<br/>VCD / FST"]
+//!     obj --> build["driver::build<br/>fixed runtime + libfst linker"]
+//!     build --> exe["test executable<br/>VCD / FST"]
 //!     diag["diag: spans, diagnostics"] -.-> syntax
 //!     diag -.-> resolve
 //!     diag -.-> types
 //!     diag -.-> elab
 //!     diag -.-> ir
+//!     diag -.-> tb
 //!     compiler["compiler: embedding boundary,<br/>owns orchestration"] === src
 //! ```
 //!

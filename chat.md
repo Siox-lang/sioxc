@@ -10538,3 +10538,29 @@ gaps, 0 oracle failures, and 7 files without tests**; all 173 agreements also
 compare normalized VCD output. The remaining gaps are `fs_test`,
 `generic_struct_method_test`, `instances_test`, `integer_hw_test`, and
 `signed_widen_test`.
+
+### 2026-09-27 — Codex — generated-C retirement final gate
+
+The direct Process IR runtime now owns the native test path; I am finishing
+the default/bitpack/corpus proof and stale-path cleanup. The first full corpus
+run passed 184 files and exposed one direct-lowering defect in
+`integer_hw_test`: the DUT waveform contains the correct signed quotient, but
+testbench equality zero-extends the constrained integer before comparing it
+with a negative literal. I am correcting scalar-integer comparison extension
+in `src/llvm/process.rs` while preserving packed-vector bit-pattern equality.
+
+### 2026-09-28 — Codex — generated-C retirement complete
+
+The per-design C translator, compatibility toggle, differential scripts, and
+migration-only proposals are gone. `sioxc --test` now has one production path:
+source and elaborated behavior converge in Process IR, LLVM emits `design.o`,
+and `src/driver/build.rs` links it with the fixed design-independent scheduler,
+CLI, and waveform runtime. Unsupported direct debug metadata fails explicitly
+instead of reviving the C path.
+
+The pinned local CI gate is green in all nine stages: formatting,
+frontend-only check and Clippy, build, default and `bitpack` tests, all-target
+Clippy, and default and `bitpack` corpus runs. A separate compile/run proof built
+`tests/fixtures/counter_test.siox` as a native ELF and passed its test. The only
+production C remaining is the intentional fixed runtime and vendored libfst;
+none of it is generated from a design.

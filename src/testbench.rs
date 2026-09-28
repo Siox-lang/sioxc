@@ -1,9 +1,8 @@
 //! Shared native-test discovery and hierarchy planning.
 //!
 //! This module is the boundary between the ordinary resolved/type-checked
-//! frontend and either native test backend. Attribute discovery happens once;
-//! the generated-C compatibility harness and the future software-IR/LLVM
-//! lowering consume the same [`TestPlan`].
+//! frontend and Process IR. Attribute discovery happens once; elaboration and
+//! the LLVM/runtime path consume the same [`TestPlan`].
 
 use std::collections::{HashMap, HashSet};
 
@@ -28,7 +27,7 @@ pub struct TestCase {
     pub span: Span,
 }
 
-/// The single native-test input shared by every backend.
+/// The canonical native-test input shared by elaboration and Process lowering.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TestPlan {
     /// The discovered tests, in declaration order.
@@ -93,10 +92,10 @@ pub fn elaborate(
     (hierarchy, TestPlan { tests })
 }
 
-/// The compatibility runtime supports any number of canonical self-toggle
-/// clock processes and one foreground stimulus process. General coroutine
-/// scheduling belongs to the software-IR backend; reject it until that backend
-/// can preserve concurrency instead of serializing source processes.
+/// The fixed runtime supports any number of canonical self-toggle clock
+/// processes and one foreground stimulus process. General concurrent
+/// foreground scheduling is not implemented yet, so reject it instead of
+/// serializing source processes.
 fn validate_process_scheduling(
     modules: &[Module],
     resolved: &Resolved,
@@ -206,9 +205,9 @@ fn discover(modules: &[Module], resolved: &Resolved) -> Vec<DiscoveredTest> {
 
 /// Inherent implementation items belonging to one resolved entity.
 ///
-/// Both the compatibility backend and software-IR lowering enter a test body
-/// through this identity-based lookup. Keeping it beside [`TestPlan`] avoids a
-/// second owner/name matching rule at each backend boundary.
+/// Test discovery and Process-IR lowering enter a test body through this
+/// identity-based lookup. Keeping it beside [`TestPlan`] avoids a second
+/// owner/name matching rule at the lowering boundary.
 pub fn implementation_items<'a>(
     modules: &'a [Module],
     resolved: &Resolved,
@@ -306,7 +305,7 @@ mod tests {
                  impl T { process first {} process second {} }\n"
             ),
             1,
-            "the compatibility backend must not serialize concurrent stimulus"
+            "the native scheduler must not serialize concurrent stimulus"
         );
         assert_eq!(
             diagnostics(

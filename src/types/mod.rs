@@ -294,6 +294,10 @@ struct Checker<'a> {
     own_variants: HashMap<String, Vec<String>>,
     /// Enum name -> the head name after `:` (a base enum or numeric repr).
     enum_bases: HashMap<String, String>,
+    /// Explicit `impl From<Source> for Target` conversion routes. Keeping the
+    /// source in the key prevents an unrelated `From` implementation from
+    /// making every one-argument constructor appear legal.
+    conversion_sigs: HashSet<(String, String)>,
     /// Struct name -> (derivation base, own field names) for inheritance.
     structs: HashMap<String, (Option<Type>, Vec<String>)>,
     /// Raw representation fields are private unless exported. Views are

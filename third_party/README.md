@@ -10,11 +10,14 @@ submodule [`libfst/`](libfst).
   `git -C third_party/libfst checkout <rev>` and commit the new pointer.
 - License: MIT, with bundled LZ4 and FastLZ notices in `libfst/LICENSE`.
 
-`sioxc` embeds `libfst/src/*.c` and `*.h` with `include_str!` and writes them
-beside its generated native test harness in the temporary build directory.
-Clang compiles them into the test executable, so writing FST needs no installed
-GTKWave, `vcd2fst`, or separate libfst at either compile or simulation time.
-The generated executable links the platform zlib that libfst uses.
+The crate build compiles `libfst/src/*.c` into design-independent native
+objects that `sioxc` embeds and writes to its temporary link directory. It also
+embeds the fixed sources as a portability fallback when those objects are not
+available for the selected host. Clang normally only links the prebuilt objects
+into the test executable; on the fallback path it compiles those same fixed
+sources first. Writing FST therefore needs no installed GTKWave, `vcd2fst`, or
+separate libfst at either compile or simulation time. The executable links the
+platform zlib that libfst uses.
 
 ### Fetching it
 

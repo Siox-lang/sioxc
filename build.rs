@@ -1,8 +1,8 @@
 //! Check that the vendored-by-reference sources are present.
 //!
 //! `third_party/libfst` is a git submodule. Fixed native runtime sources are
-//! compiled to objects embedded in `sioxc`; unlike the compatibility harness,
-//! these objects contain no per-design generated code. A clone made without
+//! compiled to objects embedded in `sioxc`; these objects contain no per-design
+//! generated code. A clone made without
 //! `--recursive` leaves libfst empty, and the failure would otherwise be a raw
 //! "couldn't read .../fstapi.c" pointing inside the compiler rather than at
 //! the thing the reader has to do.

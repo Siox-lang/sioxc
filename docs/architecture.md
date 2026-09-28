@@ -30,7 +30,7 @@ The IR module is directory-backed and split by responsibility:
   modules in `lower/` own collection, entity bodies, expressions, operators,
   calls, values, control flow, block locals, writes, resolution, initializers,
   layouts, metavalues, and diagnostics;
-- `lower_helpers.rs` is the compatibility facade for the focused
+- `lower_helpers.rs` is the stable facade for the focused
   `lower_helpers/` utilities: expression/constant builders, type metadata,
   generate expansion, substitution, and source access. Together with
   `lower/`, these are the only Siox-AST-dependent IR modules;
@@ -64,9 +64,10 @@ stages. Consumers continue to use the stable `siox::ir::*` and
 The separate `Siox-lang/siox-lsp` repository references this compiler through
 Cargo Git and depends only on the backend-independent `siox` crate.
 
-The following diagram describes the current transitional implementation. The
-process product now has one owner; the temporary AST adapter and generated-C
-statement translator are the remaining split to remove.
+The following diagram describes the current implementation. Process IR has one
+owner and one native execution path. The remaining transition is earlier in
+the pipeline: `test_ir` still adapts typed source and normalized hardware into
+the canonical CFGs instead of source constructs lowering there immediately.
 
 ```mermaid
 flowchart TB
@@ -96,14 +97,10 @@ flowchart TB
     end
 
     DESIGN -->|LLVM output requested| LL["siox::llvm<br/>native state + codegen"]
-    DESIGN -->|test descriptors| HARNESS["generated C compatibility harness<br/>scheduler + VCD/FST"]
-    RUNTIME["embedded precompiled libfst runtime<br/>source fallback"] --> LINK
-    PROCESS_RUNTIME["embedded fixed Process scheduler + CLI + VCD/FST<br/>migration path"] --> LINK
-    SY -->|AST compatibility bodies| HARNESS
+    PROCESS_RUNTIME["embedded fixed Process scheduler + CLI + VCD/FST<br/>source fallback"] --> LINK
     LL -->|Emit::LlvmIr| LLVM_TEXT["LLVM IR text"]
     LL -->|object or test requested| OBJ["native object"]
     OBJ -->|test executable requested| LINK["Clang + native linker"]
-    HARNESS --> LINK
     LINK --> TEST["native test executable"]
 
     SY -->|tokens / source / AST requested| FRONT_TEXT["frontend text artifact"]
@@ -132,7 +129,7 @@ that completed. `CompileRequest` enters through `Compiler::compile`; the final
 `Compilation` return carries diagnostics even when a later phase or backend
 fails. A request stops once its selected output is ready—for example, AST and
 tree requests do not continue through IR. Frontend-only requests stop before
-`siox::llvm` and harness generation.
+`siox::llvm` and native linking.
 
 `siox::llvm` emits LLVM and compiles the `Design` ahead of time to native code.
 For a test build, `siox::testbench` resolves enabled uses of the canonical
@@ -145,30 +142,18 @@ CFGs with root/instance ownership, while a test plan additionally contributes
 storage, clocks, and stimulus. Branch, suspend/resume, structured match/for
 control, termination, assignment semantics, activation, labels, and spans
 already live there. Operands are arena-owned once and referenced from CFG nodes
-by stable `ProcessValueId`. The current default C compatibility harness
-consumes descriptors from the design but still translates test statements
-from AST. The harness
-contains the stimulus, scheduler, assertions, and reporting; it
-links with the native design object when `Emit::TestExecutable` is requested.
-The harness contains the VCD writer, and the resulting executable incorporates
-the pinned libfst runtime. Its design-independent C sources are compiled once
-with `sioxc` and embedded as host objects; a test build compiles only its
-design-specific harness before linking those objects and zlib. A source fallback
-is retained when host precompilation is unavailable. This artifact therefore
-needs Clang and zlib but neither GTKWave nor an installed libfst. Therefore the
-`sioxc` feature set needs an LLVM toolchain; a
-`default-features = false` editor build does not need the native backend or
-harness toolchain.
+by stable `ProcessValueId`. The LLVM object exports immutable test, process,
+activation, sensitivity, waveform, and source-location tables plus callable
+process entries. One fixed scheduler consumes them, owns ready batches and
+delta commits, and links with a fixed descriptor-driven CLI and the pinned
+libfst waveform runtime. These design-independent C sources are compiled once
+with `sioxc` and embedded as host objects; a source fallback is retained when
+host precompilation is unavailable. No source statement or Process instruction
+is translated to per-design C. A native test build therefore needs Clang and
+zlib but neither GTKWave nor an installed libfst. A `default-features = false`
+editor build needs neither LLVM nor the native-output toolchain.
 
-The replacement boundary is executable now as an opt-in migration path. The
-LLVM object exports immutable test/process/activation/sensitivity tables and
-callable process entries; one fixed precompiled scheduler consumes them, owns
-ready batches and delta commits, and links with a fixed descriptor-driven CLI.
-This path emits no design-specific C. It remains opt-in while the remaining
-runtime operations are ported, so unsupported Process IR nodes fail explicitly
-instead of silently changing behavior.
-
-## Planned unified process pipeline
+## Unified process pipeline
 
 `process [name] { ... }` supplies the common scheduling boundary that the
 earlier architecture lacked. Explicit hardware processes, implicit reactive
@@ -195,8 +180,9 @@ subroutines within a caller; only a process creates an independently scheduled
 context. The current `Driver` and `EventBlock` forms become derived
 optimizations of Process IR rather than a separate hardware input path.
 
-The staged migration and acceptance criteria live in
-[the unified process pipeline plan](proposals/testbench-software-ir.md).
+The temporary `test_ir` adapter remains until syntax-driven lowering can
+produce these CFGs directly. That is an input-side cleanup; the backend and
+runtime already consume only canonical Process IR.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The layering is a convention enforced by module discipline; do
@@ -216,7 +202,7 @@ The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
 | `types` | AST | Type/kind/operator checking and persistent expression `Ty` facts. |
 | `elab` | AST | Parameters, roots, instances, connections, concrete instance-array build facts, and `Hierarchy`. |
 | `testbench` | AST/plan | Canonical std test discovery, exact test-root elaboration, and backend-neutral `TestPlan`. |
-| `ir` | IR | Signals, layouts, canonical process CFGs/test descriptors, compatibility drivers/event blocks, initializers, validation, and semantic lints. |
+| `ir` | IR | Signals, layouts, canonical process CFGs/test descriptors, normalized drivers/event blocks, initializers, validation, and semantic lints. |
 | `test_ir` | temporary adapter | Imports normalized hardware and lowers test AST into `Design::process_ir`; removed once all source processes share the main IR lowering entry point. |
 | `compiler` | API | `Compiler`, disk/in-memory `SourceInput`, `CompileRequest`, retained `Compilation` phase products, structured failures, and artifacts. |
 
@@ -290,9 +276,9 @@ as `crate::<module>`; the binary imports the library as `siox::<module>`.
 
 ## Data that flows between stages today
 
-This diagram records the current values while the unified-process migration is
-in progress. The standalone `test_ir::Program` is already gone; the planned
-endpoint above removes the temporary AST adapter and AST-to-C harness branch.
+This diagram records the current values. The standalone `test_ir::Program` and
+the AST-to-C execution branch are gone; only the temporary adapter that fills
+canonical Process IR remains.
 
 ```mermaid
 flowchart LR
@@ -317,12 +303,8 @@ flowchart LR
     DESIGN -->|LLVM output requested| BACKEND["siox::llvm"]
     BACKEND -->|Emit::LlvmIr| LLVM_TEXT["Artifact::Text<br/>LLVM IR"]
     BACKEND -->|object or test requested| OBJECT["native object"]
-    DESIGN -->|test descriptors| HARNESS["generated C compatibility harness"]
-    RUNTIME["embedded precompiled libfst runtime"] --> LINK
-    PROCESS_RUNTIME["embedded fixed Process scheduler + CLI + VCD/FST<br/>migration path"] --> LINK
-    MODULES -->|AST compatibility bodies| HARNESS
+    PROCESS_RUNTIME["embedded fixed Process scheduler + CLI + VCD/FST"] --> LINK
     OBJECT -->|Emit::TestExecutable| LINK["Clang + native linker"]
-    HARNESS --> LINK
     LINK --> EXECUTABLE["Artifact::File<br/>test executable"]
 
     TEXT --> ARTIFACT["optional Artifact"]
@@ -366,9 +348,9 @@ fields, ordinary versus packed arrays, written range direction, scalar domains,
 value constraints, and source spans. IR signal flattening traverses this
 tree rather than reconstructing shape from AST declarations; checked recursive
 width and leaf-count queries define the same boundary for native consumers.
-Testbench locals retain layouts without becoming hardware signals, so the
-generated harness uses the already-specialized tree for flattened C storage
-and positional aggregate writes. LLVM obtains flattened signal widths through
+Testbench locals retain layouts without becoming hardware signals, so Process
+IR and LLVM use the already-specialized tree for native storage and positional
+aggregate writes. LLVM obtains flattened signal widths through
 the corresponding leaf layouts; IR validation rejects a stale duplicated
 signal width or an aggregate layout attached directly to a leaf signal. A
 names-only nominal field-order index remains for positional syntax in constants
@@ -377,7 +359,7 @@ a storage or sizing model.
 
 File inputs follow the phase that owns their storage. Hardware/top
 initializers are elaboration-time ROM images in `Design::Signal::init`;
-`#[test]` locals are excluded from hardware IR and the generated native harness
+`#[test]` locals are excluded from hardware signals and Process runtime storage
 owns their runtime byte/code-point buffers. Both resolve relative paths against
 the source directory recorded in `Design::base_dir`. The single `read<T>`
 construct selects UTF-8 for `string`; numeric types share the raw integer path
@@ -511,9 +493,9 @@ Dynamic packed and aggregate indices carry a `CheckedIndex` IR node containing
 the value, its declared-domain predicate, written range direction, and source
 span. LLVM latches the first active violation before evaluating the mux's
 internal recovery arm. Check activation follows source control flow, so an
-access in an untaken conditional branch is not reported. The native harness
-uses the same failure wording and source contract for testbench locals and
-runtime-sized strings.
+access in an untaken conditional branch is not reported. The native Process
+runtime uses the same failure wording and source contract for testbench locals
+and runtime-sized strings.
 
 Foreign C calls retain ABI kind metadata independently for each parameter and
 the return value. Kernel `integer` crosses as signed `int64_t`, `real` as C
@@ -553,11 +535,11 @@ a word-ABI or language limit: a design beyond it receives a normal codegen
 error and can be consumed by a future backend with a different value model.
 
 Integer literals and match-pattern masks use the same low-word-first
-arbitrary-width representation. The native test harness chooses its C
-`_BitInt` width from the widest type or nested expression in that design and
-exchanges every ABI word. Generated native test executables write requested VCD
-and compressed FST changes directly while scheduling; waveform values do not
-round-trip through the compiler. Both writers observe the same settle points.
+arbitrary-width representation. LLVM preserves each Process value's own width
+and exports every required ABI word. Native test executables write requested
+VCD and compressed FST changes directly while scheduling; waveform values do
+not round-trip through the compiler. Both writers observe the same settle
+points.
 Structural inheritance walks terminate by detecting actual cycles, so a valid
 deep type hierarchy is not rejected at an arbitrary depth.
 
@@ -617,6 +599,6 @@ diagnostics; input, selection, validation, and backend failures are separate
 
 `sioxc` parses flags, constructs that request, renders the result, and chooses
 an exit status. Like `rustc`, it takes one input per invocation: `--emit`
-selects the artifact and `--test` selects test-harness compilation. Project
+selects the artifact and `--test` selects native test-executable compilation. Project
 graphs, directory traversal, execution, and simulation tooling remain outside
 the compiler.

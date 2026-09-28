@@ -33,14 +33,14 @@ impl CounterTest {
 Testbench processes are concurrent, while statements inside one process run in
 order. `await` advances simulation time (see
 [simulation.md](simulation.md)), and a process-local `let` is a mutable local
-with ordinary sequential assignment. The native compatibility scheduler
-currently accepts one foreground stimulus process plus canonical background
+with ordinary sequential assignment. The fixed native scheduler currently
+accepts one foreground stimulus process plus canonical background
 clock processes; it rejects additional foreground processes instead of
 serializing them. Test processes already receive stable process/block/local and
 value IDs plus validated branch, match, loop, suspension, and termination CFGs
-inside `Design::process_ir`; the remaining migration lowers hardware processes
-there too and makes the compatibility harness consume those CFGs instead of
-translating test AST. There is no second test-only program or runner.
+inside `Design::process_ir`; hardware processes and test stimulus execute from
+those CFGs through the same LLVM/runtime path. There is no second test-only
+program, generated source translation, or runner.
 Method calls on the DUT or on struct-typed locals work in
 stimulus, so a testbench can drive a design through a method result. Strings
 retain their array semantics here: locals can be
@@ -67,8 +67,8 @@ constrained values are sign-extended from their stored width before use.
 Named `real` constants and real-typed parameters/returns of ordinary functions
 and methods retain that same representation while native code inlines them.
 Struct-local numeric leaves use their declared width as well: fields wider
-than one ABI word preserve every word, while a field narrower than the
-harness-wide value still wraps at its own boundary.
+than one ABI word preserve every word, while a narrower field still wraps at
+its own boundary.
 Unconnected scalar/vector arrays are materialized one typed element at a time,
 so literals, indexing, element mutation, and same-shaped array copies preserve
 arbitrary-width elements too.
@@ -117,37 +117,10 @@ test result: ok. 1 passed; 0 failed
 
 - **Filter by qualified name:** `./counter-tests counter::CounterTest` runs the
   matching subset. Partial names also work as filters.
-- **Debugging:** `sioxc --test -g` builds an executable a debugger follows in
-  siox terms — `break counter.siox:34`, stepping, source display and backtraces
-  all name `.siox` files and lines. The ordinary build is unaffected and stays
-  optimized.
-
-  A hardware signal is not a variable — it lives behind the `sx_read` accessor,
-  indexed by `SignalId` — so DWARF has nothing natural to describe and reading
-  one by its siox path needs a lookup. A `-g` build carries that lookup **in
-  the binary**, as three ordinary functions:
-
-  ```
-  (gdb) call sx_dbg_print("c.n")     one signal, by path or unique tail
-  T.c.n = 2
-  (gdb) call sx_dbg_list("f.mem")    every signal whose path contains it
-  T.f.mem[0] = 11
-  T.f.mem[1] = 22
-  (gdb) print sx_dbg_get("c.n") + 1  the value, usable in an expression
-  $1 = 3
-  ```
-
-  Nothing has to be sourced, and any debugger that can call into the inferior
-  works. An unknown path says so, and an ambiguous one asks for more of the
-  path rather than picking a signal — silence would read as "the value is
-  zero". Leaving the root off matches at a `.`, so `n` finds `T.c.n` and not
-  `T.c.en`.
-
-  A value past 64 bits prints whole, in hex (`T.b.acc = 0x10000000000000007`);
-  `sx_dbg_get` can only hand back one machine word, so on a wider signal it
-  says which word it returned rather than passing off the low bits as the
-  value. Only hardware signals are in the table; a testbench's own locals are
-  ordinary C variables, so `print` them directly.
+- **Debugging:** direct Siox DWARF and a stable debugger-facing signal lookup
+  are not implemented yet. `sioxc --test -g` therefore fails explicitly rather
+  than emitting a binary whose stepping or source variables would be
+  misleading. Ordinary runtime failures still carry Siox source locations.
 - **Failures name their source.** A failing `assert!`, a ranged signal leaving
   its domain, and a failing `read<T>` all print `--> file:line:col` beside the
   message, followed by the source line and a caret, so a CI log points at the

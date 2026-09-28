@@ -48,7 +48,7 @@ fn waveform_times(trace: &str) -> Vec<u64> {
 }
 
 #[test]
-fn direct_runtime_matches_deterministic_random_services() {
+fn native_random_services_are_reproducible_across_builds() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");
         return;
@@ -59,8 +59,8 @@ fn direct_runtime_matches_deterministic_random_services() {
         std::env::temp_dir().join(format!("siox_direct_random_runtime_{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let source = directory.join("random.siox");
-    let compatibility = directory.join("random-compatibility");
-    let direct = directory.join("random-direct");
+    let first = directory.join("random-first");
+    let second = directory.join("random-second");
     std::fs::write(
         &source,
         r#"module direct_random_runtime;
@@ -92,11 +92,8 @@ fn direct_runtime_matches_deterministic_random_services() {
     )
     .unwrap();
 
-    let build = |output: &std::path::Path, direct_runtime: bool| {
+    let build = |output: &std::path::Path| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
-        if direct_runtime {
-            command.env("SIOX_DIRECT_PROCESS_RUNTIME", "1");
-        }
         command
             .current_dir(root)
             .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
@@ -107,32 +104,32 @@ fn direct_runtime_matches_deterministic_random_services() {
             .output()
             .unwrap()
     };
-    for (output, direct_runtime) in [(&compatibility, false), (&direct, true)] {
-        let result = build(output, direct_runtime);
+    for output in [&first, &second] {
+        let result = build(output);
         assert!(
             result.status.success(),
-            "random fixture failed to compile (direct={direct_runtime}):\n{}{}",
+            "random fixture failed to compile:\n{}{}",
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr)
         );
     }
 
-    let compatibility_run = Command::new(&compatibility).output().unwrap();
-    let direct_run = Command::new(&direct).output().unwrap();
+    let first_run = Command::new(&first).output().unwrap();
+    let second_run = Command::new(&second).output().unwrap();
     assert!(
-        compatibility_run.status.success(),
-        "compatibility random fixture failed:\n{}{}",
-        String::from_utf8_lossy(&compatibility_run.stdout),
-        String::from_utf8_lossy(&compatibility_run.stderr)
+        first_run.status.success(),
+        "first random fixture failed:\n{}{}",
+        String::from_utf8_lossy(&first_run.stdout),
+        String::from_utf8_lossy(&first_run.stderr)
     );
     assert!(
-        direct_run.status.success(),
-        "direct random fixture failed:\n{}{}",
-        String::from_utf8_lossy(&direct_run.stdout),
-        String::from_utf8_lossy(&direct_run.stderr)
+        second_run.status.success(),
+        "second random fixture failed:\n{}{}",
+        String::from_utf8_lossy(&second_run.stdout),
+        String::from_utf8_lossy(&second_run.stderr)
     );
-    assert_eq!(direct_run.stdout, compatibility_run.stdout);
-    assert_eq!(direct_run.stderr, compatibility_run.stderr);
+    assert_eq!(second_run.stdout, first_run.stdout);
+    assert_eq!(second_run.stderr, first_run.stderr);
 
     let _ = std::fs::remove_dir_all(directory);
 }
@@ -303,7 +300,6 @@ fn direct_process_runtime_links_without_generated_design_c() {
     .unwrap();
 
     let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
         .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
         .arg("--test")
         .arg(&source)
@@ -331,6 +327,74 @@ fn direct_process_runtime_links_without_generated_design_c() {
         report,
         warnings
     );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
+fn constrained_integer_equality_sign_extends_without_changing_packed_equality() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let directory =
+        std::env::temp_dir().join(format!("siox_integer_equality_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("integer_equality.siox");
+    let output = directory.join("integer-equality-test");
+    std::fs::write(
+        &source,
+        r#"module integer_equality;
+           using std::bits::signed;
+
+           entity Divider {
+               a: integer<-16..15> in,
+               b: integer<-16..15> in,
+               quotient: integer<-16..15> out
+           }
+           impl Divider { quotient = a / b; }
+
+           #[test] entity IntegerEqualityTest {}
+           impl IntegerEqualityTest {
+               let a: integer<-16..15> = -8;
+               let b: integer<-16..15> = 3;
+               let quotient: integer<-16..15>;
+               let packed: signed[16] = 65520;
+               let dut: Divider = { .a = a, .b = b, .quotient = quotient };
+
+               await 1ns;
+               assert!(quotient == -2,
+                       "a constrained integer compares in its mathematical domain");
+               assert!(packed == 65520,
+                       "a packed family still compares its selected-width bit pattern");
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "integer equality fixture failed to compile:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "integer equality fixture failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
     let _ = std::fs::remove_dir_all(directory);
 }
 
@@ -391,7 +455,6 @@ fn direct_process_runtime_marshals_foreign_calls_without_generated_design_c() {
     .unwrap();
 
     let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
         .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
         .arg("--test")
         .arg(&source)
@@ -458,7 +521,6 @@ fn direct_timed_resume_observes_reactive_quiescence() {
     .unwrap();
 
     let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
         .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
         .arg("--test")
         .arg(&source)
@@ -483,7 +545,7 @@ fn direct_timed_resume_observes_reactive_quiescence() {
 }
 
 #[test]
-fn direct_process_runtime_vcd_matches_generated_c() {
+fn native_waveforms_are_reproducible_across_builds() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");
         return;
@@ -493,12 +555,12 @@ fn direct_process_runtime_vcd_matches_generated_c() {
         std::env::temp_dir().join(format!("siox_direct_process_vcd_{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let source = directory.join("direct_wave.siox");
-    let compatibility = directory.join("compatibility-test");
-    let direct = directory.join("direct-test");
-    let compatibility_vcd = directory.join("compatibility.vcd");
-    let direct_vcd = directory.join("direct.vcd");
-    let compatibility_fst = directory.join("compatibility.fst");
-    let direct_fst = directory.join("direct.fst");
+    let first = directory.join("first-test");
+    let second = directory.join("second-test");
+    let first_vcd = directory.join("first.vcd");
+    let second_vcd = directory.join("second.vcd");
+    let first_fst = directory.join("first.fst");
+    let second_fst = directory.join("second.fst");
     std::fs::write(
         &source,
         r#"module direct_wave;
@@ -522,11 +584,8 @@ fn direct_process_runtime_vcd_matches_generated_c() {
     )
     .unwrap();
 
-    let build = |output: &std::path::Path, direct_runtime: bool| {
+    let build = |output: &std::path::Path| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
-        if direct_runtime {
-            command.env("SIOX_DIRECT_PROCESS_RUNTIME", "1");
-        }
         command
             .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
             .arg("--test")
@@ -536,19 +595,19 @@ fn direct_process_runtime_vcd_matches_generated_c() {
             .output()
             .unwrap()
     };
-    let compatibility_build = build(&compatibility, false);
+    let first_build = build(&first);
     assert!(
-        compatibility_build.status.success(),
-        "compatibility waveform fixture failed to build:\n{}{}",
-        String::from_utf8_lossy(&compatibility_build.stdout),
-        String::from_utf8_lossy(&compatibility_build.stderr)
+        first_build.status.success(),
+        "first waveform fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&first_build.stdout),
+        String::from_utf8_lossy(&first_build.stderr)
     );
-    let direct_build = build(&direct, true);
+    let second_build = build(&second);
     assert!(
-        direct_build.status.success(),
-        "direct waveform fixture failed to build:\n{}{}",
-        String::from_utf8_lossy(&direct_build.stdout),
-        String::from_utf8_lossy(&direct_build.stderr)
+        second_build.status.success(),
+        "second waveform fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&second_build.stdout),
+        String::from_utf8_lossy(&second_build.stderr)
     );
 
     let run = |binary: &std::path::Path, vcd: &std::path::Path, fst: &std::path::Path| {
@@ -560,38 +619,38 @@ fn direct_process_runtime_vcd_matches_generated_c() {
             .output()
             .unwrap()
     };
-    let compatibility_run = run(&compatibility, &compatibility_vcd, &compatibility_fst);
+    let first_run = run(&first, &first_vcd, &first_fst);
     assert!(
-        compatibility_run.status.success(),
-        "compatibility waveform fixture failed:\n{}{}",
-        String::from_utf8_lossy(&compatibility_run.stdout),
-        String::from_utf8_lossy(&compatibility_run.stderr)
+        first_run.status.success(),
+        "first waveform fixture failed:\n{}{}",
+        String::from_utf8_lossy(&first_run.stdout),
+        String::from_utf8_lossy(&first_run.stderr)
     );
-    let direct_run = run(&direct, &direct_vcd, &direct_fst);
+    let second_run = run(&second, &second_vcd, &second_fst);
     assert!(
-        direct_run.status.success(),
-        "direct waveform fixture failed:\n{}{}",
-        String::from_utf8_lossy(&direct_run.stdout),
-        String::from_utf8_lossy(&direct_run.stderr)
+        second_run.status.success(),
+        "second waveform fixture failed:\n{}{}",
+        String::from_utf8_lossy(&second_run.stdout),
+        String::from_utf8_lossy(&second_run.stderr)
     );
 
-    let compatibility_trace = std::fs::read_to_string(&compatibility_vcd).unwrap();
-    let direct_trace = std::fs::read_to_string(&direct_vcd).unwrap();
-    assert_eq!(direct_trace, compatibility_trace);
-    assert_eq!(decode_fst(&direct_fst), decode_fst(&compatibility_fst));
+    let first_trace = std::fs::read_to_string(&first_vcd).unwrap();
+    let second_trace = std::fs::read_to_string(&second_vcd).unwrap();
+    assert_eq!(second_trace, first_trace);
+    assert_eq!(decode_fst(&second_fst), decode_fst(&first_fst));
     assert_eq!(
-        waveform_times(&direct_trace),
+        waveform_times(&second_trace),
         vec![0, 5_000_000, 10_000_000, 15_000_000, 20_000_000, 25_000_000]
     );
     assert!(
-        direct_trace.contains("b0011"),
-        "counter value missing:\n{direct_trace}"
+        second_trace.contains("b0011"),
+        "counter value missing:\n{second_trace}"
     );
     let _ = std::fs::remove_dir_all(directory);
 }
 
 #[test]
-fn direct_runtime_diagnostics_match_generated_c() {
+fn native_runtime_diagnostics_are_reproducible_across_builds() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");
         return;
@@ -603,8 +662,8 @@ fn direct_runtime_diagnostics_match_generated_c() {
     ));
     std::fs::create_dir_all(&directory).unwrap();
     let source = directory.join("diagnostics.siox");
-    let compatibility = directory.join("compatibility-test");
-    let direct = directory.join("direct-test");
+    let first = directory.join("first-test");
+    let second = directory.join("second-test");
     std::fs::write(
         &source,
         r#"module diagnostic_parity;
@@ -632,11 +691,8 @@ fn direct_runtime_diagnostics_match_generated_c() {
     )
     .unwrap();
 
-    for (output, direct_runtime) in [(&compatibility, false), (&direct, true)] {
+    for output in [&first, &second] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
-        if direct_runtime {
-            command.env("SIOX_DIRECT_PROCESS_RUNTIME", "1");
-        }
         let build = command
             .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
             .arg("--test")
@@ -647,7 +703,7 @@ fn direct_runtime_diagnostics_match_generated_c() {
             .unwrap();
         assert!(
             build.status.success(),
-            "diagnostic fixture failed to build (direct={direct_runtime}):\n{}{}",
+            "diagnostic fixture failed to build:\n{}{}",
             String::from_utf8_lossy(&build.stdout),
             String::from_utf8_lossy(&build.stderr)
         );
@@ -658,11 +714,11 @@ fn direct_runtime_diagnostics_match_generated_c() {
         "diagnostic_parity::Failure",
         "diagnostic_parity::IndexFailure",
     ] {
-        let compatibility_run = Command::new(&compatibility).arg(filter).output().unwrap();
-        let direct_run = Command::new(&direct).arg(filter).output().unwrap();
-        assert_eq!(direct_run.status.code(), compatibility_run.status.code());
-        assert_eq!(direct_run.stdout, compatibility_run.stdout);
-        assert_eq!(direct_run.stderr, compatibility_run.stderr);
+        let first_run = Command::new(&first).arg(filter).output().unwrap();
+        let second_run = Command::new(&second).arg(filter).output().unwrap();
+        assert_eq!(second_run.status.code(), first_run.status.code());
+        assert_eq!(second_run.stdout, first_run.stdout);
+        assert_eq!(second_run.stderr, first_run.stderr);
     }
     let _ = std::fs::remove_dir_all(directory);
 }
@@ -694,7 +750,6 @@ fn direct_legacy_initializers_keep_source_order() {
     .unwrap();
 
     let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
         .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
         .arg("--test")
         .arg(&source)
@@ -755,7 +810,6 @@ fn direct_runtime_formats_typed_process_values() {
     .unwrap();
 
     let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
         .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
         .arg("--test")
         .arg(&source)
@@ -842,7 +896,6 @@ fn direct_runtime_dispatches_normalized_match_patterns() {
     .unwrap();
 
     let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
         .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
         .arg("--test")
         .arg(&source)
@@ -924,7 +977,6 @@ fn direct_runtime_preserves_metavalue_comparison_rules() {
     .unwrap();
 
     let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
         .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
         .arg("--test")
         .arg(&source)
@@ -971,7 +1023,6 @@ fn direct_process_runtime_reports_assertions_without_generated_design_c() {
     .unwrap();
 
     let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
         .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
         .arg("--test")
         .arg(&source)
@@ -1029,7 +1080,6 @@ fn direct_process_runtime_reports_unreachable_await_conditions() {
     .unwrap();
 
     let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
-        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
         .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
         .arg("--test")
         .arg(&source)
@@ -1164,7 +1214,7 @@ fn process_local_keeps_its_declared_index_range() {
 }
 
 #[test]
-fn native_local_names_are_isolated_from_each_other_and_the_harness() {
+fn native_struct_paths_remain_distinct() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");
         return;
@@ -1178,7 +1228,6 @@ fn native_local_names_are_isolated_from_each_other_and_the_harness() {
     std::fs::write(
         &source,
         r#"module native_names;
-           using std::text::string;
            struct Left { pub c: unsigned[8] }
            struct Right { pub b_c: unsigned[8] }
            #[test] entity FlattenedNames {}
@@ -1187,11 +1236,6 @@ fn native_local_names_are_isolated_from_each_other_and_the_harness() {
                let a: Right = { .b_c = 22 };
                assert!(a_b.c == 11 and a.b_c == 22,
                        "flattened paths stay distinct");
-           }
-           #[test] entity HarnessName {}
-           impl HarnessName {
-               let g_io_failed: unsigned[1] = 0;
-               let missing: string = read<string>("not-there.txt");
            }"#,
     )
     .unwrap();
@@ -1214,16 +1258,13 @@ fn native_local_names_are_isolated_from_each_other_and_the_harness() {
     let run = Command::new(&output).output().unwrap();
     let report =
         String::from_utf8_lossy(&run.stdout).to_string() + &String::from_utf8_lossy(&run.stderr);
-    assert!(!run.status.success(), "missing fixture passed:\n{report}");
+    assert!(
+        run.status.success(),
+        "struct-path fixture failed:\n{report}"
+    );
     assert!(
         report.contains("native_names::FlattenedNames ... ok"),
         "flattened-name test did not pass independently:\n{report}"
-    );
-    assert!(
-        report.contains("native_names::HarnessName ... FAILED")
-            && report.contains("read<string>")
-            && report.contains("not-there.txt"),
-        "harness helper was shadowed or failure was unclear:\n{report}"
     );
     let _ = std::fs::remove_dir_all(directory);
 }
@@ -1861,12 +1902,12 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
     let root = env!("CARGO_MANIFEST_DIR");
     let stem = format!("siox_vcd_values_{}", std::process::id());
     let source = std::env::temp_dir().join(format!("{stem}.siox"));
-    let compatibility = std::env::temp_dir().join(format!("{stem}_compatibility"));
-    let direct = std::env::temp_dir().join(format!("{stem}_direct"));
-    let compatibility_vcd = compatibility.with_extension("vcd");
-    let compatibility_fst = compatibility.with_extension("fst");
-    let direct_vcd = direct.with_extension("vcd");
-    let direct_fst = direct.with_extension("fst");
+    let first = std::env::temp_dir().join(format!("{stem}_first"));
+    let second = std::env::temp_dir().join(format!("{stem}_second"));
+    let first_vcd = first.with_extension("vcd");
+    let first_fst = first.with_extension("fst");
+    let second_vcd = second.with_extension("vcd");
+    let second_fst = second.with_extension("fst");
     std::fs::write(
         &source,
         "module vcd_values;
@@ -1905,11 +1946,8 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
          }",
     )
     .unwrap();
-    let build = |output: &std::path::Path, direct_runtime: bool| {
+    let build = |output: &std::path::Path| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
-        if direct_runtime {
-            command.env("SIOX_DIRECT_PROCESS_RUNTIME", "1");
-        }
         command
             .current_dir(root)
             .arg("--test")
@@ -1919,11 +1957,11 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
             .output()
             .unwrap()
     };
-    for (output, direct_runtime) in [(&compatibility, false), (&direct, true)] {
-        let result = build(output, direct_runtime);
+    for output in [&first, &second] {
+        let result = build(output);
         assert!(
             result.status.success(),
-            "waveform value fixture failed to compile (direct={direct_runtime}):\n{}{}",
+            "waveform value fixture failed to compile:\n{}{}",
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr)
         );
@@ -1938,8 +1976,8 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
             .unwrap()
     };
     for (binary, vcd, fst) in [
-        (&compatibility, &compatibility_vcd, &compatibility_fst),
-        (&direct, &direct_vcd, &direct_fst),
+        (&first, &first_vcd, &first_fst),
+        (&second, &second_vcd, &second_fst),
     ] {
         let result = run(binary, vcd, fst);
         assert!(
@@ -1949,9 +1987,9 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
             String::from_utf8_lossy(&result.stderr)
         );
     }
-    let compatibility_trace = std::fs::read_to_string(&compatibility_vcd).unwrap();
-    let trace = std::fs::read_to_string(&direct_vcd).unwrap();
-    assert_eq!(trace, compatibility_trace);
+    let first_trace = std::fs::read_to_string(&first_vcd).unwrap();
+    let trace = std::fs::read_to_string(&second_vcd).unwrap();
+    assert_eq!(trace, first_trace);
     assert!(
         trace.contains("zv"),
         "Logic 'Z' was not emitted as z:\n{trace}"
@@ -1970,8 +2008,8 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
         "wide VCD value was truncated:\n{trace}"
     );
     assert!(trace.contains("r2.5 "), "real VCD value was lost:\n{trace}");
-    let fst_trace = decode_fst(&direct_fst);
-    assert_eq!(fst_trace, decode_fst(&compatibility_fst));
+    let fst_trace = decode_fst(&second_fst);
+    assert_eq!(fst_trace, decode_fst(&first_fst));
     assert!(fst_trace.contains('z'), "FST lost Logic 'Z':\n{fst_trace}");
     assert!(
         fst_trace.contains("b1x0z "),
@@ -1991,14 +2029,7 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
     );
     assert_eq!(waveform_times(&fst_trace), waveform_times(&trace));
     let _ = std::fs::remove_file(source);
-    for path in [
-        compatibility,
-        direct,
-        compatibility_vcd,
-        compatibility_fst,
-        direct_vcd,
-        direct_fst,
-    ] {
+    for path in [first, second, first_vcd, first_fst, second_vcd, second_fst] {
         let _ = std::fs::remove_file(path);
     }
 }
@@ -2012,12 +2043,12 @@ fn native_fst_keeps_multiple_tests_on_one_monotonic_timeline() {
     let root = env!("CARGO_MANIFEST_DIR");
     let stem = format!("siox_fst_multitest_{}", std::process::id());
     let source = std::env::temp_dir().join(format!("{stem}.siox"));
-    let compatibility = std::env::temp_dir().join(format!("{stem}_compatibility"));
-    let direct = std::env::temp_dir().join(format!("{stem}_direct"));
-    let compatibility_vcd = compatibility.with_extension("vcd");
-    let compatibility_fst = compatibility.with_extension("fst");
-    let direct_vcd = direct.with_extension("vcd");
-    let direct_fst = direct.with_extension("fst");
+    let first = std::env::temp_dir().join(format!("{stem}_first"));
+    let second = std::env::temp_dir().join(format!("{stem}_second"));
+    let first_vcd = first.with_extension("vcd");
+    let first_fst = first.with_extension("fst");
+    let second_vcd = second.with_extension("vcd");
+    let second_fst = second.with_extension("fst");
     std::fs::write(
         &source,
         "module fst_multitest;
@@ -2042,11 +2073,8 @@ fn native_fst_keeps_multiple_tests_on_one_monotonic_timeline() {
     )
     .unwrap();
 
-    for (output, direct_runtime) in [(&compatibility, false), (&direct, true)] {
+    for output in [&first, &second] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
-        if direct_runtime {
-            command.env("SIOX_DIRECT_PROCESS_RUNTIME", "1");
-        }
         let build = command
             .current_dir(root)
             .arg("--test")
@@ -2057,14 +2085,14 @@ fn native_fst_keeps_multiple_tests_on_one_monotonic_timeline() {
             .unwrap();
         assert!(
             build.status.success(),
-            "multi-test FST fixture failed to build (direct={direct_runtime}):\n{}{}",
+            "multi-test FST fixture failed to build:\n{}{}",
             String::from_utf8_lossy(&build.stdout),
             String::from_utf8_lossy(&build.stderr)
         );
     }
     for (binary, vcd, fst) in [
-        (&compatibility, &compatibility_vcd, &compatibility_fst),
-        (&direct, &direct_vcd, &direct_fst),
+        (&first, &first_vcd, &first_fst),
+        (&second, &second_vcd, &second_fst),
     ] {
         let run = Command::new(binary)
             .arg("-o")
@@ -2081,11 +2109,11 @@ fn native_fst_keeps_multiple_tests_on_one_monotonic_timeline() {
         );
     }
 
-    let compatibility_vcd_trace = std::fs::read_to_string(&compatibility_vcd).unwrap();
-    let vcd_trace = std::fs::read_to_string(&direct_vcd).unwrap();
-    assert_eq!(vcd_trace, compatibility_vcd_trace);
-    let fst_trace = decode_fst(&direct_fst);
-    assert_eq!(fst_trace, decode_fst(&compatibility_fst));
+    let first_vcd_trace = std::fs::read_to_string(&first_vcd).unwrap();
+    let vcd_trace = std::fs::read_to_string(&second_vcd).unwrap();
+    assert_eq!(vcd_trace, first_vcd_trace);
+    let fst_trace = decode_fst(&second_fst);
+    assert_eq!(fst_trace, decode_fst(&first_fst));
     let times = waveform_times(&fst_trace);
     assert_eq!(times, waveform_times(&vcd_trace));
     assert_eq!(times.first(), Some(&0));
@@ -2097,14 +2125,7 @@ fn native_fst_keeps_multiple_tests_on_one_monotonic_timeline() {
     assert!(fst_trace.contains("$scope module Second $end"));
 
     let _ = std::fs::remove_file(source);
-    for path in [
-        compatibility,
-        direct,
-        compatibility_vcd,
-        compatibility_fst,
-        direct_vcd,
-        direct_fst,
-    ] {
+    for path in [first, second, first_vcd, first_fst, second_vcd, second_fst] {
         let _ = std::fs::remove_file(path);
     }
 }

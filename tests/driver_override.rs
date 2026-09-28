@@ -1,4 +1,4 @@
-//! Spec 3.14 override, in both engines' terms.
+//! Spec 3.14 override in canonical lowering and the native runtime.
 //!
 //! Within one driver context a later assignment overrides an earlier one, so a
 //! driver that a later *unconditional* one replaces never reaches the signal.

@@ -9,8 +9,8 @@ use super::{Expr, LookupTable, ProcessIr, SourceLayout};
 /// Hardware behavior appears in two deliberately separate forms: combinational
 /// [`Driver`]s that settle to a fixed point within a delta cycle, and
 /// [`EventBlock`]s that compute next state from pre-commit values and commit
-/// together. Preserving that split is what keeps `clk.rising()` meaning the
-/// same thing in both backends.
+/// together. Preserving that split gives Process lowering one unambiguous
+/// meaning for `clk.rising()`.
 ///
 /// A `Logic` vector additionally carries a discriminant companion plane, keyed
 /// by [`Design::meta_of`], so `'X'` and `'Z'` survive operations that a single

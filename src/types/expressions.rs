@@ -474,6 +474,7 @@ impl<'a> Checker<'a> {
                 // range checks later (with the S3 reporting machinery).
                 self.check_conversion_fit(callee, args, e);
                 self.check_conversion_arity(callee, args);
+                self.check_conversion_route(callee, args, sym);
                 self.check_generic_bounds(callee, args, sym);
                 self.check_call_arity(callee, args, sym);
                 self.check_runtime_call_contract(callee, type_args, args, *bang, sym);

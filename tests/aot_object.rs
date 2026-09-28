@@ -1,5 +1,5 @@
-//! A `.siox` source compiled to an object file, linked against a C harness and
-//! run through the exported `sx_*` ABI.
+//! A `.siox` source compiled to an object file, linked against a small
+//! hand-written ABI probe, and run through the exported `sx_*` ABI.
 //!
 //! `src/llvm/aot.rs` already links and runs objects, but from a `Design` built
 //! by hand — that covers the LLVM emitter, not the pipeline that produces the
@@ -32,7 +32,7 @@ static void tick(void) {
 }
 
 int main(void) {
-    if (sx_process_abi_version != 11 || sx_process_count == 0) return 5;
+    if (sx_process_abi_version != 12 || sx_process_count == 0) return 5;
     if (!sx_process_entries[0]) return 6;
     sx_reset();
     sx_set(V, 7);

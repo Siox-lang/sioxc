@@ -27,9 +27,7 @@ struct Cli {
     /// Compile `#[test]` entities into a native test executable.
     #[arg(long)]
     test: bool,
-    /// Build a test executable a debugger can follow: the generated code is
-    /// attributed back to its `.siox` lines and left unoptimized, so
-    /// `break file.siox:34` and stepping work.
+    /// Request native source-level debug metadata (not implemented yet).
     #[arg(short = 'g', long)]
     debug: bool,
     /// Compiler artifact to emit.

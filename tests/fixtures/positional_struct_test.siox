@@ -1,4 +1,4 @@
-// Positional name-less struct locals in the native testbench harness.
+// Positional nameless struct locals in the native Process runtime.
 // `{ 3, 4 }` binds to fields by declaration order; the
 // explicit and typed-positional forms must still agree.
 module positional_struct;

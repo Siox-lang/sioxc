@@ -8,7 +8,7 @@
 //!
 //! LLVM is the permanent backend — building siox needs an LLVM toolchain (see
 //! `Cargo.toml` for the pinned version). Values use their semantic LLVM width
-//! internally and cross the native harness ABI as low-word-first `u64` chunks.
+//! internally and cross the native runtime ABI as low-word-first `u64` chunks.
 
 mod aot;
 mod emit;
@@ -17,7 +17,7 @@ mod process;
 pub use aot::{emit_object, emit_object_with_sources};
 pub use emit::emit_module_ir;
 
-/// Width of one word in the generated native harness ABI.
+/// Width of one word in the native runtime ABI.
 pub const ABI_WORD_BITS: u32 = 64;
 
 /// Number of ABI words required to exchange a value of `bits` bits.

@@ -154,7 +154,7 @@ purely additive.
    restriction; Bluespec's answer is a scheduler with conflict analysis, which
    is a much larger commitment than the rest of this proposal.
 2. **Naming.** What the generated ports are called in IR paths, waveforms and
-   the C harness. They must be stable and injective, and they collide with
+   the fixed runtime ABI. They must be stable and injective, and they collide with
    user-declared port names unless namespaced.
 3. **Depth.** Whether a call may reach beyond a direct child. Parent-to-child
    is the direction instances already flow; anything deeper needs a rule for

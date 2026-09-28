@@ -39,17 +39,18 @@ change what is observed.
 The `ir` layer emits the simulation model and the **LLVM backend** (`siox::llvm`)
 compiles it ahead of time to native machine code. `sioxc <file>` emits the
 sole structural root as an object; `--top` selects one when several independent
-roots exist. `sioxc --test` generates a native testbench
-harness and links it with that object. The compiler stops after producing the
-executable; running and filtering it are separate operations.
+roots exist. `sioxc --test` emits the test processes into that object and links
+it with the fixed scheduler, command-line, and waveform runtime. The compiler
+stops after producing the executable; running and filtering it are separate
+operations.
 
-Signal values cross the harness ABI in low-word-first 64-bit words, so values
+Signal values cross the runtime ABI in low-word-first 64-bit words, so values
 such as `unsigned[128]` retain their per-type width. LLVM is the permanent
 backend, so building `sioxc` needs LLVM 22. Emitting a native test executable
-also needs Clang and zlib: Clang compiles its generated harness and links the
-FST runtime objects that were precompiled and embedded with `sioxc`. If those
-host objects could not be prepared when the compiler was built, native test
-generation falls back to compiling the pinned runtime sources at that point.
+also needs Clang and zlib: Clang links the LLVM design object with the fixed
+runtime and FST objects that were precompiled and embedded with `sioxc`. If
+those host objects could not be prepared when the compiler was built, native
+test generation compiles the same pinned, design-independent runtime sources.
 
 ## Simulation time and the event wheel
 
@@ -61,10 +62,11 @@ earliest pending event and advances to it:
   clock with a `5ns` half-period — the canonical clock generator. Every clock
   process starts at time zero independently of source declaration order, and
   multiple clocks interleave on the one wheel with real timestamps.
-- **Delayed assignments.** The default compatibility harness currently accepts
-  the canonical self-toggle above. The opt-in direct Process runtime also
-  executes one-shot writes to static targets with exact-width captured values;
-  it does not become the default until VHDL cancellation semantics are fixed.
+- **Delayed assignments.** The Process runtime recognizes the canonical
+  self-toggle above as a free-running clock and executes one-shot writes to
+  static targets with exact-width captured values. One-shot writes currently
+  have transport-like behavior; VHDL inertial cancellation and rejection are
+  still outstanding.
 - **`await`** is the single timing primitive in a testbench, in three forms:
 
   ```siox
@@ -75,9 +77,8 @@ earliest pending event and advances to it:
 
   Each yields to the scheduler until its trigger fires, and may appear inside
   `for`/`if`. (`wait`/`tick` were removed — both now error and point at
-  `await`.) During the compatibility migration the old wheel still lives in the
-  emitted C harness. The opt-in fixed runtime executes all three forms directly:
-  Process IR separates timed suspension from a normalized trigger CFG. A level
+  `await`.) The fixed runtime executes all three forms directly: Process IR
+  separates timed suspension from a normalized trigger CFG. A level
   condition is checked immediately, while an edge always suspends before its
   first check. False triggers wake and re-evaluate after committed state changes;
   a true trigger waits for reactive delta cycles to settle before the following

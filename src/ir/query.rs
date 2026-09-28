@@ -97,8 +97,8 @@ fn check_expr(e: &Expr, n: u32, tables: &[LookupTable], issues: &mut Vec<String>
 
 /// A unit of behaviour the scheduler dispatches, with its **sensitivity**
 /// (the signals it reads) and **write set** (the signals it drives). This is
-/// the process view the LLVM backend compiles and the interpreter dispatches
-/// on (spec Stage 6 / the compiled-backend plan, B1).
+/// the normalized scheduler view consumed while hardware behavior is imported
+/// into canonical Process IR and by the LLVM hardware emitter.
 #[derive(Clone, Debug)]
 pub struct Process {
     /// What kind of scheduled process this is.
@@ -152,11 +152,10 @@ impl Design {
     ///
     /// The runtime latches an index into this table plus one, so `0` keeps its
     /// meaning of "no site" and the report falls back to the signal's
-    /// declaration. Both engines call *this* to build the table rather than
-    /// walking the design themselves: the index is the whole contract between
-    /// the value the hardware latches and the string the harness prints, and
-    /// two walks that disagree by one entry would misattribute every failure
-    /// after the first divergence.
+    /// declaration. This one table is the contract between the value hardware
+    /// latches and the source location the fixed runtime prints; consumers must
+    /// not independently renumber it or failures after the first difference
+    /// would be misattributed.
     pub fn range_sites(&self) -> Vec<crate::diag::Span> {
         fn process_place_signals(
             ir: &crate::ir::process::ProcessIr,
@@ -170,22 +169,12 @@ impl Design {
                 crate::ir::process::ProcessValueKind::Signal { signals: ids, .. } => {
                     signals.extend(ids.iter().copied());
                 }
-                crate::ir::process::ProcessValueKind::Storage(storage) => {
-                    if let Some(storage) = ir.storages.get(storage.0 as usize) {
-                        signals.extend(
-                            storage
-                                .bindings
-                                .iter()
-                                .filter(|binding| {
-                                    matches!(
-                                        binding.direction,
-                                        LayoutDirection::In | LayoutDirection::InOut
-                                    )
-                                })
-                                .map(|binding| binding.signal),
-                        );
-                    }
-                }
+                // A Process storage write is external stimulus. It does reach
+                // its input/inout bindings, but it is not an assignment in
+                // the design being simulated. Keep site zero for those writes
+                // so a range failure falls back to the affected port's
+                // declaration instead of blaming the testbench stimulus.
+                crate::ir::process::ProcessValueKind::Storage(_) => {}
                 crate::ir::process::ProcessValueKind::Field { base, .. }
                 | crate::ir::process::ProcessValueKind::Index { base, .. } => {
                     process_place_signals(ir, *base, signals);
@@ -221,9 +210,10 @@ impl Design {
             }
         }
         // Process IR currently coexists with the normalized hardware graph,
-        // so identical migrated writes deduplicate by span. Source-first
-        // testbench writes that have no legacy driver still need a stable site
-        // id for the same public range-failure ABI.
+        // so identical migrated hardware writes deduplicate by span. Direct
+        // signal writes retain a source site; storage-backed external
+        // stimulus deliberately retains site zero and therefore the signal
+        // declaration fallback.
         for process in &self.process_ir.processes {
             for block in &process.blocks {
                 for instruction in &block.instructions {
@@ -327,9 +317,8 @@ impl Design {
                 collect(&update.expr, &mut sites, &mut seen);
             }
         }
-        // Process IR owns the source-level checked access once generated-C is
-        // gone. Keep legacy expression sites first for ABI stability during
-        // migration, then append process-only sites. Arena nodes are already
+        // Process IR owns source-level checked accesses. Keep legacy expression
+        // sites first for ABI stability, then append process-only sites. Arena nodes are already
         // dependency ordered, and the set removes cloned accesses.
         for value in &self.process_ir.values {
             if let crate::ir::process::ProcessValueKind::CheckedIndex {

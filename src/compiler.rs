@@ -138,10 +138,8 @@ pub struct CompileRequest {
     /// Required destination override for file artifacts. Textual artifacts are
     /// returned in memory and ignore this field.
     pub output: Option<PathBuf>,
-    /// Build a test executable a debugger can follow: the generated C is
-    /// attributed back to its `.siox` lines and compiled unoptimized with
-    /// debug info, so `break file.siox:34` and stepping work. Off by default,
-    /// because simulation throughput matters for long runs.
+    /// Request native source-level debug metadata. The Process IR backend
+    /// currently rejects this explicitly until direct DWARF emission exists.
     pub debug: bool,
 }
 
@@ -737,13 +735,8 @@ impl Compiler {
         if !Self::validate_design(result) {
             return;
         }
-        let resolved = result.resolved.as_ref().expect("resolution completed");
-        let hierarchy = result.hierarchy.as_ref().expect("elaboration completed");
         let design = result.design.as_ref().expect("lowering completed");
         match build::build(build::BuildRequest {
-            modules: &result.modules,
-            resolved,
-            hierarchy,
             design,
             sources: &result.sources,
             debug,

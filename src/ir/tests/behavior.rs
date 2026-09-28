@@ -332,9 +332,9 @@ fn runtime_packed_bit_read_write_updates_value_and_metavalue_planes() {
 
 /// What reaches the site table, and in what order.
 ///
-/// The two engines cannot disagree on the numbering -- they call this one
-/// function -- so reordering or duplicating entries would still line up.
-/// What is asserted here is the *contents*: a span only earns an index if
+/// Every consumer uses this numbering, so reordering or duplicating entries
+/// would still line up internally. What is asserted here is the *contents*: a
+/// span only earns an index if
 /// some assignment can be blamed through it, which is what leaves index 0
 /// free to mean "fall back to the declaration". The order is pinned as the
 /// documented shape rather than as a defence against drift.
@@ -371,7 +371,7 @@ fn range_sites_indexes_only_blamable_assignments() {
             // An unranged target can never fail this way.
             driver(1, Some(span(200))),
             // The same statement lowered twice (one body, two instances)
-            // is one site, or the two engines would number differently.
+            // is one site, rather than two indistinguishable diagnostics.
             driver(0, Some(span(100))),
             driver(0, Some(span(300))),
         ],

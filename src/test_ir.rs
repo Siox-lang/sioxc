@@ -124,6 +124,7 @@ fn process_functions<'a>(
         })
     {
         functions.insert_operator_impl(implementation);
+        functions.insert_conversion_impl(implementation);
         let Some(owner) = functions.type_head_key(&implementation.target) else {
             continue;
         };
@@ -410,16 +411,16 @@ fn process_type_from_layout(
                 .unwrap_or(*width),
             family: Some(family.clone()),
         }),
-        LayoutKind::Array {
-            range: Some(range),
-            element,
-        } => Some(crate::types::Ty::Array {
+        LayoutKind::Array { range, element } => Some(crate::types::Ty::Array {
             elem: Box::new(process_type_from_layout(element, resolved)?),
-            len: u32::try_from(range.len()?).ok()?,
+            len: range
+                .and_then(|range| range.len())
+                .and_then(|length| u32::try_from(length).ok())
+                .unwrap_or(0),
             family: None,
         }),
         LayoutKind::Struct { name, .. } => nominal_type_from_name(name, resolved),
-        LayoutKind::Array { range: None, .. } | LayoutKind::Opaque { .. } => None,
+        LayoutKind::Opaque { .. } => None,
     }
 }
 
@@ -978,12 +979,12 @@ pub fn lower(
             &mut process_ir,
         );
 
-        // The compatibility language allowed bare testbench statements and
-        // declarations to form one source-ordered implicit process. Keep a
+        // Legacy bare testbench statements and declarations form one
+        // source-ordered implicit process. Keep a
         // declaration before the first statement as reset state, but do not
         // hoist a later initializer across an earlier statement/await. DUT
         // instance declarations are not Process storage and stay outside this
-        // compatibility rule.
+        // legacy ordering rule.
         let mut saw_legacy_statement = false;
         let mut ordered_initializers = std::collections::HashSet::new();
         for item in &items {
@@ -1125,9 +1126,8 @@ pub fn lower(
                 ImplItem::Stmt(statement) if crate::testbench::is_clock_statement(statement) => {
                     // Legacy impl-scope syntax still denotes a concurrent
                     // clock process. Keeping it in the foreground statement
-                    // list made Process IR lose the scheduling boundary even
-                    // though the compatibility harness rediscovered it later
-                    // by scanning AST. Give it an ordinary reactive CFG now.
+                    // list would make Process IR lose the scheduling boundary.
+                    // Give it an ordinary reactive CFG now.
                     let id = ProcessId(process_ir.processes.len() as u32);
                     let statements = std::slice::from_ref(statement);
                     let activation = process_activation(
@@ -1258,8 +1258,8 @@ struct InstanceLocation {
 /// Convert the normalized hardware scheduler decomposition into ordinary
 /// Process IR CFGs. This bridge consumes elaborated digital expressions, not
 /// hardware AST, so generic substitution, generate unrolling, std operator
-/// evaluation, resolution, and metavalue lowering cannot diverge from the
-/// compatibility backend during migration.
+/// evaluation, resolution, and metavalue lowering remain shared with the
+/// normalized hardware product during the Process-first migration.
 fn import_hardware_processes(hierarchy: &Hierarchy, design: &Design, process_ir: &mut ProcessIr) {
     let locations = hierarchy_locations(hierarchy);
     for scheduled in design.processes() {
@@ -1374,7 +1374,7 @@ fn import_hardware_processes(hierarchy: &Hierarchy, design: &Design, process_ir:
     }
 }
 
-/// One assignment imported from the normalized digital compatibility product.
+/// One assignment imported from the normalized digital scheduler product.
 struct ImportedAssignment<'a> {
     signal: SignalId,
     expression: &'a crate::ir::Expr,
@@ -1445,7 +1445,7 @@ fn append_digital_assignment(
 
 /// Append one already-normalized digital expression and annotate every new
 /// arena node with its natural packed width. Normalized expressions have no
-/// frontend `Ty`, so retaining this here lets direct backends operate per
+/// frontend `Ty`, so retaining this here lets Process IR consumers operate per
 /// value rather than falling back to a design-wide machine width.
 fn push_normalized_value(
     process_ir: &mut ProcessIr,
@@ -1586,7 +1586,7 @@ fn shifted_arena_width(left: u32, right: ProcessValueId, values: &[ProcessValue]
 /// Conservatively fold an integer-only Process IR value graph. This exists to
 /// retain the natural width of normalized expressions such as
 /// `1 << (WIDTH - 1)`: treating a constant expression as a dynamic shift would
-/// truncate the result before the direct backend ever sees it.
+/// truncate the result before native Process lowering ever sees it.
 ///
 /// Dependencies precede their users in the arena, so generated Process IR is
 /// acyclic. Values outside the integer subset deliberately return `None` and
@@ -1782,7 +1782,6 @@ fn register_test_storages(
         };
         let id = ProcessStorageId(process_ir.storages.len() as u32);
         let ty = declared_nominal_type(declaration.ty.as_ref(), resolved)
-            .or_else(|| process_type_from_layout(layout, resolved))
             .or_else(|| {
                 declaration
                     .value
@@ -1790,7 +1789,8 @@ fn register_test_storages(
                     .and_then(|value| typed.expr_type(ast::expr_span(value)))
                     .filter(|ty| !matches!(ty, crate::types::Ty::Error))
                     .cloned()
-            });
+            })
+            .or_else(|| process_type_from_layout(layout, resolved));
         let layout = process_layout_with_type(layout, ty.as_ref());
         process_ir.storages.push(ProcessStorage {
             id,
@@ -2021,7 +2021,7 @@ fn lower_process(
     process
 }
 
-/// Lower the compatibility-era implicit test process without moving a
+/// Lower the legacy implicit test process without moving a
 /// declaration initializer across an earlier bare statement. Explicit
 /// `process` blocks never use this path; their impl-level state is initialized
 /// before independently scheduled processes start.
@@ -2453,12 +2453,16 @@ fn lower_statement(
             after,
             span,
         } => {
-            let semantics = assignment_semantics(target, process, context);
+            let source_semantics = assignment_semantics(target, process, context);
+            let target_type = context.typed.expr_type(ast::expr_span(target)).cloned();
+            let source_target = target;
+            let target = value_ref(source_target, process, context);
+            let semantics =
+                process_place_assignment(target, context.process_ir).unwrap_or(source_semantics);
             let settle = after.is_none()
                 && matches!(process.activation, ProcessActivation::TimeZero)
-                && assignment_drives_design(target, process, context);
-            let target_type = context.typed.expr_type(ast::expr_span(target)).cloned();
-            let target = value_ref(target, process, context);
+                && (assignment_drives_design_value(target, context.process_ir)
+                    || assignment_drives_design_source(source_target, process, context));
             let value = value_ref_with_type(value, process, context, target_type.as_ref());
             let instruction = match after {
                 Some(delay) => ProcessInstruction::Schedule {
@@ -2583,7 +2587,7 @@ fn assignment_base(target: &ast::Expr) -> Option<&ast::Path> {
 /// Whether an immediate foreground assignment drives at least one DUT input.
 /// The fixed runtime must publish that storage and reach a reactive fixed
 /// point before the next source statement observes connected outputs.
-fn assignment_drives_design(
+fn assignment_drives_design_source(
     target: &ast::Expr,
     process: &ProcessCfg,
     context: &LoweringContext<'_>,
@@ -2591,7 +2595,7 @@ fn assignment_drives_design(
     if let ast::Expr::Concat { parts, .. } = target {
         return parts
             .iter()
-            .any(|part| assignment_drives_design(part, process, context));
+            .any(|part| assignment_drives_design_source(part, process, context));
     }
     // A direct instance-port place is already a flattened hardware signal,
     // rather than testbench storage with an explicit binding. A foreground
@@ -2611,6 +2615,58 @@ fn assignment_drives_design(
                 )
             })
         })
+}
+
+/// Classify an already-lowered assignment place. This is authoritative for
+/// an inlined procedure, where `self` or a formal parameter aliases the
+/// caller's local/storage place and the callee AST no longer names that root.
+fn process_place_assignment(
+    target: ProcessValueId,
+    process_ir: &ProcessIr,
+) -> Option<ProcessAssignment> {
+    match &process_ir.values.get(target.0 as usize)?.kind {
+        ProcessValueKind::Local { .. } => Some(ProcessAssignment::ImmediateLocal),
+        ProcessValueKind::Storage(_) => Some(ProcessAssignment::ImmediateStorage),
+        ProcessValueKind::Signal { .. } => Some(ProcessAssignment::StagedSignal),
+        ProcessValueKind::Field { base, .. }
+        | ProcessValueKind::Index { base, .. }
+        | ProcessValueKind::PackedSlice { base, .. } => process_place_assignment(*base, process_ir),
+        ProcessValueKind::Concat(_) => Some(ProcessAssignment::PerPlace),
+        _ => None,
+    }
+}
+
+/// Whether a lowered place ultimately aliases a DUT input. This complements
+/// the source-level check for ordinary code and preserves settle semantics
+/// when a procedure receiver/parameter hides the caller's storage root.
+fn assignment_drives_design_value(target: ProcessValueId, process_ir: &ProcessIr) -> bool {
+    match &process_ir
+        .values
+        .get(target.0 as usize)
+        .map(|value| &value.kind)
+    {
+        Some(ProcessValueKind::Signal { .. }) => true,
+        Some(ProcessValueKind::Storage(storage)) => process_ir
+            .storages
+            .get(storage.0 as usize)
+            .is_some_and(|storage| {
+                storage.bindings.iter().any(|binding| {
+                    matches!(
+                        binding.direction,
+                        LayoutDirection::In | LayoutDirection::InOut
+                    )
+                })
+            }),
+        Some(ProcessValueKind::Field { base, .. })
+        | Some(ProcessValueKind::Index { base, .. })
+        | Some(ProcessValueKind::PackedSlice { base, .. }) => {
+            assignment_drives_design_value(*base, process_ir)
+        }
+        Some(ProcessValueKind::Concat(parts)) => parts
+            .iter()
+            .any(|part| assignment_drives_design_value(*part, process_ir)),
+        _ => false,
+    }
 }
 
 /// Classify the scheduler meaning before source syntax is discarded. A
@@ -2718,6 +2774,11 @@ fn lower_call(
             None
         }
         _ => {
+            if let Some(tail) =
+                inline_process_procedure_call(callee, arguments, context, process, block)
+            {
+                return Some(tail);
+            }
             let operation = match name.as_str() {
                 "assert" => ProcessRuntimeOp::Assert,
                 "warn" => ProcessRuntimeOp::Warn,
@@ -2735,6 +2796,104 @@ fn lower_call(
                     span,
                 });
             Some(block)
+        }
+    }
+}
+
+/// Inline a side-effecting, no-return Siox call into the caller's Process CFG.
+///
+/// Phase 1 procedures are intentionally handled at the same typed lowering
+/// boundary as value-returning functions: receiver and formal parameters are
+/// aliases for caller places, so assignments become ordinary canonical
+/// Process writes. For now this accepts straight-line assignment bodies. More
+/// general call CFGs remain fail-closed instead of introducing an interpreter
+/// or a second runtime call convention.
+fn inline_process_procedure_call(
+    callee: &ast::Expr,
+    arguments: &[ast::Expr],
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
+    let first_value = context.process_ir.values.len();
+    let original_process = process.clone();
+    let (function, receiver) = match callee {
+        ast::Expr::Field { base, field, .. } => {
+            let receiver = value_ref(base, process, context);
+            let owner = context
+                .process_ir
+                .values
+                .get(receiver.0 as usize)
+                .and_then(|value| value.ty.as_ref())
+                .and_then(|ty| process_type_key(ty, context))?;
+            (
+                context
+                    .functions
+                    .get_associated(&owner, &field.text)?
+                    .clone(),
+                Some(receiver),
+            )
+        }
+        _ => (context.functions.get(callee)?.clone(), None),
+    };
+    let body = function.body.as_ref()?;
+    if function.ret.is_some()
+        || function.params.iter().any(|parameter| parameter.is_self) != receiver.is_some()
+        || !body
+            .stmts
+            .iter()
+            .all(|statement| matches!(statement, Stmt::Assign { .. }))
+    {
+        truncate_process_values(context, first_value);
+        return None;
+    }
+    let parameters = function
+        .params
+        .iter()
+        .filter(|parameter| !parameter.is_self)
+        .collect::<Vec<_>>();
+    if parameters.len() != arguments.len() {
+        truncate_process_values(context, first_value);
+        return None;
+    }
+
+    let mut bindings = std::collections::HashMap::new();
+    for (parameter, argument) in parameters.into_iter().zip(arguments) {
+        let Some(name) = parameter.name.as_ref() else {
+            truncate_process_values(context, first_value);
+            return None;
+        };
+        let Some(definition) = context.resolved.declared(name.span) else {
+            truncate_process_values(context, first_value);
+            return None;
+        };
+        let parameter_type = parameter
+            .ty
+            .as_ref()
+            .and_then(|ty| process_declared_type(ty, context));
+        let argument = value_ref_with_type(argument, process, context, parameter_type.as_ref());
+        bindings.insert(definition, argument);
+    }
+    if !context.inline_functions.insert(function.span) {
+        truncate_process_values(context, first_value);
+        return None;
+    }
+
+    context.value_bindings.push(bindings);
+    context.inline_self_values.push(receiver);
+    context.inline_return_types.push(None);
+    let tail = lower_statements(&body.stmts, context, process, block);
+    context.inline_return_types.pop();
+    context.inline_self_values.pop();
+    context.value_bindings.pop();
+    context.inline_functions.remove(&function.span);
+
+    match tail {
+        Some(tail) => Some(tail),
+        None => {
+            *process = original_process;
+            truncate_process_values(context, first_value);
+            None
         }
     }
 }
@@ -3002,8 +3161,18 @@ fn process_display_kind(
         .expr_type(ast::expr_span(expression))
         .filter(usable)
         .cloned()
-        .or_else(|| process_value_type(value, context))?;
-    match &ty {
+        .or_else(|| process_value_type(value, context));
+    match ty.as_ref() {
+        Some(ty) => process_display_kind_for_type(ty, context),
+        None => process_display_kind_from_value(process_value, context),
+    }
+}
+
+fn process_display_kind_for_type(
+    ty: &crate::types::Ty,
+    context: &LoweringContext<'_>,
+) -> Option<ProcessDisplayKind> {
+    match ty {
         crate::types::Ty::Integer => Some(ProcessDisplayKind::Signed),
         crate::types::Ty::Real => Some(ProcessDisplayKind::Real),
         crate::types::Ty::Char => Some(ProcessDisplayKind::Character),
@@ -3035,6 +3204,59 @@ fn process_display_kind(
             Some(ProcessDisplayKind::Enum(key))
         }
         crate::types::Ty::Void | crate::types::Ty::Error => None,
+    }
+}
+
+/// Preserve presentation semantics when the typed AST has no entry for a
+/// derived value synthesized while inlining constants or operators.
+fn process_display_kind_from_value(
+    value: &ProcessValue,
+    context: &LoweringContext<'_>,
+) -> Option<ProcessDisplayKind> {
+    match &value.kind {
+        ProcessValueKind::Number(ProcessNumber::Real(_)) => Some(ProcessDisplayKind::Real),
+        ProcessValueKind::Number(ProcessNumber::Integer(_))
+        | ProcessValueKind::BitString { .. }
+        | ProcessValueKind::Char(_) => Some(ProcessDisplayKind::Unsigned),
+        ProcessValueKind::String(_) => Some(ProcessDisplayKind::String),
+        ProcessValueKind::Unary { operation, operand } => process_value_type(*operand, context)
+            .as_ref()
+            .and_then(|ty| process_display_kind_for_type(ty, context))
+            .or(match operation {
+                ProcessUnaryOp::Neg | ProcessUnaryOp::RealToInteger => {
+                    Some(ProcessDisplayKind::Signed)
+                }
+                ProcessUnaryOp::Not => Some(ProcessDisplayKind::Unsigned),
+            }),
+        ProcessValueKind::Binary { operation, .. } => match operation {
+            ProcessBinaryOp::FloatAdd
+            | ProcessBinaryOp::FloatSub
+            | ProcessBinaryOp::FloatMul
+            | ProcessBinaryOp::FloatDiv => Some(ProcessDisplayKind::Real),
+            ProcessBinaryOp::Eq
+            | ProcessBinaryOp::Ne
+            | ProcessBinaryOp::Lt
+            | ProcessBinaryOp::Le
+            | ProcessBinaryOp::Gt
+            | ProcessBinaryOp::Ge
+            | ProcessBinaryOp::SignedLt
+            | ProcessBinaryOp::SignedLe
+            | ProcessBinaryOp::SignedGt
+            | ProcessBinaryOp::SignedGe
+            | ProcessBinaryOp::FloatEq
+            | ProcessBinaryOp::FloatNe
+            | ProcessBinaryOp::FloatLt
+            | ProcessBinaryOp::FloatLe
+            | ProcessBinaryOp::FloatGt
+            | ProcessBinaryOp::FloatGe => Some(ProcessDisplayKind::Unsigned),
+            ProcessBinaryOp::SignedAdd
+            | ProcessBinaryOp::SignedSub
+            | ProcessBinaryOp::SignedMul
+            | ProcessBinaryOp::SignedDiv
+            | ProcessBinaryOp::ArithmeticShr => Some(ProcessDisplayKind::Signed),
+            _ => Some(ProcessDisplayKind::Unsigned),
+        },
+        _ => None,
     }
 }
 
@@ -3711,6 +3933,119 @@ fn lower_process_kernel_conversion(
     Some(push_value(*span, Some(target), Some(width), kind, context))
 }
 
+/// Whether a representation-preserving enum conversion is total. A nominal
+/// derivation must connect the two types, and every source symbol must exist
+/// in the target domain; an unrelated enum with the same width is never a
+/// conversion route.
+fn process_enum_conversion_is_total(design: &Design, target: &str, source: &str) -> bool {
+    let ancestor = |ancestor: &str, descendant: &str| {
+        let mut current = descendant;
+        let mut seen = std::collections::HashSet::new();
+        while let Some(base) = design.enum_bases.get(current) {
+            if !seen.insert(current.to_string()) {
+                return false;
+            }
+            if base == ancestor {
+                return true;
+            }
+            current = base;
+        }
+        false
+    };
+    let connected = ancestor(target, source) || ancestor(source, target);
+    connected
+        && design
+            .enum_syms
+            .get(source)
+            .zip(design.enum_syms.get(target))
+            .is_some_and(|(source, target)| {
+                source
+                    .values()
+                    .all(|symbol| target.values().any(|candidate| candidate == symbol))
+            })
+}
+
+/// Lower a user-type conversion through the exact source-owned `From` body or
+/// through a total enum derivation. The frontend has already rejected calls
+/// with no route, so a miss here remains fail-closed instead of reinterpreting
+/// unrelated nominal values by width.
+fn lower_process_named_conversion(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let ast::Expr::Call {
+        callee,
+        type_args,
+        args,
+        bang: false,
+        span,
+    } = expression
+    else {
+        return None;
+    };
+    if !type_args.is_empty() {
+        return None;
+    }
+    let [argument] = args.as_slice() else {
+        return None;
+    };
+    let ast::Expr::Path(path) = callee.as_ref() else {
+        return None;
+    };
+    let definition = context.resolved.resolved(path.span)?;
+    if !matches!(
+        context.resolved.kind_of(definition),
+        Some(crate::resolve::DefKind::Struct | crate::resolve::DefKind::Enum)
+    ) {
+        return None;
+    }
+    let target_type = return_type
+        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+        .cloned()
+        .unwrap_or(crate::types::Ty::Named(definition));
+    let target = process_type_key(&target_type, context)?;
+    let source_type = context
+        .typed
+        .expr_type(ast::expr_span(argument))
+        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+        .cloned()?;
+    let source = process_type_key(&source_type, context)?;
+    let first_value = context.process_ir.values.len();
+    let operand = value_ref_with_type(argument, process, context, Some(&source_type));
+
+    if let Some(function) = context.functions.get_conversion(&target, &source) {
+        let result = inline_process_function(
+            function,
+            None,
+            &[operand],
+            process,
+            context,
+            Some(&target_type),
+        );
+        if result.is_none() {
+            truncate_process_values(context, first_value);
+        }
+        return result;
+    }
+
+    if target == source || process_enum_conversion_is_total(context.design, &target, &source) {
+        let kind = ProcessValueKind::RawResize { operand };
+        let width = source_value_width(&kind, Some(&target_type), process, context)?;
+        return Some(push_value(
+            *span,
+            Some(target_type),
+            Some(width),
+            kind,
+            context,
+        ));
+    }
+
+    truncate_process_values(context, first_value);
+    None
+}
+
 /// Lower a value-transparent conversion to the language's explicit raw resize
 /// operation. Packed families (`unsigned[N](value)`), nominal one-field
 /// newtypes (`Byte(value)`), and the family-preserving `resize(value, width)`
@@ -3788,7 +4123,7 @@ fn lower_process_raw_resize(
         return None;
     }
     let target = match callee.as_ref() {
-        ast::Expr::Index { base, index, .. } => target.cloned().or_else(|| {
+        ast::Expr::Index { base, index, .. } => {
             let ast::Expr::Path(path) = base.as_ref() else {
                 return None;
             };
@@ -3805,16 +4140,27 @@ fn lower_process_raw_resize(
             let len =
                 crate::ir::eval_const_fns(index, context.constant_integers, context.functions, 0)
                     .and_then(|width| u32::try_from(width).ok())?;
-            Some(crate::types::Ty::Array {
-                // Packed families carry their width independently of the
-                // element type. The family identity is sufficient until this
-                // temporary adapter is removed in favour of canonical Process
-                // lowering.
-                elem: Box::new(crate::types::Ty::Error),
+            let (elem, family) = match target {
+                Some(crate::types::Ty::Array {
+                    elem,
+                    family: Some(target_family),
+                    ..
+                }) => (elem.clone(), target_family.clone()),
+                _ => (
+                    // Packed families carry their width independently of the
+                    // element type. The family identity is sufficient until
+                    // this temporary adapter is removed in favour of
+                    // canonical Process lowering.
+                    Box::new(crate::types::Ty::Error),
+                    family,
+                ),
+            };
+            crate::types::Ty::Array {
+                elem,
                 family: Some(family),
                 len,
-            })
-        })?,
+            }
+        }
         ast::Expr::Path(path) => {
             let definition = context.resolved.resolved(path.span)?;
             if context.resolved.def(definition)?.kind != crate::resolve::DefKind::Struct {
@@ -3886,8 +4232,9 @@ fn lower_process_default(
         },
         _ => None,
     }?;
+    let definition_kind = context.resolved.def(definition)?.kind;
     if !matches!(
-        context.resolved.def(definition)?.kind,
+        definition_kind,
         crate::resolve::DefKind::Builtin
             | crate::resolve::DefKind::Struct
             | crate::resolve::DefKind::Enum
@@ -3895,7 +4242,13 @@ fn lower_process_default(
     ) {
         return None;
     }
-    let target = target?.clone();
+    let target = target.cloned().or_else(|| {
+        matches!(
+            definition_kind,
+            crate::resolve::DefKind::Struct | crate::resolve::DefKind::Enum
+        )
+        .then_some(crate::types::Ty::Named(definition))
+    })?;
     if matches!(target, crate::types::Ty::Error) {
         return None;
     }
@@ -3908,7 +4261,7 @@ fn lower_process_default(
 /// scalar ABI. The source declaration supplies the linker-visible symbol and
 /// parameter count; checked expression types retain aliases and constraints as
 /// their kernel `integer`/`real` representation. Keeping this in Process IR
-/// prevents either native backend from revisiting an extern AST declaration.
+/// prevents native lowering from revisiting an extern AST declaration.
 fn lower_process_foreign_call(
     expression: &ast::Expr,
     process: &ProcessCfg,
@@ -4023,6 +4376,13 @@ fn lower_process_host_call(
         ProcessHostValueOp::Random | ProcessHostValueOp::RandomRange => {
             Some(crate::types::Ty::Integer)
         }
+        ProcessHostValueOp::ReadUtf8
+        | ProcessHostValueOp::ReadUtf8Fixed
+        | ProcessHostValueOp::ReadBinary
+        | ProcessHostValueOp::FileExists
+        | ProcessHostValueOp::StringLength
+        | ProcessHostValueOp::StringIndex
+        | ProcessHostValueOp::StringEqualsUtf8 => return None,
     });
     let kind = ProcessValueKind::HostCall {
         operation,
@@ -4030,6 +4390,134 @@ fn lower_process_host_call(
     };
     let width = source_value_width(&kind, ty.as_ref(), process, context);
     Some(push_value(*span, ty, width, kind, context))
+}
+
+fn process_type_is_string(ty: Option<&crate::types::Ty>) -> bool {
+    matches!(
+        ty,
+        Some(crate::types::Ty::Array {
+            elem,
+            family: None,
+            ..
+        }) if matches!(elem.as_ref(), crate::types::Ty::Char)
+    )
+}
+
+/// Normalize filesystem calls while the source literal and design base
+/// directory are still available. The Process value carries an absolute path;
+/// the fixed runtime owns file access, UTF-8 decoding, and string lifetime.
+fn lower_process_file_call(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let ast::Expr::Call {
+        callee,
+        type_args,
+        args,
+        bang: false,
+        span,
+    } = expression
+    else {
+        return None;
+    };
+    let [ast::Expr::StrLit {
+        text: path,
+        span: path_span,
+    }] = args.as_slice()
+    else {
+        return None;
+    };
+    let direct_string =
+        matches!(type_args.as_slice(), [requested] if type_leaf(requested) == Some("string"));
+    let operation = if builtin_callee_is(callee, "read", context) {
+        if process_type_is_string(return_type) || return_type.is_none() && direct_string {
+            match return_type {
+                Some(crate::types::Ty::Array { len, .. }) if *len != 0 => {
+                    ProcessHostValueOp::ReadUtf8Fixed
+                }
+                _ => ProcessHostValueOp::ReadUtf8,
+            }
+        } else if return_type.is_some() {
+            ProcessHostValueOp::ReadBinary
+        } else {
+            return None;
+        }
+    } else if builtin_callee_is(callee, "exists", context) && type_args.is_empty() {
+        ProcessHostValueOp::FileExists
+    } else {
+        return None;
+    };
+    let path = context
+        .design
+        .base_dir
+        .join(path)
+        .to_string_lossy()
+        .into_owned();
+    let path_type = crate::types::Ty::Array {
+        elem: Box::new(crate::types::Ty::Char),
+        family: None,
+        len: u32::try_from(path.chars().count()).ok()?,
+    };
+    let path_kind = ProcessValueKind::String(path);
+    let path_width = source_value_width(&path_kind, Some(&path_type), process, context);
+    let path = push_value(*path_span, Some(path_type), path_width, path_kind, context);
+    let kind = ProcessValueKind::HostCall {
+        operation,
+        arguments: vec![path],
+    };
+    let ty = return_type.cloned().or_else(|| match operation {
+        ProcessHostValueOp::ReadUtf8 => Some(crate::types::Ty::Array {
+            elem: Box::new(crate::types::Ty::Char),
+            family: None,
+            len: 0,
+        }),
+        ProcessHostValueOp::FileExists => {
+            nominal_type_from_name("std::logic::Bool", context.resolved)
+        }
+        _ => None,
+    });
+    let width = source_value_width(&kind, ty.as_ref(), process, context);
+    Some(push_value(*span, ty, width, kind, context))
+}
+
+fn process_value_is_runtime_string(id: ProcessValueId, context: &LoweringContext<'_>) -> bool {
+    let Some(value) = context.process_ir.values.get(id.0 as usize) else {
+        return false;
+    };
+    match &value.kind {
+        ProcessValueKind::HostCall {
+            operation: ProcessHostValueOp::ReadUtf8,
+            ..
+        } => true,
+        ProcessValueKind::Storage(storage) => context
+            .process_ir
+            .storages
+            .get(storage.0 as usize)
+            .and_then(|storage| storage.initializer)
+            .is_some_and(|initializer| process_value_is_runtime_string(initializer, context)),
+        ProcessValueKind::Select {
+            then_value,
+            else_value,
+            ..
+        } => {
+            process_value_is_runtime_string(*then_value, context)
+                && process_value_is_runtime_string(*else_value, context)
+        }
+        _ => false,
+    }
+}
+
+fn process_value_is_string_literal(id: ProcessValueId, context: &LoweringContext<'_>) -> bool {
+    matches!(
+        context
+            .process_ir
+            .values
+            .get(id.0 as usize)
+            .map(|value| &value.kind),
+        Some(ProcessValueKind::String(_))
+    )
 }
 
 /// Inline a pure, value-returning Siox function into the Process value arena.
@@ -4486,7 +4974,7 @@ fn inline_process_unary_operator(
 /// Evaluate a pure function statement sequence symbolically. `return`, local
 /// aliases, and branching cover the expression-shaped Siox functions shared
 /// by std and hardware lowering; other statements deliberately leave the call
-/// explicit and fail closed in the direct backend.
+/// explicit and fail closed in native Process lowering.
 fn inline_value_statements(
     statements: &[Stmt],
     process: &ProcessCfg,
@@ -4881,10 +5369,18 @@ fn value_ref_with_type(
         if let Some(value) = lower_process_kernel_conversion(expression, process, context) {
             return value;
         }
+        if let Some(value) =
+            lower_process_named_conversion(expression, process, context, ty.as_ref())
+        {
+            return value;
+        }
         if let Some(value) = lower_process_raw_resize(expression, process, context, ty.as_ref()) {
             return value;
         }
         if let Some(value) = lower_process_default(expression, process, context, ty.as_ref()) {
+            return value;
+        }
+        if let Some(value) = lower_process_file_call(expression, process, context, ty.as_ref()) {
             return value;
         }
         if let Some(value) = lower_process_host_call(expression, process, context, ty.as_ref()) {
@@ -5013,9 +5509,16 @@ fn value_ref_with_type(
                 kind
             } else {
                 let base = value_ref(base, process, context);
-                ProcessValueKind::Attribute {
-                    base,
-                    attribute: attr.text.clone(),
+                if attr.text == "length" && process_value_is_runtime_string(base, context) {
+                    ProcessValueKind::HostCall {
+                        operation: ProcessHostValueOp::StringLength,
+                        arguments: vec![base],
+                    }
+                } else {
+                    ProcessValueKind::Attribute {
+                        base,
+                        attribute: attr.text.clone(),
+                    }
                 }
             }
         }
@@ -5027,6 +5530,24 @@ fn value_ref_with_type(
                 }
             } else {
                 let base = value_ref(base, process, context);
+                if process_value_is_runtime_string(base, context) {
+                    let index_span = ast::expr_span(index);
+                    let index = value_ref_with_type(
+                        index,
+                        process,
+                        context,
+                        Some(&crate::types::Ty::Integer),
+                    );
+                    let kind = ProcessValueKind::HostCall {
+                        operation: ProcessHostValueOp::StringIndex,
+                        arguments: vec![base, index],
+                    };
+                    let ty = ty
+                        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                        .or(Some(crate::types::Ty::Char));
+                    let width = source_value_width(&kind, ty.as_ref(), process, context);
+                    return push_value(index_span, ty, width, kind, context);
+                }
                 let base_layout = process_value_source_layout(base, context.process_ir)
                     .cloned()
                     .or_else(|| {
@@ -5161,6 +5682,45 @@ fn value_ref_with_type(
                     value_ref_with_type(rhs, process, context, None),
                 )
             };
+            if matches!(op, ast::BinOp::Eq | ast::BinOp::Ne) {
+                let operands = if process_value_is_runtime_string(left, context)
+                    && process_value_is_string_literal(right, context)
+                {
+                    Some((left, right))
+                } else if process_value_is_runtime_string(right, context)
+                    && process_value_is_string_literal(left, context)
+                {
+                    Some((right, left))
+                } else {
+                    None
+                };
+                if let Some((handle, literal)) = operands {
+                    let bool_type = ty.clone();
+                    let equals = push_value(
+                        span,
+                        bool_type.clone(),
+                        Some(1),
+                        ProcessValueKind::HostCall {
+                            operation: ProcessHostValueOp::StringEqualsUtf8,
+                            arguments: vec![handle, literal],
+                        },
+                        context,
+                    );
+                    if matches!(op, ast::BinOp::Eq) {
+                        return equals;
+                    }
+                    return push_value(
+                        span,
+                        bool_type,
+                        Some(1),
+                        ProcessValueKind::Unary {
+                            operation: ProcessUnaryOp::Not,
+                            operand: equals,
+                        },
+                        context,
+                    );
+                }
+            }
             ProcessValueKind::Binary {
                 operation: lower_binary_operator(op, left_type.as_ref(), right_type.as_ref()),
                 left,
@@ -5356,19 +5916,20 @@ fn push_value(
     // array length). Retain a type-derived layout only for values that own
     // their aggregate representation; otherwise `Bit[3..0]` would silently
     // become `Bit[0..3]` merely because it was read into the arena.
-    let owns_layout = matches!(
-        &kind,
+    let layout = match &kind {
+        // A default needs its scalar nominal identity too: a derived enum's
+        // first discriminant may be nonzero and can collide by leaf name with
+        // another module's enum. LLVM cannot recover that from width alone.
+        ProcessValueKind::Default => ty
+            .as_ref()
+            .and_then(|ty| process_layout_for_type(ty, span, context)),
         ProcessValueKind::Array(_)
-            | ProcessValueKind::Construct { .. }
-            | ProcessValueKind::String(_)
-            | ProcessValueKind::Default
-    );
-    let layout = owns_layout
-        .then(|| {
-            ty.as_ref()
-                .and_then(|ty| process_aggregate_layout_for_type(ty, span, context))
-        })
-        .flatten();
+        | ProcessValueKind::Construct { .. }
+        | ProcessValueKind::String(_) => ty
+            .as_ref()
+            .and_then(|ty| process_aggregate_layout_for_type(ty, span, context)),
+        _ => None,
+    };
     let width = width.or_else(|| {
         layout
             .as_ref()
@@ -5394,6 +5955,22 @@ fn source_value_width(
     process: &ProcessCfg,
     context: &LoweringContext<'_>,
 ) -> Option<u32> {
+    let runtime_handle_width = |layout: Option<&crate::ir::SourceLayout>| {
+        matches!(
+            layout.map(|layout| &layout.kind),
+            Some(LayoutKind::Array {
+                range: None,
+                element,
+            }) if matches!(
+                element.kind,
+                LayoutKind::Scalar {
+                    domain: crate::ir::ScalarDomain::Character,
+                    ..
+                }
+            )
+        )
+        .then_some(64)
+    };
     let value_width = |id: &ProcessValueId| context.process_ir.values.get(id.0 as usize)?.bit_width;
     let typed_width = |ty: &crate::types::Ty| {
         ty.bit_width()
@@ -5430,6 +6007,52 @@ fn source_value_width(
                 widths.all(|width| width == first).then_some(first)
             })
     };
+    // A place is represented by its declaration-owned frame, not by the
+    // kernel type's ordinary expression width. Consumers widen constrained
+    // integers through `process_value_at`; recording them as i64 here would
+    // make the place disagree with the storage/local object that owns it.
+    match kind {
+        ProcessValueKind::Local { local, .. } => {
+            let local = process.locals.get(local.0 as usize)?;
+            return local
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.bit_width()?.try_into().ok())
+                .or_else(|| runtime_handle_width(local.layout.as_ref()))
+                .or_else(|| local.ty.as_ref().and_then(typed_width))
+                .filter(|width| *width != 0);
+        }
+        ProcessValueKind::Storage(storage) => {
+            let storage = context.process_ir.storages.get(storage.0 as usize)?;
+            return storage
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.bit_width()?.try_into().ok())
+                // A named alias may deliberately retain an opaque source
+                // layout while the checked storage type already names its
+                // concrete scalar representation. Prefer any declared layout
+                // (especially constrained integers), then use that terminal
+                // type only when the layout carries no width of its own.
+                .or_else(|| runtime_handle_width(storage.layout.as_ref()))
+                .or_else(|| storage.ty.as_ref().and_then(typed_width))
+                .filter(|width| *width != 0);
+        }
+        ProcessValueKind::StorageState {
+            state: ProcessSignalState::Event,
+            ..
+        } => return Some(1),
+        ProcessValueKind::StorageState { storage, .. } => {
+            let storage = context.process_ir.storages.get(storage.0 as usize)?;
+            return storage
+                .layout
+                .as_ref()
+                .and_then(|layout| layout.bit_width()?.try_into().ok())
+                .or_else(|| runtime_handle_width(storage.layout.as_ref()))
+                .or_else(|| storage.ty.as_ref().and_then(typed_width))
+                .filter(|width| *width != 0);
+        }
+        _ => {}
+    }
     if let ProcessValueKind::Number(ProcessNumber::Integer(words)) = kind {
         let natural = integer_words_width(words)?;
         return Some(
@@ -5495,36 +6118,9 @@ fn source_value_width(
         ProcessValueKind::String(value) => {
             u32::try_from(value.chars().count()).ok()?.checked_mul(32)
         }
-        ProcessValueKind::Local { local, .. } => {
-            let local = process.locals.get(local.0 as usize)?;
-            local
-                .layout
-                .as_ref()
-                .and_then(|layout| layout.bit_width()?.try_into().ok())
-                .or_else(|| local.ty.as_ref().and_then(typed_width))
-        }
-        ProcessValueKind::Storage(storage) => context
-            .process_ir
-            .storages
-            .get(storage.0 as usize)?
-            .layout
-            .as_ref()?
-            .bit_width()?
-            .try_into()
-            .ok(),
-        ProcessValueKind::StorageState {
-            state: ProcessSignalState::Event,
-            ..
-        } => Some(1),
-        ProcessValueKind::StorageState { storage, .. } => context
-            .process_ir
-            .storages
-            .get(storage.0 as usize)?
-            .layout
-            .as_ref()?
-            .bit_width()?
-            .try_into()
-            .ok(),
+        ProcessValueKind::Local { .. }
+        | ProcessValueKind::Storage(_)
+        | ProcessValueKind::StorageState { .. } => unreachable!("places return above"),
         ProcessValueKind::Signal {
             state: ProcessSignalState::Event,
             ..
@@ -6669,7 +7265,7 @@ mod tests {
     #[test]
     /// Aggregate values which exist only as constants, call arguments, or
     /// process-local initializers retain the recursive source layout required
-    /// by a direct backend. Function signatures provide the context for
+    /// by native Process lowering. Function signatures provide the context for
     /// anonymous array and struct literals before the AST is discarded.
     fn aggregate_only_values_retain_recursive_layouts() {
         let sources = [
@@ -6863,7 +7459,7 @@ mod tests {
 
     #[test]
     /// Validation must reject a process whose owner or entry block does not
-    /// exist, since neither backend could execute one.
+    /// exist, since the native runtime could not execute one.
     fn design_validator_rejects_invalid_process_ownership_and_entry() {
         let span = crate::diag::Span::new(FileId(0), 0..1);
         let design = Design {

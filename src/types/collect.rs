@@ -111,6 +111,7 @@ impl<'a> Checker<'a> {
             enum_variants: HashMap::new(),
             own_variants: HashMap::new(),
             enum_bases: HashMap::new(),
+            conversion_sigs: HashSet::new(),
             structs: HashMap::new(),
             field_visibility: HashMap::new(),
             struct_field_types: HashMap::new(),
@@ -319,6 +320,17 @@ impl<'a> Checker<'a> {
                     let trait_name = self.trait_key(tr);
                     let target = self.type_key(&im.target);
                     if let (Some(mut t), Some(ty)) = (trait_name, target) {
+                        if t == "From" {
+                            let source =
+                                im.trait_args.first().and_then(|argument| match argument {
+                                    GenericArg::Positional(Expr::Path(path)) => self.path_key(path),
+                                    GenericArg::PositionalType(ty) => self.type_key(ty),
+                                    _ => None,
+                                });
+                            if let Some(source) = source {
+                                self.conversion_sigs.insert((ty.clone(), source));
+                            }
+                        }
                         // `impl Operator<"<sym>", Input, Output> for T`: the
                         // first trait argument is the operator symbol, which
                         // keys the impl. A user operator (a non-standard symbol)

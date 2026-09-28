@@ -31,6 +31,9 @@ pub struct FunctionIndex<'a> {
     /// Their loop-shaped bodies are expanded by Process lowering, while each
     /// element still dispatches through its concrete source implementation.
     blanket_array_operators: HashMap<String, &'a ast::FnDecl>,
+    /// Exact `impl From<Source> for Target` bodies, keyed by both nominal
+    /// identities so equal leaves in different modules cannot collide.
+    conversions: HashMap<(String, String), &'a ast::FnDecl>,
 }
 
 impl<'a> FunctionIndex<'a> {
@@ -42,7 +45,45 @@ impl<'a> FunctionIndex<'a> {
             associated: HashMap::new(),
             operators: HashMap::new(),
             blanket_array_operators: HashMap::new(),
+            conversions: HashMap::new(),
         }
+    }
+
+    /// Register the executable body of an exact `From<Source>` conversion.
+    pub fn insert_conversion_impl(&mut self, implementation: &'a ast::ImplDecl) {
+        let Some(trait_path) = implementation.trait_.as_ref() else {
+            return;
+        };
+        if self.trait_path_key(trait_path).as_deref() != Some("From") {
+            return;
+        }
+        let Some(target) = self.type_head_key(&implementation.target) else {
+            return;
+        };
+        let Some(source) = implementation
+            .trait_args
+            .first()
+            .and_then(|argument| match argument {
+                ast::GenericArg::Positional(ast::Expr::Path(path)) => self.type_path_key(path),
+                ast::GenericArg::PositionalType(ty) => self.type_head_key(ty),
+                _ => None,
+            })
+        else {
+            return;
+        };
+        if let Some(function) = implementation.items.iter().find_map(|item| match item {
+            ast::ImplItem::Fn(function) if function.name.text == "from" => Some(function),
+            _ => None,
+        }) {
+            self.conversions.insert((target, source), function);
+        }
+    }
+
+    /// Select the exact source/target conversion body.
+    pub fn get_conversion(&self, target: &str, source: &str) -> Option<&'a ast::FnDecl> {
+        self.conversions
+            .get(&(target.to_string(), source.to_string()))
+            .copied()
     }
 
     /// Register a module-level or foreign function declaration.

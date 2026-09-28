@@ -14,9 +14,9 @@ Build `sioxc` from source. The compiler needs:
 
 - [Rust](https://rustup.rs) 1.90 or newer;
 - LLVM 22 development libraries (the version selected in `Cargo.toml`);
-- Clang and zlib for native `#[test]` executables. The generated harness is C;
-  its embedded FST runtime is normally precompiled once with `sioxc` and links
-  zlib.
+- Clang and zlib for native `#[test]` executables. Clang links the LLVM-emitted
+  design with a fixed C scheduler, command-line, and waveform runtime; those
+  design-independent runtime objects are normally precompiled with `sioxc`.
 
 ```bash
 git clone --recursive https://github.com/Siox-lang/sioxc

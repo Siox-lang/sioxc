@@ -316,14 +316,14 @@ impl<'a> Lowering<'a> {
     /// read-modify-write must merge over.
     ///
     /// It is not enough to start from the signal's *prior* value. Each write
-    /// produces a whole new value for the signal, and the backend keeps only
+    /// produces a whole new value for the signal, and lowering keeps only
     /// the last one that fires: event-block updates are all staged from the
     /// pre-commit state and committed in order, and combinational drivers fold
     /// as `val = cond ? expr : val`. So a second partial write that merged over
     /// `Current(sig)` (or over nothing) silently threw the first one away —
     /// `word[1] = '1'; word[3] = '1';` set bit 3 alone. Folding the writes
     /// already lowered in this context gives each one the value its
-    /// predecessors left behind, which is what the source says in both engines.
+    /// predecessors left behind, which is what the source says.
     pub(super) fn slice_write_base(
         &self,
         signal: SignalId,

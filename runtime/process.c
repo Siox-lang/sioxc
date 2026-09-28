@@ -13,7 +13,7 @@ enum {
     SX_PROCESS_FINISHED = 3,
     SX_PROCESS_SETTLING = 4,
     SX_PROCESS_UNSUPPORTED = 255,
-    SX_PROCESS_ABI = 11,
+    SX_PROCESS_ABI = 12,
     SX_EVENT_WRITE = 0,
     SX_EVENT_RESUME = 1,
     SX_SUSPENSION_NONE = 0,
@@ -94,6 +94,20 @@ static size_t sx_format_len;
 static size_t sx_format_cap;
 static uint64_t sx_random_state = UINT64_C(0x9E3779B97F4A7C15);
 
+typedef struct {
+    uint32_t *values;
+    size_t length;
+    char *utf8;
+    size_t byte_length;
+} sx_runtime_string;
+
+static sx_runtime_string *sx_strings;
+static size_t sx_string_count;
+static size_t sx_string_capacity;
+
+static void sx_set_error(const char *format, ...);
+static sx_runtime_string *sx_runtime_string_for(uint64_t handle);
+
 const char *sx_runtime_error(void) { return sx_error; }
 uint64_t sx_runtime_now(void) { return sx_now; }
 uint32_t sx_runtime_warning_count(void) { return sx_warnings; }
@@ -130,6 +144,253 @@ uint64_t sx_runtime_uniform(void) {
     uint64_t bits;
     memcpy(&bits, &value, sizeof(bits));
     return bits;
+}
+
+static void sx_clear_strings(void) {
+    for (size_t index = 0; index < sx_string_count; ++index) {
+        free(sx_strings[index].values);
+        free(sx_strings[index].utf8);
+    }
+    free(sx_strings);
+    sx_strings = 0;
+    sx_string_count = 0;
+    sx_string_capacity = 0;
+}
+
+static int sx_utf8_next(const unsigned char *data, size_t length,
+                        size_t *cursor, uint32_t *value) {
+    size_t at = *cursor;
+    if (at >= length) return 0;
+    unsigned b0 = data[at++];
+    if (b0 <= 0x7f) *value = b0;
+    else if (b0 >= 0xc2 && b0 <= 0xdf && at < length
+             && (data[at] & 0xc0) == 0x80) {
+        *value = ((b0 & 0x1f) << 6) | (data[at++] & 0x3f);
+    } else if (b0 >= 0xe0 && b0 <= 0xef && at + 1 < length
+               && (data[at] & 0xc0) == 0x80 && (data[at + 1] & 0xc0) == 0x80
+               && !(b0 == 0xe0 && data[at] < 0xa0)
+               && !(b0 == 0xed && data[at] >= 0xa0)) {
+        *value = ((b0 & 0x0f) << 12) | ((data[at] & 0x3f) << 6)
+                 | (data[at + 1] & 0x3f);
+        at += 2;
+    } else if (b0 >= 0xf0 && b0 <= 0xf4 && at + 2 < length
+               && (data[at] & 0xc0) == 0x80 && (data[at + 1] & 0xc0) == 0x80
+               && (data[at + 2] & 0xc0) == 0x80
+               && !(b0 == 0xf0 && data[at] < 0x90)
+               && !(b0 == 0xf4 && data[at] >= 0x90)) {
+        *value = ((b0 & 0x07) << 18) | ((data[at] & 0x3f) << 12)
+                 | ((data[at + 1] & 0x3f) << 6) | (data[at + 2] & 0x3f);
+        at += 3;
+    } else return -1;
+    *cursor = at;
+    return 1;
+}
+
+uint64_t sx_runtime_read_utf8(const char *path) {
+    if (!path) {
+        sx_set_error("read<string>: invalid path");
+        return 0;
+    }
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        sx_set_error("read<string>(\"%s\"): cannot open file", path);
+        return 0;
+    }
+    if (fseek(file, 0, SEEK_END) || ftell(file) < 0) {
+        fclose(file);
+        sx_set_error("read<string>(\"%s\"): cannot determine file length", path);
+        return 0;
+    }
+    long end = ftell(file);
+    if (end < 0 || fseek(file, 0, SEEK_SET)) {
+        fclose(file);
+        sx_set_error("read<string>(\"%s\"): cannot seek file", path);
+        return 0;
+    }
+    size_t length = (size_t)end;
+    if (length == SIZE_MAX || length > SIZE_MAX / sizeof(uint32_t)) {
+        fclose(file);
+        sx_set_error("read<string>(\"%s\"): file is too large", path);
+        return 0;
+    }
+    char *bytes = malloc(length + 1);
+    uint32_t *values = calloc(length ? length : 1, sizeof(uint32_t));
+    if (!bytes || !values) {
+        free(bytes);
+        free(values);
+        fclose(file);
+        sx_set_error("read<string>(\"%s\"): out of memory", path);
+        return 0;
+    }
+    size_t read = fread(bytes, 1, length, file);
+    fclose(file);
+    if (read != length) {
+        free(bytes);
+        free(values);
+        sx_set_error("read<string>(\"%s\"): short read", path);
+        return 0;
+    }
+    bytes[length] = 0;
+    size_t cursor = 0, count = 0;
+    while (cursor < length) {
+        if (sx_utf8_next((const unsigned char *)bytes, length, &cursor,
+                         &values[count]) < 0) {
+            free(bytes);
+            free(values);
+            sx_set_error("read<string>(\"%s\"): file is not valid UTF-8", path);
+            return 0;
+        }
+        ++count;
+    }
+    if (sx_string_count == sx_string_capacity) {
+        size_t capacity = sx_string_capacity ? sx_string_capacity * 2 : 4;
+        if (capacity < sx_string_capacity
+            || capacity > SIZE_MAX / sizeof(sx_runtime_string)) {
+            free(bytes);
+            free(values);
+            sx_set_error("read<string>(\"%s\"): too many runtime strings", path);
+            return 0;
+        }
+        sx_runtime_string *grown = realloc(
+            sx_strings, capacity * sizeof(sx_runtime_string));
+        if (!grown) {
+            free(bytes);
+            free(values);
+            sx_set_error("read<string>(\"%s\"): out of memory", path);
+            return 0;
+        }
+        sx_strings = grown;
+        sx_string_capacity = capacity;
+    }
+    sx_strings[sx_string_count] = (sx_runtime_string){
+        values, count, bytes, length
+    };
+    return (uint64_t)++sx_string_count;
+}
+
+uint8_t sx_runtime_read_utf8_fixed(const char *path, uint64_t *words,
+                                   uint32_t word_count,
+                                   uint32_t character_capacity) {
+    if (!words || (uint64_t)word_count * sizeof(uint64_t) <
+                      (uint64_t)character_capacity * sizeof(uint32_t)) {
+        sx_set_error("read<string>: invalid fixed-string destination");
+        return 0;
+    }
+    uint64_t handle = sx_runtime_read_utf8(path);
+    if (!handle) return 0;
+    sx_runtime_string *string = sx_runtime_string_for(handle);
+    if (!string) return 0;
+    if (string->length > character_capacity) {
+        sx_set_error(
+            "read<string>(\"%s\"): %llu characters do not fit a %u-element string",
+            path ? path : "", (unsigned long long)string->length,
+            (unsigned)character_capacity);
+        return 0;
+    }
+    memset(words, 0, (size_t)word_count * sizeof(uint64_t));
+    for (size_t index = 0; index < string->length; ++index) {
+        uint64_t bit_offset = (uint64_t)index * 32;
+        words[bit_offset / 64] |=
+            (uint64_t)string->values[index] << (bit_offset % 64);
+    }
+    return 1;
+}
+
+uint8_t sx_runtime_read_binary(const char *path, uint64_t *words,
+                               uint32_t word_count, uint32_t byte_capacity) {
+    if (!path || !words || !word_count) {
+        sx_set_error("read: invalid binary destination");
+        return 0;
+    }
+    if ((uint64_t)word_count * sizeof(uint64_t) < byte_capacity) {
+        sx_set_error("read: invalid binary destination capacity");
+        return 0;
+    }
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        sx_set_error("read(\"%s\"): cannot open file", path);
+        return 0;
+    }
+    if (fseek(file, 0, SEEK_END) || ftell(file) < 0) {
+        fclose(file);
+        sx_set_error("read(\"%s\"): cannot determine file length", path);
+        return 0;
+    }
+    long end = ftell(file);
+    if (end < 0 || fseek(file, 0, SEEK_SET)) {
+        fclose(file);
+        sx_set_error("read(\"%s\"): cannot seek file", path);
+        return 0;
+    }
+    if ((uint64_t)end > byte_capacity) {
+        fclose(file);
+        sx_set_error("read(\"%s\"): %llu bytes do not fit in %u bytes", path,
+                     (unsigned long long)end, (unsigned)byte_capacity);
+        return 0;
+    }
+    memset(words, 0, (size_t)word_count * sizeof(uint64_t));
+    size_t length = (size_t)end;
+    unsigned char bytes[4096];
+    size_t offset = 0;
+    while (offset < length) {
+        size_t remaining = length - offset;
+        size_t count = remaining < sizeof(bytes) ? remaining : sizeof(bytes);
+        size_t read = fread(bytes, 1, count, file);
+        if (read != count) {
+            fclose(file);
+            sx_set_error("read(\"%s\"): short read", path);
+            return 0;
+        }
+        for (size_t index = 0; index < count; ++index) {
+            size_t destination = offset + index;
+            words[destination / 8] |=
+                (uint64_t)bytes[index] << ((destination % 8) * 8);
+        }
+        offset += count;
+    }
+    fclose(file);
+    return 1;
+}
+
+uint64_t sx_runtime_file_exists(const char *path) {
+    if (!path) return 0;
+    FILE *file = fopen(path, "rb");
+    if (!file) return 0;
+    fclose(file);
+    return 1;
+}
+
+static sx_runtime_string *sx_runtime_string_for(uint64_t handle) {
+    if (!handle || handle > sx_string_count) {
+        sx_set_error("invalid runtime string handle");
+        return 0;
+    }
+    return &sx_strings[handle - 1];
+}
+
+uint64_t sx_runtime_string_length(uint64_t handle) {
+    sx_runtime_string *string = sx_runtime_string_for(handle);
+    return string ? (uint64_t)string->length : 0;
+}
+
+uint64_t sx_runtime_string_index(uint64_t handle, uint64_t index) {
+    sx_runtime_string *string = sx_runtime_string_for(handle);
+    if (!string) return 0;
+    if (index >= string->length) {
+        sx_set_error("runtime string index %llu is out of bounds for length %llu",
+                     (unsigned long long)index,
+                     (unsigned long long)string->length);
+        return 0;
+    }
+    return string->values[index];
+}
+
+uint64_t sx_runtime_string_equals_utf8(uint64_t handle, const char *text) {
+    sx_runtime_string *string = sx_runtime_string_for(handle);
+    if (!string || !text) return 0;
+    size_t length = strlen(text);
+    return length == string->byte_length
+        && memcmp(string->utf8, text, length) == 0;
 }
 
 static void sx_clear_error(void) {
@@ -346,6 +607,28 @@ static const char *sx_source_location(uint32_t file, uint32_t offset) {
             sx_source_location_offsets[location] == offset)
             return sx_source_location_texts[location];
     return 0;
+}
+
+void sx_runtime_note_location(uint32_t file, uint32_t offset) {
+    if (!sx_error) return;
+    sx_append_error_location(sx_source_location(file, offset));
+}
+
+uint64_t sx_runtime_string_index_at(uint64_t handle, uint64_t index,
+                                    uint32_t file, uint32_t offset) {
+    sx_runtime_string *string = sx_runtime_string_for(handle);
+    if (!string) {
+        sx_append_error_location(sx_source_location(file, offset));
+        return 0;
+    }
+    if (index >= string->length) {
+        int64_t right = string->length ? (int64_t)string->length - 1 : -1;
+        sx_set_error("index %llu is outside declared range 0..%lld",
+                     (unsigned long long)index, (long long)right);
+        sx_append_error_location(sx_source_location(file, offset));
+        return 0;
+    }
+    return string->values[index];
 }
 
 uint8_t sx_runtime_assert(uint8_t condition, const char *message,
@@ -624,6 +907,7 @@ int sx_runtime_run_test(uint32_t test) {
     int foreground_started = 0;
     int result = 0;
     sx_clear_events();
+    sx_clear_strings();
     sx_clear_error();
     sx_now = 0;
     sx_sequence = 0;
@@ -653,10 +937,14 @@ int sx_runtime_run_test(uint32_t test) {
     }
 
     sx_reset_test(sx_test_roots[test]);
+    if (sx_error) {
+        result = 1;
+        goto done;
+    }
     sx_wave_begin_test();
     /* Reset initializes process storage and stages its input bindings. Publish
-       those values before any reactive process reads them. The compatibility
-       runner also settles the initialized design before test stimulus starts. */
+       those values and settle the initialized design before test stimulus
+       starts, so no reactive process observes an uncommitted binding. */
     (void)sx_process_commit();
     if (sx_design_failed()) {
         result = 1;
@@ -673,10 +961,10 @@ int sx_runtime_run_test(uint32_t test) {
         selected[process] = 1;
         resume_blocks[process] = sx_process_initial_blocks[process];
     }
-    /* Compatibility settling initializes every hardware instance in the
-       combined design object, even when its owning test is filtered out. Run
-       those nested hardware processes during bootstrap, but never another
-       test root's foreground/clock process. */
+    /* Reset initializes every hardware instance in the combined design object,
+       even when its owning test is filtered out. Run those nested hardware
+       processes during bootstrap, but never another test root's foreground or
+       clock process. */
     for (uint32_t process = 0; process < sx_process_count; ++process) {
         int nested_hardware = sx_process_owners[process] != sx_process_roots[process];
         if (sx_process_activations[process] == 1 &&
@@ -783,6 +1071,10 @@ int sx_runtime_run_test(uint32_t test) {
                 goto done;
             }
             uint8_t changed = sx_process_commit();
+            if (sx_design_failed()) {
+                result = 1;
+                goto done;
+            }
             if (finish) {
                 sx_wave_sample(sx_now);
                 break;
@@ -895,7 +1187,12 @@ int sx_runtime_run_test(uint32_t test) {
             goto done;
         }
 
-        if (sx_process_commit()) {
+        uint8_t changed = sx_process_commit();
+        if (sx_design_failed()) {
+            result = 1;
+            goto done;
+        }
+        if (changed) {
             for (uint32_t item = begin; item < end; ++item) {
                 uint32_t process = sx_test_process_ids[item];
                 if (stopped[process] || settling[process])
@@ -922,6 +1219,7 @@ done:
     sx_running = 0;
     sx_current_process = UINT32_MAX;
     sx_clear_events();
+    sx_clear_strings();
     free(resume_blocks);
     free(selected);
     free(settling);

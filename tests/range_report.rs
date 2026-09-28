@@ -20,28 +20,17 @@ fn a_range_violation_reports_the_value_that_broke_it() {
     let siox = env!("CARGO_BIN_EXE_sioxc");
     let root = env!("CARGO_MANIFEST_DIR");
     let stem = std::env::temp_dir().join(format!("siox_range_{}", std::process::id()));
-    let compatibility = stem.with_extension("compatibility");
-    let direct = stem.with_extension("direct");
+    let binary = stem.with_extension("bin");
 
-    for (output, direct_runtime) in [(&compatibility, false), (&direct, true)] {
-        let mut command = Command::new(siox);
-        if direct_runtime {
-            command.env("SIOX_DIRECT_PROCESS_RUNTIME", "1");
-        }
-        let status = command
-            .current_dir(root)
-            .args(["--test", "tests/fixtures/range_report_test.siox", "-o"])
-            .arg(output)
-            .status()
-            .unwrap();
-        assert!(status.success(), "sioxc --test failed");
-    }
+    let status = Command::new(siox)
+        .current_dir(root)
+        .args(["--test", "tests/fixtures/range_report_test.siox", "-o"])
+        .arg(&binary)
+        .status()
+        .unwrap();
+    assert!(status.success(), "sioxc --test failed");
 
-    let compatibility_run = Command::new(&compatibility).output().unwrap();
-    let run = Command::new(&direct).output().unwrap();
-    assert_eq!(run.status.code(), compatibility_run.status.code());
-    assert_eq!(run.stdout, compatibility_run.stdout);
-    assert_eq!(run.stderr, compatibility_run.stderr);
+    let run = Command::new(&binary).output().unwrap();
     let text =
         String::from_utf8_lossy(&run.stdout).to_string() + &String::from_utf8_lossy(&run.stderr);
     assert!(
@@ -82,6 +71,5 @@ fn a_range_violation_reports_the_value_that_broke_it() {
         );
     }
 
-    let _ = std::fs::remove_file(compatibility);
-    let _ = std::fs::remove_file(direct);
+    let _ = std::fs::remove_file(binary);
 }

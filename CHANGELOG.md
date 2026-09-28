@@ -28,12 +28,11 @@ assertions, and VCD export — predates this changelog. See
   scope and cannot capture ports or implementation state. Public receiver
   methods and calls through instances remain rejected until their generated
   port and scheduling semantics are implemented.
-- **A test executable can be built for a debugger.** `sioxc --test -g`
-  attributes the generated code back to its `.siox` lines and compiles it
-  unoptimized with debug info, so `break counter.siox:34`, stepping, source
-  display, and backtraces all work in gdb, lldb, or any DWARF-aware IDE. The
-  default build is unchanged and still optimized. The debug build also records
-  its compile flags in DWARF, so a binary can be asked how it was built.
+- **Native source debugging now fails explicitly until direct DWARF exists.**
+  `sioxc --test -g` no longer falls back to a generated-C test harness merely
+  to obtain `#line` metadata. It reports that source debug information is not
+  implemented for direct Process-to-LLVM lowering; ordinary optimized native
+  test builds are unchanged.
 - **An overwritten assignment is no longer range-checked.** A driver that a
   later unconditional one replaces never reaches the signal, but the check ran
   per driver, so `t = a + 5; t = 2;` failed a test with "`t` left its range
@@ -615,14 +614,14 @@ interpreter that doubles as a differential oracle).
   else is an ordinary function — the language does not classify functions by
   purity. `print!` format-expands at compile time (`{}` renders per argument
   kind, reals as floats); `stop()`/`finish()` end a test cleanly with the
-  time. All three paths (native compiles print! to printf). `clock()`
+  time. Native lowering compiles `print!` through the fixed runtime ABI. `clock()`
   removed — the `after`-form is the one generator.
 - **Dynamic range asserts + real initial values** — a ranged numeric
-  (`integer<1..10>`) is checked after every settle on all three paths;
+  (`integer<1..10>`) is checked after every settle in the native runtime;
   leaving the domain fails the simulation with the signal, value, and time
   (`n = 11 left its range 1..10 at 95000000 fs`). Enabler: `let v: T = 1;`
-  initial values now actually apply (VHDL-style Signal.init in both engines'
-  reset) instead of everything starting at zero.
+  initial values now actually apply during the fixed runtime reset instead of
+  everything starting at zero.
 - **Conversion fit checking** — a constant conversion argument must be
   representable in the target: `unsigned[4](300)` / `signed[4](-9)` are
   compile-time errors (signed domains respected; simple const expressions
@@ -719,8 +718,8 @@ interpreter that doubles as a differential oracle).
 - **Tops-only lowering.** Only `#[top]`/`#[test]` roots lower; sub-entities and
   a testbench's DUTs lower recursively per-instance (`CounterTest.dut.*`), so
   two instances of one entity in a testbench no longer share state.
-- **The native test binary got a real event wheel** — generated C tracks
-  simulation time and per-clock next-edge state, so multiple clocks of
+- **The native test binary got a real event wheel** — the fixed Process runtime
+  tracks simulation time and per-clock next-edge state, so multiple clocks of
   different periods interleave correctly (previously all clocks toggled in
   lockstep) and `await <duration>` advances real time.
 
@@ -737,7 +736,7 @@ interpreter that doubles as a differential oracle).
   multiple clocks interleave correctly on one event wheel.
 - **Hierarchical designs** with submodules wired up wrong (lowering was flat,
   per entity type); now per-instance with connection drivers.
-- Divide-by-zero yields `0` consistently on both engines; the IR validator
+- Divide-by-zero yields `0` consistently in hardware and test expressions; the IR validator
   rejects malformed IR before codegen.
 
 ### Deferred / by design

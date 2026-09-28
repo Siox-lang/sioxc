@@ -39,7 +39,7 @@ fn native_runtime_array_writes_compile_and_run() {
 }
 
 #[test]
-fn direct_process_runtime_array_writes_compile_and_run() {
+fn process_runtime_array_writes_compile_and_run() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");
         return;
@@ -51,7 +51,6 @@ fn direct_process_runtime_array_writes_compile_and_run() {
     ));
     let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
         .current_dir(root)
-        .env("SIOX_DIRECT_PROCESS_RUNTIME", "1")
         .args([
             "--test",
             "tests/fixtures/dynamic_array_write_test.siox",
@@ -62,14 +61,14 @@ fn direct_process_runtime_array_writes_compile_and_run() {
         .unwrap();
     assert!(
         build.status.success(),
-        "direct Process build failed:\n{}\n{}",
+        "Process build failed:\n{}\n{}",
         String::from_utf8_lossy(&build.stdout),
         String::from_utf8_lossy(&build.stderr)
     );
     let run = Command::new(&binary).output().unwrap();
     assert!(
         run.status.success(),
-        "direct Process runtime-array test failed:\n{}\n{}",
+        "Process runtime-array test failed:\n{}\n{}",
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr)
     );

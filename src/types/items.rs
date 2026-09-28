@@ -115,12 +115,11 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Validate the scalar ABI the current LLVM and generated-C backends
-    /// implement. Accepting a broader source type is dangerous here: both
-    /// backends otherwise lower every non-real value as one `uint64_t`, which
-    /// silently truncates wide vectors and treats aggregate layouts as scalar
-    /// words. Void calls in statement position are likewise not represented
-    /// in hardware IR yet, so reject them instead of dropping their effects.
+    /// Validate the scalar ABI the LLVM backend and fixed runtime implement.
+    /// Accepting a broader source type is dangerous here: the C ABI contract
+    /// does not yet define aggregate or multiword ownership. Void calls in
+    /// statement position are likewise not represented in hardware IR yet, so
+    /// reject them instead of dropping their effects.
     pub(super) fn check_extern_c_signature(&mut self, function: &FnDecl) {
         if !function.generics.params.is_empty() {
             self.error(

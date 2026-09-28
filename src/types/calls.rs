@@ -4,6 +4,131 @@
 use super::*;
 
 impl<'a> Checker<'a> {
+    /// Reject a named conversion unless its exact source/target pair is
+    /// provided by `From` or by a total nominal derivation. Hardware lowering
+    /// used to perform this check as a side effect, which meant test-only
+    /// process code bypassed it and failed much later in the simulator.
+    pub(super) fn check_conversion_route(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        sym: &HashMap<String, Ty>,
+    ) {
+        let [argument] = args else { return };
+        let Expr::Path(path) = callee else { return };
+        if self.function_id(path).is_some() {
+            return;
+        }
+        let Some(target) = self.path_key(path) else {
+            return;
+        };
+        if !self.structs.contains_key(&target) && !self.enum_variants.contains_key(&target) {
+            return;
+        }
+        // Nominal packed-array newtypes use the same explicit raw-resize
+        // constructor as their underlying family (`Byte(201)`). They are not
+        // trait conversions and therefore have no `From` route to validate.
+        if self.is_packed_array_newtype(&target) {
+            return;
+        }
+        let source_ty = self.type_of(argument, sym);
+        let Some(source) = self.type_kind_name(&source_ty) else {
+            return;
+        };
+        let explicit = self
+            .conversion_sigs
+            .contains(&(target.clone(), source.clone()));
+        let derived_enum = self.enum_conversion_is_total(&target, &source);
+        let derived_struct = self.struct_conversion_is_total(&target, &source);
+        if target == source || explicit || derived_enum || derived_struct {
+            return;
+        }
+        self.error_with_help(
+            codes::TYPE_MISMATCH,
+            expr_span(callee),
+            format!(
+                "no conversion from `{}` to `{}`",
+                self.key_leaf(&source),
+                self.key_leaf(&target)
+            ),
+            "`T(x)` needs an `impl From<S> for T`, or a derivation chain between the two types; conversions are never implicit".to_string(),
+        );
+    }
+
+    /// A chain-connected enum conversion is total only when every source
+    /// variant also exists in the target domain.
+    fn enum_conversion_is_total(&self, target: &str, source: &str) -> bool {
+        let ancestor = |ancestor: &str, descendant: &str| {
+            let mut current = descendant;
+            let mut seen = HashSet::new();
+            while let Some(base) = self.enum_bases.get(current) {
+                if !seen.insert(current.to_string()) {
+                    return false;
+                }
+                if base == ancestor {
+                    return true;
+                }
+                current = base;
+            }
+            false
+        };
+        let connected = ancestor(target, source) || ancestor(source, target);
+        connected
+            && self
+                .enum_variants
+                .get(source)
+                .zip(self.enum_variants.get(target))
+                .is_some_and(|(source, target)| {
+                    source.iter().all(|variant| target.contains(variant))
+                })
+    }
+
+    /// Whether `name` derives transitively from `base` as a struct.
+    fn struct_derives_from(&self, name: &str, base: &str) -> bool {
+        let mut current = name.to_string();
+        let mut seen = HashSet::new();
+        while seen.insert(current.clone()) {
+            let Some((Some(parent), _)) = self.structs.get(&current) else {
+                return false;
+            };
+            let Some(parent) = self.type_key(parent) else {
+                return false;
+            };
+            if parent == base {
+                return true;
+            }
+            current = parent;
+        }
+        false
+    }
+
+    /// A derived struct can always project to its base. Constructing in the
+    /// other direction is representation-total only across fieldless newtype
+    /// links such as `struct time(integer)`.
+    fn struct_conversion_is_total(&self, target: &str, source: &str) -> bool {
+        if self.struct_derives_from(source, target) {
+            return true;
+        }
+        let mut current = target.to_string();
+        let mut seen = HashSet::new();
+        while seen.insert(current.clone()) {
+            let Some((Some(parent), fields)) = self.structs.get(&current) else {
+                return false;
+            };
+            if !fields.is_empty() {
+                return false;
+            }
+            let Some(parent) = self.type_key(parent) else {
+                return false;
+            };
+            if parent == source {
+                return true;
+            }
+            current = parent;
+        }
+        false
+    }
+
     /// Compile-time fit check for conversion expressions with constant
     /// arguments: the value must be representable in the target container.
     pub(super) fn check_conversion_fit(&mut self, callee: &Expr, args: &[Expr], site: &Expr) {
@@ -93,8 +218,8 @@ impl<'a> Checker<'a> {
 
     /// `print!("{} {}", x)` silently rendered an empty slot, and a spare
     /// argument was silently dropped — in a testbench that is exactly where a
-    /// wrong value costs you debugging time. Both engines share the arity, so
-    /// checking it here covers them at once.
+    /// wrong value costs you debugging time. Checking the shared source
+    /// contract here keeps every Process IR consumer consistent.
     pub(super) fn check_format_arity(&mut self, callee: &Expr, args: &[Expr]) {
         let name = match callee {
             Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
@@ -315,7 +440,7 @@ impl<'a> Checker<'a> {
     /// Compiler/runtime-provided functions have no source `FnDecl`, so retain
     /// their complete public contract here: arity, argument domains, macro
     /// spelling, and removed migration forms. This keeps malformed calls from
-    /// surviving until C harness generation.
+    /// reaching Process IR lowering or the fixed runtime ABI.
     pub(super) fn check_runtime_call_contract(
         &mut self,
         callee: &Expr,
