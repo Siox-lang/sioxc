@@ -64,9 +64,14 @@ earliest pending event and advances to it:
   multiple clocks interleave on the one wheel with real timestamps.
 - **Delayed assignments.** The Process runtime recognizes the canonical
   self-toggle above as a free-running clock and executes one-shot writes to
-  static targets with exact-width captured values. One-shot writes currently
-  have transport-like behavior; VHDL inertial cancellation and rejection are
-  still outstanding.
+  static targets with exact-width captured values. One-shot writes use VHDL's
+  default inertial rule: the rejection limit is the assignment delay, a later
+  assignment edits the same driver/scalar-subelement projected waveform, and
+  distinct drivers remain isolated. Transactions at or after the replacement
+  time are removed; within the rejection window, the contiguous suffix equal
+  to the replacement value is retained. Composite and overlapping whole/slice
+  targets are edited per physical scalar subelement. Explicit `transport` and
+  custom `reject` syntax are not part of Phase 1.
 - **`await`** is the single timing primitive in a testbench, in three forms:
 
   ```siox

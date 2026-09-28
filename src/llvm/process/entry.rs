@@ -17,7 +17,7 @@ pub(super) fn process_entry<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     range_sites: &HashMap<siox::diag::Span, u32>,
     checked_values: &[bool],
-    schedule_ids: &HashMap<(ProcessId, siox::ir::ProcessBlockId, usize), u32>,
+    schedule_sites: &HashMap<(ProcessId, siox::ir::ProcessBlockId, usize), ScheduleSite>,
 ) -> FunctionValue<'ctx> {
     let i8 = context.i8_type();
     let i32 = context.i32_type();
@@ -330,7 +330,7 @@ pub(super) fn process_entry<'ctx>(
                     value,
                     delay,
                     ..
-                } => schedule_ids
+                } => schedule_sites
                     .get(&(process.id, block.id, instruction_index))
                     .and_then(|site| {
                         emit_schedule_call(
@@ -338,7 +338,7 @@ pub(super) fn process_entry<'ctx>(
                             module,
                             &builder,
                             design,
-                            *site,
+                            site,
                             *target,
                             *value,
                             *delay,
@@ -691,7 +691,10 @@ pub(super) fn emit_scheduled_apply<'ctx>(
     let pointer = context.ptr_type(AddressSpace::default());
     let function = module.add_function(
         "sx_process_apply_scheduled",
-        i8.fn_type(&[i32.into(), pointer.into(), i32.into()], false),
+        i8.fn_type(
+            &[i32.into(), pointer.into(), pointer.into(), i32.into()],
+            false,
+        ),
         None,
     );
     let builder = context.create_builder();
@@ -715,8 +718,12 @@ pub(super) fn emit_scheduled_apply<'ctx>(
         .get_nth_param(1)
         .expect("scheduled callback has value words")
         .into_pointer_value();
-    let count = function
+    let masks = function
         .get_nth_param(2)
+        .expect("scheduled callback has mask words")
+        .into_pointer_value();
+    let count = function
+        .get_nth_param(3)
         .expect("scheduled callback has a word count")
         .into_int_value();
     let cases = sites
@@ -747,19 +754,19 @@ pub(super) fn emit_scheduled_apply<'ctx>(
             .unwrap();
 
         builder.position_at_end(*apply);
-        let emitted = delayed_place(design, site.target)
+        let emitted = scheduled_value_from_words(context, &builder, words, site.width)
             .zip(scheduled_value_from_words(
-                context, &builder, words, site.width,
+                context, &builder, masks, site.width,
             ))
-            .and_then(|(place, value)| {
-                write_static_place(
+            .and_then(|(value, mask)| {
+                write_static_place_masked(
                     context,
                     module,
                     &builder,
                     design,
-                    place,
+                    site.place,
                     value,
-                    None,
+                    mask,
                     site.span,
                     range_sites,
                 )
@@ -798,9 +805,9 @@ pub(super) fn process_entry_table<'ctx>(
         .collect::<HashMap<_, _>>();
     let checked_values = checked_process_values(design);
     let schedule_sites = schedule_sites(design);
-    let schedule_ids = schedule_sites
+    let schedule_by_location = schedule_sites
         .iter()
-        .map(|site| ((site.process, site.block, site.instruction), site.id))
+        .map(|site| ((site.process, site.block, site.instruction), site.clone()))
         .collect::<HashMap<_, _>>();
     emit_scheduled_apply(context, module, design, &schedule_sites, &range_sites);
     let values = design
@@ -816,7 +823,7 @@ pub(super) fn process_entry_table<'ctx>(
                 &index_sites,
                 &range_sites,
                 &checked_values,
-                &schedule_ids,
+                &schedule_by_location,
             )
             .as_global_value()
             .as_pointer_value()

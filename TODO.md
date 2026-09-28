@@ -78,10 +78,6 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
 - 🟡 **Canonical composite sizing.** Put the checked packed width on canonical
   aggregate values so IR consumers do not rediscover struct/array widths from
   `SourceLayout`. Source type-cycle rejection remains the cycle boundary.
-- 🟡 **VHDL delayed-assignment semantics.** The fixed queue implements
-  transport-like one-shot writes. Add the required inertial cancellation and
-  rejection behavior, keyed by target/driver and source order, without adding
-  a backend-specific scheduling rule.
 - 🟡 **Canonicalize dynamic aggregate updates.** Process assignments already
   retain runtime-selected projections, and direct LLVM evaluates every index
   and right-hand leaf before one packed root merge. Make that pre-write

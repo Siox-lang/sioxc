@@ -575,6 +575,31 @@ pub(super) fn stage_signal<'ctx>(
     Some(())
 }
 
+/// Merge selected bits into the signal's pending value and return the complete
+/// staged result. The emitted helper chooses committed state for the first
+/// write in a delta and pending state for subsequent scalar-lane writes.
+pub(super) fn stage_signal_masked<'ctx>(
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    signal: SignalId,
+    value: IntValue<'ctx>,
+    mask: IntValue<'ctx>,
+) -> Option<IntValue<'ctx>> {
+    let function = module.get_function(&format!("sx.process.stage.masked.{}", signal.0))?;
+    match builder
+        .build_call(
+            function,
+            &[value.into(), mask.into()],
+            "process.masked.stage",
+        )
+        .ok()?
+        .try_as_basic_value()
+    {
+        inkwell::values::ValueKind::Basic(value) => Some(value.into_int_value()),
+        _ => None,
+    }
+}
+
 /// Record the first checked-index failure in the same globals used by the
 /// established hardware emitter. `active` preserves source control flow when
 /// LLVM eagerly computes both operands of a value-level `select`.

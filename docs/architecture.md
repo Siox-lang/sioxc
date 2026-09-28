@@ -166,8 +166,12 @@ already live there. Operands are arena-owned once and referenced from CFG nodes
 by stable `ProcessValueId`. The LLVM object exports immutable test, process,
 activation, sensitivity, waveform, and source-location tables plus callable
 process entries. One fixed scheduler consumes them, owns ready batches and
-delta commits, and links with a fixed descriptor-driven CLI and the pinned
-libfst waveform runtime. These design-independent C sources are compiled once
+delta commits, and edits delayed writes as driver/scalar-subelement projected
+waveforms with VHDL default-inertial rejection. LLVM supplies stable waveform
+identity and masked apply sites, so overlapping whole/slice targets compose
+without teaching the runtime concrete design layouts. The object links with a
+fixed descriptor-driven CLI and the pinned libfst waveform runtime. These
+design-independent C sources are compiled once
 with `sioxc` and embedded as host objects; a source fallback is retained when
 host precompilation is unavailable. No source statement or Process instruction
 is translated to per-design C. A native test build therefore needs Clang and

@@ -2741,10 +2741,13 @@ the after-form is the one generator.)
 
 The Process runtime recognizes the self-toggle as a free-running clock and
 queues one-shot static writes with their exact-width value captured at schedule
-time. One-shot writes are transport-like today; VHDL inertial cancellation and
-rejection behavior remains to be implemented (see
-[simulation.md](simulation.md#simulation-time-and-the-event-wheel)). Use
-`await 12ns; rst = '0';` when cancellation semantics would otherwise matter.
+time. One-shot writes use VHDL default-inertial waveform semantics: the pulse
+rejection limit equals the delay, projected transactions are keyed by source
+driver and physical scalar subelement, and a later assignment preserves only
+the earlier equal-valued suffix within that rejection window. Composite and
+overlapping whole/slice assignments are edited per scalar subelement. Phase 1
+does not expose explicit `transport` or custom `reject` syntax. See
+[simulation.md](simulation.md#simulation-time-and-the-event-wheel).
 
 #### Generic functions and trait bounds
 

@@ -10595,3 +10595,26 @@ both unit configurations, all-target Clippy, and all 185 default plus 185
 `bitpack` corpus programs. A separately emitted counter-test ELF also passed.
 The remaining adapter owns typed source expression/place/call/CFG lowering and
 will be removed in subsequent slices.
+
+### 2026-09-28 — Codex — inertial delayed-assignment semantics
+
+Taking ownership of the Process `Schedule` ABI, `src/llvm/process/places.rs`,
+`src/llvm/process/writes.rs`, the fixed queue in `runtime/process.c`, and their
+native tests/docs. I am replacing the current per-site transport behavior with
+driver-and-place waveform identity plus VHDL default-inertial transaction
+editing, while keeping process-resume events and distinct drivers isolated.
+
+### 2026-09-28 — Codex — VHDL default-inertial queue complete
+
+Delayed Process writes now carry stable driver/physical-scalar waveform
+identity through Process ABI 13. The fixed queue applies the VHDL default
+rejection limit, removes later/differing projected transactions, preserves the
+contiguous equal-valued suffix, and retains independent masks for composite
+scalar lanes. Whole-object and overlapping slice/element statements therefore
+edit the same physical waveform without one driver cancelling another.
+
+LLVM emits static lane descriptors and masked apply sites; the fixed runtime
+remains unaware of design layouts. A native timing fixture proves rejected
+pulses, equal-suffix retention, per-bit composite behavior, and overlapping
+whole/element identity. The full pinned gate is green, including both 185-file
+corpora and both state layouts.

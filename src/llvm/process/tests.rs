@@ -13,6 +13,109 @@ fn span() -> Span {
     Span::new(FileId(0), 0..0)
 }
 
+fn scheduled_process(id: u32, schedules: &[(Option<u32>, ProcessValueId)]) -> ProcessCfg {
+    let span = span();
+    ProcessCfg {
+        id: ProcessId(id),
+        root: InstanceId(0),
+        owner: InstanceId(0),
+        label: None,
+        span,
+        activation: ProcessActivation::TimeZero,
+        entry: ProcessBlockId(0),
+        locals: Vec::new(),
+        blocks: vec![ProcessBlock {
+            id: ProcessBlockId(0),
+            instructions: schedules
+                .iter()
+                .map(|(driver_context, target)| ProcessInstruction::Schedule {
+                    driver_context: *driver_context,
+                    target: *target,
+                    value: ProcessValueId(2),
+                    delay: ProcessValueId(3),
+                    span,
+                })
+                .collect(),
+            terminator: ProcessTerminator::Return {
+                value: None,
+                span: Some(span),
+            },
+        }],
+    }
+}
+
+/// A waveform follows a driver/place pair, not a source instruction. This is
+/// what lets later statements edit earlier pending transactions while
+/// preventing another driver on the same resolved signal from cancelling it.
+#[test]
+fn schedule_waveforms_share_only_driver_and_exact_place() {
+    let span = span();
+    let signal = |path: &str| Signal {
+        path: path.into(),
+        declaration_span: span,
+        width: 1,
+        real: false,
+        integer: false,
+        char: false,
+        range: None,
+        init: vec![0],
+        enum_type: None,
+    };
+    let signal_value = |signal| ProcessValue {
+        span,
+        ty: None,
+        bit_width: Some(1),
+        kind: ProcessValueKind::Signal {
+            signals: vec![SignalId(signal)],
+            state: ProcessSignalState::Current,
+        },
+    };
+    let design = Design {
+        signals: vec![signal("T.a"), signal("T.b")],
+        process_ir: ProcessIr {
+            processes: vec![
+                scheduled_process(
+                    0,
+                    &[
+                        (None, ProcessValueId(0)),
+                        (None, ProcessValueId(0)),
+                        (None, ProcessValueId(1)),
+                    ],
+                ),
+                scheduled_process(1, &[(None, ProcessValueId(0))]),
+                scheduled_process(2, &[(Some(7), ProcessValueId(0))]),
+                scheduled_process(3, &[(Some(7), ProcessValueId(0))]),
+            ],
+            values: vec![
+                signal_value(0),
+                signal_value(1),
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
+                },
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(1),
+                    kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+                },
+            ],
+            ..ProcessIr::default()
+        },
+        ..Design::default()
+    };
+
+    let sites = schedule_sites(&design);
+    assert_eq!(sites.len(), 6);
+    assert_eq!(sites[0].lanes[0].waveform, sites[1].lanes[0].waveform);
+    assert_ne!(sites[0].lanes[0].waveform, sites[2].lanes[0].waveform);
+    assert_ne!(sites[0].lanes[0].waveform, sites[3].lanes[0].waveform);
+    assert_eq!(sites[4].lanes[0].waveform, sites[5].lanes[0].waveform);
+    assert_ne!(sites[0].lanes[0].waveform, sites[4].lanes[0].waveform);
+}
+
 /// The design object exports stable flattened descriptors directly.
 #[test]
 fn emits_runtime_discovery_metadata() {
@@ -84,7 +187,7 @@ fn emits_runtime_discovery_metadata() {
         ..Design::default()
     };
     let llvm = crate::llvm::emit_module_ir(&design).unwrap();
-    assert!(llvm.contains("@sx_process_abi_version = constant i32 12"));
+    assert!(llvm.contains("@sx_process_abi_version = constant i32 13"));
     assert!(llvm.contains("define i8 @sx_process_commit()"));
     assert!(llvm.contains("define i8 @sx_process_changed(i32"));
     assert!(llvm.contains("define i8 @sx_process_storage_changed(i32"));

@@ -1145,6 +1145,74 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 .unwrap();
             self.builder.build_return(None).unwrap();
 
+            // Masked staging composes scalar-subelement transactions that
+            // expire at the same simulation time. Once one lane has staged a
+            // write, later lanes merge into `pending`; the first lane merges
+            // into the committed value. This keeps VHDL composite waveform
+            // editing independent without making the C runtime understand the
+            // target's concrete LLVM storage layout.
+            let function = self.module.add_function(
+                &format!("sx.process.stage.masked.{signal}"),
+                value_type.fn_type(&[value_type.into(), value_type.into()], false),
+                Some(Linkage::Internal),
+            );
+            self.builder
+                .position_at_end(self.ctx.append_basic_block(function, "entry"));
+            let value = function
+                .get_nth_param(0)
+                .expect("masked stage helper has a value")
+                .into_int_value();
+            let mask = function
+                .get_nth_param(1)
+                .expect("masked stage helper has a mask")
+                .into_int_value();
+            let valid_pointer = self.process_flag_ptr("sx.process.valid", signal);
+            let valid = self
+                .builder
+                .build_load(byte, valid_pointer, "process.masked.valid")
+                .unwrap()
+                .into_int_value();
+            let valid = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    valid,
+                    byte.const_zero(),
+                    "process.masked.has.pending",
+                )
+                .unwrap();
+            let base = self
+                .builder
+                .build_select(
+                    valid,
+                    self.load("pending", id),
+                    self.load("cur", id),
+                    "process.masked.base",
+                )
+                .unwrap()
+                .into_int_value();
+            let kept = self
+                .builder
+                .build_and(
+                    base,
+                    self.builder.build_not(mask, "process.masked.keep").unwrap(),
+                    "process.masked.kept",
+                )
+                .unwrap();
+            let replaced = self
+                .builder
+                .build_and(value, mask, "process.masked.replaced")
+                .unwrap();
+            let merged = self
+                .builder
+                .build_or(kept, replaced, "process.masked.merged")
+                .unwrap();
+            self.store("pending", id, merged);
+            self.builder
+                .build_store(valid_pointer, byte.const_int(1, false))
+                .unwrap();
+            self.builder.build_return(Some(&merged)).unwrap();
+
             if self.design.signals[signal as usize].range.is_some() {
                 let function = self.module.add_function(
                     &format!("sx.process.stage.range.{signal}"),

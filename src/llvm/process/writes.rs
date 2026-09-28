@@ -205,6 +205,108 @@ pub(super) fn write_static_place<'ctx>(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) fn write_static_place_masked<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    place: StaticPlace,
+    value: IntValue<'ctx>,
+    mask: IntValue<'ctx>,
+    span: siox::diag::Span,
+    range_sites: &HashMap<siox::diag::Span, u32>,
+) -> Option<()> {
+    let mut value = fit(builder, value, place.width)?;
+    let mut mask = fit(builder, mask, place.width)?;
+    if place.reverse {
+        value = reverse_bits(builder, value)?;
+        mask = reverse_bits(builder, mask)?;
+    }
+    let root_type = context
+        .custom_width_int_type(std::num::NonZeroU32::new(place.root_width)?)
+        .ok()?;
+    let root_value = insert_region(
+        builder,
+        root_type.const_zero(),
+        value,
+        place.offset,
+        place.width,
+    )?;
+    let root_mask = insert_region(
+        builder,
+        root_type.const_zero(),
+        mask,
+        place.offset,
+        place.width,
+    )?;
+
+    match place.root {
+        StaticPlaceRoot::Signal(signal) => {
+            let merged = stage_signal_masked(module, builder, signal, root_value, root_mask)?;
+            if design.signals.get(signal.0 as usize)?.range.is_some() {
+                let checked_width = place.root_width.max(64);
+                let checked = if design.signals.get(signal.0 as usize)?.integer {
+                    fit_signed(builder, merged, checked_width)?
+                } else {
+                    fit(builder, merged, checked_width)?
+                };
+                latch_range_failure(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    signal,
+                    checked,
+                    span,
+                    range_sites,
+                )?;
+            }
+            Some(())
+        }
+        StaticPlaceRoot::Storage(storage) => {
+            let current = state_value(
+                context,
+                module,
+                builder,
+                &storage_state_name(storage),
+                place.root_width,
+            )?;
+            let kept = builder
+                .build_and(
+                    current,
+                    builder.build_not(root_mask, "process.schedule.keep").ok()?,
+                    "process.schedule.kept",
+                )
+                .ok()?;
+            let replacement = builder
+                .build_and(root_value, root_mask, "process.schedule.replacement")
+                .ok()?;
+            let merged = builder
+                .build_or(kept, replacement, "process.schedule.merged")
+                .ok()?;
+            write_static_place(
+                context,
+                module,
+                builder,
+                design,
+                StaticPlace {
+                    root: place.root,
+                    root_width: place.root_width,
+                    offset: 0,
+                    width: place.root_width,
+                    reverse: false,
+                },
+                merged,
+                None,
+                span,
+                range_sites,
+            )
+        }
+        StaticPlaceRoot::Local(_, _) => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn dynamic_place_offset<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
@@ -584,7 +686,7 @@ pub(super) fn emit_schedule_call<'ctx>(
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     design: &Design,
-    site: u32,
+    site: &ScheduleSite,
     target: ProcessValueId,
     value: ProcessValueId,
     delay: ProcessValueId,
@@ -592,6 +694,9 @@ pub(super) fn emit_schedule_call<'ctx>(
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<()> {
     let place = delayed_place(design, target)?;
+    if place != site.place || place.width != site.width || site.lanes.is_empty() {
+        return None;
+    }
     let captured = assignment_value(
         context,
         module,
@@ -650,14 +755,46 @@ pub(super) fn emit_schedule_call<'ctx>(
         builder.build_store(destination, part).ok()?;
     }
 
+    let descriptor = |suffix: &str, values: Vec<u32>| {
+        let ty = i32.array_type(u32::try_from(values.len()).ok()?);
+        let global = module.add_global(ty, None, &format!("sx.schedule.{suffix}.{}", site.id));
+        global.set_linkage(Linkage::Private);
+        let values = values
+            .into_iter()
+            .map(|value| i32.const_int(u64::from(value), false))
+            .collect::<Vec<_>>();
+        global.set_initializer(&i32.const_array(&values));
+        Some(global.as_pointer_value())
+    };
+    let waveforms = descriptor(
+        "waveforms",
+        site.lanes.iter().map(|lane| lane.waveform).collect(),
+    )?;
+    let offsets = descriptor(
+        "offsets",
+        site.lanes.iter().map(|lane| lane.offset).collect(),
+    )?;
+    let widths = descriptor("widths", site.lanes.iter().map(|lane| lane.width).collect())?;
+    let lane_count = u32::try_from(site.lanes.len()).ok()?;
+
     let function = module
         .get_function("sx_runtime_schedule")
         .unwrap_or_else(|| {
             module.add_function(
                 "sx_runtime_schedule",
-                context
-                    .void_type()
-                    .fn_type(&[i32.into(), i64.into(), pointer.into(), i32.into()], false),
+                context.void_type().fn_type(
+                    &[
+                        i32.into(),
+                        i64.into(),
+                        pointer.into(),
+                        i32.into(),
+                        pointer.into(),
+                        pointer.into(),
+                        pointer.into(),
+                        i32.into(),
+                    ],
+                    false,
+                ),
                 Some(Linkage::External),
             )
         });
@@ -665,10 +802,14 @@ pub(super) fn emit_schedule_call<'ctx>(
         .build_call(
             function,
             &[
-                i32.const_int(u64::from(site), false).into(),
+                i32.const_int(u64::from(site.id), false).into(),
                 delay.into(),
                 words.into(),
                 i32.const_int(u64::from(word_count), false).into(),
+                waveforms.into(),
+                offsets.into(),
+                widths.into(),
+                i32.const_int(u64::from(lane_count), false).into(),
             ],
             "",
         )

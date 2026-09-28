@@ -34,7 +34,7 @@ pub(super) enum StaticPlaceRoot {
     Signal(SignalId),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct StaticPlace {
     pub(super) root: StaticPlaceRoot,
     pub(super) root_width: u32,
@@ -60,15 +60,93 @@ pub(super) struct DynamicPlace {
     pub(super) indices: Vec<DynamicPlaceIndex>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct ScheduleSite {
     pub(super) id: u32,
     pub(super) process: ProcessId,
     pub(super) block: siox::ir::ProcessBlockId,
     pub(super) instruction: usize,
-    pub(super) target: ProcessValueId,
+    pub(super) place: StaticPlace,
     pub(super) width: u32,
+    pub(super) lanes: Vec<ScheduleLane>,
     pub(super) span: siox::diag::Span,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ScheduleLane {
+    /// Driver-and-physical-scalar identity used to edit the projected waveform.
+    pub(super) waveform: u32,
+    /// Lane offset in the captured target value's logical orientation.
+    pub(super) offset: u32,
+    /// Packed representation width of this scalar subelement.
+    pub(super) width: u32,
+}
+
+/// One projected output waveform is owned by one source driver and one scalar
+/// subelement of a physical root. Separate source statements and overlapping
+/// whole/slice targets for that pair edit the same transaction sequence;
+/// distinct drivers never cancel each other on a resolved signal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ScheduleDriver {
+    Compatibility(u32),
+    Process(ProcessId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct ScheduleWaveform {
+    driver: ScheduleDriver,
+    root: StaticPlaceRoot,
+    offset: u32,
+    width: u32,
+}
+
+fn scalar_lane_widths(layout: &SourceLayout, widths: &mut Vec<u32>) -> Option<()> {
+    match &layout.kind {
+        LayoutKind::Scalar { width, .. } => widths.push(*width),
+        // A packed source array is one storage leaf but each element has its
+        // own projected waveform. The primary value plane is one bit per
+        // element; multi-valued metadata is carried by its companion plane.
+        LayoutKind::Packed { width, .. } => {
+            widths.extend(std::iter::repeat_n(1, usize::try_from(*width).ok()?));
+        }
+        LayoutKind::Array {
+            range: Some(range),
+            element,
+        } => {
+            let count = usize::try_from(range.len()?).ok()?;
+            for _ in 0..count {
+                scalar_lane_widths(element, widths)?;
+            }
+        }
+        LayoutKind::Struct { fields, .. } => {
+            for field in fields {
+                scalar_lane_widths(&field.layout, widths)?;
+            }
+        }
+        LayoutKind::Opaque {
+            width: Some(width), ..
+        } => widths.push(*width),
+        LayoutKind::Array { range: None, .. } | LayoutKind::Opaque { width: None, .. } => {
+            return None;
+        }
+    }
+    Some(())
+}
+
+fn scheduled_lane_widths(design: &Design, target: ProcessValueId, width: u32) -> Vec<u32> {
+    let mut widths = Vec::new();
+    let complete = process_value_layout(design, target)
+        .and_then(|layout| scalar_lane_widths(layout, &mut widths))
+        .is_some()
+        && widths
+            .iter()
+            .try_fold(0u32, |sum, lane| sum.checked_add(*lane))
+            == Some(width);
+    if complete && !widths.is_empty() {
+        widths
+    } else {
+        vec![width]
+    }
 }
 
 /// A delayed write may target object-owned storage or a signal, but never a
@@ -103,13 +181,56 @@ pub(super) fn delayed_place(design: &Design, target: ProcessValueId) -> Option<S
 
 pub(super) fn schedule_sites(design: &Design) -> Vec<ScheduleSite> {
     let mut sites = Vec::new();
+    let mut waveforms = HashMap::new();
     for process in &design.process_ir.processes {
         for block in &process.blocks {
             for (instruction, node) in block.instructions.iter().enumerate() {
-                let ProcessInstruction::Schedule { target, span, .. } = node else {
+                let ProcessInstruction::Schedule {
+                    driver_context,
+                    target,
+                    span,
+                    ..
+                } = node
+                else {
                     continue;
                 };
                 let Some(place) = delayed_place(design, *target) else {
+                    continue;
+                };
+                let driver = driver_context.map_or(
+                    ScheduleDriver::Process(process.id),
+                    ScheduleDriver::Compatibility,
+                );
+                let mut offset = 0u32;
+                let lanes = scheduled_lane_widths(design, *target, place.width)
+                    .into_iter()
+                    .map(|width| {
+                        let physical_offset = if place.reverse {
+                            place
+                                .width
+                                .checked_sub(offset.checked_add(width)?)?
+                                .checked_add(place.offset)?
+                        } else {
+                            place.offset.checked_add(offset)?
+                        };
+                        let key = ScheduleWaveform {
+                            driver,
+                            root: place.root,
+                            offset: physical_offset,
+                            width,
+                        };
+                        let next = u32::try_from(waveforms.len()).ok()?;
+                        let waveform = *waveforms.entry(key).or_insert(next);
+                        let lane = ScheduleLane {
+                            waveform,
+                            offset,
+                            width,
+                        };
+                        offset = offset.checked_add(width)?;
+                        Some(lane)
+                    })
+                    .collect::<Option<Vec<_>>>();
+                let Some(lanes) = lanes.filter(|_| offset == place.width) else {
                     continue;
                 };
                 sites.push(ScheduleSite {
@@ -117,8 +238,9 @@ pub(super) fn schedule_sites(design: &Design) -> Vec<ScheduleSite> {
                     process: process.id,
                     block: block.id,
                     instruction,
-                    target: *target,
+                    place,
                     width: place.width,
+                    lanes,
                     span: *span,
                 });
             }

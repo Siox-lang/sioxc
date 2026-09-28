@@ -1778,6 +1778,91 @@ fn native_testbench_exchanges_more_than_two_words() {
 }
 
 #[test]
+fn native_delayed_assignments_use_default_inertial_waveforms() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let directory =
+        std::env::temp_dir().join(format!("siox_inertial_waveform_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("inertial.siox");
+    let output = directory.join("inertial-test");
+    std::fs::write(
+        &source,
+        r#"module inertial_waveform;
+           using std::bits::unsigned;
+           #[test] entity InertialWaveform {}
+           impl InertialWaveform {
+               let rejected: Bit = '0';
+               let retained: unsigned[2] = 0;
+               let overlap: unsigned[2] = 0;
+               process run {
+                   // Each later differing value rejects the pending pulse in
+                   // the preceding default-inertial delay window.
+                   rejected = '1' after 5ns;
+                   rejected = '0' after 10ns;
+                   rejected = '1' after 15ns;
+
+                   // Composite waveforms are edited per scalar element. Bit 0
+                   // differs and is rejected until 15ns; bit 1 has an equal
+                   // suffix and must still transition at 10ns.
+                   retained = 1 after 5ns;
+                   retained = 2 after 10ns;
+                   retained = 3 after 15ns;
+
+                   // A whole-object assignment and a later element assignment
+                   // address the same physical scalar waveform.
+                   overlap = 1 after 5ns;
+                   overlap[0] = '0' after 10ns;
+
+                   await 6ns;
+                   assert!(rejected == '0', "the short pulse was rejected");
+                   assert!(retained == 0, "the retained transition is still pending");
+                   assert!(overlap == 0, "an overlapping element write rejected the whole write");
+                   await 5ns;
+                   assert!(rejected == '0', "a differing pending transaction was removed");
+                   assert!(retained == 2, "the scalar equal-valued suffix was preserved");
+                   await 4ns;
+                   assert!(rejected == '1', "the replacement transaction was applied");
+                   assert!(retained == 3, "all replacement scalar lanes were applied");
+               }
+           }"#,
+    )
+    .unwrap();
+
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .args(["--std", concat!(env!("CARGO_MANIFEST_DIR"), "/std")])
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "inertial fixture failed to compile:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let run = Command::new(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "inertial fixture failed:\n{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(stdout.contains("test result: ok. 1 passed"), "{stdout}");
+
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn native_range_checks_each_clock_settle() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");

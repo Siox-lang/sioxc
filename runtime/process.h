@@ -14,7 +14,9 @@ uint64_t sx_runtime_now(void);
 
 /* Copy one exact-width value into the time-ordered delayed-write queue. */
 void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
-                         uint32_t word_count);
+                         uint32_t word_count, const uint32_t *waveforms,
+                         const uint32_t *lane_offsets,
+                         const uint32_t *lane_widths, uint32_t lane_count);
 
 /* Suspend the current process and enqueue its resume block after `delay`. */
 void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
