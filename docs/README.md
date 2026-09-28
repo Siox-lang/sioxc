@@ -48,10 +48,10 @@ flowchart LR
     TYPE -->|test build| PLAN["testbench<br/>TestPlan"]
     PLAN -->|selected roots| ELAB
     ELAB --> DIGITAL["ir lowering<br/>signals + layouts + drivers/events"]
-    TYPE -->|typed test expressions| ADAPTER["test_ir<br/>temporary input adapter"]
-    PLAN -->|descriptors + roots| ADAPTER
-    DIGITAL -->|normalized hardware| ADAPTER
-    ADAPTER --> PROCESS["Design::process_ir<br/>canonical CFGs + values"]
+    TYPE -->|typed process expressions| PROCESS_LOWER["ir::lower_processes<br/>source/test CFG lowering"]
+    PLAN -->|descriptors + roots| PROCESS_LOWER
+    DIGITAL -->|layouts + normalized hardware bridge| PROCESS_LOWER
+    PROCESS_LOWER --> PROCESS["Design::process_ir<br/>canonical CFGs + values"]
 
     PROCESS --> FRONT["frontend artifact<br/>metadata / dumps"]
     PROCESS --> LLVM["LLVM backend"]
@@ -72,13 +72,13 @@ to one fixed scheduler/CLI without generating design-specific C. VCD/FST,
 source-located diagnostics, and host services consume descriptors and metadata
 emitted in the design object.
 
-The input side is not completely straight-line yet. `test_ir` is a temporary
-adapter, not a second IR or backend: it still coordinates the IR-owned
-normalized-hardware importer with its typed-test expression lowering, filling
-the `ProcessIr` owned by `ir::Design`. The intended Phase 1 endpoint lowers
-source processes directly into that owned Process IR, derives optimized
-digital scheduler forms from it, and deletes the adapter. See
-[the current `test_ir` boundary](architecture.md#current-test_ir-boundary).
+Typed source/test expressions now lower through the IR-owned
+`ir/lower/source_processes.rs` entry directly into the `ProcessIr` owned by
+`ir::Design`; the transitional public `test_ir` module is gone. The input side
+is not completely straight-line yet because normalized hardware still enters
+through `ir/lower/hardware_processes.rs`. The Phase 1 endpoint derives those
+optimized digital scheduler forms from Process IR instead. See
+[the current Process IR ingress boundary](architecture.md#current-process-ir-ingress-boundary).
 
 The arrows through parse, resolve, type-check, elaboration, and IR are compiler
 work. The final arrow back to `siox::compiler` is the function return, not

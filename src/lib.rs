@@ -15,8 +15,7 @@
 //! | [`resolve`] | 3 | name resolution, `using` imports, visibility, `DefId`s |
 //! | [`types`]   | 4 | type & kind checking; Phase-2 syntax rejection |
 //! | [`elab`]    | 5 | elaboration: parameter substitution, instance hierarchy |
-//! | [`ir`]      | 6 | canonical process/control, value, layout, and digital simulation IR |
-//! | [`test_ir`] | adapter | temporary normalized-hardware/test-AST lowering into `ir::Design::process_ir` |
+//! | [`ir`]      | 6 | source lowering plus canonical process/control, value, layout, and digital simulation IR |
 //!
 //! [`compiler`] is the presentation-neutral embedding boundary that composes
 //! those stages for editors, build tools, and `sioxc`. The native LLVM AOT
@@ -28,12 +27,12 @@
 //!     syntax["syntax<br/>lex, parse"] --> resolve
 //!     resolve["resolve<br/>names, visibility"] --> types
 //!     types["types<br/>type & kind check"] --> elab
-//!     types -. "typed test expressions" .-> adapter
 //!     types -. "test selection" .-> tb["testbench<br/>TestPlan"]
-//!     elab["elab<br/>instances, parameters"] --> ir
-//!     tb --> adapter["test_ir<br/>temporary input adapter"]
-//!     ir["ir lowering<br/>signals + drivers/events"] --> adapter
-//!     adapter --> process["Design::process_ir<br/>canonical process CFGs"]
+//!     elab["elab<br/>instances, parameters"] --> ir["ir lowering<br/>signals + layouts"]
+//!     types -. "typed process expressions" .-> process_lower["ir::lower_processes<br/>source/test CFG lowering"]
+//!     tb --> process_lower
+//!     ir --> process_lower
+//!     process_lower --> process["Design::process_ir<br/>canonical process CFGs"]
 //!     process --> emit
 //!     emit["llvm::emit<br/>design + processes to LLVM IR"] --> aot
 //!     aot["llvm::aot"] --> obj["native object"]
@@ -75,6 +74,5 @@ pub mod ir;
 pub mod llvm;
 pub mod resolve;
 pub mod syntax;
-pub mod test_ir;
 pub mod testbench;
 pub mod types;

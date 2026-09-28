@@ -1,11 +1,10 @@
-//! Transitional lowering into the canonical process IR.
+//! Typed source lowering into the canonical process IR.
 //!
 //! Process/CFG types, validation, test descriptors, and ownership live in
-//! [`crate::ir::Design`]. Test stimulus still enters from typed Siox AST;
+//! [`crate::ir::Design`]. Test stimulus enters from typed Siox AST;
 //! hardware enters through the elaborated, normalized digital scheduler graph
-//! so generic/generate/std semantics are not repeated. This module disappears
-//! once Process IR becomes the lowering authority for both and the optimized
-//! digital forms are derived from it.
+//! so generic/generate/std semantics are not repeated. The remaining Phase 1
+//! inversion derives those optimized digital forms from this canonical product.
 
 use crate::elab::Hierarchy;
 use crate::ir::{
@@ -243,7 +242,7 @@ fn declared_process_type(ty: &ast::Type, resolved: &Resolved) -> Option<crate::t
 }
 
 /// Recover a concrete checked type from a function/local declaration while
-/// the temporary AST adapter still has access to source syntax. Stage 4 does
+/// source Process lowering still has access to source syntax. Stage 4 does
 /// not persist a type for every contextual aggregate literal, so call
 /// arguments such as `[1, 2]` and `{ .a = 1 }` must inherit the signature's
 /// recursive shape before that signature disappears from Process IR.
@@ -2401,7 +2400,7 @@ fn lower_process_format(
 }
 
 /// Recover the recursive declaration layout of an arena projection while the
-/// temporary typed-AST adapter is still constructing Process IR. Expression
+/// typed source lowerer is constructing Process IR. Expression
 /// typing does not retain a standalone type for every field/index expression,
 /// but the storage/local declaration does retain the authoritative layout.
 fn process_value_source_layout(
@@ -3621,8 +3620,8 @@ fn lower_process_raw_resize(
                 _ => (
                     // Packed families carry their width independently of the
                     // element type. The family identity is sufficient until
-                    // this temporary adapter is removed in favour of
-                    // canonical Process lowering.
+                    // typed expression metadata retains the concrete element
+                    // across this source-to-Process lowering boundary.
                     Box::new(crate::types::Ty::Error),
                     family,
                 ),
@@ -5418,7 +5417,7 @@ fn push_value(
     id
 }
 
-/// Packed width known at the temporary typed-AST adapter boundary. Composite
+/// Packed width known at the typed source-lowering boundary. Composite
 /// runtime values retain their recursive layout elsewhere; this records only
 /// the scalar width a direct LLVM operation may rely on.
 fn source_value_width(

@@ -13,9 +13,6 @@ may use is `diag` — plus the LLVM backend:
   optional artifact without printing or executing it.
 - **`siox::llvm`** — the LLVM native AOT backend (inkwell).
 - **`siox::testbench`** — canonical native-test selection metadata.
-- **`siox::test_ir`** — the temporary adapter that fills the canonical
-  `ir::Design::process_ir` from normalized hardware and typed test AST; it owns
-  no phase product or backend input.
 - **`sioxc`** — the root package's thin command-line adapter.
 
 The IR module is directory-backed and split by responsibility:
@@ -29,7 +26,8 @@ The IR module is directory-backed and split by responsibility:
 - `lower.rs` is the Siox frontend-lowering facade and shared state. Focused
   modules in `lower/` own collection, entity bodies, expressions, operators,
   calls, values, control flow, block locals, writes, resolution, initializers,
-  layouts, metavalues, and diagnostics;
+  layouts, metavalues, diagnostics, typed source/test Process CFG lowering,
+  and the remaining normalized-hardware Process importer;
 - `lower_helpers.rs` is the stable facade for the focused
   `lower_helpers/` utilities: expression/constant builders, type metadata,
   generate expansion, substitution, and source access. Together with
@@ -86,9 +84,10 @@ The separate `Siox-lang/siox-lsp` repository references this compiler through
 Cargo Git and depends only on the backend-independent `siox` crate.
 
 The following diagram describes the current implementation. Process IR has one
-owner and one native execution path. The remaining transition is earlier in
-the pipeline: `test_ir` still adapts typed source and normalized hardware into
-the canonical CFGs instead of source constructs lowering there immediately.
+owner and one native execution path. Typed source/test constructs lower there
+directly under `ir/lower`; the remaining transition is the normalized-hardware
+bridge, which still imports scheduler forms that should ultimately be derived
+from the canonical CFGs.
 
 ```mermaid
 flowchart TB
@@ -103,10 +102,10 @@ flowchart TB
         TESTPLAN -->|exact canonical std test roots| EL
         EL -->|concrete hierarchy| DIGITAL["ir lowering<br/>signals + layouts + drivers/events"]
         DIGITAL --> DESIGN["ir::Design<br/>owned ProcessIr"]
-        TESTPLAN -->|descriptors + roots| TESTIR["test_ir<br/>temporary process adapter"]
-        TY -->|typed expressions| TESTIR
-        DIGITAL -->|normalized hardware + concrete layouts| TESTIR
-        TESTIR -->|fills hardware/test CFGs + descriptors| DESIGN
+        TESTPLAN -->|descriptors + roots| PROCESS_LOWER["ir::lower_processes<br/>typed source/test lowering"]
+        TY -->|typed expressions| PROCESS_LOWER
+        DIGITAL -->|concrete layouts + normalized hardware bridge| PROCESS_LOWER
+        PROCESS_LOWER -->|fills source/hardware CFGs + descriptors| DESIGN
 
         DIAG["diag<br/>SourceMap + DiagnosticSink"] -. spans + diagnostics .-> SY
         DIAG -.-> RE
@@ -114,7 +113,7 @@ flowchart TB
         DIAG -.-> TESTPLAN
         DIAG -.-> EL
         DIAG -.-> DIGITAL
-        DIAG -.-> TESTIR
+        DIAG -.-> PROCESS_LOWER
     end
 
     DESIGN -->|LLVM output requested| LL["siox::llvm<br/>native state + codegen"]
@@ -155,12 +154,13 @@ tree requests do not continue through IR. Frontend-only requests stop before
 `siox::llvm` emits LLVM and compiles the `Design` ahead of time to native code.
 For a test build, `siox::testbench` resolves enabled uses of the canonical
 `std::attrs::test` declaration once, elaborates exactly those roots, and binds
-them into a `TestPlan`. The temporary `siox::test_ir` adapter fills the
-canonical `Design::process_ir` with validated descriptors and CFGs; the
-compiler no longer retains a second software program. It runs for every
-lowered compiler output: normalized hardware scheduler units become reactive
-CFGs with root/instance ownership, while a test plan additionally contributes
-storage, clocks, and stimulus. Branch, suspend/resume, structured match/for
+them into a `TestPlan`. `ir::lower_processes` fills the canonical
+`Design::process_ir` with validated descriptors and CFGs directly from the
+typed/elaborated source context; the compiler has no separate adapter module or
+second software program. It runs for every lowered compiler output: the
+remaining normalized-hardware bridge contributes reactive CFGs with
+root/instance ownership, while a test plan additionally contributes storage,
+clocks, and stimulus. Branch, suspend/resume, structured match/for
 control, termination, assignment semantics, activation, labels, and spans
 already live there. Operands are arena-owned once and referenced from CFG nodes
 by stable `ProcessValueId`. The LLVM object exports immutable test, process,
@@ -205,37 +205,27 @@ subroutines within a caller; only a process creates an independently scheduled
 context. The current `Driver` and `EventBlock` forms become derived
 optimizations of Process IR rather than a separate hardware input path.
 
-### Current `test_ir` boundary
+### Current Process IR ingress boundary
 
-`src/test_ir.rs` is not a second software IR, interpreter, runtime, or output
-backend. The canonical `ProcessIr`, CFG, value, storage, descriptor, and
-validation types all live under `src/ir/` and are owned by `ir::Design`.
-`test_ir` is an input adapter invoked after `ir::lower_in` by
-`Compiler::compile`; it currently coordinates two jobs:
+The canonical `ProcessIr`, CFG, value, storage, descriptor, validation, and
+typed source lowering code all live under `src/ir/` and are owned by
+`ir::Design`. `Compiler::compile` invokes
+`src/ir/lower/source_processes.rs` directly after `ir::lower_in`; the former
+public `test_ir` adapter module has been deleted. Typed expressions, control
+flow, storage, clocks, stimulus, and `TestPlan` descriptors therefore enter the
+canonical arena through its owning layer.
 
-1. invoke the IR-owned `src/ir/lower/hardware_processes.rs` bridge, which
-   imports normalized `Driver`/`EventBlock` scheduler units as reactive Process
-   CFGs after test CFGs so existing Process IDs and scheduler order stay stable;
-2. lower typed testbench expressions, control flow, storage, clocks, and
-   `TestPlan` descriptors into the same Process IR.
+One migration bridge remains. `source_processes.rs` invokes
+`src/ir/lower/hardware_processes.rs` after source/test CFG construction, and
+that bridge imports normalized `Driver`/`EventBlock` scheduler units as
+reactive Process CFGs. Keeping it last preserves current Process IDs and
+scheduler order. Phase 1 completes the inversion by:
 
-Consequently there is already one native execution product and one
-Process-to-LLVM/runtime path, but there are still two frontend ingress routes
-before that convergence. Removing the adapter is an IR-authority migration,
-not part of the completed generated-C retirement.
-
-Delete `test_ir` only after these steps are complete, in order:
-
-1. move its remaining reusable typed expression, value, call, place, and CFG
-   builders under `src/ir/lower/` without introducing a second process product
-   (the normalized-hardware bridge and common CFG/width helpers have moved);
-2. lower explicit processes, implicit concurrent behavior, clocks, and test
-   stimulus directly into `Design::process_ir` from the shared typed/elaborated
-   source context;
-3. make `Driver` and `EventBlock` derived scheduling optimizations of Process
-   IR rather than inputs that must be imported back into it;
-4. remove `crate::test_ir::lower` from `Compiler::compile`, delete the module,
-   and keep the default and `bitpack` native/corpus gates unchanged.
+1. lowering explicit hardware processes and implicit concurrent behavior into
+   Process IR before scheduler decomposition;
+2. deriving optimized `Driver`/`EventBlock` forms from Process IR;
+3. deleting the normalized-hardware importer while keeping default and
+   `bitpack` native/corpus behavior unchanged.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The layering is a convention enforced by module discipline; do
@@ -255,8 +245,7 @@ The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
 | `types` | AST | Type/kind/operator checking and persistent expression `Ty` facts. |
 | `elab` | AST | Parameters, roots, instances, connections, concrete instance-array build facts, and `Hierarchy`. |
 | `testbench` | AST/plan | Canonical std test discovery, exact test-root elaboration, and backend-neutral `TestPlan`. |
-| `ir` | IR | Signals, layouts, canonical process CFGs/test descriptors, normalized drivers/event blocks, initializers, validation, and semantic lints. |
-| `test_ir` | temporary adapter | Imports normalized hardware and lowers test AST into `Design::process_ir`; removed once all source processes share the main IR lowering entry point. |
+| `ir` | IR | Source/process lowering, signals, layouts, canonical process CFGs/test descriptors, normalized drivers/event blocks, initializers, validation, and semantic lints. |
 | `compiler` | API | `Compiler`, disk/in-memory `SourceInput`, `CompileRequest`, retained `Compilation` phase products, structured failures, and artifacts. |
 
 Resolution is the owner of nominal identity. Both declaration sites and use
@@ -329,9 +318,10 @@ as `crate::<module>`; the binary imports the library as `siox::<module>`.
 
 ## Data that flows between stages today
 
-This diagram records the current values. The standalone `test_ir::Program` and
-the AST-to-C execution branch are gone; only the temporary adapter that fills
-canonical Process IR remains.
+This diagram records the current values. The standalone software program,
+public `test_ir` adapter, and AST-to-C execution branch are gone. Typed source
+processes fill canonical Process IR inside its owning `ir/lower` layer; only
+the normalized-hardware import bridge remains transitional.
 
 ```mermaid
 flowchart LR
@@ -344,10 +334,10 @@ flowchart LR
     TESTPLAN --> HIERARCHY
     HIERARCHY --> DIGITAL["digital IR lowering"]
     DIGITAL --> DESIGN["ir::Design<br/>signals + ProcessIr"]
-    TESTPLAN --> TESTIR["test_ir AST adapter"]
-    TYPED --> TESTIR
-    DIGITAL -->|shared layouts| TESTIR
-    TESTIR -->|fills owned ProcessIr| DESIGN
+    TESTPLAN --> PROCESS_LOWER["ir::lower_processes<br/>typed source/test CFGs"]
+    TYPED --> PROCESS_LOWER
+    DIGITAL -->|shared layouts + normalized hardware bridge| PROCESS_LOWER
+    PROCESS_LOWER -->|fills owned ProcessIr| DESIGN
 
     TOKENS -->|Emit::Tokens| TEXT["Artifact::Text"]
     MODULES -->|Emit::Source / Ast| TEXT

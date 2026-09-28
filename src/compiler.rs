@@ -596,7 +596,7 @@ impl Compiler {
             &mut result.diagnostics,
             base_dir,
         );
-        crate::test_ir::lower(
+        crate::ir::lower_processes(
             &result.modules,
             resolved,
             typed,

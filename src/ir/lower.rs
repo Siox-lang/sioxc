@@ -18,10 +18,12 @@ mod layout;
 mod metavalue;
 mod operators;
 mod resolution;
+mod source_processes;
 mod values;
 mod writes;
 
 pub(crate) use hardware_processes::import_hardware_processes;
+pub(crate) use source_processes::lower as lower_processes;
 
 /// A design ready to simulate: signals, combinational drivers, and event blocks.
 /// `(operator, left type, right type, span)` for an unmatched operator.

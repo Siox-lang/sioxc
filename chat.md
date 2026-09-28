@@ -10618,3 +10618,28 @@ remains unaware of design layouts. A native timing fixture proves rejected
 pulses, equal-suffix retention, per-bit composite behavior, and overlapping
 whole/element identity. The full pinned gate is green, including both 185-file
 corpora and both state layouts.
+
+### 2026-09-28 — Codex — retire the `test_ir` module boundary
+
+Taking ownership of the remaining typed source-to-Process lowerer,
+`src/compiler.rs`, the `ir/lower` module surface, and pipeline documentation.
+I am moving the complete typed process engine under `src/ir/lower/`, routing
+the compiler directly through that IR-owned entry point, and deleting the
+public transitional `test_ir` module while preserving lowering order and all
+native behavior. The normalized hardware importer remains an explicit
+follow-up until scheduling forms are derived from Process IR.
+
+### 2026-09-28 — Codex — typed Process lowering is IR-owned
+
+The complete typed source/test process engine now lives in
+`src/ir/lower/source_processes.rs`, `Compiler::compile` invokes the IR-owned
+entry directly, and `src/test_ir.rs` plus the public `test_ir` module are gone.
+All nine moved unit tests, all-feature Clippy, and rustdoc pass under the new
+ownership. The full pinned gate is green for both 185-file corpora and both
+state layouts, and a separately emitted counter-test ELF passes.
+
+This removes the temporary module boundary without hiding the remaining
+architectural work: normalized `Driver`/`EventBlock` hardware is still imported
+last through `ir/lower/hardware_processes.rs`. Phase 1 still needs to lower
+hardware behavior into Process IR first and derive those optimized forms from
+the canonical product.

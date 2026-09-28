@@ -58,23 +58,20 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
 - 🟡 **Make Process IR the lowering authority.** All finalized hardware and
   test behavior is present in `Design::process_ir`, but normalized
   `Driver`/`EventBlock` hardware is still imported through a migration bridge.
-  `test_ir` is only an input adapter—there is no second execution IR or
-  backend—but it still owns separate typed-AST-to-value/CFG translation.
-  The dependency-closed hardware importer now lives in
-  `src/ir/lower/hardware_processes.rs`, and common CFG/constant-width builders
-  live with canonical Process IR; `test_ir` temporarily invokes that importer
-  after test CFG construction to preserve existing Process IDs and scheduler
-  order.
+  Typed expressions, values, calls, places, CFGs, test descriptors, storage,
+  clocks, and stimulus now lower through
+  `src/ir/lower/source_processes.rs`; `Compiler::compile` calls that IR-owned
+  entry directly and the transitional `test_ir` module has been deleted. The
+  dependency-closed normalized-hardware importer lives beside it in
+  `src/ir/lower/hardware_processes.rs` and still runs after source CFG
+  construction to preserve current Process IDs and scheduler order.
   Complete this migration in order:
 
-  1. move reusable expression, value, call, place, and CFG builders into
-     `src/ir/lower/`;
-  2. lower explicit processes, implicit continuous behavior, clocks, and test
-     stimulus directly into `Design::process_ir`;
-  3. derive optimized `Driver`/`EventBlock` scheduling forms from Process IR;
-  4. remove `crate::test_ir::lower` from `Compiler::compile` and delete
-     `src/test_ir.rs` once default and `bitpack` native/corpus behavior remains
-     unchanged.
+  1. lower explicit hardware processes and implicit continuous behavior into
+     `Design::process_ir` before scheduler decomposition;
+  2. derive optimized `Driver`/`EventBlock` scheduling forms from Process IR;
+  3. delete the normalized-hardware importer once default and `bitpack`
+     native/corpus behavior remains unchanged.
 - 🟡 **Canonical composite sizing.** Put the checked packed width on canonical
   aggregate values so IR consumers do not rediscover struct/array widths from
   `SourceLayout`. Source type-cycle rejection remains the cycle boundary.
@@ -82,7 +79,7 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   retain runtime-selected projections, and direct LLVM evaluates every index
   and right-hand leaf before one packed root merge. Make that pre-write
   snapshot/update invariant explicit in Process IR validation or a dedicated
-  operation before deleting the temporary typed-AST adapter.
+  operation.
 ## LLVM
 
 Owns exact-width native code generation and the object-side runtime ABI. Code:

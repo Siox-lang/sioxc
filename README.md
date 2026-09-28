@@ -36,11 +36,11 @@ default features and do not need LLVM; see the
 [embedding API documentation](docs/interoperability.md#compiler-embedding-api).
 
 Native execution has one path: canonical Process IR is emitted through LLVM
-and linked with the fixed runtime; no design-specific C is generated. One
-input-side migration remains inside the compiler: the temporary `test_ir`
-adapter still converts normalized hardware and typed test behavior into that
-canonical Process IR. It is not another backend or runtime. See the
-[architecture status](docs/architecture.md#current-test_ir-boundary).
+and linked with the fixed runtime; no design-specific C is generated. Typed
+source/test processes lower directly under `ir/lower` into that product. One
+input-side migration remains: normalized `Driver`/`EventBlock` hardware is
+still imported into Process IR until those scheduler forms are derived from it.
+See the [architecture status](docs/architecture.md#current-process-ir-ingress-boundary).
 
 ## Write your first circuit
 

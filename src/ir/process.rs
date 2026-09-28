@@ -29,12 +29,12 @@ pub struct ProcessValueId(pub u32);
 /// The canonical control-flow product owned by an elaborated
 /// [`Design`](super::Design).
 ///
-/// The temporary `test_ir` adapter fills test CFGs from typed AST and hardware
-/// CFGs from the normalized scheduler decomposition. The representation and
-/// its invariants live here so no backend needs a second process product. The
-/// remaining migration inversion makes this arena authoritative and derives
+/// Typed source/test CFGs lower directly under `ir::lower`; normalized hardware
+/// CFGs still enter through the scheduler-decomposition bridge. The
+/// representation and its invariants live here so no backend needs a second
+/// process product. The remaining migration inversion derives
 /// [`Driver`](super::Driver) / [`EventBlock`](super::EventBlock) compatibility
-/// forms from it.
+/// forms from this arena.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProcessIr {
     /// Every process control-flow graph, indexed by [`ProcessId`].
@@ -187,7 +187,7 @@ pub struct ProcessLocal {
     /// locals; see `source`.
     pub name: String,
     /// Resolved source declaration used only to preserve lexical identity
-    /// while the temporary AST adapter classifies writes. Equal spellings in
+    /// while the source-process lowerer classifies writes. Equal spellings in
     /// nested scopes remain different locals. Other frontends may leave it
     /// absent once they provide structured places directly.
     pub source: Option<DefId>,
@@ -890,7 +890,7 @@ pub enum ProcessValueKind {
 ///
 /// Both source Process values and values imported from normalized hardware use
 /// this rule, so it belongs with the canonical arena rather than either input
-/// adapter.
+/// lowerer.
 pub(crate) fn integer_words_width(words: &[u64]) -> Option<u32> {
     let high = words.last().copied().unwrap_or(0);
     let high_width = (64 - high.leading_zeros()).max(1);

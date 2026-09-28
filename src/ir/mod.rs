@@ -46,8 +46,8 @@ pub use design::*;
 pub use expr::*;
 pub use functions::FunctionIndex;
 pub use layout::*;
-pub(crate) use lower::import_hardware_processes;
 use lower::AccessStep;
+pub(crate) use lower::{import_hardware_processes, lower_processes};
 pub use lower::{lower, lower_in};
 use lower_helpers::*;
 pub use lower_helpers::{
