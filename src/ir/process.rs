@@ -239,6 +239,13 @@ pub enum ProcessInstruction {
         span: crate::diag::Span,
     },
     /// Write a value to a place.
+    ///
+    /// Assignment evaluation is transactional: the complete right-hand value
+    /// and every index embedded in `target` are read from the pre-write state
+    /// before any destination root is mutated or staged. Composite targets are
+    /// then merged into their packed roots and published according to
+    /// `semantics`. Backends must not interleave operand evaluation with leaf
+    /// writes.
     Assign {
         /// Whether the write is immediate or staged to the next delta.
         semantics: ProcessAssignment,
@@ -1238,33 +1245,92 @@ impl ProcessIr {
                             }
                         }
                         ProcessInstruction::Assign {
-                            semantics, target, ..
+                            semantics,
+                            target,
+                            value,
+                            ..
                         } => {
-                            let expected = match semantics {
-                                ProcessAssignment::ImmediateLocal => Some(ProcessPlaceClass::Local),
-                                ProcessAssignment::ImmediateStorage => {
-                                    Some(ProcessPlaceClass::Storage)
-                                }
-                                ProcessAssignment::StagedSignal => Some(ProcessPlaceClass::Signal),
-                                ProcessAssignment::PerPlace => None,
-                            };
-                            let valid = match expected {
-                                Some(expected) => {
-                                    process_place_class(self, *target) == Some(expected)
-                                }
-                                None => {
-                                    matches!(
-                                        self.values.get(target.0 as usize).map(|value| &value.kind),
-                                        Some(ProcessValueKind::Concat(_))
-                                    ) && process_place_classes(self, *target)
-                                        .is_some_and(|classes| !classes.is_empty())
-                                }
-                            };
+                            let snapshot = process_assignment_snapshot(self, *target);
+                            let concatenated = matches!(
+                                self.values.get(target.0 as usize).map(|value| &value.kind),
+                                Some(ProcessValueKind::Concat(_))
+                            );
+                            let valid = snapshot.as_ref().is_some_and(|snapshot| {
+                                !snapshot.roots.is_empty()
+                                    && match semantics {
+                                        ProcessAssignment::ImmediateLocal => {
+                                            !concatenated
+                                                && snapshot.roots.iter().all(|root| {
+                                                    matches!(
+                                                        root,
+                                                        ProcessPlaceRoot::Local(owner, _)
+                                                            if *owner == process.id
+                                                    )
+                                                })
+                                        }
+                                        ProcessAssignment::ImmediateStorage => {
+                                            !concatenated
+                                                && snapshot.roots.iter().all(|root| {
+                                                    matches!(root, ProcessPlaceRoot::Storage(_))
+                                                })
+                                        }
+                                        ProcessAssignment::StagedSignal => {
+                                            !concatenated
+                                                && snapshot.roots.iter().all(|root| {
+                                                    matches!(root, ProcessPlaceRoot::Signal(_))
+                                                })
+                                        }
+                                        ProcessAssignment::PerPlace => {
+                                            concatenated
+                                                && snapshot.roots.iter().all(|root| {
+                                                    !matches!(
+                                                        root,
+                                                        ProcessPlaceRoot::Local(owner, _)
+                                                            if *owner != process.id
+                                                    )
+                                                })
+                                        }
+                                    }
+                            });
                             if !valid {
                                 issues.push(format!(
                                     "process {:?} block {:?} has {:?} assignment to incompatible place {:?}",
                                     process.id, block.id, semantics, target
                                 ));
+                            }
+                            if self
+                                .values
+                                .get(target.0 as usize)
+                                .is_some_and(|target| target.bit_width.is_none())
+                            {
+                                issues.push(format!(
+                                    "process {:?} block {:?} assignment snapshot target {:?} has no packed width",
+                                    process.id, block.id, target
+                                ));
+                            }
+                            if self
+                                .values
+                                .get(value.0 as usize)
+                                .is_some_and(|value| value.bit_width.is_none())
+                            {
+                                issues.push(format!(
+                                    "process {:?} block {:?} assignment snapshot value {:?} has no packed width",
+                                    process.id, block.id, value
+                                ));
+                            }
+                            if let Some(snapshot) = snapshot {
+                                for index in snapshot.indices {
+                                    if self
+                                        .values
+                                        .get(index.0 as usize)
+                                        .is_some_and(|value| value.bit_width.is_none())
+                                    {
+                                        issues.push(format!(
+                                            "process {:?} block {:?} assignment snapshot index {:?} has no packed width",
+                                            process.id, block.id, index
+                                        ));
+                                    }
+                                }
                             }
                         }
                         ProcessInstruction::Schedule { target, delay, .. } => {
@@ -1758,35 +1824,102 @@ enum ProcessPlaceClass {
     Signal,
 }
 
-/// Follow projections to the storage object an assignment ultimately writes.
-fn process_place_class(ir: &ProcessIr, value: ProcessValueId) -> Option<ProcessPlaceClass> {
-    let classes = process_place_classes(ir, value)?;
-    let first = *classes.first()?;
-    classes.iter().all(|class| *class == first).then_some(first)
+/// Identity of a mutable root captured by one assignment. Projections retain
+/// this identity so validation can reason about the atomic update without
+/// knowing backend offsets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ProcessPlaceRoot {
+    Local(ProcessId, ProcessLocalId),
+    Storage(ProcessStorageId),
+    Signal(SignalId),
+}
+
+impl ProcessPlaceRoot {
+    fn class(self) -> ProcessPlaceClass {
+        match self {
+            Self::Local(_, _) => ProcessPlaceClass::Local,
+            Self::Storage(_) => ProcessPlaceClass::Storage,
+            Self::Signal(_) => ProcessPlaceClass::Signal,
+        }
+    }
+}
+
+/// Operands that must be captured before an assignment publishes any update.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProcessAssignmentSnapshot {
+    roots: Vec<ProcessPlaceRoot>,
+    indices: Vec<ProcessValueId>,
+}
+
+/// Recover the canonical mutable roots and index operands encoded by a target
+/// value. A recursion guard keeps malformed hand-built IR diagnostic instead
+/// of letting validation recurse forever; ordinary arena dominance already
+/// guarantees production targets are acyclic.
+fn process_assignment_snapshot(
+    ir: &ProcessIr,
+    target: ProcessValueId,
+) -> Option<ProcessAssignmentSnapshot> {
+    fn walk(
+        ir: &ProcessIr,
+        value: ProcessValueId,
+        active: &mut HashSet<ProcessValueId>,
+        snapshot: &mut ProcessAssignmentSnapshot,
+    ) -> Option<()> {
+        if !active.insert(value) {
+            return None;
+        }
+        match &ir.values.get(value.0 as usize)?.kind {
+            ProcessValueKind::Local { process, local } => {
+                snapshot
+                    .roots
+                    .push(ProcessPlaceRoot::Local(*process, *local));
+            }
+            ProcessValueKind::Storage(storage) => {
+                snapshot.roots.push(ProcessPlaceRoot::Storage(*storage));
+            }
+            ProcessValueKind::Signal {
+                signals,
+                state: ProcessSignalState::Current,
+            } if !signals.is_empty() => snapshot
+                .roots
+                .extend(signals.iter().copied().map(ProcessPlaceRoot::Signal)),
+            ProcessValueKind::Field { base, .. }
+            | ProcessValueKind::BitSlice { base, .. }
+            | ProcessValueKind::PackedSlice { base, .. } => {
+                walk(ir, *base, active, snapshot)?;
+            }
+            ProcessValueKind::Index { base, index } => {
+                walk(ir, *base, active, snapshot)?;
+                snapshot.indices.push(*index);
+            }
+            ProcessValueKind::Concat(parts) if !parts.is_empty() => {
+                for part in parts {
+                    walk(ir, *part, active, snapshot)?;
+                }
+            }
+            _ => return None,
+        }
+        active.remove(&value);
+        Some(())
+    }
+
+    let mut snapshot = ProcessAssignmentSnapshot {
+        roots: Vec::new(),
+        indices: Vec::new(),
+    };
+    walk(ir, target, &mut HashSet::new(), &mut snapshot)?;
+    (!snapshot.roots.is_empty()).then_some(snapshot)
 }
 
 /// Every root storage class written by an assignable process value.
 fn process_place_classes(ir: &ProcessIr, value: ProcessValueId) -> Option<Vec<ProcessPlaceClass>> {
-    match &ir.values.get(value.0 as usize)?.kind {
-        ProcessValueKind::Local { .. } => Some(vec![ProcessPlaceClass::Local]),
-        ProcessValueKind::Storage(_) => Some(vec![ProcessPlaceClass::Storage]),
-        ProcessValueKind::Signal {
-            state: ProcessSignalState::Current,
-            ..
-        } => Some(vec![ProcessPlaceClass::Signal]),
-        ProcessValueKind::Field { base, .. }
-        | ProcessValueKind::Index { base, .. }
-        | ProcessValueKind::BitSlice { base, .. }
-        | ProcessValueKind::PackedSlice { base, .. } => process_place_classes(ir, *base),
-        ProcessValueKind::Concat(values) => {
-            let mut classes = Vec::new();
-            for value in values {
-                classes.extend(process_place_classes(ir, *value)?);
-            }
-            (!classes.is_empty()).then_some(classes)
-        }
-        _ => None,
-    }
+    Some(
+        process_assignment_snapshot(ir, value)?
+            .roots
+            .into_iter()
+            .map(ProcessPlaceRoot::class)
+            .collect(),
+    )
 }
 
 /// Preserve the fully selected arithmetic domain of a normalized digital

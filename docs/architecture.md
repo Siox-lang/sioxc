@@ -167,7 +167,13 @@ by stable `ProcessValueId`. Every statically packed operand, including an array
 or struct, carries its checked width on `ProcessValue`; its optional
 `SourceLayout` supplies recursive field/element shape and offsets, never a
 fallback width. Process IR validation rejects a missing or contradictory width
-before LLVM emission. The LLVM object exports immutable test, process,
+before LLVM emission. Assignments are transactional at the same boundary: the
+right-hand packed value and every runtime-selected target index are captured
+from the pre-write state, then each destination root is updated or staged.
+Validation rejects non-place targets and operands without a capturable packed
+representation; LLVM separates capture from its root-mutation helper so an
+aggregate copy cannot observe one of its own partial writes. The LLVM object
+exports immutable test, process,
 activation, sensitivity, waveform, and source-location tables plus callable
 process entries. One fixed scheduler consumes them, owns ready batches and
 delta commits, and edits delayed writes as driver/scalar-subelement projected

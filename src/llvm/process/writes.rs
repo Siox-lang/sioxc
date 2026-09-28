@@ -352,9 +352,11 @@ pub(super) fn dynamic_place_offset<'ctx>(
     Some(offset)
 }
 
-/// Apply one runtime-selected write as a single root read/modify/write. The
-/// right-hand value and every index have been evaluated before publication, so
-/// overlapping aggregate copies observe the pre-write snapshot.
+/// Apply one captured runtime-selected write as a single root
+/// read/modify/write. The caller supplies the already-evaluated value,
+/// metadata, and offset, so this mutation boundary cannot interleave target or
+/// right-hand evaluation with publication. Overlapping aggregate copies
+/// therefore observe the pre-write snapshot.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_dynamic_place<'ctx>(
     context: &'ctx Context,
@@ -364,13 +366,11 @@ pub(super) fn write_dynamic_place<'ctx>(
     place: &DynamicPlace,
     value: IntValue<'ctx>,
     metadata: Option<IntValue<'ctx>>,
+    offset: IntValue<'ctx>,
     span: siox::diag::Span,
-    index_sites: &HashMap<IndexSite, u32>,
     range_sites: &HashMap<siox::diag::Span, u32>,
-    cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<()> {
     let value = fit(builder, value, place.width)?;
-    let offset = dynamic_place_offset(context, module, builder, design, place, index_sites, cache)?;
     match place.root {
         StaticPlaceRoot::Local(process, local) => {
             let name = local_state_name(process, local);
@@ -665,6 +665,8 @@ pub(super) fn emit_place_assignment<'ctx>(
         index_sites,
         cache,
     )?;
+    let offset =
+        dynamic_place_offset(context, module, builder, design, &place, index_sites, cache)?;
     write_dynamic_place(
         context,
         module,
@@ -673,10 +675,9 @@ pub(super) fn emit_place_assignment<'ctx>(
         &place,
         value,
         metadata,
+        offset,
         span,
-        index_sites,
         range_sites,
-        cache,
     )
 }
 

@@ -72,11 +72,7 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   2. derive optimized `Driver`/`EventBlock` scheduling forms from Process IR;
   3. delete the normalized-hardware importer once default and `bitpack`
      native/corpus behavior remains unchanged.
-- 🟡 **Canonicalize dynamic aggregate updates.** Process assignments already
-  retain runtime-selected projections, and direct LLVM evaluates every index
-  and right-hand leaf before one packed root merge. Make that pre-write
-  snapshot/update invariant explicit in Process IR validation or a dedicated
-  operation.
+
 ## LLVM
 
 Owns exact-width native code generation and the object-side runtime ABI. Code:

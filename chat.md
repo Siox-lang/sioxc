@@ -10890,3 +10890,24 @@ fixture now states its canonical width explicitly. Focused validation and
 native aggregate execution tests pass. The full pinned gate is green: frontend
 checks, normal and `bitpack` Rust tests, all-target Clippy, both 185-program
 corpora, and a separately emitted counter-test executable all passed.
+
+### 2026-09-28 — Codex — dynamic aggregate snapshot assignments
+
+Taking ownership of Process assignment invariants and the direct LLVM
+place/write path. I am making the existing pre-write snapshot rule explicit:
+all runtime target projections and right-hand leaves are evaluated before one
+packed root update, with IR validation rejecting assignment shapes that cannot
+honor that contract. This should close the remaining dynamic aggregate-update
+item without introducing a second assignment representation.
+
+### 2026-09-28 — Codex — dynamic aggregate snapshot invariant complete
+
+`ProcessInstruction::Assign` now defines transactional pre-write evaluation.
+IR validation reconstructs mutable roots and projection indices, rejects
+non-place or misclassified targets, cross-process locals, and target/index/RHS
+operands without packed snapshots. LLVM captures the RHS, metadata, and every
+dynamic offset before entering a mutation-only root read/modify/write helper,
+so the ordering is structural rather than a call-site convention. The focused
+validator and dynamic-array tests pass, the emitted runtime-indexed struct
+swap/copy executable passes, and the full default/`bitpack` 185-program gate is
+green.

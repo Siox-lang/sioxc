@@ -583,6 +583,110 @@ fn process_aggregate_layout_requires_canonical_packed_width() {
 }
 
 #[test]
+/// The target projection and right-hand value are one assignment snapshot.
+/// Every runtime index and the value therefore need a packed representation
+/// before a backend may begin mutating the selected root.
+fn process_assignment_snapshot_requires_capturable_operands() {
+    let span = crate::diag::Span::new(FileId(0), 0..1);
+    let mut ir = ProcessIr {
+        values: vec![
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(16),
+                kind: ProcessValueKind::Local {
+                    process: ProcessId(0),
+                    local: ProcessLocalId(0),
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: None,
+                kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Index {
+                    base: ProcessValueId(0),
+                    index: ProcessValueId(1),
+                },
+            },
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(8),
+                kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![7])),
+            },
+        ],
+        processes: vec![ProcessCfg {
+            id: ProcessId(0),
+            root: crate::elab::InstanceId(0),
+            owner: crate::elab::InstanceId(0),
+            label: None,
+            span,
+            activation: ProcessActivation::TimeZero,
+            entry: ProcessBlockId(0),
+            locals: vec![ProcessLocal {
+                id: ProcessLocalId(0),
+                name: "values".into(),
+                source: None,
+                span,
+                ty: None,
+                layout: None,
+            }],
+            blocks: vec![ProcessBlock {
+                id: ProcessBlockId(0),
+                instructions: vec![ProcessInstruction::Assign {
+                    semantics: ProcessAssignment::ImmediateLocal,
+                    driver_context: None,
+                    target: ProcessValueId(2),
+                    value: ProcessValueId(3),
+                    span,
+                }],
+                terminator: ProcessTerminator::Return {
+                    value: None,
+                    span: Some(span),
+                },
+            }],
+        }],
+        ..ProcessIr::default()
+    };
+
+    let issues = ir.validate(0);
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.contains("assignment snapshot index ProcessValueId(1)")),
+        "{issues:?}"
+    );
+
+    ir.values[1].bit_width = Some(64);
+    assert!(ir.validate(0).is_empty(), "{:#?}", ir.validate(0));
+
+    ir.values[3].bit_width = None;
+    let issues = ir.validate(0);
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.contains("assignment snapshot value ProcessValueId(3)")),
+        "{issues:?}"
+    );
+
+    ir.values[3].bit_width = Some(8);
+    ir.values[2].bit_width = None;
+    let issues = ir.validate(0);
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.contains("assignment snapshot target ProcessValueId(2)")),
+        "{issues:?}"
+    );
+}
+
+#[test]
 /// Validation accepts well-formed IR and flags each malformed shape.
 fn validate_accepts_good_and_flags_bad_ir() {
     // A lowered counter is well-formed.
