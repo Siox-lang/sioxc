@@ -28,9 +28,13 @@
 //!     syntax["syntax<br/>lex, parse"] --> resolve
 //!     resolve["resolve<br/>names, visibility"] --> types
 //!     types["types<br/>type & kind check"] --> elab
+//!     types -. "typed test expressions" .-> adapter
+//!     types -. "test selection" .-> tb["testbench<br/>TestPlan"]
 //!     elab["elab<br/>instances, parameters"] --> ir
-//!     ir["ir<br/>digital simulation IR"] --> tb
-//!     tb["testbench + test_ir<br/>process descriptors"] --> emit
+//!     tb --> adapter["test_ir<br/>temporary input adapter"]
+//!     ir["ir lowering<br/>signals + drivers/events"] --> adapter
+//!     adapter --> process["Design::process_ir<br/>canonical process CFGs"]
+//!     process --> emit
 //!     emit["llvm::emit<br/>design + processes to LLVM IR"] --> aot
 //!     aot["llvm::aot"] --> obj["native object"]
 //!     obj --> build["driver::build<br/>fixed runtime + libfst linker"]

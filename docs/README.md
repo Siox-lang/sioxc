@@ -45,10 +45,16 @@ flowchart LR
     AST --> RES["Resolve"]
     RES --> TYPE["Type-check"]
     TYPE --> ELAB["Elaborate<br/>Hierarchy"]
-    ELAB --> IR["Lower<br/>Digital IR"]
+    TYPE -->|test build| PLAN["testbench<br/>TestPlan"]
+    PLAN -->|selected roots| ELAB
+    ELAB --> DIGITAL["ir lowering<br/>signals + layouts + drivers/events"]
+    TYPE -->|typed test expressions| ADAPTER["test_ir<br/>temporary input adapter"]
+    PLAN -->|descriptors + roots| ADAPTER
+    DIGITAL -->|normalized hardware| ADAPTER
+    ADAPTER --> PROCESS["Design::process_ir<br/>canonical CFGs + values"]
 
-    IR --> FRONT["frontend artifact<br/>metadata / dumps"]
-    IR --> LLVM["LLVM backend"]
+    PROCESS --> FRONT["frontend artifact<br/>metadata / dumps"]
+    PROCESS --> LLVM["LLVM backend"]
     LLVM --> OBJ["native object"]
     OBJ --> LINK["native linker"]
     FIXED["fixed Process scheduler + CLI<br/>VCD / FST runtime"] --> LINK
@@ -60,14 +66,19 @@ flowchart LR
     RESULT -->|returns Compilation| API
 ```
 
-This diagram is the current implementation. `process` is the common
-sequential/scheduling boundary, giving one semantic track:
-`source → AST → resolve → typecheck → elaborate → Process IR → target
-validation → optimization → output`. `#[test]` only adds root/descriptor
-metadata; only final artifact selection varies. Native tests link the LLVM
-process entries to one fixed scheduler/CLI without generating design-specific
-C. VCD/FST, source-located diagnostics, and host services consume descriptors
-and metadata emitted in the design object.
+This diagram is the current implementation. There is one execution track after
+canonical Process IR: LLVM emits the process entries and native tests link them
+to one fixed scheduler/CLI without generating design-specific C. VCD/FST,
+source-located diagnostics, and host services consume descriptors and metadata
+emitted in the design object.
+
+The input side is not completely straight-line yet. `test_ir` is a temporary
+adapter, not a second IR or backend: it imports normalized hardware
+`Driver`/`EventBlock` behavior and lowers typed test expressions into the
+`ProcessIr` owned by `ir::Design`. The intended Phase 1 endpoint lowers source
+processes directly into that owned Process IR, derives optimized digital
+scheduler forms from it, and deletes the adapter. See
+[the current `test_ir` boundary](architecture.md#current-test_ir-boundary).
 
 The arrows through parse, resolve, type-check, elaboration, and IR are compiler
 work. The final arrow back to `siox::compiler` is the function return, not

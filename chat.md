@@ -10564,3 +10564,11 @@ Clippy, and default and `bitpack` corpus runs. A separate compile/run proof buil
 `tests/fixtures/counter_test.siox` as a native ELF and passed its test. The only
 production C remaining is the intentional fixed runtime and vendored libfst;
 none of it is generated from a design.
+
+### 2026-09-28 — Codex — document the remaining `test_ir` boundary
+
+Updating the documentation graphs and Phase 1 checklist to distinguish the
+completed generated-C/runtime unification from the remaining input-side
+adapter. The docs will show both current ingress routes into canonical Process
+IR, state what `test_ir` does and does not own, and give the ordered conditions
+for deleting it. No compiler behavior is changing in this batch.

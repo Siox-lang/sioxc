@@ -7,7 +7,7 @@ layer that owns each change:
 
 This file tracks active work, not implementation history. Completed migration
 details and measurements belong in [`chat.md`](chat.md) and the documents under
-[`docs/`](docs/). Status last audited 2026-09-27 against the compiler, standard
+[`docs/`](docs/). Status last audited 2026-09-28 against the compiler, standard
 library, `siox-tests`, and CI.
 
 Legend: 🔴 not started · 🟡 partial / constrained.
@@ -58,10 +58,18 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
 - 🟡 **Make Process IR the lowering authority.** All finalized hardware and
   test behavior is present in `Design::process_ir`, but normalized
   `Driver`/`EventBlock` hardware is still imported through a migration bridge.
-  Lower explicit processes and implicit continuous behavior into Process IR
-  first, then derive optimized driver/event scheduling from that one product.
-  Delete `test_ir` after it no longer performs a separate AST-to-value/CFG
-  translation.
+  `test_ir` is only an input adapter—there is no second execution IR or
+  backend—but it still owns separate typed-AST-to-value/CFG translation.
+  Complete this migration in order:
+
+  1. move reusable expression, value, call, place, and CFG builders into
+     `src/ir/lower/`;
+  2. lower explicit processes, implicit continuous behavior, clocks, and test
+     stimulus directly into `Design::process_ir`;
+  3. derive optimized `Driver`/`EventBlock` scheduling forms from Process IR;
+  4. remove `crate::test_ir::lower` from `Compiler::compile` and delete
+     `src/test_ir.rs` once default and `bitpack` native/corpus behavior remains
+     unchanged.
 - 🟡 **Canonical composite sizing.** Put the checked packed width on canonical
   aggregate values so IR consumers do not rediscover struct/array widths from
   `SourceLayout`. Source type-cycle rejection remains the cycle boundary.

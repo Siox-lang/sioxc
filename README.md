@@ -35,6 +35,13 @@ backend. Frontend-only library consumers such as editors can instead disable
 default features and do not need LLVM; see the
 [embedding API documentation](docs/interoperability.md#compiler-embedding-api).
 
+Native execution has one path: canonical Process IR is emitted through LLVM
+and linked with the fixed runtime; no design-specific C is generated. One
+input-side migration remains inside the compiler: the temporary `test_ir`
+adapter still converts normalized hardware and typed test behavior into that
+canonical Process IR. It is not another backend or runtime. See the
+[architecture status](docs/architecture.md#current-test_ir-boundary).
+
 ## Write your first circuit
 
 Save this as `counter.siox` — an 8-bit counter that ticks up on each clock edge,

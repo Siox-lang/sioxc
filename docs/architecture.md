@@ -153,7 +153,7 @@ is translated to per-design C. A native test build therefore needs Clang and
 zlib but neither GTKWave nor an installed libfst. A `default-features = false`
 editor build needs neither LLVM nor the native-output toolchain.
 
-## Unified process pipeline
+## Unified process pipeline (Phase 1 endpoint)
 
 `process [name] { ... }` supplies the common scheduling boundary that the
 earlier architecture lacked. Explicit hardware processes, implicit reactive
@@ -180,9 +180,35 @@ subroutines within a caller; only a process creates an independently scheduled
 context. The current `Driver` and `EventBlock` forms become derived
 optimizations of Process IR rather than a separate hardware input path.
 
-The temporary `test_ir` adapter remains until syntax-driven lowering can
-produce these CFGs directly. That is an input-side cleanup; the backend and
-runtime already consume only canonical Process IR.
+### Current `test_ir` boundary
+
+`src/test_ir.rs` is not a second software IR, interpreter, runtime, or output
+backend. The canonical `ProcessIr`, CFG, value, storage, descriptor, and
+validation types all live under `src/ir/` and are owned by `ir::Design`.
+`test_ir` is an input adapter invoked after `ir::lower_in` by
+`Compiler::compile`; it currently performs two jobs:
+
+1. import normalized hardware `Driver`/`EventBlock` scheduler units as
+   reactive Process CFGs;
+2. lower typed testbench expressions, control flow, storage, clocks, and
+   `TestPlan` descriptors into the same Process IR.
+
+Consequently there is already one native execution product and one
+Process-to-LLVM/runtime path, but there are still two frontend ingress routes
+before that convergence. Removing the adapter is an IR-authority migration,
+not part of the completed generated-C retirement.
+
+Delete `test_ir` only after these steps are complete, in order:
+
+1. move its reusable expression, value, call, place, and CFG builders under
+   `src/ir/lower/` without introducing a second process product;
+2. lower explicit processes, implicit concurrent behavior, clocks, and test
+   stimulus directly into `Design::process_ir` from the shared typed/elaborated
+   source context;
+3. make `Driver` and `EventBlock` derived scheduling optimizations of Process
+   IR rather than inputs that must be imported back into it;
+4. remove `crate::test_ir::lower` from `Compiler::compile`, delete the module,
+   and keep the default and `bitpack` native/corpus gates unchanged.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The layering is a convention enforced by module discipline; do
