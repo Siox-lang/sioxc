@@ -299,7 +299,7 @@ The compiler follows rustc's separation of responsibilities:
 | Cargo | a future project tool for dependency graphs, caching, compiling many inputs, running tests, simulation, and waveform workflows |
 
 The command line therefore has no phase subcommands. `sioxc input.siox`
-performs one compilation; `--emit object|metadata|source|tokens|ast|tree|ir|
+performs one compilation; `--emit object|metadata|source|expanded|tokens|ast|tree|ir|
 llvm-ir` chooses the requested artifact, while `--test` changes the generated
 artifact into a test executable. The compiler never executes that artifact.
 
@@ -477,7 +477,11 @@ Before the full Pratt parse, `compiler` lexically follows that exact transitive
 import graph and collects every operator impl's `attr precedence = N;`. Imported
 operators therefore group expressions correctly in their users, while an
 unrelated `.siox` file cannot alter the active grammar.
-The import pass `syntax::imports::desugar` runs first over every loaded
+Macro expansion, `syntax::macros::expand`, runs first over every loaded
+module: it replaces each user `name!(…)` with its expansion, parsed where the
+call stood, and removes the `macro` declarations (language §3.30). The parser
+keeps every bang call's argument tokens in `Module::macro_args` for it.
+The import pass `syntax::imports::desugar` runs next over every loaded
 module. It rewrites the Rust import forms the resolver does not model — globs,
 module aliases, `self::`/`super::` paths, enum variant imports, block-level
 `use`, and generic `type` aliases — into plain imports and qualified paths,

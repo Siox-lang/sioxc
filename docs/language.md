@@ -2376,6 +2376,69 @@ valid starting value; it does not substitute for a reset.
 
 ---
 
+### 3.30 Macros
+
+A `macro` generates siox syntax at compile time. It is for abstractions that
+must produce *structure* (signals, processes, items) or keep *syntax* that a
+function would lose; behavior belongs in a function, parameterized hardware
+in a generic entity, and regular repetition in a `for` generate. Macros
+follow Rust's declarative macros 2.0: ordinary items, imported with `use`,
+hygienic at the definition site.
+
+```siox
+pub macro twice($x: expr) { $x + $x }
+
+macro probe($name: ident, $ty: type) { let $name: $ty; }
+
+macro check($c: expr) { assert!($c); }                 // two forms,
+macro check($c: expr, $m: expr) { assert!($c, $m); }   // chosen per call
+
+impl Cpu {
+    probe!(sum_q, unsigned[32]);       // implementation members
+    process {
+        check!(twice!(a) == 2 * a);    // a statement, around an expression
+    }
+}
+```
+
+- **Declaration.** `pub? macro name($p: kind, …) { body }` at module level,
+  order-independent like every item. The body is tokens, parsed only when the
+  macro is invoked. A parameter is `$name` in the list and in the body.
+- **Fragment kinds.** `expr` (substituted as one operand: `$x * 2` with
+  `$x = a + b` is `(a + b) * 2`), `ident`, `type`, `path`, `stmt` (without
+  its `;`), `item`, and `tokens` (anything balanced). Each argument is checked
+  against its kind at the call.
+- **Forms.** A name may be declared several times; a call uses the first form,
+  in declaration order, whose parameter count and kinds its arguments match.
+  No match is an error listing the forms.
+- **Invocation.** `name!(…)`, `name![…]` or `name!{…}`, by name, imported
+  name or path (`debug::probe!(x)`). The position decides the expansion: one
+  expression; statements; implementation members; or module items. In the
+  last three a `()`/`[]` call ends with `;` and a `{}` call does not. siox has
+  no block expressions, so an expression macro expands to one expression.
+- **Hygiene.** A name the body declares (`let`, `for`, a label, an item) is
+  private to that expansion and shows as `name#n` in diagnostics and
+  `--emit expanded`. A name passed as an argument is the caller's. A free
+  name in the body means what it means in the macro's module, so a public
+  macro may call its module's functions (which must be `pub` to be usable at
+  the call site) and its module's private macros.
+- **Resolution.** Macros have their own namespace: `fn f` and `macro f`
+  coexist. `use`, renames, globs and `pub use` re-exports work as for items;
+  an imported macro never invoked is reported by `unused_import`. The
+  built-in `assert!`, `print!` and `warn!` are always visible, and a user
+  macro of the same name shadows one.
+- **Expansion** happens after parsing and before name resolution, so
+  generated code is checked exactly like handwritten code. A macro may invoke
+  macros, at most 128 deep (rustc's default `recursion_limit`); an expansion
+  may not declare a `macro`. Errors in an argument point at the call; errors
+  in the body point into the declaration and note which macro was expanding.
+  `sioxc --emit expanded file.siox` prints the entry module after expansion.
+- There is no `macro_rules!`, no procedural macro, and no user-defined `#[…]`:
+  expansion substitutes syntax and runs no user code. Repetition is a later
+  addition (proposals/macros.md).
+
+---
+
 ## Historical Stage 1 — Syntax freeze and examples
 
 ### Goal

@@ -84,6 +84,7 @@ enum CliEmit {
     Object,
     Metadata,
     Source,
+    Expanded,
     Tokens,
     Ast,
     Tree,
@@ -109,6 +110,7 @@ pub fn run() -> ExitCode {
             CliEmit::Object => Emit::Object { top: cli.top },
             CliEmit::Metadata => Emit::Metadata,
             CliEmit::Source => Emit::Source,
+            CliEmit::Expanded => Emit::Expanded,
             CliEmit::Tokens => Emit::Tokens,
             CliEmit::Ast => Emit::Ast,
             CliEmit::Tree => Emit::Tree,
@@ -269,6 +271,18 @@ fn report_frontend(compilation: &siox::compiler::Compilation) {
 fn describe_item(item: &Item) -> (&'static str, String) {
     match item {
         Item::Fn(function) => ("fn", function.name.text.clone()),
+        Item::Macro(m) => ("macro", m.name.text.clone()),
+        Item::MacroCall { path, .. } => (
+            "invoke",
+            format!(
+                "{}!",
+                path.segments
+                    .iter()
+                    .map(|segment| segment.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::")
+            ),
+        ),
         Item::ExternBlock { abi, fns, .. } => ("extern", format!("\"{abi}\" ({} fns)", fns.len())),
         Item::Using(using) => {
             let name = match &using.kind {

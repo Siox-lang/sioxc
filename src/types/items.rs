@@ -116,7 +116,7 @@ impl<'a> Checker<'a> {
             Item::Struct(_) => {}
             Item::View(v) => self.check_view(v),
             Item::AttrDecl(attribute) => self.check_attr_default(attribute),
-            Item::Using(_) | Item::AttrBinding(_) => {}
+            Item::Using(_) | Item::AttrBinding(_) | Item::Macro(_) | Item::MacroCall { .. } => {}
         }
     }
 
@@ -431,7 +431,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Item::AttrDecl(attribute) => self.check_type_layout(&attribute.ty),
-            Item::AttrBinding(_) => {}
+            Item::AttrBinding(_) | Item::Macro(_) | Item::MacroCall { .. } => {}
         }
     }
 

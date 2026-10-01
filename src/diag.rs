@@ -445,6 +445,9 @@ pub mod codes {
     /// A lint directive that is not `#[level(lint, ...)]`, such as a bare
     /// `#[allow]` (rustc E0452).
     pub const MALFORMED_LINT_DIRECTIVE: &str = "E-P034";
+    /// A macro invocation that cannot expand: no form matches its arguments,
+    /// its body names no parameter, or expansions nest too deep.
+    pub const MACRO_EXPANSION: &str = "E-P035";
 
     // Warnings
     // W-P001 retired: parallel drivers are legal when their type implements

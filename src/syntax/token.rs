@@ -71,6 +71,8 @@ pub enum TokenKind {
     Let,
     /// The `fn` keyword: function or method declaration.
     Fn,
+    /// The `macro` keyword: a user-defined syntax transformation.
+    Macro,
     /// The `process` keyword.
     Process,
     /// The `in` port direction, also the separator in `for i in range`.
@@ -172,6 +174,8 @@ pub enum TokenKind {
     CustomOp,
     /// `#` — introduces an attribute application `#[...]`.
     Pound,
+    /// `$` — a macro parameter, `$x`.
+    Dollar,
     /// `'` — the VHDL-style attribute accessor in `sig'event`. A `'c'`-shaped
     /// run is lexed as a [`TokenKind::CharacterLit`] instead; see the lexer.
     Tick,
@@ -207,6 +211,7 @@ impl TokenKind {
             TokenKind::Use => "`use`",
             TokenKind::Type => "`type`",
             TokenKind::Super => "`super`",
+            TokenKind::Macro => "`macro`",
             TokenKind::Pub => "`pub`",
             TokenKind::Entity => "`entity`",
             TokenKind::Impl => "`impl`",
@@ -267,6 +272,7 @@ impl TokenKind {
             TokenKind::LtEq => "`<=`",
             TokenKind::GtEq => "`>=`",
             TokenKind::Pound => "`#`",
+            TokenKind::Dollar => "`$`",
             TokenKind::Tick => "`'`",
         }
     }

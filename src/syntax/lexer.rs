@@ -376,10 +376,11 @@ impl<'a> Lexer<'a> {
             b'/' => TokenKind::Slash,
             b'!' => TokenKind::Bang,
             b'#' => TokenKind::Pound,
-            b'%' | b'^' | b'~' | b'?' | b'$' | b'`' => {
+            b'$' => TokenKind::Dollar,
+            b'%' | b'^' | b'~' | b'?' | b'`' => {
                 while self
                     .peek()
-                    .is_some_and(|c| matches!(c, b'%' | b'^' | b'~' | b'?' | b'$' | b'`'))
+                    .is_some_and(|c| matches!(c, b'%' | b'^' | b'~' | b'?' | b'`'))
                 {
                     self.bump();
                 }
@@ -488,6 +489,7 @@ fn keyword_kind(s: &str) -> Option<TokenKind> {
         "const" => TokenKind::Const,
         "let" => TokenKind::Let,
         "fn" => TokenKind::Fn,
+        "macro" => TokenKind::Macro,
         "process" => TokenKind::Process,
         "in" => TokenKind::In,
         "out" => TokenKind::Out,
