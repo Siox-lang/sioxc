@@ -200,7 +200,7 @@ fn index(modules: &[Module]) -> Index {
                     }
                     UsingKind::Import { .. } => {}
                 },
-                Item::Impl(_) | Item::AttrBinding(_) => {}
+                Item::Impl(_) | Item::AttrBinding(_) | Item::Macro(_) | Item::MacroCall { .. } => {}
             }
         }
     }
@@ -754,6 +754,7 @@ impl Rewriter<'_> {
                     }
                 }
                 Item::AttrBinding(b) => self.expr(&mut b.value, env, sink),
+                Item::Macro(_) | Item::MacroCall { .. } => {}
             }
         }
     }

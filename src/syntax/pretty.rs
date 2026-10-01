@@ -17,8 +17,72 @@ pub fn print_module(module: &Module) -> String {
         indent: 0,
         lints: module.lints.iter().map(|d| (d.clone(), false)).collect(),
     };
+    MACRO_ARGS.with(|args| args.borrow_mut().clone_from(&module.macro_args));
     p.module(module);
+    MACRO_ARGS.with(|args| args.borrow_mut().clear());
     p.out
+}
+
+thread_local! {
+    /// The module being printed's macro arguments, for the calls whose
+    /// arguments are not expressions. Expression printing is a free function
+    /// tree, so this is how it reaches them.
+    static MACRO_ARGS: std::cell::RefCell<std::collections::HashMap<crate::diag::Span, MacroArgs>> =
+        std::cell::RefCell::default();
+}
+
+/// A macro call's arguments as written, when they must be printed from their
+/// tokens: not expressions, or not in parentheses.
+fn macro_call_args(span: crate::diag::Span) -> Option<String> {
+    MACRO_ARGS.with(|args| {
+        let args = args.borrow();
+        let call = args.get(&span)?;
+        if call.parsed && call.delim == MacroDelim::Paren {
+            return None;
+        }
+        let inner = tokens_text(&call.tokens);
+        Some(match call.delim {
+            MacroDelim::Paren => format!("({inner})"),
+            MacroDelim::Bracket => format!("[{inner}]"),
+            MacroDelim::Brace => format!("{{ {inner} }}"),
+        })
+    })
+}
+
+/// Tokens on one line, spaced so they read naturally and re-lex the same.
+pub(crate) fn tokens_text(tokens: &[MacroToken]) -> String {
+    use crate::syntax::token::TokenKind as K;
+    let mut out = String::new();
+    let mut prev: Option<&K> = None;
+    for t in tokens {
+        let tight = match prev {
+            None => true,
+            Some(
+                K::LParen | K::LBracket | K::Dollar | K::Dot | K::ColonColon | K::Pound | K::Tick,
+            ) => true,
+            Some(K::Bang) => matches!(t.kind, K::LParen | K::LBracket | K::LBrace),
+            _ => {
+                matches!(
+                    t.kind,
+                    K::RParen
+                        | K::RBracket
+                        | K::Comma
+                        | K::Semi
+                        | K::Dot
+                        | K::ColonColon
+                        | K::Colon
+                        | K::Tick
+                ) || (matches!(t.kind, K::LParen | K::LBracket | K::Bang)
+                    && matches!(prev, Some(K::Ident)))
+            }
+        };
+        if !tight {
+            out.push(' ');
+        }
+        out.push_str(&t.text);
+        prev = Some(&t.kind);
+    }
+    out
 }
 
 /// One level of indentation.
@@ -115,7 +179,61 @@ impl Printer {
             Item::Trait(t) => self.trait_decl(t),
             Item::AttrDecl(a) => self.attr_decl(a),
             Item::AttrBinding(b) => self.attr_binding(b),
+            Item::Macro(m) => self.macro_decl(m),
+            Item::MacroCall { path: p, span } => {
+                let args = macro_call_args(*span).unwrap_or_else(|| "()".to_string());
+                let semi = if args.starts_with('{') { "" } else { ";" };
+                self.line(&format!("{}!{args}{semi}", path(p)));
+            }
         }
+    }
+
+    /// Print a `macro` declaration, its body one statement per line.
+    fn macro_decl(&mut self, m: &MacroDecl) {
+        use crate::syntax::token::TokenKind as K;
+        let params = m
+            .params
+            .iter()
+            .map(|p| format!("${}: {}", p.name.text, p.kind.name()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.line(&format!(
+            "{}macro {}({params}) {{",
+            pub_kw(m.is_pub),
+            m.name.text
+        ));
+        self.indent += 1;
+        let mut line: Vec<MacroToken> = Vec::new();
+        let mut depth = 0usize;
+        for t in &m.body {
+            match t.kind {
+                K::RBrace if depth == 0 => {
+                    if !line.is_empty() {
+                        self.line(&tokens_text(&line));
+                        line.clear();
+                    }
+                    self.indent = self.indent.saturating_sub(1);
+                    self.line("}");
+                    continue;
+                }
+                K::LParen | K::LBracket => depth += 1,
+                K::RParen | K::RBracket => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            line.push(t.clone());
+            if depth == 0 && matches!(t.kind, K::Semi | K::LBrace) {
+                self.line(&tokens_text(&line));
+                line.clear();
+                if t.kind == K::LBrace {
+                    self.indent += 1;
+                }
+            }
+        }
+        if !line.is_empty() {
+            self.line(&tokens_text(&line));
+        }
+        self.indent -= 1;
+        self.line("}");
     }
 
     /// Print a `use` import or alias.
@@ -632,6 +750,8 @@ fn item_span(item: &Item) -> crate::diag::Span {
         Item::Trait(t) => t.span,
         Item::AttrDecl(a) => a.span,
         Item::AttrBinding(b) => b.span,
+        Item::Macro(m) => m.span,
+        Item::MacroCall { span, .. } => *span,
     }
 }
 
@@ -945,8 +1065,16 @@ fn expr_inner(e: &Expr) -> (String, u8) {
             type_args,
             args,
             bang,
-            ..
+            span,
         } => {
+            if *bang {
+                if let Some(args) = macro_call_args(*span) {
+                    return (
+                        format!("{}!{args}", expr_prec(callee, POSTFIX_PREC)),
+                        POSTFIX_PREC,
+                    );
+                }
+            }
             let a = args.iter().map(expr).collect::<Vec<_>>().join(", ");
             let b = if *bang { "!" } else { "" };
             let types = if type_args.is_empty() {

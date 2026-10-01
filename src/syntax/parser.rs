@@ -175,6 +175,13 @@ pub struct Parser<'a> {
     /// Inside a process or function body, where `for` and `if` are control
     /// flow rather than structure and so take no label.
     sequential: u32,
+    /// Each token's text, for a parser over macro tokens: they come from
+    /// several files, and hygiene may have renamed an identifier.
+    texts: Option<Vec<String>>,
+    /// Index of the token consumed last, where text lookups start.
+    last: usize,
+    /// The argument tokens of every `name!(…)` read so far.
+    macro_args: HashMap<Span, MacroArgs>,
 }
 
 impl<'a> Parser<'a> {
@@ -208,6 +215,167 @@ impl<'a> Parser<'a> {
             depth: 0,
             depth_reported: false,
             sequential: 0,
+            texts: None,
+            last: 0,
+            macro_args: HashMap::new(),
+        }
+    }
+
+    /// A parser over a macro expansion's tokens. `sequential` says whether
+    /// the expansion lands inside a process or function body; `at` is where
+    /// an empty stream ends.
+    pub fn from_macro_tokens(
+        tokens: &[MacroToken],
+        sink: &'a mut DiagnosticSink,
+        operators: &HashMap<String, u8>,
+        sequential: bool,
+        at: Span,
+    ) -> Self {
+        let end = tokens.last().map_or(at, |t| Span {
+            start: t.span.end,
+            ..t.span
+        });
+        let mut stream: Vec<Token> = tokens
+            .iter()
+            .map(|t| Token {
+                kind: t.kind.clone(),
+                span: t.span,
+            })
+            .collect();
+        stream.push(Token {
+            kind: TokenKind::Eof,
+            span: end,
+        });
+        let mut parser = Parser::new("", stream, sink).with_custom_operators(operators);
+        let mut texts: Vec<String> = tokens.iter().map(|t| t.text.clone()).collect();
+        texts.push(String::new());
+        parser.texts = Some(texts);
+        parser.sequential = u32::from(sequential);
+        parser
+    }
+
+    /// The whole token stream as one expression.
+    pub fn expansion_expr(&mut self) -> Expr {
+        let expr = self.parse_expr(false);
+        self.expect_expansion_end();
+        expr
+    }
+
+    /// The whole token stream as statements.
+    pub fn expansion_stmts(&mut self) -> Vec<Stmt> {
+        let mut stmts = Vec::new();
+        while !self.at(TokenKind::Eof) {
+            let before = self.pos;
+            let statement_start = self.span();
+            for attr in self.parse_attrs() {
+                self.error_at(
+                    attr.span,
+                    "only a lint directive (`#[allow(...)]`, …) can be applied to a statement",
+                );
+            }
+            stmts.push(self.parse_stmt());
+            self.close_lint_scope(statement_start);
+            if self.pos == before {
+                self.bump();
+            }
+        }
+        stmts
+    }
+
+    /// The whole token stream as implementation members.
+    pub fn expansion_impl_items(&mut self) -> Vec<ImplItem> {
+        let mut items = Vec::new();
+        while !self.at(TokenKind::Eof) {
+            let before = self.pos;
+            let item_start = self.span();
+            if let Some(item) = self.parse_impl_item() {
+                items.push(item);
+            }
+            self.close_lint_scope(item_start);
+            if self.pos == before {
+                self.bump();
+            }
+        }
+        items
+    }
+
+    /// The whole token stream as module items.
+    pub fn expansion_items(&mut self) -> Vec<Item> {
+        let mut items = Vec::new();
+        while !self.at(TokenKind::Eof) {
+            let before = self.pos;
+            let item_start = self.span();
+            match self.parse_item() {
+                Some(item) => items.push(item),
+                None => self.recover_to_item_boundary(),
+            }
+            self.close_lint_scope(item_start);
+            if self.pos == before {
+                self.bump();
+            }
+        }
+        items
+    }
+
+    /// Whether the whole token stream is exactly one `kind` fragment. Run it
+    /// over a scratch sink: only the answer matters.
+    pub fn is_fragment(&mut self, kind: FragmentKind) -> bool {
+        match kind {
+            FragmentKind::Tokens => return true,
+            FragmentKind::Expr => {
+                self.parse_expr(false);
+            }
+            FragmentKind::Ident => {
+                if !self.at(TokenKind::Ident) {
+                    return false;
+                }
+                self.bump();
+            }
+            FragmentKind::Type => {
+                self.parse_type();
+            }
+            FragmentKind::Path => {
+                if !matches!(self.kind(), TokenKind::Ident | TokenKind::Super) {
+                    return false;
+                }
+                self.parse_path();
+            }
+            FragmentKind::Stmt => {
+                // A statement fragment is written without its `;`.
+                if matches!(
+                    self.kind(),
+                    TokenKind::If | TokenKind::Match | TokenKind::For
+                ) {
+                    self.parse_stmt();
+                } else {
+                    self.parse_expr(false);
+                    if self.eat(TokenKind::Eq) {
+                        self.parse_expr(false);
+                    }
+                }
+            }
+            FragmentKind::Item => {
+                if self.parse_item().is_none() {
+                    return false;
+                }
+            }
+        }
+        self.at(TokenKind::Eof) && !self.sink.has_errors()
+    }
+
+    /// The argument tokens of the `name!(…)` calls this parser read.
+    pub fn take_macro_args(&mut self) -> HashMap<Span, MacroArgs> {
+        std::mem::take(&mut self.macro_args)
+    }
+
+    /// The lint directives this parser read, with their extents.
+    pub fn take_lints(&mut self) -> Vec<LintDirective> {
+        std::mem::take(&mut self.lints)
+    }
+
+    fn expect_expansion_end(&mut self) {
+        if !self.at(TokenKind::Eof) {
+            self.error_here("this macro's expansion continues past one expression");
         }
     }
 
@@ -278,6 +446,7 @@ impl<'a> Parser<'a> {
             items,
             lints: std::mem::take(&mut self.lints),
             span,
+            macro_args: std::mem::take(&mut self.macro_args),
         }
     }
 
@@ -429,13 +598,25 @@ impl<'a> Parser<'a> {
                 Item::Impl(implementation)
             }
             TokenKind::Trait => Item::Trait(self.parse_trait(is_pub)),
+            TokenKind::Macro => Item::Macro(self.parse_macro(is_pub)),
+            TokenKind::Ident | TokenKind::Super if self.at_macro_call() => {
+                let path = self.parse_path();
+                self.bump(); // `!`
+                let args = self.capture_macro_args(false);
+                let span = path.span.to(self.prev_span());
+                if args.delim != MacroDelim::Brace {
+                    self.expect(TokenKind::Semi, "after a macro invocation");
+                }
+                self.macro_args.insert(span, args);
+                Item::MacroCall { path, span }
+            }
             TokenKind::Attr => match self.parse_attr(is_pub) {
                 AttrItem::Decl(declaration) => Item::AttrDecl(declaration),
                 AttrItem::Binding(binding) => Item::AttrBinding(binding),
             },
             _ => {
                 self.error_here(
-                    "expected an item (use, type, const, fn, struct, view, enum, entity, impl, trait, attr)",
+                    "expected an item (use, type, const, fn, struct, view, enum, entity, impl, trait, attr, macro)",
                 );
                 return None;
             }
@@ -464,6 +645,7 @@ impl<'a> Parser<'a> {
                     | TokenKind::Impl
                     | TokenKind::Trait
                     | TokenKind::Attr
+                    | TokenKind::Macro
             ) {
                 return;
             }
@@ -1801,8 +1983,13 @@ impl<'a> Parser<'a> {
             }
         } else {
             // No implicit tail-expression returns: every expression statement is
-            // terminated by `;`. A function returns a value via `return`.
-            self.expect(TokenKind::Semi, "after an expression statement");
+            // terminated by `;`. A function returns a value via `return`. A
+            // `name!{…}` macro call is the exception, as in Rust.
+            let braced = matches!(&lhs, Expr::Call { bang: true, span, .. }
+                if self.macro_args.get(span).is_some_and(|a| a.delim == MacroDelim::Brace));
+            if !braced || self.at(TokenKind::Semi) {
+                self.expect(TokenKind::Semi, "after an expression statement");
+            }
             Stmt::Expr(lhs)
         }
     }
@@ -2383,22 +2570,204 @@ impl<'a> Parser<'a> {
                         span: start.to(self.prev_span()),
                     };
                 }
-                // `assert!(...)` — bang call.
-                TokenKind::Bang if self.kind_at(self.pos + 1) == &TokenKind::LParen => {
+                // `assert!(...)`, `name![...]`, `name!{...}` — a macro call.
+                // Its tokens are kept for a user macro; a built-in one reads
+                // them as expressions.
+                TokenKind::Bang
+                    if self.kind_at(self.pos + 1) == &TokenKind::LParen
+                        || (matches!(e, Expr::Path(_))
+                            && matches!(
+                                self.kind_at(self.pos + 1),
+                                TokenKind::LBracket | TokenKind::LBrace
+                            )) =>
+                {
                     self.bump(); // `!`
-                    let args = self.parse_call_args();
+                    let open = self.pos;
+                    let mut margs = self.capture_macro_args(true);
+                    let args = if margs.parsed {
+                        self.expression_args(&margs.tokens)
+                    } else if margs.delim == MacroDelim::Paren && Self::is_builtin_macro(&e) {
+                        // A built-in macro's arguments are expressions: say
+                        // what is wrong with them where they are.
+                        let end = self.pos;
+                        self.pos = open;
+                        let args = self.parse_call_args();
+                        self.pos = end;
+                        margs.parsed = true;
+                        args
+                    } else {
+                        Vec::new()
+                    };
+                    let span = start.to(self.prev_span());
+                    self.macro_args.insert(span, margs);
                     e = Expr::Call {
                         callee: Box::new(e),
                         type_args: Vec::new(),
                         args,
                         bang: true,
-                        span: start.to(self.prev_span()),
+                        span,
                     };
                 }
                 _ => break,
             }
         }
         e
+    }
+
+    /// Whether a path and `!` and an opening delimiter start here: a macro
+    /// invocation in item position.
+    fn at_macro_call(&self) -> bool {
+        let mut i = self.pos;
+        loop {
+            if !matches!(self.kind_at(i), TokenKind::Ident | TokenKind::Super) {
+                return false;
+            }
+            i += 1;
+            if self.kind_at(i) != &TokenKind::ColonColon {
+                break;
+            }
+            i += 1;
+        }
+        self.kind_at(i) == &TokenKind::Bang
+            && matches!(
+                self.kind_at(i + 1),
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace
+            )
+    }
+
+    /// Whether `callee` names one of the compiler's built-in macros.
+    fn is_builtin_macro(callee: &Expr) -> bool {
+        matches!(callee, Expr::Path(p) if p.segments.len() == 1
+            && matches!(p.segments[0].text.as_str(), "assert" | "print" | "warn"))
+    }
+
+    /// Read a macro call's delimited arguments, from the opening delimiter
+    /// through the closing one, as tokens. With `try_exprs`, a `(…)` list is
+    /// also checked to read as comma-separated expressions.
+    fn capture_macro_args(&mut self, try_exprs: bool) -> MacroArgs {
+        let delim = match self.kind() {
+            TokenKind::LParen => MacroDelim::Paren,
+            TokenKind::LBracket => MacroDelim::Bracket,
+            _ => MacroDelim::Brace,
+        };
+        let open = self.span();
+        let tokens = self.capture_delimited();
+        let parsed = try_exprs && delim == MacroDelim::Paren && {
+            let mut scratch = DiagnosticSink::new();
+            let mut sub = Parser::from_macro_tokens(
+                &tokens,
+                &mut scratch,
+                &self.custom_operators,
+                false,
+                open,
+            );
+            sub.parse_comma_exprs();
+            sub.at(TokenKind::Eof) && !scratch.has_errors()
+        };
+        MacroArgs {
+            delim,
+            tokens,
+            parsed,
+        }
+    }
+
+    /// Re-read tokens known to be comma-separated expressions.
+    fn expression_args(&mut self, tokens: &[MacroToken]) -> Vec<Expr> {
+        let at = self.prev_span();
+        let mut sub =
+            Parser::from_macro_tokens(tokens, &mut *self.sink, &self.custom_operators, false, at);
+        let args = sub.parse_comma_exprs();
+        let nested = sub.take_macro_args();
+        self.macro_args.extend(nested);
+        args
+    }
+
+    /// Comma-separated expressions up to the end of the stream.
+    fn parse_comma_exprs(&mut self) -> Vec<Expr> {
+        let mut args = Vec::new();
+        while !self.at(TokenKind::Eof) {
+            args.push(self.parse_expr(false));
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        args
+    }
+
+    /// The tokens between a balanced pair of delimiters, consuming both.
+    fn capture_delimited(&mut self) -> Vec<MacroToken> {
+        let open_span = self.span();
+        self.bump(); // the opening delimiter
+        let mut depth = 0usize;
+        let mut tokens = Vec::new();
+        loop {
+            match self.kind() {
+                TokenKind::Eof => {
+                    self.error_at(open_span, "this delimiter is never closed");
+                    return tokens;
+                }
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace if depth == 0 => {
+                    self.bump();
+                    return tokens;
+                }
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => depth -= 1,
+                _ => {}
+            }
+            let t = self.bump();
+            tokens.push(MacroToken {
+                text: self.text_of(t.span).to_string(),
+                kind: t.kind,
+                span: t.span,
+            });
+        }
+    }
+
+    /// `macro name($a: expr, …) { body }`, at `macro`.
+    fn parse_macro(&mut self, is_pub: bool) -> MacroDecl {
+        let start = if is_pub {
+            self.prev_span()
+        } else {
+            self.span()
+        };
+        self.bump(); // `macro`
+        let name = self.parse_ident();
+        self.expect(TokenKind::LParen, "to open the macro's parameters");
+        let mut params = Vec::new();
+        while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+            if !self.expect(TokenKind::Dollar, "before a macro parameter (`$x: expr`)") {
+                break;
+            }
+            let param = self.parse_ident();
+            self.expect(TokenKind::Colon, "after a macro parameter's name");
+            let kind_name = self.parse_ident();
+            let kind = FragmentKind::from_name(&kind_name.text).unwrap_or_else(|| {
+                self.sink.emit(
+                    Diagnostic::error(format!("`{}` is not a fragment kind", kind_name.text))
+                        .at(kind_name.span)
+                        .help("use expr, ident, type, path, stmt, item or tokens"),
+                );
+                FragmentKind::Tokens
+            });
+            params.push(MacroParam { name: param, kind });
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RParen, "to close the macro's parameters");
+        let body = if self.at(TokenKind::LBrace) {
+            self.capture_delimited()
+        } else {
+            self.error_here("expected `{` to open the macro's body");
+            Vec::new()
+        };
+        MacroDecl {
+            is_pub,
+            name,
+            params,
+            body,
+            span: start.to(self.prev_span()),
+        }
     }
 
     /// Parse a parenthesized, comma-separated argument list.
@@ -3104,16 +3473,32 @@ impl<'a> Parser<'a> {
 
     /// The source text of the token at the cursor.
     fn cur_text(&self) -> &str {
-        self.text_of(self.peek().span)
+        match &self.texts {
+            Some(texts) => &texts[self.pos.min(texts.len() - 1)],
+            None => self.text_of(self.peek().span),
+        }
     }
 
     /// The source text `span` covers.
     fn text_of(&self, span: Span) -> &str {
+        if let Some(texts) = &self.texts {
+            // Macro tokens can share a span (an inserted qualifier, a
+            // substituted argument used twice), so find the token by
+            // position: callers ask about the token they just consumed or
+            // one shortly before it.
+            let last = self.last.min(self.tokens.len() - 1);
+            let found = (0..=last)
+                .rev()
+                .chain(last + 1..self.tokens.len())
+                .find(|&i| self.tokens[i].span == span);
+            return found.map_or("", |i| &texts[i]);
+        }
         &self.src[span.start as usize..span.end as usize]
     }
 
     /// Consume and return the token at the cursor.
     fn bump(&mut self) -> Token {
+        self.last = self.pos;
         let t = self.peek().clone();
         if self.pos < self.tokens.len() - 1 {
             self.pos += 1;

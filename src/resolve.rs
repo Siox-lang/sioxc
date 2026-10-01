@@ -721,7 +721,7 @@ impl<'a> Resolver<'a> {
                 self.register_attr(&a.name.text, id, a.name.span);
             }
             // A binding names an existing declaration and introduces nothing.
-            Item::AttrBinding(_) => {}
+            Item::AttrBinding(_) | Item::Macro(_) | Item::MacroCall { .. } => {}
             // Impls declare no top-level name.
             Item::Impl(_) => {}
         }
@@ -1276,7 +1276,7 @@ impl<'a> Resolver<'a> {
             }
             // `syntax::attributes::attach` copied every binding onto its
             // target as an applied attribute, which is resolved there.
-            Item::AttrBinding(_) => {}
+            Item::AttrBinding(_) | Item::Macro(_) | Item::MacroCall { .. } => {}
         }
     }
 

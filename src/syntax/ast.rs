@@ -20,6 +20,118 @@ pub struct Module {
     pub lints: Vec<crate::diag::lints::LintDirective>,
     /// The whole file, from `module` to the last item.
     pub span: Span,
+    /// The argument tokens of every `name!(…)` call in the file, keyed by the
+    /// call's span. The parser also reads a call's arguments as expressions,
+    /// which is all a built-in macro needs; a user macro re-reads the tokens
+    /// by its parameters' fragment kinds (`syntax::macros`).
+    pub macro_args: std::collections::HashMap<Span, MacroArgs>,
+}
+
+/// A token as a macro captures and re-emits it: its kind, the span it was
+/// written at, and its text, which hygiene may have renamed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MacroToken {
+    /// The lexical form.
+    pub kind: crate::syntax::token::TokenKind,
+    /// Where it was written, in the caller or in the macro's body.
+    pub span: Span,
+    /// The source text, or the renamed identifier.
+    pub text: String,
+}
+
+/// The delimiters of a macro invocation's arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MacroDelim {
+    /// `name!(…)`
+    Paren,
+    /// `name![…]`
+    Bracket,
+    /// `name!{…}`, which needs no `;` as a statement or item.
+    Brace,
+}
+
+/// A macro invocation's arguments, inside its delimiters.
+#[derive(Clone, Debug)]
+pub struct MacroArgs {
+    /// Which delimiters enclosed them.
+    pub delim: MacroDelim,
+    /// The tokens between the delimiters.
+    pub tokens: Vec<MacroToken>,
+    /// Whether the tokens read as comma-separated expressions; when not, the
+    /// call's `args` are empty and only a user macro can accept them.
+    pub parsed: bool,
+}
+
+/// `pub macro twice($x: expr) { $x + $x }` (proposals/macros.md).
+#[derive(Clone, Debug)]
+pub struct MacroDecl {
+    /// Whether it is exported.
+    pub is_pub: bool,
+    /// The macro's name, invoked as `name!`.
+    pub name: Ident,
+    /// The parameters, in order.
+    pub params: Vec<MacroParam>,
+    /// The body's tokens, without the enclosing braces.
+    pub body: Vec<MacroToken>,
+    /// `macro` (or `pub`) through the closing brace.
+    pub span: Span,
+}
+
+/// One `$name: kind` macro parameter.
+#[derive(Clone, Debug)]
+pub struct MacroParam {
+    /// The name after `$`.
+    pub name: Ident,
+    /// What syntax the argument must be.
+    pub kind: FragmentKind,
+}
+
+/// The syntax a macro parameter accepts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FragmentKind {
+    /// One expression, substituted as one operand.
+    Expr,
+    /// One identifier.
+    Ident,
+    /// One type.
+    Type,
+    /// One path.
+    Path,
+    /// One statement, without its `;`.
+    Stmt,
+    /// One item.
+    Item,
+    /// Any balanced tokens.
+    Tokens,
+}
+
+impl FragmentKind {
+    /// The kind a parameter names, or `None` for an unknown one.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "expr" => Self::Expr,
+            "ident" => Self::Ident,
+            "type" => Self::Type,
+            "path" => Self::Path,
+            "stmt" => Self::Stmt,
+            "item" => Self::Item,
+            "tokens" => Self::Tokens,
+            _ => return None,
+        })
+    }
+
+    /// How the kind is written.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Expr => "expr",
+            Self::Ident => "ident",
+            Self::Type => "type",
+            Self::Path => "path",
+            Self::Stmt => "stmt",
+            Self::Item => "item",
+            Self::Tokens => "tokens",
+        }
+    }
 }
 
 /// A `::`-separated path such as `std::logic::Bit` (spec 3 / Stage 3).
@@ -79,6 +191,17 @@ pub enum Item {
     AttrDecl(AttrDecl),
     /// A module-level attribute binding: `attr top for Chip = true;`.
     AttrBinding(AttrBinding),
+    /// A `macro` declaration. The expansion pass removes it.
+    Macro(MacroDecl),
+    /// A macro invocation in item position, `register_bank!(regs, 4);`. Its
+    /// arguments are in [`Module::macro_args`] under `span`; the expansion
+    /// pass replaces it with the items it expands to.
+    MacroCall {
+        /// The macro's name or path.
+        path: Path,
+        /// The path through the closing delimiter.
+        span: Span,
+    },
 }
 
 /// `use std::logic::{Bit, ...};` or `type Word = unsigned[32];` (spec 3.4).
