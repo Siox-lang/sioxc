@@ -79,6 +79,7 @@ impl Printer {
             Item::Impl(i) => self.impl_decl(i),
             Item::Trait(t) => self.trait_decl(t),
             Item::AttrDecl(a) => self.attr_decl(a),
+            Item::AttrBinding(b) => self.attr_binding(b),
         }
     }
 
@@ -284,6 +285,7 @@ impl Printer {
                 self.line("}");
             }
             ImplItem::Stmt(s) => self.stmt(s),
+            ImplItem::AttrBinding(b) => self.attr_binding(b),
         }
     }
 
@@ -312,10 +314,29 @@ impl Printer {
             .map(|t| t.text.clone())
             .collect::<Vec<_>>()
             .join(", ");
+        let default = a
+            .default
+            .as_ref()
+            .map(|d| format!(" = {}", expr(d)))
+            .unwrap_or_default();
         self.line(&format!(
-            "{kw}attr {}: {} for {targets};",
+            "{kw}attr {}: {} for {targets}{default};",
             a.name.text,
             type_str(&a.ty)
+        ));
+    }
+
+    /// Print an attribute binding, named or objectless.
+    fn attr_binding(&mut self, b: &AttrBinding) {
+        let object = b
+            .object
+            .as_ref()
+            .map(|o| format!(" for {}", o.text))
+            .unwrap_or_default();
+        self.line(&format!(
+            "attr {}{object} = {};",
+            path(&b.name),
+            expr(&b.value)
         ));
     }
 
@@ -655,7 +676,7 @@ const UNARY_PREC: u8 = 100;
 const RANGE_PREC: u8 = 1;
 
 /// Render an expression, adding only the parentheses precedence requires.
-fn expr(e: &Expr) -> String {
+pub(crate) fn expr(e: &Expr) -> String {
     expr_prec(e, 0)
 }
 

@@ -26,7 +26,12 @@ impl<'a> Checker<'a> {
                 // Silently lowering it produced an `Unknown` that only failed
                 // at codegen, naming a driver index rather than the attribute.
                 let a = attr.text.as_str();
-                if !PHASE2_ATTRS.contains(&a) && !SYS_ATTRS.contains(&a) {
+                // A declared attribute's read was folded into its value before
+                // resolution; one left here already failed with its reason.
+                if !PHASE2_ATTRS.contains(&a)
+                    && !SYS_ATTRS.contains(&a)
+                    && !self.attr_value_kinds.contains_key(a)
+                {
                     // The edge helpers are ordinary trait methods now, so this
                     // is the one wrong attribute worth a migration hint.
                     let help = if matches!(a, "rising" | "falling" | "edge") {

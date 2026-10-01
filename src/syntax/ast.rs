@@ -73,6 +73,8 @@ pub enum Item {
     Trait(TraitDecl),
     /// A user-defined attribute declaration (`attr top: Bool for entity;`).
     AttrDecl(AttrDecl),
+    /// A module-level attribute binding: `attr top for Chip = true;`.
+    AttrBinding(AttrBinding),
 }
 
 /// `using std::logic::{Bit, ...};` or `using Word = unsigned[32];` (spec 3.4).
@@ -271,6 +273,9 @@ pub struct Port {
     pub name: Ident,
     /// The port's type, including any width or view qualifier.
     pub ty: Type,
+    /// Attributes bound to the port from its entity's implementation
+    /// (`attr keep for clk = true;`). Ports carry no `#[...]` of their own.
+    pub attrs: Vec<Attr>,
     /// The whole port declaration's extent.
     pub span: Span,
 }
@@ -334,6 +339,10 @@ pub enum ImplItem {
     Process(ProcessDecl),
     /// Bare behavioral statement (combinational or event-controlled block).
     Stmt(Stmt),
+    /// An attribute binding: `attr keep for probe = true;` names a member,
+    /// `attr precedence = 40;` binds the enclosing implementation (or, for an
+    /// attribute declared `for entity`, the entity it implements).
+    AttrBinding(AttrBinding),
 }
 
 /// A `process { ... }` block: concurrent with other processes, sequential
@@ -378,6 +387,23 @@ pub struct AttrDecl {
     /// `port`, `instance`, `node`, `signal`, and so on. Applying it elsewhere
     /// is a diagnostic.
     pub targets: Vec<Ident>,
+    /// `= <default>`: the value every target has until a binding says
+    /// otherwise, so a read (`x'name`) always answers.
+    pub default: Option<Expr>,
+    /// `attr` keyword through the terminating `;`.
+    pub span: Span,
+}
+
+/// `attr keep for probe = true;` (named) or `attr precedence = 40;`
+/// (objectless): metadata attached to a declaration from outside it.
+#[derive(Clone, Debug)]
+pub struct AttrBinding {
+    /// The attribute being bound, resolved against `attr` declarations.
+    pub name: Path,
+    /// The declaration it binds; `None` binds the enclosing item.
+    pub object: Option<Ident>,
+    /// The bound value: a literal of the attribute's declared type.
+    pub value: Expr,
     /// `attr` keyword through the terminating `;`.
     pub span: Span,
 }

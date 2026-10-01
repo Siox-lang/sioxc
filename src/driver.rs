@@ -276,5 +276,18 @@ fn describe_item(item: &Item) -> (&'static str, String) {
         }
         Item::Trait(trait_) => ("trait", trait_.name.text.clone()),
         Item::AttrDecl(attribute) => ("attr", attribute.name.text.clone()),
+        Item::AttrBinding(binding) => {
+            let name = binding
+                .name
+                .segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            match &binding.object {
+                Some(object) => ("attr", format!("{name} for {}", object.text)),
+                None => ("attr", name),
+            }
+        }
     }
 }

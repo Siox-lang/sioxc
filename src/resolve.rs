@@ -366,7 +366,7 @@ fn impl_member(item: &ImplItem) -> Option<(&String, Span, &'static str)> {
             let name = process.name.as_ref()?;
             (&name.text, name.span, "process")
         }
-        ImplItem::Stmt(_) => return None,
+        ImplItem::Stmt(_) | ImplItem::AttrBinding(_) => return None,
     })
 }
 
@@ -662,6 +662,8 @@ impl<'a> Resolver<'a> {
                 );
                 self.register_attr(&a.name.text, id, a.name.span);
             }
+            // A binding names an existing declaration and introduces nothing.
+            Item::AttrBinding(_) => {}
             // Impls declare no top-level name.
             Item::Impl(_) => {}
         }
@@ -1182,6 +1184,9 @@ impl<'a> Resolver<'a> {
                 }
                 for p in &e.ports {
                     self.resolve_type(&p.ty);
+                    for a in &p.attrs {
+                        self.resolve_attr(a);
+                    }
                 }
                 self.exit();
             }
@@ -1196,7 +1201,15 @@ impl<'a> Resolver<'a> {
                 }
                 self.exit();
             }
-            Item::AttrDecl(a) => self.resolve_type(&a.ty),
+            Item::AttrDecl(a) => {
+                self.resolve_type(&a.ty);
+                if let Some(default) = &a.default {
+                    self.resolve_expr(default);
+                }
+            }
+            // `syntax::attributes::attach` copied every binding onto its
+            // target as an applied attribute, which is resolved there.
+            Item::AttrBinding(_) => {}
         }
     }
 
@@ -1243,7 +1256,7 @@ impl<'a> Resolver<'a> {
                 ImplItem::Fn(f) => self.bind_local(&f.name.text, f.name.span),
                 ImplItem::ModeField { name, .. } => self.bind_local(&name.text, name.span),
                 ImplItem::Process(_) => {}
-                ImplItem::Stmt(_) => {}
+                ImplItem::Stmt(_) | ImplItem::AttrBinding(_) => {}
             }
         }
         self.resolve_type(&im.target);
@@ -1461,6 +1474,7 @@ impl<'a> Resolver<'a> {
             ImplItem::ModeField { .. } => {}
             ImplItem::Process(process) => self.resolve_block(&process.body),
             ImplItem::Stmt(s) => self.resolve_stmt(s),
+            ImplItem::AttrBinding(_) => {}
         }
     }
 

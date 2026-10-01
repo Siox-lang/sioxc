@@ -390,6 +390,19 @@ pub mod codes {
     /// A native test declares more independently scheduled foreground
     /// processes than the Phase-1 test scheduler can execute concurrently.
     pub const TEST_PROCESS_SCHEDULING: &str = "E-P028";
+    /// An attribute binding or read names no declaration it can apply to
+    /// (`attr keep for nothing = true;`, `ghost'keep`), or an objectless
+    /// binding sits where there is no enclosing item to bind.
+    pub const UNKNOWN_ATTR_OBJECT: &str = "E-P029";
+    /// One attribute bound twice on one declaration. Unlike drivers, a later
+    /// binding does not override an earlier one.
+    pub const DUPLICATE_ATTR_BINDING: &str = "E-P030";
+    /// A read (`x'name`) of an attribute that is neither bound on `x` nor
+    /// declared with a default, so it has no value.
+    pub const ATTR_WITHOUT_VALUE: &str = "E-P031";
+    /// `#[...]` used for metadata. `#[...]` is reserved for compiler
+    /// directives (`#[test]`); metadata is bound with `attr name for x = v;`.
+    pub const METADATA_IN_DIRECTIVE: &str = "E-P032";
 
     // Warnings
     // W-P001 retired: parallel drivers are legal when their type implements

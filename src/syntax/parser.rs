@@ -55,10 +55,7 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
             i += 1;
             continue;
         }
-        let Some(precedence) = pending_precedence.take() else {
-            i += 1;
-            continue;
-        };
+        let pending = pending_precedence.take();
         if tokens[i].kind == TokenKind::Impl {
             let limit = (i + 20).min(tokens.len());
             let mut j = i + 1;
@@ -69,12 +66,17 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
                     }
                     if j < limit {
                         let symbol = text(&tokens[j]).trim_matches('"').to_string();
+                        // `#[precedence = N]` before the impl, or the binding
+                        // `attr precedence = N;` inside its body.
+                        let precedence = pending.or_else(|| body_precedence(src, tokens, j));
                         // A reserved grammar symbol (`=`, `::`, …) must not enter
                         // the custom-operator table, or it would shadow the
                         // language's own use of the token; the type checker
                         // reports the impl as an error instead.
-                        if !crate::syntax::ast::is_reserved_operator(&symbol) {
-                            out.insert(symbol, precedence);
+                        if let Some(precedence) = precedence {
+                            if !crate::syntax::ast::is_reserved_operator(&symbol) {
+                                out.insert(symbol, precedence);
+                            }
                         }
                     }
                     break;
@@ -85,6 +87,51 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
         i += 1;
     }
     out
+}
+
+/// The `N` of an `attr precedence = N;` binding directly inside the impl body
+/// that opens after token `from`, if there is one.
+fn body_precedence(src: &str, tokens: &[Token], from: usize) -> Option<u8> {
+    let text = |t: &Token| &src[t.span.start as usize..t.span.end as usize];
+    let open = (from..tokens.len()).find(|&k| tokens[k].kind == TokenKind::LBrace)?;
+    let mut depth = 0usize;
+    let mut k = open;
+    while k < tokens.len() {
+        match tokens[k].kind {
+            TokenKind::LBrace => depth += 1,
+            TokenKind::RBrace => {
+                depth -= 1;
+                if depth == 0 {
+                    return None;
+                }
+            }
+            TokenKind::Attr if depth == 1 => {
+                let shape: Vec<&Token> = tokens[k + 1..]
+                    .iter()
+                    .filter(|t| t.kind != TokenKind::Comment)
+                    .take(3)
+                    .collect();
+                if let [name, eq, value] = shape[..] {
+                    if name.kind == TokenKind::Ident
+                        && text(name) == "precedence"
+                        && eq.kind == TokenKind::Eq
+                        && value.kind == TokenKind::Int
+                    {
+                        return text(value).replace('_', "").parse::<u8>().ok();
+                    }
+                }
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    None
+}
+
+/// What an `attr` item turned out to be once its shape was seen.
+enum AttrItem {
+    Decl(AttrDecl),
+    Binding(AttrBinding),
 }
 
 /// How deeply expressions and blocks may nest. A recursive-descent parser has
@@ -266,7 +313,10 @@ impl<'a> Parser<'a> {
                 Item::Impl(self.parse_impl(attrs))
             }
             TokenKind::Trait => Item::Trait(self.parse_trait(is_pub)),
-            TokenKind::Attr => Item::AttrDecl(self.parse_attr_decl(is_pub)),
+            TokenKind::Attr => match self.parse_attr(is_pub) {
+                AttrItem::Decl(declaration) => Item::AttrDecl(declaration),
+                AttrItem::Binding(binding) => Item::AttrBinding(binding),
+            },
             _ => {
                 self.error_here(
                     "expected an item (using, const, fn, struct, view, enum, entity, impl, trait, attr)",
@@ -667,6 +717,7 @@ impl<'a> Parser<'a> {
             dir,
             name,
             ty,
+            attrs: Vec::new(),
             span: start.to(self.prev_span()),
         };
         (port, terminated)
@@ -721,6 +772,7 @@ impl<'a> Parser<'a> {
             dir: Some(dir),
             name,
             ty,
+            attrs: Vec::new(),
             span: start.to(self.prev_span()),
         };
         (port, terminated)
@@ -870,6 +922,16 @@ impl<'a> Parser<'a> {
             );
         }
         match self.kind() {
+            TokenKind::Attr => match self.parse_attr(false) {
+                AttrItem::Binding(binding) => Some(ImplItem::AttrBinding(binding)),
+                AttrItem::Decl(declaration) => {
+                    self.error_at(
+                        declaration.span,
+                        "an attribute is declared at module level, not inside an implementation",
+                    );
+                    None
+                }
+            },
             TokenKind::Const => Some(ImplItem::Const(self.parse_const(false))),
             // `let value: T = e;` is state/signal; `fn send(self, ...) { ... }`
             // is a method.
@@ -1092,12 +1154,51 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse an `attr` declaration and the target kinds it allows.
-    fn parse_attr_decl(&mut self, is_pub: bool) -> AttrDecl {
+    /// Parse an `attr` item: a declaration (`attr keep: Bool for let = false;`,
+    /// with `: Type`) or a binding (`attr keep for probe = true;`, or
+    /// objectless `attr precedence = 40;`). Only a declaration has a type.
+    fn parse_attr(&mut self, is_pub: bool) -> AttrItem {
         let start = self.span();
         self.bump(); // `attr`
-        let name = self.parse_ident();
-        self.expect(TokenKind::Colon, "before an attribute type");
+        let name = self.parse_path();
+        if self.eat(TokenKind::Colon) {
+            if name.segments.len() != 1 {
+                self.error_at(
+                    name.span,
+                    "an attribute declaration names a single identifier",
+                );
+            }
+            let name = name.segments.last().cloned().unwrap_or_else(|| Ident {
+                text: String::new(),
+                span: name.span,
+            });
+            return AttrItem::Decl(self.parse_attr_decl_rest(start, is_pub, name));
+        }
+        if is_pub {
+            self.error_at(
+                start,
+                "an attribute binding has no visibility; only a declaration is `pub`",
+            );
+        }
+        let object = if self.eat(TokenKind::For) {
+            Some(self.parse_ident())
+        } else {
+            None
+        };
+        self.expect(TokenKind::Eq, "before an attribute's bound value");
+        let value = self.parse_expr(false);
+        self.expect(TokenKind::Semi, "after an attribute binding");
+        AttrItem::Binding(AttrBinding {
+            name,
+            object,
+            value,
+            span: start.to(self.prev_span()),
+        })
+    }
+
+    /// Parse an `attr` declaration after its name and `:` — the type, the
+    /// target kinds it allows, and an optional default.
+    fn parse_attr_decl_rest(&mut self, start: Span, is_pub: bool, name: Ident) -> AttrDecl {
         let ty = self.parse_type();
         self.expect(TokenKind::For, "before attribute targets");
         // Targets are a fixed vocabulary that includes keywords (`entity`,
@@ -1109,12 +1210,18 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        let default = if self.eat(TokenKind::Eq) {
+            Some(self.parse_expr(false))
+        } else {
+            None
+        };
         self.expect(TokenKind::Semi, "after an attribute declaration");
         AttrDecl {
             is_pub,
             name,
             ty,
             targets,
+            default,
             span: start.to(self.prev_span()),
         }
     }
@@ -3457,5 +3564,57 @@ mod tests {
             .items
             .iter()
             .any(|it| matches!(it, Item::Entity(e) if e.name.text == "Good")));
+    }
+
+    /// `attr` is a declaration when it has `: Type` (optionally with a
+    /// default), and a binding otherwise — named with `for`, or objectless.
+    #[test]
+    fn attr_items_are_declarations_or_bindings() {
+        let m = parse_ok(
+            "module m;\nattr speed: integer for entity, let = 3;\nattr speed for Top = 4;\nimpl Top { attr speed for probe = 5; attr speed = 6; }\n",
+        );
+        let Item::AttrDecl(declaration) = &m.items[0] else {
+            panic!("expected a declaration")
+        };
+        assert!(matches!(declaration.default, Some(Expr::Int { ref text, .. }) if text == "3"));
+        assert!(
+            matches!(&m.items[1], Item::AttrBinding(b) if b.object.as_ref().is_some_and(|o| o.text == "Top"))
+        );
+        let Item::Impl(im) = &m.items[2] else {
+            panic!("expected impl")
+        };
+        assert!(
+            matches!(&im.items[0], ImplItem::AttrBinding(b) if b.object.as_ref().is_some_and(|o| o.text == "probe"))
+        );
+        assert!(matches!(&im.items[1], ImplItem::AttrBinding(b) if b.object.is_none()));
+        assert_eq!(
+            crate::syntax::pretty::print_module(&m),
+            "module m;\n\nattr speed: integer for entity, let = 3;\n\nattr speed for Top = 4;\n\nimpl Top {\n    attr speed for probe = 5;\n    attr speed = 6;\n}\n",
+        );
+        for (src, message) in [
+            (
+                "module m;\nimpl T { attr x: Bool for let; }\n",
+                "declared at module level",
+            ),
+            ("module m;\npub attr x for T = true;\n", "has no visibility"),
+        ] {
+            let diags = diagnostics(src);
+            assert!(
+                diags.iter().any(|d| d.message.contains(message)),
+                "{src}: {diags:#?}"
+            );
+        }
+    }
+
+    /// The operator table is built before parsing, so it must also find a
+    /// precedence bound inside the impl body, not only `#[precedence = N]`.
+    #[test]
+    fn precedence_is_discovered_from_a_body_binding() {
+        let src = "module m;\nimpl Operator<\"^^\", Bit, Bit> for Bit {\n  fn apply(self, rhs: Bit) -> Bit { return self; }\n  attr precedence = 45;\n}\nimpl Operator<\"~~\", Bit, Bit> for Bit {}\n";
+        let mut sink = DiagnosticSink::new();
+        let tokens = crate::syntax::lexer::Lexer::new(FileId(0), src).tokenize(&mut sink);
+        let operators = discover_custom_operators(src, &tokens);
+        assert_eq!(operators.get("^^"), Some(&45));
+        assert_eq!(operators.get("~~"), None, "no precedence, no entry");
     }
 }

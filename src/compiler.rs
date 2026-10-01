@@ -509,6 +509,7 @@ impl Compiler {
         for mismatch in mismatches {
             result.diagnostics.emit(mismatch);
         }
+        crate::syntax::attributes::attach(&mut result.modules, &mut result.diagnostics);
         let resolved = crate::resolve::resolve(&result.modules, &mut result.diagnostics);
         result.stats.definitions = Some(resolved.defs().len());
         let typed = crate::types::check(&result.modules, &resolved, &mut result.diagnostics);
