@@ -118,24 +118,9 @@ impl Printer {
         }
     }
 
-    /// Print a `using` import or alias.
+    /// Print a `use` import or alias.
     fn using(&mut self, u: &Using) {
-        let body = match &u.kind {
-            UsingKind::Import { base, names } => {
-                let names = names
-                    .iter()
-                    .map(|n| trait_name_str(&n.text))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                if base.segments.is_empty() {
-                    format!("using {names};")
-                } else {
-                    format!("using {}::{{{names}}};", path(base))
-                }
-            }
-            UsingKind::Alias { name, ty } => format!("using {} = {};", name.text, type_str(ty)),
-        };
-        self.line(&format!("{}{body}", pub_kw(u.is_pub)));
+        self.line(&using_text(u));
     }
 
     /// Print a `const` declaration.
@@ -497,6 +482,36 @@ impl Printer {
 }
 
 // --- leaf renderers (pure) --------------------------------------------------
+
+/// An import or alias as source: `use a::b::C;`, `use a::b::{C, L = D};`,
+/// `use L = a::b::C;`, or `type Word = unsigned[32];`.
+pub(crate) fn using_text(u: &Using) -> String {
+    let body = match &u.kind {
+        UsingKind::Import { base, names } => match &names[..] {
+            [only] if !base.segments.is_empty() => match &only.local {
+                Some(local) => format!("use {} = {}::{};", local.text, path(base), only.name.text),
+                None => format!("use {}::{};", path(base), trait_name_str(&only.name.text)),
+            },
+            _ => {
+                let names = names
+                    .iter()
+                    .map(|n| match &n.local {
+                        Some(local) => format!("{} = {}", local.text, n.name.text),
+                        None => trait_name_str(&n.name.text),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if base.segments.is_empty() {
+                    format!("use {names};")
+                } else {
+                    format!("use {}::{{{names}}};", path(base))
+                }
+            }
+        },
+        UsingKind::Alias { name, ty } => format!("type {} = {};", name.text, type_str(ty)),
+    };
+    format!("{}{body}", pub_kw(u.is_pub))
+}
 
 /// `label: ` in front of a labelled construct, or nothing.
 fn label_prefix(label: &Option<Ident>) -> String {
@@ -1065,7 +1080,7 @@ mod tests {
     fn roundtrips_unconstrained_arrays_and_char() {
         roundtrip(
             "module std::text;\n\
-             pub using string = Char[];\n\
+             pub type string = Char[];\n\
              entity E {\n\
                s: string[5] in,\n\
                c: Char in,\n\
@@ -1135,8 +1150,8 @@ mod tests {
     fn roundtrips_a_full_program() {
         roundtrip(
             "module demo::counter;\n\
-             using std::logic::{Bit, Logic};\n\
-             using Word = unsigned[32];\n\
+             use std::logic::{Bit, Logic};\n\
+             type Word = unsigned[32];\n\
              const DEFAULT_WIDTH: usize = 8;\n\
              struct Packet<T> { valid: Bit, data: T }\n\
              enum State {  Idle = 0, Start = 1, Done = 2 }\n\

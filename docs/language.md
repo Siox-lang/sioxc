@@ -207,8 +207,11 @@ enum
 trait
     compile-time behavior/interface contract
 
-using
-    import or type alias
+use
+    import
+
+type
+    transparent type alias
 
 attr
     metadata attribute declaration or binding
@@ -466,8 +469,8 @@ closing brackets:
 struct Box<T> { value: T }
 struct Pair<T, U> { left: T, right: U }
 
-using Nested = Box<Box<unsigned[8]>>;
-using Named = Pair<U = Box<unsigned[16]>, T = Box<Box<unsigned[8]>>>;
+type Nested = Box<Box<unsigned[8]>>;
+type Named = Pair<U = Box<unsigned[16]>, T = Box<Box<unsigned[8]>>>;
 ```
 
 The parenthesis rule above applies to value expressions. A nested `<...>`
@@ -544,24 +547,38 @@ Reason: entity fields are externally connected ports/interface terminals, not hi
 
 ---
 
-### 3.4 `using` is only for imports and aliases
+### 3.4 `use` imports, `type` aliases
 
-`using` should not create runtime/local objects.
-
-Valid:
-
-```siox
-using std::logic::{Bit, Logic};
-using Word = unsigned[32];
-```
-
-Invalid:
+Imports and aliases follow Rust, with one change: an import is renamed with
+`=`, not `as`. Neither creates a runtime or local object.
 
 ```siox
-using path = a -> b; // invalid in digital Phase 1 and not an alias
+use std::logic::Logic;                 // import one item
+use std::logic::{Bit, Logic};          // import several from one module
+use AxiMaster = bus::axi::Master;      // renamed import (Rust: `as AxiMaster`)
+use bus::axi::{AxiSlave = Slave, Mode}; // renaming inside a group
+pub use std::logic::{Bit, Logic};      // re-export
+
+type Word = unsigned[32];              // transparent alias: `Word` is `unsigned[32]`
+pub type Byte = integer<0..255>;
 ```
 
-In Phase 2 analogue, local paths should use `let`, not `using`.
+- `use` makes an existing declaration visible under a local name. It works the
+  same for every kind of declaration: entity, struct, enum, trait, function,
+  constant, attribute or alias. A renamed import binds the declaration itself,
+  so a renamed enum keeps its variants and a renamed generic keeps its
+  parameters.
+- `type` names a type you could not name with a path: a sized vector, a
+  ranged integer, an applied generic. The alias is transparent for type
+  identity; a distinct type is the newtype form, `struct Word(Bit[]);`
+  (§3.28).
+- The removed `using` keyword is an error whose help gives the `use` or `type`
+  line that replaces it.
+- Not yet: nested groups and `self` in a group, glob imports (`use a::*;`),
+  `self::`/`super::` paths, imports inside blocks, and generic aliases. See
+  [the using-split proposal](proposals/using-split.md).
+
+In Phase 2 analogue, local paths will use `let`, not an import or alias.
 
 ---
 
@@ -1826,7 +1843,7 @@ impl IndexAssign<Self, Self> for Cursor { /* index and value are Cursor */ }
 (VHDL's `range <>` box):
 
 ```siox
-pub using string = Char[];   // std::text
+pub type string = Char[];   // std::text
 s: string[5] in,             // the use supplies the range: Char[5]
 ```
 
@@ -1874,7 +1891,7 @@ b: Logic[BYTE] in,
 z = w[BYTE];
 ```
 
-Module constants and `using` aliases participate in widths, lengths, and
+Module constants and `type` aliases participate in widths, lengths, and
 slice bounds (`const N: integer = 4; let a: Bit[N];`). Their identity includes
 the declaring module, so unrelated modules may export constants or exact type
 aliases with the same leaf name; a qualified path or imported name selects the
@@ -2031,7 +2048,7 @@ without a matching impl is an error (`==`/`!=` stay built-in on enums as
 discriminant comparison). `Self` in an impl refers to the implementing type.
 
 Operator declarations may live in an imported module. Before parsing
-expressions, the compiler follows the exact transitive `using` graph and reads
+expressions, the compiler follows the exact transitive `use` graph and reads
 their precedence attributes; it does not scan unrelated source files. Thus a
 re-exported operator behaves identically to one declared in the entry file,
 without letting an unreferenced module change expression grouping.
@@ -2121,10 +2138,10 @@ A value-range constraint on the numeric base types uses the parameter
 brackets — `[]` stays bit/array-shaped:
 
 ```siox
-using Byte = integer<0..255>;
-using Short = integer<-32768..32767>;
+type Byte = integer<0..255>;
+type Short = integer<-32768..32767>;
 const SHORT: range = -32768..32767;
-using Short2 = integer<SHORT>;         // range constants compose
+type Short2 = integer<SHORT>;         // range constants compose
 let gain: real<0.0..1.0>;
 ```
 
@@ -2195,7 +2212,7 @@ acceptance tests.
 ### 3.28 Nominal type derivation
 
 A new nominal type may derive from an existing one, reusing its representation
-while being a distinct type. `using` stays an exact alias; parentheses make a
+while being a distinct type. `type` stays an exact alias; parentheses make a
 **newtype**:
 
 ```siox
@@ -2461,7 +2478,7 @@ Resolve all names to declarations.
 Implement:
 
 - Module namespace tree.
-- Imports using `using`.
+- Imports with `use`.
 - Type aliases.
 - Public/private visibility.
 - `::` path resolution.
@@ -2473,26 +2490,26 @@ Implement:
 
 ### Name-resolution rules
 
-`using` imports names:
+`use` imports names:
 
 ```siox
-using std::logic::{Bit, Logic};
+use std::logic::{Bit, Logic};
 ```
 
 An import is resolved against the exact module named before `::{...}`. Loading
 a module does not otherwise place its declarations in scope, and an imported
 name may not collide with another import or a declaration in the importing
-module. `pub using` re-exports the imported name as part of the importing
+module. `pub use` re-exports the imported name as part of the importing
 module's interface.
 
 For a file compiled directly by `sioxc`, an ordinary module path maps relative
-to the entry file (`using bus::spi::{Master}` loads `bus/spi.siox`). `std::`
+to the entry file (`use bus::spi::Master;` loads `bus/spi.siox`). `std::`
 paths map relative to the configured `--std` directory instead.
 
 Aliases create local names:
 
 ```siox
-using Word = unsigned[32];
+type Word = unsigned[32];
 ```
 
 Fully-qualified paths remain valid:

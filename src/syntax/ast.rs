@@ -44,7 +44,7 @@ pub struct Ident {
 /// Top-level (module-scope) declarations.
 #[derive(Clone, Debug)]
 pub enum Item {
-    /// `using std::logic::Bit;` — an import or a type alias.
+    /// `use std::logic::Bit;` — an import or a type alias.
     Using(Using),
     /// A module-scope `const`.
     Const(ConstDecl),
@@ -81,34 +81,52 @@ pub enum Item {
     AttrBinding(AttrBinding),
 }
 
-/// `using std::logic::{Bit, ...};` or `using Word = unsigned[32];` (spec 3.4).
+/// `use std::logic::{Bit, ...};` or `type Word = unsigned[32];` (spec 3.4).
 #[derive(Clone, Debug)]
 pub struct Using {
-    /// `pub using ...` re-exports the name from this module.
+    /// `pub use ...` re-exports the names; `pub type ...` exports the alias.
     pub is_pub: bool,
     /// Whether this brings names in or defines an alias.
     pub kind: UsingKind,
-    /// `using` keyword through the terminating `;`.
+    /// `use`/`type` keyword through the terminating `;`.
     pub span: Span,
 }
 
-/// Which of the two `using` forms was written.
+/// An import (`use`) or a transparent type alias (`type`). The two shared
+/// the removed `use` keyword, and still share this node.
 #[derive(Clone, Debug)]
 pub enum UsingKind {
-    /// `using a::b::{c, d};`
+    /// `use a::b::{c, d};`, `use a::b::C;`, `use Local = a::b::C;`
     Import {
         /// The path shared by every imported name (`a::b`).
         base: Path,
         /// Names taken from `base`. A single-name import has one entry.
-        names: Vec<Ident>,
+        names: Vec<ImportName>,
     },
-    /// `using Word = unsigned[32];`
+    /// `type Word = unsigned[32];`
     Alias {
         /// The new name introduced in this module.
         name: Ident,
         /// The type it stands for. An alias is transparent, not nominal.
         ty: Type,
     },
+}
+
+/// One imported name, optionally renamed: `C` in `use a::b::C;`, or
+/// `Local = C` in `use a::b::{Local = C};` (Rust's `C as Local`).
+#[derive(Clone, Debug)]
+pub struct ImportName {
+    /// The name as declared in the base module.
+    pub name: Ident,
+    /// The local name it is bound to, when renamed.
+    pub local: Option<Ident>,
+}
+
+impl ImportName {
+    /// The name this import introduces in the importing module.
+    pub fn binding(&self) -> &Ident {
+        self.local.as_ref().unwrap_or(&self.name)
+    }
 }
 
 /// `const NAME: Ty = expr;` — module scope or inside impl (spec 3.3).

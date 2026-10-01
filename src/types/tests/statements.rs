@@ -42,12 +42,12 @@ fn data_array_index_is_bound_checked() {
     // Packed nominal array families retain the same nonzero labels. Cover both
     // an impl-local declaration and a port, whose metadata is collected
     // on different checker paths.
-    let packed_local = "module m; using std::bits::unsigned; using std::logic::Logic; \
+    let packed_local = "module m; use std::bits::unsigned; use std::logic::Logic; \
             entity E { y: Logic out } impl E { let v: unsigned[15..8]; y = v[IX]; }";
     assert!(!oob(&packed_local.replace("IX", "15")));
     assert!(!oob(&packed_local.replace("IX", "8")));
     assert!(oob(&packed_local.replace("IX", "7")));
-    let packed_port = "module m; using std::bits::unsigned; using std::logic::Logic; \
+    let packed_port = "module m; use std::bits::unsigned; use std::logic::Logic; \
             entity E { v: unsigned[15..8] in, y: Logic out } impl E { y = v[IX]; }";
     assert!(!oob(&packed_port.replace("IX", "15")));
     assert!(oob(&packed_port.replace("IX", "16")));

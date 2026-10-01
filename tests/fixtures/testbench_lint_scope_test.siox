@@ -1,7 +1,7 @@
 module testbench_lint_scope_fixture;
 
-using std::bits::unsigned;
-using std::logic::Bit;
+use std::bits::unsigned;
+use std::logic::Bit;
 
 entity EdgeCounter {
     clk: Bit in,

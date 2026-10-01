@@ -362,15 +362,15 @@ impl<'a> Checker<'a> {
             // mistake for anything else — but the two were indistinguishable,
             // so a misspelled or unimported call passed every stage and failed
             // in the backend as "unsupported call `abs` in testbench
-            // expression", blaming the emitter for a missing `using`.
+            // expression", blaming the emitter for a missing `use`.
             let callee_key = self.path_key(p).unwrap_or_else(|| name.text.clone());
             if !self.callee_is_declared(&callee_key) {
                 self.error_with_help(
                     codes::UNKNOWN_NAME,
                     expr_span(callee),
                     format!("unknown function `{}`", name.text),
-                    "declare it, or import it with `using` — a std function needs \
-                     its module (`using std::math::{abs};`)"
+                    "declare it, or import it with `use` — a std function needs \
+                     its module (`use std::math::abs;`)"
                         .to_string(),
                 );
             }

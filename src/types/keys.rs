@@ -288,7 +288,7 @@ impl<'a> Checker<'a> {
     /// numeric type (`let b: integer<0..255> = 300;` is an error). Literal
     /// bounds only; named ranges and dynamic values are runtime checks later.
     /// The declared bounds of a ranged numeric (`integer<left..right>`),
-    /// resolving any alias chain (`using Byte = integer<0..255>; using Octet =
+    /// resolving any alias chain (`type Byte = integer<0..255>; type Octet =
     /// Byte`). `None` for every other type.
     pub(super) fn declared_range(&self, decl_ty: &Type) -> Option<(i64, i64)> {
         let resolved = self.resolve_alias_type(decl_ty)?;

@@ -1,6 +1,6 @@
 module custom_operator_test;
 
-using std::ops::{Operator};
+use std::ops::Operator;
 
 pub enum Flag {
     Off,

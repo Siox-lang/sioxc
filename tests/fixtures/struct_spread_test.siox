@@ -2,7 +2,7 @@
 // hardware in the native Process runtime.
 module struct_spread;
 
-using std::bits::unsigned;
+use std::bits::unsigned;
 
 struct Pkt { pub a: unsigned[8], pub b: unsigned[8], pub c: unsigned[8] }
 

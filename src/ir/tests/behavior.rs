@@ -231,7 +231,7 @@ fn runtime_index_then_struct_field_reaches_the_scalar_leaf() {
 /// storage offsets, which differ for a descending range.
 fn packed_vector_indices_use_declared_labels_and_storage_offsets() {
     let design = lower_src(
-        "module m; using std::bits::unsigned; using std::logic::Logic;
+        "module m; use std::bits::unsigned; use std::logic::Logic;
              entity E {
                value: unsigned[15..8] in,
                high: Logic out, low: Logic out, whole: unsigned[8] out
@@ -265,7 +265,7 @@ fn packed_vector_indices_use_declared_labels_and_storage_offsets() {
 /// A runtime packed bit read and write updates both the value plane and the
 /// metavalue companion.
 fn runtime_packed_bit_read_write_updates_value_and_metavalue_planes() {
-    let source = "module m; using std::bits::unsigned; using std::logic::{Bit, Logic};
+    let source = "module m; use std::bits::unsigned; use std::logic::{Bit, Logic};
              entity E {
                clk: Bit in, index: unsigned[5] in, data: Logic in, q: Logic out
              }

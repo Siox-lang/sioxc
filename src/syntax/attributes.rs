@@ -120,7 +120,7 @@ fn visible_attrs(module: &Module, modules: &[Module]) -> HashSet<String> {
                 }
                 Item::Using(using) if !only_pub || using.is_pub => {
                     if let UsingKind::Import { names, .. } = &using.kind {
-                        out.extend(names.iter().map(|name| name.text.clone()));
+                        out.extend(names.iter().map(|name| name.binding().text.clone()));
                     }
                 }
                 _ => {}
@@ -810,7 +810,7 @@ mod tests {
     fn reads_see_imported_and_prelude_attributes_only() {
         let (modules, diags) = attached(&[
             "module vendor; pub attr speed: integer for let = 5; pub attr hidden: integer for let = 6;",
-            "module std::prelude; pub using vendor::{speed};",
+            "module std::prelude; pub use vendor::speed;",
             "module m; entity T { y: unsigned[8] out } impl T { let s: unsigned[8]; y = s'speed + s'hidden; }",
         ]);
         assert!(diags.is_empty(), "{diags:#?}");

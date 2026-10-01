@@ -350,14 +350,14 @@ struct Checker<'a> {
     /// `impl Prefix<sym, _> for T` (spec 3.24). std declares which prefixes
     /// exist; the compiler evaluates the known radix ones intrinsically.
     prefix_types: HashMap<String, Vec<String>>,
-    /// `using X = T;` aliases, resolved through when typing.
+    /// `type X = T;` aliases, resolved through when typing.
     aliases: HashMap<String, Type>,
     /// Indexed local -> its inclusive declared labels. Range direction is not
     /// retained in `Ty`: both `unsigned[15..8]` and `unsigned[8..15]` have
     /// length 8, while their valid labels are 8..15 rather than 0..7. The
     /// declaration is therefore authoritative for vectors and data arrays.
     array_bounds: std::cell::RefCell<HashMap<String, (i64, i64)>>,
-    /// Aliases currently being expanded, so a cycle (`using A = B; using B =
+    /// Aliases currently being expanded, so a cycle (`type A = B; type B =
     /// A`) is caught instead of recursing until the stack overflows.
     expanding: std::cell::RefCell<HashSet<String>>,
     /// (type head, method name) -> the method's declared return type, for

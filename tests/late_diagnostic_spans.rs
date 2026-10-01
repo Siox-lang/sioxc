@@ -23,7 +23,7 @@ fn rendered(output: &std::process::Output) -> String {
 #[test]
 fn an_ir_lint_renders_at_the_port_declaration() {
     let source = "module m;\n\
-        using std::bits::{unsigned};\n\
+        use std::bits::unsigned;\n\
         entity E {\n\
           forgotten: unsigned[8] out,\n\
         }\n\
@@ -44,7 +44,7 @@ fn an_ir_lint_renders_at_the_port_declaration() {
 #[test]
 fn a_compile_time_file_error_renders_at_the_let_declaration() {
     let source = "module m;\n\
-        using std::bits::{unsigned};\n\
+        use std::bits::unsigned;\n\
         entity E {}\n\
         impl E {\n\
           let data: unsigned[8][2] = read<unsigned[8]>(\"__siox_missing_span_fixture__.bin\");\n\
@@ -65,7 +65,7 @@ fn a_diagnostic_shows_its_source_line_with_a_caret() {
     // it names. A runtime failure in a generated executable renders through the
     // same helper, so the two cannot drift apart.
     let source = "module m;\n\
-                  using std::bits::{unsigned};\n\
+                  use std::bits::unsigned;\n\
                   entity E { y: unsigned[8] out }\n\
                   impl E { y = nonexistent; }\n";
     let (_, output) = compile("caret", source);

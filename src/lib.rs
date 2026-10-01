@@ -12,7 +12,7 @@
 //! | --------- | ----- | ---- |
 //! | [`diag`]    | 0 | `Span`, `SourceMap`, `Diagnostic`, the error/warning code catalogue |
 //! | [`syntax`]  | 1–2 | lexer, tokens, AST, parser, pretty-printer |
-//! | [`resolve`] | 3 | name resolution, `using` imports, visibility, `DefId`s |
+//! | [`resolve`] | 3 | name resolution, `use` imports, visibility, `DefId`s |
 //! | [`types`]   | 4 | type & kind checking; Phase-2 syntax rejection |
 //! | [`elab`]    | 5 | elaboration: parameter substitution, instance hierarchy |
 //! | [`ir`]      | 6 | source lowering plus canonical process/control, value, layout, and digital simulation IR |

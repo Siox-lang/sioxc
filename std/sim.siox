@@ -1,6 +1,6 @@
 module std::sim;
 
-using std::ops::{Ordering};
+use std::ops::Ordering;
 
 // Simulation time and frequency (modelled on VHDL physical quantities). `time`
 // is a nominal integer measured in femtoseconds; frequency is a nominal real

@@ -48,7 +48,7 @@ fn a_failing_assertion_names_its_line() {
     // The `assert!` is on line 8, indented four spaces, so it starts at
     // column 5.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                #[test] entity T {}\n\
                impl T {\n\
                \x20   let v: unsigned[8] = 1;\n\
@@ -72,7 +72,7 @@ fn a_failing_assertion_names_its_line() {
 #[test]
 fn a_hardware_index_violation_names_the_access_and_declared_direction() {
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                entity Lookup { index: integer in, value: unsigned[8] out }\n\
                impl Lookup {\n\
                \x20   let values: unsigned[8][4..2] = [10, 20, 30];\n\
@@ -99,7 +99,7 @@ fn a_hardware_index_violation_names_the_access_and_declared_direction() {
 #[test]
 fn a_native_index_violation_is_not_a_silent_write() {
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                #[test] entity T {}\n\
                impl T {\n\
                \x20   let values: unsigned[8][4..2] = [10, 20, 30];\n\
@@ -120,8 +120,8 @@ fn a_native_index_violation_is_not_a_silent_write() {
 #[test]
 fn a_hardware_packed_write_checks_the_declared_labels() {
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
-               using std::logic::{Bit};\n\
+               use std::bits::unsigned;\n\
+               use std::logic::Bit;\n\
                entity Register { clk: Bit in, index: integer in, value: unsigned[8] out }\n\
                impl Register {\n\
                \x20   let data: unsigned[15..8] = 0;\n\
@@ -147,7 +147,7 @@ fn a_hardware_packed_write_checks_the_declared_labels() {
 #[test]
 fn a_native_packed_read_is_not_an_implicit_zero() {
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                #[test] entity T {}\n\
                impl T {\n\
                \x20   let data: unsigned[15..8] = 0;\n\
@@ -165,7 +165,7 @@ fn a_native_packed_read_is_not_an_implicit_zero() {
 #[test]
 fn an_untaken_guard_suppresses_a_dynamic_index_check() {
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                entity Lookup { index: integer in, value: unsigned[8] out }\n\
                impl Lookup {\n\
                \x20   let values: unsigned[8][4..2] = [10, 20, 30];\n\
@@ -198,7 +198,7 @@ fn a_range_violation_names_the_assignment() {
     // declaration on line 5, which says which domain was left but not what
     // left it.
     let src = "module m;\n\
-               using std::logic::{Bit};\n\
+               use std::logic::Bit;\n\
                entity E { clk: Bit in, y: integer<0..10> out }\n\
                impl E {\n\
                \x20   let c: integer<0..10> = 0;\n\
@@ -241,7 +241,7 @@ fn a_range_violation_picks_the_assignment_that_broke_it() {
     // updates all read pre-commit state, so on the fifth edge line 8 stores
     // `74 + 30`.
     let src = "module m;\n\
-               using std::logic::{Bit};\n\
+               use std::logic::Bit;\n\
                entity E { clk: Bit in }\n\
                impl E {\n\
                \x20   let level: integer<0..100> = 0;\n\
@@ -283,7 +283,7 @@ fn a_combinational_range_violation_names_its_assignment() {
     //
     // `t` leaves 0..10 in the driver on line 6, at column 5.
     let src = "module m;\n\
-               using std::logic::{Bit};\n\
+               use std::logic::Bit;\n\
                entity E { a: integer<0..10> in, y: integer<0..10> out }\n\
                impl E {\n\
                \x20   let t: integer<0..10> = 0;\n\
@@ -319,7 +319,7 @@ fn one_statement_shared_by_instances_names_the_instance_that_broke_it() {
     //
     // `K = 1` stays inside 0..100; `K = 3` does not.
     let src = "module m;\n\
-               using std::logic::{Bit};\n\
+               use std::logic::Bit;\n\
                entity Cell<K: integer> { clk: Bit in, y: integer<0..100> out }\n\
                impl<K: integer> Cell<K> {\n\
                \x20   let v: integer<0..100> = 0;\n\
@@ -427,7 +427,7 @@ fn an_overwritten_clocked_update_is_not_range_checked() {
     // commit in order, so a later unconditional write to the same target under
     // the same block condition subsumes the earlier one.
     let src = "module m;\n\
-               using std::logic::{Bit};\n\
+               use std::logic::Bit;\n\
                entity E { clk: Bit in, a: integer<0..10> in, y: integer<0..10> out }\n\
                impl E {\n\
                \x20   let t: integer<0..10> = 0;\n\
@@ -500,7 +500,7 @@ fn a_failing_file_read_names_the_declaration() {
     // the way an assertion names its own statement. The declaration is on
     // line 5 at column 5.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                #[test] entity T {}\n\
                impl T {\n\
                \x20   let text: string = read<string>(\"definitely_absent_fixture.txt\");\n\
@@ -524,7 +524,7 @@ fn a_failure_shows_the_source_line_with_a_caret() {
     // is embedded at compile time, so the executable never reads the source
     // and stays right even if the tree moves on.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                #[test] entity T {}\n\
                impl T {\n\
                \x20   let v: unsigned[8] = 1;\n\
@@ -555,7 +555,7 @@ fn a_passing_test_reports_no_location() {
     // The location is per-failure, not a banner: a run with nothing wrong must
     // not mention a source position at all.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                #[test] entity T {}\n\
                impl T {\n\
                \x20   let v: unsigned[8] = 1;\n\

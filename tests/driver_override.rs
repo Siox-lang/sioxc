@@ -47,7 +47,7 @@ fn a_combinational_default_holds_when_its_override_does_not_fire() {
     // branches are exercised in one run, because only the untaken branch
     // proves the default driver is still emitted.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                entity E { a: unsigned[8] in, y: unsigned[8] out }\n\
                impl E {\n\
                \x20   let t: unsigned[8] = 0;\n\
@@ -82,8 +82,8 @@ fn a_clocked_default_holds_when_its_override_does_not_fire() {
     // update in the block writes `t` -- that one is conditional, and subsumes
     // nothing.
     let src = "module m;\n\
-               using std::logic::{Bit};\n\
-               using std::bits::{unsigned};\n\
+               use std::logic::Bit;\n\
+               use std::bits::unsigned;\n\
                entity E { clk: Bit in, a: unsigned[8] in, y: unsigned[8] out }\n\
                impl E {\n\
                \x20   let t: unsigned[8] = 7;\n\
@@ -120,7 +120,7 @@ fn a_replaced_driver_leaves_no_trace_in_the_value() {
     // The pruned case, checked on the value rather than on a diagnostic: the
     // earlier driver is not merely unreported, it is gone.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                entity E { a: unsigned[8] in, y: unsigned[8] out }\n\
                impl E {\n\
                \x20   let t: unsigned[8] = 0;\n\

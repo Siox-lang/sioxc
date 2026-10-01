@@ -26,8 +26,8 @@ use std::process::Command;
 fn testbench_diagnostics(name: &str, body: &str) -> String {
     let src = format!(
         "module m;\n\
-         using std::logic::{{Bit, Logic, ULogic}};\n\
-         using std::bits::{{unsigned}};\n\
+         use std::logic::{{Bit, Logic, ULogic}};\n\
+         use std::bits::{{unsigned}};\n\
          #[test] entity T {{}}\n\
          impl T {{ {body} await 1ns; print!(\"r={{}}\", o); }}\n"
     );
@@ -58,8 +58,8 @@ fn testbench_diagnostics(name: &str, body: &str) -> String {
 fn diagnostics(name: &str, body: &str, out_ty: &str) -> String {
     let src = format!(
         "module m;\n\
-         using std::logic::{{Bit, Logic, ULogic}};\n\
-         using std::bits::{{unsigned}};\n\
+         use std::logic::{{Bit, Logic, ULogic}};\n\
+         use std::bits::{{unsigned}};\n\
          entity E {{ y: {out_ty} out }}\n\
          impl E {{ {body} }}\n"
     );

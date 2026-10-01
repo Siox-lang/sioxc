@@ -474,6 +474,8 @@ fn keyword_kind(s: &str) -> Option<TokenKind> {
     Some(match s {
         "module" => TokenKind::Module,
         "using" => TokenKind::Using,
+        "use" => TokenKind::Use,
+        "type" => TokenKind::Type,
         "pub" => TokenKind::Pub,
         "entity" => TokenKind::Entity,
         "impl" => TokenKind::Impl,

@@ -1002,7 +1002,7 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    /// Resolve an exact `using` alias chain without looping on malformed
+    /// Resolve an exact `use` alias chain without looping on malformed
     /// cyclic declarations (which resolution diagnoses separately).
     pub(super) fn resolve_alias<'t>(&'t self, ty: &'t ast::Type) -> &'t ast::Type {
         let mut ty = ty;

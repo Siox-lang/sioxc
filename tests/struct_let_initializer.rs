@@ -17,7 +17,7 @@ use std::process::Command;
 fn diagnostics(name: &str, body: &str) -> String {
     let src = format!(
         "module m;\n\
-         using std::bits::{{unsigned}};\n\
+         use std::bits::{{unsigned}};\n\
          struct Pair {{ pub a: unsigned[8], pub b: unsigned[8] }}\n\
          fn make(v: unsigned[8]) -> Pair {{ return Pair {{ .a = v, .b = v + 1 }}; }}\n\
          fn branchy(v: unsigned[8]) -> Pair {{\n\

@@ -24,7 +24,7 @@ impl<'a> Lowering<'a> {
             subst_ty = subst_type_params(ty, &self.cur_type_env);
             &subst_ty
         };
-        // Substitute `using X = T;` aliases transitively; an index applied to an alias of
+        // Substitute `type X = T;` aliases transitively; an index applied to an alias of
         // an unconstrained array fills its hole (`string[5]` = `Char[5]`).
         let resolved;
         let ty = match ty {

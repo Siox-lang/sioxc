@@ -64,7 +64,7 @@ fn native_random_services_are_reproducible_across_builds() {
     std::fs::write(
         &source,
         r#"module direct_random_runtime;
-           using std::bits::unsigned;
+           use std::bits::unsigned;
            #[test] entity RandomRuntime {}
            impl RandomRuntime {
                seed(7);
@@ -151,8 +151,8 @@ fn direct_process_runtime_links_without_generated_design_c() {
     std::fs::write(
         &source,
         r#"module direct_runtime;
-           using std::bits::{signed, unsigned};
-           using std::logic::Bit;
+           use std::bits::{signed, unsigned};
+           use std::logic::Bit;
            const EXPECTED_SUM: integer = 3;
            fn doubled(value: integer) -> integer { return value * 2; }
            fn larger(a: unsigned[8], b: unsigned[8]) -> unsigned[8] {
@@ -346,7 +346,7 @@ fn constrained_integer_equality_sign_extends_without_changing_packed_equality() 
     std::fs::write(
         &source,
         r#"module integer_equality;
-           using std::bits::signed;
+           use std::bits::signed;
 
            entity Divider {
                a: integer<-16..15> in,
@@ -415,7 +415,7 @@ fn direct_process_runtime_marshals_foreign_calls_without_generated_design_c() {
     std::fs::write(
         &source,
         r#"module direct_foreign;
-           using std::bits::unsigned;
+           use std::bits::unsigned;
            extern "C" {
                pub fn sqrt(value: real) -> real;
                pub fn scalbln(value: real, exponent: integer) -> real;
@@ -564,8 +564,8 @@ fn native_waveforms_are_reproducible_across_builds() {
     std::fs::write(
         &source,
         r#"module direct_wave;
-           using std::bits::unsigned;
-           using std::logic::Bit;
+           use std::bits::unsigned;
+           use std::logic::Bit;
            entity Counter { clk: Bit in, count: unsigned[4] out }
            impl Counter {
                let value: unsigned[4] = 0;
@@ -667,7 +667,7 @@ fn native_runtime_diagnostics_are_reproducible_across_builds() {
     std::fs::write(
         &source,
         r#"module diagnostic_parity;
-           using std::bits::unsigned;
+           use std::bits::unsigned;
            entity Lookup { index: integer in, value: unsigned[8] out }
            impl Lookup {
                let values: unsigned[8][4..2] = [10, 20, 30];
@@ -787,7 +787,7 @@ fn direct_runtime_formats_typed_process_values() {
     std::fs::write(
         &source,
         r#"module direct_format;
-           using std::bits::{signed, unsigned};
+           use std::bits::{signed, unsigned};
            enum State { Idle, Run }
            struct Sample { pub value: real }
            fn make_char(value: integer) -> Char { return Char(value); }
@@ -861,7 +861,7 @@ fn direct_runtime_dispatches_normalized_match_patterns() {
     std::fs::write(
         &source,
         r#"module direct_match;
-           using std::bits::{signed, unsigned};
+           use std::bits::{signed, unsigned};
            enum State { Idle, Run, Done }
            struct Pair { pub left: signed[8], pub right: unsigned[8] }
            #[test] entity DirectMatch {}
@@ -934,8 +934,8 @@ fn direct_runtime_preserves_metavalue_comparison_rules() {
     std::fs::write(
         &source,
         r#"module direct_meta_compare;
-           using std::bits::unsigned;
-           using std::logic::Bit;
+           use std::bits::unsigned;
+           use std::logic::Bit;
 
            entity Compare {
                select: unsigned[1] in,
@@ -1069,7 +1069,7 @@ fn direct_process_runtime_reports_unreachable_await_conditions() {
     std::fs::write(
         &source,
         r#"module direct_await_deadlock;
-           using std::logic::Bool;
+           use std::logic::Bool;
            #[test] entity DirectAwaitDeadlock {}
            impl DirectAwaitDeadlock {
                let ready: Bool = false;
@@ -1159,7 +1159,7 @@ fn process_local_keeps_its_declared_index_range() {
     std::fs::write(
         &source,
         r#"module process_local_range;
-           using std::logic::Bit;
+           use std::logic::Bit;
            entity Probe { clk: Bit in, observed: Bit out }
            impl Probe { observed = clk; }
            #[test] entity ProcessLocalRange {}
@@ -1282,7 +1282,7 @@ fn native_calls_constants_and_aliases_keep_equal_leaves_module_specific() {
     std::fs::create_dir_all(directory.join("b")).unwrap();
     std::fs::write(
         directory.join("a/math.siox"),
-        "module a::math; pub using Scalar = integer; pub const load_a: integer = 1; \
+        "module a::math; pub type Scalar = integer; pub const load_a: integer = 1; \
          pub const VALUE: integer = 11; \
          pub fn select() -> integer { return VALUE; } \
          pub fn typed(value: Scalar) -> Scalar { return value; }",
@@ -1290,7 +1290,7 @@ fn native_calls_constants_and_aliases_keep_equal_leaves_module_specific() {
     .unwrap();
     std::fs::write(
         directory.join("b/math.siox"),
-        "module b::math; pub using Scalar = real; pub const load_b: integer = 2; \
+        "module b::math; pub type Scalar = real; pub const load_b: integer = 2; \
          pub const VALUE: integer = 22; \
          pub fn select() -> integer { return VALUE; } \
          pub fn typed(value: Scalar) -> Scalar { return value; }",
@@ -1301,8 +1301,8 @@ fn native_calls_constants_and_aliases_keep_equal_leaves_module_specific() {
     std::fs::write(
         &source,
         r#"module identity;
-           using a::math::{load_a};
-           using b::math::{load_b};
+           use a::math::load_a;
+           use b::math::load_b;
            #[test] entity FunctionIdentity {}
            impl FunctionIdentity {
                let left: integer = a::math::select();
@@ -1372,8 +1372,8 @@ fn native_equal_enum_leaves_keep_values_and_symbols_module_specific() {
     std::fs::write(
         &source,
         r#"module identity;
-           using a::state::{load_a};
-           using b::state::{load_b};
+           use a::state::load_a;
+           use b::state::load_b;
            enum Bool { Off = 4, On = 5 }
            struct LeftBox { pub state: a::state::State }
            struct RightBox { pub state: b::state::State }
@@ -1468,8 +1468,8 @@ fn native_equal_struct_leaves_keep_fields_methods_and_defaults_module_specific()
     std::fs::write(
         &source,
         r#"module identity;
-           using a::record::{load_a};
-           using b::record::{load_b};
+           use a::record::load_a;
+           use b::record::load_b;
            struct unsigned { pub marker: integer }
            #[test] entity StructIdentity {}
            impl StructIdentity {
@@ -1551,7 +1551,7 @@ fn native_equal_test_entity_leaves_keep_distinct_roots_and_symbols() {
     let vcd = directory.join("identity.vcd");
     std::fs::write(
         &source,
-        "module identity; using a::root::{load_a}; using b::root::{load_b};",
+        "module identity; use a::root::load_a; use b::root::load_b;",
     )
     .unwrap();
 
@@ -1750,7 +1750,7 @@ fn native_testbench_exchanges_more_than_two_words() {
     std::fs::write(
         &source,
         "module wide_test;
-         using std::bits::unsigned;
+         use std::bits::unsigned;
          #[test] entity WideTest {}
          impl WideTest {
              let value: unsigned[192];
@@ -1793,7 +1793,7 @@ fn native_delayed_assignments_use_default_inertial_waveforms() {
     std::fs::write(
         &source,
         r#"module inertial_waveform;
-           using std::bits::unsigned;
+           use std::bits::unsigned;
            #[test] entity InertialWaveform {}
            impl InertialWaveform {
                let rejected: Bit = '0';
@@ -1996,8 +1996,8 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
     std::fs::write(
         &source,
         "module vcd_values;
-         using std::logic::Logic;
-         using std::bits::unsigned;
+         use std::logic::Logic;
+         use std::bits::unsigned;
          enum State { Idle, Run }
          entity Values {
              scalar: Logic out,
@@ -2403,7 +2403,7 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
         &source,
         format!(
             "module wide_format;
-             using std::math::{{sqrt, pow, floor, PI}};
+             use std::math::{{sqrt, pow, floor, PI}};
              const HALF_PI: real = PI / 2.0;
              const BYTE_RANGE: range = 7..0;
              const NEGATIVE: integer = -8;
@@ -2675,8 +2675,8 @@ fn numeric_match_ranges_preserve_signed_and_real_domains() {
     std::fs::write(
         &source,
         r#"module numeric_match;
-         using std::bits::signed;
-         using std::bits::unsigned;
+         use std::bits::signed;
+         use std::bits::unsigned;
          entity NumericMatch {
              int_value: integer in,
              signed_value: signed[8] in,
@@ -2779,7 +2779,7 @@ fn hardware_block_locals_are_scoped_immediate_values() {
     std::fs::write(
         &source,
         r#"module hardware_block_locals;
-         using std::bits::unsigned;
+         use std::bits::unsigned;
          struct Pair { pub first: unsigned[8], pub second: unsigned[8] }
          entity LocalHardware {
              clk: Bit in,
@@ -2934,7 +2934,7 @@ fn nested_generic_type_arguments_build_and_run() {
     std::fs::write(
         &source,
         r#"module nested_generic_types;
-         using std::bits::unsigned;
+         use std::bits::unsigned;
          struct Box<T> { pub value: T }
          entity Pass<T> { input: T in, output: T out }
          impl<T> Pass<T> { output = input; }

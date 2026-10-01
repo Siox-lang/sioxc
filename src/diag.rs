@@ -361,7 +361,7 @@ pub mod codes {
     /// attributes). Phase 1 rejects these deliberately rather than accepting
     /// them silently.
     pub const PHASE2_SYNTAX: &str = "E-P010";
-    /// A `using` naming a module or item that does not exist.
+    /// A `use` naming a module or item that does not exist.
     pub const UNRESOLVED_IMPORT: &str = "E-P011";
     /// A `let` binding without a type annotation (`let x = ...`): Phase 1 is
     /// type-strict — every binding declares its type (`let x: T [= ...]`).
@@ -376,7 +376,7 @@ pub mod codes {
     /// A function that recursed past the inline depth limit: hardware
     /// recursion must terminate at elaboration, so this has no finite circuit.
     pub const UNBOUNDED_RECURSION: &str = "E-P015";
-    /// A qualified path or `using` that accesses a private declaration from a
+    /// A qualified path or `use` that accesses a private declaration from a
     /// different source module.
     pub const PRIVATE_IMPORT: &str = "E-P016";
     /// An expression with no hardware form — a chained runtime index
@@ -457,7 +457,7 @@ pub mod codes {
     pub const UNUSED_SIGNAL: &str = "W-P003";
     /// A declared parameter nothing uses.
     pub const UNUSED_PARAM: &str = "W-P004";
-    /// A `using` whose name is never referenced.
+    /// A `use` whose name is never referenced.
     pub const UNUSED_IMPORT: &str = "W-P005";
     /// A match arm fully covered by earlier arms.
     pub const UNREACHABLE_MATCH_ARM: &str = "W-P006";

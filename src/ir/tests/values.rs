@@ -626,10 +626,10 @@ fn ranged_integer_assignment_can_change_storage_width() {
 fn chained_aliases_retain_terminal_signal_representation() {
     let design = lower_src(
         "module m;\n\
-             using Small = integer<-16..15>;\n\
-             using Alias = Small;\n\
-             using Chars = Char[];\n\
-             using Text = Chars;\n\
+             type Small = integer<-16..15>;\n\
+             type Alias = Small;\n\
+             type Chars = Char[];\n\
+             type Text = Chars;\n\
              entity E { x: Alias in, y: Alias out, }\n\
              impl E { let text: Text[3] = \"abc\"; y = x; }\n",
     );
@@ -657,8 +657,8 @@ fn chained_aliases_retain_terminal_signal_representation() {
 fn foreign_integer_calls_retain_signed_abi_types() {
     let design = lower_src(
         "module m;\n\
-             using CWord = integer;\n\
-             using CInteger = CWord;\n\
+             type CWord = integer;\n\
+             type CInteger = CWord;\n\
              extern \"C\" { pub fn labs(v: CInteger) -> CInteger; }\n\
              entity E {\n\
                  x: integer<-128..127> in,\n\
@@ -752,7 +752,7 @@ fn nested_runtime_access_on_a_block_local_stays_storage_free() {
 #[test]
 /// A runtime packed index on a block local stays storage-free.
 fn runtime_packed_index_on_a_block_local_stays_storage_free() {
-    let source = "module m; using std::bits::unsigned; using std::logic::{Bit, Logic};
+    let source = "module m; use std::bits::unsigned; use std::logic::{Bit, Logic};
              entity E {
                enable: Bit in, index: unsigned[5] in, y: Logic out
              }

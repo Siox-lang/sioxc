@@ -24,8 +24,8 @@ fn native_tests_own_and_read_the_current_runtime_files() {
     std::fs::write(
         &source,
         "module runtime_io;\n\
-         using std::text::{string, unicode};\n\
-         using Text = string;\n\
+         use std::text::{string, unicode};\n\
+         type Text = string;\n\
          entity Rom { data: unsigned[8] out, wide: unsigned[128] out }\n\
          impl Rom {\n\
            let image: unsigned[8][1] = read<unsigned[8]>(\"hardware.bin\");\n\
@@ -174,7 +174,7 @@ fn runtime_string_indices_are_checked_against_the_loaded_length() {
     std::fs::write(
         &source,
         "module runtime_text_index;\n\
-         using std::text::{string, unicode};\n\
+         use std::text::{string, unicode};\n\
          #[test] entity RuntimeTextIndex {}\n\
          impl RuntimeTextIndex {\n\
          \x20   let message: string = read<string>(\"message.txt\");\n\

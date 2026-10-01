@@ -23,9 +23,9 @@
 use std::process::Command;
 
 const PRELUDE: &str = "module m;\n\
-     using std::bits::{unsigned};\n\
-     using std::logic::{Logic};\n\
-     using std::ops::{Operator};\n\
+     use std::bits::unsigned;\n\
+     use std::logic::Logic;\n\
+     use std::ops::Operator;\n\
      struct Vec2 { x: unsigned[8], y: unsigned[8] }\n\
      impl Operator<\"*\", unsigned[8], Vec2> for Vec2 {\n\
          fn apply(self, rhs: unsigned[8]) -> Vec2 { return Vec2 { .x = self.x * rhs, .y = self.y * rhs }; }\n\
@@ -140,8 +140,8 @@ fn an_aggregate_struct_is_still_reported() {
     // behind it. Excluding all structs from this check would leave the failed
     // operator dispatch silent again.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
-               using std::ops::{Operator};\n\
+               use std::bits::unsigned;\n\
+               use std::ops::Operator;\n\
                struct Vec2 { x: unsigned[8], y: unsigned[8] }\n\
                impl Operator<\"*\", unsigned[8], Vec2> for Vec2 {\n\
                    fn apply(self, rhs: unsigned[8]) -> Vec2 { return Vec2 { .x = self.x * rhs, .y = self.y * rhs }; }\n\

@@ -6,12 +6,12 @@ module std::numeric;
 // the range dips below zero); a constant outside the range is a compile
 // error, and dynamic range checking is a later simulation check.
 
-pub using Byte = integer<0..255>;
-pub using Short = integer<-32768..32767>;
-pub using Int = integer<-2147483648..2147483647>;
-pub using Long = integer<-9223372036854775808..9223372036854775807>;
-pub using Natural = integer<0..9223372036854775807>;
-pub using Positive = integer<1..9223372036854775807>;
+pub type Byte = integer<0..255>;
+pub type Short = integer<-32768..32767>;
+pub type Int = integer<-2147483648..2147483647>;
+pub type Long = integer<-9223372036854775808..9223372036854775807>;
+pub type Natural = integer<0..9223372036854775807>;
+pub type Positive = integer<1..9223372036854775807>;
 
 // Address-width helper (SV's $clog2): the number of bits needed to index
 // `n` items. Recursive; const-evaluates in width positions

@@ -6026,8 +6026,8 @@ mod tests {
                }\n\
              }",
             "module std::logic; pub enum Bool { false, true }",
-            "module std::attrs; using std::logic::{Bool}; pub attr test: Bool for entity;",
-            "module std::ops; using std::logic::{Bool}; pub enum Ordering { Less, Equal, Greater } \
+            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity;",
+            "module std::ops; use std::logic::Bool; pub enum Ordering { Less, Equal, Greater } \
              pub trait Boolean { fn as_bool(self) -> Bool; } \
              pub trait Operator<op: string, input, output> { fn apply(self, rhs: input) -> output {} } \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } } \
@@ -6036,9 +6036,9 @@ mod tests {
                fn apply(self) -> T[] { let result: T[] = self; \
                  for i in self'range { result[i] = not self[i]; } return result; } } \
              pub trait Suffix<symbol: string, input> { fn suffix(data: input) {} }",
-            "module std::prelude; pub using std::logic::{Bool}; pub using std::attrs::{test}; \
-             pub using std::ops::{Boolean, Operator};",
-            "module std::sim; using std::ops::Suffix; pub struct time(integer); \
+            "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
+             pub use std::ops::{Boolean, Operator};",
+            "module std::sim; use std::ops::Suffix; pub struct time(integer); \
              impl Suffix<\"ns\", integer> for time { \
                fn suffix(value: integer) -> time { return time(value * 37); } \
              }",
@@ -6419,12 +6419,12 @@ mod tests {
                }\n\
              }",
             "module std::logic; pub enum Bool { false, true }",
-            "module std::attrs; using std::logic::{Bool}; pub attr test: Bool for entity;",
-            "module std::ops; using std::logic::{Bool}; pub trait Boolean { fn as_bool(self) -> Bool; } \
+            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity;",
+            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
-            "module std::text; pub using string = Char[];",
-            "module std::prelude; pub using std::logic::{Bool}; pub using std::attrs::{test}; \
-             pub using std::ops::{Boolean}; pub using std::text::{string};",
+            "module std::text; pub type string = Char[];",
+            "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
+             pub use std::ops::Boolean; pub use std::text::string;",
         ];
         let mut sink = DiagnosticSink::new();
         let modules = sources
@@ -6523,11 +6523,11 @@ mod tests {
                stimulus: process {}\n\
              }",
             "module std::logic; pub enum Bool { false, true }",
-            "module std::attrs; using std::logic::{Bool}; pub attr test: Bool for entity;",
-            "module std::ops; using std::logic::{Bool}; pub trait Boolean { fn as_bool(self) -> Bool; } \
+            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity;",
+            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
-            "module std::prelude; pub using std::logic::{Bool}; pub using std::attrs::{test}; \
-             pub using std::ops::{Boolean};",
+            "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
+             pub use std::ops::Boolean;",
         ];
         let mut sink = DiagnosticSink::new();
         let modules = sources
@@ -6582,9 +6582,9 @@ mod tests {
             "module gates; entity Gate { input: Bool in, output: Bool out } \
              impl Gate { output = input; }",
             "module std::logic; pub enum Bool { false, true }",
-            "module std::ops; using std::logic::{Bool}; pub trait Boolean { fn as_bool(self) -> Bool; } \
+            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
-            "module std::prelude; pub using std::logic::{Bool}; pub using std::ops::{Boolean};",
+            "module std::prelude; pub use std::logic::Bool; pub use std::ops::Boolean;",
         ];
         let mut sink = DiagnosticSink::new();
         let modules = sources
@@ -6639,12 +6639,12 @@ mod tests {
              impl Smoke { let observed: integer = 0; \
                run: process { observed = choose(observed, EXPECTED); } }",
             "module std::logic; pub enum Bool { false, true }",
-            "module std::attrs; using std::logic::{Bool}; pub attr test: Bool for entity;",
-            "module std::ops; using std::logic::{Bool}; \
+            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity;",
+            "module std::ops; use std::logic::Bool; \
              pub trait Boolean { fn as_bool(self) -> Bool; } \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
-            "module std::prelude; pub using std::logic::{Bool}; \
-             pub using std::attrs::{test}; pub using std::ops::{Boolean};",
+            "module std::prelude; pub use std::logic::Bool; \
+             pub use std::attrs::test; pub use std::ops::Boolean;",
         ];
         let mut sink = DiagnosticSink::new();
         let modules = sources
@@ -6715,8 +6715,8 @@ mod tests {
                } \
              }",
             "module std::logic; pub enum Bool { false, true }",
-            "module std::attrs; using std::logic::{Bool}; pub attr test: Bool for entity;",
-            "module std::ops; using std::logic::{Bool}; \
+            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity;",
+            "module std::ops; use std::logic::Bool; \
              pub trait Boolean { fn as_bool(self) -> Bool; } \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
         ];

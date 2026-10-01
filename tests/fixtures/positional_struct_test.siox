@@ -3,7 +3,7 @@
 // explicit and typed-positional forms must still agree.
 module positional_struct;
 
-using std::bits::unsigned;
+use std::bits::unsigned;
 
 struct Pkt { pub a: unsigned[8], pub b: unsigned[8] }
 

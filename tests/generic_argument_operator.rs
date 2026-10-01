@@ -32,7 +32,7 @@ fn parse_errors(src: &str) -> Vec<String> {
 fn in_generic(arg: &str) -> String {
     format!(
         "module m;\n\
-         using std::bits::{{unsigned}};\n\
+         use std::bits::{{unsigned}};\n\
          entity Bank<W: integer> {{ y: unsigned[8] out }}\n\
          impl<W: integer> Bank<W> {{ y = W; }}\n\
          entity Use {{ y: unsigned[8] out }}\n\
@@ -84,7 +84,7 @@ fn a_bound_closing_on_a_shift_token_still_parses() {
     // `Meter<8>>` ends on a single `>>` token that closes both lists. Treating
     // it as a shift operator here rejected every generic bound in the corpus.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                trait Meter<W: integer> { fn raw(self) -> unsigned[8]; }\n\
                struct Wrap<T: Meter<8>> { inner: T }\n";
     let errors = parse_errors(src);
@@ -97,7 +97,7 @@ fn a_bound_closing_on_a_shift_token_still_parses() {
 #[test]
 fn nested_generic_type_arguments_parse_without_aliases() {
     let source = "module m;\n\
-                  using std::bits::{unsigned};\n\
+                  use std::bits::unsigned;\n\
                   struct Box<T> { value: T }\n\
                   struct Pair<T, U> { left: T, right: U }\n\
                   struct Nested<T> {\n\

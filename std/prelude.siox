@@ -1,15 +1,15 @@
 module std::prelude;
 
-// The prelude: names in scope in EVERY file, no `using` needed — like VHDL's
+// The prelude: names in scope in EVERY file, no `use` needed — like VHDL's
 // implicit std.standard or Rust's prelude. The compiler auto-loads this
 // module (and, transitively, the modules it imports), so the core types
 // always carry their std semantics: `signed` compares signed, `Logic` has its
 // truth tables, `10ns` works bare. Deliberately tiny — everything else
 // (Complex, Byte..Positive, encodings, ...) stays behind explicit imports.
 
-pub using std::logic::{Bit, Logic, Bool};
-pub using std::bits::{unsigned, signed, sext};
-pub using std::ops::{Boolean, Ordering, Range, Index, IndexAssign, New, From, Resolve};
-pub using std::attrs::{test, precedence, allow, warn, deny, forbid};
-pub using std::text::{string};
-pub using std::sim::{time, frequency};
+pub use std::logic::{Bit, Logic, Bool};
+pub use std::bits::{unsigned, signed, sext};
+pub use std::ops::{Boolean, Ordering, Range, Index, IndexAssign, New, From, Resolve};
+pub use std::attrs::{test, precedence, allow, warn, deny, forbid};
+pub use std::text::string;
+pub use std::sim::{time, frequency};
