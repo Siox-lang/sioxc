@@ -119,6 +119,9 @@ pub struct Parser<'a> {
     /// Whether the depth limit has already been reported, so one over-deep
     /// expression yields one diagnostic rather than one per level.
     depth_reported: bool,
+    /// Inside a process or function body, where `for` and `if` are control
+    /// flow rather than structure and so take no label.
+    sequential: u32,
 }
 
 impl<'a> Parser<'a> {
@@ -149,6 +152,7 @@ impl<'a> Parser<'a> {
             custom_operators: HashMap::new(),
             depth: 0,
             depth_reported: false,
+            sequential: 0,
         }
     }
 
@@ -869,6 +873,15 @@ impl<'a> Parser<'a> {
                 "only functions may be `pub` inside an implementation",
             );
         }
+        // `update: process { ... }`, `stages: for ...`, `tap: if ...` — a
+        // VHDL-style label. Nothing else at impl-item level starts with an
+        // identifier and a single `:`.
+        let label = self.parse_label();
+        if let Some(label) = label.clone() {
+            if !self.at(TokenKind::Process) {
+                return Some(ImplItem::Stmt(self.parse_labelled_stmt(label)));
+            }
+        }
         match self.kind() {
             TokenKind::Const => Some(ImplItem::Const(self.parse_const(false))),
             // `let value: T = e;` is state/signal; `fn send(self, ...) { ... }`
@@ -886,12 +899,25 @@ impl<'a> Parser<'a> {
                 Some(ImplItem::Fn(self.parse_fn_after_name(start, name, is_pub)))
             }
             TokenKind::Process => {
-                let start = self.span();
+                let start = label.as_ref().map_or(self.span(), |label| label.span);
                 self.bump();
-                let name = self.at(TokenKind::Ident).then(|| self.parse_ident());
+                let mut label = label;
+                if self.at(TokenKind::Ident) {
+                    // The removed `process update { ... }` spelling: say what
+                    // replaces it and keep the name as the label.
+                    let old = self.parse_ident();
+                    self.sink.emit(
+                        Diagnostic::error("a process name goes in front, as a label")
+                            .at(old.span)
+                            .help(format!("write `{}: process {{ ... }}`", old.text)),
+                    );
+                    label.get_or_insert(old);
+                }
+                self.sequential += 1;
                 let body = self.parse_block();
+                self.sequential -= 1;
                 Some(ImplItem::Process(ProcessDecl {
-                    name,
+                    label,
                     span: start.to(body.span),
                     body,
                 }))
@@ -910,6 +936,56 @@ impl<'a> Parser<'a> {
             }
             _ => Some(ImplItem::Stmt(self.parse_stmt())),
         }
+    }
+
+    /// Parse an optional `label:` in front of a labelled construct.
+    fn parse_label(&mut self) -> Option<Ident> {
+        if self.at(TokenKind::Ident) && self.kind_at(self.pos + 1) == &TokenKind::Colon {
+            let label = self.parse_ident();
+            self.bump(); // `:`
+            return Some(label);
+        }
+        None
+    }
+
+    /// Parse the statement after `label:`. A structural `for` or `if` and any
+    /// assignment keep the label; anything else reports it and parses on
+    /// without it.
+    fn parse_labelled_stmt(&mut self, label: Ident) -> Stmt {
+        if self.sequential > 0 && (self.at(TokenKind::For) || self.at(TokenKind::If)) {
+            self.sink.emit(
+                Diagnostic::error("a `for` or `if` inside a process or function takes no label")
+                    .at(label.span)
+                    .help(
+                        "here it is control flow, not structure; only a `for` or `if` \
+                         outside any process names a hierarchy scope",
+                    ),
+            );
+            return self.parse_stmt();
+        }
+        let mut statement = self.parse_stmt();
+        let (slot, span) = match &mut statement {
+            Stmt::For {
+                label: slot, span, ..
+            }
+            | Stmt::Assign {
+                label: slot, span, ..
+            } => (slot, span),
+            Stmt::If(iff) => (&mut iff.label, &mut iff.span),
+            _ => {
+                let what = if self.sequential > 0 {
+                    "inside a process or function, only an assignment can be labelled"
+                } else {
+                    "only a `process`, a structural `for` or `if`, or an assignment can be \
+                     labelled"
+                };
+                self.error_at(label.span, what);
+                return statement;
+            }
+        };
+        *span = label.span.to(*span);
+        *slot = Some(label);
+        statement
     }
 
     /// Parse the rest of a `let` once its name has been consumed.
@@ -951,7 +1027,10 @@ impl<'a> Parser<'a> {
         };
         self.parse_where_into(&mut generics);
         let body = if self.at(TokenKind::LBrace) {
-            Some(self.parse_block())
+            self.sequential += 1;
+            let body = self.parse_block();
+            self.sequential -= 1;
+            Some(body)
         } else {
             self.expect(TokenKind::Semi, "after a method signature");
             None
@@ -1156,6 +1235,9 @@ impl<'a> Parser<'a> {
 
     /// Parse one statement.
     fn parse_stmt(&mut self) -> Stmt {
+        if let Some(label) = self.parse_label() {
+            return self.parse_labelled_stmt(label);
+        }
         match self.kind() {
             TokenKind::Let => {
                 let start = self.span();
@@ -1227,6 +1309,7 @@ impl<'a> Parser<'a> {
             };
             self.expect(TokenKind::Semi, "after an assignment");
             Stmt::Assign {
+                label: None,
                 target: lhs,
                 value,
                 after,
@@ -1245,6 +1328,7 @@ impl<'a> Parser<'a> {
                 span,
             };
             Stmt::Assign {
+                label: None,
                 target: lhs,
                 value,
                 after: None,
@@ -1288,6 +1372,7 @@ impl<'a> Parser<'a> {
             None
         };
         IfStmt {
+            label: None,
             cond,
             then,
             else_,
@@ -1357,6 +1442,7 @@ impl<'a> Parser<'a> {
         if self.eat(TokenKind::Eq) {
             let value = self.parse_expr(false);
             Stmt::Assign {
+                label: None,
                 target: lhs,
                 value,
                 after: None,
@@ -1376,6 +1462,7 @@ impl<'a> Parser<'a> {
         let range = self.parse_expr(true);
         let body = self.parse_block();
         Stmt::For {
+            label: None,
             var,
             range,
             body,
@@ -3012,7 +3099,7 @@ mod tests {
     /// An impl body carries state and an explicit `process` block.
     fn impl_with_state_and_explicit_process() {
         let m = parse_ok(
-            "module m;\nimpl<W: integer> Counter<W> {\n  const MAX: unsigned[W] = (1 << W) - 1;\n  let value: unsigned[W] = 0;\n  process update {\n    if clk.rising() {\n      if rst == '1' {\n        value = 0;\n      } else {\n        value = value + 1;\n      }\n    }\n  }\n  count = value;\n}\n",
+            "module m;\nimpl<W: integer> Counter<W> {\n  const MAX: unsigned[W] = (1 << W) - 1;\n  let value: unsigned[W] = 0;\n  update: process {\n    if clk.rising() {\n      if rst == '1' {\n        value = 0;\n      } else {\n        value = value + 1;\n      }\n    }\n  }\n  count = value;\n}\n",
         );
         let Item::Impl(i) = &m.items[0] else {
             panic!("expected impl")
@@ -3026,11 +3113,134 @@ mod tests {
             panic!("expected process")
         };
         assert_eq!(
-            process.name.as_ref().map(|name| name.text.as_str()),
+            process.label.as_ref().map(|label| label.text.as_str()),
             Some("update")
         );
         assert!(matches!(process.body.stmts[0], Stmt::If(_)));
         assert!(matches!(i.items[3], ImplItem::Stmt(Stmt::Assign { .. })));
+    }
+
+    /// `process update { ... }` was the old spelling of a labelled process.
+    /// One error naming the replacement, and the name still becomes the label
+    /// so later stages see the same process.
+    #[test]
+    fn a_process_name_is_reported_as_a_label() {
+        let src = "module m;\nimpl E {\n  process update { q = d; }\n}\n";
+        let diags = diagnostics(src);
+        assert_eq!(diags.len(), 1, "got {diags:#?}");
+        assert!(diags[0].message.contains("goes in front, as a label"));
+        assert!(diags[0]
+            .help
+            .as_ref()
+            .is_some_and(|h| h.contains("update: process {")));
+        let (m, _) = parse(src);
+        let Item::Impl(i) = &m.items[0] else {
+            panic!("expected impl")
+        };
+        let ImplItem::Process(process) = &i.items[0] else {
+            panic!("expected process")
+        };
+        assert_eq!(
+            process.label.as_ref().map(|l| l.text.as_str()),
+            Some("update")
+        );
+    }
+
+    /// A structural `for` or `if` takes a label, at the top of an impl or
+    /// nested inside another generate; the label covers a whole `if`/`else`.
+    #[test]
+    fn structural_for_and_if_take_labels() {
+        let m = parse_ok(
+            "module m;\nimpl E {\n  stages: for k in 0..2 {\n    inner: if k == 0 { let s: S; }\n  }\n  tap: if DEBUG { let t: P; } else if X { let t: Q; } else { let t: R; }\n}\n",
+        );
+        let Item::Impl(i) = &m.items[0] else {
+            panic!("expected impl")
+        };
+        let ImplItem::Stmt(Stmt::For { label, body, .. }) = &i.items[0] else {
+            panic!("expected a labelled for")
+        };
+        assert_eq!(label.as_ref().map(|l| l.text.as_str()), Some("stages"));
+        assert!(
+            matches!(&body.stmts[0], Stmt::If(iff) if iff.label.as_ref().is_some_and(|l| l.text == "inner"))
+        );
+        let ImplItem::Stmt(Stmt::If(iff)) = &i.items[1] else {
+            panic!("expected a labelled if")
+        };
+        assert_eq!(iff.label.as_ref().map(|l| l.text.as_str()), Some("tap"));
+        let Some(ElseBranch::If(chained)) = iff.else_.as_deref() else {
+            panic!("expected an else-if")
+        };
+        assert!(chained.label.is_none(), "one label covers the whole chain");
+        assert_eq!(
+            crate::syntax::pretty::print_module(&m),
+            "module m;\n\nimpl E {\n    stages: for k in 0..2 {\n        inner: if k == 0 {\n            let s: S;\n        }\n    }\n    tap: if DEBUG {\n        let t: P;\n    } else if X {\n        let t: Q;\n    } else {\n        let t: R;\n    }\n}\n",
+        );
+    }
+
+    /// Any assignment takes a label, concurrent or inside a process, compound
+    /// and delayed forms included; the printer keeps it.
+    #[test]
+    fn assignments_take_labels() {
+        let src = "module m;\n\nimpl E {\n    sum: y = a + b;\n    count: process {\n        step: n = n + 1;\n        bump: n += 1;\n        late: clk = not clk after 5ns;\n        if rst == '1' {\n            clear: n = 0;\n        }\n    }\n}\n";
+        let m = parse_ok(src);
+        let Item::Impl(i) = &m.items[0] else {
+            panic!("expected impl")
+        };
+        assert!(
+            matches!(&i.items[0], ImplItem::Stmt(Stmt::Assign { label: Some(l), .. }) if l.text == "sum")
+        );
+        let ImplItem::Process(process) = &i.items[1] else {
+            panic!("expected process")
+        };
+        let labels: Vec<_> = process
+            .body
+            .stmts
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Assign { label, .. } => label.as_ref().map(|l| l.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels, ["step", "bump", "late"]);
+        let printed = crate::syntax::pretty::print_module(&m);
+        for line in [
+            "sum: y = a + b;",
+            "step: n = n + 1;",
+            "clear: n = 0;",
+            "late: clk = not clk after 5ns;",
+        ] {
+            assert!(printed.contains(line), "missing `{line}` in:\n{printed}");
+        }
+    }
+
+    /// Inside a process or function, `for` and `if` are control flow, not
+    /// structure, so they take no label.
+    #[test]
+    fn sequential_for_and_if_take_no_label() {
+        for src in [
+            "module m;\nimpl E {\n  process { steps: for k in 0..2 { q = d; } }\n}\n",
+            "module m;\nimpl E {\n  p: process { check: if a { q = d; } }\n}\n",
+            "module m;\nfn f() -> Bit { pick: if a { return '1'; } return '0'; }\n",
+        ] {
+            let diags = diagnostics(src);
+            assert_eq!(diags.len(), 1, "for:\n{src}\ngot {diags:#?}");
+            assert!(diags[0].message.contains("takes no label"));
+        }
+    }
+
+    /// Labels are optional, and a `let` takes none: it is named already.
+    #[test]
+    fn labels_are_optional_and_only_on_processes() {
+        let m = parse_ok("module m;\nimpl E {\n  process { q = d; }\n  y = a;\n}\n");
+        let Item::Impl(i) = &m.items[0] else {
+            panic!("expected impl")
+        };
+        assert!(matches!(&i.items[0], ImplItem::Process(p) if p.label.is_none()));
+        let diags = diagnostics("module m;\nimpl E {\n  tap: let t: Bit;\n}\n");
+        assert!(
+            diags.iter().any(|d| d.message.contains("can be labelled")),
+            "got {diags:#?}"
+        );
     }
 
     #[test]

@@ -363,11 +363,49 @@ fn impl_member(item: &ImplItem) -> Option<(&String, Span, &'static str)> {
         ImplItem::Fn(function) => (&function.name.text, function.name.span, "method"),
         ImplItem::ModeField { name, .. } => (&name.text, name.span, "mode field"),
         ImplItem::Process(process) => {
-            let name = process.name.as_ref()?;
-            (&name.text, name.span, "process")
+            let label = process.label.as_ref()?;
+            (&label.text, label.span, "process")
         }
+        ImplItem::Stmt(Stmt::For {
+            label: Some(label), ..
+        }) => (&label.text, label.span, "generate"),
+        ImplItem::Stmt(Stmt::If(IfStmt {
+            label: Some(label), ..
+        })) => (&label.text, label.span, "generate"),
+        ImplItem::Stmt(Stmt::Assign {
+            label: Some(label), ..
+        }) => (&label.text, label.span, "assignment"),
         ImplItem::Stmt(_) => return None,
     })
+}
+
+/// Every assignment label in `block`, nested blocks included, in source order.
+fn assignment_labels<'b>(block: &'b Block, out: &mut Vec<&'b Ident>) {
+    for statement in &block.stmts {
+        match statement {
+            Stmt::Assign {
+                label: Some(label), ..
+            } => out.push(label),
+            Stmt::If(iff) => assignment_labels_in_if(iff, out),
+            Stmt::For { body, .. } => assignment_labels(body, out),
+            Stmt::Match(m) => {
+                for arm in &m.arms {
+                    assignment_labels(&arm.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// [`assignment_labels`] over every branch of an `if` chain.
+fn assignment_labels_in_if<'b>(iff: &'b IfStmt, out: &mut Vec<&'b Ident>) {
+    assignment_labels(&iff.then, out);
+    match iff.else_.as_deref() {
+        Some(ElseBranch::Block(block)) => assignment_labels(block, out),
+        Some(ElseBranch::If(inner)) => assignment_labels_in_if(inner, out),
+        None => {}
+    }
 }
 
 /// Semantic owner of an inherent impl. Applied views are overloaded by their
@@ -1459,7 +1497,21 @@ impl<'a> Resolver<'a> {
             }
             ImplItem::Fn(f) => self.resolve_fn(f),
             ImplItem::ModeField { .. } => {}
-            ImplItem::Process(process) => self.resolve_block(&process.body),
+            ImplItem::Process(process) => {
+                // Assignment labels inside a process share its namespace.
+                let mut labels = Vec::new();
+                assignment_labels(&process.body, &mut labels);
+                let owner = process.label.as_ref().map_or_else(
+                    || "process".to_string(),
+                    |label| format!("process `{}`", label.text),
+                );
+                self.check_duplicate_names(
+                    labels.into_iter().map(|label| (&label.text, label.span)),
+                    "assignment label",
+                    &owner,
+                );
+                self.resolve_block(&process.body)
+            }
             ImplItem::Stmt(s) => self.resolve_stmt(s),
         }
     }
@@ -2682,8 +2734,8 @@ mod tests {
     fn named_processes_share_the_entity_member_namespace() {
         let sink = diagnostics(
             "module m;\nentity Device {}\n\
-             impl Device { process drive {} }\n\
-             impl Device { process drive {} }\n",
+             impl Device { drive: process {} }\n\
+             impl Device { drive: process {} }\n",
         );
         let duplicates: Vec<_> = sink
             .diagnostics()
@@ -2702,6 +2754,42 @@ mod tests {
             .labels
             .iter()
             .any(|label| label.message.contains("first declared here as process")));
+    }
+
+    #[test]
+    /// A generate label is a member name too: it names a hierarchy scope, so
+    /// it cannot share its name with a signal or a process.
+    fn a_generate_label_shares_the_member_namespace() {
+        for src in [
+            "module m;\nentity Device {}\nimpl Device { let stages: Bit; stages: for k in 0..1 {} }\n",
+            "module m;\nentity Device {}\nimpl Device { tap: process {} tap: if 1 == 1 {} }\n",
+        ] {
+            let sink = diagnostics(src);
+            assert!(
+                sink.diagnostics()
+                    .iter()
+                    .any(|d| d.code == Some(codes::DUPLICATE_ITEM)),
+                "want a duplicate for:\n{src}"
+            );
+        }
+    }
+
+    #[test]
+    /// Assignment labels inside one process share that process's namespace;
+    /// the same label in two processes is fine.
+    fn assignment_labels_are_unique_within_a_process() {
+        let sink = diagnostics(
+            "module m;\nentity Device {}\nimpl Device {\n\
+             p: process { step: n = 1; if a { step: n = 2; } }\n\
+             q: process { step: n = 3; }\n}\n",
+        );
+        let duplicates: Vec<_> = sink
+            .diagnostics()
+            .iter()
+            .filter(|d| d.code == Some(codes::DUPLICATE_ITEM))
+            .collect();
+        assert_eq!(duplicates.len(), 1, "got {duplicates:#?}");
+        assert!(duplicates[0].message.contains("assignment label `step`"));
     }
 
     #[test]

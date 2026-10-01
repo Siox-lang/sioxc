@@ -1,6 +1,7 @@
 //! Aggregate literal inspection and generate expansion.
 
 use super::*;
+use crate::elab::GenPath;
 
 /// Flatten a struct literal into `suffix -> value` (".valid", ".inner.x"),
 /// named the way a composite port's leaves are.
@@ -89,7 +90,7 @@ pub(in crate::ir) fn instance_let_parts(
 pub(in crate::ir) fn gather_generate(
     s: &ast::Stmt,
     env: &HashMap<String, i64>,
-    loop_idx: &[i64],
+    at: &GenPath,
     entities: &HashMap<DefId, &ast::EntityDecl>,
     resolved: &Resolved,
     fns: &FunctionIndex<'_>,
@@ -98,16 +99,8 @@ pub(in crate::ir) fn gather_generate(
     match s {
         ast::Stmt::Let(l) => {
             if let Some((cty, args)) = instance_let_parts(l, entities, resolved) {
-                // A generated instance (inside a loop) gets the enclosing loop
-                // indices appended for a unique name, matching the elaborator's
-                // `<name>_<i>` convention.
-                let name = if loop_idx.is_empty() {
-                    l.name.text.clone()
-                } else {
-                    let idx: Vec<String> = loop_idx.iter().map(|v| v.to_string()).collect();
-                    format!("{}_{}", l.name.text, idx.join("_"))
-                };
-                out.push((name, cty, args));
+                // Named by the elaborator's own rule (`s_0`, `stages[0].s`).
+                out.push((at.name(&l.name.text), cty, args));
             }
         }
         // Instance-array element: `stage[i] = Sub { .. }` (index already
@@ -128,6 +121,7 @@ pub(in crate::ir) fn gather_generate(
             }
         }
         ast::Stmt::For {
+            label,
             var,
             range: ast::Expr::Range { lo, hi, .. },
             body,
@@ -140,14 +134,13 @@ pub(in crate::ir) fn gather_generate(
                 for i in loop_range(a, b) {
                     let mut e = env.clone();
                     e.insert(var.text.clone(), i);
-                    let mut idx = loop_idx.to_vec();
-                    idx.push(i);
+                    let at = at.iteration(label.as_ref(), i);
                     for st in &body.stmts {
                         // Substitute the loop index throughout the statement so
                         // `Sub<W=i>` and `wires[i]` become concrete before the
                         // instance is recorded.
                         let st = subst_stmt(st, &var.text, i);
-                        gather_generate(&st, &e, &idx, entities, resolved, fns, out);
+                        gather_generate(&st, &e, &at, entities, resolved, fns, out);
                     }
                 }
             }
@@ -156,23 +149,24 @@ pub(in crate::ir) fn gather_generate(
         // constant-folded and only the taken branch's instances are gathered.
         // A non-constant condition is behavioral, not a generate-if.
         ast::Stmt::If(iff) => {
+            let at = &at.branch(iff.label.as_ref());
             if let Some(c) = eval_const_fns(&iff.cond, env, fns, 0) {
                 if c != 0 {
                     for st in &iff.then.stmts {
-                        gather_generate(st, env, loop_idx, entities, resolved, fns, out);
+                        gather_generate(st, env, at, entities, resolved, fns, out);
                     }
                 } else {
                     match iff.else_.as_deref() {
                         Some(ast::ElseBranch::Block(b)) => {
                             for st in &b.stmts {
-                                gather_generate(st, env, loop_idx, entities, resolved, fns, out);
+                                gather_generate(st, env, at, entities, resolved, fns, out);
                             }
                         }
                         Some(ast::ElseBranch::If(inner)) => {
                             gather_generate(
                                 &ast::Stmt::If(inner.clone()),
                                 env,
-                                loop_idx,
+                                at,
                                 entities,
                                 resolved,
                                 fns,

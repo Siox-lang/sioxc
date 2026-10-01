@@ -751,8 +751,12 @@ impl<'a> Elaborator<'a> {
             for im in impls {
                 for item in &im.items {
                     match item {
-                        ImplItem::Let(l) => self.gather_let(l, env, &[], &tparams, &mut specs),
-                        ImplItem::Stmt(s) => self.gather_stmt(s, env, &[], &tparams, &mut specs),
+                        ImplItem::Let(l) => {
+                            self.gather_let(l, env, &GenPath::default(), &tparams, &mut specs)
+                        }
+                        ImplItem::Stmt(s) => {
+                            self.gather_stmt(s, env, &GenPath::default(), &tparams, &mut specs)
+                        }
                         ImplItem::Process(process) => self.note_misplaced(&process.body, &tparams),
                         _ => {}
                     }
@@ -929,24 +933,13 @@ impl<'a> Elaborator<'a> {
         &self,
         l: &'a LetDecl,
         env: &HashMap<String, i64>,
-        loop_path: &[i64],
+        at: &GenPath,
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
     ) {
         if let Some((ty, args, span)) = self.instance_let(l, tparams) {
-            // A generated instance gets its loop indices appended, outermost
-            // loop first; a plain one keeps its declared name. The suffix used
-            // to come from `env`, which also holds the generic parameters and
-            // iterates in `HashMap` order, so names varied between builds and
-            // disagreed with the IR, which already used this ordered path.
-            let name = if loop_path.is_empty() {
-                l.name.text.clone()
-            } else {
-                let idx: Vec<String> = loop_path.iter().map(|v| v.to_string()).collect();
-                format!("{}_{}", l.name.text, idx.join("_"))
-            };
             out.push(InstanceSpec {
-                name,
+                name: at.name(&l.name.text),
                 ty,
                 args,
                 attrs: &l.attrs,
@@ -962,12 +955,12 @@ impl<'a> Elaborator<'a> {
         &self,
         s: &'a Stmt,
         env: &HashMap<String, i64>,
-        loop_path: &[i64],
+        at: &GenPath,
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
     ) {
         match s {
-            Stmt::Let(l) => self.gather_let(l, env, loop_path, tparams, out),
+            Stmt::Let(l) => self.gather_let(l, env, at, tparams, out),
             // Instance-array element construction: `stage[i] = Sub { .. }`. The
             // target renders to the element name (`stage[1]`) with the loop
             // index evaluated, so `stage[i].port` reads resolve to it.
@@ -992,6 +985,7 @@ impl<'a> Elaborator<'a> {
                 });
             }
             Stmt::For {
+                label,
                 var,
                 range: Expr::Range { lo, hi, .. },
                 body,
@@ -1003,10 +997,9 @@ impl<'a> Elaborator<'a> {
                     for i in loop_range(a, b) {
                         let mut e = env.clone();
                         e.insert(var.text.clone(), i);
-                        let mut path = loop_path.to_vec();
-                        path.push(i);
+                        let at = at.iteration(label.as_ref(), i);
                         for st in &body.stmts {
-                            self.gather_stmt(st, &e, &path, tparams, out);
+                            self.gather_stmt(st, &e, &at, tparams, out);
                         }
                     }
                 }
@@ -1014,7 +1007,10 @@ impl<'a> Elaborator<'a> {
             // `if <const> { .. } else { .. }`: a generate-if. The condition is
             // constant-folded; only the taken branch's instances are gathered.
             // A non-constant condition is a behavioral `if`, not a generate-if.
-            Stmt::If(iff) => self.gather_if(iff, env, loop_path, tparams, out),
+            Stmt::If(iff) => {
+                let at = at.branch(iff.label.as_ref());
+                self.gather_if(iff, env, &at, tparams, out)
+            }
             _ => {}
         }
     }
@@ -1031,9 +1027,11 @@ impl<'a> Elaborator<'a> {
                     .at(span)
                     .label(first, format!("the first `{name}` is here"))
                     .help(
-                        "an instance inside a generate `for` is named after its loop \
-                         indices (`s` becomes `s_0`, `s_1`, …), in the same namespace \
-                         as every other instance here; rename one of them",
+                        "an instance inside an unlabelled generate `for` is named after \
+                         its loop indices (`s` becomes `s_0`, `s_1`, …), in the same \
+                         namespace as every other instance here; rename one of them, or \
+                         label the loop (`stages: for …`) to name its instances in their \
+                         own scope (`stages[0].s`)",
                     ),
             );
         }
@@ -1114,7 +1112,7 @@ impl<'a> Elaborator<'a> {
         &self,
         iff: &'a IfStmt,
         env: &HashMap<String, i64>,
-        loop_path: &[i64],
+        at: &GenPath,
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
     ) {
@@ -1122,15 +1120,15 @@ impl<'a> Elaborator<'a> {
             ParamValue::Int(0) => match iff.else_.as_deref() {
                 Some(ElseBranch::Block(b)) => {
                     for st in &b.stmts {
-                        self.gather_stmt(st, env, loop_path, tparams, out);
+                        self.gather_stmt(st, env, at, tparams, out);
                     }
                 }
-                Some(ElseBranch::If(inner)) => self.gather_if(inner, env, loop_path, tparams, out),
+                Some(ElseBranch::If(inner)) => self.gather_if(inner, env, at, tparams, out),
                 None => {}
             },
             ParamValue::Int(_) => {
                 for st in &iff.then.stmts {
-                    self.gather_stmt(st, env, loop_path, tparams, out);
+                    self.gather_stmt(st, env, at, tparams, out);
                 }
             }
             // A non-constant condition is behavioural — a process, not a
@@ -1503,6 +1501,60 @@ fn eval_params(
 /// directional**, matching bit slices and array ranges: `0..2` -> 0,1,2 and
 /// `2..0` -> 2,1,0. (Kept in sync with `crate::ir::loop_range`, which owns the
 /// canonical definition; the crate layering forbids depending on it here.)
+/// Where a generated instance sits: the labelled generate scopes around it,
+/// and the indices of the unlabelled loops inside the innermost one. This is
+/// the one naming authority for generated instances; the IR's generate walk
+/// uses it too, so the hierarchy and the signal names cannot disagree.
+///
+/// - An unlabelled loop appends its index, outermost first: `s_0_1`.
+/// - `stages: for k in ..` opens one scope per iteration: `stages[0].s`.
+/// - `tap: if ..` opens one scope for whichever branch is taken: `tap.s`.
+///
+/// A scope is a `.`-separated path prefix, so the waveform writer and the
+/// debugger, which split instance paths on `.`, nest it for free.
+#[derive(Clone, Debug, Default)]
+pub struct GenPath {
+    scope: String,
+    loop_path: Vec<i64>,
+}
+
+impl GenPath {
+    /// The elaborated name of `base` declared here.
+    pub fn name(&self, base: &str) -> String {
+        let mut name = format!("{}{base}", self.scope);
+        for index in &self.loop_path {
+            name.push_str(&format!("_{index}"));
+        }
+        name
+    }
+
+    /// The position inside iteration `index` of a loop labelled `label`.
+    pub fn iteration(&self, label: Option<&Ident>, index: i64) -> GenPath {
+        match label {
+            Some(label) => GenPath {
+                scope: format!("{}[{index}].", self.name(&label.text)),
+                loop_path: Vec::new(),
+            },
+            None => {
+                let mut at = self.clone();
+                at.loop_path.push(index);
+                at
+            }
+        }
+    }
+
+    /// The position inside an `if` labelled `label`, whichever branch runs.
+    pub fn branch(&self, label: Option<&Ident>) -> GenPath {
+        match label {
+            Some(label) => GenPath {
+                scope: format!("{}.", self.name(&label.text)),
+                loop_path: Vec::new(),
+            },
+            None => self.clone(),
+        }
+    }
+}
+
 fn loop_range(a: i64, b: i64) -> Vec<i64> {
     if a <= b {
         (a..=b).collect()
@@ -1917,14 +1969,14 @@ mod tests {
         // could otherwise fold as a generate condition.
         let (_, process) = elaborate_src(&format!(
             "{CELL}entity Top {{ clk: Bit in, y: Bit out }}\n\
-             impl Top {{ y = clk; process build {{ if clk.rising() {{ let c: Cell = {{ .i = clk }}; }} }} }}\n"
+             impl Top {{ y = clk; build: process {{ if clk.rising() {{ let c: Cell = {{ .i = clk }}; }} }} }}\n"
         ));
         assert_eq!(process, 1, "reported, not silently dropped");
 
         // Nested inside a process, at depth.
         let (_, nested) = elaborate_src(&format!(
             "{CELL}entity Top {{ clk: Bit in, y: Bit out }}\n\
-             impl Top {{ y = clk; process build {{ if clk.rising() {{ if 1 == 1 {{ let c: Cell = {{ .i = clk }}; }} }} }} }}\n"
+             impl Top {{ y = clk; build: process {{ if clk.rising() {{ if 1 == 1 {{ let c: Cell = {{ .i = clk }}; }} }} }} }}\n"
         ));
         assert_eq!(
             nested, 1,
@@ -1934,7 +1986,7 @@ mod tests {
         // The `else` branch of a process counts too.
         let (_, else_arm) = elaborate_src(&format!(
             "{CELL}entity Top {{ clk: Bit in, y: Bit out }}\n\
-             impl Top {{ y = clk; process build {{ if clk.rising() {{ y = clk; }} else {{ let c: Cell = {{ .i = clk }}; }} }} }}\n"
+             impl Top {{ y = clk; build: process {{ if clk.rising() {{ y = clk; }} else {{ let c: Cell = {{ .i = clk }}; }} }} }}\n"
         ));
         assert_eq!(else_arm, 1, "the else branch of a process");
 
@@ -1956,7 +2008,7 @@ mod tests {
         let (_, shadowed) = elaborate_src(
             "module m;\nentity T { i: Bit in, o: Bit out }\nimpl T { o = i; }\n\
              entity Buf<T> { clk: Bit in, d: T in, q: T out }\n\
-             impl<T> Buf<T> { q = d; process hold { if clk.rising() { let held: T; } } }\n\
+             impl<T> Buf<T> { q = d; hold: process { if clk.rising() { let held: T; } } }\n\
              entity Top { clk: Bit in, y: Bit out }\n\
              impl Top { let b: Buf<Bit> = { .clk = clk, .d = clk }; y = b.q; }\n",
         );
@@ -2449,5 +2501,62 @@ mod tests {
             0,
             "a struct value is not an instance"
         );
+    }
+
+    /// A labelled generate is a scope: a labelled `for` has one child per
+    /// iteration, keyed by the loop value in square brackets, and a labelled
+    /// `if` has one child whichever branch is taken. The path spells it.
+    #[test]
+    fn a_labelled_generate_names_its_instances_through_its_scope() {
+        let src = "module m;\n\
+             entity Cell { o: Bit out }\n\
+             impl Cell { o = '1'; }\n\
+             entity Probe { o: Bit out }\n\
+             impl Probe { o = '0'; }\n\
+             entity Top {}\n\
+             impl Top {\n\
+                 stages: for k in 2..0 { let s: Cell = {}; }\n\
+                 tap: if 1 == 0 { let t: Probe = {}; } else { let t: Cell = {}; }\n\
+                 rows: for r in 0..1 {\n\
+                     for c in 0..1 { let x: Cell = {}; }\n\
+                     inner: if 1 == 1 { let y: Cell = {}; }\n\
+                 }\n\
+                 for k in 0..1 { pair: if 1 == 1 { let z: Cell = {}; } }\n\
+             }";
+        let (hier, errors) = elaborate_src(src);
+        assert_eq!(errors, 0);
+        assert_eq!(
+            cell_names(&hier),
+            [
+                "stages[2].s",
+                "stages[1].s",
+                "stages[0].s",
+                "tap.t",
+                "rows[0].x_0",
+                "rows[0].x_1",
+                "rows[0].inner.y",
+                "rows[1].x_0",
+                "rows[1].x_1",
+                "rows[1].inner.y",
+                "pair_0.z",
+                "pair_1.z",
+            ],
+        );
+    }
+
+    /// A labelled scope has its own namespace: `stages[0].s` cannot collide
+    /// with a hand-written `s_0` the way the flat loop name does.
+    #[test]
+    fn a_labelled_generate_cannot_collide_with_a_flat_name() {
+        let src = "module m;\n\
+             entity Cell { o: Bit out }\n\
+             impl Cell { o = '1'; }\n\
+             entity Top {}\n\
+             impl Top {\n\
+                 stages: for k in 0..1 { let s: Cell = {}; }\n\
+                 let s_0: Cell = {};\n\
+                 let s: Cell = {};\n\
+             }";
+        assert_eq!(elaborate_src(src).1, 0);
     }
 }

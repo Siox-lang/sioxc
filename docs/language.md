@@ -45,6 +45,22 @@ precise reference.
   array yet omitted by a generate condition; referencing one of its ports is
   `E-P022` (“instance was not elaborated”), while leaving that slot unused is
   legal.
+- **Generate labels.** A structural `for` or `if` may carry a VHDL-style label,
+  which makes it a scope in the elaborated hierarchy. `stages: for k in 0..2
+  { let s: Stage = { .. }; }` has one child per iteration, keyed by the loop
+  value in square brackets: `stages[0].s`, `stages[1].s`, `stages[2].s`.
+  `tap: if DEBUG { let t: Probe = { .. }; } else { let t: Stub = { .. }; }`
+  has one child, filled by whichever branch is taken, so the path `tap.t` is
+  the same either way. One label covers the whole `if`/`else if`/`else`
+  chain. The path spelling is the same in `--emit tree`, IR signal names, VCD/FST
+  scopes and the debugger. A label is never required. An unlabelled loop
+  names its instances in the parent's namespace with its indices appended,
+  outermost first (`s_0`, `s_0_1`), and a collision with another name there
+  is `E-P002`; a label avoids it. A label inside an unlabelled loop carries that
+  loop's index (`pair_0.z`). Labels share the implementation's member
+  namespace with `let`s, processes and functions (`E-P002` on a duplicate).
+  Inside a process or function, `for` and `if` are control flow and take no
+  label.
 - **Where an entity may be instantiated.** Only at the root layer of another
   entity's body, or inside a generate `for`/`if` — not in a process (an `if` on
   a signal), not in a `match` arm, not in a function. Those are `E-P020`.
@@ -938,14 +954,16 @@ The compiler recognizes that `clk.rising()` depends on `clk'event`, so the block
 ### 3.11 Processes are concurrent; their bodies are sequential
 
 An entity implementation uses `process { ... }` to introduce ordered
-behavior. A process may carry a label — `process update { ... }` — so IR and
-diagnostics can identify it. Labels are recommended for
-nontrivial entities and must be unique in the entity implementation namespace.
-This follows the VHDL model without requiring an explicit sensitivity list:
+behavior. A process may carry a VHDL-style label — `update: process { ... }` —
+so IR and diagnostics can identify it. A label is never required, never
+changes behavior, and must be unique in the entity implementation namespace.
+The older `process update { ... }` spelling is an error that names the
+labelled form. This follows the VHDL model without requiring an explicit
+sensitivity list:
 
 ```siox
 impl Register {
-    process update {
+    update: process {
         if clk.rising() {
             q = d;
         }
@@ -965,6 +983,14 @@ The rules are:
 - A bare assignment outside a process is concurrent and forms its own driver
   context. Several such assignments to one unresolved signal are conflicting
   drivers; a type implementing `Resolve` folds them.
+- Any assignment may carry a label, concurrent or inside a process, including
+  indexed, field, compound and `after`-delayed ones: `sum: y = a + b;`,
+  `step: n = n + 1;`. Like a process label it is never required and never
+  changes behavior. A concurrent assignment's label names its driver context,
+  so a conflicting-driver error (`E-P014`) and the IR dump identify it by
+  name. Labels at the top of an implementation share its member namespace;
+  labels inside one process share that process's namespace (`E-P002` on a
+  duplicate).
 - Persistent signal assignments take effect at the end of the process/event
   step. Process-local `let` bindings update immediately.
 - Entity instances, persistent state declarations, constants, and helper

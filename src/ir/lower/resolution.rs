@@ -158,19 +158,34 @@ impl<'a> Lowering<'a> {
                 // not its symptom (a missing `Resolve` impl) — the usual cause
                 // is a miswired bus, e.g. two producers on one net. Point at
                 // each contributing connection when we know where it came from.
-                let sites: Vec<crate::diag::Span> = ctxs
+                // Each source is named by its process or assignment label
+                // when it has one: `conflicting source 2 (`sum`)`.
+                let sites: Vec<(crate::diag::Span, String)> = ctxs
                     .keys()
-                    .filter_map(|c| self.ctx_span.get(c).copied())
+                    .filter_map(|c| {
+                        let span = self.ctx_span.get(c).copied()?;
+                        let name = self
+                            .out
+                            .process_labels
+                            .get(c)
+                            .and_then(|label| label.rsplit("::").next())
+                            .map(|label| format!(" (`{label}`)"))
+                            .unwrap_or_default();
+                        Some((span, name))
+                    })
                     .collect();
                 let mut d = crate::diag::Diagnostic::error(format!(
                     "`{path}` is driven by {} conflicting sources",
                     ctxs.len()
                 ))
                 .with_code(crate::diag::codes::CONFLICTING_DRIVERS);
-                if let Some((first, rest)) = sites.split_first() {
+                if let Some(((first, first_name), rest)) = sites.split_first() {
                     d = d.at(*first);
-                    for (i, s) in rest.iter().enumerate() {
-                        d = d.label(*s, format!("conflicting source {}", i + 2));
+                    if !first_name.is_empty() {
+                        d = d.label(*first, format!("conflicting source 1{first_name}"));
+                    }
+                    for (i, (s, name)) in rest.iter().enumerate() {
+                        d = d.label(*s, format!("conflicting source {}{name}", i + 2));
                     }
                     d = d.label(declaration_span, "signal declared here");
                 } else {

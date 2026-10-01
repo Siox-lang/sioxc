@@ -7,8 +7,8 @@ simulation consumes, [architecture.md](architecture.md).
 
 ## The model: delta-cycle, event-driven
 
-A source `process name { ... }` is one concurrent driver context; its body is
-ordered, and its optional name is retained for IR/runtime diagnostics. Bare
+A source `name: process { ... }` is one concurrent driver context; its body is
+ordered, and its optional label is retained for IR/runtime diagnostics. Bare
 continuous assignments outside a process each form a concurrent context. The
 normalized design then lowers (in `ir`) to two scheduler forms, kept strictly
 apart:
@@ -16,7 +16,7 @@ apart:
 - **Combinational `Driver`s** — a continuous assignment (`count = value;`), a
   wire that always equals its expression.
 - **Sequential `EventBlock`s** — an event-controlled statement inside a
-  process (`process update { if clk.rising() { … } }`), updated only on the
+  process (`update: process { if clk.rising() { … } }`), updated only on the
   trigger, with next-state semantics.
 
 A **settle** evaluates one delta cycle over the signal state (`cur`, `old`, and
@@ -207,6 +207,11 @@ external waveform application.
   discriminant (the de-facto VCD string extension Surfer and GTKWave both read).
 - **Struct and array signals** flatten to one trace per leaf (`p.valid`,
   `regs[2]`).
+- **Instances** are nested scopes. A labelled generate adds its own scopes:
+  `stages: for k in 0..2` shows `stages[0]`, `stages[1]`, … each holding that
+  iteration's instances, and `tap: if …` shows one `tap` scope whichever
+  branch was built. Instances from an unlabelled loop sit directly in the
+  parent as `s_0`, `s_1`, ….
 
 **Viewing:** [Surfer](https://surfer-project.org/) is a modern native/browser
 viewer; [GTKWave](https://gtkwave.sourceforge.net/) is the long-standing

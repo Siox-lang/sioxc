@@ -326,6 +326,34 @@ fn conflicting_drivers_name_the_conflict_and_its_sites() {
     }
 }
 
+/// Two concurrent assignments to one unresolved signal: the error points at
+/// both, and names a labelled source by its label.
+#[test]
+fn conflicting_assignments_are_named_by_their_labels() {
+    let conflicts: Vec<_> = lower_diagnostics(
+        "module m;\n\
+         entity E { a: Bit in, b: Bit in, y: Bit out }\n\
+         impl E {\n\
+           first: y = a;\n\
+           second: process { y = b; }\n\
+         }",
+    )
+    .into_iter()
+    .filter(|d| d.code == Some(crate::diag::codes::CONFLICTING_DRIVERS))
+    .collect();
+    assert_eq!(conflicts.len(), 1, "got {conflicts:#?}");
+    let labels: Vec<&str> = conflicts[0]
+        .labels
+        .iter()
+        .map(|label| label.message.as_str())
+        .collect();
+    assert!(
+        labels.contains(&"conflicting source 1 (`first`)")
+            && labels.contains(&"conflicting source 2 (`second`)"),
+        "got {labels:?}"
+    );
+}
+
 #[test]
 /// Parallel drivers on a type with a `Resolve` impl are legal and must not
 /// warn.

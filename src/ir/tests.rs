@@ -200,7 +200,7 @@ const COUNTER: &str = "module m;\n\
         }\n\
         impl<W: integer> Counter<W> {\n\
           let value: unsigned[W] = 0;\n\
-          process update {\n\
+          update: process {\n\
             if clk.rising() {\n\
               if rst == '1' {\n\
                 value = 0;\n\

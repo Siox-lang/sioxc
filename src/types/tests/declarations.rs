@@ -591,17 +591,17 @@ fn literal_width_bounds_do_not_overflow_at_the_top_widths() {
 /// A `process` is only valid in an inherent entity impl (E-P027).
 fn process_is_only_valid_on_an_inherent_entity_impl() {
     assert_eq!(
-        check_src("module m;\nentity E { y: Bit out }\nimpl E { process drive { y = '1'; } }\n"),
+        check_src("module m;\nentity E { y: Bit out }\nimpl E { drive: process { y = '1'; } }\n"),
         0,
         "an entity process is valid"
     );
     assert_eq!(
-        check_src("module m;\nstruct S { pub x: Bit }\nimpl S { process drive {} }\n"),
+        check_src("module m;\nstruct S { pub x: Bit }\nimpl S { drive: process {} }\n"),
         1,
         "a data type cannot own a process"
     );
     assert_eq!(
-            check_src("module m;\ntrait T { fn f(self); }\nentity E {}\nimpl T for E { fn f(self) {} process drive {} }\n"),
+            check_src("module m;\ntrait T { fn f(self); }\nentity E {}\nimpl T for E { fn f(self) {} drive: process {} }\n"),
             1,
             "a trait impl cannot add a process"
         );

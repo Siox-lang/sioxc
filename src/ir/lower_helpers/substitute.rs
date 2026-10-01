@@ -86,11 +86,13 @@ pub fn subst_stmt_paths(s: &ast::Stmt, map: &HashMap<String, ast::Expr>) -> ast:
     use ast::Stmt;
     match s {
         Stmt::Assign {
+            label,
             target,
             value,
             after,
             span,
         } => Stmt::Assign {
+            label: label.clone(),
             target: subst_expr_paths(target, map),
             value: subst_expr_paths(value, map),
             after: after.as_ref().map(|a| subst_expr_paths(a, map)),
@@ -111,11 +113,13 @@ pub fn subst_stmt_paths(s: &ast::Stmt, map: &HashMap<String, ast::Expr>) -> ast:
             span: m.span,
         }),
         Stmt::For {
+            label,
             var,
             range,
             body,
             span,
         } => Stmt::For {
+            label: label.clone(),
             var: var.clone(),
             range: subst_expr_paths(range, map),
             body: subst_block_paths(body, map),
@@ -151,6 +155,7 @@ pub(in crate::ir) fn subst_if_paths(
     map: &HashMap<String, ast::Expr>,
 ) -> ast::IfStmt {
     ast::IfStmt {
+        label: iff.label.clone(),
         cond: subst_expr_paths(&iff.cond, map),
         then: subst_block_paths(&iff.then, map),
         else_: iff.else_.as_ref().map(|e| {
@@ -274,11 +279,13 @@ pub(in crate::ir) fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt
             ast::Stmt::Let(l)
         }
         ast::Stmt::For {
+            label,
             var: v,
             range,
             body,
             span,
         } => ast::Stmt::For {
+            label: label.clone(),
             var: v.clone(),
             range: subst_expr(range, var, val),
             body: {
@@ -291,11 +298,13 @@ pub(in crate::ir) fn subst_stmt(s: &ast::Stmt, var: &str, val: i64) -> ast::Stmt
         // `stage[i] = Sub { .x = w[i] }`: substitute in both the indexed target
         // and the construct, so instance-array elements unroll concretely.
         ast::Stmt::Assign {
+            label,
             target,
             value,
             after,
             span,
         } => ast::Stmt::Assign {
+            label: label.clone(),
             target: subst_expr(target, var, val),
             value: subst_expr(value, var, val),
             after: after.as_ref().map(|a| subst_expr(a, var, val)),

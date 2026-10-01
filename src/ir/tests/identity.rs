@@ -814,3 +814,26 @@ fn module_range_constant_keeps_its_qualified_width_identity() {
         Some(Expr::Const(8))
     ));
 }
+
+#[test]
+/// A labelled generate names its instances' signals through its scope, with
+/// the elaborator's rule, so the waveform nests `stages[0]` › `s` and the
+/// tree, the IR and the debugger agree on one path.
+fn a_labelled_generate_scopes_its_signal_names() {
+    let design = lower_src(
+        "module m;\n\
+         entity Stage { i: Bit in, o: Bit out }\n\
+         impl Stage { o = i; }\n\
+         entity Top { a: Bit in, y: Bit out }\n\
+         impl Top {\n\
+           let w: Bit[0..2];\n\
+           w[0] = a;\n\
+           stages: for k in 0..1 { let s: Stage = { .i = w[k], .o = w[k + 1] }; }\n\
+           tap: if 1 == 1 { let t: Stage = { .i = w[2], .o = y }; }\n\
+         }",
+    );
+    let names: HashSet<&str> = design.signals.iter().map(|s| s.path.as_str()).collect();
+    for path in ["Top.stages[0].s.i", "Top.stages[1].s.o", "Top.tap.t.o"] {
+        assert!(names.contains(path), "missing {path} in {names:?}");
+    }
+}

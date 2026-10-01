@@ -111,9 +111,9 @@ fn validate_process_scheduling(
             match item {
                 ImplItem::Process(process) if !is_clock_process(&process.body.stmts) => {
                     let label = process
-                        .name
+                        .label
                         .as_ref()
-                        .map(|name| format!("process `{}`", name.text))
+                        .map(|label| format!("process `{}`", label.text))
                         .unwrap_or_else(|| "anonymous process".to_string());
                     foreground.push((process.span, label));
                 }
@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(
             diagnostics(
                 "module tests;\n#[std::attrs::test] entity T {}\n\
-                 impl T { process first {} process second {} }\n"
+                 impl T { first: process {} second: process {} }\n"
             ),
             1,
             "the native scheduler must not serialize concurrent stimulus"
@@ -312,8 +312,8 @@ mod tests {
                 "module tests;\n#[std::attrs::test] entity T {}\n\
                  impl T {\n\
                    let clk: Bool = false;\n\
-                   process clock { clk = not clk after 1; }\n\
-                   process stimulus {}\n\
+                   clock: process { clk = not clk after 1; }\n\
+                   stimulus: process {}\n\
                  }\n"
             ),
             0,
@@ -322,7 +322,7 @@ mod tests {
         assert_eq!(
             diagnostics(
                 "module tests;\n#[std::attrs::test] entity T {}\n\
-                 impl T { process stimulus {} print!(\"legacy\"); }\n"
+                 impl T { stimulus: process {} print!(\"legacy\"); }\n"
             ),
             1,
             "legacy impl-scope stimulus is one foreground sequence too"
