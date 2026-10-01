@@ -417,7 +417,13 @@ and then use their normal integer representation/conversion.
 - **Diagnostics flow through `DiagnosticSink`.** Stages take `&mut
   DiagnosticSink`, `emit` into it, and the CLI renders/counts at the end. Use
   the stable codes in `diag::codes` (e.g. `WRITE_TO_INPUT_PORT`); add new
-  codes to that catalogue rather than scattering string literals.
+  codes to that catalogue rather than scattering string literals. Every
+  warning code is also a lint (`diag::lints::LINTS`, mirrored by
+  `std::attrs::Lint`): once the compiler has parsed the program it gives the
+  sink the `-A`/`-W`/`-D`/`-F` levels and every `#[allow(...)]`-style
+  directive, and `emit` applies them as warnings arrive, so a denied lint is an
+  error before the next stage checks `has_errors`. A new warning needs a lint
+  name in both places; a test enforces it.
 
 - **Best-effort, keep going.** A stage returns a usable result even on error
   (e.g. `parse_module` returns a partial AST, the parser guarantees forward
@@ -646,6 +652,7 @@ diagnostics; input, selection, validation, and backend failures are separate
 
 `sioxc` parses flags, constructs that request, renders the result, and chooses
 an exit status. Like `rustc`, it takes one input per invocation: `--emit`
-selects the artifact and `--test` selects native test-executable compilation. Project
-graphs, directory traversal, execution, and simulation tooling remain outside
-the compiler.
+selects the artifact and `--test` selects native test-executable compilation.
+`-A`/`-W`/`-D`/`-F` become `CompileRequest::with_lint_levels`, in the order
+written, as rustc applies them. Project graphs, directory traversal,
+execution, and simulation tooling remain outside the compiler.

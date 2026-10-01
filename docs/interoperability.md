@@ -126,3 +126,10 @@ backend-unavailable `CompileFailure` unless the `llvm` feature is enabled.
 File artifacts require an output path when the host wants to control their
 location; `CompileRequest::with_output` sets it. The compiler writes the
 artifact but still never launches it.
+
+`CompileRequest::with_lint_levels` takes the same levels as `sioxc -A/-W/-D/-F`,
+in order (`vec![(Level::Deny, "warnings".into())]` is `-D warnings`). Lint
+levels are applied as the diagnostics are produced: an allowed lint never
+appears in `compilation.diagnostics()`, and a denied one arrives as an error.
+Each diagnostic now also carries `notes` (rendered as `= note:` lines), which
+is where a lint says what set its level.
