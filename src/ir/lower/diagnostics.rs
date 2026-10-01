@@ -586,6 +586,7 @@ impl<'a> Lowering<'a> {
         )>,
     ) {
         match s {
+            ast::Stmt::Use(_) => {}
             ast::Stmt::Assign {
                 target,
                 value,

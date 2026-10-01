@@ -149,7 +149,7 @@ impl<'a> Lowering<'a> {
                         constant_decls.push((self.free_fns.constant_decl_key(c), c));
                     }
                     ast::Item::Using(u) => {
-                        if let ast::UsingKind::Alias { name, ty } = &u.kind {
+                        if let ast::UsingKind::Alias { name, ty, .. } = &u.kind {
                             self.aliases
                                 .insert(self.free_fns.type_alias_decl_key(name), ty.clone());
                         }

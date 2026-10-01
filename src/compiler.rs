@@ -532,6 +532,7 @@ impl Compiler {
         result
             .diagnostics
             .set_lint_levels(request.lints.clone(), directives);
+        crate::syntax::imports::desugar(&mut result.modules, &mut result.diagnostics);
         crate::syntax::attributes::attach(&mut result.modules, &mut result.diagnostics);
         let resolved = crate::resolve::resolve(&result.modules, &mut result.diagnostics);
         result.stats.definitions = Some(resolved.defs().len());
@@ -938,72 +939,162 @@ fn discover_dependencies(
     dependencies
 }
 
-/// Module paths named by top-level `use` declarations. This intentionally
-/// recognizes only the two import spellings and skips aliases:
-/// `use a::b::Name;` -> `a::b`, `use a::b::{Name}` -> `a::b`.
+/// Module paths a file's `use` declarations may need loaded, at module level
+/// or inside blocks. Each import leaf proposes its owning module, and also
+/// itself, since `use std::math;` imports a module; a candidate with no file
+/// behind it is skipped by the caller. Nested groups, `self`, globs, and
+/// `self::`/`super::` paths are followed. Aliases (`type X = …`) are not
+/// imports.
 fn discover_import_modules(source: &str, tokens: &[Token]) -> Vec<Vec<String>> {
-    let token_text = |token: &Token| {
+    let tokens: Vec<&Token> = tokens
+        .iter()
+        .filter(|t| t.kind != TokenKind::Comment)
+        .collect();
+    let text = |token: &Token| {
         source
             .get(token.span.start as usize..token.span.end as usize)
             .unwrap_or("")
+            .to_string()
     };
-    let mut modules = Vec::new();
+    // The file's own module, for `self::` and `super::`.
+    let mut here = Vec::new();
+    if tokens.first().is_some_and(|t| t.kind == TokenKind::Module) {
+        let mut cursor = 1;
+        while let Some(t) = tokens.get(cursor) {
+            if t.kind == TokenKind::Ident {
+                here.push(text(t));
+                cursor += 1;
+            } else if t.kind == TokenKind::ColonColon {
+                cursor += 1;
+            } else {
+                break;
+            }
+        }
+    }
+    let mut modules: Vec<Vec<String>> = Vec::new();
+    let push = |path: Vec<String>, modules: &mut Vec<Vec<String>>| {
+        if !path.is_empty() && !modules.contains(&path) {
+            modules.push(path);
+        }
+    };
     for (index, token) in tokens.iter().enumerate() {
         if token.kind != TokenKind::Use && token.kind != TokenKind::Using {
             continue;
         }
         let mut cursor = index + 1;
         // `use Local = a::b::C;` imports from `a::b` like `use a::b::C;`.
-        if token.kind == TokenKind::Use
-            && tokens
-                .get(cursor)
-                .is_some_and(|t| t.kind == TokenKind::Ident)
+        if tokens
+            .get(cursor)
+            .is_some_and(|t| t.kind == TokenKind::Ident)
             && tokens
                 .get(cursor + 1)
                 .is_some_and(|t| t.kind == TokenKind::Eq)
         {
             cursor += 2;
         }
-        let mut segments = Vec::new();
-        while let Some(segment) = tokens.get(cursor) {
-            if segment.kind != TokenKind::Ident {
-                break;
-            }
-            segments.push(token_text(segment).to_string());
-            cursor += 1;
-            if tokens
-                .get(cursor)
-                .is_some_and(|next| next.kind == TokenKind::ColonColon)
-                && tokens
-                    .get(cursor + 1)
-                    .is_some_and(|next| next.kind == TokenKind::Ident)
-            {
-                cursor += 1;
+        let mut leaves = Vec::new();
+        use_tree_leaves(&tokens, &text, &mut cursor, Vec::new(), &mut leaves);
+        for (path, glob) in leaves {
+            let Some(path) = absolute_use_path(path, &here) else {
                 continue;
+            };
+            // The leaf may be a module, an item in one, or a variant of an
+            // enum in one (`m::Enum::Variant`); a file that does not exist
+            // is skipped.
+            let named = if glob || path.last().is_some_and(|s| s == "self") {
+                &path[..path.len() - 1]
+            } else {
+                &path[..]
+            };
+            for keep in named.len().saturating_sub(2)..=named.len() {
+                push(named[..keep].to_vec(), &mut modules);
             }
-            break;
-        }
-        if segments.is_empty()
-            || tokens
-                .get(cursor)
-                .is_some_and(|next| next.kind == TokenKind::Eq)
-        {
-            continue;
-        }
-        let braced = tokens
-            .get(cursor)
-            .is_some_and(|next| next.kind == TokenKind::ColonColon)
-            && tokens
-                .get(cursor + 1)
-                .is_some_and(|next| next.kind == TokenKind::LBrace);
-        if !braced {
-            segments.pop();
-        }
-        if !segments.is_empty() {
-            modules.push(segments);
         }
     }
     modules
+}
+
+/// The leaves of one `use` tree starting at `cursor`, as full paths (prefix
+/// included) and whether each is a glob.
+fn use_tree_leaves(
+    tokens: &[&Token],
+    text: &dyn Fn(&Token) -> String,
+    cursor: &mut usize,
+    prefix: Vec<String>,
+    out: &mut Vec<(Vec<String>, bool)>,
+) {
+    let mut path = prefix;
+    while let Some(TokenKind::Ident | TokenKind::SelfKw | TokenKind::Super) =
+        tokens.get(*cursor).map(|t| t.kind.clone())
+    {
+        path.push(text(tokens[*cursor]));
+        *cursor += 1;
+        if !tokens
+            .get(*cursor)
+            .is_some_and(|t| t.kind == TokenKind::ColonColon)
+        {
+            break;
+        }
+        *cursor += 1;
+        match tokens.get(*cursor).map(|t| t.kind.clone()) {
+            Some(TokenKind::Star) => {
+                *cursor += 1;
+                path.push("*".to_string());
+                out.push((path, true));
+                return;
+            }
+            Some(TokenKind::LBrace) => {
+                *cursor += 1;
+                while let Some(t) = tokens.get(*cursor) {
+                    match t.kind {
+                        TokenKind::RBrace => {
+                            *cursor += 1;
+                            return;
+                        }
+                        TokenKind::Comma | TokenKind::StrLit => *cursor += 1,
+                        TokenKind::Ident
+                            if tokens
+                                .get(*cursor + 1)
+                                .is_some_and(|n| n.kind == TokenKind::Eq) =>
+                        {
+                            *cursor += 2; // `Local =`
+                        }
+                        TokenKind::Ident | TokenKind::SelfKw | TokenKind::Super => {
+                            use_tree_leaves(tokens, text, cursor, path.clone(), out);
+                        }
+                        _ => *cursor += 1,
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+    }
+    if !path.is_empty() {
+        out.push((path, false));
+    }
+}
+
+/// `self::`/`super::` made absolute against `here`.
+fn absolute_use_path(path: Vec<String>, here: &[String]) -> Option<Vec<String>> {
+    match path.first().map(String::as_str) {
+        Some("self") if path.len() > 1 => {
+            let mut out = here.to_vec();
+            out.extend(path.into_iter().skip(1));
+            Some(out)
+        }
+        Some("super") => {
+            let mut out = here.to_vec();
+            let mut rest = path.as_slice();
+            while rest.first().is_some_and(|s| s == "super") {
+                out.pop()?;
+                rest = &rest[1..];
+            }
+            out.extend(rest.iter().cloned());
+            Some(out)
+        }
+        _ => Some(path),
+    }
 }
 
 /// The file backing a module path: under the standard-library root for a
@@ -1050,19 +1141,38 @@ mod tests {
     /// Dependency discovery has to find imports through both spellings, since
     /// `use a::b::{c}` and `pub use a::b::c` name the same module.
     fn lexical_dependency_discovery_matches_both_import_spellings() {
-        let source = "module user;\n\
+        let source = "module app::user;\n\
             use alpha::math::{Value, \"%%\"};\n\
             pub use beta::logic::Flag;\n\
             type Alias = gamma::Ignored;\n\
-            use Local;\n";
+            use std::{logic::{Bit, self}, math::*};\n\
+            use Renamed = delta::Thing;\n\
+            use super::sibling::Item;\n\
+            use zeta::colors::Color::Red;\n\
+            fn f() { use epsilon::helper; }\n";
         let mut sink = DiagnosticSink::new();
         let tokens = Lexer::new(FileId(0), source).tokenize(&mut sink);
-        assert_eq!(
-            discover_import_modules(source, &tokens),
-            [
-                vec!["alpha".to_string(), "math".to_string()],
-                vec!["beta".to_string(), "logic".to_string()],
-            ]
+        let found = discover_import_modules(source, &tokens);
+        let names: Vec<String> = found.iter().map(|m| m.join("::")).collect();
+        for expected in [
+            "alpha::math",
+            "beta::logic",
+            "beta::logic::Flag", // may itself be a module; skipped if no file
+            "std::logic",
+            "std::math",
+            "delta",
+            "app::sibling",
+            "epsilon",
+            "zeta::colors", // a variant's enum lives in a module
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "missing {expected} in {names:?}"
+            );
+        }
+        assert!(
+            !names.iter().any(|n| n.starts_with("gamma")),
+            "an alias is not an import"
         );
     }
 

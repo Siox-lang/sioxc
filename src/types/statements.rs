@@ -149,6 +149,7 @@ impl<'a> Checker<'a> {
         names: &HashMap<String, Ty>,
     ) -> bool {
         match statement {
+            Stmt::Use(_) => false,
             Stmt::Return { .. } => true,
             Stmt::If(if_) => {
                 self.block_guarantees_return(&if_.then, names)
@@ -376,6 +377,7 @@ impl<'a> Checker<'a> {
         expected_return: Option<&Ty>,
     ) {
         match s {
+            Stmt::Use(_) => {}
             Stmt::Let(l) => {
                 self.check_instance_placement(l);
                 self.require_let_annotation(l);

@@ -476,6 +476,7 @@ fn keyword_kind(s: &str) -> Option<TokenKind> {
         "using" => TokenKind::Using,
         "use" => TokenKind::Use,
         "type" => TokenKind::Type,
+        "super" => TokenKind::Super,
         "pub" => TokenKind::Pub,
         "entity" => TokenKind::Entity,
         "impl" => TokenKind::Impl,

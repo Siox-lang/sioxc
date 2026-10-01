@@ -477,8 +477,14 @@ Before the full Pratt parse, `compiler` lexically follows that exact transitive
 import graph and collects every operator impl's `attr precedence = N;`. Imported
 operators therefore group expressions correctly in their users, while an
 unrelated `.siox` file cannot alter the active grammar.
-The binding pass `syntax::attributes::attach` runs over every loaded module
-just before resolution: it copies each `attr … for … = …;` binding onto its
+The import pass `syntax::imports::desugar` runs first over every loaded
+module. It rewrites the Rust import forms the resolver does not model — globs,
+module aliases, `self::`/`super::` paths, enum variant imports, block-level
+`use`, and generic `type` aliases — into plain imports and qualified paths,
+reporting glob ambiguity where a name is used. Imported variants keep the
+`Enum::Variant` form later stages expect, with a hidden import of the enum
+when needed, and generic aliases are substituted away.
+The binding pass `syntax::attributes::attach` then runs just before resolution: it copies each `attr … for … = …;` binding onto its
 target as an applied attribute (the form later stages read) and folds each
 `x'name` read of a declared attribute into its bound or default value.
 The resolver additionally bootstraps the `Operator`, `Prefix`, `Suffix`, and

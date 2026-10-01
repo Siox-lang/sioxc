@@ -556,11 +556,18 @@ Imports and aliases follow Rust, with one change: an import is renamed with
 use std::logic::Logic;                 // import one item
 use std::logic::{Bit, Logic};          // import several from one module
 use AxiMaster = bus::axi::Master;      // renamed import (Rust: `as AxiMaster`)
-use bus::axi::{AxiSlave = Slave, Mode}; // renaming inside a group
+use std::{
+    math::{self, PI},                  // `math` itself, and `math::PI`
+    numeric::{Word8 = Byte},           // renaming inside a nested group
+};
+use bus::axi::*;                       // every public name of `bus::axi`
+use self::State::{Idle, Busy};         // enum variants, from this module
+use super::common::Bus;                // from the parent module
 pub use std::logic::{Bit, Logic};      // re-export
 
 type Word = unsigned[32];              // transparent alias: `Word` is `unsigned[32]`
 pub type Byte = integer<0..255>;
+type Pair<T> = Packet<T>;              // a generic alias
 ```
 
 - `use` makes an existing declaration visible under a local name. It works the
@@ -568,15 +575,45 @@ pub type Byte = integer<0..255>;
   constant, attribute or alias. A renamed import binds the declaration itself,
   so a renamed enum keeps its variants and a renamed generic keeps its
   parameters.
+- **Paths.** A bare path starts at the project root (Rust's `crate::`):
+  `use a::b::C;` loads `a/b.siox`. `std::` starts at the standard library,
+  `self::` at the current module, and `super::` at its parent, repeatable
+  (`super::super::x`). A fully qualified path works anywhere without an import.
+- **Groups** nest, rename members, and name their own prefix with `self`
+  (`{self, …}`, or `{m = self}` to rename it). A group is pure shorthand for
+  the separate imports it lists.
+- **Modules.** Importing a module, by path or with `self` in a group, binds its
+  name as a prefix: `use std::math;` then `math::max(a, b)`. A `pub use` of a
+  module re-exports it as a member of the importing module.
+- **Enum variants** import like items: `use pkg::State::{Idle, Busy};`, or
+  `use pkg::State::*;`. As in Rust, importing a variant does not import the
+  enum; `{self, Idle}` imports both. An import cannot pass through a type
+  alias: `use Alias::Variant;` is an error, so import from the enum it names.
+- **Globs** import every public name of a module (or every variant of an enum)
+  and are weaker than every explicit name: a local declaration or an explicit
+  import shadows a glob-imported name silently. Two globs that bring the same
+  name are an error only where that name is used. Two explicit imports of one
+  name, or an explicit import and a local declaration, are an error.
+- **Blocks.** A `use` may also open any block: a function body, a `process`, or
+  a nested block. Its names are visible from the `use` to the end of that
+  block and shadow the module's. It may not appear among the members of an `impl`, a struct, an enum
+  or an entity interface.
+- **Namespaces.** One import binds a name in every namespace it resolves in:
+  types (modules, structs, enums, entities, views, traits, aliases), values
+  (functions, constants, variants), macros (`assert!`, `print!`) and
+  attributes (`attr` declarations, looked up only in attribute position). So a
+  module `std::assert` and the macro `assert!` never collide.
 - `type` names a type you could not name with a path: a sized vector, a
   ranged integer, an applied generic. The alias is transparent for type
   identity; a distinct type is the newtype form, `struct Word(Bit[]);`
-  (§3.28).
+  (§3.28). A generic alias takes the same binder as other declarations and is
+  applied like its target: `Pair<unsigned[8]>` is `Packet<unsigned[8]>`.
+- Operators never need an import: `a + b` finds its `impl Operator<"+", …>`
+  through the operand's type (§3.25). Every module reached by any `use` form
+  contributes its user operators' precedences.
+- `pub use` and glob imports are never reported by the `unused_import` lint.
 - The removed `using` keyword is an error whose help gives the `use` or `type`
   line that replaces it.
-- Not yet: nested groups and `self` in a group, glob imports (`use a::*;`),
-  `self::`/`super::` paths, imports inside blocks, and generic aliases. See
-  [the using-split proposal](proposals/using-split.md).
 
 In Phase 2 analogue, local paths will use `let`, not an import or alias.
 

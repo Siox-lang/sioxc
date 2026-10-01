@@ -47,6 +47,8 @@ pub enum TokenKind {
     Use,
     /// The `type` keyword: a transparent type alias.
     Type,
+    /// `super`, the parent module at the head of a path (`super::Name`).
+    Super,
     /// The `pub` visibility keyword.
     Pub,
     /// The `entity` keyword.
@@ -204,6 +206,7 @@ impl TokenKind {
             TokenKind::Using => "`using`",
             TokenKind::Use => "`use`",
             TokenKind::Type => "`type`",
+            TokenKind::Super => "`super`",
             TokenKind::Pub => "`pub`",
             TokenKind::Entity => "`entity`",
             TokenKind::Impl => "`impl`",

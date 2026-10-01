@@ -359,6 +359,7 @@ fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<Def
         out: &mut HashSet<DefId>,
     ) {
         match statement {
+            Stmt::Use(_) => {}
             Stmt::Let(declaration) => record_let(declaration, type_params, declared, resolved, out),
             Stmt::Assign {
                 value: Expr::Construct { ty: Some(ty), .. },

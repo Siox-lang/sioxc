@@ -681,7 +681,7 @@ impl<'a> Checker<'a> {
                 self.view_dirs.insert(key, dirs);
             }
             Item::Using(u) => {
-                if let UsingKind::Alias { name, ty } = &u.kind {
+                if let UsingKind::Alias { name, ty, .. } = &u.kind {
                     if let Some(alias_key) = self.declaration_key(name.span) {
                         self.aliases.insert(alias_key, ty.clone());
                     }

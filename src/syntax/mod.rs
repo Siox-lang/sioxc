@@ -7,6 +7,7 @@
 pub mod ast;
 pub mod attributes;
 pub mod format;
+pub mod imports;
 pub mod lexer;
 pub mod parser;
 pub mod pretty;
