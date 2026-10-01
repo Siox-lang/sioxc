@@ -214,8 +214,8 @@ fn direct_process_runtime_links_without_generated_design_c() {
                    .signed_widened = signed_widened,
                    .signed_shifted = signed_shifted
                };
-               process clock_source { clock = not clock after 1ns; }
-               process run {
+               clock_source: process { clock = not clock after 1ns; }
+               run: process {
                    assert!(widened == 200 and signed_widened == 0 - 16,
                            "reactive hardware settles before test stimulus starts");
                    source = 201;
@@ -577,7 +577,7 @@ fn native_waveforms_are_reproducible_across_builds() {
                let clk: Bit = '0';
                let count: unsigned[4];
                let counter: Counter = { .clk = clk, .count = count };
-               process clock_source { clk = not clk after 5ns; }
+               clock_source: process { clk = not clk after 5ns; }
                await 25ns;
                assert!(count == 3, "counter observes three rising edges");
            }"#,
@@ -1164,7 +1164,7 @@ fn process_local_keeps_its_declared_index_range() {
            impl Probe { observed = clk; }
            #[test] entity ProcessLocalRange {}
            impl ProcessLocalRange {
-               process stimulus {
+               stimulus: process {
                    let value: unsigned[15..8] = 0;
                    value[11..8] = "1111";
                    assert!(value == 15,
@@ -1176,12 +1176,12 @@ fn process_local_keeps_its_declared_index_range() {
                let clk: Bit = '0';
                let observed: Bit;
                let probe: Probe = { .clk = clk, .observed = observed };
-               process stimulus {
+               stimulus: process {
                    await 1ns;
                    assert!(observed == '1',
                            "a later-declared clock starts concurrently at time zero");
                }
-               process clock {
+               clock: process {
                    clk = not clk after 1ns;
                }
            }"#,
@@ -1799,7 +1799,7 @@ fn native_delayed_assignments_use_default_inertial_waveforms() {
                let rejected: Bit = '0';
                let retained: unsigned[2] = 0;
                let overlap: unsigned[2] = 0;
-               process run {
+               run: process {
                    // Each later differing value rejects the pending pulse in
                    // the preceding default-inertial delay window.
                    rejected = '1' after 5ns;

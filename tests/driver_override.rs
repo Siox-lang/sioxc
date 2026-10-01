@@ -51,7 +51,7 @@ fn a_combinational_default_holds_when_its_override_does_not_fire() {
                entity E { a: unsigned[8] in, y: unsigned[8] out }\n\
                impl E {\n\
                \x20   let t: unsigned[8] = 0;\n\
-               \x20   process select {\n\
+               \x20   select: process {\n\
                \x20       t = 2;\n\
                \x20       if a > 3 { t = 9; }\n\
                \x20   }\n\
@@ -87,7 +87,7 @@ fn a_clocked_default_holds_when_its_override_does_not_fire() {
                entity E { clk: Bit in, a: unsigned[8] in, y: unsigned[8] out }\n\
                impl E {\n\
                \x20   let t: unsigned[8] = 7;\n\
-               \x20   process update {\n\
+               \x20   update: process {\n\
                \x20       if clk.rising() {\n\
                \x20           t = 2;\n\
                \x20           if a > 3 { t = 9; }\n\
@@ -124,7 +124,7 @@ fn a_replaced_driver_leaves_no_trace_in_the_value() {
                entity E { a: unsigned[8] in, y: unsigned[8] out }\n\
                impl E {\n\
                \x20   let t: unsigned[8] = 0;\n\
-               \x20   process select {\n\
+               \x20   select: process {\n\
                \x20       t = a + 5;\n\
                \x20       t = 2;\n\
                \x20   }\n\

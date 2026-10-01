@@ -10,7 +10,7 @@ entity Counter {
 
 impl Counter {
     let v: unsigned[8] = 0;
-    process update {
+    update: process {
         if clk.rising() {
             if rst == '1' {
                 v = 0;

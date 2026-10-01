@@ -13,7 +13,7 @@ entity Counter<W: integer> {
 impl<W: integer> Counter<W> {
     let value: unsigned[W] = 0;
 
-    process update {
+    update: process {
         if clk.rising() {
             if rst == '1' {
                 value = 0;
@@ -43,11 +43,11 @@ impl CounterTest {
         .count = count,
     };
 
-    process clock_generator {
+    clock_generator: process {
         clk = not clk after 5ns;   // background clock, 10ns period
     }
 
-    process stimulus {
+    stimulus: process {
         await 10ns;
         rst = '0';
 

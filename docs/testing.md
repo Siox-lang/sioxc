@@ -18,10 +18,10 @@ impl CounterTest {
     let count: unsigned[8];
     let dut: Counter = { .clk = clk, .rst = rst, .count = count };
 
-    process clock {
+    clock: process {
         clk = not clk after 5ns;     // free-running clock, 10 ns period
     }
-    process stimulus {
+    stimulus: process {
         await 10ns;                  // hold reset for one edge
         rst = '0';
         for i in 0..9 { await clk.rising(); }

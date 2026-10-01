@@ -363,8 +363,8 @@ fn impl_member(item: &ImplItem) -> Option<(&String, Span, &'static str)> {
         ImplItem::Fn(function) => (&function.name.text, function.name.span, "method"),
         ImplItem::ModeField { name, .. } => (&name.text, name.span, "mode field"),
         ImplItem::Process(process) => {
-            let name = process.name.as_ref()?;
-            (&name.text, name.span, "process")
+            let label = process.label.as_ref()?;
+            (&label.text, label.span, "process")
         }
         ImplItem::Stmt(_) => return None,
     })
@@ -2682,8 +2682,8 @@ mod tests {
     fn named_processes_share_the_entity_member_namespace() {
         let sink = diagnostics(
             "module m;\nentity Device {}\n\
-             impl Device { process drive {} }\n\
-             impl Device { process drive {} }\n",
+             impl Device { drive: process {} }\n\
+             impl Device { drive: process {} }\n",
         );
         let duplicates: Vec<_> = sink
             .diagnostics()

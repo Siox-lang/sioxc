@@ -1080,9 +1080,9 @@ pub fn lower(
                 ImplItem::Process(process) => {
                     let id = ProcessId(process_ir.processes.len() as u32);
                     let label = process
-                        .name
+                        .label
                         .as_ref()
-                        .map(|name| format!("{root_path}::{}", name.text));
+                        .map(|label| format!("{root_path}::{}", label.text));
                     let activation = process_activation(
                         &process.body.stmts,
                         &root_path,
@@ -5998,8 +5998,8 @@ mod tests {
                let cells: Cell[2] = [Cell::Low, Cell::High];\n\
                let flipped: Cell[2] = not cells;\n\
                let dut: Device = { .input = flag, .output = observed };\n\
-               process clock { flag = not flag after 1ns; }\n\
-               process stimulus {\n\
+               clock: process { flag = not flag after 1ns; }\n\
+               stimulus: process {\n\
                  let seen: Bool = flag;\n\
                  let mode: Mode = Mode::On;\n\
                  if seen { print!(\"set\"); } else { warn!(true, \"clear\"); }\n\
@@ -6409,7 +6409,7 @@ mod tests {
                let flags: Bool[0..1] = [false, true];\n\
                let state: State = State::Run;\n\
                let text: string = \"hello\";\n\
-               process run {\n\
+               run: process {\n\
                  print!(\"{} {} {} {}\", flags'ascending, state, State::Done,\n\
                    if true { state } else { State::Idle });\n\
                  print!(\"{} {}\", text, text[2]);\n\
@@ -6517,7 +6517,7 @@ mod tests {
              impl Smoke {\n\
                let link: Link;\n\
                let dut: Device = { .bus = link };\n\
-               process stimulus {}\n\
+               stimulus: process {}\n\
              }",
             "module std::logic; pub enum Bool { false, true }",
             "module std::attrs; using std::logic::{Bool}; pub attr test: Bool for entity;",
@@ -6634,7 +6634,7 @@ mod tests {
              } \
              #[std::attrs::test] entity Smoke {} \
              impl Smoke { let observed: integer = 0; \
-               process run { observed = choose(observed, EXPECTED); } }",
+               run: process { observed = choose(observed, EXPECTED); } }",
             "module std::logic; pub enum Bool { false, true }",
             "module std::attrs; using std::logic::{Bool}; pub attr test: Bool for entity;",
             "module std::ops; using std::logic::{Bool}; \
@@ -6704,7 +6704,7 @@ mod tests {
                const VALUES: integer[2] = [7, 8]; \
                let seed: Pair = { .a = 0, .b = 0 }; \
                let result: integer = 0; \
-               process run { \
+               run: process { \
                  let local: integer[2] = [1, 2]; \
                  result = first(local); \
                  result = first(VALUES); \

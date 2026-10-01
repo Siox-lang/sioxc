@@ -938,14 +938,14 @@ The compiler recognizes that `clk.rising()` depends on `clk'event`, so the block
 ### 3.11 Processes are concurrent; their bodies are sequential
 
 An entity implementation uses `process { ... }` to introduce ordered
-behavior. A process may carry a label — `process update { ... }` — so IR and
+behavior. A process may carry a label — `update: process { ... }` — so IR and
 diagnostics can identify it. Labels are recommended for
 nontrivial entities and must be unique in the entity implementation namespace.
 This follows the VHDL model without requiring an explicit sensitivity list:
 
 ```siox
 impl Register {
-    process update {
+    update: process {
         if clk.rising() {
             q = d;
         }

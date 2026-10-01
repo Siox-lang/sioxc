@@ -702,8 +702,8 @@ fn resolved_process_keeps_every_contributing_label() {
              }\n\
              entity E { q: unsigned[8] out }\n\
              impl E {\n\
-               process bit_one { q[1] = '1'; }\n\
-               process bit_three { q[3] = '1'; }\n\
+               bit_one: process { q[1] = '1'; }\n\
+               bit_three: process { q[3] = '1'; }\n\
              }\n",
     );
     let target = SignalId(

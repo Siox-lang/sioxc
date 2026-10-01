@@ -1917,14 +1917,14 @@ mod tests {
         // could otherwise fold as a generate condition.
         let (_, process) = elaborate_src(&format!(
             "{CELL}entity Top {{ clk: Bit in, y: Bit out }}\n\
-             impl Top {{ y = clk; process build {{ if clk.rising() {{ let c: Cell = {{ .i = clk }}; }} }} }}\n"
+             impl Top {{ y = clk; build: process {{ if clk.rising() {{ let c: Cell = {{ .i = clk }}; }} }} }}\n"
         ));
         assert_eq!(process, 1, "reported, not silently dropped");
 
         // Nested inside a process, at depth.
         let (_, nested) = elaborate_src(&format!(
             "{CELL}entity Top {{ clk: Bit in, y: Bit out }}\n\
-             impl Top {{ y = clk; process build {{ if clk.rising() {{ if 1 == 1 {{ let c: Cell = {{ .i = clk }}; }} }} }} }}\n"
+             impl Top {{ y = clk; build: process {{ if clk.rising() {{ if 1 == 1 {{ let c: Cell = {{ .i = clk }}; }} }} }} }}\n"
         ));
         assert_eq!(
             nested, 1,
@@ -1934,7 +1934,7 @@ mod tests {
         // The `else` branch of a process counts too.
         let (_, else_arm) = elaborate_src(&format!(
             "{CELL}entity Top {{ clk: Bit in, y: Bit out }}\n\
-             impl Top {{ y = clk; process build {{ if clk.rising() {{ y = clk; }} else {{ let c: Cell = {{ .i = clk }}; }} }} }}\n"
+             impl Top {{ y = clk; build: process {{ if clk.rising() {{ y = clk; }} else {{ let c: Cell = {{ .i = clk }}; }} }} }}\n"
         ));
         assert_eq!(else_arm, 1, "the else branch of a process");
 
@@ -1956,7 +1956,7 @@ mod tests {
         let (_, shadowed) = elaborate_src(
             "module m;\nentity T { i: Bit in, o: Bit out }\nimpl T { o = i; }\n\
              entity Buf<T> { clk: Bit in, d: T in, q: T out }\n\
-             impl<T> Buf<T> { q = d; process hold { if clk.rising() { let held: T; } } }\n\
+             impl<T> Buf<T> { q = d; hold: process { if clk.rising() { let held: T; } } }\n\
              entity Top { clk: Bit in, y: Bit out }\n\
              impl Top { let b: Buf<Bit> = { .clk = clk, .d = clk }; y = b.q; }\n",
         );

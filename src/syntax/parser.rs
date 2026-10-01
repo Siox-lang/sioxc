@@ -869,6 +869,14 @@ impl<'a> Parser<'a> {
                 "only functions may be `pub` inside an implementation",
             );
         }
+        // `update: process { ... }` — a VHDL-style label. Nothing else at
+        // impl-item level starts with an identifier and a single `:`.
+        let label = self.parse_label();
+        if let Some(label) = &label {
+            if !self.at(TokenKind::Process) {
+                self.error_at(label.span, "only a `process` can be labelled");
+            }
+        }
         match self.kind() {
             TokenKind::Const => Some(ImplItem::Const(self.parse_const(false))),
             // `let value: T = e;` is state/signal; `fn send(self, ...) { ... }`
@@ -886,12 +894,23 @@ impl<'a> Parser<'a> {
                 Some(ImplItem::Fn(self.parse_fn_after_name(start, name, is_pub)))
             }
             TokenKind::Process => {
-                let start = self.span();
+                let start = label.as_ref().map_or(self.span(), |label| label.span);
                 self.bump();
-                let name = self.at(TokenKind::Ident).then(|| self.parse_ident());
+                let mut label = label;
+                if self.at(TokenKind::Ident) {
+                    // The removed `process update { ... }` spelling: say what
+                    // replaces it and keep the name as the label.
+                    let old = self.parse_ident();
+                    self.sink.emit(
+                        Diagnostic::error("a process name goes in front, as a label")
+                            .at(old.span)
+                            .help(format!("write `{}: process {{ ... }}`", old.text)),
+                    );
+                    label.get_or_insert(old);
+                }
                 let body = self.parse_block();
                 Some(ImplItem::Process(ProcessDecl {
-                    name,
+                    label,
                     span: start.to(body.span),
                     body,
                 }))
@@ -910,6 +929,16 @@ impl<'a> Parser<'a> {
             }
             _ => Some(ImplItem::Stmt(self.parse_stmt())),
         }
+    }
+
+    /// Parse an optional `label:` in front of a labelled construct.
+    fn parse_label(&mut self) -> Option<Ident> {
+        if self.at(TokenKind::Ident) && self.kind_at(self.pos + 1) == &TokenKind::Colon {
+            let label = self.parse_ident();
+            self.bump(); // `:`
+            return Some(label);
+        }
+        None
     }
 
     /// Parse the rest of a `let` once its name has been consumed.
@@ -3012,7 +3041,7 @@ mod tests {
     /// An impl body carries state and an explicit `process` block.
     fn impl_with_state_and_explicit_process() {
         let m = parse_ok(
-            "module m;\nimpl<W: integer> Counter<W> {\n  const MAX: unsigned[W] = (1 << W) - 1;\n  let value: unsigned[W] = 0;\n  process update {\n    if clk.rising() {\n      if rst == '1' {\n        value = 0;\n      } else {\n        value = value + 1;\n      }\n    }\n  }\n  count = value;\n}\n",
+            "module m;\nimpl<W: integer> Counter<W> {\n  const MAX: unsigned[W] = (1 << W) - 1;\n  let value: unsigned[W] = 0;\n  update: process {\n    if clk.rising() {\n      if rst == '1' {\n        value = 0;\n      } else {\n        value = value + 1;\n      }\n    }\n  }\n  count = value;\n}\n",
         );
         let Item::Impl(i) = &m.items[0] else {
             panic!("expected impl")
@@ -3026,11 +3055,54 @@ mod tests {
             panic!("expected process")
         };
         assert_eq!(
-            process.name.as_ref().map(|name| name.text.as_str()),
+            process.label.as_ref().map(|label| label.text.as_str()),
             Some("update")
         );
         assert!(matches!(process.body.stmts[0], Stmt::If(_)));
         assert!(matches!(i.items[3], ImplItem::Stmt(Stmt::Assign { .. })));
+    }
+
+    /// `process update { ... }` was the old spelling of a labelled process.
+    /// One error naming the replacement, and the name still becomes the label
+    /// so later stages see the same process.
+    #[test]
+    fn a_process_name_is_reported_as_a_label() {
+        let src = "module m;\nimpl E {\n  process update { q = d; }\n}\n";
+        let diags = diagnostics(src);
+        assert_eq!(diags.len(), 1, "got {diags:#?}");
+        assert!(diags[0].message.contains("goes in front, as a label"));
+        assert!(diags[0]
+            .help
+            .as_ref()
+            .is_some_and(|h| h.contains("update: process {")));
+        let (m, _) = parse(src);
+        let Item::Impl(i) = &m.items[0] else {
+            panic!("expected impl")
+        };
+        let ImplItem::Process(process) = &i.items[0] else {
+            panic!("expected process")
+        };
+        assert_eq!(
+            process.label.as_ref().map(|l| l.text.as_str()),
+            Some("update")
+        );
+    }
+
+    /// Labels are optional, and only a process takes one at this stage.
+    #[test]
+    fn labels_are_optional_and_only_on_processes() {
+        let m = parse_ok("module m;\nimpl E {\n  process { q = d; }\n  y = a;\n}\n");
+        let Item::Impl(i) = &m.items[0] else {
+            panic!("expected impl")
+        };
+        assert!(matches!(&i.items[0], ImplItem::Process(p) if p.label.is_none()));
+        let diags = diagnostics("module m;\nimpl E {\n  tap: let t: Bit;\n}\n");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("only a `process` can be labelled")),
+            "got {diags:#?}"
+        );
     }
 
     #[test]

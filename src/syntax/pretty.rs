@@ -271,11 +271,11 @@ impl Printer {
             }
             ImplItem::Process(process) => {
                 let label = process
-                    .name
+                    .label
                     .as_ref()
-                    .map(|name| format!(" {}", name.text))
+                    .map(|label| format!("{}: ", label.text))
                     .unwrap_or_default();
-                self.line(&format!("process{label} {{"));
+                self.line(&format!("{label}process {{"));
                 self.indent += 1;
                 for statement in &process.body.stmts {
                     self.stmt(statement);
@@ -1101,7 +1101,7 @@ mod tests {
     /// An explicit `process` block prints with its boundary intact.
     fn explicit_process_roundtrips() {
         roundtrip(
-            "module m;\nentity Counter { clk: Bit in, q: Bit out }\nimpl Counter {\n  process update {\n    if clk.rising() {\n      q = not q;\n    }\n  }\n}\n",
+            "module m;\nentity Counter { clk: Bit in, q: Bit out }\nimpl Counter {\n  update: process {\n    if clk.rising() {\n      q = not q;\n    }\n  }\n}\n",
         );
     }
 }

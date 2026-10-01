@@ -28,7 +28,7 @@ pub struct Design {
     /// drivers/event blocks. The remaining inversion makes this product the
     /// lowering authority and derives those compatibility forms from it.
     pub process_ir: ProcessIr,
-    /// Driver-context labels retained from `process name { ... }`, qualified
+    /// Driver-context labels retained from `name: process { ... }`, qualified
     /// by instance path for diagnostics and backend tracing.
     pub process_labels: HashMap<u32, String>,
     /// Labels from every source context folded into one resolved

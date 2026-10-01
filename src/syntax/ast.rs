@@ -340,8 +340,9 @@ pub enum ImplItem {
 /// inside. Declarations and structural instances stay outside it.
 #[derive(Clone, Debug)]
 pub struct ProcessDecl {
-    /// Optional diagnostic/tooling label: `process receive { ... }`.
-    pub name: Option<Ident>,
+    /// Optional VHDL-style label: `receive: process { ... }`. It names the
+    /// process for diagnostics and tools and never changes behavior.
+    pub label: Option<Ident>,
     /// Statements the process runs. They execute sequentially within the
     /// process even though processes are concurrent with each other.
     pub body: Block,

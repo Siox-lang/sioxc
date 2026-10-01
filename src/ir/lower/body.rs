@@ -796,10 +796,10 @@ impl<'a> Lowering<'a> {
                     ast::ImplItem::Process(process) => {
                         self.lint_generated_dead_assignments(process.body.stmts.iter());
                         self.cur_ctx += 1;
-                        if let Some(name) = &process.name {
+                        if let Some(label) = &process.label {
                             self.out.process_labels.insert(
                                 self.cur_ctx,
-                                format!("{}::{}", self.cur_instance_path, name.text),
+                                format!("{}::{}", self.cur_instance_path, label.text),
                             );
                         }
                         for statement in &process.body.stmts {

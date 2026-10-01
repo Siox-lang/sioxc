@@ -552,7 +552,7 @@ fn format_argument_count_must_match() {
 #[test]
 fn return_outside_a_function_is_reported() {
     let hw = check_src(
-        "module m;\nentity E { y: unsigned[8] out, }\nimpl E { process bad { y = 1; return; } }\n",
+        "module m;\nentity E { y: unsigned[8] out, }\nimpl E { bad: process { y = 1; return; } }\n",
     );
     assert_eq!(hw, 1, "hardware statement position");
     let free_fn = check_src(
