@@ -361,12 +361,13 @@ fn impl_member(item: &ImplItem) -> Option<(&String, Span, &'static str)> {
         ImplItem::Let(declaration) => (&declaration.name.text, declaration.name.span, "state"),
         ImplItem::Const(constant) => (&constant.name.text, constant.name.span, "constant"),
         ImplItem::Fn(function) => (&function.name.text, function.name.span, "method"),
+        ImplItem::AttrBinding(_) => return None,
         ImplItem::ModeField { name, .. } => (&name.text, name.span, "mode field"),
         ImplItem::Process(process) => {
             let name = process.name.as_ref()?;
             (&name.text, name.span, "process")
         }
-        ImplItem::Stmt(_) | ImplItem::AttrBinding(_) => return None,
+        ImplItem::Stmt(_) => return None,
     })
 }
 
