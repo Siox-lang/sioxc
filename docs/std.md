@@ -192,6 +192,13 @@ pub attr precedence: integer for impl = 0;  // custom operator binding power
 Bind them with `attr keep for probe = true;`, or objectless inside an
 implementation: `attr precedence = 40;`.
 
+`std::attrs` also declares the compiler directives, like rustc's built-in
+attributes: `test` above, and the lint levels `allow`, `warn`, `deny` and
+`forbid`, each `for item`. The prelude re-exports all of them, and the
+compiler recognizes these declarations rather than the spelling. `enum Lint`
+lists every lint name a directive accepts (`possible_latch`, `unused_signal`,
+…, and `warnings` for all of them); see the spec's §3.5a.
+
 `top` intentionally is not standard metadata and is not compiler-seeded. A
 Vivado, Quartus, RTL, or Cocotb integration may declare and bind its own `top`
 attribute. The frontend preserves it as ordinary resolved metadata, while
