@@ -2740,7 +2740,7 @@ impl<'a> Parser<'a> {
             }
             let param = self.parse_ident();
             self.expect(TokenKind::Colon, "after a macro parameter's name");
-            let kind_name = self.parse_ident();
+            let kind_name = self.parse_word();
             let kind = FragmentKind::from_name(&kind_name.text).unwrap_or_else(|| {
                 self.sink.emit(
                     Diagnostic::error(format!("`{}` is not a fragment kind", kind_name.text))

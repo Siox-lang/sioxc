@@ -10663,3 +10663,23 @@ token, `compiler.rs` dependency discovery walks use trees, and the
 `unused_import` lint skips globs and `pub use`. Imported variants stay in
 `Enum::Variant` form (patterns require it); qualifiers the pass adds carry an
 empty span before the written name, because later stages resolve by span.
+
+### 2026-10-02 — Claude — user macros, slice 1
+
+`macro` items work (language §3.30, proposals/macros.md): `pub macro
+name($x: expr, …) { body }`, several forms per name chosen by argument
+count and fragment kind (expr, ident, type, path, stmt, item, tokens), and
+invocation as an expression, statements, impl members or module items, with
+`()`, `[]` or `{}`. Hygiene is definition-site (body-declared names become
+`name#n`; free body names are qualified with the macro's module), macros
+import through `use`, expansion nests 128 deep, `--emit expanded` prints the
+result.
+
+The pass is `src/syntax/macros.rs`, run in `compiler.rs` before the imports
+pass. Shared-file touches: `$` is now its own token (it was a custom-operator
+character nobody used); the parser records every bang call's argument tokens
+in `Module::macro_args` (keyed by call span) instead of a new `Expr::Call`
+field, so no IR file changed; `Item::Macro`/`Item::MacroCall` got no-op arms
+in resolve, types, imports and the driver's `-v` trace. A `name!(…)` that is
+neither a user macro nor `assert!`/`print!`/`warn!` is now an error here
+("cannot find macro").

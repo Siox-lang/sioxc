@@ -1,7 +1,10 @@
 # Macros
 
-Status: **proposal**. Slice 1 (below) is being implemented; repetition and
-`builtin #` are later slices.
+Status: **slice 1 implemented** (language §3.30): declarations, forms,
+fragment kinds, all four invocation positions, hygiene, resolution through
+`use`, and `--emit expanded`. Repetition, `builtin #`, and call-site
+locations for assertions inside macros remain; see [Later
+slices](#later-slices).
 
 `macro` declares a user-defined syntax transformation. It is the third
 compile-time mechanism, next to the two that already exist:
@@ -216,15 +219,7 @@ user-visible behavior.
   `error!` (core-std.md) be declared in `core` instead of special-cased.
 - **Expansion notes in the language server**: generated declarations shown as
   generated, not as handwritten source.
-
-## Slice 1: implementation plan
-
-| step | where |
-| --- | --- |
-| `macro` keyword, `$` token | `syntax/lexer.rs`, `token.rs` |
-| `Item::Macro(MacroDecl)` with parameters and body tokens; `Expr::Call { bang }` keeps its argument tokens | `syntax/ast.rs`, `parser.rs` |
-| a parser entry that parses a token vector (tokens from several files) as an expression, statements, members or items | `parser.rs` |
-| the expansion pass: collection, resolution through `use`, form selection, fragment checks, substitution, hygiene, re-parse, recursion | new `syntax/macros.rs` |
-| run the pass first among the pre-resolution passes; `--emit expanded` | `compiler.rs`, `driver.rs` |
-| tests: each position and fragment kind, forms, hygiene both ways, def-site resolution, imports, recursion limit, diagnostics | `tests/macros.rs`, a corpus program |
-| language §3.30 *Macros*; delete this proposal when slices are done | `docs/language.md` |
+- **Call-site locations.** A failing `assert!` written in a macro body reports
+  the body's line today; Rust reports the outermost invocation. Later-stage
+  diagnostics in expanded body code do not yet carry the "while expanding"
+  note that parse errors get.

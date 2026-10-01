@@ -105,6 +105,8 @@ pub enum Emit {
     Tokens,
     /// Debug representation of the entry AST.
     Ast,
+    /// Canonical source of the entry module after macro expansion.
+    Expanded,
     /// Elaborated structural or explicitly selected instance tree.
     Tree,
     /// Normalized digital IR.
@@ -524,6 +526,12 @@ impl Compiler {
         for mismatch in mismatches {
             result.diagnostics.emit(mismatch);
         }
+        let macro_warnings =
+            crate::syntax::macros::expand(&mut result.modules, &operators, &mut result.diagnostics);
+        if request.emit == Emit::Expanded {
+            result.artifact = result.entry().map(pretty::print_module).map(Artifact::Text);
+            return result;
+        }
         let directives = result
             .modules
             .iter()
@@ -532,6 +540,9 @@ impl Compiler {
         result
             .diagnostics
             .set_lint_levels(request.lints.clone(), directives);
+        for warning in macro_warnings {
+            result.diagnostics.emit(warning);
+        }
         crate::syntax::imports::desugar(&mut result.modules, &mut result.diagnostics);
         crate::syntax::attributes::attach(&mut result.modules, &mut result.diagnostics);
         let resolved = crate::resolve::resolve(&result.modules, &mut result.diagnostics);
@@ -658,7 +669,13 @@ impl Compiler {
                     .unwrap_or_else(|| path.with_extension("test"));
                 self.emit_test_executable(&mut result, output, request.debug);
             }
-            Emit::Metadata | Emit::Source | Emit::Tokens | Emit::Ast | Emit::Tree | Emit::Ir => {}
+            Emit::Metadata
+            | Emit::Source
+            | Emit::Expanded
+            | Emit::Tokens
+            | Emit::Ast
+            | Emit::Tree
+            | Emit::Ir => {}
         }
         result
     }
