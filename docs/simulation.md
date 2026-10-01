@@ -207,6 +207,11 @@ external waveform application.
   discriminant (the de-facto VCD string extension Surfer and GTKWave both read).
 - **Struct and array signals** flatten to one trace per leaf (`p.valid`,
   `regs[2]`).
+- **Instances** are nested scopes. A labelled generate adds its own scopes:
+  `stages: for k in 0..2` shows `stages[0]`, `stages[1]`, … each holding that
+  iteration's instances, and `tap: if …` shows one `tap` scope whichever
+  branch was built. Instances from an unlabelled loop sit directly in the
+  parent as `s_0`, `s_1`, ….
 
 **Viewing:** [Surfer](https://surfer-project.org/) is a modern native/browser
 viewer; [GTKWave](https://gtkwave.sourceforge.net/) is the long-standing
