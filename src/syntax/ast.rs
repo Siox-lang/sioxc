@@ -14,6 +14,10 @@ pub struct Module {
     pub path: Path,
     /// Top-level declarations, in source order.
     pub items: Vec<Item>,
+    /// Every lint directive in the file (`#[allow(...)]` on an item or
+    /// statement, `#![allow(...)]` for the module), with the extent it
+    /// governs. The sink applies them to warnings as they are emitted.
+    pub lints: Vec<crate::diag::lints::LintDirective>,
     /// The whole file, from `module` to the last item.
     pub span: Span,
 }
@@ -73,6 +77,8 @@ pub enum Item {
     Trait(TraitDecl),
     /// A user-defined attribute declaration (`attr top: Bool for entity;`).
     AttrDecl(AttrDecl),
+    /// A module-level attribute binding: `attr top for Chip = true;`.
+    AttrBinding(AttrBinding),
 }
 
 /// `using std::logic::{Bit, ...};` or `using Word = unsigned[32];` (spec 3.4).
@@ -271,6 +277,9 @@ pub struct Port {
     pub name: Ident,
     /// The port's type, including any width or view qualifier.
     pub ty: Type,
+    /// Attributes bound to the port from its entity's implementation
+    /// (`attr keep for clk = true;`). Ports carry no `#[...]` of their own.
+    pub attrs: Vec<Attr>,
     /// The whole port declaration's extent.
     pub span: Span,
 }
@@ -334,14 +343,19 @@ pub enum ImplItem {
     Process(ProcessDecl),
     /// Bare behavioral statement (combinational or event-controlled block).
     Stmt(Stmt),
+    /// An attribute binding: `attr keep for probe = true;` names a member,
+    /// `attr precedence = 40;` binds the enclosing implementation (or, for an
+    /// attribute declared `for entity`, the entity it implements).
+    AttrBinding(AttrBinding),
 }
 
 /// A `process { ... }` block: concurrent with other processes, sequential
 /// inside. Declarations and structural instances stay outside it.
 #[derive(Clone, Debug)]
 pub struct ProcessDecl {
-    /// Optional diagnostic/tooling label: `process receive { ... }`.
-    pub name: Option<Ident>,
+    /// Optional VHDL-style label: `receive: process { ... }`. It names the
+    /// process for diagnostics and tools and never changes behavior.
+    pub label: Option<Ident>,
     /// Statements the process runs. They execute sequentially within the
     /// process even though processes are concurrent with each other.
     pub body: Block,
@@ -378,6 +392,23 @@ pub struct AttrDecl {
     /// `port`, `instance`, `node`, `signal`, and so on. Applying it elsewhere
     /// is a diagnostic.
     pub targets: Vec<Ident>,
+    /// `= <default>`: the value every target has until a binding says
+    /// otherwise, so a read (`x'name`) always answers.
+    pub default: Option<Expr>,
+    /// `attr` keyword through the terminating `;`.
+    pub span: Span,
+}
+
+/// `attr keep for probe = true;` (named) or `attr precedence = 40;`
+/// (objectless): metadata attached to a declaration from outside it.
+#[derive(Clone, Debug)]
+pub struct AttrBinding {
+    /// The attribute being bound, resolved against `attr` declarations.
+    pub name: Path,
+    /// The declaration it binds; `None` binds the enclosing item.
+    pub object: Option<Ident>,
+    /// The bound value: a literal of the attribute's declared type.
+    pub value: Expr,
     /// `attr` keyword through the terminating `;`.
     pub span: Span,
 }
@@ -468,6 +499,9 @@ pub enum Stmt {
     /// (`after` is testbench-only in Phase 1; the self-toggle idiom is the
     /// canonical clock generator).
     Assign {
+        /// Optional VHDL-style label: `sum: y = a + b;`. It names the
+        /// assignment for diagnostics and never changes behavior.
+        label: Option<Ident>,
         /// The assigned place: a name, field, index, slice, or concatenation.
         target: Expr,
         /// The value driven onto `target`.
@@ -484,6 +518,9 @@ pub enum Stmt {
     Match(MatchStmt),
     /// `for i in 0..10 { ... }` over a static range (spec Stage 1 / 8).
     For {
+        /// Optional label on a structural loop: `stages: for k in 0..2 { ... }`
+        /// names a hierarchy scope with one child per iteration.
+        label: Option<Ident>,
         /// The loop variable, bound fresh in each iteration's `body`.
         var: Ident,
         /// The range iterated over. It must be static: loops are unrolled at
@@ -508,6 +545,10 @@ pub enum Stmt {
 /// An `if` statement and the head of any `else` chain hanging off it.
 #[derive(Clone, Debug)]
 pub struct IfStmt {
+    /// Optional label on a structural `if`: `tap: if DEBUG { ... } else { ... }`
+    /// names one hierarchy scope, filled by whichever branch is taken. Only
+    /// the head of an `else if` chain carries one.
+    pub label: Option<Ident>,
     /// The tested condition, read through the `Condition` trait.
     pub cond: Expr,
     /// Statements run when `cond` holds.

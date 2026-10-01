@@ -45,6 +45,22 @@ precise reference.
   array yet omitted by a generate condition; referencing one of its ports is
   `E-P022` (“instance was not elaborated”), while leaving that slot unused is
   legal.
+- **Generate labels.** A structural `for` or `if` may carry a VHDL-style label,
+  which makes it a scope in the elaborated hierarchy. `stages: for k in 0..2
+  { let s: Stage = { .. }; }` has one child per iteration, keyed by the loop
+  value in square brackets: `stages[0].s`, `stages[1].s`, `stages[2].s`.
+  `tap: if DEBUG { let t: Probe = { .. }; } else { let t: Stub = { .. }; }`
+  has one child, filled by whichever branch is taken, so the path `tap.t` is
+  the same either way. One label covers the whole `if`/`else if`/`else`
+  chain. The path spelling is the same in `--emit tree`, IR signal names, VCD/FST
+  scopes and the debugger. A label is never required. An unlabelled loop
+  names its instances in the parent's namespace with its indices appended,
+  outermost first (`s_0`, `s_0_1`), and a collision with another name there
+  is `E-P002`; a label avoids it. A label inside an unlabelled loop carries that
+  loop's index (`pair_0.z`). Labels share the implementation's member
+  namespace with `let`s, processes and functions (`E-P002` on a duplicate).
+  Inside a process or function, `for` and `if` are control flow and take no
+  label.
 - **Where an entity may be instantiated.** Only at the root layer of another
   entity's body, or inside a generate `for`/`if` — not in a process (an `if` on
   a signal), not in a `match` arm, not in a function. Those are `E-P020`.
@@ -109,7 +125,9 @@ precise reference.
   Derivation never adds members or generally inherits behaviour; bigger types
   are built by composition. A nominal newtype over `T[]` forwards constrained
   blanket implementations declared for its array base.
-- `#[…]` attributes, including type-targeted ones.
+- Declarative attributes: declared `attr keep: Bool for let = false;`, bound
+  `attr keep for probe = true;`, read `probe'keep`, including type-targeted
+  ones. `#[…]` is only for compiler directives (`#[test]`).
 - System attributes for metadata: `x'length`, range bounds `x'high`/`x'low`/`x'left`/`x'right`/`x'ascending`.
 
 ### Diagnostics
@@ -117,7 +135,8 @@ precise reference.
 Every diagnostic has a stable code. Beyond errors, the compiler lints for
 possible latches, unused imports, combinational loops (a signal that feeds
 itself with no register in the path), and non-exhaustive / unreachable match
-arms. Independent drivers on a type without `Resolve` are the E-P014 conflict
+arms; `#[allow(…)]`/`#[deny(…)]` and `-A`/`-D` set each lint's level, as in
+rustc (§3.5a). Independent drivers on a type without `Resolve` are the E-P014 conflict
 error; drivers on a type with `Resolve` are intentional and do not warn. Type
 errors carry targeted fix-it help — e.g. a string literal used where a single
 value is wanted (`Logic = "0"`) points at the character literal `'0'`.
@@ -192,10 +211,10 @@ using
     import or type alias
 
 attr
-    metadata attribute declaration
+    metadata attribute declaration or binding
 
 #[...]
-    metadata attribute application
+    compiler directive (`#[test]`)
 
 ::
     language/system attributes and associated items
@@ -546,58 +565,140 @@ In Phase 2 analogue, local paths should use `let`, not `using`.
 
 ---
 
-### 3.5 `attr` declarations are required before `#[...]` use
+### 3.5 `attr` declares, binds and reads metadata
 
-Metadata attributes must be declared before use.
+Metadata is a declaration and a binding, both spelled with `attr`, and is read
+back with the tick:
 
-Example declarations:
-
-```siox
-pub attr test: Bool for entity;
-pub attr keep: Bool for let, port;
-pub attr library: string for entity;
-pub attr name: string for entity;
-
-// A vendor integration owns its own metadata namespace.
-pub attr vivado_top: Bool for entity;
+```text
+attr <name>: <Type> for <targets> = <default>;   // declaration
+attr <name> for <object> = <value>;              // binding, named
+attr <name> = <value>;                           // binding, enclosing item
+<object>'<name>                                  // read
 ```
 
-Usage:
+Only a declaration has `: Type`, and only a declaration may be `pub`. An
+attribute must be declared (or imported) before it is bound.
 
 ```siox
-#[vivado_top]
-entity Top {
-    clk: Bit in
+pub attr test: Bool for entity = false;
+pub attr keep: Bool for let, port = false;
+pub attr library: string for entity = "";
+pub attr name: string for entity = "";
+pub attr precedence: integer for impl = 0;
+
+// A vendor integration owns its own metadata namespace.
+pub attr vivado_top: Bool for entity = false;
+```
+
+**Bindings.** A binding attaches a value from outside the declaration it
+describes, so it cannot be mistaken for a driver: `=` after `attr` is never a
+signal assignment.
+
+- Inside an implementation, a named binding names one of the entity's `let`s
+  (in any of its implementation blocks in the module) or one of its ports:
+  `attr keep for probe = true;`.
+- An objectless binding binds the enclosing item. Inside an operator impl,
+  `attr precedence = 40;` binds that implementation (`precedence` is declared
+  `for impl`). Inside an entity's implementation, an attribute declared
+  `for entity` binds the entity itself, since the entity body holds only ports:
+  `attr vivado_top = true;`.
+- At module level a named binding names an entity: `attr vivado_top for Top =
+  true;`. An objectless binding at module level has nothing to bind
+  (`E-P029`).
+- A binding may come before or after the declaration it names. Binding one
+  attribute twice on one declaration is `E-P030`: unlike drivers, a later
+  binding does not override an earlier one.
+- The value must have the attribute's declared type (`E-P007`), and the target
+  must be one the declaration lists (`E-P006`).
+
+```siox
+impl Operator<"nand", Logic, Logic> for Logic {
+    attr precedence = 40;              // the enclosing implementation
+    fn apply(self, rhs: Logic) -> Logic { ... }
+}
+
+impl Top {
+    attr keep for probe = true;        // a named `let`
+    attr external_clock for p = true;  // a named instance
+
+    let probe: unsigned[8];
+    let p: Pll = { .clk = clk, .locked = l };
 }
 ```
 
-Invalid if `vivado_top` was not declared/imported:
+**Reads.** `object'name` reads an attribute of a `let`, port, instance or
+entity. It answers with the binding on that object, else (for an instance) the
+binding on its entity, else the declared default, so a read of a declared
+attribute is total. A read with none of the three is `E-P031`; a declaration
+without a default is still legal for attributes nobody reads. Bindings are
+elaboration-time constants: a read folds to its value before name resolution,
+so `if p'external_clock { ... }` costs nothing at run time. A declared
+attribute may not take a system attribute's name (`length`, `event`, …),
+so `x'length` keeps its meaning.
+
+**`#[...]` is for directives.** A directive changes what the compiler emits,
+accepts, or reports; removing metadata changes only what a tool sees. Metadata
+written as `#[...]` is `E-P032`, and the help names the binding that replaces
+it for that position. As with rustc's built-in attributes, the directives are
+declared in `std::attrs` and reach every module through the prelude, and the
+compiler recognizes those declarations, not a spelling: a same-named attribute
+declared elsewhere is ordinary metadata.
+
+- `#[test]` compiles an entity into the `sioxc --test` executable.
+- `#[allow(lint, …)]`, `#[warn(…)]`, `#[deny(…)]` and `#[forbid(…)]` set lint
+  levels, as in rustc (below).
+
+### 3.5a Lint levels
+
+Every warning is a *lint* with a snake_case name; the first one of each kind
+says so (``note: `#[warn(unused_signal)]` on by default``). `std::attrs::Lint`
+lists them:
+
+| lint | code | | lint | code |
+| --- | --- | --- | --- | --- |
+| `possible_latch` | W-P002 | | `suspicious_reset` | W-P009 |
+| `unused_signal` | W-P003 | | `combinational_loop` | W-P010 |
+| `unused_param` | W-P004 | | `undriven_output` | W-P011 |
+| `unused_import` | W-P005 | | `unconnected_input` | W-P012 |
+| `unreachable_match_arm` | W-P006 | | `dead_assignment` | W-P014 |
+| `non_exhaustive_match` | W-P007 | | `unimplemented_attr` | W-P015 |
+| `suspicious_logic_compare` | W-P008 | | `incomplete_struct_literal` | W-P016 |
+| `unknown_lints` | W-P017 | | | |
+
+`warnings` names all of them at once.
 
 ```siox
-#[vivado_top]
-entity Top { }
+module design;
+#![deny(warnings)]                    // every warning in this module fails the build
+
+impl Pipeline {
+    #[allow(undriven_output)]         // a probe kept for the waveform
+    let probe: unsigned[8];
+
+    process {
+        #[allow(possible_latch)]      // this latch is meant
+        if en { q = d; }
+    }
+}
 ```
 
-Invalid if type does not match:
-
-```siox
-#[vivado_top = "yes"]
-entity Top { }
-```
-
-because `vivado_top` expects `Bool`.
-
-Boolean shorthand:
-
-```siox
-#[vivado_top]
-```
-
-means:
-
-```siox
-#[vivado_top = true]
-```
+- `allow` drops the lint's warnings, `warn` reports them (the default),
+  `deny` reports them as errors, and `forbid` is `deny` that nothing inside may
+  lower: an inner `allow`, `warn` or `deny` of a forbidden lint is `E-P033`.
+- A directive governs the item, implementation member or statement it
+  precedes. `#![...]` right after the module path governs the whole module and
+  must come before any item. Only lint directives may precede a statement.
+- The command line sets levels for every module: `-A`/`--allow`,
+  `-W`/`--warn`, `-D`/`--deny` and `-F`/`--forbid` take a lint name and apply
+  in the order written (`sioxc -D warnings -A unused_signal design.siox`).
+  Directives in the source then apply from the outermost item inwards, so the
+  innermost level wins.
+- A denied lint is an error: it stops later stages and fails the build. An
+  error or warning a level produced points at the directive that set it, or
+  names the flag.
+- An unknown lint name is the `unknown_lints` warning, which can itself be
+  allowed. `#[allow]` without a lint list is `E-P034`.
 
 **Nominal array families follow their base representation.** An array newtype
 such as `struct unsigned(Logic[])` is an N-element nominal array without any
@@ -648,15 +749,16 @@ an attribute valid only on that entity/struct or on declarations/instances
 of it — vendor metadata, like Vivado's `ASYNC_REG`/`DONT_TOUCH`:
 
 ```siox
-pub attr external_clock: Bool for Pll;
+pub attr external_clock: Bool for Pll = false;
 
-#[external_clock = true]
+attr external_clock for p = true;
 let p: Pll = { clk, locked };
 ```
 
 Applying it to anything else is `E-P006`. Instance attributes are preserved
-through elaboration (visible with `sioxc file.siox --emit tree`) so synthesis/constraint
-backends can export them to external tools.
+through elaboration (visible with `sioxc file.siox --emit tree`, as
+`p: Pll [external_clock = true]`) so synthesis/constraint backends can export
+them to external tools.
 
 ---
 
@@ -670,15 +772,16 @@ Examples:
 
 ```siox
 // Ordinary vendor metadata: preserved, but not interpreted by sioxc.
-#[vivado::top]
 entity Top { ... }
+attr vivado::top for Top = true;
 
-// Canonical std metadata consumed only for native test builds.
+// The one directive: compile this entity into the native test executable.
 #[test]
 entity CounterTest { ... }
 
-#[library = "work", name = "ExternalCounter"]
 extern entity Counter { ... }
+attr library for Counter = "work";
+attr name for Counter = "ExternalCounter";
 ```
 
 `top` is not a std or compiler attribute. An RTL/vendor/Cocotb integration may
@@ -938,14 +1041,16 @@ The compiler recognizes that `clk.rising()` depends on `clk'event`, so the block
 ### 3.11 Processes are concurrent; their bodies are sequential
 
 An entity implementation uses `process { ... }` to introduce ordered
-behavior. A process may carry a label — `process update { ... }` — so IR and
-diagnostics can identify it. Labels are recommended for
-nontrivial entities and must be unique in the entity implementation namespace.
-This follows the VHDL model without requiring an explicit sensitivity list:
+behavior. A process may carry a VHDL-style label — `update: process { ... }` —
+so IR and diagnostics can identify it. A label is never required, never
+changes behavior, and must be unique in the entity implementation namespace.
+The older `process update { ... }` spelling is an error that names the
+labelled form. This follows the VHDL model without requiring an explicit
+sensitivity list:
 
 ```siox
 impl Register {
-    process update {
+    update: process {
         if clk.rising() {
             q = d;
         }
@@ -965,6 +1070,14 @@ The rules are:
 - A bare assignment outside a process is concurrent and forms its own driver
   context. Several such assignments to one unresolved signal are conflicting
   drivers; a type implementing `Resolve` folds them.
+- Any assignment may carry a label, concurrent or inside a process, including
+  indexed, field, compound and `after`-delayed ones: `sum: y = a + b;`,
+  `step: n = n + 1;`. Like a process label it is never required and never
+  changes behavior. A concurrent assignment's label names its driver context,
+  so a conflicting-driver error (`E-P014`) and the IR dump identify it by
+  name. Labels at the top of an implementation share its member namespace;
+  labels inside one process share that process's namespace (`E-P002` on a
+  duplicate).
 - Persistent signal assignments take effect at the end of the process/event
   step. Process-local `let` bindings update immediately.
 - Entity instances, persistent state declarations, constants, and helper
@@ -1912,7 +2025,7 @@ impl Operator<"+", Complex, Complex> for Complex {
 
 The **standard symbols** (`+ - * / << >> and or not <=>`) carry built-in
 precedence. Any **other symbol** is a user operator (`xor`, `nand`, `^^`, …):
-its impl declares binding power with `#[precedence = N]`. Unary `not`
+its impl binds its binding power with `attr precedence = N;`. Unary `not`
 implements `apply(self)` with no rhs. Using an operator on a user struct/enum
 without a matching impl is an error (`==`/`!=` stay built-in on enums as
 discriminant comparison). `Self` in an impl refers to the implementing type.

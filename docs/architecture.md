@@ -243,7 +243,7 @@ The backend is `src/llvm/`; the compiler entry and driver are `src/main.rs` and
 | `syntax` | AST | Lexer, tokens, AST, parser, canonical printer, and named/anonymous process blocks. |
 | `resolve` | AST | Definitions, visibility, imports, paths, and use-site → `DefId`. |
 | `types` | AST | Type/kind/operator checking and persistent expression `Ty` facts. |
-| `elab` | AST | Parameters, roots, instances, connections, concrete instance-array build facts, and `Hierarchy`. |
+| `elab` | AST | Parameters, roots, instances, connections, concrete instance-array build facts, and `Hierarchy`. `elab::GenPath` names generated instances (`s_0` in an unlabelled loop, `stages[0].s` in a labelled one) for both elaboration and the IR's generate walk. |
 | `testbench` | AST/plan | Canonical std test discovery, exact test-root elaboration, and backend-neutral `TestPlan`. |
 | `ir` | IR | Source/process lowering, signals, layouts, canonical process CFGs/test descriptors, normalized drivers/event blocks, initializers, validation, and semantic lints. |
 | `compiler` | API | `Compiler`, disk/in-memory `SourceInput`, `CompileRequest`, retained `Compilation` phase products, structured failures, and artifacts. |
@@ -468,9 +468,13 @@ word fallback only applies when the std root has no prelude at all. `resolve`
 seeds only the kernel scalars (`integer`, `real`, and Unicode `Char`);
 `Bit`, `Logic`, `Bool`, `unsigned`, and `signed` come from std declarations.
 Before the full Pratt parse, `compiler` lexically follows that exact transitive
-import graph and collects every `#[precedence]` operator declaration. Imported
+import graph and collects every operator impl's `attr precedence = N;`. Imported
 operators therefore group expressions correctly in their users, while an
 unrelated `.siox` file cannot alter the active grammar.
+The binding pass `syntax::attributes::attach` runs over every loaded module
+just before resolution: it copies each `attr … for … = …;` binding onto its
+target as an applied attribute (the form later stages read) and folds each
+`x'name` read of a declared attribute into its bound or default value.
 The resolver additionally bootstraps the `Operator`, `Prefix`, `Suffix`, and
 `LogicEncoding` hook identities plus syntax-level attributes; their canonical
 contracts and values remain declarations in `std::ops`, `std::logic`, and

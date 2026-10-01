@@ -141,6 +141,10 @@ pub struct CompileRequest {
     /// Request native source-level debug metadata. The Process IR backend
     /// currently rejects this explicitly until direct DWARF emission exists.
     pub debug: bool,
+    /// Lint levels from the command line (`-A`/`-W`/`-D`/`-F`), in the order
+    /// given; later entries override earlier ones, and source directives
+    /// override both unless a level is `forbid`.
+    pub lints: Vec<(crate::diag::lints::Level, String)>,
 }
 
 impl CompileRequest {
@@ -152,6 +156,7 @@ impl CompileRequest {
             emit,
             output: None,
             debug: false,
+            lints: Vec::new(),
         }
     }
 
@@ -164,6 +169,13 @@ impl CompileRequest {
     /// Set the destination path for a file artifact.
     pub fn with_output(mut self, path: impl Into<PathBuf>) -> Self {
         self.output = Some(path.into());
+        self
+    }
+
+    /// Set lint levels for the whole compilation, as rustc's `-A`/`-W`/`-D`/
+    /// `-F` do, in order (`[(Deny, "warnings")]` is `-D warnings`).
+    pub fn with_lint_levels(mut self, lints: Vec<(crate::diag::lints::Level, String)>) -> Self {
+        self.lints = lints;
         self
     }
 }
@@ -364,6 +376,9 @@ impl Compilation {
                 let (line, column) = self.sources.line_col(label.span.file, label.span.start);
                 let _ = writeln!(out, "   = {} (at {line}:{column})", label.message);
             }
+            for note in &diagnostic.notes {
+                let _ = writeln!(out, "   = note: {note}");
+            }
             if let Some(help) = &diagnostic.help {
                 let _ = writeln!(out, "   = help: {help}");
             }
@@ -509,6 +524,15 @@ impl Compiler {
         for mismatch in mismatches {
             result.diagnostics.emit(mismatch);
         }
+        let directives = result
+            .modules
+            .iter()
+            .flat_map(|module| module.lints.iter().cloned())
+            .collect();
+        result
+            .diagnostics
+            .set_lint_levels(request.lints.clone(), directives);
+        crate::syntax::attributes::attach(&mut result.modules, &mut result.diagnostics);
         let resolved = crate::resolve::resolve(&result.modules, &mut result.diagnostics);
         result.stats.definitions = Some(resolved.defs().len());
         let typed = crate::types::check(&result.modules, &resolved, &mut result.diagnostics);
@@ -775,7 +799,7 @@ fn backend_unavailable() -> CompileFailure {
 ///
 /// Roots are entities nothing instantiates. `explicit` names one directly and
 /// may be module-qualified to break a tie between equal leaf names. With no
-/// explicit choice, exactly one root must exist -- `#[top]` is vendor metadata
+/// explicit choice, exactly one root must exist -- `top` is vendor metadata
 /// and deliberately does not participate.
 fn select_top(
     modules: &[Module],
@@ -1060,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    /// `#[top]` is vendor metadata, not a build directive: default root
+    /// `top` is vendor metadata, not a build directive: default root
     /// selection must ignore it and use structural reachability instead.
     fn default_object_root_is_structural_not_vendor_metadata() {
         let mut sink = DiagnosticSink::new();
@@ -1072,10 +1096,12 @@ mod tests {
             ),
             syntax::parse_module(
                 FileId(1),
-                "module design; #[vendor::top = 1] entity Preferred {} entity Other {}",
+                "module design; entity Preferred {} attr vendor::top for Preferred = 1; entity Other {}",
                 &mut sink,
             ),
         ];
+        let mut modules = modules;
+        syntax::attributes::attach(&mut modules, &mut sink);
         let resolved = resolve::resolve(&modules, &mut sink);
         assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
         let crate::syntax::ast::Item::Entity(preferred) = &modules[1].items[0] else {

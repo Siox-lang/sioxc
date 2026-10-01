@@ -101,6 +101,7 @@ impl<'a> Lowering<'a> {
                 value,
                 after,
                 span,
+                ..
             } => {
                 // `after` delays are testbench stimulus, not synthesizable
                 // hardware (Phase 1): reject rather than silently drop.
@@ -844,6 +845,7 @@ impl<'a> Lowering<'a> {
                     value,
                     after,
                     span,
+                    ..
                 } => {
                     if after.is_some() {
                         self.sink.emit(

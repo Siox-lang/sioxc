@@ -15,6 +15,7 @@ pub fn print_module(module: &Module) -> String {
     let mut p = Printer {
         out: String::new(),
         indent: 0,
+        lints: module.lints.iter().map(|d| (d.clone(), false)).collect(),
     };
     p.module(module);
     p.out
@@ -29,6 +30,9 @@ struct Printer {
     out: String,
     /// Current indentation depth, counted in levels not columns.
     indent: usize,
+    /// The module's lint directives, each printed once before the item or
+    /// statement whose extent it governs.
+    lints: Vec<(crate::diag::lints::LintDirective, bool)>,
 }
 
 impl Printer {
@@ -46,13 +50,44 @@ impl Printer {
         self.out.push('\n');
     }
 
+    /// Print the lint directives governing exactly the node spanning `span`:
+    /// their extent starts at or before it (at the directive itself) and ends
+    /// where it ends. `inner` prints the `#![...]` form.
+    fn lint_directives(&mut self, span: crate::diag::Span, inner: bool) {
+        let mut lines = Vec::new();
+        for (directive, printed) in &mut self.lints {
+            let scope = directive.scope;
+            if *printed
+                || scope.file != span.file
+                || scope.end != span.end
+                || scope.start > span.start
+            {
+                continue;
+            }
+            *printed = true;
+            let names = directive
+                .names
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let bang = if inner { "!" } else { "" };
+            lines.push(format!("#{bang}[{}({names})]", directive.level.word()));
+        }
+        for line in lines {
+            self.line(&line);
+        }
+    }
+
     // --- items --------------------------------------------------------------
 
     /// Print a whole module: its `module` header, then each item.
     fn module(&mut self, m: &Module) {
         self.line(&format!("module {};", path(&m.path)));
+        self.lint_directives(m.span, true);
         for item in &m.items {
             self.blank();
+            self.lint_directives(item_span(item), false);
             self.item(item);
         }
     }
@@ -79,6 +114,7 @@ impl Printer {
             Item::Impl(i) => self.impl_decl(i),
             Item::Trait(t) => self.trait_decl(t),
             Item::AttrDecl(a) => self.attr_decl(a),
+            Item::AttrBinding(b) => self.attr_binding(b),
         }
     }
 
@@ -262,6 +298,7 @@ impl Printer {
 
     /// Print one member of an impl body.
     fn impl_item(&mut self, item: &ImplItem) {
+        self.lint_directives(impl_item_span(item), false);
         match item {
             ImplItem::Const(c) => self.const_decl(c),
             ImplItem::Let(l) => self.line(&format!("{};", let_decl(l))),
@@ -270,12 +307,7 @@ impl Printer {
                 self.line(&format!("{} {};", dir_str(*dir), name.text));
             }
             ImplItem::Process(process) => {
-                let label = process
-                    .name
-                    .as_ref()
-                    .map(|name| format!(" {}", name.text))
-                    .unwrap_or_default();
-                self.line(&format!("process{label} {{"));
+                self.line(&format!("{}process {{", label_prefix(&process.label)));
                 self.indent += 1;
                 for statement in &process.body.stmts {
                     self.stmt(statement);
@@ -284,6 +316,7 @@ impl Printer {
                 self.line("}");
             }
             ImplItem::Stmt(s) => self.stmt(s),
+            ImplItem::AttrBinding(b) => self.attr_binding(b),
         }
     }
 
@@ -312,10 +345,29 @@ impl Printer {
             .map(|t| t.text.clone())
             .collect::<Vec<_>>()
             .join(", ");
+        let default = a
+            .default
+            .as_ref()
+            .map(|d| format!(" = {}", expr(d)))
+            .unwrap_or_default();
         self.line(&format!(
-            "{kw}attr {}: {} for {targets};",
+            "{kw}attr {}: {} for {targets}{default};",
             a.name.text,
             type_str(&a.ty)
+        ));
+    }
+
+    /// Print an attribute binding, named or objectless.
+    fn attr_binding(&mut self, b: &AttrBinding) {
+        let object = b
+            .object
+            .as_ref()
+            .map(|o| format!(" for {}", o.text))
+            .unwrap_or_default();
+        self.line(&format!(
+            "attr {}{object} = {};",
+            path(&b.name),
+            expr(&b.value)
         ));
     }
 
@@ -353,9 +405,11 @@ impl Printer {
 
     /// Print one statement.
     fn stmt(&mut self, s: &Stmt) {
+        self.lint_directives(stmt_span(s), false);
         match s {
             Stmt::Let(l) => self.line(&format!("{};", let_decl(l))),
             Stmt::Assign {
+                label,
                 target,
                 value,
                 after,
@@ -365,14 +419,28 @@ impl Printer {
                     .as_ref()
                     .map(|d| format!(" after {}", expr(d)))
                     .unwrap_or_default();
-                self.line(&format!("{} = {}{delay};", expr(target), expr(value)));
+                self.line(&format!(
+                    "{}{} = {}{delay};",
+                    label_prefix(label),
+                    expr(target),
+                    expr(value)
+                ));
             }
             Stmt::If(i) => self.if_stmt(i),
             Stmt::Match(m) => self.match_stmt(m),
             Stmt::For {
-                var, range, body, ..
+                label,
+                var,
+                range,
+                body,
+                ..
             } => {
-                self.line(&format!("for {} in {} {{", var.text, expr(range)));
+                self.line(&format!(
+                    "{}for {} in {} {{",
+                    label_prefix(label),
+                    var.text,
+                    expr(range)
+                ));
                 self.block_body(body);
                 self.line("}");
             }
@@ -386,7 +454,7 @@ impl Printer {
 
     /// Print an `if` statement.
     fn if_stmt(&mut self, i: &IfStmt) {
-        self.if_chain("if", i);
+        self.if_chain(&format!("{}if", label_prefix(&i.label)), i);
     }
 
     /// Render an if/else-if chain flat, e.g. `if a { } else if b { } else { }`.
@@ -430,6 +498,14 @@ impl Printer {
 
 // --- leaf renderers (pure) --------------------------------------------------
 
+/// `label: ` in front of a labelled construct, or nothing.
+fn label_prefix(label: &Option<Ident>) -> String {
+    label
+        .as_ref()
+        .map(|label| format!("{}: ", label.text))
+        .unwrap_or_default()
+}
+
 /// `"pub "` or the empty string, so callers can prefix unconditionally.
 fn pub_kw(is_pub: bool) -> &'static str {
     if is_pub {
@@ -467,6 +543,37 @@ fn sep(i: usize, len: usize) -> &'static str {
         ""
     } else {
         ","
+    }
+}
+
+/// The extent of a top-level item.
+fn item_span(item: &Item) -> crate::diag::Span {
+    match item {
+        Item::Using(u) => u.span,
+        Item::Const(c) => c.span,
+        Item::Fn(f) => f.span,
+        Item::ExternBlock { span, .. } => *span,
+        Item::Struct(s) => s.span,
+        Item::View(v) => v.span,
+        Item::Enum(e) => e.span,
+        Item::Entity(e) => e.span,
+        Item::Impl(i) => i.span,
+        Item::Trait(t) => t.span,
+        Item::AttrDecl(a) => a.span,
+        Item::AttrBinding(b) => b.span,
+    }
+}
+
+/// The extent of an implementation member.
+fn impl_item_span(item: &ImplItem) -> crate::diag::Span {
+    match item {
+        ImplItem::Const(c) => c.span,
+        ImplItem::Let(l) => l.span,
+        ImplItem::Fn(f) => f.span,
+        ImplItem::ModeField { span, .. } => *span,
+        ImplItem::Process(p) => p.span,
+        ImplItem::Stmt(s) => stmt_span(s),
+        ImplItem::AttrBinding(b) => b.span,
     }
 }
 
@@ -655,7 +762,7 @@ const UNARY_PREC: u8 = 100;
 const RANGE_PREC: u8 = 1;
 
 /// Render an expression, adding only the parentheses precedence requires.
-fn expr(e: &Expr) -> String {
+pub(crate) fn expr(e: &Expr) -> String {
     expr_prec(e, 0)
 }
 
@@ -1033,7 +1140,7 @@ mod tests {
              const DEFAULT_WIDTH: usize = 8;\n\
              struct Packet<T> { valid: Bit, data: T }\n\
              enum State {  Idle = 0, Start = 1, Done = 2 }\n\
-             #[top]\n\
+             #[test]\n\
              entity Counter<W: integer> {\n\
                clk: Bit in,\n\
                bus: Stream<unsigned[32]> Source,\n\
@@ -1090,9 +1197,9 @@ mod tests {
         roundtrip(
             "module m;\n\
              trait Operator<op, I, O> { fn apply(self, rhs: I) -> O; }\n\
-             #[precedence = 35] impl Operator<\"xor\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
-             #[precedence = 40] impl Operator<\"nand\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
-             #[precedence = 30] impl Operator<\"nor\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
+             impl Operator<\"xor\", M, M> for M { attr precedence = 35; fn apply(self, rhs: M) -> M { return self; } }\n\
+             impl Operator<\"nand\", M, M> for M { attr precedence = 40; fn apply(self, rhs: M) -> M { return self; } }\n\
+             impl Operator<\"nor\", M, M> for M { attr precedence = 30; fn apply(self, rhs: M) -> M { return self; } }\n\
              impl M {\n  y = a and b or c;\n  z = a xor b and not c;\n  w = a nand b nor c;\n}\n",
         );
     }
@@ -1101,7 +1208,7 @@ mod tests {
     /// An explicit `process` block prints with its boundary intact.
     fn explicit_process_roundtrips() {
         roundtrip(
-            "module m;\nentity Counter { clk: Bit in, q: Bit out }\nimpl Counter {\n  process update {\n    if clk.rising() {\n      q = not q;\n    }\n  }\n}\n",
+            "module m;\nentity Counter { clk: Bit in, q: Bit out }\nimpl Counter {\n  update: process {\n    if clk.rising() {\n      q = not q;\n    }\n  }\n}\n",
         );
     }
 }
