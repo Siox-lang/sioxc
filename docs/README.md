@@ -23,6 +23,7 @@ synthesis layer yet (those are Phase 2 and 3 — see
 | [proposals/](proposals/) | Designs that are **not** implemented yet. Once something lands, its record moves into the document it belongs to and the proposal goes away, so this folder only ever lists outstanding work. |
 | [Declarative attributes](proposals/attribute-system.md) | Proposed `attr … for … = …;` declaration and binding for metadata, with defaults and readback through `'`. |
 | [`#[...]` as compiler directives](proposals/compiler-directives.md) | Proposed rule that `#[...]` marks only what changes compilation — `#[test]` today, lint control next. |
+| [Compiler foundations](proposals/compiler-foundations.md) | Proposed rustc-style internals: UI tests for diagnostics, `--explain` and JSON output, one constant evaluator, a resolved tree with no name lookups after `resolve`, and std-declared lang items. |
 | [../TODO.md](../TODO.md) | The **outstanding-work list** — post-baseline capability growth by compiler area. |
 
 If you are new: skim this page, then read [language.md](language.md) for the
