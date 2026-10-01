@@ -469,6 +469,9 @@ pub enum Stmt {
     /// (`after` is testbench-only in Phase 1; the self-toggle idiom is the
     /// canonical clock generator).
     Assign {
+        /// Optional VHDL-style label: `sum: y = a + b;`. It names the
+        /// assignment for diagnostics and never changes behavior.
+        label: Option<Ident>,
         /// The assigned place: a name, field, index, slice, or concatenation.
         target: Expr,
         /// The value driven onto `target`.
@@ -485,6 +488,9 @@ pub enum Stmt {
     Match(MatchStmt),
     /// `for i in 0..10 { ... }` over a static range (spec Stage 1 / 8).
     For {
+        /// Optional label on a structural loop: `stages: for k in 0..2 { ... }`
+        /// names a hierarchy scope with one child per iteration.
+        label: Option<Ident>,
         /// The loop variable, bound fresh in each iteration's `body`.
         var: Ident,
         /// The range iterated over. It must be static: loops are unrolled at
@@ -509,6 +515,10 @@ pub enum Stmt {
 /// An `if` statement and the head of any `else` chain hanging off it.
 #[derive(Clone, Debug)]
 pub struct IfStmt {
+    /// Optional label on a structural `if`: `tap: if DEBUG { ... } else { ... }`
+    /// names one hierarchy scope, filled by whichever branch is taken. Only
+    /// the head of an `else if` chain carries one.
+    pub label: Option<Ident>,
     /// The tested condition, read through the `Condition` trait.
     pub cond: Expr,
     /// Statements run when `cond` holds.

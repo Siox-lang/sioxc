@@ -1923,6 +1923,7 @@ fn lower_statement(
             value,
             after,
             span,
+            ..
         } => {
             let source_semantics = assignment_semantics(target, process, context);
             let target_type = context.typed.expr_type(ast::expr_span(target)).cloned();
@@ -1997,6 +1998,7 @@ fn lower_statement(
             range,
             body,
             span,
+            ..
         } => lower_for(var, range, body, *span, context, process, block),
         Stmt::Return { value, span } => {
             process.blocks[block.0 as usize].terminator = ProcessTerminator::Return {

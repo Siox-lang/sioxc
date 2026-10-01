@@ -193,7 +193,7 @@ impl<'a> Lowering<'a> {
                     gather_generate(
                         s,
                         env,
-                        &[],
+                        &crate::elab::GenPath::default(),
                         &self.entities,
                         self.resolved,
                         &self.free_fns,
@@ -796,6 +796,8 @@ impl<'a> Lowering<'a> {
                     ast::ImplItem::Process(process) => {
                         self.lint_generated_dead_assignments(process.body.stmts.iter());
                         self.cur_ctx += 1;
+                        // A conflicting-driver error points at the process.
+                        self.ctx_span.insert(self.cur_ctx, process.span);
                         if let Some(label) = &process.label {
                             self.out.process_labels.insert(
                                 self.cur_ctx,
@@ -808,6 +810,20 @@ impl<'a> Lowering<'a> {
                     }
                     ast::ImplItem::Stmt(statement) => {
                         self.cur_ctx += 1;
+                        self.ctx_span
+                            .insert(self.cur_ctx, ast::stmt_span(statement));
+                        // A labelled concurrent assignment is its own driver
+                        // context, so its label names that context as a
+                        // process label does.
+                        if let ast::Stmt::Assign {
+                            label: Some(label), ..
+                        } = statement
+                        {
+                            self.out.process_labels.insert(
+                                self.cur_ctx,
+                                format!("{}::{}", self.cur_instance_path, label.text),
+                            );
+                        }
                         self.lower_stmt(statement, None);
                     }
                     _ => {}
