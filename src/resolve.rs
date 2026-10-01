@@ -190,6 +190,10 @@ struct ImportSite {
     /// Whether the import passed its visibility check. An inaccessible
     /// import is already an error, so it must not also be reported unused.
     accessible: bool,
+    /// Brought in by a glob, which is not reported unused name by name, or
+    /// re-exported with `pub use`, which other modules may use: as in Rust,
+    /// neither is linted.
+    exempt: bool,
 }
 
 /// The result of resolving a set of modules: the definition table plus a map
@@ -757,7 +761,7 @@ impl<'a> Resolver<'a> {
         for site in sites {
             let imp_span = site.span;
             let id = site.id;
-            if std_files.contains(&imp_span.file) {
+            if std_files.contains(&imp_span.file) || site.exempt {
                 continue;
             }
             let used = self
@@ -812,7 +816,7 @@ impl<'a> Resolver<'a> {
         let UsingKind::Import { base, names } = &u.kind else {
             return false;
         };
-        let base_str = base
+        let root_str = base
             .segments
             .iter()
             .map(|s| s.text.as_str())
@@ -821,8 +825,19 @@ impl<'a> Resolver<'a> {
         let importing_module = self.current_module.clone().unwrap_or_default();
         let mut progress = false;
         for import in names {
+            // Globs, `self` and module imports were rewritten into plain
+            // imports and paths by `syntax::imports` before resolution.
+            if import.glob || import.name.text == "self" {
+                continue;
+            }
             let n = &import.name;
             let local = import.binding();
+            // A nested group's leaf lives in `base::via`.
+            let base_str = std::iter::once(root_str.as_str())
+                .filter(|root| !root.is_empty())
+                .chain(import.via.iter().map(|segment| segment.text.as_str()))
+                .collect::<Vec<_>>()
+                .join("::");
             let found = self
                 .module_defs
                 .get(&(base_str.clone(), n.text.clone()))
@@ -864,6 +879,7 @@ impl<'a> Resolver<'a> {
                                 span: local.span,
                                 id,
                                 accessible,
+                                exempt: import.expanded || u.is_pub,
                             });
                             self.out.uses.insert(n.span, id);
                             self.out.uses.insert(local.span, id);
@@ -889,12 +905,11 @@ impl<'a> Resolver<'a> {
                     // are read from disk, so `use mylib::{Inc}` reported
                     // "no `Inc` in `mylib`" — blaming the import list for a
                     // file the compiler had never opened.
-                    if !base.segments.is_empty() && !self.loaded_modules.contains(&base_str) {
+                    if !base_str.is_empty() && !self.loaded_modules.contains(&base_str) {
                         // Say which file the path maps to. The old help said only
                         // `std::` paths are read from disk, which stopped being
                         // true when imports began loading sibling files.
-                        let names: Vec<&str> =
-                            base.segments.iter().map(|s| s.text.as_str()).collect();
+                        let names: Vec<&str> = base_str.split("::").collect();
                         let help = match names.split_first() {
                             Some((&"std", rest)) if !rest.is_empty() => format!(
                                 "`std::` paths are read from the `--std` directory: \
@@ -972,7 +987,7 @@ impl<'a> Resolver<'a> {
             for item in &m.items {
                 match item {
                     Item::Using(u) => {
-                        if let UsingKind::Alias { name, ty } = &u.kind {
+                        if let UsingKind::Alias { name, ty, .. } = &u.kind {
                             if let (Some(owner), Some(target)) = (
                                 self.out.declared(name.span),
                                 type_head_path(ty).and_then(|path| self.out.resolved(path.span)),
@@ -1594,6 +1609,7 @@ impl<'a> Resolver<'a> {
     /// Resolve one statement.
     fn resolve_stmt(&mut self, s: &Stmt) {
         match s {
+            Stmt::Use(_) => {}
             Stmt::Let(l) => {
                 if let Some(t) = &l.ty {
                     self.resolve_type(t);
@@ -2167,7 +2183,7 @@ impl<'a> Resolver<'a> {
             .flat_map(|module| module.items.iter())
             .filter_map(|item| match item {
                 Item::Using(Using {
-                    kind: UsingKind::Alias { name, ty },
+                    kind: UsingKind::Alias { name, ty, .. },
                     ..
                 }) => self.out.declared(name.span).map(|id| (id, ty)),
                 _ => None,

@@ -85,6 +85,7 @@ pub(in crate::ir) fn subst_type_params(
 pub fn subst_stmt_paths(s: &ast::Stmt, map: &HashMap<String, ast::Expr>) -> ast::Stmt {
     use ast::Stmt;
     match s {
+        Stmt::Use(u) => Stmt::Use(u.clone()),
         Stmt::Assign {
             label,
             target,

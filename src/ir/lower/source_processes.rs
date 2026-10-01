@@ -1903,6 +1903,7 @@ fn lower_statement(
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
     match statement {
+        Stmt::Use(_) => Some(block),
         Stmt::Let(declaration) => {
             let local = push_local(process, declaration, context);
             let target = process.locals[local.0 as usize].ty.clone();

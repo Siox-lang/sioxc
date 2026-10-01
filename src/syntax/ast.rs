@@ -103,23 +103,36 @@ pub enum UsingKind {
         /// Names taken from `base`. A single-name import has one entry.
         names: Vec<ImportName>,
     },
-    /// `type Word = unsigned[32];`
+    /// `type Word = unsigned[32];`, or generic `type Pair<T> = Packet<T>;`
     Alias {
         /// The new name introduced in this module.
         name: Ident,
+        /// Generic parameters, substituted at every use.
+        params: Params,
         /// The type it stands for. An alias is transparent, not nominal.
         ty: Type,
     },
 }
 
-/// One imported name, optionally renamed: `C` in `use a::b::C;`, or
-/// `Local = C` in `use a::b::{Local = C};` (Rust's `C as Local`).
+/// One leaf of an import tree, optionally renamed: `C` in `use a::b::C;`,
+/// `Local = C` in `use a::b::{Local = C};` (Rust's `C as Local`), `d::C` in
+/// `use a::{d::C};` (`via` holds `d`), `self` in `use a::{self}`, or the
+/// glob in `use a::*;`.
 #[derive(Clone, Debug)]
 pub struct ImportName {
-    /// The name as declared in the base module.
+    /// Module segments between the import's base path and this leaf, from
+    /// nested groups: `[logic]` for `Bit` in `use std::{logic::{Bit}};`.
+    pub via: Vec<Ident>,
+    /// The name as declared in the module `base::via`; `self` names that
+    /// module itself, and `*` (with `glob`) every public name in it.
     pub name: Ident,
     /// The local name it is bound to, when renamed.
     pub local: Option<Ident>,
+    /// `use a::*;`: every public name of the module (or variant of the enum).
+    pub glob: bool,
+    /// Not written: one name a glob brought in, expanded by
+    /// `syntax::imports`. It is never reported as an unused import.
+    pub expanded: bool,
 }
 
 impl ImportName {
@@ -512,6 +525,8 @@ pub struct Block {
 pub enum Stmt {
     /// A local or signal declaration.
     Let(LetDecl),
+    /// An import scoped to the rest of its block: `use std::math::max;`.
+    Use(Using),
     /// `target = expr;` — meaning resolved by context (spec 3.12).
     /// `x = v;`, optionally delayed VHDL-style: `clk = !clk after 5ns;`
     /// (`after` is testbench-only in Phase 1; the self-toggle idiom is the
@@ -1031,6 +1046,7 @@ pub enum GenericArg {
 /// intermediate the compiler emitted.
 pub fn stmt_span(s: &Stmt) -> Span {
     match s {
+        Stmt::Use(u) => u.span,
         Stmt::Let(l) => l.span,
         Stmt::Assign { span, .. } => *span,
         Stmt::If(i) => i.span,

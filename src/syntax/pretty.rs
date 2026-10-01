@@ -392,6 +392,7 @@ impl Printer {
     fn stmt(&mut self, s: &Stmt) {
         self.lint_directives(stmt_span(s), false);
         match s {
+            Stmt::Use(u) => self.line(&using_text(u)),
             Stmt::Let(l) => self.line(&format!("{};", let_decl(l))),
             Stmt::Assign {
                 label,
@@ -483,34 +484,89 @@ impl Printer {
 
 // --- leaf renderers (pure) --------------------------------------------------
 
-/// An import or alias as source: `use a::b::C;`, `use a::b::{C, L = D};`,
-/// `use L = a::b::C;`, or `type Word = unsigned[32];`.
+/// An import or alias as source: `use a::b::C;`, `use L = a::b::C;`,
+/// `use a::{C, L = D, e::{F, self}};`, `use a::*;`, or `type W<T> = …;`.
 pub(crate) fn using_text(u: &Using) -> String {
     let body = match &u.kind {
-        UsingKind::Import { base, names } => match &names[..] {
-            [only] if !base.segments.is_empty() => match &only.local {
-                Some(local) => format!("use {} = {}::{};", local.text, path(base), only.name.text),
-                None => format!("use {}::{};", path(base), trait_name_str(&only.name.text)),
-            },
-            _ => {
-                let names = names
-                    .iter()
-                    .map(|n| match &n.local {
-                        Some(local) => format!("{} = {}", local.text, n.name.text),
-                        None => trait_name_str(&n.name.text),
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                if base.segments.is_empty() {
-                    format!("use {names};")
-                } else {
-                    format!("use {}::{{{names}}};", path(base))
+        UsingKind::Import { base, names } => {
+            let single = match &names[..] {
+                [only] if only.via.is_empty() && only.name.text != "self" => Some(only),
+                _ => None,
+            };
+            match single {
+                Some(only) if !base.segments.is_empty() && only.glob => {
+                    format!("use {}::*;", path(base))
+                }
+                Some(only) if !base.segments.is_empty() => match &only.local {
+                    Some(local) => {
+                        format!("use {} = {}::{};", local.text, path(base), only.name.text)
+                    }
+                    None => format!("use {}::{};", path(base), trait_name_str(&only.name.text)),
+                },
+                _ => {
+                    let leaves: Vec<(&[Ident], &ImportName)> =
+                        names.iter().map(|n| (&n.via[..], n)).collect();
+                    let members = import_members(&leaves);
+                    if base.segments.is_empty() {
+                        format!("use {members};")
+                    } else {
+                        format!("use {}::{{{members}}};", path(base))
+                    }
                 }
             }
-        },
-        UsingKind::Alias { name, ty } => format!("type {} = {};", name.text, type_str(ty)),
+        }
+        UsingKind::Alias {
+            name,
+            params: ps,
+            ty,
+        } => {
+            format!("type {}{} = {};", name.text, params(ps), type_str(ty))
+        }
     };
     format!("{}{body}", pub_kw(u.is_pub))
+}
+
+/// The members of an import group, regrouping leaves that share a leading
+/// `via` segment into a nested group: `logic::{Bit, Logic}, math::*`.
+fn import_members(leaves: &[(&[Ident], &ImportName)]) -> String {
+    let leaf = |n: &ImportName| -> String {
+        if n.glob {
+            "*".to_string()
+        } else {
+            match &n.local {
+                Some(local) => format!("{} = {}", local.text, n.name.text),
+                None => trait_name_str(&n.name.text),
+            }
+        }
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < leaves.len() {
+        let (via, name) = leaves[index];
+        let Some(head) = via.first() else {
+            out.push(leaf(name));
+            index += 1;
+            continue;
+        };
+        let mut group = vec![(&via[1..], name)];
+        let mut next = index + 1;
+        while next < leaves.len() && leaves[next].0.first().is_some_and(|h| h.text == head.text) {
+            group.push((&leaves[next].0[1..], leaves[next].1));
+            next += 1;
+        }
+        let inner = match &group[..] {
+            // `seg::Leaf`, but never `seg::self` or `seg::L = X`, which need braces.
+            [(rest, only)]
+                if rest.is_empty() && only.name.text != "self" && only.local.is_none() =>
+            {
+                leaf(only)
+            }
+            _ => format!("{{{}}}", import_members(&group)),
+        };
+        out.push(format!("{}::{inner}", head.text));
+        index = next;
+    }
+    out.join(", ")
 }
 
 /// `label: ` in front of a labelled construct, or nothing.

@@ -551,8 +551,10 @@ impl<'a> Parser<'a> {
 
     // --- use / type / const ------------------------------------------------
 
-    /// Parse an import: `use a::b::C;`, `use a::b::{C, D = E};`, or the
-    /// renamed `use Local = a::b::C;` (Rust's `use a::b::C as Local;`).
+    /// Parse an import tree, the way Rust does, with renaming spelled `=`:
+    /// `use a::b::C;`, `use L = a::b::C;`, `use a::{C, L = D, e::{F, self}};`,
+    /// `use a::*;`. Paths may start with `self::` or `super::`. Nested groups
+    /// are flattened into one list; each leaf keeps its `via` segments.
     fn parse_use(&mut self, is_pub: bool) -> Using {
         let start = self.span();
         self.bump(); // `use`
@@ -564,21 +566,10 @@ impl<'a> Parser<'a> {
             None
         };
         let path = self.parse_path();
-        let kind = if local.is_none()
-            && self.at(TokenKind::ColonColon)
-            && self.kind_at(self.pos + 1) == &TokenKind::LBrace
-        {
-            self.bump(); // `::`
-            self.bump(); // `{`
-            let mut names = Vec::new();
-            while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-                names.push(self.parse_import_member());
-                if !self.eat(TokenKind::Comma) {
-                    break;
-                }
-            }
-            self.expect(TokenKind::RBrace, "to close an import list");
-            UsingKind::Import { base: path, names }
+        let mut names = Vec::new();
+        let base = if local.is_none() && self.at_group_or_glob() {
+            self.parse_use_suffix(Vec::new(), &mut names);
+            path
         } else {
             // `use a::b::C;` — the last segment is the imported name.
             let mut segments = path.segments.clone();
@@ -592,87 +583,126 @@ impl<'a> Parser<'a> {
                     "an import names a module and an item in it: `use module::Item;`",
                 );
             }
-            UsingKind::Import {
-                base: Path {
-                    segments,
-                    span: path.span,
-                },
-                names: vec![ImportName { name, local }],
+            names.push(ImportName {
+                via: Vec::new(),
+                name,
+                local,
+                glob: false,
+                expanded: false,
+            });
+            Path {
+                segments,
+                span: path.span,
             }
         };
         self.expect(TokenKind::Semi, "after a `use`");
         Using {
             is_pub,
-            kind,
+            kind: UsingKind::Import { base, names },
             span: start.to(self.prev_span()),
         }
     }
 
-    /// One member of an import list: `C`, or renamed `Local = C`.
-    fn parse_import_member(&mut self) -> ImportName {
+    /// Whether the cursor is at `::{` or `::*`, continuing an import path.
+    fn at_group_or_glob(&self) -> bool {
+        self.at(TokenKind::ColonColon)
+            && matches!(
+                self.kind_at(self.pos + 1),
+                TokenKind::LBrace | TokenKind::Star
+            )
+    }
+
+    /// After an import path: `::*` (a glob) or `::{ … }` (a group), each leaf
+    /// recorded with the `via` segments leading to it.
+    fn parse_use_suffix(&mut self, via: Vec<Ident>, out: &mut Vec<ImportName>) {
+        self.bump(); // `::`
+        if self.at(TokenKind::Star) {
+            let star = self.bump();
+            out.push(ImportName {
+                via,
+                name: Ident {
+                    text: "*".to_string(),
+                    span: star.span,
+                },
+                local: None,
+                glob: true,
+                expanded: false,
+            });
+            return;
+        }
+        self.bump(); // `{`
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            self.parse_import_member(&via, out);
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace, "to close an import list");
+    }
+
+    /// One member of an import group: `C`, `L = C`, `self`, `L = self`,
+    /// `d::C`, `d::*`, or a nested group `d::{ … }`.
+    fn parse_import_member(&mut self, via: &[Ident], out: &mut Vec<ImportName>) {
         if self.at(TokenKind::StrLit) {
             // Quoted operator-trait imports were removed with `impl "+"`.
             let name = self.parse_trait_name();
-            return ImportName { name, local: None };
+            out.push(ImportName {
+                via: via.to_vec(),
+                name,
+                local: None,
+                glob: false,
+                expanded: false,
+            });
+            return;
         }
-        if self.at(TokenKind::Ident) && self.kind_at(self.pos + 1) == &TokenKind::Eq {
+        let local = if (self.at(TokenKind::Ident)) && self.kind_at(self.pos + 1) == &TokenKind::Eq {
             let local = self.parse_ident();
             self.bump(); // `=`
-            let name = self.parse_ident();
-            return ImportName {
-                name,
-                local: Some(local),
-            };
+            Some(local)
+        } else {
+            None
+        };
+        let path = self.parse_path();
+        let mut segments = path.segments;
+        if local.is_none() && self.at_group_or_glob() {
+            let mut nested = via.to_vec();
+            nested.append(&mut segments);
+            self.parse_use_suffix(nested, out);
+            return;
         }
-        if self.at(TokenKind::LBrace)
-            || self.kind_at(self.pos + 1) == &TokenKind::ColonColon
-            || self.at(TokenKind::SelfKw)
-            || self.at(TokenKind::Star)
-        {
-            self.error_here(
-                "nested groups, `self` and `*` in an import list are not supported yet; \
-                 write one `use` per module",
-            );
-            while !self.at(TokenKind::Comma)
-                && !self.at(TokenKind::RBrace)
-                && !self.at(TokenKind::Eof)
-            {
-                self.bump();
-            }
-            return ImportName {
-                name: Ident {
-                    text: String::new(),
-                    span: self.prev_span(),
-                },
-                local: None,
-            };
-        }
-        ImportName {
-            name: self.parse_ident(),
-            local: None,
-        }
+        let name = segments.pop().unwrap_or_else(|| Ident {
+            text: String::new(),
+            span: self.prev_span(),
+        });
+        let mut full_via = via.to_vec();
+        full_via.extend(segments);
+        out.push(ImportName {
+            via: full_via,
+            name,
+            local,
+            glob: false,
+            expanded: false,
+        });
     }
 
-    /// Parse a transparent type alias: `type Word = unsigned[32];`.
+    /// Parse a transparent type alias: `type Word = unsigned[32];`, or generic
+    /// `type Pair<T> = Packet<T>;`.
     fn parse_type_alias(&mut self, is_pub: bool) -> Using {
         let start = self.span();
         self.bump(); // `type`
         let name = self.parse_ident();
-        if self.at(TokenKind::Lt) {
-            self.error_here("generic type aliases are not supported yet");
-            let _ = self.parse_params_opt();
-        }
+        let params = self.parse_params_opt();
         self.expect(TokenKind::Eq, "after a type alias name");
         let ty = self.parse_type();
         self.expect(TokenKind::Semi, "after a type alias");
         Using {
             is_pub,
-            kind: UsingKind::Alias { name, ty },
+            kind: UsingKind::Alias { name, params, ty },
             span: start.to(self.prev_span()),
         }
     }
 
-    /// The removed `use`: parse its old shape so later stages still see
+    /// The removed `using`: parse its old shape so later stages still see
     /// the import or alias, and report the `use`/`type` that replaces it.
     fn parse_using(&mut self, is_pub: bool) -> Using {
         let start = self.span();
@@ -686,8 +716,11 @@ impl<'a> Parser<'a> {
                 let mut names = Vec::new();
                 while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
                     names.push(ImportName {
+                        via: Vec::new(),
                         name: self.parse_trait_name(),
                         local: None,
+                        glob: false,
+                        expanded: false,
                     });
                     if !self.eat(TokenKind::Comma) {
                         break;
@@ -705,7 +738,11 @@ impl<'a> Parser<'a> {
                     self.error_at(path.span, "an alias name must be a single identifier");
                 }
                 let ty = self.parse_type();
-                UsingKind::Alias { name, ty }
+                UsingKind::Alias {
+                    name,
+                    params: Params::default(),
+                    ty,
+                }
             } else {
                 let mut segments = path.segments.clone();
                 let name = segments.pop().unwrap_or_else(|| Ident {
@@ -717,7 +754,13 @@ impl<'a> Parser<'a> {
                         segments,
                         span: path.span,
                     },
-                    names: vec![ImportName { name, local: None }],
+                    names: vec![ImportName {
+                        via: Vec::new(),
+                        name,
+                        local: None,
+                        glob: false,
+                        expanded: false,
+                    }],
                 }
             };
         self.expect(TokenKind::Semi, "after a `using`");
@@ -1654,6 +1697,9 @@ impl<'a> Parser<'a> {
 
     /// Parse one statement.
     fn parse_stmt(&mut self) -> Stmt {
+        if self.at(TokenKind::Use) {
+            return Stmt::Use(self.parse_use(false));
+        }
         if let Some(label) = self.parse_label() {
             return self.parse_labelled_stmt(label);
         }
@@ -2456,7 +2502,9 @@ impl<'a> Parser<'a> {
                     span: p.span.to(t.span),
                 }
             }
-            TokenKind::Ident | TokenKind::SelfKw => self.parse_path_expr_or_construct(no_struct),
+            TokenKind::Ident | TokenKind::SelfKw | TokenKind::Super => {
+                self.parse_path_expr_or_construct(no_struct)
+            }
             // A leading `{`: `{ .field = ... }` is a name-less struct literal
             // (typed from context); `{ a, b }` is a bit concatenation.
             TokenKind::LBrace
@@ -2533,7 +2581,12 @@ impl<'a> Parser<'a> {
     fn parse_path_expr_or_construct(&mut self, no_struct: bool) -> Expr {
         let start = self.span();
         let mut segments = vec![self.parse_ident()];
-        while self.at(TokenKind::ColonColon) && self.kind_at(self.pos + 1) == &TokenKind::Ident {
+        while self.at(TokenKind::ColonColon)
+            && matches!(
+                self.kind_at(self.pos + 1),
+                TokenKind::Ident | TokenKind::Super
+            )
+        {
             self.bump(); // `::`
             segments.push(self.parse_ident());
         }
@@ -2834,7 +2887,12 @@ impl<'a> Parser<'a> {
     fn parse_path(&mut self) -> Path {
         let start = self.span();
         let mut segments = vec![self.parse_ident()];
-        while self.at(TokenKind::ColonColon) && self.kind_at(self.pos + 1) == &TokenKind::Ident {
+        while self.at(TokenKind::ColonColon)
+            && matches!(
+                self.kind_at(self.pos + 1),
+                TokenKind::Ident | TokenKind::Super
+            )
+        {
             self.bump(); // `::`
             segments.push(self.parse_ident());
         }
@@ -2846,7 +2904,7 @@ impl<'a> Parser<'a> {
 
     /// Parse an identifier, accepting `self` since it may head a path.
     fn parse_ident(&mut self) -> Ident {
-        if self.at(TokenKind::Ident) || self.at(TokenKind::SelfKw) {
+        if self.at(TokenKind::Ident) || self.at(TokenKind::SelfKw) || self.at(TokenKind::Super) {
             let t = self.bump();
             Ident {
                 text: self.text_of(t.span).to_string(),
@@ -2890,6 +2948,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::Using
                 | TokenKind::Use
                 | TokenKind::Type
+                | TokenKind::Super
                 | TokenKind::Pub
                 | TokenKind::Entity
                 | TokenKind::Impl
@@ -4290,12 +4349,43 @@ mod tests {
             assert!(diags[0].message.contains("split into `use` and `type`"));
             assert_eq!(diags[0].help.as_deref(), Some(help));
         }
-        let diags = diagnostics("module m;\nuse a::{b::{c}};\n");
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.message.contains("not supported yet")),
-            "{diags:#?}"
+        // Nested groups are ordinary import syntax now.
+        parse_ok("module m;\nuse a::{b::{c}};\n");
+    }
+
+    /// Every import form parses, flattens to leaves with their `via`
+    /// segments, and prints back in grouped form.
+    #[test]
+    fn import_trees_parse_and_print() {
+        let src = "module m;\n\nuse std::{logic::{Bit, Logic}, math::{self, PI}, numeric::{Word8 = Byte}};\n\nuse bus::axi::*;\n\nuse protocols::{wb = self};\n\nuse super::sibling::Item;\n\nuse self::State::{Idle, Busy};\n\ntype Pair<T> = Packet<T>;\n\nfn f() -> integer {\n    use std::math::max;\n    return max(1, 2);\n}\n";
+        let m = parse_ok(src);
+        let Item::Using(Using {
+            kind: UsingKind::Import { names, .. },
+            ..
+        }) = &m.items[0]
+        else {
+            panic!("expected an import")
+        };
+        let leaves: Vec<String> = names
+            .iter()
+            .map(|n| {
+                let via: Vec<&str> = n.via.iter().map(|v| v.text.as_str()).collect();
+                format!("{}:{}<-{}", via.join("/"), n.binding().text, n.name.text)
+            })
+            .collect();
+        assert_eq!(
+            leaves,
+            [
+                "logic:Bit<-Bit",
+                "logic:Logic<-Logic",
+                "math:self<-self",
+                "math:PI<-PI",
+                "numeric:Word8<-Byte",
+            ]
         );
+        assert!(
+            matches!(&m.items[1], Item::Using(Using { kind: UsingKind::Import { names, .. }, .. }) if names[0].glob)
+        );
+        assert_eq!(crate::syntax::pretty::print_module(&m), src);
     }
 }

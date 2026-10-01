@@ -23,7 +23,6 @@ synthesis layer yet (those are Phase 2 and 3 — see
 | [proposals/](proposals/) | Designs that are **not** implemented yet. Once something lands, its record moves into the document it belongs to and the proposal goes away, so this folder only ever lists outstanding work. |
 | [Entity methods](proposals/entity-methods.md) | `pub fn` members on entities whose calls elaborate into ports. Tier 1 (associated functions) is implemented; receiver methods remain proposed. |
 | [Standard-library build-out](proposals/std-buildout.md) | The compiler/std boundary and the open std work tracked in TODO. |
-| [Split `using` into `use` and `type`](proposals/using-split.md) | `use`/`type`, renaming with `=`, groups and `pub use` are implemented; nested groups, globs, `self::`/`super::`, block-scoped imports and generic aliases remain. |
 | [Macros](proposals/macros.md) | Proposed hygienic declarative macros, `name!(...)`, operating on syntax rather than values. |
 | [`#[derive]`](proposals/derive.md) | Proposed generated `Ord`/`Resolve` implementations as a directive; `#[cfg]` stays rejected. |
 | [`core` and `std`](proposals/core-std.md) | Proposed split: `core` (compiled in) holds what only the compiler can provide — kernel types, hooks, directives, macros, runtime services, a new `error!`; `std` holds everything users program with — logic and numeric types, math, vectors/matrices, encodings, common vendor attributes. |

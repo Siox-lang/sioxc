@@ -10643,3 +10643,23 @@ architectural work: normalized `Driver`/`EventBlock` hardware is still imported
 last through `ir/lower/hardware_processes.rs`. Phase 1 still needs to lower
 hardware behavior into Process IR first and derive those optimized forms from
 the canonical product.
+
+### 2026-10-01 — Claude — the `use` split is finished
+
+Every Rust import form now works: nested groups with `self` and renames,
+module imports and aliases (`use std::math;` then `math::max`), `pub use` of a
+module, globs (weaker than explicit names; ambiguity only where used),
+`self::`/`super::` paths, block-level `use`, enum variant imports
+(`{self, Red}` for the enum too), and generic `type` aliases. `use
+Alias::Variant` is an error. The proposal is deleted; language.md §3.4 is the
+reference.
+
+The forms are rewritten by a new pre-resolution pass,
+`src/syntax/imports.rs`, so resolve/types/elab/ir only ever see plain imports
+and paths. Touches outside it are small: `Stmt::Use` no-op arms (elab, ir
+lower, resolve, types), `..` on `UsingKind::Alias` patterns (it gained
+`params`), `ImportName` gained `via`/`glob`/`expanded`, `super` is a keyword
+token, `compiler.rs` dependency discovery walks use trees, and the
+`unused_import` lint skips globs and `pub use`. Imported variants stay in
+`Enum::Variant` form (patterns require it); qualifiers the pass adds carry an
+empty span before the written name, because later stages resolve by span.
