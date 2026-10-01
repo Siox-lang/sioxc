@@ -162,16 +162,16 @@ pub struct Parser<'a> {
     /// Custom operator symbol to its precedence, discovered from the
     /// transitive import graph before this parse begins.
     custom_operators: HashMap<String, u8>,
-    /// Current expression/block nesting, against `MAX_NESTING`.
-    depth: u32,
-    /// Whether the depth limit has already been reported, so one over-deep
-    /// expression yields one diagnostic rather than one per level.
-    depth_reported: bool,
     /// Lint directives (`#[allow(...)]`) read by the last `parse_attrs`,
     /// waiting for the item or statement they govern.
     pending_lints: Vec<LintDirective>,
     /// Every lint directive with its governed extent, for the module.
     lints: Vec<LintDirective>,
+    /// Current expression/block nesting, against `MAX_NESTING`.
+    depth: u32,
+    /// Whether the depth limit has already been reported, so one over-deep
+    /// expression yields one diagnostic rather than one per level.
+    depth_reported: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -200,10 +200,10 @@ impl<'a> Parser<'a> {
             pos: 0,
             sink,
             custom_operators: HashMap::new(),
-            depth: 0,
-            depth_reported: false,
             pending_lints: Vec::new(),
             lints: Vec::new(),
+            depth: 0,
+            depth_reported: false,
         }
     }
 

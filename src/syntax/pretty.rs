@@ -488,37 +488,6 @@ impl Printer {
 
 // --- leaf renderers (pure) --------------------------------------------------
 
-/// The extent of a top-level item.
-fn item_span(item: &Item) -> crate::diag::Span {
-    match item {
-        Item::Using(u) => u.span,
-        Item::Const(c) => c.span,
-        Item::Fn(f) => f.span,
-        Item::ExternBlock { span, .. } => *span,
-        Item::Struct(s) => s.span,
-        Item::View(v) => v.span,
-        Item::Enum(e) => e.span,
-        Item::Entity(e) => e.span,
-        Item::Impl(i) => i.span,
-        Item::Trait(t) => t.span,
-        Item::AttrDecl(a) => a.span,
-        Item::AttrBinding(b) => b.span,
-    }
-}
-
-/// The extent of an implementation member.
-fn impl_item_span(item: &ImplItem) -> crate::diag::Span {
-    match item {
-        ImplItem::Const(c) => c.span,
-        ImplItem::Let(l) => l.span,
-        ImplItem::Fn(f) => f.span,
-        ImplItem::ModeField { span, .. } => *span,
-        ImplItem::Process(p) => p.span,
-        ImplItem::Stmt(s) => stmt_span(s),
-        ImplItem::AttrBinding(b) => b.span,
-    }
-}
-
 /// `"pub "` or the empty string, so callers can prefix unconditionally.
 fn pub_kw(is_pub: bool) -> &'static str {
     if is_pub {
@@ -556,6 +525,37 @@ fn sep(i: usize, len: usize) -> &'static str {
         ""
     } else {
         ","
+    }
+}
+
+/// The extent of a top-level item.
+fn item_span(item: &Item) -> crate::diag::Span {
+    match item {
+        Item::Using(u) => u.span,
+        Item::Const(c) => c.span,
+        Item::Fn(f) => f.span,
+        Item::ExternBlock { span, .. } => *span,
+        Item::Struct(s) => s.span,
+        Item::View(v) => v.span,
+        Item::Enum(e) => e.span,
+        Item::Entity(e) => e.span,
+        Item::Impl(i) => i.span,
+        Item::Trait(t) => t.span,
+        Item::AttrDecl(a) => a.span,
+        Item::AttrBinding(b) => b.span,
+    }
+}
+
+/// The extent of an implementation member.
+fn impl_item_span(item: &ImplItem) -> crate::diag::Span {
+    match item {
+        ImplItem::Const(c) => c.span,
+        ImplItem::Let(l) => l.span,
+        ImplItem::Fn(f) => f.span,
+        ImplItem::ModeField { span, .. } => *span,
+        ImplItem::Process(p) => p.span,
+        ImplItem::Stmt(s) => stmt_span(s),
+        ImplItem::AttrBinding(b) => b.span,
     }
 }
 
