@@ -1,6 +1,6 @@
 module std::ops;
 
-using std::logic::{Bit, Bool};
+use std::logic::{Bit, Bool};
 
 // Operator overloading is Rust-style (spec 3.25) but goes through a single
 // symbol-parameterized trait: `a <op> b` dispatches to
@@ -154,7 +154,7 @@ impl Operator<"xnor", Bit, Bit> for Bit {
 // applied only in condition position — it is not a general implicit cast.
 //
 // This is the canonical declaration of `Boolean`; name it with
-// `using std::ops::{Boolean};`. The `Bit`/`Bool` condition behaviour below is
+// `use std::ops::Boolean;`. The `Bit`/`Bool` condition behaviour below is
 // also mirrored inside the type checker so plain `if bit` works without an
 // import — the impls here keep the semantics on the record in source form.
 

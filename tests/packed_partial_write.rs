@@ -23,8 +23,8 @@ use std::process::Command;
 fn diagnostics(name: &str, body: &str) -> String {
     let src = format!(
         "module m;\n\
-         using std::bits::{{unsigned}};\n\
-         using std::logic::{{Bit}};\n\
+         use std::bits::{{unsigned}};\n\
+         use std::logic::{{Bit}};\n\
          entity E {{ c: Bit in, y: unsigned[8] out }}\n\
          impl E {{\n{body}\n}}\n"
     );

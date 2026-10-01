@@ -32,7 +32,7 @@ impl<'a> Checker<'a> {
                     },
                     // An index on an *unconstrained* array fills its hole
                     // rather than nesting: `string[5]` is `Char[5]`, not
-                    // `Char[0][5]` (`using string = Char[]`, std::text). The
+                    // `Char[0][5]` (`type string = Char[]`, std::text). The
                     // lowerer already did this; the checker rejected the form.
                     Ty::Array {
                         elem,
@@ -128,7 +128,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Resolve a `using` alias chain transitively. Cycles stop the walk and
+    /// Resolve a `use` alias chain transitively. Cycles stop the walk and
     /// return `None` so callers can suppress follow-on diagnostics.
     pub(super) fn resolve_alias_type(&self, ty: &Type) -> Option<Type> {
         let mut current = ty.clone();

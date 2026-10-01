@@ -1,6 +1,6 @@
 module std::logic;
 
-using std::ops::{From, New, Resolve};
+use std::ops::{From, New, Resolve};
 
 // Scalar logic types (spec Stage 11, modelled on VHDL's std.standard and
 // ieee.std_logic_1164 — where `bit`, `boolean` and `std_ulogic` are ordinary

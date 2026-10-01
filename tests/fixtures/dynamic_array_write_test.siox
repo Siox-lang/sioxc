@@ -1,6 +1,6 @@
 module dynamic_array_write_fixture;
 
-using std::bits::unsigned;
+use std::bits::unsigned;
 
 struct Pair { pub left: unsigned[8], pub right: unsigned[8] }
 

@@ -32,8 +32,8 @@ fn rejects_write_to_input_bus_leaf() {
 fn chained_integer_aliases_still_enforce_value_ranges() {
     let errors = check_src(
         "module m;\n\
-             using Small = integer<0..3>;\n\
-             using Alias = Small;\n\
+             type Small = integer<0..3>;\n\
+             type Alias = Small;\n\
              entity E { ok: Bit out }\n\
              impl E { let value: Alias = 4; ok = '1'; }\n",
     );

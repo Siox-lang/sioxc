@@ -12,7 +12,7 @@ fn compiler() -> Compiler {
 fn in_memory_analysis_retains_every_completed_phase() {
     let source = r#"
 module embedded;
-using std::bits::unsigned;
+use std::bits::unsigned;
 
 entity Pass {
     value: unsigned[8] out

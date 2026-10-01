@@ -14,8 +14,8 @@ use siox::compiler::{Artifact, CompileRequest, Compiler, Emit, SourceInput};
 /// - a struct literal connected to a testbench instance's port is flattened
 ///   in port-map order.
 const DESIGN: &str = "module det;
-using std::bits::{unsigned};
-using std::attrs::{test};
+use std::bits::unsigned;
+use std::attrs::test;
 struct Inner { pub lo: unsigned[8], pub hi: unsigned[8] }
 entity Pick { o: Inner in, y: unsigned[8] out }
 impl Pick {

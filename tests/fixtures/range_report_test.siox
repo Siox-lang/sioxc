@@ -6,7 +6,7 @@
 // stores as -6 — a number inside the very range the message says was left.
 module range_report_test;
 
-using std::logic::{Bit};
+use std::logic::Bit;
 
 entity Acc {
     clk: Bit in,

@@ -88,8 +88,8 @@ fn chained_struct_aliases_still_validate_literals() {
     let errors = check_src(
         "module m;\n\
              struct S { a: Bit }\n\
-             using A = S;\n\
-             using B = A;\n\
+             type A = S;\n\
+             type B = A;\n\
              entity E { ok: Bit out }\n\
              impl E { let x: B = { .nosuch = '1' }; ok = '1'; }\n",
     );
@@ -126,7 +126,7 @@ fn struct_literal_fields_are_checked_in_every_value_context() {
 fn array_aliases_preserve_declared_index_bounds() {
     let errors = check_src(
         "module m;\n\
-             using Window = Logic[15..8];\n\
+             type Window = Logic[15..8];\n\
              entity E { y: Logic out }\n\
              impl E { let data: Window; y = data[0]; }\n",
     );

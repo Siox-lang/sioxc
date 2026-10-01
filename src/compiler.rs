@@ -491,7 +491,7 @@ impl Compiler {
                     .with_code(crate::diag::codes::UNRESOLVED_IMPORT)
                     .at(module.path.span)
                     .help(format!(
-                        "`using {expected}::…` reads this file because of its path; \
+                        "`use {expected}::…` reads this file because of its path; \
                          declare `module {expected};` here, or move the file to match \
                          the module it declares"
                     )),
@@ -885,7 +885,7 @@ struct DependencySource {
 /// the complete precedence table up front; parsing a dependency only after its
 /// importer would make that dependency's operators appear undeclared in the
 /// importer. Discovery is lexical, so malformed expressions do not hide later
-/// `using` declarations and unrelated project files never affect the grammar.
+/// `use` declarations and unrelated project files never affect the grammar.
 fn discover_dependencies(
     entry_source: &str,
     entry_tokens: &[Token],
@@ -938,9 +938,9 @@ fn discover_dependencies(
     dependencies
 }
 
-/// Module paths named by top-level `using` declarations. This intentionally
+/// Module paths named by top-level `use` declarations. This intentionally
 /// recognizes only the two import spellings and skips aliases:
-/// `using a::b::Name;` -> `a::b`, `using a::b::{Name}` -> `a::b`.
+/// `use a::b::Name;` -> `a::b`, `use a::b::{Name}` -> `a::b`.
 fn discover_import_modules(source: &str, tokens: &[Token]) -> Vec<Vec<String>> {
     let token_text = |token: &Token| {
         source
@@ -949,10 +949,21 @@ fn discover_import_modules(source: &str, tokens: &[Token]) -> Vec<Vec<String>> {
     };
     let mut modules = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
-        if token.kind != TokenKind::Using {
+        if token.kind != TokenKind::Use && token.kind != TokenKind::Using {
             continue;
         }
         let mut cursor = index + 1;
+        // `use Local = a::b::C;` imports from `a::b` like `use a::b::C;`.
+        if token.kind == TokenKind::Use
+            && tokens
+                .get(cursor)
+                .is_some_and(|t| t.kind == TokenKind::Ident)
+            && tokens
+                .get(cursor + 1)
+                .is_some_and(|t| t.kind == TokenKind::Eq)
+        {
+            cursor += 2;
+        }
         let mut segments = Vec::new();
         while let Some(segment) = tokens.get(cursor) {
             if segment.kind != TokenKind::Ident {
@@ -1037,13 +1048,13 @@ mod tests {
 
     #[test]
     /// Dependency discovery has to find imports through both spellings, since
-    /// `using a::b::{c}` and `pub using a::b::c` name the same module.
+    /// `use a::b::{c}` and `pub use a::b::c` name the same module.
     fn lexical_dependency_discovery_matches_both_import_spellings() {
         let source = "module user;\n\
-            using alpha::math::{Value, \"%%\"};\n\
-            pub using beta::logic::Flag;\n\
-            using Alias = gamma::Ignored;\n\
-            using Local;\n";
+            use alpha::math::{Value, \"%%\"};\n\
+            pub use beta::logic::Flag;\n\
+            type Alias = gamma::Ignored;\n\
+            use Local;\n";
         let mut sink = DiagnosticSink::new();
         let tokens = Lexer::new(FileId(0), source).tokenize(&mut sink);
         assert_eq!(

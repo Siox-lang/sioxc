@@ -41,7 +41,7 @@ fn diagnostics(name: &str, src: &str) -> String {
 fn design(body: &str) -> String {
     format!(
         "module m;\n\
-         using std::bits::{{unsigned}};\n\
+         use std::bits::{{unsigned}};\n\
          entity E {{ y: unsigned[16] out }}\n\
          impl E {{\n{body}\n}}\n"
     )
@@ -89,7 +89,7 @@ fn a_parameter_substituted_index_is_reported() {
     // Not a loop at all: the index is a parameter, constant only after
     // elaboration. It used to clamp to the last element.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                entity E<N: integer> { y: unsigned[16] out }\n\
                impl<N: integer> E<N> {\n\
                    let v: unsigned[16][4];\n\
@@ -111,7 +111,7 @@ fn a_descending_range_into_a_negative_index_is_reported() {
     // bounds do. The -1 iteration folded to nothing until `subst_expr` learned
     // to emit a negation rather than an `Int` with a sign in its text.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                entity E<N: integer> { y: unsigned[16] out }\n\
                impl<N: integer> E<N> {\n\
                    let v: unsigned[16][4];\n\
@@ -156,8 +156,8 @@ fn a_clocked_block_inside_a_generate_loop_is_checked_too() {
     // check. Writing the outer form here would leave that second hook dead and
     // the test would pass with it deleted.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
-               using std::logic::{Bit};\n\
+               use std::bits::unsigned;\n\
+               use std::logic::Bit;\n\
                entity E { clk: Bit in, y: unsigned[16] out }\n\
                impl E {\n\
                    let v: unsigned[16][4];\n\
@@ -180,7 +180,7 @@ fn an_instance_array_that_over_runs_is_named_as_instances() {
     // declared size was simply ignored. The wording has to match the literal
     // case, which calls them instances rather than array elements.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                entity Inc { a: unsigned[16] in, y: unsigned[16] out }\n\
                impl Inc { y = a + 1; }\n\
                entity E { y: unsigned[16] out }\n\
@@ -201,7 +201,7 @@ fn an_instance_array_that_over_runs_is_named_as_instances() {
 #[test]
 fn reading_an_instance_array_slot_that_was_not_elaborated_is_reported() {
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                entity Inc { y: unsigned[8] out }\n\
                impl Inc { y = 1; }\n\
                entity Chain<N: integer> { y: unsigned[8] out }\n\
@@ -233,7 +233,7 @@ fn reading_an_instance_array_slot_that_was_not_elaborated_is_reported() {
 #[test]
 fn an_unreferenced_unbuilt_instance_array_slot_is_legal() {
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                entity Inc { y: unsigned[8] out }\n\
                impl Inc { y = 1; }\n\
                entity Top { y: unsigned[8] out }\n\
@@ -254,7 +254,7 @@ fn an_unreferenced_unbuilt_instance_array_slot_is_legal() {
 #[test]
 fn driving_a_port_of_an_unbuilt_instance_array_slot_is_reported() {
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                entity Cell { a: unsigned[8] in, y: unsigned[8] out }\n\
                impl Cell { y = a; }\n\
                entity Top { a: unsigned[8] in, y: unsigned[8] out }\n\
@@ -278,7 +278,7 @@ fn driving_a_port_of_an_unbuilt_instance_array_slot_is_reported() {
 #[test]
 fn an_unbound_generic_instance_array_does_not_invent_a_missing_slot() {
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                entity Cell { y: unsigned[8] out }\n\
                impl Cell { y = 1; }\n\
                entity LibraryChain<N: integer> { y: unsigned[8] out }\n\
@@ -307,8 +307,8 @@ fn a_statically_dead_branch_is_not_bounds_checked() {
     // wrapper matters: without it the branch statements never re-enter
     // lowering on their own, which is where the context to skip them is lost.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
-               using std::logic::{Bit};\n\
+               use std::bits::unsigned;\n\
+               use std::logic::Bit;\n\
                entity A { clk: Bit in, d: unsigned[8] in, q: unsigned[8] out }\n\
                impl A {\n\
                    let s: unsigned[8][3];\n\
@@ -401,7 +401,7 @@ fn a_runtime_index_is_deferred_to_simulation() {
     // legal design expression and carries a checked-index site into native
     // simulation instead.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
+               use std::bits::unsigned;\n\
                entity Mem { addr: unsigned[2] in, y: unsigned[16] out }\n\
                impl Mem {\n\
                    let regs: unsigned[16][4];\n\
@@ -422,8 +422,8 @@ fn an_in_range_generate_loop_is_left_alone() {
     // Including a descending declared range, whose valid indices are 7..0 —
     // taking the length instead of the declared bounds would reject it.
     let src = "module m;\n\
-               using std::bits::{unsigned};\n\
-               using std::logic::{Bit};\n\
+               use std::bits::unsigned;\n\
+               use std::logic::Bit;\n\
                entity E { y: unsigned[16] out }\n\
                impl E {\n\
                    let v: unsigned[16][4];\n\

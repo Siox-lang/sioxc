@@ -1,6 +1,11 @@
 # Split `using` into `use` and `type`
 
-Status: **proposal**. Nothing here is implemented.
+Status: **partly implemented** (language §3.4). Done: `use` and `type`
+replace `using` (now an error naming the replacement); single, grouped and
+renamed imports (`use L = a::b::C;`, `{L = C}`); `pub use`; `pub type`; std
+and the corpus migrated. Remaining, each additive: nested groups and `self`
+in groups, glob imports, `self::`/`super::` paths, imports inside blocks,
+generic `type` aliases, and the separate value/type/macro namespaces.
 
 siox currently spells two different operations with one keyword:
 

@@ -1,6 +1,6 @@
 //! Name resolution and module system for siox Phase 1 (spec Stage 3).
 //!
-//! Resolves identifiers to declarations: top-level item names, `using`
+//! Resolves identifiers to declarations: top-level item names, `use`
 //! imports/aliases, `::` path resolution, associated items (`State::Idle`),
 //! impl/instance type names, and attribute names. Each declaration gets a
 //! stable [`DefId`]; every resolved use-site is recorded by span so later
@@ -152,7 +152,7 @@ pub enum DefKind {
     Const,
     /// A module-level function (inlined at lowering; const-evaluable).
     Fn,
-    /// A `using Name = Type;` alias, transparent rather than nominal.
+    /// A `type Name = Type;` alias, transparent rather than nominal.
     TypeAlias,
     /// Declared metadata attribute (`attr top: Bool for entity;`).
     Attr,
@@ -179,7 +179,7 @@ pub struct DefInfo {
     pub parent: Option<DefId>,
 }
 
-/// One `using` import, recorded so the unused-import lint can run after
+/// One `use` import, recorded so the unused-import lint can run after
 /// every reference has been resolved.
 #[derive(Clone)]
 struct ImportSite {
@@ -281,7 +281,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     }
     // Resolve direct imports first, then public re-export chains. Collection
     // has already seen every declaration, so source order is irrelevant; the
-    // bounded fixed point is only for `module facade; pub using base::{T}`.
+    // bounded fixed point is only for `module facade; pub use base::{T}`.
     for _ in 0..=modules.len() {
         let mut progress = false;
         for m in modules {
@@ -454,7 +454,7 @@ struct Resolver<'a> {
     enum_variants: HashMap<DefId, HashMap<String, DefId>>,
     /// Lexical scopes for params/locals, innermost last.
     scopes: Vec<HashMap<String, DefId>>,
-    /// `using` import sites `(name span, imported DefId)`, for the unused-import
+    /// `use` import sites `(name span, imported DefId)`, for the unused-import
     /// lint after all references are resolved.
     import_sites: Vec<ImportSite>,
     /// Generic-parameter declaration sites (`<W>`, `<T>` on an entity/struct/
@@ -480,7 +480,7 @@ struct Resolver<'a> {
     /// Split impl blocks share a scope, so duplicates must be rejected before
     /// type checking/lowering can silently overwrite a registry entry.
     inherent_members: HashMap<(ImplOwner, String), (Span, &'static str)>,
-    /// The `module` path of every source that was actually loaded. A `using`
+    /// The `module` path of every source that was actually loaded. A `use`
     /// naming a path absent from this set imports from a file the compiler
     /// never read, which is a different mistake from importing a name the
     /// module does not have — and used to be reported as the latter.
@@ -723,11 +723,11 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Unused-import lint (W-P005): a `using base::{name}` whose imported
+    /// Unused-import lint (W-P005): a `use base::{name}` whose imported
     /// declaration is never referenced elsewhere in the same module. The
     /// import's own
     /// name span is excluded so the binding doesn't count as a use of itself.
-    /// Reject a `using` that imports a non-`pub` item from another module.
+    /// Reject a `use` that imports a non-`pub` item from another module.
     fn lint_private_imports(
         &mut self,
         _std_files: &std::collections::HashSet<crate::diag::FileId>,
@@ -804,7 +804,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Bind each `using base::{names}` name to the declaration another loaded
+    /// Bind each `use base::{names}` name to the declaration another loaded
     /// module provides. Runs after all modules are collected; an import that
     /// matches nothing is a hard error.
     fn resolve_imports(&mut self, item: &Item, report: bool) -> bool {
@@ -820,7 +820,9 @@ impl<'a> Resolver<'a> {
             .join("::");
         let importing_module = self.current_module.clone().unwrap_or_default();
         let mut progress = false;
-        for n in names {
+        for import in names {
+            let n = &import.name;
+            let local = import.binding();
             let found = self
                 .module_defs
                 .get(&(base_str.clone(), n.text.clone()))
@@ -848,22 +850,23 @@ impl<'a> Resolver<'a> {
                 });
             match found {
                 Some((id, accessible)) => {
-                    let key = (importing_module.clone(), n.text.clone());
+                    let key = (importing_module.clone(), local.text.clone());
                     if let Some(existing) = self.module_defs.get(&key).copied() {
                         if report {
-                            self.report_import_collision(&n.text, n.span, existing);
+                            self.report_import_collision(&local.text, local.span, existing);
                         }
                         continue;
                     }
                     match self.module_imports.entry(key) {
                         std::collections::hash_map::Entry::Vacant(entry) => {
-                            entry.insert((id, u.is_pub, n.span));
+                            entry.insert((id, u.is_pub, local.span));
                             self.import_sites.push(ImportSite {
-                                span: n.span,
+                                span: local.span,
                                 id,
                                 accessible,
                             });
                             self.out.uses.insert(n.span, id);
+                            self.out.uses.insert(local.span, id);
                             progress = true;
                         }
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
@@ -873,9 +876,9 @@ impl<'a> Resolver<'a> {
                                 // is harmless; any public occurrence makes it
                                 // a module re-export, independent of file order.
                                 entry.get_mut().1 |= u.is_pub;
-                            } else if report && entry.get().2 != n.span {
+                            } else if report && entry.get().2 != local.span {
                                 let existing = entry.get().0;
-                                self.report_import_collision(&n.text, n.span, existing);
+                                self.report_import_collision(&local.text, local.span, existing);
                             }
                         }
                     }
@@ -883,7 +886,7 @@ impl<'a> Resolver<'a> {
                 None if report => {
                     // A module that was never loaded is a different mistake
                     // from a module that lacks the name. Only `std::` paths
-                    // are read from disk, so `using mylib::{Inc}` reported
+                    // are read from disk, so `use mylib::{Inc}` reported
                     // "no `Inc` in `mylib`" — blaming the import list for a
                     // file the compiler had never opened.
                     if !base.segments.is_empty() && !self.loaded_modules.contains(&base_str) {
@@ -958,7 +961,7 @@ impl<'a> Resolver<'a> {
         self.sink.emit(diagnostic);
     }
 
-    /// A type declaration that reaches itself (`using A = B; using B = A`, or
+    /// A type declaration that reaches itself (`type A = B; type B = A`, or
     /// `struct A : B` with `struct B : A`) made every later stage recurse
     /// until the stack overflowed — the compiler aborted with a core dump.
     /// Report it once, here, where the declarations are all in hand.
@@ -1176,7 +1179,7 @@ impl<'a> Resolver<'a> {
     fn resolve_item(&mut self, item: &Item) {
         match item {
             // An alias target is a type reference and must resolve — a
-            // `using Word = NoSuchType;` used to pass silently, leaving every
+            // `type Word = NoSuchType;` used to pass silently, leaving every
             // signal typed through it at unknown width.
             Item::Using(u) => {
                 if let UsingKind::Alias { ty, .. } = &u.kind {
@@ -1741,7 +1744,7 @@ impl<'a> Resolver<'a> {
             } else {
                 let help = match self.suggest(&name) {
                     Some(s) => format!("did you mean `{s}`?"),
-                    None => "declare it, or import it with `using`".to_string(),
+                    None => "declare it, or import it with `use`".to_string(),
                 };
                 self.sink.emit(
                     Diagnostic::error(format!("unknown type `{name}`"))
@@ -2536,7 +2539,7 @@ impl<'a> Resolver<'a> {
         self.builtin_attrs.get(name).copied()
     }
 
-    /// Find a name exported by `module`, honouring `pub using` re-exports. The
+    /// Find a name exported by `module`, honouring `pub use` re-exports. The
     /// `attr` flag selects the attribute namespace.
     fn lookup_module_export(&self, module: &str, name: &str, attr: bool) -> Option<DefId> {
         let direct = if attr {
@@ -2643,7 +2646,7 @@ mod tests {
     /// stopped being true when imports began loading sibling files.
     #[test]
     fn importing_from_an_unloaded_module_says_so() {
-        let sink = diagnostics("module m;\nusing mylib::{Inc};\n");
+        let sink = diagnostics("module m;\nuse mylib::{Inc};\n");
         let d = sink
             .diagnostics()
             .iter()
@@ -2663,7 +2666,7 @@ mod tests {
     /// describes that, so the two failures stay distinguishable.
     #[test]
     fn importing_a_missing_name_from_a_loaded_module_is_unchanged() {
-        let sink = diagnostics("module m;\nusing m::{NoSuch};\n");
+        let sink = diagnostics("module m;\nuse m::{NoSuch};\n");
         let d = sink
             .diagnostics()
             .iter()
@@ -2707,7 +2710,7 @@ mod tests {
                 FileId(0),
             ),
             (
-                "module user;\nusing owner::{Device};\nimpl Device { pub fn read(self) -> integer { return self.value; } }\n",
+                "module user;\nuse owner::{Device};\nimpl Device { pub fn read(self) -> integer { return self.value; } }\n",
                 FileId(1),
             ),
         ]);
@@ -2746,7 +2749,7 @@ mod tests {
     /// neither can gain inherent members.
     fn compiler_types_and_aliases_do_not_gain_inherent_impls() {
         let sink = diagnostics(
-            "module m;\nusing Count = integer;\n\
+            "module m;\ntype Count = integer;\n\
              impl integer { fn raw(self) -> integer { return self; } }\n\
              impl Count { fn alias(self) -> integer { return self; } }\n",
         );
@@ -2848,6 +2851,45 @@ mod tests {
     }
 
     #[test]
+    /// A renamed import binds the local name to the declaration itself; the
+    /// original name is not bound, and the local name can collide.
+    fn a_renamed_import_binds_its_local_name() {
+        let resolve_sources = |sources: &[&str]| {
+            let mut sink = DiagnosticSink::new();
+            let modules: Vec<Module> = sources
+                .iter()
+                .enumerate()
+                .map(|(i, src)| crate::syntax::parse_module(FileId(i as u32), src, &mut sink))
+                .collect();
+            resolve(&modules, &mut sink);
+            sink
+        };
+        let lib = "module lib; pub struct Thing { pub x: integer }";
+        let ok = resolve_sources(&[
+            lib,
+            "module m; use Other = lib::Thing; const C: Other = Other { 1 };",
+        ]);
+        assert_eq!(ok.error_count(), 0, "{:#?}", ok.diagnostics());
+        let missing = resolve_sources(&[
+            lib,
+            "module m; use Other = lib::Thing; const C: Thing = Thing { 1 };",
+        ]);
+        assert!(
+            missing.error_count() > 0,
+            "the original name is not imported"
+        );
+        let clash = resolve_sources(&[lib, "module m; use Thing = lib::Thing; struct Thing {}"]);
+        assert!(
+            clash
+                .diagnostics()
+                .iter()
+                .any(|d| d.code == Some(codes::DUPLICATE_ITEM)),
+            "{:#?}",
+            clash.diagnostics()
+        );
+    }
+
+    #[test]
     /// Members of different kinds still share one namespace, so a `let` in one
     /// impl block cannot be shadowed by a method of that name in another.
     fn different_inherent_member_kinds_cannot_shadow_across_blocks() {
@@ -2902,7 +2944,7 @@ mod tests {
         );
         let user = crate::syntax::parse_module(
             FileId(1),
-            "module m;\nusing std::lib::{Used, Dead};\nentity E { a: Used in, }\n",
+            "module m;\nuse std::lib::{Used, Dead};\nentity E { a: Used in, }\n",
             &mut sink,
         );
         resolve(&[provider, user], &mut sink);
@@ -2933,7 +2975,7 @@ mod tests {
         );
         let user = crate::syntax::parse_module(
             FileId(1),
-            "module m;\nusing a::{Secret, Public};\nentity E { s: Secret in, p: Public in, }\n",
+            "module m;\nuse a::{Secret, Public};\nentity E { s: Secret in, p: Public in, }\n",
             &mut sink,
         );
         resolve(&[provider, user], &mut sink);
@@ -2965,7 +3007,7 @@ mod tests {
         );
         let use_site = crate::syntax::parse_module(
             FileId(1),
-            "module a;\nusing a::{Secret};\nfn keep(value: Secret) -> Secret { return value; }\n",
+            "module a;\nuse a::{Secret};\nfn keep(value: Secret) -> Secret { return value; }\n",
             &mut sink,
         );
         resolve(&[declaration, use_site], &mut sink);
@@ -3096,7 +3138,7 @@ mod tests {
         );
         let user = crate::syntax::parse_module(
             FileId(2),
-            "module user;\nusing a::{Thing};\nfn take(value: Thing) -> Thing { return value; }\n",
+            "module user;\nuse a::{Thing};\nfn take(value: Thing) -> Thing { return value; }\n",
             &mut sink,
         );
         resolve(&[a, b, user], &mut sink);
@@ -3108,7 +3150,7 @@ mod tests {
 
     #[test]
     /// Loading a module does not put its names into unqualified scope; only an
-    /// explicit `using` does.
+    /// explicit `use` does.
     fn loaded_modules_do_not_leak_names_into_unqualified_scope() {
         let mut sink = DiagnosticSink::new();
         let library = crate::syntax::parse_module(
@@ -3204,7 +3246,7 @@ mod tests {
     }
 
     #[test]
-    /// `pub using` re-exports its target, so importers of the re-exporting
+    /// `pub use` re-exports its target, so importers of the re-exporting
     /// module see the name.
     fn public_imports_reexport_their_target() {
         let mut sink = DiagnosticSink::new();
@@ -3215,12 +3257,12 @@ mod tests {
         );
         let facade = crate::syntax::parse_module(
             FileId(1),
-            "module facade;\npub using base::{Thing};\n",
+            "module facade;\npub use base::Thing;\n",
             &mut sink,
         );
         let user = crate::syntax::parse_module(
             FileId(2),
-            "module user;\nusing facade::{Thing};\nfn take(value: Thing) -> Thing { return value; }\n",
+            "module user;\nuse facade::{Thing};\nfn take(value: Thing) -> Thing { return value; }\n",
             &mut sink,
         );
         resolve(&[user, facade, base], &mut sink);
@@ -3249,7 +3291,7 @@ mod tests {
         );
         let user = crate::syntax::parse_module(
             FileId(1),
-            "module user;\nstruct Thing { value: integer }\nusing library::{Thing};\n",
+            "module user;\nstruct Thing { value: integer }\nuse library::{Thing};\n",
             &mut sink,
         );
         resolve(&[library, user], &mut sink);
@@ -3271,12 +3313,12 @@ mod tests {
         );
         let first = crate::syntax::parse_module(
             FileId(1),
-            "module user;\nusing library::{Thing};\nfn first(value: Thing) -> Thing { return value; }\n",
+            "module user;\nuse library::{Thing};\nfn first(value: Thing) -> Thing { return value; }\n",
             &mut sink,
         );
         let second = crate::syntax::parse_module(
             FileId(2),
-            "module user;\nusing library::{Thing};\nfn second(value: Thing) -> Thing { return value; }\n",
+            "module user;\nuse library::{Thing};\nfn second(value: Thing) -> Thing { return value; }\n",
             &mut sink,
         );
         resolve(&[library, first, second], &mut sink);
@@ -3311,14 +3353,14 @@ mod tests {
     }
 
     #[test]
-    /// A `pub using` alias is exported like any other public name.
+    /// A `pub use` alias is exported like any other public name.
     fn pub_using_alias_is_exported() {
         let mut sink = DiagnosticSink::new();
         let provider =
-            crate::syntax::parse_module(FileId(0), "module a;\npub using Word = Bit;\n", &mut sink);
+            crate::syntax::parse_module(FileId(0), "module a;\npub type Word = Bit;\n", &mut sink);
         let user = crate::syntax::parse_module(
             FileId(1),
-            "module m;\nusing a::Word;\nentity E { w: Word in, }\n",
+            "module m;\nuse a::Word;\nentity E { w: Word in, }\n",
             &mut sink,
         );
         resolve(&[provider, user], &mut sink);
@@ -3475,14 +3517,14 @@ mod tests {
     /// perfectly ordinary bad input.
     #[test]
     fn declaration_cycles_are_reported_not_fatal() {
-        let (_, errs) = resolve_src("module m;\nusing A = B;\nusing B = A;\n");
+        let (_, errs) = resolve_src("module m;\ntype A = B;\ntype B = A;\n");
         assert!(errs >= 1, "alias cycle");
 
         let (_, errs) = resolve_src("module m;\nstruct A(B);\nstruct B(A);\n");
         assert!(errs >= 1, "derivation cycle");
 
         // A self-reference is the one-step case.
-        let (_, errs) = resolve_src("module m;\nusing A = A;\n");
+        let (_, errs) = resolve_src("module m;\ntype A = A;\n");
         assert!(errs >= 1, "self-alias");
 
         // An enum derives its variants from its base the way a struct derives
@@ -3500,16 +3542,16 @@ mod tests {
         assert_eq!(errs, 0, "a derivation chain is not a cycle");
 
         // Legitimate chains are untouched.
-        let (_, errs) = resolve_src("module m;\nstruct A { x: Bit }\nstruct B(A);\nusing C = B;\n");
+        let (_, errs) = resolve_src("module m;\nstruct A { x: Bit }\nstruct B(A);\ntype C = B;\n");
         assert_eq!(errs, 0);
     }
 
     /// An alias target is a type reference and must resolve.
     #[test]
     fn unknown_alias_target_is_reported() {
-        let (_, errs) = resolve_src("module m;\nusing Word = NoSuchType;\n");
+        let (_, errs) = resolve_src("module m;\ntype Word = NoSuchType;\n");
         assert_eq!(errs, 1);
-        let (_, errs) = resolve_src("module m;\nusing Word = Bit;\n");
+        let (_, errs) = resolve_src("module m;\ntype Word = Bit;\n");
         assert_eq!(errs, 0);
     }
 

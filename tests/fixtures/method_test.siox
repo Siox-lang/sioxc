@@ -4,7 +4,7 @@ module examples::method_test;
 // testbench local. Exercises struct-field local writes (`p.a = ..`) and the
 // value-returning method inline (`p.sum()`), driving a DUT input.
 
-using std::bits::unsigned;
+use std::bits::unsigned;
 
 struct Pkt { pub a: unsigned[8], pub b: unsigned[8] }
 impl Pkt {

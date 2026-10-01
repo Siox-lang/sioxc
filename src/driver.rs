@@ -282,7 +282,7 @@ fn describe_item(item: &Item) -> (&'static str, String) {
                         .join("::");
                     let names = names
                         .iter()
-                        .map(|name| name.text.as_str())
+                        .map(|name| name.binding().text.as_str())
                         .collect::<Vec<_>>()
                         .join(", ");
                     if base.is_empty() {
@@ -292,7 +292,10 @@ fn describe_item(item: &Item) -> (&'static str, String) {
                     }
                 }
             };
-            ("using", name)
+            match &using.kind {
+                UsingKind::Alias { .. } => ("type", name),
+                UsingKind::Import { .. } => ("use", name),
+            }
         }
         Item::Const(constant) => ("const", constant.name.text.clone()),
         Item::Struct(structure) => ("struct", structure.name.text.clone()),

@@ -41,8 +41,12 @@ pub enum TokenKind {
     // Keywords (Phase 1)
     /// The `module` keyword.
     Module,
-    /// The `using` keyword.
+    /// The removed `use` keyword, kept so its replacement can be named.
     Using,
+    /// The `use` keyword: an import.
+    Use,
+    /// The `type` keyword: a transparent type alias.
+    Type,
     /// The `pub` visibility keyword.
     Pub,
     /// The `entity` keyword.
@@ -198,6 +202,8 @@ impl TokenKind {
 
             TokenKind::Module => "`module`",
             TokenKind::Using => "`using`",
+            TokenKind::Use => "`use`",
+            TokenKind::Type => "`type`",
             TokenKind::Pub => "`pub`",
             TokenKind::Entity => "`entity`",
             TokenKind::Impl => "`impl`",

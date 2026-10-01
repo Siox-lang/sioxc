@@ -10,7 +10,7 @@ fn private_struct_members_are_type_scoped_and_pub_crosses_the_boundary() {
             pub struct Packet { hidden: integer, pub visible: integer }\n\
             impl Packet { fn secret(self) -> integer { return self.hidden; } pub fn get(self) -> integer { return self.hidden; } }\n";
     let consumer = "module user;\n\
-            using model::{Packet};\n\
+            use model::Packet;\n\
             fn inspect(p: Packet) -> integer { return p.hidden + p.visible + p.secret() + p.get(); }\n";
     let sink = check_modules(&[(provider, FileId(0)), (consumer, FileId(1))]);
     let private = sink
@@ -325,7 +325,7 @@ fn public_entity_associated_functions_are_namespaced_functions() {
                 fn hidden(value: integer) -> integer { return value + 2; }\n\
             }\n";
     let consumer = "module user;\n\
-            using model::{Device};\n\
+            use model::Device;\n\
             fn inspect(value: integer) -> integer {\n\
                 return Device::visible(value) + Device::hidden(value);\n\
             }\n";
@@ -366,7 +366,7 @@ fn a_private_trait_keeps_its_implementation_methods_private() {
             pub struct Value(integer);\n\
             trait Hidden { fn reveal(self) -> integer; }\n\
             impl Hidden for Value { fn reveal(self) -> integer { return 1; } }\n";
-    let consumer = "module user;\nusing model::{Value};\nfn inspect(value: Value) -> integer { return value.reveal(); }\n";
+    let consumer = "module user;\nuse model::{Value};\nfn inspect(value: Value) -> integer { return value.reveal(); }\n";
     let sink = check_modules(&[(provider, FileId(0)), (consumer, FileId(1))]);
     assert!(sink.diagnostics().iter().any(|diagnostic| {
         diagnostic.code == Some(codes::PRIVATE_MEMBER) && diagnostic.message.contains("reveal")
@@ -381,7 +381,8 @@ fn a_view_does_not_publish_backing_struct_methods() {
             pub view Source for Stream { data out }\n\
             impl Stream { fn secret(self) -> integer { return self.data; } }\n\
             pub entity Producer { bus: Stream Source }\n";
-    let consumer = "module user;\nusing bus::{Producer};\nimpl Producer { let seen: integer = bus.secret(); }\n";
+    let consumer =
+        "module user;\nuse bus::{Producer};\nimpl Producer { let seen: integer = bus.secret(); }\n";
     let sink = check_modules(&[(provider, FileId(0)), (consumer, FileId(1))]);
     assert!(sink.diagnostics().iter().any(|diagnostic| {
         diagnostic.code == Some(codes::PRIVATE_MEMBER) && diagnostic.message.contains("secret")
@@ -392,7 +393,7 @@ fn a_view_does_not_publish_backing_struct_methods() {
 /// A view declared in another module cannot publish private backing fields.
 fn a_foreign_view_cannot_publish_private_backing_fields() {
     let provider = "module bus;\npub struct Stream { data: integer }\n";
-    let consumer = "module user;\nusing bus::{Stream};\npub view Source for Stream { data out }\npub entity Producer { bus: Stream Source }\n";
+    let consumer = "module user;\nuse bus::{Stream};\npub view Source for Stream { data out }\npub entity Producer { bus: Stream Source }\n";
     let sink = check_modules(&[(provider, FileId(0)), (consumer, FileId(1))]);
     assert!(sink.diagnostics().iter().any(|diagnostic| {
         diagnostic.code == Some(codes::PRIVATE_MEMBER)

@@ -18,7 +18,7 @@ fn lower_nested(width: usize) -> Design {
     let pad = "0".repeat(width - 8);
     let source = format!(
         "module m;\n\
-         using std::bits::unsigned;\n\
+         use std::bits::unsigned;\n\
          entity E {{ y: unsigned[{width}] out, }}\n\
          impl E {{\n\
          let a: unsigned[{width}] = \"{pad}0000X100\";\n\
@@ -107,7 +107,7 @@ fn lower_resolved(width: usize) -> Design {
     let pad = "0".repeat(width - 8);
     let source = format!(
         "module m;\n\
-         using std::bits::unsigned;\n\
+         use std::bits::unsigned;\n\
          entity E {{ y: unsigned[{width}] out }}\n\
          impl E {{\n\
          let a: unsigned[{width}] = \"{pad}0000X100\";\n\

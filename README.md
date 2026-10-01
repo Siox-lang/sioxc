@@ -50,8 +50,8 @@ plus a testbench that drives it:
 ```siox
 module counter;
 
-using std::bits::unsigned;
-using std::logic::{Bit, Logic};
+use std::bits::unsigned;
+use std::logic::{Bit, Logic};
 
 entity Counter {
     clk: Bit in,

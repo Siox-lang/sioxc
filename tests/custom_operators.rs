@@ -16,7 +16,7 @@ fn imported_operator_fixture(name: &str) -> (std::path::PathBuf, std::path::Path
     std::fs::write(
         directory.join("local/operators.siox"),
         r#"module local::operators;
-           using std::ops::{Operator};
+           use std::ops::Operator;
            pub enum Flag { Off, On }
            impl Operator<"unless", Flag, Bool> for Flag {
                attr precedence = 45;
@@ -30,7 +30,7 @@ fn imported_operator_fixture(name: &str) -> (std::path::PathBuf, std::path::Path
     .unwrap();
     std::fs::write(
         directory.join("local/api.siox"),
-        "module local::api; pub using local::operators::{Flag};",
+        "module local::api; pub use local::operators::Flag;",
     )
     .unwrap();
     // Deliberately not imported. A directory-wide operator scan would pick up
@@ -38,7 +38,7 @@ fn imported_operator_fixture(name: &str) -> (std::path::PathBuf, std::path::Path
     std::fs::write(
         directory.join("unrelated.siox"),
         r#"module unrelated;
-           using std::ops::{Operator};
+           use std::ops::Operator;
            enum Other { A }
            impl Operator<"unless", Other, Bool> for Other {
                attr precedence = 1;
@@ -50,7 +50,7 @@ fn imported_operator_fixture(name: &str) -> (std::path::PathBuf, std::path::Path
     std::fs::write(
         &entry,
         r#"module imported_operator;
-           using local::api::{Flag};
+           use local::api::Flag;
            #[test] entity ImportedOperator {}
            impl ImportedOperator {
                let left: Flag = Flag::On;

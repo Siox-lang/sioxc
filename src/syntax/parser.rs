@@ -394,6 +394,8 @@ impl<'a> Parser<'a> {
         }
 
         let item = match self.kind() {
+            TokenKind::Use => Item::Using(self.parse_use(is_pub)),
+            TokenKind::Type => Item::Using(self.parse_type_alias(is_pub)),
             TokenKind::Using => Item::Using(self.parse_using(is_pub)),
             TokenKind::Const => Item::Const(self.parse_const(is_pub)),
             TokenKind::Fn => {
@@ -433,7 +435,7 @@ impl<'a> Parser<'a> {
             },
             _ => {
                 self.error_here(
-                    "expected an item (using, const, fn, struct, view, enum, entity, impl, trait, attr)",
+                    "expected an item (use, type, const, fn, struct, view, enum, entity, impl, trait, attr)",
                 );
                 return None;
             }
@@ -451,6 +453,8 @@ impl<'a> Parser<'a> {
                     | TokenKind::Pub
                     | TokenKind::Extern
                     | TokenKind::Using
+                    | TokenKind::Use
+                    | TokenKind::Type
                     | TokenKind::Fn
                     | TokenKind::Const
                     | TokenKind::Struct
@@ -545,23 +549,146 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // --- using / const ------------------------------------------------------
+    // --- use / type / const ------------------------------------------------
 
-    /// Parse `using a::b::{c, d};` or `using Name = Type;`.
+    /// Parse an import: `use a::b::C;`, `use a::b::{C, D = E};`, or the
+    /// renamed `use Local = a::b::C;` (Rust's `use a::b::C as Local;`).
+    fn parse_use(&mut self, is_pub: bool) -> Using {
+        let start = self.span();
+        self.bump(); // `use`
+        let local = if self.at(TokenKind::Ident) && self.kind_at(self.pos + 1) == &TokenKind::Eq {
+            let local = self.parse_ident();
+            self.bump(); // `=`
+            Some(local)
+        } else {
+            None
+        };
+        let path = self.parse_path();
+        let kind = if local.is_none()
+            && self.at(TokenKind::ColonColon)
+            && self.kind_at(self.pos + 1) == &TokenKind::LBrace
+        {
+            self.bump(); // `::`
+            self.bump(); // `{`
+            let mut names = Vec::new();
+            while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+                names.push(self.parse_import_member());
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RBrace, "to close an import list");
+            UsingKind::Import { base: path, names }
+        } else {
+            // `use a::b::C;` — the last segment is the imported name.
+            let mut segments = path.segments.clone();
+            let name = segments.pop().unwrap_or_else(|| Ident {
+                text: String::new(),
+                span: path.span,
+            });
+            if segments.is_empty() {
+                self.error_at(
+                    path.span,
+                    "an import names a module and an item in it: `use module::Item;`",
+                );
+            }
+            UsingKind::Import {
+                base: Path {
+                    segments,
+                    span: path.span,
+                },
+                names: vec![ImportName { name, local }],
+            }
+        };
+        self.expect(TokenKind::Semi, "after a `use`");
+        Using {
+            is_pub,
+            kind,
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// One member of an import list: `C`, or renamed `Local = C`.
+    fn parse_import_member(&mut self) -> ImportName {
+        if self.at(TokenKind::StrLit) {
+            // Quoted operator-trait imports were removed with `impl "+"`.
+            let name = self.parse_trait_name();
+            return ImportName { name, local: None };
+        }
+        if self.at(TokenKind::Ident) && self.kind_at(self.pos + 1) == &TokenKind::Eq {
+            let local = self.parse_ident();
+            self.bump(); // `=`
+            let name = self.parse_ident();
+            return ImportName {
+                name,
+                local: Some(local),
+            };
+        }
+        if self.at(TokenKind::LBrace)
+            || self.kind_at(self.pos + 1) == &TokenKind::ColonColon
+            || self.at(TokenKind::SelfKw)
+            || self.at(TokenKind::Star)
+        {
+            self.error_here(
+                "nested groups, `self` and `*` in an import list are not supported yet; \
+                 write one `use` per module",
+            );
+            while !self.at(TokenKind::Comma)
+                && !self.at(TokenKind::RBrace)
+                && !self.at(TokenKind::Eof)
+            {
+                self.bump();
+            }
+            return ImportName {
+                name: Ident {
+                    text: String::new(),
+                    span: self.prev_span(),
+                },
+                local: None,
+            };
+        }
+        ImportName {
+            name: self.parse_ident(),
+            local: None,
+        }
+    }
+
+    /// Parse a transparent type alias: `type Word = unsigned[32];`.
+    fn parse_type_alias(&mut self, is_pub: bool) -> Using {
+        let start = self.span();
+        self.bump(); // `type`
+        let name = self.parse_ident();
+        if self.at(TokenKind::Lt) {
+            self.error_here("generic type aliases are not supported yet");
+            let _ = self.parse_params_opt();
+        }
+        self.expect(TokenKind::Eq, "after a type alias name");
+        let ty = self.parse_type();
+        self.expect(TokenKind::Semi, "after a type alias");
+        Using {
+            is_pub,
+            kind: UsingKind::Alias { name, ty },
+            span: start.to(self.prev_span()),
+        }
+    }
+
+    /// The removed `use`: parse its old shape so later stages still see
+    /// the import or alias, and report the `use`/`type` that replaces it.
     fn parse_using(&mut self, is_pub: bool) -> Using {
         let start = self.span();
-        self.bump(); // `using`
+        let keyword = self.bump(); // `using`
         let path = self.parse_path();
 
         let kind =
             if self.at(TokenKind::ColonColon) && self.kind_at(self.pos + 1) == &TokenKind::LBrace {
-                // `using a::b::{ c, d };`
                 self.bump(); // `::`
                 self.bump(); // `{`
                 let mut names = Vec::new();
                 while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-                    // Operator traits import by their quoted name: `{"+", Boolean}`.
-                    names.push(self.parse_trait_name());
+                    names.push(ImportName {
+                        name: self.parse_trait_name(),
+                        local: None,
+                    });
                     if !self.eat(TokenKind::Comma) {
                         break;
                     }
@@ -569,7 +696,6 @@ impl<'a> Parser<'a> {
                 self.expect(TokenKind::RBrace, "to close an import list");
                 UsingKind::Import { base: path, names }
             } else if self.at(TokenKind::Eq) {
-                // `using Word = unsigned[32];`
                 self.bump(); // `=`
                 let name = path.segments.last().cloned().unwrap_or_else(|| Ident {
                     text: String::new(),
@@ -581,27 +707,38 @@ impl<'a> Parser<'a> {
                 let ty = self.parse_type();
                 UsingKind::Alias { name, ty }
             } else {
-                // `using a::b::C;` — last segment is the imported name.
                 let mut segments = path.segments.clone();
                 let name = segments.pop().unwrap_or_else(|| Ident {
                     text: String::new(),
                     span: path.span,
                 });
-                let base = Path {
-                    segments,
-                    span: path.span,
-                };
                 UsingKind::Import {
-                    base,
-                    names: vec![name],
+                    base: Path {
+                        segments,
+                        span: path.span,
+                    },
+                    names: vec![ImportName { name, local: None }],
                 }
             };
         self.expect(TokenKind::Semi, "after a `using`");
-        Using {
+        let using = Using {
             is_pub,
             kind,
             span: start.to(self.prev_span()),
-        }
+        };
+        let replacement = crate::syntax::pretty::using_text(&using);
+        let (what, keyword_now) = match using.kind {
+            UsingKind::Import { .. } => ("an import", "`use`"),
+            UsingKind::Alias { .. } => ("a type alias", "`type`"),
+        };
+        self.sink.emit(
+            Diagnostic::error(format!(
+                "`using` was split into `use` and `type`; this is {what}"
+            ))
+            .at(keyword.span)
+            .help(format!("write `{replacement}` ({keyword_now})")),
+        );
+        using
     }
 
     /// Parse a `const` declaration.
@@ -2751,6 +2888,8 @@ impl<'a> Parser<'a> {
                 | TokenKind::SelfKw
                 | TokenKind::Module
                 | TokenKind::Using
+                | TokenKind::Use
+                | TokenKind::Type
                 | TokenKind::Pub
                 | TokenKind::Entity
                 | TokenKind::Impl
@@ -3189,7 +3328,7 @@ mod tests {
                 "param list",
                 "entity E<W: integer, @@@ X: integer> { y: Bit out }",
             ),
-            ("import list", "using std::bits::{unsigned, @@@ signed};"),
+            ("import list", "use std::bits::{unsigned, @@@ signed};"),
             (
                 "impl statements",
                 "entity E { a: Bit in, y: Bit out }\nimpl E { y = a; @@@ }",
@@ -3281,7 +3420,7 @@ mod tests {
     /// A module header and its imports parse into the expected shapes.
     fn module_header_and_imports() {
         let m = parse_ok(
-            "module std::logic;\nusing std::logic::{Bit, Logic};\nusing Word = unsigned[32];\n",
+            "module std::logic;\nuse std::logic::{Bit, Logic};\ntype Word = unsigned[32];\n",
         );
         assert_eq!(m.path.segments.len(), 2);
         assert_eq!(m.path.segments[1].text, "logic");
@@ -4092,5 +4231,71 @@ mod tests {
                 "{src}: {diags:#?}"
             );
         }
+    }
+
+    /// `use` imports (single, grouped, renamed with `=`, re-exported) and
+    /// `type` aliases parse, and print back as written.
+    #[test]
+    fn use_and_type_parse_and_print() {
+        let src = "module m;\n\nuse std::logic::Logic;\n\nuse std::logic::{Bit, Flag = Bool};\n\nuse Master = bus::axi::Master;\n\npub use std::bits::{unsigned, signed};\n\ntype Word = unsigned[32];\n\npub type Byte = integer<0..255>;\n";
+        let m = parse_ok(src);
+        let imports: Vec<(String, Vec<String>)> = m
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Using(Using {
+                    kind: UsingKind::Import { base, names },
+                    ..
+                }) => Some((
+                    base.segments
+                        .iter()
+                        .map(|s| s.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("::"),
+                    names
+                        .iter()
+                        .map(|n| format!("{}<-{}", n.binding().text, n.name.text))
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(imports[1].1, ["Bit<-Bit", "Flag<-Bool"]);
+        assert_eq!(
+            imports[2],
+            ("bus::axi".to_string(), vec!["Master<-Master".to_string()])
+        );
+        assert!(
+            matches!(&m.items[4], Item::Using(Using { kind: UsingKind::Alias { name, .. }, .. }) if name.text == "Word")
+        );
+        assert_eq!(crate::syntax::pretty::print_module(&m), src);
+    }
+
+    /// The removed `using` still parses, so later stages see the import, but
+    /// it is an error whose help is the exact replacement line.
+    #[test]
+    fn using_names_its_replacement() {
+        for (src, help) in [
+            (
+                "module m;\nusing std::logic::{Bit, Logic};\n",
+                "write `use std::logic::{Bit, Logic};` (`use`)",
+            ),
+            (
+                "module m;\npub using Word = unsigned[32];\n",
+                "write `pub type Word = unsigned[32];` (`type`)",
+            ),
+        ] {
+            let diags = diagnostics(src);
+            assert_eq!(diags.len(), 1, "{diags:#?}");
+            assert!(diags[0].message.contains("split into `use` and `type`"));
+            assert_eq!(diags[0].help.as_deref(), Some(help));
+        }
+        let diags = diagnostics("module m;\nuse a::{b::{c}};\n");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("not supported yet")),
+            "{diags:#?}"
+        );
     }
 }

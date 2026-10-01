@@ -4,7 +4,7 @@ use super::*;
 
 /// A call to a function nothing declares passed every stage and failed in
 /// the backend as "unsupported call `abs` in testbench expression",
-/// blaming the emitter for a missing `using`.
+/// blaming the emitter for a missing `use`.
 #[test]
 fn an_undeclared_call_is_reported() {
     let errors = check_src(

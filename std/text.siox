@@ -16,7 +16,7 @@ module std::text;
 // A string is an array of symbols; the empty `[]` leaves the range to be
 // set at use — by an explicit length (`string[5]`) or, later, inferred from
 // a string literal (`let s = "hello";` -> Char[5]).
-pub using string = Char[];
+pub type string = Char[];
 
 // Encoding tables (spec: type kernel — characters have no numbers except
 // through a table). `Char` stores Unicode code points, so the Unicode table

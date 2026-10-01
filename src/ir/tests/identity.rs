@@ -223,11 +223,11 @@ fn entity_associated_functions_keep_resolved_owner_identity() {
 fn equal_type_alias_leaves_keep_the_resolved_representation() {
     let sources = [
         (
-            "module a; pub using Scalar = integer<-16..15>; pub using Value = Scalar;",
+            "module a; pub type Scalar = integer<-16..15>; pub type Value = Scalar;",
             FileId(0),
         ),
         (
-            "module b; pub using Scalar = integer<-128..127>; pub using Value = Scalar;",
+            "module b; pub type Scalar = integer<-128..127>; pub type Value = Scalar;",
             FileId(1),
         ),
         (

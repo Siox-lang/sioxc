@@ -23,7 +23,7 @@ fn project(name: &str, uart_decl: &str) -> (std::path::PathBuf, std::path::PathB
     let entry = dir.join("top.siox");
     std::fs::write(
         &entry,
-        "module top;\nusing bus::spi::{Master};\nusing bus::uart::{Other};\n\
+        "module top;\nuse bus::spi::{Master};\nuse bus::uart::{Other};\n\
          entity Top { a: Bit out, b: Bit out }\n\
          impl Top { let m: Master = { .o = a }; let u: Other = { .o = b }; }\n",
     )

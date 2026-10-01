@@ -316,7 +316,7 @@ struct Lowering<'a> {
     /// Module-level range constants (`const BYTE: range = 7..0`), as written
     /// (left, right) so direction is preserved.
     const_ranges: HashMap<String, (i64, i64)>,
-    /// Type aliases (`using Word = unsigned[32]`).
+    /// Type aliases (`type Word = unsigned[32]`).
     aliases: HashMap<String, ast::Type>,
     /// The active entity's width environment (consts + instance params),
     /// for const-evaluating slice bounds during expression lowering.

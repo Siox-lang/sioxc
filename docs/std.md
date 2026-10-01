@@ -4,7 +4,7 @@
 
 
 The standard library lives in `std/` as ordinary siox source, loaded
-transitively from `--std <dir>` (default `./std`): `using std::logic::{...}`
+transitively from `--std <dir>` (default `./std`): `use std::logic::{...}`
 parses `<dir>/logic.siox`, and imports bind to real `pub` declarations (a
 bad import is a hard error, `E-P011`).
 
@@ -166,12 +166,12 @@ Ranged integers (spec 3.26): each stores in the smallest width covering its
 range; constants outside it are compile errors.
 
 ```siox
-pub using Byte = integer<0..255>;
-pub using Short = integer<-32768..32767>;
-pub using Int = integer<-2147483648..2147483647>;
-pub using Long = integer<-9223372036854775808..9223372036854775807>;
-pub using Natural = integer<0..9223372036854775807>;
-pub using Positive = integer<1..9223372036854775807>;
+pub type Byte = integer<0..255>;
+pub type Short = integer<-32768..32767>;
+pub type Int = integer<-2147483648..2147483647>;
+pub type Long = integer<-9223372036854775808..9223372036854775807>;
+pub type Natural = integer<0..9223372036854775807>;
+pub type Positive = integer<1..9223372036854775807>;
 ```
 
 ## `std::attrs`
