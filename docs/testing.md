@@ -98,7 +98,9 @@ reassignment and comparison.
 - `warn!(…)` / `print!(…)` — diagnostics and logging; enum and logic values
   render symbolically (`Idle`, `'Z'`), `Char` and string values render as
   Unicode, and arbitrary-width numeric values retain every decimal digit.
-- `stop!` / `finish!` — end the run.
+- `stop()` / `finish()` — end the run. They are ordinary functions, not
+  macros: `stop()` halts the test, which passes so far, and `finish()` ends
+  the simulation cleanly.
 
 ## Running
 
