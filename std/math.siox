@@ -48,7 +48,7 @@ impl Suffix<"i", real> for Complex {
     fn suffix(v: real) -> Complex { return Complex { .re = 0, .im = v }; }
 }
 
-// Integer helpers (spec Stage 11; VHDL math_real's sign-free core). Pure
+// Integer helpers (VHDL math_real's sign-free core). Pure
 // `return`/`if` bodies: inlined in hardware, const-evaluated when arguments
 // are constants, callable from testbenches.
 pub fn abs(v: integer) -> integer {
@@ -67,8 +67,7 @@ pub fn max(a: integer, b: integer) -> integer {
 }
 
 // Real math straight from the C math library (spec 3.27, `extern "C"`):
-// `real` maps to `double`. The JIT resolves the symbols from the process;
-// the native binary links -lm; the interpreter evaluates this set natively.
+// `real` maps to `double`, and the native test executable links -lm.
 extern "C" {
     pub fn sqrt(x: real) -> real;
     pub fn sin(x: real) -> real;

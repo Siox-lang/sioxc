@@ -2,9 +2,9 @@ module std::logic;
 
 use std::ops::{From, New, Resolve};
 
-// Scalar logic types (spec Stage 11, modelled on VHDL's std.standard and
+// Scalar logic types, modelled on VHDL's std.standard and
 // ieee.std_logic_1164 — where `bit`, `boolean` and `std_ulogic` are ordinary
-// enumeration types declared in library code, not compiler magic).
+// enumeration types declared in library code, not compiler magic.
 //
 // These are the canonical declarations. The type checker represents them as
 // ordinary named enums; their non-core behavior lives in the trait impls below.
@@ -282,4 +282,4 @@ impl New for Logic {
 
 // The ULogic <-> Logic crossing needs no explicit impl: `Logic(u)` / `ULogic(l)`
 // are derivation-total conversions the compiler synthesizes from the
-// `Logic : ULogic` relation (same variants, representation-identity).
+// `enum Logic(ULogic)` newtype (same variants, representation-identity).

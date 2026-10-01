@@ -6,30 +6,48 @@ module std::text;
 // numbers of their own — a numbering exists only relative to an encoding
 // table, and ASCII is not the only table. `integer <-> Char` conversion
 // therefore goes through a named table here (VHDL's 'pos/'val made explicit
-// and table-scoped); planned:
-//
-//   pub struct Unicode {}   // code(c) -> integer, char(n) -> Char
-//   pub struct Ascii {}     // 7-bit subset; out-of-table is an error
-//
-// (Blocked on associated fns callable in expressions.)
+// and table-scoped).
 
-// A string is an array of symbols; the empty `[]` leaves the range to be
-// set at use — by an explicit length (`string[5]`) or, later, inferred from
-// a string literal (`let s = "hello";` -> Char[5]).
+// A string is an array of symbols; the empty `[]` leaves the range to be set
+// at use — by an explicit length (`string[5]`) or by the literal that
+// initializes it (`let s: string = "hello";` is `Char[5]`).
 pub type string = Char[];
 
-// Encoding tables (spec: type kernel — characters have no numbers except
-// through a table). `Char` stores Unicode code points, so the Unicode table
-// is the identity; Ascii is its 7-bit prefix (-1 = not representable).
+// Encoding tables. `Char` stores Unicode code points, so `Unicode` is the
+// identity; `Ascii` is its 7-bit prefix, with `-1` for a character outside it.
+//
+//   Unicode::code('é') == 233      Unicode::char(65) == 'A'
+//   Ascii::code('A') == 65         Ascii::code('é') == -1
+pub struct Unicode {}
+
+impl Unicode {
+    pub fn code(c: Char) -> integer {
+        return integer(c);
+    }
+
+    pub fn char(n: integer) -> Char {
+        return Char(n);
+    }
+}
+
+pub struct Ascii {}
+
+impl Ascii {
+    pub fn code(c: Char) -> integer {
+        if integer(c) < 128 { return integer(c); }
+        return -1;
+    }
+}
+
+// Shorthands for the tables above.
 pub fn unicode(c: Char) -> integer {
-    return integer(c);
+    return Unicode::code(c);
 }
 
 pub fn char_of(n: integer) -> Char {
-    return Char(n);
+    return Unicode::char(n);
 }
 
 pub fn ascii(c: Char) -> integer {
-    if integer(c) < 128 { return integer(c); }
-    return 0 - 1;
+    return Ascii::code(c);
 }

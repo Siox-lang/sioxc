@@ -6,8 +6,10 @@ use std::ops::Ordering;
 // is a nominal integer measured in femtoseconds; frequency is a nominal real
 // measured in hertz.
 //
-// `wait`/`tick`/`run` stimulus control is built-in simulator syntax for now
-// (spec Stage 11 allows this).
+// Timing in a testbench is the built-in `await`: `await 10ns;` advances
+// simulation time, `await clk.rising();` waits for an edge, and `await cond;`
+// waits until a condition holds. `stop()` halts the test as passed so far and
+// `finish()` ends the simulation cleanly; both are runtime-provided.
 
 pub struct time(integer);
 

@@ -34,7 +34,7 @@ is a documented shim, and the declaration here is canonical.
 | `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
-| `std::text`   | std.standard `string` + `'pos`/`'val` | `string = Char[]`; encoding tables (`Unicode`/`Ascii`) planned |
+| `std::text`   | std.standard `string` + `'pos`/`'val` | `string = Char[]`; encoding tables `Unicode`/`Ascii` |
 | `std::sim`    | std.standard `time`              | `time`, `frequency` + unit suffixes; FS..MS constants |
 | `std::fs`     | textio / impure host I/O         | typed `read<T>` construction and `exists` fixture probes |
 | `std::attrs`  | (attributes; VHDL has none)      | `test`, `keep`, `library`, `name`, `precedence` |
@@ -150,8 +150,10 @@ Unit suffixes `fs ps ns us ms` construct `time`; `Hz kHz MHz GHz` construct
 the 1 fs base tick (also the waveform timescale), and both nominal types implement
 `Operator<"<=>", Self, Ordering>` so all six comparisons are available without
 discarding their unit identity. `FS..MS` remain raw integer multipliers.
-`wait`/`tick` stimulus control is built-in simulator syntax; `wait 10ns` also
-works in bare files through a fixed fallback table typed as `integer`.
+Timing is the built-in `await`: `await 10ns;` advances time, `await
+clk.rising();` waits for an edge, and `await cond;` waits for a condition.
+`await 10ns` also works in bare files through a fixed fallback table typed as
+`integer`. `stop()` and `finish()` are runtime-provided.
 
 ## `std::rand`
 
@@ -160,10 +162,29 @@ and inclusive `randint(left, right)`. `randint` accepts ascending or descending
 bounds. Its full unsigned 64-bit domain is valid and consumes exactly one raw
 draw, without forming a wrapping zero modulo.
 
+## `std::text`
+
+```siox
+pub type string = Char[];
+pub struct Unicode {}   // Unicode::code(c) -> integer, Unicode::char(n) -> Char
+pub struct Ascii {}     // Ascii::code(c) -> integer, -1 outside 7-bit ASCII
+pub fn unicode(c: Char) -> integer;   // shorthand for Unicode::code
+pub fn char_of(n: integer) -> Char;   // shorthand for Unicode::char
+pub fn ascii(c: Char) -> integer;     // shorthand for Ascii::code
+```
+
+`Char` has no number of its own: a number exists only relative to an encoding
+table, so conversion names the table (VHDL's `'pos`/`'val`, made explicit).
+`Char` stores Unicode code points, so `Unicode` is the identity and `Ascii` is
+its 7-bit prefix. The tables are structs with associated functions, so other
+encodings can be added the same way. A `string` takes its length from an
+explicit size (`string[5]`) or from the literal that initializes it.
+
 ## `std::numeric`
 
 Ranged integers (spec 3.26): each stores in the smallest width covering its
-range; constants outside it are compile errors.
+range. Constants outside it are compile errors, and a value that leaves the
+range while simulating is reported at run time with the signal's path.
 
 ```siox
 pub type Byte = integer<0..255>;
@@ -206,9 +227,10 @@ sioxc root selection remains structural or explicit through `--top`.
 
 ## `std::assert`
 
-`assert!(cond, "msg")` is built-in simulator syntax; this module carries the
-severity ladder (VHDL `severity_level`) for when assertions grow a severity
-argument:
+`assert!(cond, "msg")` fails a test, `warn!(cond, "msg")` reports and counts
+without failing, and `print!` formats a line; all three are built-in macros,
+so they capture their source location. This module carries the severity
+ladder (VHDL `severity_level`) for when assertions grow a severity argument:
 
 ```siox
 pub enum Severity { Note, Warning, Error, Failure }

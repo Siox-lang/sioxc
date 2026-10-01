@@ -11,9 +11,9 @@ use std::ops::Ordering;
 //
 // The names are the only thing that says "signed": nothing in the compiler
 // tracks signedness. It is defined entirely by the operator impls below —
-// `signed`'s Ord is a signed compare, its Shr an arithmetic shift, its Div a
-// signed divide — and the compiler just dispatches to whichever impls a type
-// declares. A type named neither would behave the same as its impls say.
+// `signed`'s `<=>` is a signed compare, its `>>` an arithmetic shift, its `/`
+// a signed divide — and the compiler just dispatches to whichever impls a
+// type declares. A type named neither would behave the same as its impls say.
 pub struct unsigned(Logic[]);
 pub struct signed(Logic[]);
 
@@ -28,8 +28,8 @@ pub struct signed(Logic[]);
 // `self + rhs` below is the built-in integer add — results wrap to the
 // target's width when stored, which is what makes `unsigned[N]` modular.
 // Comparisons on `unsigned` use kernel unsigned semantics; the explicit
-// `<=>` below exposes them through the ordinary
-// operator contract. `signed` gets a sign-aware implementation later.
+// `<=>` below exposes them through the ordinary operator contract, and
+// `signed` declares its own sign-aware `<=>` further down.
 
 // --- unsigned[N]: modular unsigned arithmetic -------------------------------
 
@@ -165,9 +165,9 @@ impl Operator<"*", signed, signed> for signed {
 // quotient as two's complement.
 // The sign test reads the RAW top bit, like `sext` above: `self >> ..` here
 // dispatches signed's own arithmetic shift, which fills with the sign, so a
-// negative operand tests as all-ones and never equals 1. (`Shr` and `Ord`
-// below spell it the short way safely — a `>>` nested inside those bodies is
-// the built-in shift, not a re-entry into this dispatch.)
+// negative operand tests as all-ones and never equals 1. (The `>>` and `<=>`
+// impls below spell it the short way safely — a `>>` nested inside those
+// bodies is the built-in shift, not a re-entry into this dispatch.)
 //
 // `resize(x, x'length)` narrows the operand to its own width first. A signal
 // already holds exactly that many bits, but a constant operand does not:

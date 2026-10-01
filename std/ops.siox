@@ -147,16 +147,6 @@ impl Operator<"xnor", Bit, Bit> for Bit {
         return '0';
     }
 }
-//
-// `Boolean` gives a type a truth representation so it can be used directly
-// as a condition (in `if`, and later `while`/assertions). Truth is the system
-// `Bool` type — `true`/`false`, not an `integer` code. The conversion is
-// applied only in condition position — it is not a general implicit cast.
-//
-// This is the canonical declaration of `Boolean`; name it with
-// `use std::ops::Boolean;`. The `Bit`/`Bool` condition behaviour below is
-// also mirrored inside the type checker so plain `if bit` works without an
-// import — the impls here keep the semantics on the record in source form.
 
 // The result of a three-way comparison (`impl Operator<"<=>", T, Ordering>`,
 // spec 3.25). One `<=>` impl derives all of < <= > >= == != — like Rust's Ord.
@@ -168,6 +158,12 @@ pub enum Ordering {
     Greater
 }
 
+// `Boolean` gives a type a truth representation so it can be used directly
+// as a condition (`if`, `assert!`). Truth is the system `Bool` type —
+// `true`/`false`, not an `integer` code. The conversion is applied only in
+// condition position — it is not a general implicit cast. The prelude
+// exports it; the `Bit`/`Bool` behaviour below is also mirrored inside the
+// type checker, and these impls keep the semantics on the record in source.
 pub trait Boolean {
     fn as_bool(self) -> Bool;
 }
