@@ -14,6 +14,7 @@
 //! - Float / hex-string literal tokens map to [`Expr::Int`] (which stores raw
 //!   text); a dedicated literal node can be added when a later stage needs it.
 
+use crate::diag::lints::{Level, LintDirective};
 use crate::diag::{Diagnostic, DiagnosticSink, Span};
 use crate::syntax::ast::*;
 use crate::syntax::token::{Token, TokenKind};
@@ -166,6 +167,11 @@ pub struct Parser<'a> {
     /// Whether the depth limit has already been reported, so one over-deep
     /// expression yields one diagnostic rather than one per level.
     depth_reported: bool,
+    /// Lint directives (`#[allow(...)]`) read by the last `parse_attrs`,
+    /// waiting for the item or statement they govern.
+    pending_lints: Vec<LintDirective>,
+    /// Every lint directive with its governed extent, for the module.
+    lints: Vec<LintDirective>,
 }
 
 impl<'a> Parser<'a> {
@@ -196,6 +202,8 @@ impl<'a> Parser<'a> {
             custom_operators: HashMap::new(),
             depth: 0,
             depth_reported: false,
+            pending_lints: Vec::new(),
+            lints: Vec::new(),
         }
     }
 
@@ -218,23 +226,114 @@ impl<'a> Parser<'a> {
         let path = self.parse_path();
         self.expect(TokenKind::Semi, "after the module path");
 
+        // `#![allow(...)]` right after the module path governs the module.
+        let mut inner = Vec::new();
+        while self.at(TokenKind::Pound) && self.kind_at(self.pos + 1) == &TokenKind::Bang {
+            let directive_start = self.span();
+            self.bump(); // `#`
+            self.bump(); // `!`
+            self.expect(TokenKind::LBracket, "to open an inner directive");
+            let word = self.parse_path();
+            match self.parse_lint_directive(directive_start, &word) {
+                Some(directive) => inner.push(directive),
+                None => {
+                    self.error_at(
+                        word.span,
+                        "only a lint level (`allow`, `warn`, `deny`, `forbid`) can be an \
+                         inner `#![...]` directive",
+                    );
+                    while !self.at(TokenKind::RBracket) && !self.at(TokenKind::Eof) {
+                        self.bump();
+                    }
+                    self.eat(TokenKind::RBracket);
+                }
+            }
+        }
+
         let mut items = Vec::new();
         while !self.at(TokenKind::Eof) {
             let before = self.pos;
+            let item_start = self.span();
             match self.parse_item() {
                 Some(item) => items.push(item),
                 None => self.recover_to_item_boundary(),
             }
+            self.close_lint_scope(item_start);
             // Guarantee forward progress even if a sub-parser consumed nothing.
             if self.pos == before {
                 self.bump();
             }
         }
+        let span = start.to(self.prev_span());
+        for mut directive in inner {
+            directive.scope = span;
+            self.lints.push(directive);
+        }
         Module {
             path,
             items,
-            span: start.to(self.prev_span()),
+            lints: std::mem::take(&mut self.lints),
+            span,
         }
+    }
+
+    /// Give the lint directives written since `start` the extent parsed
+    /// since then: the item or statement they precede. Directives of an
+    /// enclosing item were written before `start` and wait for its scope.
+    fn close_lint_scope(&mut self, start: Span) {
+        if self.pending_lints.is_empty() {
+            return;
+        }
+        let scope = start.to(self.prev_span());
+        let (inside, outer): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_lints)
+            .into_iter()
+            .partition(|directive| directive.span.start >= start.start);
+        self.pending_lints = outer;
+        for mut directive in inside {
+            directive.scope = scope;
+            self.lints.push(directive);
+        }
+    }
+
+    /// After `#[` and a path: if the path is a lint level, the rest of a
+    /// `level(lint, ...)]` directive. `None` (consuming nothing) otherwise.
+    fn parse_lint_directive(&mut self, start: Span, word: &Path) -> Option<LintDirective> {
+        let level = match &word.segments[..] {
+            [only] => Level::from_word(&only.text)?,
+            _ => return None,
+        };
+        let mut names = Vec::new();
+        if self.eat(TokenKind::LParen) {
+            while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                let name = self.parse_ident();
+                names.push((name.text, name.span));
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen, "to close a lint list");
+        } else {
+            self.sink.emit(
+                Diagnostic::error(format!("malformed lint directive `#[{}]`", level.word()))
+                    .with_code(crate::diag::codes::MALFORMED_LINT_DIRECTIVE)
+                    .at(word.span)
+                    .help(format!(
+                        "name the lints it applies to: `#[{}(unused_signal)]`",
+                        level.word()
+                    )),
+            );
+            while !self.at(TokenKind::RBracket) && !self.at(TokenKind::Eof) {
+                self.bump();
+            }
+        }
+        self.expect(TokenKind::RBracket, "to close a directive");
+        Some(LintDirective {
+            level,
+            word: word.span,
+            names,
+            span: start.to(self.prev_span()),
+            scope: start,
+        })
     }
 
     /// Parse one top-level item. `None` after unrecoverable junk, having already
@@ -376,8 +475,18 @@ impl<'a> Parser<'a> {
         while self.at(TokenKind::Pound) {
             let start = self.span();
             self.bump(); // `#`
+            if self.at(TokenKind::Bang) {
+                self.error_here(
+                    "an inner `#![...]` directive goes right after the module path, before any item",
+                );
+                self.bump();
+            }
             self.expect(TokenKind::LBracket, "to open an attribute");
             let name = self.parse_path();
+            if let Some(directive) = self.parse_lint_directive(start, &name) {
+                self.pending_lints.push(directive);
+                continue;
+            }
             let value = if self.eat(TokenKind::Eq) {
                 Some(self.parse_expr(false))
             } else {
@@ -946,9 +1055,11 @@ impl<'a> Parser<'a> {
         let mut items = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let before = self.pos;
+            let item_start = self.span();
             if let Some(it) = self.parse_impl_item() {
                 items.push(it);
             }
+            self.close_lint_scope(item_start);
             if self.pos == before {
                 self.bump();
             }
@@ -1304,7 +1415,16 @@ impl<'a> Parser<'a> {
         let mut stmts = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let before = self.pos;
+            let statement_start = self.span();
+            // A statement takes lint directives, as in Rust; nothing else.
+            for attr in self.parse_attrs() {
+                self.error_at(
+                    attr.span,
+                    "only a lint directive (`#[allow(...)]`, …) can be applied to a statement",
+                );
+            }
             stmts.push(self.parse_stmt());
+            self.close_lint_scope(statement_start);
             if self.pos == before {
                 self.bump();
             }
@@ -3697,5 +3817,70 @@ mod tests {
         );
         let (m, _) = parse(src);
         assert!(matches!(&m.items[1], Item::Entity(e) if e.attrs.len() == 1));
+    }
+
+    /// Lint directives govern the item, member or statement they precede;
+    /// `#![...]` after the module path governs the module. Each is kept on
+    /// the module with that extent, and the printer writes it back in place.
+    #[test]
+    fn lint_directives_record_their_extent() {
+        let src = "module m;\n#![deny(warnings)]\n\n#[allow(unused_signal, dead_assignment)]\nimpl E {\n    #[warn(unused_signal)]\n    let probe: Bit;\n    process {\n        #[forbid(possible_latch)]\n        q = d;\n    }\n}\n";
+        let m = parse_ok(src);
+        let scoped: Vec<(String, &str)> = m
+            .lints
+            .iter()
+            .map(|d| {
+                let names = d
+                    .names
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                (
+                    format!("{}({names})", d.level.word()),
+                    &src[d.scope.start as usize..d.scope.end as usize],
+                )
+            })
+            .collect();
+        assert_eq!(scoped[0].0, "warn(unused_signal)");
+        assert_eq!(scoped[0].1, "#[warn(unused_signal)]\n    let probe: Bit;");
+        assert_eq!(scoped[1].0, "forbid(possible_latch)");
+        assert_eq!(scoped[1].1, "#[forbid(possible_latch)]\n        q = d;");
+        assert_eq!(scoped[2].0, "allow(unused_signal,dead_assignment)");
+        assert!(scoped[2].1.starts_with("#[allow") && scoped[2].1.ends_with("}\n}"));
+        assert_eq!(scoped[3].0, "deny(warnings)");
+        assert_eq!(
+            scoped[3].1,
+            src.trim_end(),
+            "an inner directive governs the module"
+        );
+        assert_eq!(crate::syntax::pretty::print_module(&m), src);
+    }
+
+    /// A bare `#[allow]` names no lint; an inner directive after an item, or
+    /// anything but a lint directive on a statement, is reported.
+    #[test]
+    fn malformed_lint_directives_are_reported() {
+        for (src, message) in [
+            (
+                "module m;\n#[allow]\nentity E {}\n",
+                "malformed lint directive",
+            ),
+            (
+                "module m;\nentity E {}\n#![allow(warnings)]\nentity F {}\n",
+                "goes right after the module path",
+            ),
+            ("module m;\n#![test]\n", "can be an inner"),
+            (
+                "module m;\nimpl E { process { #[test] q = d; } }\n",
+                "can be applied to a statement",
+            ),
+        ] {
+            let diags = diagnostics(src);
+            assert!(
+                diags.iter().any(|d| d.message.contains(message)),
+                "{src}: {diags:#?}"
+            );
+        }
     }
 }

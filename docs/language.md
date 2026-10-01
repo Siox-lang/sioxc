@@ -119,7 +119,8 @@ precise reference.
 Every diagnostic has a stable code. Beyond errors, the compiler lints for
 possible latches, unused imports, combinational loops (a signal that feeds
 itself with no register in the path), and non-exhaustive / unreachable match
-arms. Independent drivers on a type without `Resolve` are the E-P014 conflict
+arms; `#[allow(…)]`/`#[deny(…)]` and `-A`/`-D` set each lint's level, as in
+rustc (§3.5a). Independent drivers on a type without `Resolve` are the E-P014 conflict
 error; drivers on a type with `Resolve` are intentional and do not warn. Type
 errors carry targeted fix-it help — e.g. a string literal used where a single
 value is wanted (`Logic = "0"`) points at the character literal `'0'`.
@@ -620,10 +621,68 @@ so `if p'external_clock { ... }` costs nothing at run time. A declared
 attribute may not take a system attribute's name (`length`, `event`, …),
 so `x'length` keeps its meaning.
 
-**`#[...]` is for directives.** `#[test]` marks an entity for `sioxc --test`,
-which changes what the compiler emits, so it stays a directive on the entity's
-own line. Metadata written as `#[...]` is `E-P032`, and the help names the
-binding that replaces it for that position.
+**`#[...]` is for directives.** A directive changes what the compiler emits,
+accepts, or reports; removing metadata changes only what a tool sees. Metadata
+written as `#[...]` is `E-P032`, and the help names the binding that replaces
+it for that position. As with rustc's built-in attributes, the directives are
+declared in `std::attrs` and reach every module through the prelude, and the
+compiler recognizes those declarations, not a spelling: a same-named attribute
+declared elsewhere is ordinary metadata.
+
+- `#[test]` compiles an entity into the `sioxc --test` executable.
+- `#[allow(lint, …)]`, `#[warn(…)]`, `#[deny(…)]` and `#[forbid(…)]` set lint
+  levels, as in rustc (below).
+
+### 3.5a Lint levels
+
+Every warning is a *lint* with a snake_case name; the first one of each kind
+says so (``note: `#[warn(unused_signal)]` on by default``). `std::attrs::Lint`
+lists them:
+
+| lint | code | | lint | code |
+| --- | --- | --- | --- | --- |
+| `possible_latch` | W-P002 | | `suspicious_reset` | W-P009 |
+| `unused_signal` | W-P003 | | `combinational_loop` | W-P010 |
+| `unused_param` | W-P004 | | `undriven_output` | W-P011 |
+| `unused_import` | W-P005 | | `unconnected_input` | W-P012 |
+| `unreachable_match_arm` | W-P006 | | `dead_assignment` | W-P014 |
+| `non_exhaustive_match` | W-P007 | | `unimplemented_attr` | W-P015 |
+| `suspicious_logic_compare` | W-P008 | | `incomplete_struct_literal` | W-P016 |
+| `unknown_lints` | W-P017 | | | |
+
+`warnings` names all of them at once.
+
+```siox
+module design;
+#![deny(warnings)]                    // every warning in this module fails the build
+
+impl Pipeline {
+    #[allow(undriven_output)]         // a probe kept for the waveform
+    let probe: unsigned[8];
+
+    process {
+        #[allow(possible_latch)]      // this latch is meant
+        if en { q = d; }
+    }
+}
+```
+
+- `allow` drops the lint's warnings, `warn` reports them (the default),
+  `deny` reports them as errors, and `forbid` is `deny` that nothing inside may
+  lower: an inner `allow`, `warn` or `deny` of a forbidden lint is `E-P033`.
+- A directive governs the item, implementation member or statement it
+  precedes. `#![...]` right after the module path governs the whole module and
+  must come before any item. Only lint directives may precede a statement.
+- The command line sets levels for every module: `-A`/`--allow`,
+  `-W`/`--warn`, `-D`/`--deny` and `-F`/`--forbid` take a lint name and apply
+  in the order written (`sioxc -D warnings -A unused_signal design.siox`).
+  Directives in the source then apply from the outermost item inwards, so the
+  innermost level wins.
+- A denied lint is an error: it stops later stages and fails the build. An
+  error or warning a level produced points at the directive that set it, or
+  names the flag.
+- An unknown lint name is the `unknown_lints` warning, which can itself be
+  allowed. `#[allow]` without a lint list is `E-P034`.
 
 **Nominal array families follow their base representation.** An array newtype
 such as `struct unsigned(Logic[])` is an N-element nominal array without any

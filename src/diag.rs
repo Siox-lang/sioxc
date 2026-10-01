@@ -9,6 +9,8 @@
 
 use std::ops::Range;
 
+pub mod lints;
+
 /// Identifies a single loaded source file within a [`SourceMap`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FileId(pub u32);
@@ -197,6 +199,9 @@ pub struct Diagnostic {
     pub labels: Vec<Label>,
     /// An optional suggested fix, rendered as a trailing `= help:` line.
     pub help: Option<String>,
+    /// Supporting facts, rendered as `= note:` lines before the help, such
+    /// as where a lint's level was set.
+    pub notes: Vec<String>,
 }
 
 impl Diagnostic {
@@ -210,6 +215,7 @@ impl Diagnostic {
             primary: None,
             labels: Vec::new(),
             help: None,
+            notes: Vec::new(),
         }
     }
 
@@ -247,6 +253,12 @@ impl Diagnostic {
         self.help = Some(help.into());
         self
     }
+
+    /// Attach a supporting note.
+    pub fn note(mut self, note: impl Into<String>) -> Self {
+        self.notes.push(note.into());
+        self
+    }
 }
 
 /// Collects diagnostics emitted while compiling. Stages push into this and
@@ -255,6 +267,8 @@ impl Diagnostic {
 pub struct DiagnosticSink {
     /// Diagnostics in the order stages emitted them.
     diagnostics: Vec<Diagnostic>,
+    /// Lint levels applied to each warning as it arrives, once configured.
+    lints: Option<lints::LintLevels>,
 }
 
 impl DiagnosticSink {
@@ -266,7 +280,29 @@ impl DiagnosticSink {
     /// Record one diagnostic. Stages keep going after emitting, so that a
     /// single run reports as much as it can.
     pub fn emit(&mut self, diag: Diagnostic) {
+        let diag = match &mut self.lints {
+            Some(levels) => match levels.apply(diag) {
+                Some(diag) => diag,
+                None => return,
+            },
+            None => diag,
+        };
         self.diagnostics.push(diag);
+    }
+
+    /// Apply lint levels from the command line and the source's directives
+    /// to every warning emitted from now on (see [`lints`]). Unknown lint
+    /// names and `forbid` conflicts are reported here.
+    pub fn set_lint_levels(
+        &mut self,
+        command_line: Vec<(lints::Level, String)>,
+        directives: Vec<lints::LintDirective>,
+    ) {
+        let (levels, problems) = lints::LintLevels::new(command_line, directives);
+        self.lints = Some(levels);
+        for problem in problems {
+            self.emit(problem);
+        }
     }
 
     /// Everything emitted so far, in emission order.
@@ -403,6 +439,12 @@ pub mod codes {
     /// `#[...]` used for metadata. `#[...]` is reserved for compiler
     /// directives (`#[test]`); metadata is bound with `attr name for x = v;`.
     pub const METADATA_IN_DIRECTIVE: &str = "E-P032";
+    /// A lint directive that would lower a level an enclosing `forbid` (or
+    /// `-F`) set. `forbid` is `deny` that cannot be lowered (rustc E0453).
+    pub const FORBIDDEN_LINT_LEVEL: &str = "E-P033";
+    /// A lint directive that is not `#[level(lint, ...)]`, such as a bare
+    /// `#[allow]` (rustc E0452).
+    pub const MALFORMED_LINT_DIRECTIVE: &str = "E-P034";
 
     // Warnings
     // W-P001 retired: parallel drivers are legal when their type implements
@@ -448,6 +490,8 @@ pub mod codes {
     /// take their default, which is usually intended — but silently, and a
     /// literal is also where a field is most often forgotten.
     pub const INCOMPLETE_STRUCT_LITERAL: &str = "W-P016";
+    /// A lint directive or `-A`/`-W`/`-D`/`-F` flag names no lint.
+    pub const UNKNOWN_LINT: &str = "W-P017";
 }
 
 #[cfg(test)]

@@ -14,6 +14,10 @@ pub struct Module {
     pub path: Path,
     /// Top-level declarations, in source order.
     pub items: Vec<Item>,
+    /// Every lint directive in the file (`#[allow(...)]` on an item or
+    /// statement, `#![allow(...)]` for the module), with the extent it
+    /// governs. The sink applies them to warnings as they are emitted.
+    pub lints: Vec<crate::diag::lints::LintDirective>,
     /// The whole file, from `module` to the last item.
     pub span: Span,
 }

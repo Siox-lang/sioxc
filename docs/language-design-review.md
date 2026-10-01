@@ -606,7 +606,7 @@ fatal but all real:
 **A worked alternative, if the syntax is ever changed.** This is now written up
 as two proposals — declarative attributes (now implemented; language §3.5) for
 the `attr … for … = …;` replacement, and
-[`#[...]` as compiler directives](proposals/compiler-directives.md) for what
+`#[...]` as compiler directives (now implemented; language §3.5–3.5a) for what
 `#[...]` becomes. The shape below is the summary; the proposals carry the
 migration, costs, and open questions.
 

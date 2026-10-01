@@ -316,6 +316,11 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     r.inherit_enum_variants(modules);
     for m in modules {
         r.set_current_module(m);
+        // A lint directive's word (`allow`) is an attribute name like any
+        // other: declared in `std::attrs` and in scope through the prelude.
+        for directive in &m.lints {
+            r.resolve_directive_word(directive);
+        }
         for item in &m.items {
             r.resolve_item(item);
         }
@@ -497,7 +502,17 @@ impl<'a> Resolver<'a> {
             self.builtins.insert(name.to_string(), id);
         }
         // std::attrs metadata attributes (spec 3.5).
-        for name in ["test", "keep", "library", "name", "precedence"] {
+        for name in [
+            "test",
+            "keep",
+            "library",
+            "name",
+            "precedence",
+            "allow",
+            "warn",
+            "deny",
+            "forbid",
+        ] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.builtin_attrs.insert(name.to_string(), id);
         }
@@ -1580,6 +1595,23 @@ impl<'a> Resolver<'a> {
 
     /// Resolve an applied attribute against the `attr` namespace, which is
     /// separate from ordinary names.
+    /// Resolve a lint directive's level word to its attribute declaration.
+    fn resolve_directive_word(&mut self, directive: &crate::diag::lints::LintDirective) {
+        let word = directive.level.word();
+        match self.lookup_attr(word) {
+            Some(id) => {
+                self.out.uses.insert(directive.word, id);
+            }
+            None => self.error(
+                codes::UNKNOWN_NAME,
+                directive.word,
+                format!(
+                    "unknown attribute `{word}` (the lint directives are declared in `std::attrs`)"
+                ),
+            ),
+        }
+    }
+
     fn resolve_attr(&mut self, a: &Attr) {
         let segs = &a.name.segments;
         let last = segs.last().map(|s| s.text.as_str()).unwrap_or("");
@@ -2407,15 +2439,22 @@ impl<'a> Resolver<'a> {
             {
                 return Some(id);
             }
+            // An imported attribute lives in the attribute namespace
+            // (`lookup_attr`): the prelude's `warn` directive must not
+            // capture the `warn!` macro or a value named `warn`.
             if let Some((id, _, _)) = self.module_imports.get(&(module.clone(), name.to_string())) {
-                return Some(*id);
+                if self.out.kind_of(*id) != Some(DefKind::Attr) {
+                    return Some(*id);
+                }
             }
             if module != "std::prelude" {
                 if let Some((id, true, _)) = self
                     .module_imports
                     .get(&("std::prelude".to_string(), name.to_string()))
                 {
-                    return Some(*id);
+                    if self.out.kind_of(*id) != Some(DefKind::Attr) {
+                        return Some(*id);
+                    }
                 }
             }
         }

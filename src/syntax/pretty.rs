@@ -15,6 +15,7 @@ pub fn print_module(module: &Module) -> String {
     let mut p = Printer {
         out: String::new(),
         indent: 0,
+        lints: module.lints.iter().map(|d| (d.clone(), false)).collect(),
     };
     p.module(module);
     p.out
@@ -29,6 +30,9 @@ struct Printer {
     out: String,
     /// Current indentation depth, counted in levels not columns.
     indent: usize,
+    /// The module's lint directives, each printed once before the item or
+    /// statement whose extent it governs.
+    lints: Vec<(crate::diag::lints::LintDirective, bool)>,
 }
 
 impl Printer {
@@ -46,13 +50,44 @@ impl Printer {
         self.out.push('\n');
     }
 
+    /// Print the lint directives governing exactly the node spanning `span`:
+    /// their extent starts at or before it (at the directive itself) and ends
+    /// where it ends. `inner` prints the `#![...]` form.
+    fn lint_directives(&mut self, span: crate::diag::Span, inner: bool) {
+        let mut lines = Vec::new();
+        for (directive, printed) in &mut self.lints {
+            let scope = directive.scope;
+            if *printed
+                || scope.file != span.file
+                || scope.end != span.end
+                || scope.start > span.start
+            {
+                continue;
+            }
+            *printed = true;
+            let names = directive
+                .names
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let bang = if inner { "!" } else { "" };
+            lines.push(format!("#{bang}[{}({names})]", directive.level.word()));
+        }
+        for line in lines {
+            self.line(&line);
+        }
+    }
+
     // --- items --------------------------------------------------------------
 
     /// Print a whole module: its `module` header, then each item.
     fn module(&mut self, m: &Module) {
         self.line(&format!("module {};", path(&m.path)));
+        self.lint_directives(m.span, true);
         for item in &m.items {
             self.blank();
+            self.lint_directives(item_span(item), false);
             self.item(item);
         }
     }
@@ -263,6 +298,7 @@ impl Printer {
 
     /// Print one member of an impl body.
     fn impl_item(&mut self, item: &ImplItem) {
+        self.lint_directives(impl_item_span(item), false);
         match item {
             ImplItem::Const(c) => self.const_decl(c),
             ImplItem::Let(l) => self.line(&format!("{};", let_decl(l))),
@@ -374,6 +410,7 @@ impl Printer {
 
     /// Print one statement.
     fn stmt(&mut self, s: &Stmt) {
+        self.lint_directives(stmt_span(s), false);
         match s {
             Stmt::Let(l) => self.line(&format!("{};", let_decl(l))),
             Stmt::Assign {
@@ -450,6 +487,37 @@ impl Printer {
 }
 
 // --- leaf renderers (pure) --------------------------------------------------
+
+/// The extent of a top-level item.
+fn item_span(item: &Item) -> crate::diag::Span {
+    match item {
+        Item::Using(u) => u.span,
+        Item::Const(c) => c.span,
+        Item::Fn(f) => f.span,
+        Item::ExternBlock { span, .. } => *span,
+        Item::Struct(s) => s.span,
+        Item::View(v) => v.span,
+        Item::Enum(e) => e.span,
+        Item::Entity(e) => e.span,
+        Item::Impl(i) => i.span,
+        Item::Trait(t) => t.span,
+        Item::AttrDecl(a) => a.span,
+        Item::AttrBinding(b) => b.span,
+    }
+}
+
+/// The extent of an implementation member.
+fn impl_item_span(item: &ImplItem) -> crate::diag::Span {
+    match item {
+        ImplItem::Const(c) => c.span,
+        ImplItem::Let(l) => l.span,
+        ImplItem::Fn(f) => f.span,
+        ImplItem::ModeField { span, .. } => *span,
+        ImplItem::Process(p) => p.span,
+        ImplItem::Stmt(s) => stmt_span(s),
+        ImplItem::AttrBinding(b) => b.span,
+    }
+}
 
 /// `"pub "` or the empty string, so callers can prefix unconditionally.
 fn pub_kw(is_pub: bool) -> &'static str {

@@ -11,10 +11,48 @@ module std::attrs;
 // `attr keep for probe = true;`, or objectless inside an impl,
 // `attr precedence = 40;`.
 //
-// `test` is the exception: it marks an entity for `sioxc --test`, which
-// changes compilation, so it is written as the directive `#[test]`.
+// Compiler directives — `#[...]` — are the exception. Like rustc's built-in
+// attributes they change what the compiler emits or reports, and like
+// rustc's `#[test]` they are declared here and reach every module through the
+// prelude, so the compiler recognizes the std declaration rather than a
+// spelling: a same-named attribute declared elsewhere is ordinary metadata.
+//
+//   #[test]                   compile this entity into `sioxc --test`
+//   #[allow(lint, ...)]       do not report these lints in the next item
+//   #[warn(lint, ...)]        report them as warnings (the default)
+//   #[deny(lint, ...)]        report them as errors
+//   #[forbid(lint, ...)]      as `deny`, and no inner directive may lower it
+//
+// A lint directive governs the item or statement it precedes; `#![...]`
+// right after `module` governs the whole module. `-A`/`-W`/`-D`/`-F` set
+// levels for every module from the command line.
 
 pub attr test: Bool for entity = false;     // discovered by `sioxc --test`
+pub attr allow: Lint for item;
+pub attr warn: Lint for item;
+pub attr deny: Lint for item;
+pub attr forbid: Lint for item;
+
+// Every lint, by the name a directive uses. `warnings` names them all.
+pub enum Lint {
+    warnings,
+    possible_latch,             // W-P002
+    unused_signal,              // W-P003
+    unused_param,               // W-P004
+    unused_import,              // W-P005
+    unreachable_match_arm,      // W-P006
+    non_exhaustive_match,       // W-P007
+    suspicious_logic_compare,   // W-P008
+    suspicious_reset,           // W-P009
+    combinational_loop,         // W-P010
+    undriven_output,            // W-P011
+    unconnected_input,          // W-P012
+    dead_assignment,            // W-P014
+    unimplemented_attr,         // W-P015
+    incomplete_struct_literal,  // W-P016
+    unknown_lints               // W-P017
+}
+
 pub attr keep: Bool for let, port = false;  // keep through optimization
 pub attr library: string for entity = "";
 pub attr name: string for entity = "";
