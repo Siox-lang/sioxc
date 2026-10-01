@@ -1186,7 +1186,8 @@ pub fn lower(
                 ImplItem::Const(_)
                 | ImplItem::Fn(_)
                 | ImplItem::ModeField { .. }
-                | ImplItem::Let(_) => {}
+                | ImplItem::Let(_)
+                | ImplItem::AttrBinding(_) => {}
             }
         }
 

@@ -254,8 +254,8 @@ fn unsupported_blanket_array_operator_is_rejected_until_it_can_lower() {
     let blanket = |op: &str| {
         format!(
             "module m;\n\
-                 #[precedence = 35]\n\
                  impl<T: Operator<\"{op}\", T, T>> Operator<\"{op}\", T, T> for T[] {{\n\
+                   attr precedence = 35;\n\
                    fn apply(self, rhs: T[]) -> T[] {{ return self; }}\n\
                  }}\n"
         )
@@ -533,8 +533,8 @@ fn custom_operator_selects_input_and_output_templates() {
     let ok = "module m;\n\
             attr precedence: integer for impl;\n\
             enum Left { L } enum Right { R } enum Result { Yes }\n\
-            #[precedence = 45]\n\
             impl Operator<\"merge\", Right, Result> for Left {\n\
+              attr precedence = 45;\n\
               fn apply(self, rhs: Right) -> Result { return Result::Yes; }\n\
             }\n\
             entity E { a: Left in, b: Right in, y: Result out }\n\
@@ -609,7 +609,7 @@ fn reserved_operators_cannot_be_overloaded() {
     // comparisons cannot be claimed by an operator impl.
     for sym in ["=", "::", ".", "..", "<", "=="] {
         let src = format!(
-                "{header}#[precedence = 5] impl Operator<\"{sym}\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
+                "{header}impl Operator<\"{sym}\", A, A> for A {{ attr precedence = 5; fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
             );
         assert!(
             check_src(&src) >= 1,
@@ -618,7 +618,7 @@ fn reserved_operators_cannot_be_overloaded() {
     }
     // A genuine custom punctuation operator is accepted.
     let ok = format!(
-            "{header}#[precedence = 5] impl Operator<\"^^\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
+            "{header}impl Operator<\"^^\", A, A> for A {{ attr precedence = 5; fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
         );
     assert_eq!(check_src(&ok), 0);
 }
@@ -636,8 +636,8 @@ fn custom_operator_precedence_is_required_and_consistent() {
 
     let conflict = format!(
             "{header}\
-             #[precedence = 40] impl Operator<\"join\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n\
-             #[precedence = 30] impl Operator<\"join\", B, B> for B {{ fn apply(self, rhs: B) -> B {{ return self; }} }}\n"
+             impl Operator<\"join\", A, A> for A {{ attr precedence = 40; fn apply(self, rhs: A) -> A {{ return self; }} }}\n\
+             impl Operator<\"join\", B, B> for B {{ attr precedence = 30; fn apply(self, rhs: B) -> B {{ return self; }} }}\n"
         );
     assert_eq!(check_src(&conflict), 1);
 }

@@ -732,7 +732,7 @@ If users need generated structure they write:
 my_macro!(...);
 ```
 
-This maintains the distinction established by the compiler-directives proposal:
+This maintains the distinction the language draws for `#[...]` (language §3.5):
 
 ```text
 #[...]

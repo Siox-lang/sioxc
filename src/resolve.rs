@@ -316,6 +316,11 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     r.inherit_enum_variants(modules);
     for m in modules {
         r.set_current_module(m);
+        // A lint directive's word (`allow`) is an attribute name like any
+        // other: declared in `std::attrs` and in scope through the prelude.
+        for directive in &m.lints {
+            r.resolve_directive_word(directive);
+        }
         for item in &m.items {
             r.resolve_item(item);
         }
@@ -361,6 +366,7 @@ fn impl_member(item: &ImplItem) -> Option<(&String, Span, &'static str)> {
         ImplItem::Let(declaration) => (&declaration.name.text, declaration.name.span, "state"),
         ImplItem::Const(constant) => (&constant.name.text, constant.name.span, "constant"),
         ImplItem::Fn(function) => (&function.name.text, function.name.span, "method"),
+        ImplItem::AttrBinding(_) => return None,
         ImplItem::ModeField { name, .. } => (&name.text, name.span, "mode field"),
         ImplItem::Process(process) => {
             let label = process.label.as_ref()?;
@@ -534,7 +540,17 @@ impl<'a> Resolver<'a> {
             self.builtins.insert(name.to_string(), id);
         }
         // std::attrs metadata attributes (spec 3.5).
-        for name in ["test", "keep", "library", "name", "precedence"] {
+        for name in [
+            "test",
+            "keep",
+            "library",
+            "name",
+            "precedence",
+            "allow",
+            "warn",
+            "deny",
+            "forbid",
+        ] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.builtin_attrs.insert(name.to_string(), id);
         }
@@ -700,6 +716,8 @@ impl<'a> Resolver<'a> {
                 );
                 self.register_attr(&a.name.text, id, a.name.span);
             }
+            // A binding names an existing declaration and introduces nothing.
+            Item::AttrBinding(_) => {}
             // Impls declare no top-level name.
             Item::Impl(_) => {}
         }
@@ -1220,6 +1238,9 @@ impl<'a> Resolver<'a> {
                 }
                 for p in &e.ports {
                     self.resolve_type(&p.ty);
+                    for a in &p.attrs {
+                        self.resolve_attr(a);
+                    }
                 }
                 self.exit();
             }
@@ -1234,7 +1255,15 @@ impl<'a> Resolver<'a> {
                 }
                 self.exit();
             }
-            Item::AttrDecl(a) => self.resolve_type(&a.ty),
+            Item::AttrDecl(a) => {
+                self.resolve_type(&a.ty);
+                if let Some(default) = &a.default {
+                    self.resolve_expr(default);
+                }
+            }
+            // `syntax::attributes::attach` copied every binding onto its
+            // target as an applied attribute, which is resolved there.
+            Item::AttrBinding(_) => {}
         }
     }
 
@@ -1281,7 +1310,7 @@ impl<'a> Resolver<'a> {
                 ImplItem::Fn(f) => self.bind_local(&f.name.text, f.name.span),
                 ImplItem::ModeField { name, .. } => self.bind_local(&name.text, name.span),
                 ImplItem::Process(_) => {}
-                ImplItem::Stmt(_) => {}
+                ImplItem::Stmt(_) | ImplItem::AttrBinding(_) => {}
             }
         }
         self.resolve_type(&im.target);
@@ -1513,6 +1542,7 @@ impl<'a> Resolver<'a> {
                 self.resolve_block(&process.body)
             }
             ImplItem::Stmt(s) => self.resolve_stmt(s),
+            ImplItem::AttrBinding(_) => {}
         }
     }
 
@@ -1617,6 +1647,23 @@ impl<'a> Resolver<'a> {
 
     /// Resolve an applied attribute against the `attr` namespace, which is
     /// separate from ordinary names.
+    /// Resolve a lint directive's level word to its attribute declaration.
+    fn resolve_directive_word(&mut self, directive: &crate::diag::lints::LintDirective) {
+        let word = directive.level.word();
+        match self.lookup_attr(word) {
+            Some(id) => {
+                self.out.uses.insert(directive.word, id);
+            }
+            None => self.error(
+                codes::UNKNOWN_NAME,
+                directive.word,
+                format!(
+                    "unknown attribute `{word}` (the lint directives are declared in `std::attrs`)"
+                ),
+            ),
+        }
+    }
+
     fn resolve_attr(&mut self, a: &Attr) {
         let segs = &a.name.segments;
         let last = segs.last().map(|s| s.text.as_str()).unwrap_or("");
@@ -2444,15 +2491,22 @@ impl<'a> Resolver<'a> {
             {
                 return Some(id);
             }
+            // An imported attribute lives in the attribute namespace
+            // (`lookup_attr`): the prelude's `warn` directive must not
+            // capture the `warn!` macro or a value named `warn`.
             if let Some((id, _, _)) = self.module_imports.get(&(module.clone(), name.to_string())) {
-                return Some(*id);
+                if self.out.kind_of(*id) != Some(DefKind::Attr) {
+                    return Some(*id);
+                }
             }
             if module != "std::prelude" {
                 if let Some((id, true, _)) = self
                     .module_imports
                     .get(&("std::prelude".to_string(), name.to_string()))
                 {
-                    return Some(*id);
+                    if self.out.kind_of(*id) != Some(DefKind::Attr) {
+                        return Some(*id);
+                    }
                 }
             }
         }
@@ -2575,8 +2629,9 @@ mod tests {
     fn resolve_src(src: &str) -> (Resolved, usize) {
         let src = format!("{src}{DIGITAL_PRELUDE}");
         let mut sink = DiagnosticSink::new();
-        let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+        let mut module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
+        crate::syntax::attributes::attach(std::slice::from_mut(&mut module), &mut sink);
         let resolved = resolve(std::slice::from_ref(&module), &mut sink);
         (resolved, sink.error_count())
     }
@@ -3612,11 +3667,12 @@ mod tests {
     #[test]
     /// An undeclared attribute is reported, while a declared one resolves.
     fn undeclared_attribute_is_reported_but_declared_is_ok() {
-        let (_, errors) = resolve_src("module m;\n#[bogus]\nentity E { y: Bit out, }\n");
+        let (_, errors) =
+            resolve_src("module m;\nentity E { y: Bit out, }\nattr bogus for E = true;\n");
         assert_eq!(errors, 1);
 
         let (_, errors) = resolve_src(
-            "module m;\nattr fast: Bool for entity;\n#[fast]\nentity E { y: Bit out, }\n",
+            "module m;\nattr fast: Bool for entity;\nentity E { y: Bit out, }\nattr fast for E = true;\n",
         );
         assert_eq!(errors, 0);
     }
@@ -3632,10 +3688,12 @@ mod tests {
         );
         let user = crate::syntax::parse_module(
             FileId(1),
-            "module user;\n#[attrs::missing = 1]\nentity E {}\n",
+            "module user;\nentity E {}\nattr attrs::missing for E = 1;\n",
             &mut sink,
         );
-        resolve(&[attrs, user], &mut sink);
+        let mut modules = [attrs, user];
+        crate::syntax::attributes::attach(&mut modules, &mut sink);
+        resolve(&modules, &mut sink);
         assert!(sink.diagnostics().iter().any(|diagnostic| {
             diagnostic.code == Some(codes::UNKNOWN_NAME)
                 && diagnostic.message.contains("attrs::missing")

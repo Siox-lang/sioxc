@@ -7,8 +7,9 @@ using std::logic::{Bit, Bool};
 // `impl Operator<"<op>", Input, Output> for <type of a>` (method `apply`;
 // overloads select by the rhs/`Input` type, and the impl's `Output` names the
 // result type). The standard symbols (`+ - * / << >> and or not <=>`) carry
-// built-in precedence; a user operator such as `xor` declares its precedence
-// with `#[precedence = N]`. Unary `not` implements `apply(self)` with no rhs.
+// built-in precedence; a user operator such as `xor` binds its precedence
+// inside its impl with `attr precedence = N;`. Unary `not` implements
+// `apply(self)` with no rhs.
 // The three-way `<=>` returns `Ordering` and derives all of < <= > >= == !=.
 pub trait Operator<op: string, input, output> {
     fn apply(self, rhs: input) -> output {}
@@ -72,26 +73,26 @@ impl Operator<"not", Bool, Bool> for Bool {
     }
 }
 
-#[precedence = 35]
 impl Operator<"xor", Bool, Bool> for Bool {
+    attr precedence = 35;
     fn apply(self, rhs: Bool) -> Bool {
         if self { return not rhs; }
         return rhs;
     }
 }
 
-#[precedence = 40]
 impl Operator<"nand", Bool, Bool> for Bool {
+    attr precedence = 40;
     fn apply(self, rhs: Bool) -> Bool { return not (self and rhs); }
 }
 
-#[precedence = 30]
 impl Operator<"nor", Bool, Bool> for Bool {
+    attr precedence = 30;
     fn apply(self, rhs: Bool) -> Bool { return not (self or rhs); }
 }
 
-#[precedence = 35]
 impl Operator<"xnor", Bool, Bool> for Bool {
+    attr precedence = 35;
     fn apply(self, rhs: Bool) -> Bool {
         if self == rhs { return true; }
         return false;
@@ -121,26 +122,26 @@ impl Operator<"not", Bit, Bit> for Bit {
     }
 }
 
-#[precedence = 35]
 impl Operator<"xor", Bit, Bit> for Bit {
+    attr precedence = 35;
     fn apply(self, rhs: Bit) -> Bit {
         if self == rhs { return '0'; }
         return '1';
     }
 }
 
-#[precedence = 40]
 impl Operator<"nand", Bit, Bit> for Bit {
+    attr precedence = 40;
     fn apply(self, rhs: Bit) -> Bit { return not (self and rhs); }
 }
 
-#[precedence = 30]
 impl Operator<"nor", Bit, Bit> for Bit {
+    attr precedence = 30;
     fn apply(self, rhs: Bit) -> Bit { return not (self or rhs); }
 }
 
-#[precedence = 35]
 impl Operator<"xnor", Bit, Bit> for Bit {
+    attr precedence = 35;
     fn apply(self, rhs: Bit) -> Bit {
         if self == rhs { return '1'; }
         return '0';
@@ -222,8 +223,8 @@ impl<T: Operator<"or", T, T>> Operator<"or", T, T> for T[] {
     }
 }
 
-#[precedence = 35]
 impl<T: Operator<"xor", T, T>> Operator<"xor", T, T> for T[] {
+    attr precedence = 35;
     fn apply(self, rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i] xor rhs[i]; }
@@ -231,8 +232,8 @@ impl<T: Operator<"xor", T, T>> Operator<"xor", T, T> for T[] {
     }
 }
 
-#[precedence = 40]
 impl<T: Operator<"nand", T, T>> Operator<"nand", T, T> for T[] {
+    attr precedence = 40;
     fn apply(self, rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i] nand rhs[i]; }
@@ -240,8 +241,8 @@ impl<T: Operator<"nand", T, T>> Operator<"nand", T, T> for T[] {
     }
 }
 
-#[precedence = 30]
 impl<T: Operator<"nor", T, T>> Operator<"nor", T, T> for T[] {
+    attr precedence = 30;
     fn apply(self, rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i] nor rhs[i]; }
@@ -249,8 +250,8 @@ impl<T: Operator<"nor", T, T>> Operator<"nor", T, T> for T[] {
     }
 }
 
-#[precedence = 35]
 impl<T: Operator<"xnor", T, T>> Operator<"xnor", T, T> for T[] {
+    attr precedence = 35;
     fn apply(self, rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i] xnor rhs[i]; }

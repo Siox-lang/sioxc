@@ -45,7 +45,8 @@ fn check_src(src: &str) -> usize {
     let src = format!("{src}{VEC}");
     let src = src.as_str();
     let mut sink = DiagnosticSink::new();
-    let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
+    let mut module = crate::syntax::parse_module(FileId(0), src, &mut sink);
+    crate::syntax::attributes::attach(std::slice::from_mut(&mut module), &mut sink);
     assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
     let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
     let parse_resolve_errors = sink.error_count();
@@ -56,10 +57,11 @@ fn check_src(src: &str) -> usize {
 /// Type-check several sources as one program and return the sink.
 fn check_modules(sources: &[(&str, FileId)]) -> DiagnosticSink {
     let mut sink = DiagnosticSink::new();
-    let modules: Vec<Module> = sources
+    let mut modules: Vec<Module> = sources
         .iter()
         .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
         .collect();
+    crate::syntax::attributes::attach(&mut modules, &mut sink);
     let resolved = crate::resolve::resolve(&modules, &mut sink);
     check(&modules, &resolved, &mut sink);
     sink
@@ -69,7 +71,8 @@ fn check_modules(sources: &[(&str, FileId)]) -> DiagnosticSink {
 fn diag_codes(src: &str) -> Vec<String> {
     let src = format!("{src}{VEC}");
     let mut sink = DiagnosticSink::new();
-    let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+    let mut module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+    crate::syntax::attributes::attach(std::slice::from_mut(&mut module), &mut sink);
     let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
     check(std::slice::from_ref(&module), &resolved, &mut sink);
     sink.diagnostics()
@@ -83,7 +86,8 @@ fn warnings(src: &str, code: &str) -> usize {
     let src = format!("{src}{VEC}");
     let src = src.as_str();
     let mut sink = DiagnosticSink::new();
-    let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
+    let mut module = crate::syntax::parse_module(FileId(0), src, &mut sink);
+    crate::syntax::attributes::attach(std::slice::from_mut(&mut module), &mut sink);
     let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
     check(std::slice::from_ref(&module), &resolved, &mut sink);
     sink.diagnostics()

@@ -120,6 +120,33 @@ impl<'a> Checker<'a> {
             || (declared.as_deref() == Some("Self") && actual == Some(owner))
     }
 
+    /// An attribute declaration's own checks: its name may not shadow a
+    /// system attribute, since `x'length` must keep meaning the system query,
+    /// and its default must be a value of its type.
+    pub(super) fn check_attr_default(&mut self, a: &AttrDecl) {
+        let name = a.name.text.as_str();
+        if SYS_ATTRS.contains(&name) || PHASE2_ATTRS.contains(&name) {
+            self.error(
+                codes::DUPLICATE_ITEM,
+                a.name.span,
+                format!(
+                    "`{name}` is a system attribute (`x'{name}`); a declared attribute \
+                     cannot share its name"
+                ),
+            );
+        }
+        if let Some(default) = &a.default {
+            self.check_attr_value(&Attr {
+                name: Path {
+                    segments: vec![a.name.clone()],
+                    span: a.name.span,
+                },
+                value: Some(default.clone()),
+                span: a.span,
+            });
+        }
+    }
+
     /// Spec 3.5: an attribute's value must match the type its declaration gives.
     pub(super) fn check_attr_value(&mut self, a: &Attr) {
         let name = a

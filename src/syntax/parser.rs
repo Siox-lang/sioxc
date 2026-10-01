@@ -14,6 +14,7 @@
 //! - Float / hex-string literal tokens map to [`Expr::Int`] (which stores raw
 //!   text); a dedicated literal node can be added when a later stage needs it.
 
+use crate::diag::lints::{Level, LintDirective};
 use crate::diag::{Diagnostic, DiagnosticSink, Span};
 use crate::syntax::ast::*;
 use crate::syntax::token::{Token, TokenKind};
@@ -55,10 +56,7 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
             i += 1;
             continue;
         }
-        let Some(precedence) = pending_precedence.take() else {
-            i += 1;
-            continue;
-        };
+        let pending = pending_precedence.take();
         if tokens[i].kind == TokenKind::Impl {
             let limit = (i + 20).min(tokens.len());
             let mut j = i + 1;
@@ -69,12 +67,17 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
                     }
                     if j < limit {
                         let symbol = text(&tokens[j]).trim_matches('"').to_string();
+                        // `#[precedence = N]` before the impl, or the binding
+                        // `attr precedence = N;` inside its body.
+                        let precedence = pending.or_else(|| body_precedence(src, tokens, j));
                         // A reserved grammar symbol (`=`, `::`, …) must not enter
                         // the custom-operator table, or it would shadow the
                         // language's own use of the token; the type checker
                         // reports the impl as an error instead.
-                        if !crate::syntax::ast::is_reserved_operator(&symbol) {
-                            out.insert(symbol, precedence);
+                        if let Some(precedence) = precedence {
+                            if !crate::syntax::ast::is_reserved_operator(&symbol) {
+                                out.insert(symbol, precedence);
+                            }
                         }
                     }
                     break;
@@ -85,6 +88,51 @@ pub fn discover_custom_operators(src: &str, tokens: &[Token]) -> HashMap<String,
         i += 1;
     }
     out
+}
+
+/// The `N` of an `attr precedence = N;` binding directly inside the impl body
+/// that opens after token `from`, if there is one.
+fn body_precedence(src: &str, tokens: &[Token], from: usize) -> Option<u8> {
+    let text = |t: &Token| &src[t.span.start as usize..t.span.end as usize];
+    let open = (from..tokens.len()).find(|&k| tokens[k].kind == TokenKind::LBrace)?;
+    let mut depth = 0usize;
+    let mut k = open;
+    while k < tokens.len() {
+        match tokens[k].kind {
+            TokenKind::LBrace => depth += 1,
+            TokenKind::RBrace => {
+                depth -= 1;
+                if depth == 0 {
+                    return None;
+                }
+            }
+            TokenKind::Attr if depth == 1 => {
+                let shape: Vec<&Token> = tokens[k + 1..]
+                    .iter()
+                    .filter(|t| t.kind != TokenKind::Comment)
+                    .take(3)
+                    .collect();
+                if let [name, eq, value] = shape[..] {
+                    if name.kind == TokenKind::Ident
+                        && text(name) == "precedence"
+                        && eq.kind == TokenKind::Eq
+                        && value.kind == TokenKind::Int
+                    {
+                        return text(value).replace('_', "").parse::<u8>().ok();
+                    }
+                }
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    None
+}
+
+/// What an `attr` item turned out to be once its shape was seen.
+enum AttrItem {
+    Decl(AttrDecl),
+    Binding(AttrBinding),
 }
 
 /// How deeply expressions and blocks may nest. A recursive-descent parser has
@@ -114,6 +162,11 @@ pub struct Parser<'a> {
     /// Custom operator symbol to its precedence, discovered from the
     /// transitive import graph before this parse begins.
     custom_operators: HashMap<String, u8>,
+    /// Lint directives (`#[allow(...)]`) read by the last `parse_attrs`,
+    /// waiting for the item or statement they govern.
+    pending_lints: Vec<LintDirective>,
+    /// Every lint directive with its governed extent, for the module.
+    lints: Vec<LintDirective>,
     /// Current expression/block nesting, against `MAX_NESTING`.
     depth: u32,
     /// Whether the depth limit has already been reported, so one over-deep
@@ -150,6 +203,8 @@ impl<'a> Parser<'a> {
             pos: 0,
             sink,
             custom_operators: HashMap::new(),
+            pending_lints: Vec::new(),
+            lints: Vec::new(),
             depth: 0,
             depth_reported: false,
             sequential: 0,
@@ -175,23 +230,114 @@ impl<'a> Parser<'a> {
         let path = self.parse_path();
         self.expect(TokenKind::Semi, "after the module path");
 
+        // `#![allow(...)]` right after the module path governs the module.
+        let mut inner = Vec::new();
+        while self.at(TokenKind::Pound) && self.kind_at(self.pos + 1) == &TokenKind::Bang {
+            let directive_start = self.span();
+            self.bump(); // `#`
+            self.bump(); // `!`
+            self.expect(TokenKind::LBracket, "to open an inner directive");
+            let word = self.parse_path();
+            match self.parse_lint_directive(directive_start, &word) {
+                Some(directive) => inner.push(directive),
+                None => {
+                    self.error_at(
+                        word.span,
+                        "only a lint level (`allow`, `warn`, `deny`, `forbid`) can be an \
+                         inner `#![...]` directive",
+                    );
+                    while !self.at(TokenKind::RBracket) && !self.at(TokenKind::Eof) {
+                        self.bump();
+                    }
+                    self.eat(TokenKind::RBracket);
+                }
+            }
+        }
+
         let mut items = Vec::new();
         while !self.at(TokenKind::Eof) {
             let before = self.pos;
+            let item_start = self.span();
             match self.parse_item() {
                 Some(item) => items.push(item),
                 None => self.recover_to_item_boundary(),
             }
+            self.close_lint_scope(item_start);
             // Guarantee forward progress even if a sub-parser consumed nothing.
             if self.pos == before {
                 self.bump();
             }
         }
+        let span = start.to(self.prev_span());
+        for mut directive in inner {
+            directive.scope = span;
+            self.lints.push(directive);
+        }
         Module {
             path,
             items,
-            span: start.to(self.prev_span()),
+            lints: std::mem::take(&mut self.lints),
+            span,
         }
+    }
+
+    /// Give the lint directives written since `start` the extent parsed
+    /// since then: the item or statement they precede. Directives of an
+    /// enclosing item were written before `start` and wait for its scope.
+    fn close_lint_scope(&mut self, start: Span) {
+        if self.pending_lints.is_empty() {
+            return;
+        }
+        let scope = start.to(self.prev_span());
+        let (inside, outer): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_lints)
+            .into_iter()
+            .partition(|directive| directive.span.start >= start.start);
+        self.pending_lints = outer;
+        for mut directive in inside {
+            directive.scope = scope;
+            self.lints.push(directive);
+        }
+    }
+
+    /// After `#[` and a path: if the path is a lint level, the rest of a
+    /// `level(lint, ...)]` directive. `None` (consuming nothing) otherwise.
+    fn parse_lint_directive(&mut self, start: Span, word: &Path) -> Option<LintDirective> {
+        let level = match &word.segments[..] {
+            [only] => Level::from_word(&only.text)?,
+            _ => return None,
+        };
+        let mut names = Vec::new();
+        if self.eat(TokenKind::LParen) {
+            while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                let name = self.parse_ident();
+                names.push((name.text, name.span));
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen, "to close a lint list");
+        } else {
+            self.sink.emit(
+                Diagnostic::error(format!("malformed lint directive `#[{}]`", level.word()))
+                    .with_code(crate::diag::codes::MALFORMED_LINT_DIRECTIVE)
+                    .at(word.span)
+                    .help(format!(
+                        "name the lints it applies to: `#[{}(unused_signal)]`",
+                        level.word()
+                    )),
+            );
+            while !self.at(TokenKind::RBracket) && !self.at(TokenKind::Eof) {
+                self.bump();
+            }
+        }
+        self.expect(TokenKind::RBracket, "to close a directive");
+        Some(LintDirective {
+            level,
+            word: word.span,
+            names,
+            span: start.to(self.prev_span()),
+            scope: start,
+        })
     }
 
     /// Parse one top-level item. `None` after unrecoverable junk, having already
@@ -259,7 +405,14 @@ impl<'a> Parser<'a> {
             TokenKind::Struct => Item::Struct(self.parse_struct(is_pub)),
             TokenKind::View => Item::View(self.parse_view(is_pub)),
             TokenKind::Enum => Item::Enum(self.parse_enum(is_pub)),
-            TokenKind::Entity => Item::Entity(self.parse_entity(attrs, is_pub, is_extern)),
+            TokenKind::Entity => {
+                let entity = self.parse_entity(attrs, is_pub, is_extern);
+                let name = entity.name.text.clone();
+                self.reject_metadata(&entity.attrs, |binding| {
+                    format!("after the entity, write `{}`", binding(Some(&name)))
+                });
+                Item::Entity(entity)
+            }
             TokenKind::Impl => {
                 if is_pub {
                     self.error_at(
@@ -267,10 +420,17 @@ impl<'a> Parser<'a> {
                         "an `impl` block has no visibility; mark inherent methods `pub` individually",
                     );
                 }
-                Item::Impl(self.parse_impl(attrs))
+                let implementation = self.parse_impl(attrs);
+                self.reject_metadata(&implementation.attrs, |binding| {
+                    format!("inside the impl, write `{}`", binding(None))
+                });
+                Item::Impl(implementation)
             }
             TokenKind::Trait => Item::Trait(self.parse_trait(is_pub)),
-            TokenKind::Attr => Item::AttrDecl(self.parse_attr_decl(is_pub)),
+            TokenKind::Attr => match self.parse_attr(is_pub) {
+                AttrItem::Decl(declaration) => Item::AttrDecl(declaration),
+                AttrItem::Binding(binding) => Item::AttrBinding(binding),
+            },
             _ => {
                 self.error_here(
                     "expected an item (using, const, fn, struct, view, enum, entity, impl, trait, attr)",
@@ -319,8 +479,18 @@ impl<'a> Parser<'a> {
         while self.at(TokenKind::Pound) {
             let start = self.span();
             self.bump(); // `#`
+            if self.at(TokenKind::Bang) {
+                self.error_here(
+                    "an inner `#![...]` directive goes right after the module path, before any item",
+                );
+                self.bump();
+            }
             self.expect(TokenKind::LBracket, "to open an attribute");
             let name = self.parse_path();
+            if let Some(directive) = self.parse_lint_directive(start, &name) {
+                self.pending_lints.push(directive);
+                continue;
+            }
             let value = if self.eat(TokenKind::Eq) {
                 Some(self.parse_expr(false))
             } else {
@@ -334,6 +504,45 @@ impl<'a> Parser<'a> {
             });
         }
         attrs
+    }
+
+    /// `#[...]` is for compiler directives only, and `#[test]` is the one
+    /// there is. Metadata in it is reported with the binding that replaces it;
+    /// the attribute stays in the tree so later stages still see it.
+    fn reject_metadata(
+        &mut self,
+        attrs: &[Attr],
+        help: impl Fn(&dyn Fn(Option<&str>) -> String) -> String,
+    ) {
+        for attr in attrs {
+            let name = attr.name.segments.last().map_or("", |s| s.text.as_str());
+            if name == "test" {
+                continue;
+            }
+            let path = attr
+                .name
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            let value = attr
+                .value
+                .as_ref()
+                .map_or_else(|| "true".to_string(), crate::syntax::pretty::expr);
+            let binding = |object: Option<&str>| match object {
+                Some(object) => format!("attr {path} for {object} = {value};"),
+                None => format!("attr {path} = {value};"),
+            };
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "`#[{path}]` is metadata; `#[...]` is only for compiler directives"
+                ))
+                .with_code(crate::diag::codes::METADATA_IN_DIRECTIVE)
+                .at(attr.span)
+                .help(help(&binding)),
+            );
+        }
     }
 
     // --- using / const ------------------------------------------------------
@@ -671,6 +880,7 @@ impl<'a> Parser<'a> {
             dir,
             name,
             ty,
+            attrs: Vec::new(),
             span: start.to(self.prev_span()),
         };
         (port, terminated)
@@ -725,6 +935,7 @@ impl<'a> Parser<'a> {
             dir: Some(dir),
             name,
             ty,
+            attrs: Vec::new(),
             span: start.to(self.prev_span()),
         };
         (port, terminated)
@@ -848,9 +1059,11 @@ impl<'a> Parser<'a> {
         let mut items = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let before = self.pos;
+            let item_start = self.span();
             if let Some(it) = self.parse_impl_item() {
                 items.push(it);
             }
+            self.close_lint_scope(item_start);
             if self.pos == before {
                 self.bump();
             }
@@ -883,6 +1096,16 @@ impl<'a> Parser<'a> {
             }
         }
         match self.kind() {
+            TokenKind::Attr => match self.parse_attr(false) {
+                AttrItem::Binding(binding) => Some(ImplItem::AttrBinding(binding)),
+                AttrItem::Decl(declaration) => {
+                    self.error_at(
+                        declaration.span,
+                        "an attribute is declared at module level, not inside an implementation",
+                    );
+                    None
+                }
+            },
             TokenKind::Const => Some(ImplItem::Const(self.parse_const(false))),
             // `let value: T = e;` is state/signal; `fn send(self, ...) { ... }`
             // is a method.
@@ -890,7 +1113,12 @@ impl<'a> Parser<'a> {
                 let start = self.span();
                 self.bump();
                 let name = self.parse_ident();
-                Some(ImplItem::Let(self.parse_let_rest(attrs, start, name)))
+                let declaration = self.parse_let_rest(attrs, start, name);
+                let name = declaration.name.text.clone();
+                self.reject_metadata(&declaration.attrs, |binding| {
+                    format!("write `{}`", binding(Some(&name)))
+                });
+                Some(ImplItem::Let(declaration))
             }
             TokenKind::Fn => {
                 let start = self.span();
@@ -1171,12 +1399,51 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse an `attr` declaration and the target kinds it allows.
-    fn parse_attr_decl(&mut self, is_pub: bool) -> AttrDecl {
+    /// Parse an `attr` item: a declaration (`attr keep: Bool for let = false;`,
+    /// with `: Type`) or a binding (`attr keep for probe = true;`, or
+    /// objectless `attr precedence = 40;`). Only a declaration has a type.
+    fn parse_attr(&mut self, is_pub: bool) -> AttrItem {
         let start = self.span();
         self.bump(); // `attr`
-        let name = self.parse_ident();
-        self.expect(TokenKind::Colon, "before an attribute type");
+        let name = self.parse_path();
+        if self.eat(TokenKind::Colon) {
+            if name.segments.len() != 1 {
+                self.error_at(
+                    name.span,
+                    "an attribute declaration names a single identifier",
+                );
+            }
+            let name = name.segments.last().cloned().unwrap_or_else(|| Ident {
+                text: String::new(),
+                span: name.span,
+            });
+            return AttrItem::Decl(self.parse_attr_decl_rest(start, is_pub, name));
+        }
+        if is_pub {
+            self.error_at(
+                start,
+                "an attribute binding has no visibility; only a declaration is `pub`",
+            );
+        }
+        let object = if self.eat(TokenKind::For) {
+            Some(self.parse_ident())
+        } else {
+            None
+        };
+        self.expect(TokenKind::Eq, "before an attribute's bound value");
+        let value = self.parse_expr(false);
+        self.expect(TokenKind::Semi, "after an attribute binding");
+        AttrItem::Binding(AttrBinding {
+            name,
+            object,
+            value,
+            span: start.to(self.prev_span()),
+        })
+    }
+
+    /// Parse an `attr` declaration after its name and `:` — the type, the
+    /// target kinds it allows, and an optional default.
+    fn parse_attr_decl_rest(&mut self, start: Span, is_pub: bool, name: Ident) -> AttrDecl {
         let ty = self.parse_type();
         self.expect(TokenKind::For, "before attribute targets");
         // Targets are a fixed vocabulary that includes keywords (`entity`,
@@ -1188,12 +1455,18 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        let default = if self.eat(TokenKind::Eq) {
+            Some(self.parse_expr(false))
+        } else {
+            None
+        };
         self.expect(TokenKind::Semi, "after an attribute declaration");
         AttrDecl {
             is_pub,
             name,
             ty,
             targets,
+            default,
             span: start.to(self.prev_span()),
         }
     }
@@ -1221,7 +1494,16 @@ impl<'a> Parser<'a> {
         let mut stmts = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let before = self.pos;
+            let statement_start = self.span();
+            // A statement takes lint directives, as in Rust; nothing else.
+            for attr in self.parse_attrs() {
+                self.error_at(
+                    attr.span,
+                    "only a lint directive (`#[allow(...)]`, …) can be applied to a statement",
+                );
+            }
             stmts.push(self.parse_stmt());
+            self.close_lint_scope(statement_start);
             if self.pos == before {
                 self.bump();
             }
@@ -3612,7 +3894,7 @@ mod tests {
     /// Attribute declarations, applications and `extern entity` parse together.
     fn attr_decl_application_and_extern_entity() {
         let m = parse_ok(
-            "module m;\npub attr top: Bool for entity;\nattr keep: Bool for let, port;\n#[top]\nentity Top {\n  y: Bit out,\n}\nextern entity BlackBox<W: integer> {\n  a: unsigned[W] in,\n  b: unsigned[W] out,\n}\n",
+            "module m;\npub attr top: Bool for entity;\nattr keep: Bool for let, port;\n#[test]\nentity Top {\n  y: Bit out,\n}\nextern entity BlackBox<W: integer> {\n  a: unsigned[W] in,\n  b: unsigned[W] out,\n}\n",
         );
         let Item::AttrDecl(a) = &m.items[0] else {
             panic!("expected attr decl")
@@ -3627,7 +3909,7 @@ mod tests {
             panic!("expected entity")
         };
         assert_eq!(top.attrs.len(), 1);
-        assert_eq!(top.attrs[0].name.segments[0].text, "top");
+        assert_eq!(top.attrs[0].name.segments[0].text, "test");
         let Item::Entity(bb) = &m.items[3] else {
             panic!()
         };
@@ -3667,5 +3949,148 @@ mod tests {
             .items
             .iter()
             .any(|it| matches!(it, Item::Entity(e) if e.name.text == "Good")));
+    }
+
+    /// `attr` is a declaration when it has `: Type` (optionally with a
+    /// default), and a binding otherwise — named with `for`, or objectless.
+    #[test]
+    fn attr_items_are_declarations_or_bindings() {
+        let m = parse_ok(
+            "module m;\nattr speed: integer for entity, let = 3;\nattr speed for Top = 4;\nimpl Top { attr speed for probe = 5; attr speed = 6; }\n",
+        );
+        let Item::AttrDecl(declaration) = &m.items[0] else {
+            panic!("expected a declaration")
+        };
+        assert!(matches!(declaration.default, Some(Expr::Int { ref text, .. }) if text == "3"));
+        assert!(
+            matches!(&m.items[1], Item::AttrBinding(b) if b.object.as_ref().is_some_and(|o| o.text == "Top"))
+        );
+        let Item::Impl(im) = &m.items[2] else {
+            panic!("expected impl")
+        };
+        assert!(
+            matches!(&im.items[0], ImplItem::AttrBinding(b) if b.object.as_ref().is_some_and(|o| o.text == "probe"))
+        );
+        assert!(matches!(&im.items[1], ImplItem::AttrBinding(b) if b.object.is_none()));
+        assert_eq!(
+            crate::syntax::pretty::print_module(&m),
+            "module m;\n\nattr speed: integer for entity, let = 3;\n\nattr speed for Top = 4;\n\nimpl Top {\n    attr speed for probe = 5;\n    attr speed = 6;\n}\n",
+        );
+        for (src, message) in [
+            (
+                "module m;\nimpl T { attr x: Bool for let; }\n",
+                "declared at module level",
+            ),
+            ("module m;\npub attr x for T = true;\n", "has no visibility"),
+        ] {
+            let diags = diagnostics(src);
+            assert!(
+                diags.iter().any(|d| d.message.contains(message)),
+                "{src}: {diags:#?}"
+            );
+        }
+    }
+
+    /// The operator table is built before parsing, so it must also find a
+    /// precedence bound inside the impl body, not only `#[precedence = N]`.
+    #[test]
+    fn precedence_is_discovered_from_a_body_binding() {
+        let src = "module m;\nimpl Operator<\"^^\", Bit, Bit> for Bit {\n  fn apply(self, rhs: Bit) -> Bit { return self; }\n  attr precedence = 45;\n}\nimpl Operator<\"~~\", Bit, Bit> for Bit {}\n";
+        let mut sink = DiagnosticSink::new();
+        let tokens = crate::syntax::lexer::Lexer::new(FileId(0), src).tokenize(&mut sink);
+        let operators = discover_custom_operators(src, &tokens);
+        assert_eq!(operators.get("^^"), Some(&45));
+        assert_eq!(operators.get("~~"), None, "no precedence, no entry");
+    }
+
+    /// `#[...]` is for directives; `#[test]` is the only one. Metadata in it
+    /// is reported once, with the binding that replaces it for its position,
+    /// and stays in the tree so later stages still see it.
+    #[test]
+    fn metadata_in_brackets_names_its_binding() {
+        let src = "module m;\n#[test]\nentity T {}\n#[top]\nentity Chip {}\n#[precedence = 40]\nimpl Operator<\"^^\", Bit, Bit> for Bit {}\nimpl Chip {\n  #[vendor::keep = false]\n  let probe: Bit;\n}\n";
+        let diags = diagnostics(src);
+        let helps: Vec<_> = diags
+            .iter()
+            .map(|d| {
+                assert_eq!(d.code, Some(crate::diag::codes::METADATA_IN_DIRECTIVE));
+                d.help.clone().unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(
+            helps,
+            [
+                "after the entity, write `attr top for Chip = true;`",
+                "inside the impl, write `attr precedence = 40;`",
+                "write `attr vendor::keep for probe = false;`",
+            ]
+        );
+        let (m, _) = parse(src);
+        assert!(matches!(&m.items[1], Item::Entity(e) if e.attrs.len() == 1));
+    }
+
+    /// Lint directives govern the item, member or statement they precede;
+    /// `#![...]` after the module path governs the module. Each is kept on
+    /// the module with that extent, and the printer writes it back in place.
+    #[test]
+    fn lint_directives_record_their_extent() {
+        let src = "module m;\n#![deny(warnings)]\n\n#[allow(unused_signal, dead_assignment)]\nimpl E {\n    #[warn(unused_signal)]\n    let probe: Bit;\n    process {\n        #[forbid(possible_latch)]\n        q = d;\n    }\n}\n";
+        let m = parse_ok(src);
+        let scoped: Vec<(String, &str)> = m
+            .lints
+            .iter()
+            .map(|d| {
+                let names = d
+                    .names
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                (
+                    format!("{}({names})", d.level.word()),
+                    &src[d.scope.start as usize..d.scope.end as usize],
+                )
+            })
+            .collect();
+        assert_eq!(scoped[0].0, "warn(unused_signal)");
+        assert_eq!(scoped[0].1, "#[warn(unused_signal)]\n    let probe: Bit;");
+        assert_eq!(scoped[1].0, "forbid(possible_latch)");
+        assert_eq!(scoped[1].1, "#[forbid(possible_latch)]\n        q = d;");
+        assert_eq!(scoped[2].0, "allow(unused_signal,dead_assignment)");
+        assert!(scoped[2].1.starts_with("#[allow") && scoped[2].1.ends_with("}\n}"));
+        assert_eq!(scoped[3].0, "deny(warnings)");
+        assert_eq!(
+            scoped[3].1,
+            src.trim_end(),
+            "an inner directive governs the module"
+        );
+        assert_eq!(crate::syntax::pretty::print_module(&m), src);
+    }
+
+    /// A bare `#[allow]` names no lint; an inner directive after an item, or
+    /// anything but a lint directive on a statement, is reported.
+    #[test]
+    fn malformed_lint_directives_are_reported() {
+        for (src, message) in [
+            (
+                "module m;\n#[allow]\nentity E {}\n",
+                "malformed lint directive",
+            ),
+            (
+                "module m;\nentity E {}\n#![allow(warnings)]\nentity F {}\n",
+                "goes right after the module path",
+            ),
+            ("module m;\n#![test]\n", "can be an inner"),
+            (
+                "module m;\nimpl E { process { #[test] q = d; } }\n",
+                "can be applied to a statement",
+            ),
+        ] {
+            let diags = diagnostics(src);
+            assert!(
+                diags.iter().any(|d| d.message.contains(message)),
+                "{src}: {diags:#?}"
+            );
+        }
     }
 }

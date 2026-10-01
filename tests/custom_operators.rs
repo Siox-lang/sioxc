@@ -18,12 +18,12 @@ fn imported_operator_fixture(name: &str) -> (std::path::PathBuf, std::path::Path
         r#"module local::operators;
            using std::ops::{Operator};
            pub enum Flag { Off, On }
-           #[precedence = 45]
            impl Operator<"unless", Flag, Bool> for Flag {
+               attr precedence = 45;
                fn apply(self, rhs: Flag) -> Bool { return true; }
            }
-           #[precedence = 44]
            impl Operator<"^^", Flag, Bool> for Flag {
+               attr precedence = 44;
                fn apply(self, rhs: Flag) -> Bool { return true; }
            }"#,
     )
@@ -40,8 +40,8 @@ fn imported_operator_fixture(name: &str) -> (std::path::PathBuf, std::path::Path
         r#"module unrelated;
            using std::ops::{Operator};
            enum Other { A }
-           #[precedence = 1]
            impl Operator<"unless", Other, Bool> for Other {
+               attr precedence = 1;
                fn apply(self, rhs: Other) -> Bool { return true; }
            }"#,
     )

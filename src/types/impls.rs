@@ -254,7 +254,7 @@ impl<'a> Checker<'a> {
                         *self.type_params.borrow_mut() = saved;
                     }
                 }
-                ImplItem::ModeField { .. } => {}
+                ImplItem::ModeField { .. } | ImplItem::AttrBinding(_) => {}
                 ImplItem::Process(process) => {
                     self.check_process_block(&process.body, &dirs, &ranged, &sym, &index_bounds)
                 }

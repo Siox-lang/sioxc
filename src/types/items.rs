@@ -46,6 +46,10 @@ impl<'a> Checker<'a> {
             Item::Entity(e) => {
                 for port in &e.ports {
                     self.check_applied_view(&port.ty);
+                    for a in &port.attrs {
+                        self.check_attr_target(a, "port", type_head_name(&port.ty));
+                        self.check_attr_value(a);
+                    }
                 }
                 for a in &e.attrs {
                     self.check_attr_target(a, "entity", Some(e.name.text.as_str()));
@@ -111,7 +115,8 @@ impl<'a> Checker<'a> {
             // body, so there is nothing to validate past its base type.
             Item::Struct(_) => {}
             Item::View(v) => self.check_view(v),
-            Item::Using(_) | Item::AttrDecl(_) => {}
+            Item::AttrDecl(attribute) => self.check_attr_default(attribute),
+            Item::Using(_) | Item::AttrBinding(_) => {}
         }
     }
 
@@ -412,7 +417,10 @@ impl<'a> Checker<'a> {
                             }
                         }
                         ImplItem::Fn(function) => self.check_fn_type_layouts(function),
-                        ImplItem::ModeField { .. } | ImplItem::Process(_) | ImplItem::Stmt(_) => {}
+                        ImplItem::ModeField { .. }
+                        | ImplItem::Process(_)
+                        | ImplItem::Stmt(_)
+                        | ImplItem::AttrBinding(_) => {}
                     }
                 }
             }
@@ -423,6 +431,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Item::AttrDecl(attribute) => self.check_type_layout(&attribute.ty),
+            Item::AttrBinding(_) => {}
         }
     }
 

@@ -7,8 +7,9 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
 use siox::compiler::{Artifact, CompileRequest, Compiler, Emit, FileArtifact, SourceInput};
+use siox::diag::lints::Level;
 use siox::syntax::ast::{Item, UsingKind};
 use siox::syntax::pretty;
 
@@ -39,6 +40,43 @@ struct Cli {
     /// Directory holding the standard library (`std::logic` -> `<dir>/logic.siox`).
     #[arg(long, global = true, default_value = "std")]
     std: PathBuf,
+    /// Do not report a lint (`-A unused_signal`; `warnings` names them all).
+    #[arg(short = 'A', long = "allow", value_name = "LINT")]
+    allow: Vec<String>,
+    /// Report a lint as a warning (the default).
+    #[arg(short = 'W', long = "warn", value_name = "LINT")]
+    warn: Vec<String>,
+    /// Report a lint as an error (`-D warnings` fails on any warning).
+    #[arg(short = 'D', long = "deny", value_name = "LINT")]
+    deny: Vec<String>,
+    /// As `--deny`, and no `#[allow]` in the source may lower it.
+    #[arg(short = 'F', long = "forbid", value_name = "LINT")]
+    forbid: Vec<String>,
+}
+
+/// The `-A`/`-W`/`-D`/`-F` levels in the order they were written, which is
+/// the order they apply in: `-D warnings -A unused_signal` denies every lint
+/// but `unused_signal`.
+fn lint_levels(matches: &clap::ArgMatches, cli: &Cli) -> Vec<(Level, String)> {
+    let mut levels = Vec::new();
+    for (id, level, names) in [
+        ("allow", Level::Allow, &cli.allow),
+        ("warn", Level::Warn, &cli.warn),
+        ("deny", Level::Deny, &cli.deny),
+        ("forbid", Level::Forbid, &cli.forbid),
+    ] {
+        let Some(indices) = matches.indices_of(id) else {
+            continue;
+        };
+        for (index, name) in indices.zip(names) {
+            levels.push((index, level, name.clone()));
+        }
+    }
+    levels.sort_by_key(|(index, _, _)| *index);
+    levels
+        .into_iter()
+        .map(|(_, level, name)| (level, name))
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
@@ -54,7 +92,12 @@ enum CliEmit {
 }
 
 pub fn run() -> ExitCode {
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(error) => error.exit(),
+    };
+    let lints = lint_levels(&matches, &cli);
     if cli.test && cli.emit != CliEmit::Object {
         eprintln!("error: --test currently requires --emit object");
         return ExitCode::FAILURE;
@@ -73,8 +116,9 @@ pub fn run() -> ExitCode {
             CliEmit::LlvmIr => Emit::LlvmIr,
         }
     };
-    let mut request =
-        CompileRequest::new(SourceInput::path(&cli.file), emit.clone()).with_debug(cli.debug);
+    let mut request = CompileRequest::new(SourceInput::path(&cli.file), emit.clone())
+        .with_debug(cli.debug)
+        .with_lint_levels(lints);
     if let Some(output) = cli.out {
         request = request.with_output(output);
     }
@@ -276,5 +320,18 @@ fn describe_item(item: &Item) -> (&'static str, String) {
         }
         Item::Trait(trait_) => ("trait", trait_.name.text.clone()),
         Item::AttrDecl(attribute) => ("attr", attribute.name.text.clone()),
+        Item::AttrBinding(binding) => {
+            let name = binding
+                .name
+                .segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            match &binding.object {
+                Some(object) => ("attr", format!("{name} for {}", object.text)),
+                None => ("attr", name),
+            }
+        }
     }
 }
