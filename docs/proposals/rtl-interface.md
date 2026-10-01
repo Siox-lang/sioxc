@@ -124,7 +124,7 @@ y = mux(sel, a, b)
 And:
 
 ```siox
-#[pipeline(latency = 2)]
+#[pipeline(2)]
 fn calculate(...) {
     ...
 }
@@ -192,7 +192,7 @@ with known operand widths and result width.
 Similarly:
 
 ```siox
-#[pipeline(latency = 3)]
+#[pipeline(3)]
 fn f(...) { ... }
 ```
 
@@ -489,10 +489,10 @@ Reset {
 
 ## Pipeline directives
 
-Compiler directives such as:
+Compiler directives such as ([pipelines.md](pipelines.md)):
 
 ```siox
-#[pipeline(latency = 3)]
+#[pipeline(3)]
 fn transform(...) {
     ...
 }
