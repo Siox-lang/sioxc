@@ -78,53 +78,53 @@ impl Prefix<"o", string> for unsigned {}
 // Core `and`/`or`/`not` are boolean-per-bit. The remaining familiar logic
 // words are ordinary custom operators declared here for numeric vectors.
 
-#[precedence = 35]
 impl Operator<"xor", unsigned, unsigned> for unsigned {
+    attr precedence = 35;
     fn apply(self, rhs: unsigned) -> unsigned { return (self or rhs) - (self and rhs); }
 }
 
-#[precedence = 40]
 impl Operator<"nand", unsigned, unsigned> for unsigned {
+    attr precedence = 40;
     fn apply(self, rhs: unsigned) -> unsigned {
         return ((1 << self'length) - 1) - (self and rhs);
     }
 }
 
-#[precedence = 30]
 impl Operator<"nor", unsigned, unsigned> for unsigned {
+    attr precedence = 30;
     fn apply(self, rhs: unsigned) -> unsigned {
         return ((1 << self'length) - 1) - (self or rhs);
     }
 }
 
-#[precedence = 35]
 impl Operator<"xnor", unsigned, unsigned> for unsigned {
+    attr precedence = 35;
     fn apply(self, rhs: unsigned) -> unsigned {
         return ((1 << self'length) - 1) - ((self or rhs) - (self and rhs));
     }
 }
 
-#[precedence = 35]
 impl Operator<"xor", signed, signed> for signed {
+    attr precedence = 35;
     fn apply(self, rhs: signed) -> signed { return (self or rhs) - (self and rhs); }
 }
 
-#[precedence = 40]
 impl Operator<"nand", signed, signed> for signed {
+    attr precedence = 40;
     fn apply(self, rhs: signed) -> signed {
         return ((1 << self'length) - 1) - (self and rhs);
     }
 }
 
-#[precedence = 30]
 impl Operator<"nor", signed, signed> for signed {
+    attr precedence = 30;
     fn apply(self, rhs: signed) -> signed {
         return ((1 << self'length) - 1) - (self or rhs);
     }
 }
 
-#[precedence = 35]
 impl Operator<"xnor", signed, signed> for signed {
+    attr precedence = 35;
     fn apply(self, rhs: signed) -> signed {
         return ((1 << self'length) - 1) - ((self or rhs) - (self and rhs));
     }

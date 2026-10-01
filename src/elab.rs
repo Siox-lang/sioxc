@@ -122,9 +122,9 @@ pub struct InstanceArrayFact {
 pub struct Instance {
     /// Instance name (the `let` binding; equals the entity name for a root).
     pub name: String,
-    /// Metadata attributes from the instance `let` (`#[external_clock = true]
-    /// let p: Pll = { .. };`) — (name, pretty-printed value). Preserved for
-    /// external tools (netlist/constraint emission, spec 3.5).
+    /// Metadata bound on the instance `let` (`attr external_clock for p =
+    /// true;`) — (name, pretty-printed value). Preserved for external tools
+    /// (netlist/constraint emission, spec 3.5).
     pub attrs: Vec<(String, Option<String>)>,
     /// Entity type being instantiated.
     pub entity: String,
@@ -220,8 +220,8 @@ impl Hierarchy {
             .attrs
             .iter()
             .map(|(n, v)| match v {
-                Some(v) => format!(" #[{n} = {v}]"),
-                None => format!(" #[{n}]"),
+                Some(v) => format!(" [{n} = {v}]"),
+                None => format!(" [{n}]"),
             })
             .collect::<String>();
         if let Some(root_name) = root_name {

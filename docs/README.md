@@ -21,7 +21,6 @@ synthesis layer yet (those are Phase 2 and 3 — see
 | [interoperability.md](interoperability.md) | **Interop and embedding** — the public compiler API, `extern "C"` functions, file I/O, and the `siox-lsp` editor server. |
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
 | [proposals/](proposals/) | Designs that are **not** implemented yet. Once something lands, its record moves into the document it belongs to and the proposal goes away, so this folder only ever lists outstanding work. |
-| [Declarative attributes](proposals/attribute-system.md) | Proposed `attr … for … = …;` declaration and binding for metadata, with defaults and readback through `'`. |
 | [`#[...]` as compiler directives](proposals/compiler-directives.md) | Proposed rule that `#[...]` marks only what changes compilation — `#[test]` today, lint control next. |
 | [../TODO.md](../TODO.md) | The **outstanding-work list** — post-baseline capability growth by compiler area. |
 

@@ -1054,7 +1054,7 @@ mod tests {
              const DEFAULT_WIDTH: usize = 8;\n\
              struct Packet<T> { valid: Bit, data: T }\n\
              enum State {  Idle = 0, Start = 1, Done = 2 }\n\
-             #[top]\n\
+             #[test]\n\
              entity Counter<W: integer> {\n\
                clk: Bit in,\n\
                bus: Stream<unsigned[32]> Source,\n\
@@ -1111,9 +1111,9 @@ mod tests {
         roundtrip(
             "module m;\n\
              trait Operator<op, I, O> { fn apply(self, rhs: I) -> O; }\n\
-             #[precedence = 35] impl Operator<\"xor\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
-             #[precedence = 40] impl Operator<\"nand\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
-             #[precedence = 30] impl Operator<\"nor\", M, M> for M { fn apply(self, rhs: M) -> M { return self; } }\n\
+             impl Operator<\"xor\", M, M> for M { attr precedence = 35; fn apply(self, rhs: M) -> M { return self; } }\n\
+             impl Operator<\"nand\", M, M> for M { attr precedence = 40; fn apply(self, rhs: M) -> M { return self; } }\n\
+             impl Operator<\"nor\", M, M> for M { attr precedence = 30; fn apply(self, rhs: M) -> M { return self; } }\n\
              impl M {\n  y = a and b or c;\n  z = a xor b and not c;\n  w = a nand b nor c;\n}\n",
         );
     }

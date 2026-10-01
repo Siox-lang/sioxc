@@ -194,8 +194,8 @@ impl Operator<"or", Logic, Logic> for Logic {
     }
 }
 
-#[precedence = 35]
 impl Operator<"xor", Logic, Logic> for Logic {
+    attr precedence = 35;
     fn apply(self, rhs: Logic) -> Logic {
         if self == 'U' or rhs == 'U' { return 'U'; }
         if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '0'; }
@@ -215,8 +215,8 @@ impl Operator<"not", Logic, Logic> for Logic {
     }
 }
 
-#[precedence = 40]
 impl Operator<"nand", Logic, Logic> for Logic {
+    attr precedence = 40;
     fn apply(self, rhs: Logic) -> Logic {
         if self == '0' or self == 'L' or rhs == '0' or rhs == 'L' { return '1'; }
         if self == 'U' or rhs == 'U' { return 'U'; }
@@ -225,8 +225,8 @@ impl Operator<"nand", Logic, Logic> for Logic {
     }
 }
 
-#[precedence = 30]
 impl Operator<"nor", Logic, Logic> for Logic {
+    attr precedence = 30;
     fn apply(self, rhs: Logic) -> Logic {
         if self == '1' or self == 'H' or rhs == '1' or rhs == 'H' { return '0'; }
         if self == 'U' or rhs == 'U' { return 'U'; }
@@ -235,8 +235,8 @@ impl Operator<"nor", Logic, Logic> for Logic {
     }
 }
 
-#[precedence = 35]
 impl Operator<"xnor", Logic, Logic> for Logic {
+    attr precedence = 35;
     fn apply(self, rhs: Logic) -> Logic {
         if self == 'U' or rhs == 'U' { return 'U'; }
         if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '1'; }

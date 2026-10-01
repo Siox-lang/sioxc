@@ -776,7 +776,7 @@ fn backend_unavailable() -> CompileFailure {
 ///
 /// Roots are entities nothing instantiates. `explicit` names one directly and
 /// may be module-qualified to break a tie between equal leaf names. With no
-/// explicit choice, exactly one root must exist -- `#[top]` is vendor metadata
+/// explicit choice, exactly one root must exist -- `top` is vendor metadata
 /// and deliberately does not participate.
 fn select_top(
     modules: &[Module],
@@ -1061,7 +1061,7 @@ mod tests {
     }
 
     #[test]
-    /// `#[top]` is vendor metadata, not a build directive: default root
+    /// `top` is vendor metadata, not a build directive: default root
     /// selection must ignore it and use structural reachability instead.
     fn default_object_root_is_structural_not_vendor_metadata() {
         let mut sink = DiagnosticSink::new();
@@ -1073,10 +1073,12 @@ mod tests {
             ),
             syntax::parse_module(
                 FileId(1),
-                "module design; #[vendor::top = 1] entity Preferred {} entity Other {}",
+                "module design; entity Preferred {} attr vendor::top for Preferred = 1; entity Other {}",
                 &mut sink,
             ),
         ];
+        let mut modules = modules;
+        syntax::attributes::attach(&mut modules, &mut sink);
         let resolved = resolve::resolve(&modules, &mut sink);
         assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
         let crate::syntax::ast::Item::Entity(preferred) = &modules[1].items[0] else {

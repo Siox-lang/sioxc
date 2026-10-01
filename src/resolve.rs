@@ -2537,8 +2537,9 @@ mod tests {
     fn resolve_src(src: &str) -> (Resolved, usize) {
         let src = format!("{src}{DIGITAL_PRELUDE}");
         let mut sink = DiagnosticSink::new();
-        let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+        let mut module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
+        crate::syntax::attributes::attach(std::slice::from_mut(&mut module), &mut sink);
         let resolved = resolve(std::slice::from_ref(&module), &mut sink);
         (resolved, sink.error_count())
     }
@@ -3538,11 +3539,12 @@ mod tests {
     #[test]
     /// An undeclared attribute is reported, while a declared one resolves.
     fn undeclared_attribute_is_reported_but_declared_is_ok() {
-        let (_, errors) = resolve_src("module m;\n#[bogus]\nentity E { y: Bit out, }\n");
+        let (_, errors) =
+            resolve_src("module m;\nentity E { y: Bit out, }\nattr bogus for E = true;\n");
         assert_eq!(errors, 1);
 
         let (_, errors) = resolve_src(
-            "module m;\nattr fast: Bool for entity;\n#[fast]\nentity E { y: Bit out, }\n",
+            "module m;\nattr fast: Bool for entity;\nentity E { y: Bit out, }\nattr fast for E = true;\n",
         );
         assert_eq!(errors, 0);
     }
@@ -3558,10 +3560,12 @@ mod tests {
         );
         let user = crate::syntax::parse_module(
             FileId(1),
-            "module user;\n#[attrs::missing = 1]\nentity E {}\n",
+            "module user;\nentity E {}\nattr attrs::missing for E = 1;\n",
             &mut sink,
         );
-        resolve(&[attrs, user], &mut sink);
+        let mut modules = [attrs, user];
+        crate::syntax::attributes::attach(&mut modules, &mut sink);
+        resolve(&modules, &mut sink);
         assert!(sink.diagnostics().iter().any(|diagnostic| {
             diagnostic.code == Some(codes::UNKNOWN_NAME)
                 && diagnostic.message.contains("attrs::missing")

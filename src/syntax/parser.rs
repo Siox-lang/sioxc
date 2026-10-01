@@ -302,7 +302,14 @@ impl<'a> Parser<'a> {
             TokenKind::Struct => Item::Struct(self.parse_struct(is_pub)),
             TokenKind::View => Item::View(self.parse_view(is_pub)),
             TokenKind::Enum => Item::Enum(self.parse_enum(is_pub)),
-            TokenKind::Entity => Item::Entity(self.parse_entity(attrs, is_pub, is_extern)),
+            TokenKind::Entity => {
+                let entity = self.parse_entity(attrs, is_pub, is_extern);
+                let name = entity.name.text.clone();
+                self.reject_metadata(&entity.attrs, |binding| {
+                    format!("after the entity, write `{}`", binding(Some(&name)))
+                });
+                Item::Entity(entity)
+            }
             TokenKind::Impl => {
                 if is_pub {
                     self.error_at(
@@ -310,7 +317,11 @@ impl<'a> Parser<'a> {
                         "an `impl` block has no visibility; mark inherent methods `pub` individually",
                     );
                 }
-                Item::Impl(self.parse_impl(attrs))
+                let implementation = self.parse_impl(attrs);
+                self.reject_metadata(&implementation.attrs, |binding| {
+                    format!("inside the impl, write `{}`", binding(None))
+                });
+                Item::Impl(implementation)
             }
             TokenKind::Trait => Item::Trait(self.parse_trait(is_pub)),
             TokenKind::Attr => match self.parse_attr(is_pub) {
@@ -380,6 +391,45 @@ impl<'a> Parser<'a> {
             });
         }
         attrs
+    }
+
+    /// `#[...]` is for compiler directives only, and `#[test]` is the one
+    /// there is. Metadata in it is reported with the binding that replaces it;
+    /// the attribute stays in the tree so later stages still see it.
+    fn reject_metadata(
+        &mut self,
+        attrs: &[Attr],
+        help: impl Fn(&dyn Fn(Option<&str>) -> String) -> String,
+    ) {
+        for attr in attrs {
+            let name = attr.name.segments.last().map_or("", |s| s.text.as_str());
+            if name == "test" {
+                continue;
+            }
+            let path = attr
+                .name
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            let value = attr
+                .value
+                .as_ref()
+                .map_or_else(|| "true".to_string(), crate::syntax::pretty::expr);
+            let binding = |object: Option<&str>| match object {
+                Some(object) => format!("attr {path} for {object} = {value};"),
+                None => format!("attr {path} = {value};"),
+            };
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "`#[{path}]` is metadata; `#[...]` is only for compiler directives"
+                ))
+                .with_code(crate::diag::codes::METADATA_IN_DIRECTIVE)
+                .at(attr.span)
+                .help(help(&binding)),
+            );
+        }
     }
 
     // --- using / const ------------------------------------------------------
@@ -939,7 +989,12 @@ impl<'a> Parser<'a> {
                 let start = self.span();
                 self.bump();
                 let name = self.parse_ident();
-                Some(ImplItem::Let(self.parse_let_rest(attrs, start, name)))
+                let declaration = self.parse_let_rest(attrs, start, name);
+                let name = declaration.name.text.clone();
+                self.reject_metadata(&declaration.attrs, |binding| {
+                    format!("write `{}`", binding(Some(&name)))
+                });
+                Some(ImplItem::Let(declaration))
             }
             TokenKind::Fn => {
                 let start = self.span();
@@ -3509,7 +3564,7 @@ mod tests {
     /// Attribute declarations, applications and `extern entity` parse together.
     fn attr_decl_application_and_extern_entity() {
         let m = parse_ok(
-            "module m;\npub attr top: Bool for entity;\nattr keep: Bool for let, port;\n#[top]\nentity Top {\n  y: Bit out,\n}\nextern entity BlackBox<W: integer> {\n  a: unsigned[W] in,\n  b: unsigned[W] out,\n}\n",
+            "module m;\npub attr top: Bool for entity;\nattr keep: Bool for let, port;\n#[test]\nentity Top {\n  y: Bit out,\n}\nextern entity BlackBox<W: integer> {\n  a: unsigned[W] in,\n  b: unsigned[W] out,\n}\n",
         );
         let Item::AttrDecl(a) = &m.items[0] else {
             panic!("expected attr decl")
@@ -3524,7 +3579,7 @@ mod tests {
             panic!("expected entity")
         };
         assert_eq!(top.attrs.len(), 1);
-        assert_eq!(top.attrs[0].name.segments[0].text, "top");
+        assert_eq!(top.attrs[0].name.segments[0].text, "test");
         let Item::Entity(bb) = &m.items[3] else {
             panic!()
         };
@@ -3616,5 +3671,31 @@ mod tests {
         let operators = discover_custom_operators(src, &tokens);
         assert_eq!(operators.get("^^"), Some(&45));
         assert_eq!(operators.get("~~"), None, "no precedence, no entry");
+    }
+
+    /// `#[...]` is for directives; `#[test]` is the only one. Metadata in it
+    /// is reported once, with the binding that replaces it for its position,
+    /// and stays in the tree so later stages still see it.
+    #[test]
+    fn metadata_in_brackets_names_its_binding() {
+        let src = "module m;\n#[test]\nentity T {}\n#[top]\nentity Chip {}\n#[precedence = 40]\nimpl Operator<\"^^\", Bit, Bit> for Bit {}\nimpl Chip {\n  #[vendor::keep = false]\n  let probe: Bit;\n}\n";
+        let diags = diagnostics(src);
+        let helps: Vec<_> = diags
+            .iter()
+            .map(|d| {
+                assert_eq!(d.code, Some(crate::diag::codes::METADATA_IN_DIRECTIVE));
+                d.help.clone().unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(
+            helps,
+            [
+                "after the entity, write `attr top for Chip = true;`",
+                "inside the impl, write `attr precedence = 40;`",
+                "write `attr vendor::keep for probe = false;`",
+            ]
+        );
+        let (m, _) = parse(src);
+        assert!(matches!(&m.items[1], Item::Entity(e) if e.attrs.len() == 1));
     }
 }

@@ -1,8 +1,9 @@
 # `#[...]` as compiler directives
 
-Status: **proposal**. Nothing here is implemented. It is the other half of
-[attribute-system.md](attribute-system.md): once declarative metadata moves to
-`attr … for … = …;`, `#[...]` is left to mean one thing.
+Status: **proposal**, partly implemented. Declarative metadata has moved to
+`attr … for … = …;` (language §3.5), so `#[...]` already means one thing and
+`#[test]` is its only use; metadata written as `#[...]` is `E-P032`. Lint
+control and `derive` below are not implemented.
 
 ## Decision
 

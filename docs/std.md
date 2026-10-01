@@ -11,8 +11,8 @@ bad import is a hard error, `E-P011`).
 The compiler bootstraps the `Operator`, `Prefix`, `Suffix`, and
 `LogicEncoding` hook identities. Operator contracts live in `std::ops`; every
 operator is an `Operator<"symbol", Input, Output>` implementation, and a user
-operator (a non-standard symbol) carries an attributed precedence discovered
-before expression parsing.
+operator (a non-standard symbol) binds its precedence inside its impl
+(`attr precedence = N;`), discovered before expression parsing.
 
 Design stance (see the spec's "type kernel"): the compiler provides exactly
 three base types — `integer`, `real`, and `Char` (a non-numeric character
@@ -176,18 +176,24 @@ pub using Positive = integer<1..9223372036854775807>;
 
 ## `std::attrs`
 
-The standard metadata attributes (spec 3.5). `test` has compiler semantics;
-the others are reserved for later output passes:
+The standard metadata attributes (spec 3.5), each with a default so a read
+(`probe'keep`) always answers. `test` is written as the directive `#[test]`
+because it changes what `sioxc --test` emits; `precedence` is read by the
+parser; the others are reserved for later output passes:
 
 ```siox
-pub attr test: Bool for entity;     // discovered by `sioxc --test`
-pub attr keep: Bool for let, port;  // keep through optimization
-pub attr library: string for entity;
-pub attr name: string for entity;
+pub attr test: Bool for entity = false;     // discovered by `sioxc --test`
+pub attr keep: Bool for let, port = false;  // keep through optimization
+pub attr library: string for entity = "";
+pub attr name: string for entity = "";
+pub attr precedence: integer for impl = 0;  // custom operator binding power
 ```
 
+Bind them with `attr keep for probe = true;`, or objectless inside an
+implementation: `attr precedence = 40;`.
+
 `top` intentionally is not standard metadata and is not compiler-seeded. A
-Vivado, Quartus, RTL, or Cocotb integration may declare and apply its own `top`
+Vivado, Quartus, RTL, or Cocotb integration may declare and bind its own `top`
 attribute. The frontend preserves it as ordinary resolved metadata, while
 sioxc root selection remains structural or explicit through `--top`.
 

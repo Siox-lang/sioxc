@@ -6,9 +6,17 @@ module std::attrs;
 // such as `top` is declared by the owning integration rather than by std; the
 // compiler preserves such attributes but does not assign them semantics.
 
-pub attr test: Bool for entity;     // discovered by `siox test`
-pub attr keep: Bool for let, port;  // keep through optimization
-pub attr library: string for entity;
-pub attr name: string for entity;
-// Binding power for a custom infix operator implementation.
-pub attr precedence: integer for impl;
+// Every declaration carries a default, so a read (`probe'keep`) always has a
+// value. Bind one from outside the declaration it describes:
+// `attr keep for probe = true;`, or objectless inside an impl,
+// `attr precedence = 40;`.
+//
+// `test` is the exception: it marks an entity for `sioxc --test`, which
+// changes compilation, so it is written as the directive `#[test]`.
+
+pub attr test: Bool for entity = false;     // discovered by `sioxc --test`
+pub attr keep: Bool for let, port = false;  // keep through optimization
+pub attr library: string for entity = "";
+pub attr name: string for entity = "";
+// Binding power for a custom infix operator implementation; `0` means none.
+pub attr precedence: integer for impl = 0;

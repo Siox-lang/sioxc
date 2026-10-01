@@ -423,7 +423,7 @@ guarantees portable reset hardware.
 
 ### 9. Custom operator precedence is attached to an implementation
 
-Precedence affects parsing globally, but `#[precedence = N]` lives on a
+Precedence affects parsing globally, but `attr precedence = N;` lives in a
 type-specific impl. Several impls of the same operator must therefore agree on
 a grammar fact that does not belong to any one operand type. Imports also have
 to be discovered before parsing so the grammar can be assembled.
@@ -564,6 +564,12 @@ only the ambiguity about which prose is authoritative.
 
 ### 15. Two sigils both called "attributes"
 
+> **Resolved (2026-10).** The declarative attribute design below is
+> implemented: metadata is declared with a default, bound with
+> `attr name for x = v;` (or objectless inside an impl), and read with
+> `x'name`; `#[...]` is left to the directive `#[test]`. Language §3.5 is the
+> reference. The discussion is kept as the record of why.
+
 Metadata is written `#[test]`, `#[precedence = 40]` (spec 3.5/3.6) while value
 and type queries are written `sig'event`, `x'length` (spec 3.9). Both are
 routinely called "attributes", and the language borrows the first spelling from
@@ -598,7 +604,7 @@ fatal but all real:
   bracketed form once several attributes carry values.
 
 **A worked alternative, if the syntax is ever changed.** This is now written up
-as two proposals — [declarative attributes](proposals/attribute-system.md) for
+as two proposals — declarative attributes (now implemented; language §3.5) for
 the `attr … for … = …;` replacement, and
 [`#[...]` as compiler directives](proposals/compiler-directives.md) for what
 `#[...]` becomes. The shape below is the summary; the proposals carry the
@@ -662,7 +668,7 @@ today follows where each spelling came from -- `#[…]` from Rust, `'` from VHDL
 
 | group | when | cost in the generated design | spelled |
 | ----- | ---- | ---------------------------- | ------- |
-| declaration metadata (`test`, `precedence`, `keep`, `library`) | compile | none | `#[…]` |
+| declaration metadata (`precedence`, `keep`, `library`) | compile | none | `attr … for … = …;`, read with `'` |
 | shape queries (`length`, `high`, `low`, `left`, `right`, `ascending`, `range`) | elaboration; folds to a literal | none | `'` |
 | state queries (`event`, `old`) | every delta cycle | a shadow `old` array plus an event bit-plane | `'` |
 

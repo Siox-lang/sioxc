@@ -23,7 +23,7 @@ fn accepts_digital_sysattrs() {
 /// rejected (E-P006).
 fn attribute_on_wrong_target_is_rejected() {
     // `keep` is declared for `let, port`, not `entity`.
-    let errors = check_src("module m;\n#[keep]\nentity E { y: Bit out, }\n");
+    let errors = check_src("module m;\nentity E { y: Bit out, }\nattr keep for E = true;\n");
     assert_eq!(errors, 1);
 }
 
@@ -31,7 +31,7 @@ fn attribute_on_wrong_target_is_rejected() {
 /// An attribute on a declared target is accepted.
 fn attribute_on_right_target_is_fine() {
     let errors = check_src(
-            "module m;\npub attr vendor_top: Bool for entity;\n#[vendor_top]\nentity E { y: Bit out, }\n",
+            "module m;\npub attr vendor_top: Bool for entity;\nentity E { y: Bit out, }\nattr vendor_top for E = true;\n",
         );
     assert_eq!(errors, 0);
 }
@@ -40,9 +40,9 @@ fn attribute_on_right_target_is_fine() {
 /// An attribute's value is checked against its declared type (E-P007).
 fn attribute_value_type_is_checked() {
     // `name` expects a string; giving it an signed is an error.
-    let bad = check_src("module m;\n#[name = 5]\nentity E { y: Bit out, }\n");
+    let bad = check_src("module m;\nentity E { y: Bit out, }\nattr name for E = 5;\n");
     assert_eq!(bad, 1);
-    let good = check_src("module m;\n#[name = \"dut\"]\nentity E { y: Bit out, }\n");
+    let good = check_src("module m;\nentity E { y: Bit out, }\nattr name for E = \"dut\";\n");
     assert_eq!(good, 0);
 }
 
@@ -77,18 +77,15 @@ fn unknown_system_attribute_is_reported() {
 /// directions at all, so the same write hidden behind a method was
 /// accepted *and driven* — `fn bad(self) { self.ready = '1'; }` on a
 /// Source, whose `ready` is an input, defeated the whole point of the view.
-/// A declared attribute with a value type needs one. `check_attr_value`
-/// returned immediately when an attribute had no value, so a bare
-/// `#[speed]` on `attr speed: integer` passed unexamined and was carried
-/// through elaboration into `--emit tree` as `#[speed]` — an attribute a
-/// synthesis backend reads with no number in it. `Bool` is exempt: a bare
-/// flag reads as `true`, as the marker attributes do.
+/// A binding's value is checked against the declared type (E-P007), the
+/// same way wherever the binding is written.
 #[test]
-fn a_value_typed_attribute_needs_a_value() {
+fn a_bound_value_must_match_the_declared_type() {
     let count = |src: &str| {
         let src = format!("{src}{VEC}");
         let mut sink = DiagnosticSink::new();
-        let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+        let mut module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+        crate::syntax::attributes::attach(std::slice::from_mut(&mut module), &mut sink);
         let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
         check(std::slice::from_ref(&module), &resolved, &mut sink);
         sink.diagnostics()
@@ -102,29 +99,32 @@ fn a_value_typed_attribute_needs_a_value() {
             pub attr flag: Bool for Pll;\n\
             entity Pll { clk: Bit in, locked: Bit out }\nimpl Pll { locked = clk; }\n";
 
-    let body = |attr: &str| {
+    let body = |binding: &str| {
         count(&format!(
             "{DECL}entity E {{ c: Bit in, y: Bit out }}\n\
-                 impl E {{ {attr} let p: Pll = {{ .clk = c }}; y = p.locked; }}\n"
+                 impl E {{ attr {binding}; let p: Pll = {{ .clk = c }}; y = p.locked; }}\n"
         ))
     };
 
-    assert_eq!(body("#[speed]"), 1, "an integer attribute needs a number");
-    assert_eq!(body("#[vendor]"), 1, "a string attribute needs a string");
-
-    // The forms that carry a value are unaffected.
-    assert_eq!(body("#[speed = 42]"), 0, "a number satisfies it");
-    assert_eq!(body("#[vendor = \"acme\"]"), 0, "and a string");
-    assert_eq!(body("#[flag = Bool::true]"), 0, "and an explicit Bool");
-
-    // A bare Bool flag stays legal: it reads as `true`, like `#[test]`.
-    assert_eq!(body("#[flag]"), 0, "a bare Bool flag is still a flag");
-
-    // The wrong *type* was already reported, and still is.
+    assert_eq!(body("speed for p = 42"), 0, "a number satisfies it");
+    assert_eq!(body("vendor for p = \"acme\""), 0, "and a string");
+    assert_eq!(body("flag for p = true"), 0, "and a Bool");
     assert_eq!(
-        body("#[speed = \"fast\"]"),
+        body("speed for p = \"fast\""),
         1,
         "a string where a number belongs"
+    );
+    assert_eq!(
+        body("vendor for p = 3"),
+        1,
+        "a number where a string belongs"
+    );
+    assert_eq!(body("flag for p = 1"), 1, "a number where a Bool belongs");
+    // A declaration's default is checked the same way.
+    assert_eq!(
+        count("module m;\npub attr speed: integer for let = \"fast\";\n"),
+        1,
+        "a default of the wrong type"
     );
 }
 
@@ -135,12 +135,12 @@ fn a_value_typed_attribute_needs_a_value() {
 fn attributes_with_no_effect_are_flagged() {
     let n = |src: &str| warnings(src, codes::UNIMPLEMENTED_ATTR);
     assert_eq!(
-        n("module m;\n#[name = \"x\"]\nentity E { y: unsigned[8] out, }\nimpl E { y = 1; }\n"),
+        n("module m;\nentity E { y: unsigned[8] out, }\nimpl E { attr name = \"x\"; y = 1; }\n"),
         1,
         "`name` is reserved, not implemented"
     );
     assert_eq!(
-            n("module m;\n#[library = \"work\"]\nentity E { y: unsigned[8] out, }\nimpl E { y = 1; }\n"),
+            n("module m;\nentity E { y: unsigned[8] out, }\nimpl E { attr library = \"work\"; y = 1; }\n"),
             1,
             "so is `library`"
         );
