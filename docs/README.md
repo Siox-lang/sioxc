@@ -22,6 +22,7 @@ synthesis layer yet (those are Phase 2 and 3 — see
 | [roadmap.md](roadmap.md) | The three-phase plan. Phases 2 (analogue) and 3 (schematic) are out of scope for current work; useful for knowing what *not* to build. |
 | [proposals/](proposals/) | Designs that are **not** implemented yet. Once something lands, its record moves into the document it belongs to and the proposal goes away, so this folder only ever lists outstanding work. |
 | [`#[derive]`](proposals/derive.md) | Proposed generated `Ord`/`Resolve` implementations as a directive; `#[cfg]` stays rejected. |
+| [Compiler foundations](proposals/compiler-foundations.md) | Proposed rustc-style internals: UI tests for diagnostics, `--explain` and JSON output, one constant evaluator, a resolved tree with no name lookups after `resolve`, and std-declared lang items. |
 | [../TODO.md](../TODO.md) | The **outstanding-work list** — post-baseline capability growth by compiler area. |
 
 If you are new: skim this page, then read [language.md](language.md) for the
