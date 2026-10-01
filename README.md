@@ -62,7 +62,7 @@ entity Counter {
 impl Counter {
     let value: unsigned[8] = 0;
 
-    process update {
+    update: process {
         if clk.rising() {            // runs only on a rising clock edge
             if rst == '1' { value = 0; }
             else { value = value + 1; }
@@ -81,11 +81,11 @@ impl CounterTest {
     let count: unsigned[8];
     let dut: Counter = { .clk = clk, .rst = rst, .count = count };
 
-    process clock {
+    clock: process {
         clk = not clk after 5ns;     // free-running clock, 10 ns period
     }
 
-    process stimulus {
+    stimulus: process {
         await 10ns;                  // hold reset for one edge
         rst = '0';
         for i in 0..9 { await clk.rising(); } // let ten more edges pass
@@ -96,7 +96,8 @@ impl CounterTest {
 
 Two kinds of logic sit side by side: a concurrent **wire**
 (`count = value;` is always equal to `value`) and an ordered clocked
-**process** (`process update { if clk.rising() { … } }`).
+**process** (`update: process { if clk.rising() { … } }`). The `update:` label
+is optional and VHDL-style: it names the process in diagnostics and tools.
 
 ## Run it
 
@@ -107,14 +108,14 @@ $ sioxc --test counter.siox -o counter-tests
 $ ./counter-tests
 
 running 1 test
-test CounterTest ... ok
+test counter::CounterTest ... ok
 
-test result: ok. 1 passed; 0 failed
+test result: ok. 1 passed; 0 failed; 0 filtered out
 ```
 
 It works like `rustc --test`: `sioxc --test` compiles each `#[test]` into a
 native test executable. Run that executable normally, or pass a qualified name
-to select a subset: `./counter-tests examples::counter::CounterTest`.
+to select a subset: `./counter-tests counter::CounterTest`.
 
 ## See the waveforms
 
@@ -143,6 +144,7 @@ timeline.
 | `./tests -o out.vcd [filter]` | run generated tests and write text VCD |
 | `./tests -o out.fst [filter]` | run generated tests and write compressed FST (any non-`.vcd` path) |
 | `sioxc file.siox` | compile the sole structural root to a native object (`--top` when ambiguous) |
+| `sioxc -D warnings file.siox` | treat every warning as an error; `-A`/`-W`/`-D`/`-F <lint>` set one lint's level, as in rustc |
 
 The standard library loads from `./std` by default; add `--std <dir>` if it
  lives elsewhere. Peeking under the hood? `sioxc file.siox --emit
