@@ -27,7 +27,7 @@ synthesis layer yet (those are Phase 2 and 3 — see
 | [Macros](proposals/macros.md) | Proposed hygienic declarative macros, `name!(...)`, operating on syntax rather than values. |
 | [`#[derive]`](proposals/derive.md) | Proposed generated `Ord`/`Resolve` implementations as a directive; `#[cfg]` stays rejected. |
 | [`core` and `std`](proposals/core-std.md) | Proposed split: `core` (compiled in) holds what only the compiler can provide — kernel types, hooks, directives, macros, runtime services, a new `error!`; `std` holds everything users program with — logic and numeric types, math, vectors/matrices, encodings, common vendor attributes. |
-| [Pipelined functions](proposals/pipelines.md) | Proposed `#[pipeline(N)]` functions after Spade: `reg;` stage boundaries, depth checked at every call site, stage references, and `reg[cond]` stalls with `stage'ready`/`stage'valid`. |
+| [Pipelined functions](proposals/pipelines.md) | Proposed `#[latched]` functions after Spade, with no new keywords: `#[latch]` marks each stage (a block or one statement), depth is checked in the body and at every call site, stages can be named and referenced, and `#[latch(enable = c)]` stalls. |
 | [Compiler foundations](proposals/compiler-foundations.md) | Proposed rustc-style internals: UI tests for diagnostics, `--explain` and JSON output, one constant evaluator, a resolved tree with no name lookups after `resolve`, and std-declared lang items. |
 | [Vendor-neutral RTL interchange](proposals/rtl-interface.md) | **Phase 3.** Proposed synthesis-facing RTL IR that SystemVerilog, VHDL and other backends serialize, instead of compiling to another HDL. |
 | [../TODO.md](../TODO.md) | The **outstanding-work list** — post-baseline capability growth by compiler area. |

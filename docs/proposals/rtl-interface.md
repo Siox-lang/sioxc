@@ -124,7 +124,7 @@ y = mux(sel, a, b)
 And:
 
 ```siox
-#[pipeline(2)]
+#[latched(2)]
 fn calculate(...) {
     ...
 }
@@ -169,7 +169,7 @@ The following belong to earlier compiler stages:
 - delta-cycle source semantics;
 - `'old`;
 - `'event`;
-- user-facing pipeline directives.
+- pipeline directives (`#[latched]`, `#[latch]`).
 
 For example:
 
@@ -192,7 +192,7 @@ with known operand widths and result width.
 Similarly:
 
 ```siox
-#[pipeline(3)]
+#[latched(3)]
 fn f(...) { ... }
 ```
 
@@ -492,7 +492,7 @@ Reset {
 Compiler directives such as ([pipelines.md](pipelines.md)):
 
 ```siox
-#[pipeline(3)]
+#[latched(3)]
 fn transform(...) {
     ...
 }
@@ -525,7 +525,7 @@ For example:
 
 The RTL backend sees registers.
 
-It does not need to understand `#[pipeline]`.
+It does not need to understand `#[latched]` or `#[latch]`.
 
 This is an important general rule:
 

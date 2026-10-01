@@ -1,9 +1,9 @@
-# Pipelined functions: `#[pipeline]`
+# Pipelined functions: `#[latched]` and `#[latch]`
 
-Status: **proposal**. Nothing here is implemented. It defines the
-`#[pipeline]` directive that [rtl-interface.md](rtl-interface.md) uses as an
-example, following [Spade](https://spade-lang.org/)'s pipelines, which make
-stage boundaries part of the source and check latency at every use.
+Status: **proposal**. Nothing here is implemented. It follows
+[Spade](https://spade-lang.org/)'s pipelines, which make stage boundaries part
+of the source and check latency at every use, but spells them with two
+compiler directives instead of new keywords.
 
 A siox function is a pure expression, inlined where it is called. That is
 combinational logic: one clock cycle, however deep the arithmetic. A pipelined
@@ -15,120 +15,130 @@ every user's timing silently shifts by a cycle.
 ## Decision
 
 ```siox
-#[pipeline(3)]
+#[latched]
 fn mac(clk: Bit, a: signed[16], b: signed[16], acc: signed[32]) -> signed[32] {
-    let product: signed[32] = signed[32](sext(a)) * signed[32](sext(b));
-    reg;
+    #[latch] {                                   // stage 1
+        let product: signed[32] = signed[32](sext(a)) * signed[32](sext(b));
+    }
+    #[latch]                                     // stage 2
     let sum: signed[32] = product + acc;
-    reg * 2;
-    return sum;
+    return sum;                                  // available after two stages
 }
 
 impl Filter {
-    #[pipeline(3)]
-    y = mac(clk, x, coefficient, offset);   // y is mac's result three cycles later
+    #[latched(2)]
+    y = mac(clk, x, coefficient, offset);        // y is mac's result two cycles later
 }
 ```
 
-- `#[pipeline(N)]` on a `fn` makes it a pipeline of depth `N`: `N` register
-  stages between its inputs and its result. The first parameter is the clock;
-  every register updates on its rising edge.
-- `reg;` inside the body ends a stage. Every value visible above it is
-  registered, and below it a name refers to that registered, one-cycle-later
-  value. `reg * K;` inserts `K` stages at once.
-- The number of `reg` stages on every path to `return` must equal `N`
-  (`E-P0xx` otherwise), so the declared depth is checked against the body.
+- `#[latched]` on a `fn` makes it a pipeline: its result arrives a fixed number
+  of clock cycles after its inputs. The first parameter is the clock; every
+  stage register updates on its rising edge.
+- `#[latch]` inside a latched function marks one stage. On a block,
+  `#[latch] { … }`, the stage is everything in the block; without braces, it is
+  the one statement that follows. At the end of a stage every value it
+  computed, and every value it carries from earlier, is registered.
+- A name always means its value *in the current stage*. A `let` inside a
+  `#[latch] { … }` block stays visible after the block, delayed by the stage:
+  a stage is a step in time, not a scope.
+- The depth is the number of `#[latch]` stages on the way to `return`. Every
+  path must have the same depth (`E-P0xx` otherwise). `#[latched(N)]` on the
+  declaration states it, and the compiler checks the count matches.
 - Every call site states the depth it expects, with the same directive on the
-  statement that contains the call: `#[pipeline(3)] y = mac(…);`. A missing or
+  statement that contains the call: `#[latched(2)] y = mac(…);`. A missing or
   different depth is an error naming the declared one. This is Spade's
   `inst(N)`: changing a pipeline's depth breaks every user at compile time
   instead of shifting their timing.
-- A pipelined function is called only where hardware is built: concurrently
-  in an entity implementation, or inside another pipelined function. Calling
-  one in a process, an ordinary function or a testbench is an error.
+- A latched function is called only where hardware is built: concurrently in
+  an entity implementation, or inside another latched function. Calling one in
+  a process, an ordinary function or a testbench is an error.
 
-## Why this shape
+## Why directives
 
-**A directive, not a new item kind.** Spade has three unit kinds (`fn`,
-`entity`, `pipeline`). siox already has `fn` and `entity`, and a pipeline is a
-function whose evaluation is spread over clock cycles. `#[pipeline]` passes the
-directive test in [language §3.5](../language.md): removing it changes what the
-compiler emits.
+**No new keywords.** A stage boundary is not new computation; it is an
+instruction about *when* computation's results are kept. That is what
+directives are for: `#[...]` marks what changes what the compiler emits
+(language §3.5), and both markers do exactly that. Removing them turns a
+pipeline back into combinational logic.
+
+**The body stays ordinary siox.** Inside a latched function every statement is
+a normal statement with its normal meaning; the directives only say where the
+registers go. A reader who ignores the `#[...]` lines reads the computation.
+
+**Blocks and single statements.** Most stages are one statement, and
+`#[latch]` before it is the lightest marker possible. A stage that needs
+several statements takes a block, as a lint directive applies to a block or a
+single statement today.
 
 **Depth at the call site.** The latency of a pipeline is part of its
-interface, like a port's type. Writing it at each use makes the timing
-visible where the result is consumed, and makes a depth change a compile error
-rather than a simulation surprise.
+interface, like a port's type. Writing it at each use makes the timing visible
+where the result is consumed, and makes a depth change a compile error.
 
-**`reg` marks stages; the compiler carries values.** The designer decides where
-the stage boundaries are; the compiler inserts the registers for every value
-that crosses one, so a value used three stages later is delayed exactly three
-times without being named three times.
+## Stage names and references
 
-## Stages and references
-
-A stage takes a VHDL-style label, written on the `reg` that starts it:
+`#[latch]` takes two optional named arguments: `name` names the stage, and
+`enable` stalls it (below). Other stages can read a named stage's values:
 
 ```siox
-#[pipeline(2)]
+#[latched(2)]
 fn decode(clk: Bit, word: unsigned[32]) -> Op {
+    #[latch(name = fetch)]
     let opcode: unsigned[7] = word[6..0];
-    execute: reg;                          // the stage after this is `execute`
-    let rd: unsigned[5] = word[11..7];
-    reg;
-    return Op { .opcode = opcode, .rd = rd, .imm = stage(execute).word[31..20] };
+    #[latch] {
+        let rd: unsigned[5] = word[11..7];
+        let imm: unsigned[12] = stage(fetch).word[31..20];
+    }
+    return Op { .opcode = opcode, .rd = rd, .imm = imm };
 }
 ```
 
-- A name always means its value *in the current stage*.
-- `stage(label).x` reads `x` as it is in the labelled stage. `stage(-1).x`
-  and `stage(+1).x` are relative. Reading a later stage is how a result is
-  forwarded backwards (bypass, feedback); the compiler builds the wire, and the
-  designer owns the hazard.
+- `stage(fetch).x` reads `x` as it is in the named stage, and
+  `stage(-1).x` / `stage(+1).x` are relative. Reading a later stage is how a
+  result is forwarded backwards (bypass, feedback); the compiler builds the
+  wire, and the designer owns the hazard.
 - Using a value before the stage that computes it is an error that says how
-  many stages early it is (Spade's "is unavailable for another 2 stages").
+  many stages early it is ("`imm` is unavailable for another 1 stage").
 
 ## Stalls
 
 ```siox
-#[pipeline(3)]
+#[latched(3)]
 fn fetch(clk: Bit, pc: unsigned[32], mem_ready: Bit) -> unsigned[32] {
+    #[latch(enable = mem_ready)]                 // this stage only advances when memory is ready
     let address: unsigned[32] = pc;
-    reg[mem_ready];                       // this stage only advances when memory is ready
     …
 }
 ```
 
-- `reg[cond];` enables that stage's registers only while `cond` holds; while it
-  is false they keep their value. A stalled stage stalls every stage before
-  it, as in Spade.
+- `#[latch(enable = cond)]` enables that stage's registers only while `cond` holds;
+  while it is false they keep their value. A stalled stage stalls every stage
+  before it, as in Spade.
 - `stage'ready` reads whether the current stage will accept new input this
   cycle; `stage'valid` reads whether its contents are real (not a bubble left
   by a stall). Following siox's sigils, these are system attributes of the
-  stage, `'` not `.`.
+  stage.
 - Valid bits power on false, because every siox signal starts at its type's
   default (`Bool` is `false`), so a pipeline needs no reset to start with
   bubbles.
 
 ## Lowering
 
-A pipelined call lowers like any inlined function call, with one register
-block per `reg` boundary: for each value live across the boundary, a signal
-updated on `clk.rising()` (enabled by the `reg[cond]` condition and the
-stall chain). In the IR these are ordinary event-controlled updates, so
-simulation, waveforms and the debugger see them as signals named by call site
-and stage (the exact path is an open question below).
-Nothing new reaches the runtime.
+A latched call lowers like any inlined function call, with one register block
+per stage: for each value live across a stage boundary, a signal updated on
+`clk.rising()` (enabled by the stage's condition and the stall chain). In the
+IR these are ordinary event-controlled updates, so simulation, waveforms and
+the debugger see them as signals named by call site and stage. Nothing new
+reaches the runtime.
 
 For synthesis ([rtl-interface.md](rtl-interface.md)), the registers are
-explicit RTL registers and the backend never sees `#[pipeline]`.
+explicit RTL registers and no backend needs to understand the directives.
 
 ## Not proposed
 
-- **Automatic stage placement.** `#[pipeline(3)]` with no `reg` statements does
-  not ask the compiler to balance the logic into three stages; it is an error.
-  Retiming needs timing information siox does not have, and synthesis tools
-  already do it.
+- **Automatic stage placement.** `#[latched(3)]` on a function with no
+  `#[latch]` stages does not ask the compiler to balance the logic into three
+  stages; it is an error. Retiming needs timing information siox does not
+  have, and synthesis tools already do it.
 - **Pipelines with internal state** beyond the stage registers (accumulators,
   counters). Those are entities.
 - **Several clocks** in one pipeline. A clock-domain crossing is a
@@ -136,20 +146,24 @@ explicit RTL registers and the backend never sees `#[pipeline]`.
 
 ## Open questions
 
-- **The clock parameter.** First parameter by position, or named in the
-  directive (`#[pipeline(3, clock = clk)]`)? A falling-edge pipeline would need
-  the latter.
+- **The names.** In hardware a *latch* is a level-sensitive storage element,
+  transparent while enabled, and siox's `possible_latch` lint warns about
+  exactly that. A pipeline stage is an edge-triggered register. Engineers may
+  read `#[latch]` as asking for a real latch. Alternatives that keep the
+  directive design: `#[pipelined]` / `#[stage]`, or `#[registered]` / `#[reg]`.
+- **The clock parameter.** First parameter by position, or named
+  (`#[latched(2, clock = clk)]`)? A falling-edge pipeline would need the
+  latter.
 - **Calls inside expressions.** The call-site directive sits on a statement.
-  Should a statement with two pipelined calls be an error, or should the
-  directive list each callee (`#[pipeline(mac = 3, scale = 1)]`)?
-- **Stage references syntax.** `stage(label).x` is Spade's spelling. A siox
+  Should a statement with two latched calls be an error, or should the
+  directive list each callee (`#[latched(mac = 2, scale = 1)]`)?
+- **Stage references syntax.** `stage(name).x` is Spade's spelling. A siox
   alternative is a system attribute with an argument, `x'stage(label)`, which
   has no precedent yet.
 - **Names in the waveform.** How are the inserted registers named, so a stage
   is findable in a VCD?
-- **Generic depth.** Should a pipeline's depth be able to follow a generic
-  parameter (`#[pipeline(W / 8)]`), with call sites stating the same
-  expression?
+- **Generic depth.** Should a depth be able to follow a generic parameter
+  (`#[latched(W / 8)]`), with call sites stating the same expression?
 
 ## References
 

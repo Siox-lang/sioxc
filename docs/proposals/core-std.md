@@ -36,7 +36,7 @@ compiler's runtime and every target has one.
 | Kernel types | `integer`, `real`, `Char`, `Bool` (`true`/`false`), `string = Char[]`, `Range` | The grammar produces them: integer, real, character, string and range literals, and conditions. |
 | Operator hooks | `Operator<"sym", In, Out>`, `Ordering` (driving all six comparisons), `Prefix`, `Suffix`, `Index`, `IndexAssign` | Expression syntax dispatches to them. |
 | Value hooks | `Boolean`, `Resolve`, `New`, `From`, `LogicEncoding` | Conditions, parallel drivers, defaults, conversions and metavalue planes call them. |
-| Directives | `#[test]`, `#[allow]`/`#[warn]`/`#[deny]`/`#[forbid]` and `enum Lint`, `#[pipeline]` ([pipelines.md](pipelines.md)), `lang` | They change what the compiler emits or reports. |
+| Directives | `#[test]`, `#[allow]`/`#[warn]`/`#[deny]`/`#[forbid]` and `enum Lint`, `#[latched]`/`#[latch]` ([pipelines.md](pipelines.md)), `lang` | They change what the compiler emits or reports. |
 | Compiler-read attributes | `precedence` | The parser reads it to group expressions. |
 | Macros | `print!`, `assert!`, `warn!`, and a new `error!` | They capture source location and expand format strings. |
 | Runtime services | `await`, `stop()`, `finish()`, `read<T>`, `exists`, `rand`/`randint`/`uniform`/`seed` | Only the simulator can provide them. |
