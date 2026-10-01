@@ -3,8 +3,9 @@ module std::numeric;
 // Value-range-constrained integers (spec 3.26), modelled on VHDL's
 // natural/positive subtypes and the C fixed-width names. A ranged integer
 // stores in the smallest width covering its range (two's complement when
-// the range dips below zero); a constant outside the range is a compile
-// error, and dynamic range checking is a later simulation check.
+// the range dips below zero). A constant outside the range is a compile
+// error; a value that leaves it while simulating is reported at run time with
+// the signal's path.
 
 pub type Byte = integer<0..255>;
 pub type Short = integer<-32768..32767>;

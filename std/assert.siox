@@ -1,9 +1,11 @@
 module std::assert;
 
-// Assertion support (spec Stage 11, modelled on VHDL's `assert ... report ...
-// severity ...`).
+// Assertion support, modelled on VHDL's `assert ... report ... severity ...`.
 //
-// `assert(cond, "message")` itself is built-in simulator syntax. This module
+// The assertions themselves are built-in macros, so they can capture their
+// source location: `assert!(cond, "message")` fails the test when `cond` is
+// false, and `warn!(cond, "message")` is its non-fatal sibling, reported and
+// counted while the test still passes. `print!` formats a line. This module
 // carries the severity ladder for when assertions grow a severity argument
 // (VHDL `severity_level`: note < warning < error < failure).
 

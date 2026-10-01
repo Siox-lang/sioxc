@@ -1092,16 +1092,11 @@ impl<'a> Resolver<'a> {
                 (self.out.kind_of(prev), self.out.kind_of(id)),
                 (Some(DefKind::View), Some(DefKind::View))
             );
-            let separate_namespaced_values = matches!(
-                (self.out.kind_of(prev), self.out.kind_of(id)),
-                (Some(DefKind::Fn), Some(DefKind::Fn))
-                    | (Some(DefKind::Const), Some(DefKind::Const))
-                    | (Some(DefKind::Entity), Some(DefKind::Entity))
-                    | (Some(DefKind::Enum), Some(DefKind::Enum))
-                    | (Some(DefKind::Struct), Some(DefKind::Struct))
-                    | (Some(DefKind::Trait), Some(DefKind::Trait))
-                    | (Some(DefKind::TypeAlias), Some(DefKind::TypeAlias))
-            ) && self
+            // Declarations in different modules are different items, whatever
+            // their kinds: `enum Ascii` in a user module and `struct Ascii` in
+            // `std::text` are `m::Ascii` and `std::text::Ascii`. Only a second
+            // declaration in the same module is a duplicate.
+            let separate_namespaced_values = self
                 .out
                 .def(prev)
                 .and_then(|definition| definition.module.as_deref())
@@ -2848,6 +2843,33 @@ mod tests {
             .collect();
         assert_eq!(duplicates.len(), 1, "got {duplicates:#?}");
         assert!(duplicates[0].message.contains("assignment label `step`"));
+    }
+
+    #[test]
+    /// Two modules may declare the same name with different kinds: a user
+    /// `enum Ascii` beside `std::text`'s `struct Ascii`. Each module still
+    /// rejects its own duplicate.
+    fn equal_names_of_different_kinds_in_different_modules_are_separate() {
+        let resolve_sources = |sources: &[&str]| {
+            let mut sink = DiagnosticSink::new();
+            let modules: Vec<Module> = sources
+                .iter()
+                .enumerate()
+                .map(|(i, src)| crate::syntax::parse_module(FileId(i as u32), src, &mut sink))
+                .collect();
+            resolve(&modules, &mut sink);
+            sink
+        };
+        let separate = resolve_sources(&[
+            "module text; pub struct Ascii {}",
+            "module user; enum Ascii { 'H', 'i' } fn Ascii2() {}",
+        ]);
+        assert_eq!(separate.error_count(), 0, "{:#?}", separate.diagnostics());
+        let same = resolve_sources(&["module user; struct Ascii {} enum Ascii { 'H' }"]);
+        assert!(same
+            .diagnostics()
+            .iter()
+            .any(|d| d.code == Some(codes::DUPLICATE_ITEM)));
     }
 
     #[test]

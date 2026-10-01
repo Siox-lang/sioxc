@@ -1,6 +1,6 @@
 module std::attrs;
 
-// System metadata attributes (spec 3.5 / Stage 11).
+// Metadata attributes and compiler directives (spec 3.5, 3.5a).
 //
 // These are the canonical standard-library declarations. Tool/vendor metadata
 // such as `top` is declared by the owning integration rather than by std; the
