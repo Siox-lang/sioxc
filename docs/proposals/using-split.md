@@ -2,952 +2,435 @@
 
 Status: **proposal**. Nothing here is implemented.
 
-Siox currently uses `using` for two different operations:
-
-- importing an existing declaration into the current scope;
-- introducing a transparent type alias.
-
-Those operations are related only in that both introduce a local name. They differ semantically, and that difference becomes more important once macros become ordinary importable declarations.
-
-This proposal replaces `using` with two constructs:
+siox currently spells two different operations with one keyword:
 
 ```siox
-use <path>;                    // import
-use <name> = <path>;           // renamed import
-use <path>::{<members>};       // grouped import
-
-type <name> = <Type>;          // transparent type alias
+using std::logic::{Bit, Logic};   // an import: changes name resolution
+using Word = unsigned[32];        // a type alias: declares a new type name
 ```
 
-`use` affects name visibility.
+This proposal replaces `using` with Rust's design: `use` for imports and
+`type` for transparent type aliases. It follows Rust's import model
+throughout: paths, groups, nesting, `self`, globs, re-exports, namespaces, and
+the shadowing rules. It makes **one deliberate change**: an import is renamed
+with `=`, not `as`.
 
-`type` creates a type alias.
+```siox
+use std::logic::Logic;                 // import
+use std::logic::{Bit, Logic};          // grouped import
+use AxiMaster = bus::axi::Master;      // renamed import   (Rust: `as AxiMaster`)
+pub use std::logic::{Bit, Logic};      // re-export
+use bus::axi::*;                       // glob import
 
-No `as` keyword is introduced.
+type Word = unsigned[32];              // transparent type alias
+```
 
 ## Decision
 
-The existing `using` keyword is removed.
+- **`using` is removed.** `use` takes over every import and re-export form.
+  `type` takes over every alias.
+- **`use` follows Rust.** Everything `use` does in Rust it does here, with the
+  same meaning. The two exceptions are listed under
+  [Differences from Rust](#differences-from-rust).
+- **No `as`.** A renamed import puts the new name on the left of `=`, as
+  `type`, `let` and `const` already do: `use AxiMaster = bus::axi::Master;`.
+- **`type` follows Rust.** A `type` alias is transparent: the alias and its
+  target are the same type. A new *nominal* type stays the newtype form,
+  `struct Word(Bit[]);` (language.md §3.28).
 
-Imports use `use`:
-
-```siox
-use std::logic::Logic;
-use std::logic::ULogic;
-```
-
-Transparent type aliases use `type`:
-
-```siox
-type Word = unsigned[32];
-type Address = unsigned[64];
-```
-
-An import may be renamed with assignment syntax:
-
-```siox
-use AxiMaster = bus::axi::Master;
-```
-
-A group of declarations may be imported from one path:
-
-```siox
-use std::{a, b};
-```
-
-which is equivalent to:
-
-```siox
-use std::a;
-use std::b;
-```
-
-The distinction is semantic:
-
-```text
-use
-    makes an existing declaration visible under a local name
-
-type
-    introduces a transparent alias for a type
-```
+`use`, `type` and `super` become keywords. None of them is used as an
+identifier anywhere in `std/` or the corpus today.
 
 ## Why split them
 
-The current `using` forms describe two different operations.
-
-An import:
-
-```siox
-using std::logic::Logic;
-```
-
-changes name resolution.
-
-A type alias:
-
-```siox
-using Word = unsigned[32];
-```
-
-creates a new type-level declaration whose meaning is another type.
-
-The common syntax hides that distinction.
-
-The split makes each declaration answer one question:
+An import and an alias answer different questions:
 
 ```text
-use ...
-    what existing declaration should be visible here?
-
-type ...
-    what type does this new type name denote?
+use ...     which existing declaration should be visible here, and under what name?
+type ...    which type does this new type name denote?
 ```
 
-That becomes increasingly useful as the number of declaration kinds grows.
-
-A module may contain:
-
-```siox
-pub struct Word { ... }
-pub entity Fifo { ... }
-pub fn encode(...) { ... }
-pub const WIDTH = 32;
-pub macro assert_ready(...) { ... }
-```
-
-All of them can be imported through the same mechanism:
-
-```siox
-use package::Word;
-use package::Fifo;
-use package::encode;
-use package::WIDTH;
-use package::assert_ready;
-```
-
-`use` does not care what kind of declaration the path denotes.
-
-`type` does.
+`use` doesn't care what kind of declaration its path names. It works the same
+for a struct, entity, function, constant, module, enum variant or (later)
+macro. `type` accepts only a type. With one keyword, `using std::assert;` would
+be an import while `using Word = unsigned[32];` declares a type. The parser can
+tell them apart, but the language model is muddier, and it gets worse as more
+declaration kinds become importable.
 
 ## Imports
 
-The simplest form imports one declaration:
+### Single imports
 
 ```siox
 use std::logic::Logic;
 ```
 
-The final path component becomes available in the current scope:
+This binds the final path segment, `Logic`, in the current scope to the
+existing declaration. Nothing is copied. Any declaration may be imported: a
+module, struct, enum, enum variant, entity, view, trait, function, constant,
+attribute, type alias, or (with [macros.md](macros.md)) a macro:
 
 ```siox
-let x: Logic;
+use std::math;              // a module: now `math::PI`, `math::max(a, b)`
+use std::math::PI;          // a constant
+use std::math::max;         // a function
+use std::numeric::Byte;     // a type alias
+use std::attrs::test;       // an attribute
+use self::State::{Idle, Busy};  // enum variants of this module's `State`
 ```
 
-Conceptually:
+### Renamed imports
 
-```text
-std::logic::Logic
-        ↓
-local name `Logic`
-```
-
-The declaration itself is not copied.
-
-`use` only introduces a local binding to an existing declaration.
-
-## Renamed imports
-
-A declaration may be imported under another local name:
+Rust writes `use bus::axi::Master as AxiMaster;`. siox writes:
 
 ```siox
 use AxiMaster = bus::axi::Master;
 ```
-
-Afterward:
-
-```siox
-let port: AxiMaster;
-```
-
-refers to:
-
-```siox
-bus::axi::Master
-```
-
-The grammar is:
 
 ```text
 use <local-name> = <path>;
 ```
 
-This avoids adding an `as` keyword.
-
-The syntax also follows existing declaration-like assignment forms:
-
-```siox
-type Word = unsigned[32];
-use AxiMaster = bus::axi::Master;
-```
-
-In both cases, the name being introduced appears on the left of `=`.
-
-The difference is carried by the keyword:
-
-```text
-type
-    defines a type alias
-
-use
-    defines a local import alias
-```
-
-## Grouped imports
-
-Multiple declarations from one namespace may be imported together:
+The binding is the declaration itself under a new local name. A renamed
+generic struct keeps its parameters, a renamed enum keeps its variants
+(`AxiMode::Burst`), and a renamed module keeps its members:
 
 ```siox
-use std::{a, b};
+use axi = protocols::axi;   // axi::Master, axi::Slave
 ```
 
-This is shorthand for:
+### Groups
 
 ```siox
-use std::a;
-use std::b;
+use std::logic::{Bit, Logic};
 ```
 
-A more realistic example:
-
-```siox
-use std::logic::{Bit, Logic, ULogic};
-```
-
-is equivalent to:
-
-```siox
-use std::logic::Bit;
-use std::logic::Logic;
-use std::logic::ULogic;
-```
-
-The group is relative to the path preceding `::{`.
-
-This allows related imports to remain visually grouped without repeating their common prefix.
-
-## Nested groups
-
-Nested grouping may be supported:
+This is exactly `use std::logic::Bit; use std::logic::Logic;`. As in Rust, a
+group may nest, may rename members, and may name its own prefix with `self`:
 
 ```siox
 use std::{
     logic::{Bit, Logic},
-    testing::{assert, assert_eq},
+    math::{self, PI},              // imports `math` itself and `math::PI`
+    numeric::{Word8 = Byte},       // renamed inside a group
 };
-```
 
-which is equivalent to:
-
-```siox
-use std::logic::Bit;
-use std::logic::Logic;
-use std::testing::assert;
-use std::testing::assert_eq;
-```
-
-Nested groups are purely syntactic shorthand.
-
-They do not introduce new module semantics.
-
-If implementation simplicity is preferred for the first version, nested groups may be deferred while retaining the top-level grouped form.
-
-## Renaming inside groups
-
-Grouped imports should support the same renamed-import form:
-
-```siox
 use bus::axi::{
+    self,                          // `axi`
     AxiMaster = Master,
     AxiSlave = Slave,
 };
+
+use protocols::{wb = self};        // a renamed `self`: Rust's `{self as wb}`
 ```
 
-The right-hand side is resolved relative to the group's path.
+A path inside a group is relative to the group's prefix. Groups are pure
+shorthand and add no module semantics.
 
-This is equivalent to:
+### Operators
+
+As in Rust, an operator expression never needs an import. `a + b` finds its
+`impl Operator<"+", In, Out> for T` through the operand's type, wherever that
+impl is declared. There is no per-operator name to import: Rust's `Add`, `Sub`
+and so on are collapsed into the single `std::ops::Operator` trait (language.md
+§3.25). The compiler bootstraps that name, so writing an `impl Operator<…>`
+needs no import either. Rust, by contrast, needs `use std::ops::Add;` or a
+qualified path before `impl Add for T`.
+
+The old quoted form (`using a::{"+"}`, `impl "+" for T`) was removed earlier
+and remains an error.
+
+One operator rule has no Rust counterpart, because Rust has no user-defined
+operators. A user operator's `#[precedence = N]` affects how expressions
+*parse*. The compiler reads those precedences only from modules reachable
+through the transitive import graph (language.md §3.25). `use` keeps that
+graph exactly as `using` defines it today: a module reached by any `use` form,
+including a glob, a group or a block-scoped `use`, contributes its operators.
+
+### Glob imports
 
 ```siox
-use AxiMaster = bus::axi::Master;
-use AxiSlave = bus::axi::Slave;
+use bus::axi::*;
 ```
 
-This keeps one renaming syntax everywhere:
+This imports every public name of `bus::axi`, with Rust's priority rule: **a
+glob import is weaker than every explicit name.** A local declaration or an
+explicit `use` shadows a glob-imported name of the same namespace silently. Two
+globs that bring the same name into the same namespace are an error only when
+that name is used. Declaring both globs is not an error.
 
-```text
-local-name = imported-name
-```
-
-No second aliasing form is required.
-
-## Type aliases
-
-A transparent type alias uses `type`:
+### Re-exports
 
 ```siox
-type Word = unsigned[32];
+pub use std::logic::{Bit, Logic};
+pub use AxiMaster = bus::axi::Master;
+pub use bus::axi::*;
 ```
 
-`Word` is not a new nominal type.
+`pub use` publishes the imported binding as part of this module's interface.
+The declaration stays owned by its original module, and identity is preserved:
+`std::prelude::Bit` and `std::logic::Bit` are the same type. This is what
+`pub using` does today, and `std/prelude.siox` depends on it from day one.
 
-It denotes the same type as:
+### Paths
 
-```siox
-unsigned[32]
-```
+A `use` path starts the way it does in Rust:
 
-Therefore:
+| root | meaning | today |
+| --- | --- | --- |
+| `std::…` | the standard library (the `--std` directory) | same |
+| `a::b::…` | a module of this project, from its root | same |
+| `self::…` | the current module | new |
+| `super::…` | the parent module; `super::super::…` goes further up | new |
 
-```text
-Word == unsigned[32]
-```
+A bare project path plays the role of Rust's `crate::…`, because siox has no
+crate or package concept yet. That belongs to the future project framework
+(see [Open questions](#open-questions)).
 
-for type identity.
+Fully-qualified paths remain valid everywhere without any import, and they
+select exactly the module they name.
 
-This is deliberately different from nominal derivation:
+### Where `use` may appear
 
-```siox
-struct Word(unsigned[32]);
-```
+As in Rust, a `use` may appear:
 
-which creates a distinct type.
+- at module level;
+- at the top of any block: a `fn` body, a `process` body, or a nested block.
 
-The distinction is:
+The binding is visible from the start to the end of that scope, regardless of
+where in the scope the `use` is written. Imports are order-independent, as are
+all declarations.
 
-```siox
-type Word = unsigned[32];
-```
+As in Rust, `use` may **not** appear among the members of an `impl` (including
+an entity implementation), a struct or enum body, or an entity interface.
+Import at module level instead.
 
-```text
-transparent alias
-Word is unsigned[32]
-```
+## Namespaces
 
-versus:
+As in Rust, a name lives in one of several namespaces, and one `use` imports
+the name in **every** namespace where the path resolves:
 
-```siox
-struct Word(unsigned[32]);
-```
+| namespace | declarations |
+| --- | --- |
+| type | modules, structs, enums, entities, views, traits, `type` aliases |
+| value | functions, constants, enum variants |
+| macro | macros: today's built-in `assert!`, `print!`, `warn!`, later [macros.md](macros.md) |
+| attribute | `attr` declarations: looked up only in attribute position, as today |
 
-```text
-nominal derivation
-Word is represented by unsigned[32]
-but Word is not unsigned[32]
-```
+This means a module and a macro of the same name do not collide.
+`std::assert` (the module) and a macro `assert!` can coexist, and `foo` and
+`foo!` are never ambiguous at a use site.
 
-Both are useful and should remain visibly different.
-
-## Why `type` should not import
-
-This should not be treated as an import:
-
-```siox
-type AxiMaster = bus::axi::Master;
-```
-
-It is valid only if `bus::axi::Master` is a type, and it creates a type alias.
-
-By contrast:
-
-```siox
-use AxiMaster = bus::axi::Master;
-```
-
-imports the declaration itself under another local name.
-
-That distinction matters because `use` can refer to declaration kinds that `type` cannot:
-
-```siox
-use check = std::testing::assert;
-use make_fifo = std::fifo::make_fifo;
-use DefaultWidth = config::WIDTH;
-```
-
-assuming those declarations exist.
-
-The resolver therefore does not need to know the declaration kind before parsing a `use`.
-
-It only resolves the path afterward.
-
-## Macros
-
-The split is particularly useful once macros are ordinary module declarations.
-
-For example:
-
-```siox
-module testing {
-    pub macro assert_eq($left: expr, $right: expr) {
-        ...
-    }
-}
-```
-
-may be imported normally:
-
-```siox
-use testing::assert_eq;
-
-assert_eq!(a, b);
-```
-
-No special macro import syntax is necessary.
-
-Likewise:
-
-```siox
-use std::{
-    assert,
-    assert_eq,
-    panic,
-};
-```
-
-can import several macros or a mixture of declaration kinds.
-
-The invocation syntax still identifies the construct:
-
-```siox
-assert_eq!(a, b);     // macro
-foo(a, b);            // function
-```
-
-Import syntax controls visibility only.
-
-It does not determine how the declaration is used.
-
-## One import mechanism for all declarations
-
-`use` should operate over the module namespace rather than over a fixed list of declaration categories.
-
-The same syntax should therefore work for:
-
-```siox
-use pkg::MyStruct;
-use pkg::MyEnum;
-use pkg::MyTrait;
-use pkg::MyEntity;
-use pkg::my_function;
-use pkg::MY_CONST;
-use pkg::my_macro;
-```
-
-If Siox maintains separate namespaces internally for types, values, and macros, the resolver may still do so.
-
-That should not require separate import syntax.
-
-The imported path determines what declaration is being made visible.
+This proposal does not change which *declarations* may share a name within a
+module. It only says how an import binds.
 
 ## Name conflicts
 
-An import that would introduce a duplicate name in the same namespace is an error.
+These follow Rust:
 
-For example:
+- Two explicit imports of the same name into the same namespace are an error,
+  even when both name the same declaration.
+- An explicit import that collides with a local declaration in the same
+  namespace is an error. Neither one silently wins.
+- Glob imports are shadowed (see [Glob imports](#glob-imports)).
+- The implicit `std::prelude` sits beneath everything. Any local declaration
+  or import shadows a prelude name, which is how the resolver already treats
+  the prelude.
 
-```siox
-use foo::Word;
-use bar::Word;
-```
-
-should fail if both resolve into the same namespace and no other language rule disambiguates them.
-
-The programmer can resolve the conflict explicitly:
+The fix for a real conflict is an explicit rename:
 
 ```siox
 use FooWord = foo::Word;
 use BarWord = bar::Word;
 ```
 
-Explicit renaming is preferable to import-order shadowing.
-
-Imports should therefore not silently override one another.
-
-## Existing local declarations
-
-The same rule applies when an imported name conflicts with a local declaration:
-
-```siox
-struct Word { ... }
-
-use package::Word;
-```
-
-This should be diagnosed rather than making resolution depend on declaration order.
-
-The programmer may instead write:
-
-```siox
-use PackageWord = package::Word;
-```
-
-This keeps name resolution deterministic and local.
-
-## Visibility
-
-`use` introduces a name into the current module or scope.
-
-Whether imports may themselves be exported should follow Siox's normal visibility model.
-
-If re-export is required, the natural form is:
-
-```siox
-pub use std::logic::Logic;
-```
-
-and:
-
-```siox
-pub use AxiMaster = bus::axi::Master;
-```
-
-This means the current module publicly exposes the imported declaration under that local name.
-
-The underlying declaration does not become owned by the re-exporting module.
-
-This is useful for facade modules:
-
-```siox
-module prelude {
-    pub use std::logic::{Bit, Logic};
-    pub use std::testing::{assert, assert_eq};
-}
-```
-
-If public re-export is not needed immediately, `pub use` may be deferred without changing the basic syntax.
-
-## Scope
-
-Imports should initially be module-level declarations.
-
-Allowing arbitrary block-local imports:
-
-```siox
-fn foo() {
-    use package::bar;
-}
-```
-
-adds relatively little capability and complicates name-resolution scopes.
-
-Unless there is a concrete use case, the initial rule should remain:
-
-> `use` appears at module/declarative scope.
-
-This can be relaxed later without changing the syntax.
-
-## Wildcard imports
-
-This proposal does not require:
-
-```siox
-use std::*;
-```
-
-Wildcard imports make source meaning depend more heavily on unrelated declarations added to another module later.
-
-That works against local readability and can make package evolution create unexpected name conflicts.
-
-Grouped imports already provide a compact explicit alternative:
-
-```siox
-use std::{Bit, Logic, Bool, assert};
-```
-
-Wildcard imports should therefore be omitted initially.
-
-They can be reconsidered if large prelude-style modules demonstrate a concrete need.
-
-## Importing modules
-
-A path may refer to a module if modules are ordinary resolvable declarations.
-
-For example:
-
-```siox
-use axi = protocols::axi;
-```
-
-would allow:
-
-```siox
-axi::Master
-axi::Slave
-```
-
-Whether modules themselves are importable should follow from the module-resolution model rather than require a separate syntax.
-
-If modules are not first-class namespace bindings, this form should simply be rejected.
-
-No additional grammar is necessary.
-
-## `use` is not dependency discovery
-
-`use` resolves declarations that already exist in the Siox module graph.
-
-It does not:
-
-- download a package;
-- select a vendor library;
-- search installed dependencies;
-- configure compilation units;
-- choose a backend library;
-- manipulate project dependencies.
-
-Those operations belong to the future project/build system.
-
-For example:
-
-```siox
-use std::logic::Logic;
-```
-
-means:
-
-> Resolve `std::logic::Logic` from the module graph and make it locally visible.
-
-It does not mean:
-
-> Find or install a package called `std`.
-
-This keeps source-level name resolution separate from build-system dependency resolution.
-
-## Grammar
-
-Conceptually:
+## Type aliases
 
 ```text
-UseDecl :=
-    "use" Path ";"
-  | "use" Identifier "=" Path ";"
-  | "use" Path "::" "{" UseMembers "}" ";"
-
-UseMembers :=
-    UseMember ("," UseMember)* ","?
-
-UseMember :=
-    Identifier
-  | Identifier "=" RelativePath
-  | Identifier "::" "{" UseMembers "}"
-
-TypeAlias :=
-    "type" Identifier GenericParams? "=" Type ";"
+TypeAlias := "pub"? "type" Identifier GenericParams? "=" Type ";"
 ```
-
-The exact parser grammar may differ.
-
-The semantic distinction should remain fixed.
-
-## Examples
-
-Single import:
-
-```siox
-use std::logic::Logic;
-```
-
-Grouped import:
-
-```siox
-use std::logic::{Bit, Logic, ULogic};
-```
-
-Renamed import:
-
-```siox
-use U8 = std::numeric::unsigned8;
-```
-
-Nested imports:
-
-```siox
-use std::{
-    logic::{Bit, Logic},
-    testing::{assert, assert_eq},
-};
-```
-
-Renamed grouped imports:
-
-```siox
-use bus::axi::{
-    MasterPort = Master,
-    SlavePort = Slave,
-};
-```
-
-Type alias:
 
 ```siox
 type Word = unsigned[32];
+pub type Byte = integer<0..255>;
+pub type string = Char[];
+type Pair<T> = Packet<T>;
 ```
 
-Generic type alias:
+As in Rust:
 
-```siox
-type Word<T> = Packet<T>;
-```
+- **Transparent.** `Word` *is* `unsigned[32]` for type identity, width
+  checking, operator resolution, and every other rule. A distinct type
+  uses the newtype form, `struct Word(unsigned[32]);`.
+- **Generic.** An alias may take generic parameters, written in the same
+  binder syntax as other declarations. Today an alias name must be a single
+  identifier, so this is new.
+- **Usable as its target.** Associated items, enum variants (`Alias::Variant`),
+  struct literals, conversions and entity instantiation (`let u: Alias =
+  { … };`) all work through the alias.
+- **Not a module.** As in Rust, a `use` path cannot pass through an alias:
+  `use Alias::Variant;` is an error. Write `use Target::Variant;`.
 
-if generic aliases are supported.
+### `use X = T` versus `type X = T`
 
-Nominal type:
+Both can name an existing type under a new name. They differ the way Rust's
+`use … as` and `type` differ:
 
-```siox
-struct Word(unsigned[32]);
-```
+| | `use AxiMaster = bus::axi::Master;` | `type AxiMaster = bus::axi::Master;` |
+| --- | --- | --- |
+| right-hand side | a **path** to any declaration | any **type expression** (`unsigned[32]`, `Packet<Bit>`) |
+| namespaces bound | every namespace the path resolves in | type namespace only |
+| generic target | stays generic (`AxiMaster<W>`) | must be applied, or the alias declares its own parameters |
+| is it a declaration? | no, a binding to the original | yes, a new name that denotes a type |
 
-Macro import:
+Rule of thumb: rename something with `use`. Name a type you could not name
+with a path (a sized vector, a ranged integer, an applied generic) with
+`type`.
 
-```siox
-use std::testing::assert;
+## Module files: the one structural difference from Rust
 
-assert!(ready);
-```
+Rust needs `mod foo;` to load `foo.rs`. siox has no `mod` declaration: a
+project path in a `use` loads the module file it names, mapped relative to the
+entry file (`use bus::spi::Master;` loads `bus/spi.siox`, which must declare
+`module bus::spi;`). `std::` paths map to the `--std` directory. That stays
+exactly as `using` does it today.
 
-Macro rename:
+This is file discovery inside one project, not dependency management. `use`
+never downloads a package, searches installed libraries, selects a vendor
+library, or configures compilation units. Those belong to the future project
+framework (see the `sioxc`/project split), not to name resolution.
 
-```siox
-use check = std::testing::assert;
+## Differences from Rust
 
-check!(ready);
-```
+1. **Renaming uses `=`, not `as`.** `use AxiMaster = bus::axi::Master;` and
+   `{AxiMaster = Master}` in a group. siox has no `as` keyword, and this adds
+   none.
+2. **No `mod` declarations.** A `use` of a project path loads the module file,
+   as described above.
 
-## Why not `as`
+Everything else, including `self`, `super`, groups, nesting, globs, `pub use`,
+block-scoped imports, namespaces and conflict rules, means what it means in
+Rust.
 
-A common import-renaming syntax would be:
+### Why not `as`
 
-```text
-use bus::axi::Master as AxiMaster;
-```
-
-This proposal deliberately avoids it.
-
-`as` would add another keyword for a capability that can already be expressed clearly using existing declaration syntax:
-
-```siox
-use AxiMaster = bus::axi::Master;
-```
-
-The assignment form has another advantage: the introduced name appears first.
-
-Compare:
+`as` would add a keyword for something existing declaration syntax already
+expresses. The `=` form also puts the introduced name first, like every other
+siox declaration:
 
 ```siox
 use AxiMaster = bus::axi::Master;
 type Word = unsigned[32];
+const WIDTH: integer = 32;
+let count: unsigned[8];
 ```
 
-Both read:
-
-```text
-construct local-name = source
-```
-
-The keyword then states what kind of relationship is being declared.
-
-No additional reserved word is necessary.
-
-## Why not retain `using`
-
-Keeping:
-
-```siox
-using std::logic::Logic;
-using Word = unsigned[32];
-```
-
-saves one keyword but makes `using` mean two unrelated things.
-
-That cost grows as more declaration kinds become importable.
-
-With macros:
-
-```siox
-using std::testing::assert;
-```
-
-would mean an import, while:
-
-```siox
-using Word = unsigned[32];
-```
-
-would mean a type declaration.
-
-The parser can distinguish them, but the language model is less precise than:
-
-```siox
-use std::testing::assert;
-type Word = unsigned[32];
-```
-
-The split therefore adds a keyword while reducing semantic overload.
-
-`type` is also useful independently as a clear vocabulary word for future type-level declarations.
+Each reads `keyword new-name … source`, and the keyword says what relationship
+is being declared.
 
 ## Interaction with macros
 
-Macros may emit imports or type aliases if item-generation macros are allowed:
+With [macros.md](macros.md), macros are ordinary declarations in the macro
+namespace and need no special import syntax. Suppose `checks.siox` declares
+`module checks;` and `pub macro assert_ready($x: expr) { … }`. Then:
 
 ```siox
-macro standard_logic() {
-    use std::logic::{Bit, Logic};
-}
+use checks::assert_ready;
+use check = checks::assert_ready;   // renamed
+
+assert_ready!(ready);
+check!(ready);
 ```
 
-or:
+A macro that generates items may emit `use` and `type` declarations, which
+then follow the ordinary rules above. This is one practical reason to make the
+split before macros land: the macro system never needs to handle the
+overloaded `using`.
 
-```siox
-macro word_type($name: ident, $width: const) {
-    type $name = unsigned[$width];
-}
-```
+## Interaction with directives and attributes
 
-Generated `use` declarations follow ordinary name-resolution rules.
-
-Generated `type` aliases follow ordinary type-declaration rules.
-
-The macro system therefore does not need special handling for the old overloaded `using` construct.
-
-This is one practical reason to make the distinction explicit before macros become part of the language.
-
-## Interaction with compiler directives
-
-Compiler directives may appear on imports or aliases only where they have defined semantics.
-
-For example, lint suppression could potentially apply:
+A directive applies to a `use` only where it has defined meaning, for example
+lint control from [compiler-directives.md](compiler-directives.md):
 
 ```siox
 #[allow(unused_import)]
-use std::debug::probe;
+use std::math::PI;
 ```
 
-That is separate from the import mechanism itself.
+Whether a `type` alias is a valid target for a declarative attribute is decided
+by that attribute's declaration ([attribute-system.md](attribute-system.md)).
+This proposal adds no import-specific metadata.
 
-`use` does not carry compiler behavior.
+## Grammar
 
-## Interaction with declarative attributes
+```text
+UseDecl    := "pub"? "use" UseTree ";"
+UseTree    := Path
+            | Path "::" "*"
+            | Path "::" "{" UseList "}"
+            | Identifier "=" Path                  // renamed import
+UseList    := UseMember ("," UseMember)* ","?
+UseMember  := "self"
+            | Identifier "=" "self"
+            | RelPath
+            | RelPath "::" "*"
+            | RelPath "::" "{" UseList "}"
+            | Identifier "=" RelPath
+Path       := ("self" | "super" | Identifier) ("::" ("super" | Identifier))*
+RelPath    := Identifier ("::" Identifier)*
 
-Declarative attributes attach metadata according to their target rules.
-
-Whether `use` or `type` may be valid attribute targets is determined by the attribute declaration:
-
-```siox
-attr foo: Bool for type = false;
+TypeAlias  := "pub"? "type" Identifier GenericParams? "=" Type ";"
 ```
 
-if `type` aliases are made a valid target category.
-
-No import-specific metadata mechanism is introduced by this proposal.
+`use` is decided by its first token. A renamed import is `use Identifier =`, a
+lookahead of two tokens. `type` is decided by its first token.
 
 ## Migration
 
-Migration is mechanical.
+The migration is mechanical, and `sioxc --emit source` is the rewriting tool:
 
-Existing imports:
+| today | becomes |
+| --- | --- |
+| `using a::b::C;` | `use a::b::C;` |
+| `using a::b::{C, D};` | `use a::b::{C, D};` |
+| `pub using …;` | `pub use …;` |
+| `using X = T;` | `type X = T;` |
+| `pub using X = T;` | `pub type X = T;` |
 
-```siox
-using std::logic::Logic;
-```
+Every `using X = …` today is a type alias, because the right-hand side is
+parsed as a type. Renamed imports of non-types don't exist yet, so **every
+existing alias becomes `type`** and none becomes `use X = …`. The current tree
+holds 19 `using` lines in `std/` and about 240 in the corpus. Eleven are
+aliases, including `std::numeric`'s `Byte`…`Positive` and `std::text`'s
+`string`.
 
-become:
+Order:
 
-```siox
-use std::logic::Logic;
-```
-
-Existing type aliases:
-
-```siox
-using Word = unsigned[32];
-```
-
-become:
-
-```siox
-type Word = unsigned[32];
-```
-
-If existing syntax supports import aliases through `using`, those become:
-
-```siox
-use LocalName = package::Name;
-```
-
-A migration may proceed in stages:
-
-1. Add `use` for ordinary imports.
-2. Add `type` for transparent type aliases.
-3. Add renamed `use <name> = <path>`.
-4. Add grouped imports.
-5. Migrate `std` and the corpus.
-6. Warn on `using`.
-7. Remove `using`.
-
-Grouped and nested imports are additive and need not block the initial split.
+1. Parse `use` (single, grouped, `pub`) and `type`, with the same resolution
+   `using` has today. Teach the printer to emit them.
+2. Migrate `std/` and the corpus with `--emit source`.
+3. Make `using` an error that names its replacement (``write `use a::b::C;` ``
+   or ``write `type Word = …;` ``), as `wait` was replaced by `await`.
+4. Add what `using` never had: renamed imports, nested groups and `self`,
+   globs, `self::`/`super::` roots, block-scoped `use`, and generic `type`
+   aliases. Each of these is additive.
 
 ## Open questions
 
-- Are `use` declarations module-only, or may they appear in local scopes?
-- Should `pub use` be supported immediately?
-- Are modules themselves importable and renameable?
-- Should nested grouped imports be available in the first implementation?
-- Should grouped imports permit renaming from the start?
-- Are wildcard imports deliberately unsupported, or merely deferred?
-- Do values, types, and macros occupy separate namespaces, and if so how are import conflicts diagnosed?
-- Should generic type aliases be supported immediately?
-- Is a type alias allowed to alias views and constrained types exactly as written?
-- Should aliases participate in documentation as independent named declarations or merely as references to their target?
-
-None of these questions require retaining `using`.
+- **`crate::`.** Should a bare project path stay root-relative, or should
+  siox move to Rust 2018 paths (`crate::bus::spi`) once the project framework
+  defines what a crate is?
+- **Trait methods in scope.** Rust requires a trait to be in scope to call its
+  methods, and has `use Trait as _;` to import one anonymously. Does siox
+  adopt that rule, and if so, is the anonymous form `use _ = path::Trait;`?
+- **Documentation.** Does a `type` alias appear as its own documented
+  declaration, or only as a reference to its target?
 
 ## Non-goals
 
-- Package or dependency discovery.
-- Vendor-library configuration.
-- Conditional imports.
-- Wildcard imports in the initial design.
-- A new `as` keyword.
-- Making `type` aliases nominal.
-- Giving imports runtime semantics.
-- Giving macro imports special syntax.
-- Using `use` as a build-system command.
-
-## Bottom line
-
-`using` currently combines two operations that should have separate vocabulary.
-
-The replacement is:
-
-```siox
-use std::logic::Logic;
-use std::logic::{Bit, ULogic};
-use AxiMaster = bus::axi::Master;
-
-type Word = unsigned[32];
-```
-
-The resulting rule is simple:
-
-```text
-use
-    refers to an existing declaration and changes local visibility
-
-type
-    introduces a transparent name for a type
-```
-
-This becomes more valuable once functions, entities, traits, constants, macros, and other declarations all participate in the module system.
-
-One import mechanism can then handle all of them, while type aliasing remains explicitly type-level.
-
-The split reduces semantic overloading, avoids adding `as`, and gives the macro system a clean ordinary import model.
+- An `as` keyword.
+- `mod` declarations.
+- Package or dependency discovery, or vendor-library configuration.
+- Conditional imports (no `cfg`; see compiler-directives.md).
+- Nominal `type` aliases (use the newtype form).
+- Import-specific metadata.
