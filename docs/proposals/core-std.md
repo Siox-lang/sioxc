@@ -1,6 +1,6 @@
 # `core` and `std`
 
-Status: **proposal**. Nothing here is implemented.
+Status: **proposal**. Slice 1 (below) is being implemented.
 
 Today one flat `std/` holds two different kinds of thing: declarations the
 compiler cannot work without, and ordinary library code a user could have
@@ -129,6 +129,47 @@ when compiling for synthesis), not by excluding a library.
    items or `LogicEncoding`.
 5. Add `error!`, then the new `std` content (vectors, matrices, the common
    attributes) one module at a time, each with a corpus program.
+
+## Slice 1
+
+What the first slice does, decided:
+
+- **`core` is compiled in.** Its `.siox` sources live in the repository's
+  `core/` directory and are embedded in `sioxc` with `include_str!`; a
+  `core::…` path never reads `--std`. Diagnostics name the files
+  `<core>/ops.siox` and so on. Every compilation loads `core::prelude`, as it
+  loads `std::prelude` today.
+- **What moves:**
+
+  | module | contents |
+  | --- | --- |
+  | `core::ops` | `Bool` and its logical operators, `Operator`, `Prefix`, `Suffix`, `Range`, `Index`, `IndexAssign`, `Ordering`, `Boolean`, `Resolve`, `New`, `From`, `LogicEncoding`, and the element-wise impls over `T[]` |
+  | `core::attrs` | `test`, `allow`/`warn`/`deny`/`forbid` and `Lint`, `precedence`, `lang` |
+  | `core::text` | `string` |
+  | `core::assert` | `Severity` |
+  | `core::prelude` | re-exports all of the above |
+
+  `std::fs` and `std::rand` declare nothing today (their functions are
+  runtime builtins), so they stay where they are until `builtin #` gives them
+  declarations. `time` and `frequency` stay in `std::sim`, as the table above
+  says; the compiler finds `time` through its lang item.
+- **`std` re-exports** each moved name from its old module (`pub use
+  core::ops::Operator;` in `std::ops`, `Bool` in `std::logic`), so no program
+  changes. `std::prelude` keeps its list.
+- **Lang items replace path matching.** `core::attrs` declares
+  `attr lang: string`, and the declaring modules bind it:
+  `attr lang for Operator = "operator";`. The resolver builds a table from
+  lang name to declaration, and every compiler check that matched a
+  `std::…` path asks it instead: the hook traits, `test`, `Bool`, `time`,
+  `unsigned`, `LogicEncoding`. Only `core` and `std` modules may bind `lang`,
+  and one name bound twice is an error. Lookups by a type's *leaf* name
+  (`ty_from_head("Bool")`) are not path matches and stay for now; removing
+  them is the rest of compiler-foundations §5.
+- **Builtin fallbacks stay** for frontend tests that resolve without loading
+  `core`, and they seed the lang table under the same names.
+
+Later slices: `builtin #` and the built-in macros as `core` declarations
+(macros.md), `error!`, the leaf-name lookups, and the new `std` content.
 
 ## Open questions
 
