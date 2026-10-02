@@ -590,3 +590,19 @@ fn a_failing_assertion_in_a_macro_names_the_invocation() {
         "the invocation's line:\n{out}"
     );
 }
+
+/// `error!` fails with its message and its own line.
+#[test]
+fn error_fails_with_its_message_and_line() {
+    let src = "module m;\n\
+               #[test] entity T {}\n\
+               impl T {\n\
+               \x20   process {\n\
+               \x20       await 1ns;\n\
+               \x20       error!(\"unreachable state {}\", 3);\n\
+               \x20   }\n\
+               }\n";
+    let out = run("errormacro", src);
+    assert!(out.contains("unreachable state 3"), "{out}");
+    assert!(out.contains("errormacro.siox:6:9"), "{out}");
+}

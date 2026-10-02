@@ -27,7 +27,7 @@ thread_local! {
     /// The module being printed's macro arguments, for the calls whose
     /// arguments are not expressions. Expression printing is a free function
     /// tree, so this is how it reaches them.
-    static MACRO_ARGS: std::cell::RefCell<std::collections::HashMap<crate::diag::Span, MacroArgs>> =
+    static MACRO_ARGS: std::cell::RefCell<MacroArgTable> =
         std::cell::RefCell::default();
 }
 
@@ -36,7 +36,7 @@ thread_local! {
 fn macro_call_args(span: crate::diag::Span) -> Option<String> {
     MACRO_ARGS.with(|args| {
         let args = args.borrow();
-        let call = args.get(&span)?;
+        let call = args.get(&span)?.first()?;
         if call.parsed && call.delim == MacroDelim::Paren {
             return None;
         }

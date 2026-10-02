@@ -3,8 +3,8 @@
 Status: **slices 1 and 2 implemented** (language §3.30): declarations,
 forms, fragment kinds, all four invocation positions, hygiene, resolution
 through `use`, `--emit expanded`, repetition, call-site locations and
-expansion notes. **Slice 3**, the built-in macros declared in `core` over
-`builtin #` (below), is being implemented.
+expansion notes, and the built-in macros declared in `core` over
+`builtin #`. What remains is listed under [Later slices](#later-slices).
 
 `macro` declares a user-defined syntax transformation. It is the third
 compile-time mechanism, next to the two that already exist:

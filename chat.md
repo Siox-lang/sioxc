@@ -10714,3 +10714,14 @@ checks ask `lang_of`, and test stubs gained `attr lang for …` lines;
 `ir/functions.rs` uses `resolve::is_library_module`;
 `llvm/process/value_types.rs` looks up `core::ops::Bool`. Expect small
 mechanical conflicts there when rebasing the uncommitted IR work.
+
+### 2026-10-02 — Claude — built-in macros are `core` declarations
+
+`assert!`, `warn!`, `print!` and the new `error!` are ordinary macros in
+`core::assert`, exported by `core::prelude`, each over the primitive
+`builtin # name(…)` (only `core`'s macro bodies may write it). The parser
+reads the primitive as the same bang `Expr::Call` the compiler always lowered,
+so types/IR/LLVM are unchanged. `error!(msg)` expands to
+`builtin # assert(false, msg)`. Two parser fixes came with it: macro argument
+tables are per-span queues (a `for macro` repetition repeats call spans), and
+custom operators (`xor`) are recognised over macro tokens.

@@ -9,3 +9,4 @@ module core::prelude;
 pub use core::ops::{Bool, Boolean, Ordering, Range, Index, IndexAssign, New, From, Resolve};
 pub use core::attrs::{test, precedence, allow, warn, deny, forbid};
 pub use core::text::string;
+pub use core::assert::{assert, warn, print, error};

@@ -325,3 +325,72 @@ fn later_stage_errors_in_a_body_name_the_macro() {
     assert!(!ok);
     assert!(rendered.contains("in an expansion of `bad!`"), "{rendered}");
 }
+
+/// The built-in macros are `core` declarations over `builtin #`: importable
+/// by path, shadowed by a user macro, and the primitive is `core`'s alone.
+#[test]
+fn builtin_macros_are_core_declarations() {
+    let (rendered, ok) = check(
+        "core_path",
+        "module main;\n#[test]\nentity T {}\n\
+         impl T { process { core::assert::assert!(true); core::assert::print!(\"x\"); } }\n",
+    );
+    assert!(ok, "{rendered}");
+
+    // A user `assert` shadows core's in its module.
+    let text = expanded(
+        "shadow",
+        "module main;\nmacro assert($c: expr) { print!(\"mine\"); }\n\
+         #[test]\nentity T {}\nimpl T { process { assert!(false); } }\n",
+    );
+    assert!(text.contains("print!(\"mine\");"), "{text}");
+
+    let (rendered, ok) = check(
+        "reserved",
+        "module main;\n#[test]\nentity T {}\nimpl T { process { builtin # assert(true); } }\n",
+    );
+    assert!(!ok);
+    assert!(
+        rendered.contains("`builtin #` is reserved to `core`'s macros"),
+        "{rendered}"
+    );
+
+    let (rendered, ok) = check(
+        "reserved_in_user_macro",
+        "module main;\nmacro m() { builtin # print(\"x\") }\n\
+         #[test]\nentity T {}\nimpl T { process { m!(); } }\n",
+    );
+    assert!(!ok);
+    assert!(rendered.contains("`builtin #` is reserved"), "{rendered}");
+}
+
+/// `error!` fails unconditionally; `assert!()` with no condition has no form.
+#[test]
+fn error_and_assertion_forms() {
+    let text = expanded(
+        "error_macro",
+        "module main;\n#[test]\nentity T {}\nimpl T { process { error!(\"bad {}\", 1); } }\n",
+    );
+    assert!(text.contains("assert!(false, \"bad {}\", 1);"), "{text}");
+
+    let (rendered, ok) = check(
+        "no_condition",
+        "module main;\n#[test]\nentity T {}\nimpl T { process { assert!(); } }\n",
+    );
+    assert!(!ok);
+    assert!(rendered.contains("no form of `assert!`"), "{rendered}");
+}
+
+/// A user operator (`xor`, with its precedence from an impl) reads the same
+/// inside a macro argument and a macro body as anywhere else.
+#[test]
+fn custom_operators_work_in_arguments_and_bodies() {
+    let text = expanded(
+        "custom_op",
+        "module main;\nmacro same($x: expr) { $x xor $x }\n\
+         fn f(a: Bit, b: Bit) -> Bit { assert!((a xor b) == '1'); return same!(a xor b); }\n",
+    );
+    assert!(text.contains("assert!((a xor b) == '1');"), "{text}");
+    // Left-associative: the printer drops the redundant left parentheses.
+    assert!(text.contains("return a xor b xor (a xor b);"), "{text}");
+}

@@ -2,12 +2,27 @@ module core::assert;
 
 // Assertion support, modelled on VHDL's `assert ... report ... severity ...`.
 //
-// The assertions themselves are built-in macros, so they can capture their
-// source location: `assert!(cond, "message")` fails the test when `cond` is
-// false, and `warn!(cond, "message")` is its non-fatal sibling, reported and
-// counted while the test still passes. `print!` formats a line. This module
-// carries the severity ladder for when assertions grow a severity argument
-// (VHDL `severity_level`: note < warning < error < failure).
+// The assertions are macros, so they keep their source location: a failure
+// names the line of the outermost invocation. Each is an ordinary macro over a
+// compiler primitive, `builtin # …`, which only `core`'s macros may use.
+//
+//   assert!(cond)                   fail the test when `cond` is false
+//   assert!(cond, "fmt {}", args)   with a formatted message
+//   warn!(cond, "message")          the non-fatal sibling: reported and
+//                                   counted while the test still passes
+//   print!("fmt {}", args)          print one formatted line
+//   error!("message")               fail unconditionally, like Rust's panic!
+//
+// This module also carries the severity ladder for when assertions grow a
+// severity argument (VHDL `severity_level`: note < warning < error < failure).
+
+pub macro assert($cond: expr, $rest: expr...) { builtin # assert($cond, $rest) }
+
+pub macro warn($cond: expr, $rest: expr...) { builtin # warn($cond, $rest) }
+
+pub macro print($args: expr...) { builtin # print($args) }
+
+pub macro error($rest: expr...) { builtin # assert(false, $rest) }
 
 pub enum Severity {
     Note,
