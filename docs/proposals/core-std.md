@@ -174,6 +174,39 @@ What the first slice does, decided:
 Later slices: `builtin #` and the built-in macros as `core` declarations
 (macros.md), `error!`, the leaf-name lookups, and the new `std` content.
 
+## Slice 2: directives are built in, and `core` follows rustc's layout
+
+Decided, with rustc's `core` and `std` as the reference:
+
+- **Directives are compiler built-ins**, like rustc's `#[allow]` and
+  `#[test]`: `#[test]`, `#[allow(..)]`, `#[warn(..)]`, `#[deny(..)]` and
+  `#[forbid(..)]` are known to the compiler by name and declared nowhere.
+  `#[…]` only ever means a directive, so a directive cannot be imported,
+  renamed or shadowed: a user's `attr test` is metadata (`attr test for X =
+  …;`, read with `x'test`) and never turns an entity into a test. A
+  directive takes no `= value`; `#[test = false]` is an error (delete the
+  directive instead), as is a path such as `#[std::attrs::test]`.
+- **No `enum Lint`.** Lint names are the compiler's, as rustc's lint registry
+  is; `#[allow(..)]` checks them against the compiler's list.
+- **Modules as in rustc:**
+
+  | rustc | siox |
+  | --- | --- |
+  | `core::cmp::Ordering` | `core::cmp::Ordering` |
+  | `core::convert::From` | `core::convert::From` |
+  | `core::default::Default` | `core::default::New` |
+  | `core::ops::{Add, Index, IndexMut, Range, …}` | `core::ops::{Operator, Prefix, Suffix, Index, IndexAssign, Range}`, and the hooks with no rustc counterpart: `Boolean`, `Resolve`, `LogicEncoding` |
+  | `bool`, `str` (`core::primitive`) | `core::primitive::{Bool, string}` |
+  | `assert!`, `panic!` (builtin macros in `core::prelude`) | `core::macros::{assert, warn, print, error}`, with `Severity` |
+  | `#[lang]`, rustc-internal attributes | `core::attrs::{lang, precedence}`: the attributes the compiler reads |
+
+  `std` mirrors them the way rustc's `std` re-exports `core`: `std::cmp`,
+  `std::convert`, `std::default`, `std::ops`, `std::primitive`. The old
+  spellings (`std::ops::Ordering`, `std::logic::Bool`, `std::text::string`,
+  `std::assert::Severity`, `std::attrs::test`) are removed, not kept as
+  aliases; the corpus and docs move to the new paths. `std::assert` goes
+  away. The preludes keep their contents.
+
 ## Open questions
 
 - Should `std::attrs`' common metadata live in `std` itself, or in a
