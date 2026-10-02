@@ -210,11 +210,15 @@ impl<'a> Checker<'a> {
                 family: Some(name.to_string()),
                 len: 0,
             },
+            // Only a type can be a type head: an enum variant or constant
+            // that happens to share the name (`RomStyle::Logic`) must not
+            // capture it.
             name => self
                 .resolved
                 .defs()
                 .iter()
                 .enumerate()
+                .filter(|(_, definition)| is_type_kind(definition.kind))
                 .find(|(index, _)| {
                     self.definition_key(DefId(*index as u32)).as_deref() == Some(name)
                 })
@@ -230,7 +234,8 @@ impl<'a> Checker<'a> {
                         .iter()
                         .enumerate()
                         .find(|(_, definition)| {
-                            definition.name == name
+                            is_type_kind(definition.kind)
+                                && definition.name == name
                                 && definition
                                     .module
                                     .as_deref()
@@ -242,7 +247,9 @@ impl<'a> Checker<'a> {
                         .defs()
                         .iter()
                         .enumerate()
-                        .find(|(_, definition)| definition.name == name)
+                        .find(|(_, definition)| {
+                            is_type_kind(definition.kind) && definition.name == name
+                        })
                 })
                 .map(|(index, _)| Ty::Named(DefId(index as u32)))
                 .unwrap_or(Ty::Error),
@@ -308,4 +315,18 @@ impl<'a> Checker<'a> {
         };
         Some((signed_lit(lo)?, signed_lit(hi)?))
     }
+}
+
+/// Whether a definition of this kind names a type.
+fn is_type_kind(kind: DefKind) -> bool {
+    matches!(
+        kind,
+        DefKind::Builtin
+            | DefKind::Struct
+            | DefKind::View
+            | DefKind::Enum
+            | DefKind::Entity
+            | DefKind::Trait
+            | DefKind::TypeAlias
+    )
 }

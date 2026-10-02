@@ -10725,3 +10725,13 @@ so types/IR/LLVM are unchanged. `error!(msg)` expands to
 `builtin # assert(false, msg)`. Two parser fixes came with it: macro argument
 tables are per-span queues (a `for macro` repetition repeats call spans), and
 custom operators (`xor`) are recognised over macro tokens.
+
+### 2026-10-02 — Claude — std::sync, vendor-neutral metadata, a type-lookup fix
+
+`std::sync` adds `Sync2`, `ResetSync`, `EdgeDetect` and `PulseSync`
+(std-buildout item 1); `std::attrs` gains `async_reg`, `ram_style`,
+`rom_style`, `fsm_encoding`, `max_fanout`, `mark_debug`, `clock`,
+`io_standard`, `pin` and their enums. Fix in `types/keys.rs`:
+`ty_from_head` now only matches type definitions, so a variant spelled like
+a type (`RomStyle::Logic`) no longer captures `Logic` and breaks every
+`signed` division in std.
