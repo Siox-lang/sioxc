@@ -1,9 +1,9 @@
 # Macros
 
-Status: **slice 1 implemented** (language §3.30): declarations, forms,
-fragment kinds, all four invocation positions, hygiene, resolution through
-`use`, and `--emit expanded`. **Slice 2** (below: repetition, call-site
-locations, expansion notes) is being implemented. `builtin #` remains.
+Status: **slices 1 and 2 implemented** (language §3.30): declarations,
+forms, fragment kinds, all four invocation positions, hygiene, resolution
+through `use`, `--emit expanded`, repetition, call-site locations and
+expansion notes. `builtin #` remains; see [Later slices](#later-slices).
 
 `macro` declares a user-defined syntax transformation. It is the third
 compile-time mechanism, next to the two that already exist:

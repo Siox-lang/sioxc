@@ -42,6 +42,17 @@ pub fn expand(
     sink: &mut DiagnosticSink,
 ) -> Vec<Diagnostic> {
     let index = Index::new(modules);
+    // Every diagnostic inside a body says which macro it belongs to.
+    let mut bodies = Vec::new();
+    for forms in index.macros.values() {
+        for form in forms {
+            if let (Some(first), Some(last)) = (form.body.first(), form.body.last()) {
+                let body = first.span.to(last.span);
+                sink.note_inside(body, format!("in an expansion of `{}!`", form.name.text));
+                bodies.push(body);
+            }
+        }
+    }
     let mut used = HashSet::new();
     let mut counter = 0;
     for module in modules.iter_mut() {
@@ -56,6 +67,8 @@ pub fn expand(
             counter: &mut counter,
             used: &mut used,
             trusted: HashSet::new(),
+            site: None,
+            bodies: &bodies,
         };
         let items = std::mem::take(&mut module.items);
         module.items = expander.items(items, 0);
@@ -283,6 +296,11 @@ struct Expander<'a> {
     /// Macro names a body wrote and this pass qualified: they may name a
     /// private macro of the body's own module.
     trusted: HashSet<Span>,
+    /// The outermost invocation being expanded, where a built-in macro
+    /// written in a body reports its location.
+    site: Option<Span>,
+    /// Every macro body's extent.
+    bodies: &'a [Span],
 }
 
 impl Expander<'_> {
@@ -371,8 +389,16 @@ impl Expander<'_> {
         let index = self.index;
         let forms = &index.macros[key];
         let form = forms.iter().find(|form| {
-            form.params.len() == args.len()
-                && form.params.iter().zip(&args).all(|(param, arg)| {
+            let variadic = form.params.last().is_some_and(|p| p.variadic);
+            let fixed = form.params.len() - usize::from(variadic);
+            let count_fits = if variadic {
+                args.len() >= fixed
+            } else {
+                args.len() == fixed
+            };
+            count_fits
+                && args.iter().enumerate().all(|(i, arg)| {
+                    let param = &form.params[i.min(form.params.len() - 1)];
                     let mut scratch = DiagnosticSink::new();
                     Parser::from_macro_tokens(arg, &mut scratch, self.operators, false, span)
                         .is_fragment(param.kind)
@@ -385,7 +411,10 @@ impl Expander<'_> {
                     let params = form
                         .params
                         .iter()
-                        .map(|p| format!("${}: {}", p.name.text, p.kind.name()))
+                        .map(|p| {
+                            let many = if p.variadic { "..." } else { "" };
+                            format!("${}: {}{many}", p.name.text, p.kind.name())
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!("`{name}!({params})`")
@@ -422,14 +451,14 @@ impl Expander<'_> {
             self.sink.emit(
                 diagnostic
                     .clone()
-                    .note(format!("while expanding `{name}!`")),
+                    .note(format!("in an expansion of `{name}!`")),
             );
         }
         Some(expansion)
     }
 
-    /// The body with arguments substituted, hygiene applied, and free names
-    /// qualified for the declaring module.
+    /// The body with arguments substituted, repetitions unrolled, hygiene
+    /// applied, and free names qualified for the declaring module.
     fn substitute(
         &mut self,
         form: &MacroDecl,
@@ -437,29 +466,75 @@ impl Expander<'_> {
         home: &str,
         call: Span,
     ) -> Option<Vec<MacroToken>> {
+        let variadic = form.params.last().is_some_and(|p| p.variadic);
+        let fixed = form.params.len() - usize::from(variadic);
+        let mut bindings = HashMap::new();
+        for (i, param) in form.params.iter().enumerate() {
+            let values: Vec<&[MacroToken]> = if param.variadic {
+                args[fixed..].iter().map(Vec::as_slice).collect()
+            } else {
+                vec![args[i].as_slice()]
+            };
+            bindings.insert(
+                param.name.text.clone(),
+                Binding {
+                    kind: param.kind,
+                    values,
+                },
+            );
+        }
         // Tokens with whether they come from the body.
         let mut out: Vec<(MacroToken, bool)> = Vec::new();
-        let mut body = form.body.iter().peekable();
+        if !self.unroll(&form.body, &bindings, &form.name.text, call, &mut out) {
+            return None;
+        }
+        self.hygiene(&mut out);
+        Some(self.qualify(out, home))
+    }
+
+    /// Substitute `body` into `out`: `$x`, `$xs'length`, and
+    /// `for macro $x in $xs [join T] { … }`. `false` after an error.
+    fn unroll(
+        &mut self,
+        body: &[MacroToken],
+        bindings: &HashMap<String, Binding<'_>>,
+        macro_name: &str,
+        call: Span,
+        out: &mut Vec<(MacroToken, bool)>,
+    ) -> bool {
+        use TokenKind as K;
         let mut ok = true;
-        while let Some(token) = body.next() {
-            if token.kind != TokenKind::Dollar {
-                out.push((token.clone(), true));
+        let mut i = 0;
+        while i < body.len() {
+            let token = &body[i];
+            if token.kind == K::For && body.get(i + 1).is_some_and(|t| t.kind == K::Macro) {
+                match self.repetition(body, i, bindings, macro_name, call, out) {
+                    Some(next) => i = next,
+                    None => return false,
+                }
                 continue;
             }
-            let Some(name) = body.next_if(|t| t.kind == TokenKind::Ident) else {
+            if token.kind != K::Dollar {
+                out.push((token.clone(), true));
+                i += 1;
+                continue;
+            }
+            let Some(name) = body.get(i + 1).filter(|t| t.kind == K::Ident) else {
                 self.sink.emit(
                     Diagnostic::error("expected a parameter name after `$`")
                         .with_code(codes::MACRO_EXPANSION)
                         .at(token.span),
                 );
                 ok = false;
+                i += 1;
                 continue;
             };
-            let Some(index) = form.params.iter().position(|p| p.name.text == name.text) else {
+            i += 2;
+            let Some(binding) = bindings.get(&name.text) else {
                 self.sink.emit(
                     Diagnostic::error(format!(
-                        "`${}` is not a parameter of `{}!`",
-                        name.text, form.name.text
+                        "`${}` is not a parameter of `{macro_name}!`",
+                        name.text
                     ))
                     .with_code(codes::MACRO_EXPANSION)
                     .at(name.span),
@@ -467,43 +542,93 @@ impl Expander<'_> {
                 ok = false;
                 continue;
             };
-            let arg = &args[index];
-            if form.params[index].kind == FragmentKind::Expr {
-                // One operand, whatever the operators around it.
-                let first = arg.first().map_or(call, |t| t.span);
-                let last = arg.last().map_or(call, |t| t.span);
+            // `$xs'length`: how many arguments.
+            if body.get(i).is_some_and(|t| t.kind == K::Tick)
+                && body.get(i + 1).is_some_and(|t| t.text == "length")
+            {
                 out.push((
-                    punct(
-                        TokenKind::LParen,
-                        "(",
-                        Span {
-                            end: first.start,
-                            ..first
-                        },
-                    ),
+                    punct(K::Int, &binding.values.len().to_string(), name.span),
                     false,
                 ));
-                out.extend(arg.iter().map(|t| (t.clone(), false)));
-                out.push((
-                    punct(
-                        TokenKind::RParen,
-                        ")",
-                        Span {
-                            start: last.end,
-                            ..last
-                        },
-                    ),
-                    false,
-                ));
-            } else {
-                out.extend(arg.iter().map(|t| (t.clone(), false)));
+                i += 2;
+                continue;
+            }
+            for (n, value) in binding.values.iter().enumerate() {
+                if n > 0 {
+                    out.push((punct(K::Comma, ",", name.span), false));
+                }
+                push_argument(binding.kind, value, call, out);
             }
         }
-        if !ok {
+        ok
+    }
+
+    /// Unroll the `for macro` at `body[at]`; the index after it.
+    fn repetition(
+        &mut self,
+        body: &[MacroToken],
+        at: usize,
+        bindings: &HashMap<String, Binding<'_>>,
+        macro_name: &str,
+        call: Span,
+        out: &mut Vec<(MacroToken, bool)>,
+    ) -> Option<usize> {
+        use TokenKind as K;
+        let kind = |i: usize| body.get(at + i).map(|t| &t.kind);
+        let text = |i: usize| body.get(at + i).map_or("", |t| t.text.as_str());
+        let shaped = kind(2) == Some(&K::Dollar)
+            && kind(3) == Some(&K::Ident)
+            && kind(4) == Some(&K::In)
+            && kind(5) == Some(&K::Dollar)
+            && kind(6) == Some(&K::Ident);
+        let joined = shaped && text(7) == "join" && kind(8).is_some();
+        let open = if joined { at + 9 } else { at + 7 };
+        let close = shaped
+            .then(|| body.get(open).filter(|t| t.kind == K::LBrace))
+            .flatten()
+            .and_then(|_| matching_close(body, open));
+        let Some(close) = close else {
+            self.sink.emit(
+                Diagnostic::error("expected `for macro $x in $xs { … }`")
+                    .with_code(codes::MACRO_EXPANSION)
+                    .at(body[at].span)
+                    .help(
+                        "a separator goes before the braces: `for macro $x in $xs join + { $x }`",
+                    ),
+            );
             return None;
+        };
+        let item = text(3).to_string();
+        let list = text(6);
+        let Some(source) = bindings.get(list) else {
+            self.sink.emit(
+                Diagnostic::error(format!("`${list}` is not a parameter of `{macro_name}!`"))
+                    .with_code(codes::MACRO_EXPANSION)
+                    .at(body[at + 6].span),
+            );
+            return None;
+        };
+        let separator = joined.then(|| body[at + 8].clone());
+        let inner = &body[open + 1..close];
+        for (n, value) in source.values.iter().enumerate() {
+            if n > 0 {
+                if let Some(separator) = &separator {
+                    out.push((separator.clone(), true));
+                }
+            }
+            let mut scope = bindings.clone();
+            scope.insert(
+                item.clone(),
+                Binding {
+                    kind: source.kind,
+                    values: vec![value],
+                },
+            );
+            if !self.unroll(inner, &scope, macro_name, call, out) {
+                return None;
+            }
         }
-        self.hygiene(&mut out);
-        Some(self.qualify(out, home))
+        Some(close + 1)
     }
 
     /// Rename every name the body declares, everywhere the body uses it.
@@ -659,7 +784,9 @@ impl Expander<'_> {
                                     .into_iter()
                                     .filter(|item| !matches!(item, Item::Macro(_)))
                                     .collect();
+                                let outer = self.enter(span);
                                 out.extend(self.items(expanded, depth + 1));
+                                self.site = outer;
                             }
                         }
                         None => self.unknown(path),
@@ -688,7 +815,9 @@ impl Expander<'_> {
                     if let Some(Expansion::Members(expanded)) =
                         self.expand(&key, span, Position::Members, depth)
                     {
+                        let outer = self.enter(span);
                         out.extend(self.members(expanded, depth + 1));
+                        self.site = outer;
                     }
                     continue;
                 }
@@ -730,7 +859,9 @@ impl Expander<'_> {
                     if let Some(Expansion::Stmts(expanded)) =
                         self.expand(&key, span, Position::Stmts(sequential), depth)
                     {
+                        let outer = self.enter(span);
                         out.extend(self.stmts(expanded, sequential, depth + 1));
+                        self.site = outer;
                     }
                     continue;
                 }
@@ -796,7 +927,9 @@ impl Expander<'_> {
             if let Some(Expansion::Expr(mut expanded)) =
                 self.expand(&key, span, Position::Expr, depth)
             {
+                let outer = self.enter(span);
                 self.expr(&mut expanded, depth + 1);
+                self.site = outer;
                 *expression = expanded;
             }
             return;
@@ -861,6 +994,13 @@ impl Expander<'_> {
                             self.unknown(&path);
                         }
                     }
+                    // Written in a body: it reports where the outermost
+                    // invocation is, as Rust's `line!()` does.
+                    if let Some(site) = self.site {
+                        if builtin && self.in_body(*span) {
+                            *span = site;
+                        }
+                    }
                 }
                 self.expr(callee, depth);
                 for arg in args {
@@ -883,6 +1023,21 @@ impl Expander<'_> {
                 }
             }
         }
+    }
+
+    /// Start walking an expansion of the call at `span`; the site to
+    /// restore afterwards.
+    fn enter(&mut self, span: Span) -> Option<Span> {
+        let outer = self.site;
+        self.site.get_or_insert(span);
+        outer
+    }
+
+    /// Whether `span` was written inside a macro body.
+    fn in_body(&self, span: Span) -> bool {
+        self.bodies
+            .iter()
+            .any(|b| b.file == span.file && b.start <= span.start && span.end <= b.end)
     }
 
     /// A call to a macro nobody declared.
@@ -988,4 +1143,70 @@ fn punct(kind: TokenKind, text: &str, span: Span) -> MacroToken {
 
 fn ident_token(text: &str, span: Span) -> MacroToken {
     punct(TokenKind::Ident, text, span)
+}
+
+/// What a macro parameter is bound to while its body is substituted.
+#[derive(Clone)]
+struct Binding<'t> {
+    /// The parameter's fragment kind.
+    kind: FragmentKind,
+    /// The arguments: one, or for a `...` parameter any number.
+    values: Vec<&'t [MacroToken]>,
+}
+
+/// Push one argument: an `expr` as one parenthesized operand.
+fn push_argument(
+    kind: FragmentKind,
+    tokens: &[MacroToken],
+    call: Span,
+    out: &mut Vec<(MacroToken, bool)>,
+) {
+    if kind != FragmentKind::Expr {
+        out.extend(tokens.iter().map(|t| (t.clone(), false)));
+        return;
+    }
+    let first = tokens.first().map_or(call, |t| t.span);
+    let last = tokens.last().map_or(call, |t| t.span);
+    out.push((
+        punct(
+            TokenKind::LParen,
+            "(",
+            Span {
+                end: first.start,
+                ..first
+            },
+        ),
+        false,
+    ));
+    out.extend(tokens.iter().map(|t| (t.clone(), false)));
+    out.push((
+        punct(
+            TokenKind::RParen,
+            ")",
+            Span {
+                start: last.end,
+                ..last
+            },
+        ),
+        false,
+    ));
+}
+
+/// The index of the delimiter closing the one at `open`.
+fn matching_close(tokens: &[MacroToken], open: usize) -> Option<usize> {
+    use TokenKind as K;
+    let mut depth = 0usize;
+    for (i, token) in tokens.iter().enumerate().skip(open) {
+        match token.kind {
+            K::LParen | K::LBracket | K::LBrace => depth += 1,
+            K::RParen | K::RBracket | K::RBrace => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }

@@ -230,7 +230,10 @@ fn body_errors_name_the_macro() {
         "module main;\nmacro broken($x: expr) { $x + }\nfn f() -> integer { return broken!(1); }\n",
     );
     assert!(!ok);
-    assert!(rendered.contains("while expanding `broken!`"), "{rendered}");
+    assert!(
+        rendered.contains("in an expansion of `broken!`"),
+        "{rendered}"
+    );
 }
 
 /// The built-in macros are untouched, and a user macro can wrap them.
@@ -242,4 +245,83 @@ fn builtin_macros_still_work() {
          #[test]\nentity T {}\nimpl T { process { check!(1 == 1); assert!(true); print!(\"{}\", 1); } }\n",
     );
     assert!(ok, "{rendered}");
+}
+
+/// `...` takes the remaining arguments; `for macro` repeats over them,
+/// `join` separates the repetitions, `$xs` forwards them, and `$xs'length`
+/// counts them.
+#[test]
+fn repetition_unrolls_at_expansion_time() {
+    let text = expanded(
+        "repetition",
+        "module main;\n\
+         macro all($cs: expr...) { for macro $c in $cs { assert!($c); } }\n\
+         macro both($cs: expr...) { for macro $c in $cs join and { $c } }\n\
+         macro count($xs: tokens...) { $xs'length }\n\
+         macro sum($xs: expr...) { 0 for macro $x in $xs { + $x } }\n\
+         macro trace($fmt: expr, $args: expr...) { print!($fmt, $args); }\n\
+         #[test]\nentity T {}\n\
+         impl T { process {\n\
+             all!(1 == 1, 2 == 2);\n\
+             assert!(both!(true, false) or count!(a, b c, (d, e)) == 3);\n\
+             assert!(sum!(1, 2) == count!());\n\
+             trace!(\"{} {}\", 1, 2);\n\
+         } }\n",
+    );
+    assert!(
+        text.contains("assert!(1 == 1);\n") && text.contains("assert!(2 == 2);\n"),
+        "{text}"
+    );
+    assert!(text.contains("true and false or 3 == 3"), "{text}");
+    assert!(text.contains("0 + 1 + 2 == 0"), "{text}");
+    assert!(text.contains("print!(\"{} {}\", 1, 2);"), "{text}");
+}
+
+#[test]
+fn repetition_errors() {
+    let (rendered, ok) = check(
+        "early_variadic",
+        "module main;\nmacro m($xs: expr..., $y: expr) { 1 }\n",
+    );
+    assert!(!ok);
+    assert!(
+        rendered.contains("only the last macro parameter"),
+        "{rendered}"
+    );
+
+    let (rendered, ok) = check(
+        "malformed_for",
+        "module main;\nmacro m($xs: expr...) { for macro $x $xs { $x } }\n\
+         fn f() -> integer { return m!(1); }\n",
+    );
+    assert!(!ok);
+    assert!(
+        rendered.contains("expected `for macro $x in $xs { … }`"),
+        "{rendered}"
+    );
+
+    // A variadic form needs only its fixed arguments.
+    let (rendered, ok) = check(
+        "variadic_count",
+        "module main;\nmacro m($a: expr, $xs: expr...) { $a }\n\
+         fn f() -> integer { return m!(1) + m!(1, 2, 3); }\nfn g() -> integer { return m!(); }\n",
+    );
+    assert!(!ok);
+    assert!(rendered.contains("no form of `m!`"), "{rendered}");
+    assert!(
+        rendered.contains("`m!($a: expr, $xs: expr...)`"),
+        "{rendered}"
+    );
+}
+
+/// A type error in expanded body code says which macro it came from.
+#[test]
+fn later_stage_errors_in_a_body_name_the_macro() {
+    let (rendered, ok) = check(
+        "type_error",
+        "module main;\nmacro bad($x: expr) { $x + undefined_name }\n\
+         fn f() -> integer { return bad!(1); }\n",
+    );
+    assert!(!ok);
+    assert!(rendered.contains("in an expansion of `bad!`"), "{rendered}");
 }

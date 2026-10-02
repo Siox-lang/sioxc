@@ -84,6 +84,8 @@ pub struct MacroParam {
     pub name: Ident,
     /// What syntax the argument must be.
     pub kind: FragmentKind,
+    /// `$xs: expr...`: the last parameter, taking zero or more arguments.
+    pub variadic: bool,
 }
 
 /// The syntax a macro parameter accepts.
