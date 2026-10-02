@@ -128,8 +128,10 @@ fn visible_attrs(module: &Module, modules: &[Module]) -> HashSet<String> {
         }
     };
     collect(module, false);
-    if let Some(prelude) = modules.iter().find(|m| path_is(&m.path, "std::prelude")) {
-        collect(prelude, true);
+    for prelude in ["core::prelude", "std::prelude"] {
+        if let Some(prelude) = modules.iter().find(|m| path_is(&m.path, prelude)) {
+            collect(prelude, true);
+        }
     }
     out
 }

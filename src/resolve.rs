@@ -64,6 +64,20 @@ fn is_compiler_trait_name(name: &str) -> bool {
     COMPILER_TRAITS.contains(&name)
 }
 
+/// Whether `module` is part of the language's own library, `core` or `std`:
+/// not linted, and allowed to shadow nothing a user declares.
+pub(crate) fn is_library_module(module: &str) -> bool {
+    ["core", "std"].iter().any(|root| {
+        module == *root
+            || module
+                .strip_prefix(root)
+                .is_some_and(|rest| rest.starts_with("::"))
+    })
+}
+
+/// The preludes every module sees, in lookup order.
+const PRELUDES: [&str; 2] = ["core::prelude", "std::prelude"];
+
 /// Whether one resolved declaration is the language's canonical hook trait.
 /// A matching leaf in a user module is an ordinary namespaced trait, just as
 /// it would be in Rust; spelling alone must not grant compiler semantics.
@@ -335,7 +349,12 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     // this compilation); only warn about unused imports in the user's files.
     let std_files: std::collections::HashSet<crate::diag::FileId> = modules
         .iter()
-        .filter(|m| m.path.segments.first().map(|s| s.text.as_str()) == Some("std"))
+        .filter(|m| {
+            m.path
+                .segments
+                .first()
+                .is_some_and(|s| s.text == "std" || s.text == "core")
+        })
         .map(|m| m.span.file)
         .collect();
     r.lint_private_imports(&std_files);
@@ -911,6 +930,11 @@ impl<'a> Resolver<'a> {
                         // true when imports began loading sibling files.
                         let names: Vec<&str> = base_str.split("::").collect();
                         let help = match names.split_first() {
+                            Some((&"core", _)) => {
+                                "`core` is built into the compiler; this module is not \
+                                 part of it"
+                                    .to_string()
+                            }
                             Some((&"std", rest)) if !rest.is_empty() => format!(
                                 "`std::` paths are read from the `--std` directory: \
                                  `{}.siox` there was not found, or declares a different \
@@ -2513,10 +2537,13 @@ impl<'a> Resolver<'a> {
                     return Some(*id);
                 }
             }
-            if module != "std::prelude" {
+            for prelude in PRELUDES {
+                if module == prelude {
+                    continue;
+                }
                 if let Some((id, true, _)) = self
                     .module_imports
-                    .get(&("std::prelude".to_string(), name.to_string()))
+                    .get(&(prelude.to_string(), name.to_string()))
                 {
                     if self.out.kind_of(*id) != Some(DefKind::Attr) {
                         return Some(*id);
@@ -2538,12 +2565,14 @@ impl<'a> Resolver<'a> {
                     return Some(*id);
                 }
             }
-            if let Some((id, true, _)) = self
-                .module_imports
-                .get(&("std::prelude".to_string(), name.to_string()))
-            {
-                if self.out.kind_of(*id) == Some(DefKind::Attr) {
-                    return Some(*id);
+            for prelude in PRELUDES {
+                if let Some((id, true, _)) = self
+                    .module_imports
+                    .get(&(prelude.to_string(), name.to_string()))
+                {
+                    if self.out.kind_of(*id) == Some(DefKind::Attr) {
+                        return Some(*id);
+                    }
                 }
             }
         }

@@ -529,12 +529,12 @@ impl<'a> FunctionIndex<'a> {
         let is_std = definition
             .module
             .as_deref()
-            .is_some_and(|module| module == "std" || module.starts_with("std::"));
+            .is_some_and(crate::resolve::is_library_module);
         let other_std = colliders.iter().any(|other| {
             other
                 .module
                 .as_deref()
-                .is_some_and(|module| module == "std" || module.starts_with("std::"))
+                .is_some_and(crate::resolve::is_library_module)
         });
         if !colliders.is_empty() && (!is_std || other_std) {
             self.resolved.qualified_name(id)
@@ -561,12 +561,12 @@ impl<'a> FunctionIndex<'a> {
         let is_std = definition
             .module
             .as_deref()
-            .is_some_and(|module| module == "std" || module.starts_with("std::"));
+            .is_some_and(crate::resolve::is_library_module);
         let other_std = colliders.iter().any(|other| {
             other
                 .module
                 .as_deref()
-                .is_some_and(|module| module == "std" || module.starts_with("std::"))
+                .is_some_and(crate::resolve::is_library_module)
         });
         if !colliders.is_empty() && (!is_std || other_std) {
             self.resolved.qualified_name(id)

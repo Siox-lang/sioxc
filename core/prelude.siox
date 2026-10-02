@@ -1,0 +1,7 @@
+module core::prelude;
+
+// The core prelude: names in scope in every module, always. `core` is the part
+// of the compiler reachable through the language — the hooks the compiler
+// calls, the types its grammar produces, its directives — so unlike
+// `std::prelude` it does not depend on `--std`: these sources are compiled
+// into `sioxc`.

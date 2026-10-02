@@ -917,6 +917,7 @@ fn discover_dependencies(
     let mut loaded = HashSet::from([load_key(entry_path)]);
     let mut queue: VecDeque<Vec<String>> =
         discover_import_modules(entry_source, entry_tokens).into();
+    queue.push_front(vec!["core".to_string(), "prelude".to_string()]);
     if std_root.join("prelude.siox").exists() {
         queue.push_back(vec!["std".to_string(), "prelude".to_string()]);
     }
@@ -940,8 +941,12 @@ fn discover_dependencies(
         if !loaded.insert(load_key(&path)) {
             continue;
         }
-        let Ok(source) = std::fs::read_to_string(&path) else {
-            continue;
+        let source = match core_source(&module) {
+            Some(source) => source.to_string(),
+            None => match std::fs::read_to_string(&path) {
+                Ok(source) => source,
+                Err(_) => continue,
+            },
         };
         let mut discovery_sink = DiagnosticSink::new();
         let tokens = Lexer::new(FileId(0), &source).tokenize(&mut discovery_sink);
@@ -1114,9 +1119,34 @@ fn absolute_use_path(path: Vec<String>, here: &[String]) -> Option<Vec<String>> 
     }
 }
 
-/// The file backing a module path: under the standard-library root for a
-/// `std::` path, otherwise beside the entry file.
+/// `core`'s modules, compiled into the compiler (proposals/core-std.md): a
+/// compiler can never load a `core` it does not match, and a frontend needs
+/// no files on disk for it.
+const CORE: &[(&str, &str)] = &[("prelude", include_str!("../core/prelude.siox"))];
+
+/// The embedded source of a `core::` module path.
+fn core_source(segments: &[String]) -> Option<&'static str> {
+    match segments {
+        [root, rest @ ..] if root == "core" => {
+            let name = rest.join("/");
+            CORE.iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, source)| *source)
+        }
+        _ => None,
+    }
+}
+
+/// The file backing a module path: `<core>/…` for an embedded `core::` path,
+/// under the standard-library root for a `std::` path, otherwise beside the
+/// entry file.
 fn module_file(source_root: &Path, std_root: &Path, segments: &[String]) -> PathBuf {
+    if segments.first().is_some_and(|segment| segment == "core") {
+        let mut path = PathBuf::from("<core>");
+        path.extend(&segments[1..]);
+        path.set_extension("siox");
+        return path;
+    }
     let is_std = segments.first().is_some_and(|segment| segment == "std");
     let mut path = if is_std {
         std_root.to_path_buf()
