@@ -10782,3 +10782,19 @@ only `keep`, `top`, `clock`, `library` and `name`. `async_reg`, `ram_style`,
   (`inline_process_comparison`), as the design path's `inline_cmp` already
   did; computed operands are narrowed to their type first. `std::bits`'
   signed `<=>` reads `integer(resize(x, x'length))` so either shift works.
+
+### 2026-10-02 — Claude — floating point, slice 1 (simulation)
+
+`std::float`: IEEE-754 after VHDL's `float_pkg` (`float[8..-23]` is
+binary32), `+ - *`, comparisons, `to_float`, `.to_real()`, rounding to
+nearest even, IEEE specials, subnormals flushed. All siox source.
+
+IR touches: `llvm/process/logic.rs` treats a `RawResize` typed `integer`
+(`integer(x)`) as metavalue-free, so integer arithmetic can be stored into a
+packed `Logic` word; `source_processes.rs` gives a method result its
+receiver's layout when it returns the receiver's type
+(`y.negate().to_real()`); the design-IR inliner has a node budget
+(`INLINE_NODE_BUDGET`, `report_oversized`): float bodies reuse values so much
+that tree substitution compounds past 8 GB. Floats in hardware entities are
+therefore an error until hardware lowers through Process IR (Phase 1 exit),
+where values are shared.

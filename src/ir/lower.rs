@@ -139,6 +139,13 @@ pub fn lower_in(
     for (entity, path) in &roots {
         l.lower_entity(*entity, path);
     }
+    // An oversized inline stopped every inline after it, so the depth and
+    // name errors that follow from that would only bury the real one.
+    if !l.oversized.borrow().is_empty() {
+        l.depth_exceeded.borrow_mut().clear();
+        l.unresolved_names.borrow_mut().clear();
+    }
+    l.report_oversized();
     l.report_depth_exceeded();
     l.report_bad_operators();
     l.report_bad_conversions();
@@ -242,6 +249,12 @@ struct Lowering<'a> {
     /// `&self`, so the diagnostic is recorded here and flushed by `lower`
     /// instead of silently leaving an `Unknown` in the driver.
     depth_exceeded: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
+    /// `let` values in inlined bodies whose hardware form outgrew
+    /// [`INLINE_NODE_BUDGET`]. The design IR is a tree, so a body that reuses
+    /// a value copies it into every use; past the budget the expression would
+    /// grow without bound (and once took the machine's memory). Once one is
+    /// recorded, inlining stops.
+    oversized: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
     /// Operands hoisted out of a per-element metavalue unroll by a helper that
     /// holds only `&self` -- resolution folding and the two partial-write
     /// helpers. Those cannot append a signal themselves, so they hoist here and

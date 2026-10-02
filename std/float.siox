@@ -1,0 +1,282 @@
+module std::float;
+
+use std::bits::unsigned;
+use std::cmp::Ordering;
+
+// Floating point, after VHDL-2008's `float_pkg`, on the same idea as
+// `std::fixed`: the index range gives the format.
+//
+//   float[8..-23]   IEEE-754 binary32: sign at index 8, exponent 7..0,
+//                   fraction -1..-23
+//   float[5..-10]   binary16
+//   float[11..-52]  binary64
+//
+// so `x'high` is the exponent width E, `-x'low` the fraction width F, and the
+// exponent bias is 2^(E-1) - 1. Results round to nearest, ties to even. Zero,
+// infinity and NaN follow IEEE-754; subnormals are flushed to zero on input
+// and output (VHDL's `denormalize => false`, the usual FPGA choice).
+//
+// Everything below is ordinary siox over the packed word, so it synthesizes.
+// The helpers are unrolled `let` chains rather than loops. Inside the impls
+// the operands read as kernel words.
+pub struct float(Logic[]);
+
+// --- word helpers --------------------------------------------------------------
+
+// The low `n` bits of `x`.
+fn low_bits(x: integer, n: integer) -> integer {
+    return x - ((x >> n) << n);
+}
+
+// The index of the highest set bit of a positive `x` below 2^64.
+fn msb(x: integer) -> integer {
+    let a: integer = if (x >> 32) != 0 { 32 } else { 0 };
+    let x1: integer = x >> a;
+    let b: integer = if (x1 >> 16) != 0 { 16 } else { 0 };
+    let x2: integer = x1 >> b;
+    let c: integer = if (x2 >> 8) != 0 { 8 } else { 0 };
+    let x3: integer = x2 >> c;
+    let d: integer = if (x3 >> 4) != 0 { 4 } else { 0 };
+    let x4: integer = x3 >> d;
+    let e: integer = if (x4 >> 2) != 0 { 2 } else { 0 };
+    let x5: integer = x4 >> e;
+    let f: integer = if (x5 >> 1) != 0 { 1 } else { 0 };
+    return a + b + c + d + e + f;
+}
+
+// `m >> shift` rounded to nearest, ties to even (`shift` >= 1).
+fn round_shift(m: integer, shift: integer) -> integer {
+    let q: integer = m >> shift;
+    let rest: integer = m - (q << shift);
+    let half: integer = 1 << (shift - 1);
+    return if rest > half or (rest == half and low_bits(q, 1) == 1) { q + 1 } else { q };
+}
+
+// The word of the format with `e` exponent and `f` fraction bits.
+fn pack(sign: integer, exponent: integer, fraction: integer, e: integer, f: integer) -> integer {
+    return (sign << (e + f)) + (exponent << f) + fraction;
+}
+
+fn infinity_word(sign: integer, e: integer, f: integer) -> integer {
+    return pack(sign, (1 << e) - 1, 0, e, f);
+}
+
+// The quiet NaN every operation produces.
+fn nan_word(e: integer, f: integer) -> integer {
+    return pack(0, (1 << e) - 1, 1 << (f - 1), e, f);
+}
+
+// The number `m / 2^point * 2^(exponent - bias)` (biased `exponent`) in the
+// format: normalized to `f + 1` significant bits, rounded to nearest even,
+// infinite above the range and zero below it.
+fn encode(sign: integer, exponent: integer, m: integer, point: integer, e: integer, f: integer) -> integer {
+    let top: integer = msb(m);
+    let scaled: integer = if top > f { round_shift(m, top - f) } else { m << (f - top) };
+    let carry: integer = scaled >> (f + 1);
+    let significand: integer = scaled >> carry;
+    let biased: integer = exponent + (top - point) + carry;
+    if m == 0 { return pack(sign, 0, 0, e, f); }
+    if biased >= (1 << e) - 1 { return infinity_word(sign, e, f); }
+    if biased <= 0 { return pack(sign, 0, 0, e, f); }
+    return pack(sign, biased, significand - (1 << f), e, f);
+}
+
+// 2.0 to the power `k`, for |k| below 2048, from its binary digits.
+fn pow2(k: integer) -> real {
+    let n: integer = if 0 > k { 0 - k } else { k };
+    let p0: real = if low_bits(n, 1) == 1 { 2.0 } else { 1.0 };
+    let p1: real = if low_bits(n >> 1, 1) == 1 { p0 * 4.0 } else { p0 };
+    let p2: real = if low_bits(n >> 2, 1) == 1 { p1 * 16.0 } else { p1 };
+    let p3: real = if low_bits(n >> 3, 1) == 1 { p2 * 256.0 } else { p2 };
+    let p4: real = if low_bits(n >> 4, 1) == 1 { p3 * 65536.0 } else { p3 };
+    let c32: real = real(1 << 32);
+    let p5: real = if low_bits(n >> 5, 1) == 1 { p4 * c32 } else { p4 };
+    let c64: real = c32 * c32;
+    let p6: real = if low_bits(n >> 6, 1) == 1 { p5 * c64 } else { p5 };
+    let c128: real = c64 * c64;
+    let p7: real = if low_bits(n >> 7, 1) == 1 { p6 * c128 } else { p6 };
+    let c256: real = c128 * c128;
+    let p8: real = if low_bits(n >> 8, 1) == 1 { p7 * c256 } else { p7 };
+    let c512: real = c256 * c256;
+    let p9: real = if low_bits(n >> 9, 1) == 1 { p8 * c512 } else { p8 };
+    let p10: real = if low_bits(n >> 10, 1) == 1 { p9 * c512 * c512 } else { p9 };
+    return if 0 > k { 1.0 / p10 } else { p10 };
+}
+
+// --- arithmetic ----------------------------------------------------------------
+
+impl Operator<"*", float, float> for float {
+    fn apply(self, rhs: float) -> float {
+        let e: integer = self'high;
+        let f: integer = 0 - self'low;
+        let a: integer = integer(self);
+        let b: integer = integer(rhs);
+        let sign: integer = low_bits((a >> (e + f)) + (b >> (e + f)), 1);
+        let ea: integer = low_bits(a >> f, e);
+        let eb: integer = low_bits(b >> f, e);
+        let fa: integer = low_bits(a, f);
+        let fb: integer = low_bits(b, f);
+        let full: integer = (1 << e) - 1;
+        let nan: Bool = (ea == full and fa != 0) or (eb == full and fb != 0);
+        let infinite: Bool = ea == full or eb == full;
+        let zero: Bool = ea == 0 or eb == 0;
+        if nan or (infinite and zero) { return nan_word(e, f); }
+        if infinite { return infinity_word(sign, e, f); }
+        if zero { return pack(sign, 0, 0, e, f); }
+        let bias: integer = (1 << (e - 1)) - 1;
+        let m: integer = ((1 << f) + fa) * ((1 << f) + fb);
+        return encode(sign, ea + eb - bias, m, f + f, e, f);
+    }
+}
+
+impl Operator<"+", float, float> for float {
+    fn apply(self, rhs: float) -> float {
+        return add(integer(self), integer(rhs), self'high, 0 - self'low);
+    }
+}
+
+impl Operator<"-", float, float> for float {
+    fn apply(self, rhs: float) -> float {
+        let e: integer = self'high;
+        let f: integer = 0 - self'low;
+        let b: integer = integer(rhs);
+        // a - b is a + (-b): flip the sign bit.
+        let flipped: integer = b + ((1 - 2 * low_bits(b >> (e + f), 1)) << (e + f));
+        return add(integer(self), flipped, e, f);
+    }
+}
+
+// The sum of two words of the format: the smaller magnitude is aligned to the
+// larger with three guard bits, the last of them sticky, then encoded.
+fn add(a: integer, b: integer, e: integer, f: integer) -> integer {
+    let sa: integer = low_bits(a >> (e + f), 1);
+    let sb: integer = low_bits(b >> (e + f), 1);
+    let ea: integer = low_bits(a >> f, e);
+    let eb: integer = low_bits(b >> f, e);
+    let fa: integer = low_bits(a, f);
+    let fb: integer = low_bits(b, f);
+    let full: integer = (1 << e) - 1;
+    if (ea == full and fa != 0) or (eb == full and fb != 0) { return nan_word(e, f); }
+    if ea == full and eb == full {
+        return if sa == sb { infinity_word(sa, e, f) } else { nan_word(e, f) };
+    }
+    if ea == full { return infinity_word(sa, e, f); }
+    if eb == full { return infinity_word(sb, e, f); }
+    // Subnormals and zeros count as zero.
+    let ma: integer = if ea == 0 { 0 } else { (1 << f) + fa };
+    let mb: integer = if eb == 0 { 0 } else { (1 << f) + fb };
+    if ma == 0 and mb == 0 { return pack(sa * sb, 0, 0, e, f); }
+    if mb == 0 { return a; }
+    if ma == 0 { return b; }
+    // Order by magnitude: x is the larger.
+    let a_larger: Bool = ea > eb or (ea == eb and ma >= mb);
+    let sx: integer = if a_larger { sa } else { sb };
+    let sy: integer = if a_larger { sb } else { sa };
+    let ex: integer = if a_larger { ea } else { eb };
+    let ey: integer = if a_larger { eb } else { ea };
+    let mx: integer = (if a_larger { ma } else { mb }) << 3;
+    let my: integer = (if a_larger { mb } else { ma }) << 3;
+    let d: integer = ex - ey;
+    let aligned: integer = if d > f + 3 { 0 } else { my >> d };
+    let lost: Bool = if d > f + 3 { true } else { my - (aligned << d) != 0 };
+    let sticky: integer = if lost and low_bits(aligned, 1) == 0 { aligned + 1 } else { aligned };
+    let m: integer = if sx == sy { mx + sticky } else { mx - sticky };
+    if m == 0 { return 0; }
+    return encode(sx, ex, m, f + 3, e, f);
+}
+
+// --- comparison ----------------------------------------------------------------
+
+// IEEE order, with -0 equal to +0. `<=>` has no "unordered" answer, so a NaN
+// orders above every number (and equal to another NaN); test `x.is_nan()`
+// first where that matters.
+impl Operator<"<=>", float, Ordering> for float {
+    fn apply(self, rhs: float) -> Ordering {
+        let e: integer = self'high;
+        let f: integer = 0 - self'low;
+        let a: integer = integer(self);
+        let b: integer = integer(rhs);
+        let full: integer = (1 << e) - 1;
+        let a_nan: Bool = low_bits(a >> f, e) == full and low_bits(a, f) != 0;
+        let b_nan: Bool = low_bits(b >> f, e) == full and low_bits(b, f) != 0;
+        if a_nan and b_nan { return Ordering::Equal; }
+        if a_nan { return Ordering::Greater; }
+        if b_nan { return Ordering::Less; }
+        let sa: integer = low_bits(a >> (e + f), 1);
+        let sb: integer = low_bits(b >> (e + f), 1);
+        let ma: integer = low_bits(a, e + f);
+        let mb: integer = low_bits(b, e + f);
+        if ma == 0 and mb == 0 { return Ordering::Equal; }
+        if sa != sb { return if sa == 1 { Ordering::Less } else { Ordering::Greater }; }
+        if ma == mb { return Ordering::Equal; }
+        let less: Bool = if sa == 0 { ma < mb } else { ma > mb };
+        return if less { Ordering::Less } else { Ordering::Greater };
+    }
+}
+
+// --- inspection and conversion -------------------------------------------------
+
+impl float {
+    pub fn is_nan(self) -> Bool {
+        let e: integer = self'high;
+        let f: integer = 0 - self'low;
+        return low_bits(integer(self) >> f, e) == (1 << e) - 1 and low_bits(integer(self), f) != 0;
+    }
+
+    pub fn is_infinite(self) -> Bool {
+        let e: integer = self'high;
+        let f: integer = 0 - self'low;
+        return low_bits(integer(self) >> f, e) == (1 << e) - 1 and low_bits(integer(self), f) == 0;
+    }
+
+    // Zero, of either sign; a subnormal counts as zero.
+    pub fn is_zero(self) -> Bool {
+        let f: integer = 0 - self'low;
+        return low_bits(integer(self) >> f, self'high) == 0;
+    }
+
+    // The same number with its sign flipped.
+    pub fn negate(self) -> float {
+        let w: integer = self'high - self'low;
+        let a: integer = integer(self);
+        return a + ((1 - 2 * low_bits(a >> w, 1)) << w);
+    }
+
+    pub fn abs(self) -> float {
+        return low_bits(integer(self), self'high - self'low);
+    }
+
+    // The number this holds, as a `real`.
+    pub fn to_real(self) -> real {
+        let e: integer = self'high;
+        let f: integer = 0 - self'low;
+        let a: integer = integer(self);
+        let sign: real = if low_bits(a >> (e + f), 1) == 1 { 0.0 - 1.0 } else { 1.0 };
+        let exponent: integer = low_bits(a >> f, e);
+        let fraction: integer = low_bits(a, f);
+        if exponent == (1 << e) - 1 {
+            return if fraction == 0 { sign / 0.0 } else { 0.0 / 0.0 };
+        }
+        if exponent == 0 { return sign * 0.0; }
+        let bias: integer = (1 << (e - 1)) - 1;
+        return sign * real((1 << f) + fraction) * pow2(exponent - bias - f);
+    }
+}
+
+// `value` in the format with `e` exponent and `f` fraction bits, rounded to
+// nearest even; beyond the range it is infinite, below it zero:
+//
+//   let x: float[8..-23] = to_float(1.5, 8, 23);
+pub fn to_float(value: real, e: integer, f: integer) -> integer {
+    let sign: integer = if 0.0 > value { 1 } else { 0 };
+    let magnitude: real = if 0.0 > value { 0.0 - value } else { value };
+    if magnitude != magnitude { return nan_word(e, f); }
+    // The f64 bits of a non-negative real: exponent 62..52, fraction 51..0.
+    let bits: integer = integer(unsigned[64](magnitude));
+    let e64: integer = bits >> 52;
+    let fraction: integer = low_bits(bits, 52);
+    if e64 == 2047 { return infinity_word(sign, e, f); }
+    if e64 == 0 { return pack(sign, 0, 0, e, f); }
+    let bias: integer = (1 << (e - 1)) - 1;
+    return encode(sign, e64 - 1023 + bias, (1 << 52) + fraction, 52, e, f);
+}

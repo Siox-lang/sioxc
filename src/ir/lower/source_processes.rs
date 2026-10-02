@@ -4057,7 +4057,39 @@ fn inline_process_call(
     if result.is_none() {
         truncate_process_values(context, first_value);
     }
+    // `y.negate().to_real()`: a method returning its receiver's type keeps
+    // the receiver's format, as an operator does.
+    if let (Some(result), Some(receiver)) = (result, receiver) {
+        if returns_receiver_type(function, receiver, context) {
+            if let Some(layout) = process_value_source_layout(receiver, context.process_ir).cloned()
+            {
+                if process_value_source_layout(result, context.process_ir).is_none() {
+                    context.process_ir.value_layouts[result.0 as usize] = Some(layout);
+                }
+            }
+        }
+    }
     result
+}
+
+/// Whether `function` is declared to return the type of `receiver`.
+fn returns_receiver_type(
+    function: &ast::FnDecl,
+    receiver: ProcessValueId,
+    context: &LoweringContext<'_>,
+) -> bool {
+    let declared = function
+        .ret
+        .as_ref()
+        .and_then(|ty| declared_process_type(ty, context.resolved))
+        .and_then(|ty| process_type_key(&ty, context));
+    let receiver = context
+        .process_ir
+        .values
+        .get(receiver.0 as usize)
+        .and_then(|value| value.ty.as_ref())
+        .and_then(|ty| process_type_key(ty, context));
+    declared.is_some() && declared == receiver
 }
 
 /// Inline one already-selected Siox function over already-lowered operands.

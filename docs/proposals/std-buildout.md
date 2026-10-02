@@ -111,12 +111,35 @@ directives, `Severity` and the built-in macros. std re-exports each.
      format `[left..right]`, rounding to nearest and saturating, VHDL's
      defaults; `x.to_real()` goes back.
    - Later: division, and a `resize` choosing saturate/wrap and round/truncate.
-3. **Floating point** — `std::float`, after VHDL-2008's `float_pkg` and on
-   the same idea: `float[8..-23]` is IEEE-754 binary32 (sign at the top index,
-   then 8 exponent bits, then 23 fraction bits); `float[5..-10]` is binary16.
-   Addition, subtraction, multiplication, comparison and conversions to and
-   from `real`, `integer` and fixed point, written in siox so they synthesize.
-   It is distinct from `real`, which is the simulator's f64.
+3. **Floating point** — `std::float`, slice 1 implemented for simulation
+   (hardware use waits for hardware to lower through Process IR, see
+   std.md), after VHDL-2008's
+   `float_pkg` and on the same range idea as fixed point:
+
+   ```siox
+   use std::float::{float, to_float};
+   let x: float[8..-23] = to_float(1.5, 8, 23);   // IEEE-754 binary32
+   let h: float[5..-10];                           // binary16
+   let y: float[8..-23];
+   y = x * x + x;
+   let r: real = y.to_real();
+   ```
+
+   - Layout as IEEE-754 and VHDL: the sign at the top index, then `x'high`
+     exponent bits, then `-x'low` fraction bits; bias `2^(E-1) - 1`.
+   - Slice 1: `+`, `-`, `*`, comparisons through `<=>`, `to_float(value, E,
+     F)` from `real`, `x.to_real()`, and `is_nan`, `is_infinite`,
+     `is_zero`, `negate`, `abs`. Results round to nearest, ties to even.
+     Zero, infinity and NaN follow IEEE-754 (`inf - inf` and `0 * inf` are
+     NaN).
+   - Subnormals are flushed to zero, on input and output: the usual FPGA
+     choice, and VHDL's `float_pkg` with `denormalize => false`. A NaN orders
+     above every number, since `<=>` has no "unordered" answer.
+   - Everything is written in siox over the packed word, with no compiler
+     support beyond what fixed point needed, so it synthesizes. It is distinct
+     from `real`, the simulator's f64.
+   - Later: division, square root, subnormals, other rounding modes, and
+     conversions to and from fixed point.
 4. **Linear algebra** (optional) — `Vector<T, N>` and `Matrix<T, R, C>` over
    any `T` with the needed operators.
 

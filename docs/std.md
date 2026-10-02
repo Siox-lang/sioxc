@@ -63,6 +63,7 @@ is a documented shim, and the declaration here is canonical.
 | `std::sim`    | std.standard `time`              | `time`, `frequency` + unit suffixes; FS..MS constants |
 | `std::sync`   | (vendor CDC macros)              | `Sync2`, `ResetSync`, `EdgeDetect`, `PulseSync` |
 | `std::fixed`  | ieee.fixed_pkg                   | `ufixed`, `sfixed` (binary point in the index range), `to_ufixed`, `to_sfixed`, `.to_real()` |
+| `std::float`  | ieee.float_pkg                   | `float` (`float[8..-23]` is binary32), `to_float`, `.to_real()`, `+ - *`, comparisons, `is_nan` … |
 | `std::fs`     | textio / impure host I/O         | typed `read<T>` construction and `exists` fixture probes |
 | `std::attrs`  | (attributes; VHDL has none)      | base metadata: `keep`, `top`, `clock`, `library`, `name` |
 
@@ -276,6 +277,41 @@ let r: real = gain.to_real();                       // 2.5
   saturating; `x.to_real()` goes back.
 - Not yet: division, and a `resize` that chooses saturate/wrap and
   round/truncate.
+
+## `std::float`
+
+IEEE-754 floating point after VHDL-2008's `float_pkg`, on the same idea as
+`std::fixed`: the index range gives the format. The sign sits at the top
+index, then `x'high` exponent bits, then `-x'low` fraction bits.
+
+```siox
+use std::float::{float, to_float};
+
+let x: float[8..-23];             // binary32 (float[5..-10] is binary16)
+let y: float[8..-23];
+x = to_float(1.5, 8, 23);         // the word 0x3FC00000
+y = to_float(0.0 - 2.25, 8, 23);
+r = x * y + x;                    // rounds to nearest, ties to even
+let v: real = r.to_real();
+```
+
+- `+`, `-`, `*` and the six comparisons (through `<=>`; `-0` equals `+0`).
+  Zero, infinity and NaN follow IEEE-754: `0 * inf` and `inf - inf` are NaN,
+  overflow is infinite. A NaN orders above every number, since `<=>` has no
+  "unordered" answer; test `x.is_nan()` first where that matters.
+- `x.is_nan()`, `x.is_infinite()`, `x.is_zero()`, `x.negate()`, `x.abs()`,
+  `x.to_real()`. `to_float(value, e, f)` rounds a `real` to nearest even and
+  returns the *word*: store it in a `float` before doing arithmetic with it.
+- Subnormals are flushed to zero on input and output, VHDL's
+  `denormalize => false` and the usual FPGA choice.
+- Everything is siox source over the packed word: no compiler intrinsic.
+- **Simulation only for now.** The operators run in test processes. In a
+  hardware entity they exceed the hardware lowering's inline budget (its
+  expressions are trees, and these bodies reuse values heavily), which is an
+  error rather than a slow compile; hardware use waits for hardware to lower
+  through Process IR, where values are shared.
+- Not yet: division, square root, subnormals, other rounding modes,
+  conversions to and from fixed point.
 
 ## `std::sync`
 

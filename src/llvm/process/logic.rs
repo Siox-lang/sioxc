@@ -110,6 +110,14 @@ pub(super) fn process_value_meta_free(design: &Design, id: ProcessValueId) -> bo
         ProcessValueKind::Storage(storage) | ProcessValueKind::StorageState { storage, .. } => {
             storage_meta_width(design, *storage).is_none()
         }
+        // `integer(x)` leaves the logic domain: a kernel integer has no
+        // metavalues, so arithmetic over one stores into a packed word with
+        // every element known (VHDL's `to_integer` likewise yields a number).
+        ProcessValueKind::RawResize { .. }
+            if matches!(value.ty, Some(siox::types::Ty::Integer)) =>
+        {
+            true
+        }
         ProcessValueKind::Unary { operand, .. }
         | ProcessValueKind::RawResize { operand }
         | ProcessValueKind::Field { base: operand, .. }
