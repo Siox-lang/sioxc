@@ -176,11 +176,12 @@ and foreign integrations.
 ## std
 
 Owns user-visible types, traits, operators, attributes, simulation helpers,
-math/text/file services, and reusable hardware models. Code: `std/`.
+math/text/file services, and small technology-independent helpers. Code: `std/`.
 
-- 🟡 **Library build-out.** Add canonical counters, synchronizers, memories,
-  FIFOs, stream adapters, and fixed-point families with executable conformance
-  tests.
+- 🟡 **Library build-out.** std is the mandatory, vendor-independent base:
+  fixed-point families and vectors/matrices next, each with executable
+  conformance tests. Memories, FIFOs and stream adapters are IP for vendor
+  packages and libraries, not std.
 - 🟡 **API reference.** Keep [`docs/std.md`](docs/std.md) synchronized with each
   exported declaration and clearly label compiler/runtime intrinsics.
 - 🔴 **Foreign HDL packages (Phase 3).** Map external library names and entity
