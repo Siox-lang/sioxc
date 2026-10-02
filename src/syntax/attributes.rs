@@ -265,6 +265,7 @@ fn applied(binding: &AttrBinding) -> Attr {
         name: binding.name.clone(),
         value: Some(binding.value.clone()),
         span: binding.span,
+        directive: false,
     }
 }
 

@@ -24,7 +24,8 @@ fn native_tests_own_and_read_the_current_runtime_files() {
     std::fs::write(
         &source,
         "module runtime_io;\n\
-         use std::text::{string, unicode};\n\
+         use std::primitive::string;\n\
+         use std::text::unicode;\n\
          type Text = string;\n\
          entity Rom { data: unsigned[8] out, wide: unsigned[128] out }\n\
          impl Rom {\n\
@@ -174,7 +175,8 @@ fn runtime_string_indices_are_checked_against_the_loaded_length() {
     std::fs::write(
         &source,
         "module runtime_text_index;\n\
-         use std::text::{string, unicode};\n\
+         use std::primitive::string;\n\
+         use std::text::unicode;\n\
          #[test] entity RuntimeTextIndex {}\n\
          impl RuntimeTextIndex {\n\
          \x20   let message: string = read<string>(\"message.txt\");\n\
@@ -200,7 +202,7 @@ fn runtime_string_indices_are_checked_against_the_loaded_length() {
     );
     assert!(
         output.contains("index 9 is outside declared range 0..2")
-            && output.contains("runtime_text_index.siox:6:29"),
+            && output.contains("runtime_text_index.siox:7:29"),
         "runtime string failure was not actionable:\n{output}"
     );
 }

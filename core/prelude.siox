@@ -2,11 +2,14 @@ module core::prelude;
 
 // The core prelude: names in scope in every module, always. `core` is the part
 // of the compiler reachable through the language — the hooks the compiler
-// calls, the types its grammar produces, its directives — so unlike
+// calls, the types its grammar produces, its macros — so unlike
 // `std::prelude` it does not depend on `--std`: these sources are compiled
 // into `sioxc`.
 
-pub use core::ops::{Bool, Boolean, Ordering, Range, Index, IndexAssign, New, From, Resolve};
-pub use core::attrs::{test, precedence, allow, warn, deny, forbid};
-pub use core::text::string;
-pub use core::assert::{assert, warn, print, error};
+pub use core::primitive::{Bool, string};
+pub use core::ops::{Boolean, Range, Index, IndexAssign, Resolve};
+pub use core::cmp::Ordering;
+pub use core::default::New;
+pub use core::convert::From;
+pub use core::attrs::precedence;
+pub use core::macros::{assert, warn, print, error};

@@ -447,7 +447,7 @@ pub fn elaborate_top(
 /// Elaborate exactly the entities selected by a frontend consumer.
 ///
 /// Native test discovery uses this entry point after resolving the canonical
-/// `std::attrs::test` applications. Keeping selection outside elaboration
+/// `#[test]` directives. Keeping selection outside elaboration
 /// prevents this stage and Process-IR lowering from independently
 /// rediscovering roots by attribute spelling.
 pub fn elaborate_entities(

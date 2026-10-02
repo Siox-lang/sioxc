@@ -195,7 +195,7 @@ the generated hardware is never a mystery.
 ## Built-in macros
 
 `assert!`, `warn!`, `print!` and the new `error!` are ordinary macros
-declared in `core::assert` and exported by `core::prelude`, as Rust declares
+declared in `core::macros` and exported by `core::prelude`, as Rust declares
 `assert!` in `core` with `#[rustc_builtin_macro]`:
 
 ```siox

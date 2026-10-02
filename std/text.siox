@@ -8,8 +8,6 @@ module std::text;
 // therefore goes through a named table here (VHDL's 'pos/'val made explicit
 // and table-scoped).
 
-// `string` is the grammar's, in `core::text`.
-pub use core::text::string;
 
 // Encoding tables. `Char` stores Unicode code points, so `Unicode` is the
 // identity; `Ascii` is its 7-bit prefix, with `-1` for a character outside it.

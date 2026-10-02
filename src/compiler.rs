@@ -1033,6 +1033,34 @@ fn discover_import_modules(source: &str, tokens: &[Token]) -> Vec<Vec<String>> {
             }
         }
     }
+    // A fully qualified library path needs no import, as in Rust:
+    // `std::ops::Boolean` loads `std::ops`. Only `std::` and `core::`, so an
+    // ordinary `State::Idle` never sends discovery looking for files.
+    for (index, token) in tokens.iter().enumerate() {
+        let starts_path = token.kind == TokenKind::Ident
+            && matches!(text(token).as_str(), "std" | "core")
+            && index
+                .checked_sub(1)
+                .is_none_or(|prev| tokens[prev].kind != TokenKind::ColonColon);
+        if !starts_path {
+            continue;
+        }
+        let mut path = vec![text(token)];
+        let mut cursor = index + 1;
+        while tokens
+            .get(cursor)
+            .is_some_and(|t| t.kind == TokenKind::ColonColon)
+            && tokens
+                .get(cursor + 1)
+                .is_some_and(|t| t.kind == TokenKind::Ident)
+        {
+            path.push(text(tokens[cursor + 1]));
+            cursor += 2;
+        }
+        for keep in 2..path.len() {
+            push(path[..keep].to_vec(), &mut modules);
+        }
+    }
     modules
 }
 
@@ -1124,10 +1152,13 @@ fn absolute_use_path(path: Vec<String>, here: &[String]) -> Option<Vec<String>> 
 /// no files on disk for it.
 const CORE: &[(&str, &str)] = &[
     ("prelude", include_str!("../core/prelude.siox")),
+    ("primitive", include_str!("../core/primitive.siox")),
     ("ops", include_str!("../core/ops.siox")),
+    ("cmp", include_str!("../core/cmp.siox")),
+    ("default", include_str!("../core/default.siox")),
+    ("convert", include_str!("../core/convert.siox")),
     ("attrs", include_str!("../core/attrs.siox")),
-    ("text", include_str!("../core/text.siox")),
-    ("assert", include_str!("../core/assert.siox")),
+    ("macros", include_str!("../core/macros.siox")),
 ];
 
 /// The embedded source of a `core::` module path.

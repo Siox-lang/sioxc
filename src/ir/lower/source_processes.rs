@@ -2745,7 +2745,7 @@ fn enum_variant_type(
 }
 
 /// Result type of a layout attribute. Attributes are compiler primitives, but
-/// their Boolean values and symbols remain owned by `std::logic::Bool`.
+/// their Boolean values and symbols remain owned by `core::primitive::Bool`.
 fn process_attribute_type(
     attribute: &str,
     base: ProcessValueId,
@@ -5984,7 +5984,7 @@ mod tests {
              }\n\
              entity Device { input: Bool in, output: Bool out }\n\
              impl Device { output = input; }\n\
-             #[std::attrs::test] entity Smoke {}\n\
+             #[test] entity Smoke {}\n\
              impl Smoke {\n\
                let flag: Bool = true;\n\
                let i: integer = 9;\n\
@@ -6402,7 +6402,7 @@ mod tests {
         let sources = [
             "module tests;\n\
              enum State { Idle, Run, Done }\n\
-             #[std::attrs::test] entity Smoke {}\n\
+             #[test] entity Smoke {}\n\
              impl Smoke {\n\
                let flags: Bool[0..1] = [false, true];\n\
                let state: State = State::Run;\n\
@@ -6511,7 +6511,7 @@ mod tests {
              view Slave for Link { request in, response out }\n\
              entity Device { bus: Link Slave }\n\
              impl Device { bus.response = bus.request; }\n\
-             #[std::attrs::test] entity Smoke {}\n\
+             #[test] entity Smoke {}\n\
              impl Smoke {\n\
                let link: Link;\n\
                let dut: Device = { .bus = link };\n\
@@ -6630,7 +6630,7 @@ mod tests {
                let left: integer = a; \
                if left > b { return left; } return b; \
              } \
-             #[std::attrs::test] entity Smoke {} \
+             #[test] entity Smoke {} \
              impl Smoke { let observed: integer = 0; \
                run: process { observed = choose(observed, EXPECTED); } }",
             "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
@@ -6697,7 +6697,7 @@ mod tests {
              struct Pair { pub a: integer, pub b: integer } \
              fn first(values: integer[2]) -> integer { return values[0]; } \
              fn first_pair(value: Pair) -> integer { return value.a; } \
-             #[std::attrs::test] entity Smoke {} \
+             #[test] entity Smoke {} \
              impl Smoke { \
                const VALUES: integer[2] = [7, 8]; \
                let seed: Pair = { .a = 0, .b = 0 }; \

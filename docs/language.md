@@ -602,7 +602,7 @@ type Pair<T> = Packet<T>;              // a generic alias
   types (modules, structs, enums, entities, views, traits, aliases), values
   (functions, constants, variants), macros (`assert!`, `print!`) and
   attributes (`attr` declarations, looked up only in attribute position). So a
-  module `std::assert` and the macro `assert!` never collide.
+  module `core::macros` and the macro `assert!` never collide.
 - `type` names a type you could not name with a path: a sized vector, a
   ranged integer, an applied generic. The alias is transparent for type
   identity; a distinct type is the newtype form, `struct Word(Bit[]);`
@@ -695,9 +695,10 @@ so `x'length` keeps its meaning.
 accepts, or reports; removing metadata changes only what a tool sees. Metadata
 written as `#[...]` is `E-P032`, and the help names the binding that replaces
 it for that position. As with rustc's built-in attributes, the directives are
-declared in `core::attrs` and reach every module through the prelude, and the
-compiler recognizes those declarations, not a spelling: a same-named attribute
-declared elsewhere is ordinary metadata.
+built into the compiler and declared nowhere: they cannot be imported,
+renamed or shadowed, take no `= value`, and are written without a path. A
+module's own `attr test` is metadata (`attr test for X = …;`) and never makes
+a test.
 
 - `#[test]` compiles an entity into the `sioxc --test` executable.
 - `#[allow(lint, …)]`, `#[warn(…)]`, `#[deny(…)]` and `#[forbid(…)]` set lint
@@ -706,8 +707,8 @@ declared elsewhere is ordinary metadata.
 ### 3.5a Lint levels
 
 Every warning is a *lint* with a snake_case name; the first one of each kind
-says so (``note: `#[warn(unused_signal)]` on by default``). `core::attrs::Lint`
-lists them:
+says so (``note: `#[warn(unused_signal)]` on by default``). The compiler owns
+the names, as rustc's lint registry does:
 
 | lint | code | | lint | code |
 | --- | --- | --- | --- | --- |
@@ -2103,7 +2104,7 @@ width, so `unsigned[128](1) << 64` remains a valid cross-word shift.
 are all derived.
 
 **Comparisons.** One three-way `Operator<"<=>", T, Ordering>` impl (`apply`
-returning `std::ops::Ordering` — `Less`/`Equal`/`Greater`) derives all six
+returning `std::cmp::Ordering` — `Less`/`Equal`/`Greater`) derives all six
 comparisons — like Rust's `Ord` / C++'s `operator<=>`: `a < b` lowers to
 `(a <=> b) == Ordering::Less`, and struct equality comes with it:
 
@@ -2439,7 +2440,7 @@ impl Cpu {
   coexist. `use`, renames, globs and `pub use` re-exports work as for items;
   an imported macro never invoked is reported by `unused_import`.
 - **Built-in macros.** `assert!`, `warn!`, `print!` and `error!` are ordinary
-  macros declared in `core::assert` and visible everywhere through
+  macros declared in `core::macros` and visible everywhere through
   `core::prelude`; a user macro of the same name shadows one. Each expands to
   a compiler primitive, `builtin # assert(…)`, which only `core`'s macros may
   write. `error!("message")` fails the simulation unconditionally, like

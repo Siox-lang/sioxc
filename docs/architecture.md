@@ -153,7 +153,7 @@ tree requests do not continue through IR. Frontend-only requests stop before
 
 `siox::llvm` emits LLVM and compiles the `Design` ahead of time to native code.
 For a test build, `siox::testbench` resolves enabled uses of the canonical
-`test` lang item (`core::attrs::test`) once, elaborates exactly those roots, and binds
+built-in `#[test]` directive once, elaborates exactly those roots, and binds
 them into a `TestPlan`. `ir::lower_processes` fills the canonical
 `Design::process_ir` with validated descriptors and CFGs directly from the
 typed/elaborated source context; the compiler has no separate adapter module or
@@ -419,7 +419,7 @@ and then use their normal integer representation/conversion.
   the stable codes in `diag::codes` (e.g. `WRITE_TO_INPUT_PORT`); add new
   codes to that catalogue rather than scattering string literals. Every
   warning code is also a lint (`diag::lints::LINTS`, mirrored by
-  `core::attrs::Lint`): once the compiler has parsed the program it gives the
+  the compiler's lint list): once the compiler has parsed the program it gives the
   sink the `-A`/`-W`/`-D`/`-F` levels and every `#[allow(...)]`-style
   directive, and `emit` applies them as warnings arrive, so a denied lint is an
   error before the next stage checks `has_errors`. A new warning needs a lint

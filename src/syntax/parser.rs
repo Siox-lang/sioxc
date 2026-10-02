@@ -678,7 +678,15 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let value = if self.eat(TokenKind::Eq) {
-                Some(self.parse_expr(false))
+                let value = self.parse_expr(false);
+                if name.segments.len() == 1 && name.segments[0].text == "test" {
+                    self.sink.emit(
+                        Diagnostic::error("a directive takes no value")
+                            .at(expr_span(&value))
+                            .help("write `#[test]`, or remove it"),
+                    );
+                }
+                Some(value)
             } else {
                 None
             };
@@ -687,6 +695,7 @@ impl<'a> Parser<'a> {
                 name,
                 value,
                 span: start.to(self.prev_span()),
+                directive: true,
             });
         }
         attrs

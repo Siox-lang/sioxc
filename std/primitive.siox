@@ -1,0 +1,5 @@
+module std::primitive;
+
+// The grammar's own types: rustc's `std::primitive` re-exports them, and so
+// does this.
+pub use core::primitive::{Bool, string};
