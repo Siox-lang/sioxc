@@ -3,7 +3,8 @@
 Status: **slices 1 and 2 implemented** (language §3.30): declarations,
 forms, fragment kinds, all four invocation positions, hygiene, resolution
 through `use`, `--emit expanded`, repetition, call-site locations and
-expansion notes. `builtin #` remains; see [Later slices](#later-slices).
+expansion notes, and the built-in macros declared in `core` over
+`builtin #`. What remains is listed under [Later slices](#later-slices).
 
 `macro` declares a user-defined syntax transformation. It is the third
 compile-time mechanism, next to the two that already exist:
@@ -193,11 +194,29 @@ the generated hardware is never a mystery.
 
 ## Built-in macros
 
-`assert!`, `print!` and `warn!` remain compiler built-ins in this slice: the
-compiler parses their arguments as expressions, and later stages type-check
-and lower them as today. Moving them into `core` as ordinary macro
-declarations over a `builtin # …` form is a later slice; it changes no
-user-visible behavior.
+`assert!`, `warn!`, `print!` and the new `error!` are ordinary macros
+declared in `core::assert` and exported by `core::prelude`, as Rust declares
+`assert!` in `core` with `#[rustc_builtin_macro]`:
+
+```siox
+pub macro assert($cond: expr, $rest: expr...) { builtin # assert($cond, $rest) }
+pub macro warn($cond: expr, $rest: expr...) { builtin # warn($cond, $rest) }
+pub macro print($args: expr...) { builtin # print($args) }
+pub macro error($rest: expr...) { builtin # assert(false, $rest) }
+```
+
+- **`builtin # name(args)`** is the compiler primitive behind them: an
+  expression whose meaning the compiler supplies. It is accepted only in the
+  body of a macro declared in `core`; anywhere else it is an error. The
+  primitives are `assert`, `warn` and `print`.
+- **`error!("message")`** fails the simulation unconditionally, with its
+  source location, like Rust's `panic!`; it replaces the
+  `assert!(false, "message")` idiom.
+- Because they are macros, the built-ins follow every macro rule: they can be
+  imported, re-exported and shadowed by a user macro of the same name, and a
+  failure reports the outermost invocation.
+- Nothing about how they type-check or run changes: the primitive is the
+  same compiler operation the old special-cased call was.
 
 ## Not part of this design
 
@@ -253,9 +272,6 @@ named rather than encoded in punctuation.
 
 ## Later slices
 
-- **`builtin #`**, the std-only form that lets `assert!`, `print!`, `warn!` and
-  `error!` (core-std.md) be declared in `core` instead of special-cased. It
-  waits for `core` itself (core-std.md).
 - **Expansion notes in the language server**: generated declarations shown as
   generated, not as handwritten source.
 - **Which invocation.** A note on an error in a body names the macro but not

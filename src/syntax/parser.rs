@@ -181,7 +181,7 @@ pub struct Parser<'a> {
     /// Index of the token consumed last, where text lookups start.
     last: usize,
     /// The argument tokens of every `name!(…)` read so far.
-    macro_args: HashMap<Span, MacroArgs>,
+    macro_args: MacroArgTable,
 }
 
 impl<'a> Parser<'a> {
@@ -364,7 +364,7 @@ impl<'a> Parser<'a> {
     }
 
     /// The argument tokens of the `name!(…)` calls this parser read.
-    pub fn take_macro_args(&mut self) -> HashMap<Span, MacroArgs> {
+    pub fn take_macro_args(&mut self) -> MacroArgTable {
         std::mem::take(&mut self.macro_args)
     }
 
@@ -607,7 +607,7 @@ impl<'a> Parser<'a> {
                 if args.delim != MacroDelim::Brace {
                     self.expect(TokenKind::Semi, "after a macro invocation");
                 }
-                self.macro_args.insert(span, args);
+                self.macro_args.entry(span).or_default().push(args);
                 Item::MacroCall { path, span }
             }
             TokenKind::Attr => match self.parse_attr(is_pub) {
@@ -1986,8 +1986,12 @@ impl<'a> Parser<'a> {
             // terminated by `;`. A function returns a value via `return`. A
             // `name!{…}` macro call is the exception, as in Rust.
             let braced = matches!(&lhs, Expr::Call { bang: true, span, .. }
-                if self.macro_args.get(span).is_some_and(|a| a.delim == MacroDelim::Brace));
-            if !braced || self.at(TokenKind::Semi) {
+                if self.macro_args.get(span).and_then(|calls| calls.last())
+                    .is_some_and(|a| a.delim == MacroDelim::Brace));
+            // A macro's expansion may end in an expression without `;`, as
+            // Rust's does: `assert!(x);` expands to one expression statement.
+            let expansion_tail = self.texts.is_some() && self.at(TokenKind::Eof);
+            if (!braced || self.at(TokenKind::Semi)) && !expansion_tail {
                 self.expect(TokenKind::Semi, "after an expression statement");
             }
             Stmt::Expr(lhs)
@@ -2401,35 +2405,52 @@ impl<'a> Parser<'a> {
     /// Longest declared custom operator beginning at the current token. This
     /// supports both word operators and punctuation split across lexer tokens.
     fn custom_operator_at(&self) -> Option<(BinOp, u8, u8, usize)> {
-        let start = self.span().start as usize;
-        let tail = self.src.get(start..)?;
+        // The text of the current token and the tokens touching it, built
+        // from the tokens so it also works over macro tokens.
+        let mut tail = String::new();
+        let mut ends = Vec::new();
+        let mut i = self.pos;
+        while i < self.tokens.len() && self.tokens[i].kind != TokenKind::Eof {
+            if i > self.pos {
+                let (prev, span) = (self.tokens[i - 1].span, self.tokens[i].span);
+                if span.file != prev.file || span.start != prev.end {
+                    break;
+                }
+            }
+            tail.push_str(self.token_text(i));
+            ends.push(tail.len());
+            i += 1;
+            if tail.len() > 16 {
+                break; // longer than any operator
+            }
+        }
         let (symbol, &precedence) = self
             .custom_operators
             .iter()
             .filter(|(symbol, _)| tail.starts_with(symbol.as_str()))
             .max_by_key(|(symbol, _)| symbol.len())?;
-        let wanted_end = start + symbol.len();
-        let mut consumed = 0;
-        let mut end = start;
-        while self.pos + consumed < self.tokens.len() && end < wanted_end {
-            let span = self.tokens[self.pos + consumed].span;
-            if span.start as usize != end {
-                return None;
-            }
-            end = span.end as usize;
-            consumed += 1;
-        }
-        (end == wanted_end).then(|| {
-            (
-                BinOp::Custom {
-                    symbol: symbol.clone(),
-                    precedence,
-                },
+        // The operator must end exactly where a token ends.
+        let consumed = ends.iter().position(|&end| end == symbol.len())? + 1;
+        Some((
+            BinOp::Custom {
+                symbol: symbol.clone(),
                 precedence,
-                precedence.saturating_add(1),
-                consumed,
-            )
-        })
+            },
+            precedence,
+            precedence.saturating_add(1),
+            consumed,
+        ))
+    }
+
+    /// The text of the token at index `i`.
+    fn token_text(&self, i: usize) -> &str {
+        match &self.texts {
+            Some(texts) => &texts[i],
+            None => {
+                let span = self.tokens[i].span;
+                &self.src[span.start as usize..span.end as usize]
+            }
+        }
     }
 
     /// Parse a prefix operator, or one of the expression forms that begins with
@@ -2599,7 +2620,7 @@ impl<'a> Parser<'a> {
                         Vec::new()
                     };
                     let span = start.to(self.prev_span());
-                    self.macro_args.insert(span, margs);
+                    self.macro_args.entry(span).or_default().push(margs);
                     e = Expr::Call {
                         callee: Box::new(e),
                         type_args: Vec::new(),
@@ -2678,7 +2699,7 @@ impl<'a> Parser<'a> {
             Parser::from_macro_tokens(tokens, &mut *self.sink, &self.custom_operators, false, at);
         let args = sub.parse_comma_exprs();
         let nested = sub.take_macro_args();
-        self.macro_args.extend(nested);
+        merge_macro_args(&mut self.macro_args, nested);
         args
     }
 
@@ -2852,6 +2873,35 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_expr(false);
                 self.expect(TokenKind::RParen, "to close a parenthesized expression");
                 inner
+            }
+            // `builtin # assert(…)`: a compiler primitive, for `core`'s macro
+            // bodies (macros.md). It reads as the bang call the compiler
+            // has always lowered; the expansion pass checks where it stands.
+            TokenKind::Ident
+                if self.cur_text() == "builtin"
+                    && self.kind_at(self.pos + 1) == &TokenKind::Pound =>
+            {
+                let start = self.span();
+                self.bump(); // `builtin`
+                self.bump(); // `#`
+                let name = self.parse_ident();
+                let callee = Expr::Path(Path {
+                    span: name.span,
+                    segments: vec![name],
+                });
+                let args = if self.at(TokenKind::LParen) {
+                    self.parse_call_args()
+                } else {
+                    self.error_here("expected `(` after a builtin primitive's name");
+                    Vec::new()
+                };
+                Expr::Call {
+                    callee: Box::new(callee),
+                    type_args: Vec::new(),
+                    args,
+                    bang: true,
+                    span: start.to(self.prev_span()),
+                }
             }
             TokenKind::Ident if self.cur_text() == "true" || self.cur_text() == "false" => {
                 // `true`/`false` are not primitives — they are the two variants

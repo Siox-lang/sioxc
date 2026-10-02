@@ -20,8 +20,11 @@
 //!   path of the item it names there.
 //! - Names in the arguments are the caller's and are left alone.
 //!
-//! Built-in `assert!`, `print!` and `warn!` are not user macros and pass
-//! through untouched, as does any call this pass cannot find a macro for.
+//! `assert!`, `warn!`, `print!` and `error!` are ordinary macros declared in
+//! `core::assert` over the primitive `builtin # name(…)`, which the parser
+//! reads as the bang call the compiler lowers. A primitive has no argument
+//! tokens; only `core`'s macro bodies may write one, and it takes the
+//! outermost invocation's span so a failure names the call site.
 
 use std::collections::{HashMap, HashSet};
 
@@ -49,7 +52,7 @@ pub fn expand(
             if let (Some(first), Some(last)) = (form.body.first(), form.body.last()) {
                 let body = first.span.to(last.span);
                 sink.note_inside(body, format!("in an expansion of `{}!`", form.name.text));
-                bodies.push(body);
+                bodies.push((body, form_home(&index, form)));
             }
         }
     }
@@ -286,7 +289,7 @@ struct Expander<'a> {
     /// The module being expanded.
     module: String,
     /// Its macro calls' argument tokens, including the expansions' own.
-    args: HashMap<Span, MacroArgs>,
+    args: MacroArgTable,
     /// Lint directives the expansions wrote.
     lints: Vec<crate::diag::lints::LintDirective>,
     /// Fresh hygiene marks, shared by every module.
@@ -300,7 +303,7 @@ struct Expander<'a> {
     /// written in a body reports its location.
     site: Option<Span>,
     /// Every macro body's extent.
-    bodies: &'a [Span],
+    bodies: &'a [(Span, bool)],
 }
 
 impl Expander<'_> {
@@ -327,10 +330,19 @@ impl Expander<'_> {
                 self.check_visible(&found, &owner.join("::"), path.span);
                 return Some(found);
             }
-            return imports?
-                .globs
-                .iter()
-                .find_map(|(glob, _)| self.index.export(glob, name, 0));
+            let glob = imports.and_then(|imports| {
+                imports
+                    .globs
+                    .iter()
+                    .find_map(|(glob, _)| index.export(glob, name, 0))
+            });
+            // Beneath everything, the preludes: `assert!` and the other
+            // built-in macros are `core`'s.
+            return glob.or_else(|| {
+                ["core::prelude", "std::prelude"]
+                    .iter()
+                    .find_map(|prelude| index.export(prelude, name, 0))
+            });
         }
         let (owner, name) = abs.split_at(abs.len() - 1);
         let mut owner = owner.to_vec();
@@ -384,7 +396,7 @@ impl Expander<'_> {
             );
             return None;
         }
-        let call = self.args.get(&span).cloned()?;
+        let call = self.take_args(span)?;
         let args = split_args(&call.tokens);
         let index = self.index;
         let forms = &index.macros[key];
@@ -445,7 +457,7 @@ impl Expander<'_> {
             Position::Members => Expansion::Members(parser.expansion_impl_items()),
             Position::Items => Expansion::Items(parser.expansion_items()),
         };
-        self.args.extend(parser.take_macro_args());
+        merge_macro_args(&mut self.args, parser.take_macro_args());
         self.lints.extend(parser.take_lints());
         for diagnostic in scratch.diagnostics() {
             self.sink.emit(
@@ -754,6 +766,11 @@ impl Expander<'_> {
         let Expr::Path(path) = callee.as_ref() else {
             return None;
         };
+        // A bang call without argument tokens is a `builtin #` primitive,
+        // never a macro invocation.
+        if !self.has_args(*span) {
+            return None;
+        }
         self.find(path).map(|key| (key, *span))
     }
 
@@ -983,22 +1000,37 @@ impl Expander<'_> {
                 ..
             } => {
                 if *bang {
-                    // Not a user macro: it must be a built-in one.
                     let builtin = matches!(callee.as_ref(), Expr::Path(p)
                         if p.segments.len() == 1
                             && matches!(p.segments[0].text.as_str(), "assert" | "print" | "warn"));
-                    let readable = self.args.get(span).is_none_or(|a| a.parsed);
-                    if let Expr::Path(path) = callee.as_ref() {
-                        if !builtin || !readable {
-                            let path = path.clone();
-                            self.unknown(&path);
+                    match self.take_args(*span) {
+                        // `builtin # …`: a bang call with no argument tokens.
+                        // Only `core`'s macro bodies may write it, and it
+                        // reports where the outermost invocation is, as
+                        // Rust's `line!()` does.
+                        None => {
+                            if self.body_of(*span) != Some(true) {
+                                self.sink.emit(
+                                    Diagnostic::error("`builtin #` is reserved to `core`'s macros")
+                                        .with_code(codes::MACRO_EXPANSION)
+                                        .at(*span)
+                                        .help("call the macro `core` declares over it, such as `assert!`"),
+                                );
+                            }
+                            if let Some(site) = self.site {
+                                if builtin {
+                                    *span = site;
+                                }
+                            }
                         }
-                    }
-                    // Written in a body: it reports where the outermost
-                    // invocation is, as Rust's `line!()` does.
-                    if let Some(site) = self.site {
-                        if builtin && self.in_body(*span) {
-                            *span = site;
+                        // A `name!` no macro claims.
+                        Some(call) => {
+                            if let Expr::Path(path) = callee.as_ref() {
+                                if !builtin || !call.parsed {
+                                    let path = path.clone();
+                                    self.unknown(&path);
+                                }
+                            }
                         }
                     }
                 }
@@ -1025,6 +1057,18 @@ impl Expander<'_> {
         }
     }
 
+    /// The next call's arguments at `span`, consumed.
+    fn take_args(&mut self, span: Span) -> Option<MacroArgs> {
+        let calls = self.args.get_mut(&span)?;
+        (!calls.is_empty()).then(|| calls.remove(0))
+    }
+
+    /// Whether a call at `span` still has arguments waiting: a macro call
+    /// rather than a `builtin #` primitive.
+    fn has_args(&self, span: Span) -> bool {
+        self.args.get(&span).is_some_and(|calls| !calls.is_empty())
+    }
+
     /// Start walking an expansion of the call at `span`; the site to
     /// restore afterwards.
     fn enter(&mut self, span: Span) -> Option<Span> {
@@ -1033,11 +1077,13 @@ impl Expander<'_> {
         outer
     }
 
-    /// Whether `span` was written inside a macro body.
-    fn in_body(&self, span: Span) -> bool {
+    /// Whether `span` lies in a macro body, and if so whether that macro is
+    /// `core`'s.
+    fn body_of(&self, span: Span) -> Option<bool> {
         self.bodies
             .iter()
-            .any(|b| b.file == span.file && b.start <= span.start && span.end <= b.end)
+            .find(|(b, _)| b.file == span.file && b.start <= span.start && span.end <= b.end)
+            .map(|(_, core)| *core)
     }
 
     /// A call to a macro nobody declared.
@@ -1209,4 +1255,13 @@ fn matching_close(tokens: &[MacroToken], open: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Whether `form` is declared in `core`.
+fn form_home(index: &Index, form: &MacroDecl) -> bool {
+    index
+        .macros
+        .iter()
+        .find(|(_, forms)| forms.iter().any(|f| f.span == form.span))
+        .is_some_and(|((module, _), _)| module == "core" || module.starts_with("core::"))
 }

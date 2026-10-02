@@ -246,8 +246,9 @@ sioxc root selection remains structural or explicit through `--top`.
 ## `std::assert` and `core::assert`
 
 `assert!(cond, "msg")` fails a test, `warn!(cond, "msg")` reports and counts
-without failing, and `print!` formats a line; all three are built-in macros,
-so they capture their source location. `core::assert` carries the severity
+without failing, `print!` formats a line, and `error!("msg")` fails
+unconditionally. All four are macros declared in `core::assert` over the
+compiler primitive `builtin # …`, so a failure names the line of the call. `core::assert` carries the severity
 ladder (re-exported here) (VHDL `severity_level`) for when assertions grow a severity argument:
 
 ```siox

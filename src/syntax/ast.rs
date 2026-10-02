@@ -24,7 +24,20 @@ pub struct Module {
     /// call's span. The parser also reads a call's arguments as expressions,
     /// which is all a built-in macro needs; a user macro re-reads the tokens
     /// by its parameters' fragment kinds (`syntax::macros`).
-    pub macro_args: std::collections::HashMap<Span, MacroArgs>,
+    pub macro_args: MacroArgTable,
+}
+
+/// Every `name!(…)` call's argument tokens, by the call's span. A macro body
+/// can yield several calls with one span (a `for macro` repetition writes the
+/// same tokens again), so each span holds its calls in source order; the
+/// expansion pass consumes them in the same order.
+pub type MacroArgTable = std::collections::HashMap<Span, Vec<MacroArgs>>;
+
+/// Append `from`'s calls to `into`, keeping each span's order.
+pub fn merge_macro_args(into: &mut MacroArgTable, from: MacroArgTable) {
+    for (span, calls) in from {
+        into.entry(span).or_default().extend(calls);
+    }
 }
 
 /// A token as a macro captures and re-emits it: its kind, the span it was

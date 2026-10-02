@@ -2437,9 +2437,13 @@ impl Cpu {
   the call site) and its module's private macros.
 - **Resolution.** Macros have their own namespace: `fn f` and `macro f`
   coexist. `use`, renames, globs and `pub use` re-exports work as for items;
-  an imported macro never invoked is reported by `unused_import`. The
-  built-in `assert!`, `print!` and `warn!` are always visible, and a user
-  macro of the same name shadows one.
+  an imported macro never invoked is reported by `unused_import`.
+- **Built-in macros.** `assert!`, `warn!`, `print!` and `error!` are ordinary
+  macros declared in `core::assert` and visible everywhere through
+  `core::prelude`; a user macro of the same name shadows one. Each expands to
+  a compiler primitive, `builtin # assert(…)`, which only `core`'s macros may
+  write. `error!("message")` fails the simulation unconditionally, like
+  Rust's `panic!`.
 - **Expansion** happens after parsing and before name resolution, so
   generated code is checked exactly like handwritten code. A macro may invoke
   macros, at most 128 deep (rustc's default `recursion_limit`); an expansion
