@@ -158,6 +158,14 @@ fn bind_module(
     let mut plan: Vec<(Target, Attr, Option<Ident>)> = Vec::new();
     for (index, item) in module.items.iter().enumerate() {
         match item {
+            // A lang item is read by the resolver (`core`/`std` only).
+            Item::AttrBinding(binding)
+                if path_is(&binding.name, "lang")
+                    && module
+                        .path
+                        .segments
+                        .first()
+                        .is_some_and(|root| root.text == "core" || root.text == "std") => {}
             Item::AttrBinding(binding) => {
                 let target = match &binding.object {
                     Some(object) => entity_named(module, &object.text).map(Target::Entity),

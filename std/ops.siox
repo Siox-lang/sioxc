@@ -1,103 +1,12 @@
 module std::ops;
 
-use std::logic::{Bit, Bool};
+use std::logic::Bit;
 
-// Operator overloading is Rust-style (spec 3.25) but goes through a single
-// symbol-parameterized trait: `a <op> b` dispatches to
-// `impl Operator<"<op>", Input, Output> for <type of a>` (method `apply`;
-// overloads select by the rhs/`Input` type, and the impl's `Output` names the
-// result type). The standard symbols (`+ - * / << >> and or not <=>`) carry
-// built-in precedence; a user operator such as `xor` binds its precedence
-// inside its impl with `attr precedence = N;`. Unary `not` implements
-// `apply(self)` with no rhs.
-// The three-way `<=>` returns `Ordering` and derives all of < <= > >= == !=.
-pub trait Operator<op: string, input, output> {
-    fn apply(self, rhs: input) -> output {}
-}
-
-// Literal affixes are symbol-parameterized the same way (spec 3.24): the first
-// argument is the affix string, the second the literal's data type.
-//   - a bit-string prefix `x"AB"` dispatches to `impl Prefix<"x", string> for T`
-//   - a numeric suffix `10ns` dispatches to `impl Suffix<"ns", integer> for T`
-// The impl's target type is what the literal produces; prefix evaluation is a
-// compiler intrinsic (radix expansion) until const string operations land, so
-// prefix impls inherit the empty default body.
-pub trait Prefix<char: string, T> {
-    fn prefix(data: T) {}
-}
-
-pub trait Suffix<char: string, T> {
-    fn suffix(data: T) {}
-}
-
-// Inclusive index ranges are ordinary values when indexing is overloaded.
-// Partial source forms (`..right`, `left..`, `..`) are completed from the indexed
-// object's declared bounds before dispatch.
-pub struct Range {
-    pub left: integer,
-    pub right: integer
-}
-
-// `value[index]` falls back to Index when `value` is not an intrinsic packed
-// vector or array. `value[index] = next` similarly uses IndexAssign.
-pub trait Index<I, Output> {
-    fn index(self, index: I) -> Output;
-}
-
-pub trait IndexAssign<I, Value> {
-    fn index_assign(self, index: I, value: Value);
-}
-
-// `and`/`or` have one type-directed meaning. For Bool-like operands they are
-// scalar boolean logic; for bit-derived operands they apply per bit.
-impl Operator<"and", Bool, Bool> for Bool {
-    fn apply(self, rhs: Bool) -> Bool {
-        if self {
-            return rhs;
-        }
-        return false;
-    }
-}
-
-impl Operator<"or", Bool, Bool> for Bool {
-    fn apply(self, rhs: Bool) -> Bool {
-        if self { return true; }
-        return rhs;
-    }
-}
-
-impl Operator<"not", Bool, Bool> for Bool {
-    fn apply(self) -> Bool {
-        if self { return false; }
-        return true;
-    }
-}
-
-impl Operator<"xor", Bool, Bool> for Bool {
-    attr precedence = 35;
-    fn apply(self, rhs: Bool) -> Bool {
-        if self { return not rhs; }
-        return rhs;
-    }
-}
-
-impl Operator<"nand", Bool, Bool> for Bool {
-    attr precedence = 40;
-    fn apply(self, rhs: Bool) -> Bool { return not (self and rhs); }
-}
-
-impl Operator<"nor", Bool, Bool> for Bool {
-    attr precedence = 30;
-    fn apply(self, rhs: Bool) -> Bool { return not (self or rhs); }
-}
-
-impl Operator<"xnor", Bool, Bool> for Bool {
-    attr precedence = 35;
-    fn apply(self, rhs: Bool) -> Bool {
-        if self == rhs { return true; }
-        return false;
-    }
-}
+// The operator and value hooks are the compiler's and live in `core::ops`;
+// this module re-exports them and implements them for `Bit`.
+pub use core::ops::{
+    Operator, Prefix, Suffix, Range, Index, IndexAssign, Ordering, Boolean, Resolve, New, From
+};
 
 impl Operator<"and", Bit, Bit> for Bit {
     fn apply(self, rhs: Bit) -> Bit {
@@ -148,26 +57,6 @@ impl Operator<"xnor", Bit, Bit> for Bit {
     }
 }
 
-// The result of a three-way comparison (`impl Operator<"<=>", T, Ordering>`,
-// spec 3.25). One `<=>` impl derives all of < <= > >= == != — like Rust's Ord.
-// Discriminants are fixed (Less=0, Equal=1, Greater=2); the derived
-// comparisons test against them.
-pub enum Ordering {
-    Less,
-    Equal,
-    Greater
-}
-
-// `Boolean` gives a type a truth representation so it can be used directly
-// as a condition (`if`, `assert!`). Truth is the system `Bool` type —
-// `true`/`false`, not an `integer` code. The conversion is applied only in
-// condition position — it is not a general implicit cast. The prelude
-// exports it; the `Bit`/`Bool` behaviour below is also mirrored inside the
-// type checker, and these impls keep the semantics on the record in source.
-pub trait Boolean {
-    fn as_bool(self) -> Bool;
-}
-
 impl Boolean for Bit {
     fn as_bool(self) -> Bool {
         if self == '1' {
@@ -176,106 +65,4 @@ impl Boolean for Bit {
             return false;
         }
     }
-}
-
-impl Boolean for Bool {
-    fn as_bool(self) -> Bool {
-        return self;
-    }
-}
-
-// Parallel-driver resolution (spec 3.14): when one signal is driven from
-// several contexts, the compiler folds the contributions pairwise through
-// the type's `resolve` (associative, commutative). A type WITHOUT an impl
-// is unresolved — parallel drivers on it are an elaboration error.
-pub trait Resolve {
-    fn resolve(self, rhs: Self) -> Self;
-}
-
-// Array behavior is lifted from the element contract. Nominal newtypes over
-// arrays forward these implementations from their base without becoming
-// interchangeable with that base.
-impl<T: Resolve> Resolve for T[] {
-    fn resolve(self, rhs: T[]) -> T[] {
-        let result: T[] = self;
-        for i in self'range { result[i] = self[i].resolve(rhs[i]); }
-        return result;
-    }
-}
-
-impl<T: Operator<"and", T, T>> Operator<"and", T, T> for T[] {
-    fn apply(self, rhs: T[]) -> T[] {
-        let result: T[] = self;
-        for i in self'range { result[i] = self[i] and rhs[i]; }
-        return result;
-    }
-}
-
-impl<T: Operator<"or", T, T>> Operator<"or", T, T> for T[] {
-    fn apply(self, rhs: T[]) -> T[] {
-        let result: T[] = self;
-        for i in self'range { result[i] = self[i] or rhs[i]; }
-        return result;
-    }
-}
-
-impl<T: Operator<"xor", T, T>> Operator<"xor", T, T> for T[] {
-    attr precedence = 35;
-    fn apply(self, rhs: T[]) -> T[] {
-        let result: T[] = self;
-        for i in self'range { result[i] = self[i] xor rhs[i]; }
-        return result;
-    }
-}
-
-impl<T: Operator<"nand", T, T>> Operator<"nand", T, T> for T[] {
-    attr precedence = 40;
-    fn apply(self, rhs: T[]) -> T[] {
-        let result: T[] = self;
-        for i in self'range { result[i] = self[i] nand rhs[i]; }
-        return result;
-    }
-}
-
-impl<T: Operator<"nor", T, T>> Operator<"nor", T, T> for T[] {
-    attr precedence = 30;
-    fn apply(self, rhs: T[]) -> T[] {
-        let result: T[] = self;
-        for i in self'range { result[i] = self[i] nor rhs[i]; }
-        return result;
-    }
-}
-
-impl<T: Operator<"xnor", T, T>> Operator<"xnor", T, T> for T[] {
-    attr precedence = 35;
-    fn apply(self, rhs: T[]) -> T[] {
-        let result: T[] = self;
-        for i in self'range { result[i] = self[i] xnor rhs[i]; }
-        return result;
-    }
-}
-
-impl<T: Operator<"not", T, T>> Operator<"not", T, T> for T[] {
-    fn apply(self) -> T[] {
-        let result: T[] = self;
-        for i in self'range { result[i] = not self[i]; }
-        return result;
-    }
-}
-
-// The default constructor (language.md 3.29): the value an uninitialized signal
-// of `T` powers on to, and the nullary member of the `T(...)` family. The body
-// must be a constant. Absent an impl, the compiler uses the type's first
-// variant / zero.
-pub trait New {
-    fn new() -> Self;
-}
-
-// Explicit conversion for named types (spec 3.17): `T(x)` on a struct/enum
-// dispatches to `impl From<Source> for T` (the trait argument names the
-// source, like `Operator<Rhs>`). Conversions NEVER fire implicitly — only at a
-// conversion expression. Kernel numeric conversions (`unsigned[16](x)`,
-// `integer(x)`, `resize`) stay width-driven builtins.
-pub trait From {
-    fn from(v: Self) -> Self;
 }

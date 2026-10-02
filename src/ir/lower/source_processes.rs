@@ -337,6 +337,11 @@ fn process_declared_type(
     }
 }
 
+/// The condition type, `core`'s `bool` lang item.
+fn bool_type(resolved: &Resolved) -> Option<crate::types::Ty> {
+    resolved.lang("bool").map(crate::types::Ty::Named)
+}
+
 fn nominal_type_from_name(name: &str, resolved: &Resolved) -> Option<crate::types::Ty> {
     let type_definition = |definition: &&crate::resolve::DefInfo| {
         matches!(
@@ -676,15 +681,8 @@ fn constant_suffixes(
         let Some(trait_path) = &implementation.trait_ else {
             continue;
         };
-        let canonical = resolved
-            .resolved(trait_path.span)
-            .and_then(|definition| resolved.def(definition));
-        if !canonical.is_some_and(|definition| {
-            definition.name == "Suffix"
-                && (definition.kind == crate::resolve::DefKind::Builtin
-                    || definition.kind == crate::resolve::DefKind::Trait
-                        && definition.module.as_deref() == Some("std::ops"))
-        }) {
+        let suffix = resolved.resolved(trait_path.span);
+        if !suffix.is_some_and(|definition| resolved.lang_of(definition) == Some("suffix")) {
             continue;
         }
         let Some(ast::GenericArg::Positional(ast::Expr::StrLit { text: symbol, .. })) =
@@ -2154,11 +2152,10 @@ fn await_is_time(argument: &ast::Expr, context: &LoweringContext<'_>) -> bool {
     context
         .typed
         .expr_type(ast::expr_span(argument))
-        .and_then(|ty| match ty {
-            crate::types::Ty::Named(definition) => context.resolved.qualified_name(*definition),
-            _ => None,
+        .is_some_and(|ty| {
+            matches!(ty, crate::types::Ty::Named(definition)
+                if context.resolved.lang_of(*definition) == Some("time"))
         })
-        .is_some_and(|name| name == "std::sim::time" || name.ends_with("::time"))
 }
 
 /// Edge waits differ from level conditions in one important way: they must
@@ -2756,7 +2753,7 @@ fn process_attribute_type(
 ) -> Option<crate::types::Ty> {
     match attribute {
         "old" => process_value_type(base, context),
-        "event" | "ascending" => nominal_type_from_name("std::logic::Bool", context.resolved),
+        "event" | "ascending" => bool_type(context.resolved),
         "left" | "right" | "high" | "low" | "length" => Some(crate::types::Ty::Integer),
         _ => None,
     }
@@ -2803,7 +2800,7 @@ fn process_kind_type(
         | ProcessValueKind::Signal {
             state: ProcessSignalState::Event,
             ..
-        } => nominal_type_from_name("std::logic::Bool", context.resolved),
+        } => bool_type(context.resolved),
         ProcessValueKind::Definition(definition) => {
             enum_variant_type(*definition, context.resolved)
         }
@@ -2862,9 +2859,7 @@ fn process_value_type(
             ProcessValueKind::Storage(storage) => process_value_type_for_storage(*storage, context),
             ProcessValueKind::StorageState { storage, state } => match state {
                 ProcessSignalState::Old => process_value_type_for_storage(*storage, context),
-                ProcessSignalState::Event => {
-                    nominal_type_from_name("std::logic::Bool", context.resolved)
-                }
+                ProcessSignalState::Event => bool_type(context.resolved),
                 ProcessSignalState::Current => None,
             },
             ProcessValueKind::Local { process, local } => context
@@ -2883,7 +2878,7 @@ fn process_value_type(
             ProcessValueKind::Signal {
                 state: ProcessSignalState::Event,
                 ..
-            } => nominal_type_from_name("std::logic::Bool", context.resolved),
+            } => bool_type(context.resolved),
             ProcessValueKind::Signal { signals, .. } => {
                 let [signal] = signals.as_slice() else {
                     return None;
@@ -3948,9 +3943,7 @@ fn lower_process_file_call(
             family: None,
             len: 0,
         }),
-        ProcessHostValueOp::FileExists => {
-            nominal_type_from_name("std::logic::Bool", context.resolved)
-        }
+        ProcessHostValueOp::FileExists => bool_type(context.resolved),
         _ => None,
     });
     let width = source_value_width(&kind, ty.as_ref(), process, context);
@@ -6026,20 +6019,21 @@ mod tests {
                  finish();\n\
                }\n\
              }",
-            "module std::logic; pub enum Bool { false, true }",
-            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity;",
+            "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
+            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
             "module std::ops; use std::logic::Bool; pub enum Ordering { Less, Equal, Greater } \
-             pub trait Boolean { fn as_bool(self) -> Bool; } \
-             pub trait Operator<op: string, input, output> { fn apply(self, rhs: input) -> output {} } \
+             pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
+             pub trait Operator<op: string, input, output> { fn apply(self, rhs: input) -> output {} } attr lang for Operator = \"operator\"; \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } } \
              impl Operator<\"not\", Bool, Bool> for Bool { fn apply(self) -> Bool { return self; } } \
              impl<T: Operator<\"not\", T, T>> Operator<\"not\", T, T> for T[] { \
                fn apply(self) -> T[] { let result: T[] = self; \
                  for i in self'range { result[i] = not self[i]; } return result; } } \
-             pub trait Suffix<symbol: string, input> { fn suffix(data: input) {} }",
+             pub trait Suffix<symbol: string, input> { fn suffix(data: input) {} } \
+             attr lang for Suffix = \"suffix\";",
             "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
              pub use std::ops::{Boolean, Operator};",
-            "module std::sim; use std::ops::Suffix; pub struct time(integer); \
+            "module std::sim; use std::ops::Suffix; pub struct time(integer); attr lang for time = \"time\"; \
              impl Suffix<\"ns\", integer> for time { \
                fn suffix(value: integer) -> time { return time(value * 37); } \
              }",
@@ -6419,9 +6413,9 @@ mod tests {
                  print!(\"{} {}\", text, text[2]);\n\
                }\n\
              }",
-            "module std::logic; pub enum Bool { false, true }",
-            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity;",
-            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } \
+            "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
+            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
+            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
             "module std::text; pub type string = Char[];",
             "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
@@ -6523,9 +6517,9 @@ mod tests {
                let dut: Device = { .bus = link };\n\
                stimulus: process {}\n\
              }",
-            "module std::logic; pub enum Bool { false, true }",
-            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity;",
-            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } \
+            "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
+            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
+            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
             "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
              pub use std::ops::Boolean;",
@@ -6582,8 +6576,8 @@ mod tests {
         let sources = [
             "module gates; entity Gate { input: Bool in, output: Bool out } \
              impl Gate { output = input; }",
-            "module std::logic; pub enum Bool { false, true }",
-            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } \
+            "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
+            "module std::ops; use std::logic::Bool; pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
             "module std::prelude; pub use std::logic::Bool; pub use std::ops::Boolean;",
         ];
@@ -6639,10 +6633,10 @@ mod tests {
              #[std::attrs::test] entity Smoke {} \
              impl Smoke { let observed: integer = 0; \
                run: process { observed = choose(observed, EXPECTED); } }",
-            "module std::logic; pub enum Bool { false, true }",
-            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity;",
+            "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
+            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
             "module std::ops; use std::logic::Bool; \
-             pub trait Boolean { fn as_bool(self) -> Bool; } \
+             pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
             "module std::prelude; pub use std::logic::Bool; \
              pub use std::attrs::test; pub use std::ops::Boolean;",
@@ -6715,10 +6709,10 @@ mod tests {
                  result = first_pair({ .a = 3, .b = 4 }); \
                } \
              }",
-            "module std::logic; pub enum Bool { false, true }",
-            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity;",
+            "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";",
+            "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
             "module std::ops; use std::logic::Bool; \
-             pub trait Boolean { fn as_bool(self) -> Bool; } \
+             pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }",
         ];
         let mut sink = DiagnosticSink::new();

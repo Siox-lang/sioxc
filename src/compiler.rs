@@ -1122,7 +1122,13 @@ fn absolute_use_path(path: Vec<String>, here: &[String]) -> Option<Vec<String>> 
 /// `core`'s modules, compiled into the compiler (proposals/core-std.md): a
 /// compiler can never load a `core` it does not match, and a frontend needs
 /// no files on disk for it.
-const CORE: &[(&str, &str)] = &[("prelude", include_str!("../core/prelude.siox"))];
+const CORE: &[(&str, &str)] = &[
+    ("prelude", include_str!("../core/prelude.siox")),
+    ("ops", include_str!("../core/ops.siox")),
+    ("attrs", include_str!("../core/attrs.siox")),
+    ("text", include_str!("../core/text.siox")),
+    ("assert", include_str!("../core/assert.siox")),
+];
 
 /// The embedded source of a `core::` module path.
 fn core_source(segments: &[String]) -> Option<&'static str> {

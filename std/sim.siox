@@ -12,6 +12,7 @@ use std::ops::Ordering;
 // `finish()` ends the simulation cleanly; both are runtime-provided.
 
 pub struct time(integer);
+attr lang for time = "time";
 
 impl Operator<"<=>", time, Ordering> for time {
     fn apply(self, rhs: time) -> Ordering {

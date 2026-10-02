@@ -57,11 +57,21 @@ const COMPILER_TRAITS: &[&str] = &[
     "LogicEncoding",
 ];
 
-/// Traits whose semantics are compiler hooks even though their declarations
-/// live in `std`. They retain a canonical short key so the frontend and IR do
-/// not make compiler behavior depend on which spelling imported the trait.
-fn is_compiler_trait_name(name: &str) -> bool {
-    COMPILER_TRAITS.contains(&name)
+/// The lang role of each compiler hook trait, by its builtin fallback's name.
+fn trait_role(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Operator" => "operator",
+        "Prefix" => "prefix",
+        "Suffix" => "suffix",
+        "Index" => "index",
+        "IndexAssign" => "index_assign",
+        "Boolean" => "boolean",
+        "Resolve" => "resolve",
+        "New" => "new",
+        "From" => "from",
+        "LogicEncoding" => "logic_encoding",
+        _ => return None,
+    })
 }
 
 /// Whether `module` is part of the language's own library, `core` or `std`:
@@ -78,42 +88,31 @@ pub(crate) fn is_library_module(module: &str) -> bool {
 /// The preludes every module sees, in lookup order.
 const PRELUDES: [&str; 2] = ["core::prelude", "std::prelude"];
 
-/// Whether one resolved declaration is the language's canonical hook trait.
-/// A matching leaf in a user module is an ordinary namespaced trait, just as
-/// it would be in Rust; spelling alone must not grant compiler semantics.
+/// Whether one resolved declaration is the language's canonical hook trait:
+/// the lang item (or builtin fallback) for one of the compiler's traits. A
+/// matching leaf in a user module is an ordinary namespaced trait, just as it
+/// would be in Rust; spelling alone must not grant compiler semantics.
 pub(crate) fn is_compiler_trait(resolved: &Resolved, id: DefId) -> bool {
-    let Some(definition) = resolved.def(id) else {
-        return false;
-    };
-    let canonical_module = if definition.name == "LogicEncoding" {
-        "std::logic"
-    } else {
-        "std::ops"
-    };
-    is_compiler_trait_name(&definition.name)
-        && (definition.kind == DefKind::Builtin
-            || definition.module.as_deref() == Some(canonical_module))
+    resolved.lang_of(id).is_some_and(|role| {
+        COMPILER_TRAITS
+            .iter()
+            .any(|name| trait_role(name) == Some(role))
+    })
 }
 
 /// Whether an applied attribute is the enabled canonical native-test marker.
 ///
-/// Normal compiler invocations resolve this to `std::attrs::test`. The builtin
-/// fallback exists only for self-contained frontend users/tests that do not
-/// load std; a declaration in any other module is ordinary same-named
-/// metadata. Keeping this check here gives type checking, elaboration, digital
-/// IR, and test planning one identity/value rule.
+/// Normal compiler invocations resolve this to the `test` lang item,
+/// `core::attrs::test`. The builtin fallback exists only for self-contained
+/// frontend users/tests that do not load core; a declaration in any other
+/// module is ordinary same-named metadata. Keeping this check here gives type
+/// checking, elaboration, digital IR, and test planning one identity/value
+/// rule.
 pub(crate) fn is_enabled_std_test_attribute(resolved: &Resolved, attr: &Attr) -> bool {
     let Some(attribute_id) = resolved.resolved(attr.name.span) else {
         return false;
     };
-    let Some(definition) = resolved.def(attribute_id) else {
-        return false;
-    };
-    let canonical = definition.name == "test"
-        && (definition.kind == DefKind::Builtin
-            || (definition.kind == DefKind::Attr
-                && definition.module.as_deref() == Some("std::attrs")));
-    if !canonical {
+    if resolved.lang_of(attribute_id) != Some("test") {
         return false;
     }
 
@@ -126,12 +125,7 @@ pub(crate) fn is_enabled_std_test_attribute(resolved: &Resolved, attr: &Attr) ->
                 value.name == "true"
                     && value
                         .parent
-                        .and_then(|id| resolved.def(id))
-                        .is_some_and(|owner| {
-                            owner.kind == DefKind::Enum
-                                && owner.module.as_deref() == Some("std::logic")
-                                && owner.name == "Bool"
-                        })
+                        .is_some_and(|owner| resolved.lang_of(owner) == Some("bool"))
             }),
         // Type checking reports malformed Bool-valued attributes. Treat a
         // partial/invalid result as disabled so it cannot acquire semantics.
@@ -220,9 +214,26 @@ pub struct Resolved {
     uses: HashMap<Span, DefId>,
     /// Declaration site, keyed by span, to the definition it introduces.
     declarations: HashMap<Span, DefId>,
+    /// Lang items: the role name `core`/`std` gave a declaration with
+    /// `attr lang for X = "role";`, to that declaration.
+    lang: HashMap<String, DefId>,
+    /// The reverse of `lang`, including the builtin fallbacks.
+    lang_of: HashMap<DefId, String>,
 }
 
 impl Resolved {
+    /// The declaration that plays `role` for the compiler (`"operator"`,
+    /// `"bool"`, `"test"`, …): a lang item, or its builtin fallback when no
+    /// library declares one.
+    pub fn lang(&self, role: &str) -> Option<DefId> {
+        self.lang.get(role).copied()
+    }
+
+    /// The compiler role `id` plays, if it is a lang item.
+    pub fn lang_of(&self, id: DefId) -> Option<&str> {
+        self.lang_of.get(&id).map(String::as_str)
+    }
+
     /// Metadata for `id`, or `None` if it is not from this resolution.
     pub fn def(&self, id: DefId) -> Option<&DefInfo> {
         self.defs.get(id.0 as usize)
@@ -312,6 +323,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
             break;
         }
     }
+    r.collect_lang_items(modules);
     for m in modules {
         r.set_current_module(m);
         for item in &m.items {
@@ -561,6 +573,9 @@ impl<'a> Resolver<'a> {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
             self.builtins.insert(name.to_string(), id);
+            if let Some(role) = trait_role(name) {
+                self.seed_lang(role, id);
+            }
         }
         // std::attrs metadata attributes (spec 3.5).
         for name in [
@@ -576,7 +591,89 @@ impl<'a> Resolver<'a> {
         ] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.builtin_attrs.insert(name.to_string(), id);
+            if name == "test" {
+                self.seed_lang("test", id);
+            }
         }
+    }
+
+    /// A builtin fallback for a lang role. A library declaration of the role
+    /// replaces it in the forward table; both keep the role.
+    fn seed_lang(&mut self, role: &str, id: DefId) {
+        self.out.lang.insert(role.to_string(), id);
+        self.out.lang_of.insert(id, role.to_string());
+    }
+
+    /// Read every `attr lang for X = "role";` binding. Only `core` and `std`
+    /// may bind `lang`, and a role names one declaration.
+    fn collect_lang_items(&mut self, modules: &[Module]) {
+        let mut declared: HashMap<String, Span> = HashMap::new();
+        for module in modules {
+            self.set_current_module(module);
+            let here = self.current_module.clone().unwrap_or_default();
+            for item in &module.items {
+                let Item::AttrBinding(binding) = item else {
+                    continue;
+                };
+                if binding.name.segments.len() != 1 || binding.name.segments[0].text != "lang" {
+                    continue;
+                }
+                if !is_library_module(&here) {
+                    // A user's own `attr lang` is ordinary metadata.
+                    let is_core_lang = self
+                        .lookup_attr("lang")
+                        .and_then(|id| self.out.def(id))
+                        .is_some_and(|d| d.module.as_deref() == Some("core::attrs"));
+                    if !is_core_lang {
+                        continue;
+                    }
+                    self.error(
+                        codes::LANG_ITEM,
+                        binding.span,
+                        "`lang` is reserved to `core` and `std`".to_string(),
+                    );
+                    continue;
+                }
+                let (Some(object), Expr::StrLit { text: role, .. }) =
+                    (&binding.object, &binding.value)
+                else {
+                    self.error(
+                        codes::LANG_ITEM,
+                        binding.span,
+                        "a lang item is bound as `attr lang for <declaration> = \"role\";`"
+                            .to_string(),
+                    );
+                    continue;
+                };
+                let role = role.trim_matches('"').to_string();
+                let key = (here.clone(), object.text.clone());
+                let Some(id) = self
+                    .module_defs
+                    .get(&key)
+                    .or_else(|| self.module_attrs.get(&key))
+                    .copied()
+                else {
+                    self.error(
+                        codes::LANG_ITEM,
+                        object.span,
+                        format!("`{}` is not declared in `{here}`", object.text),
+                    );
+                    continue;
+                };
+                if let Some(first) = declared.insert(role.clone(), binding.span) {
+                    self.sink.emit(
+                        Diagnostic::error(format!("lang item `{role}` is bound twice"))
+                            .with_code(codes::LANG_ITEM)
+                            .at(binding.span)
+                            .label(first, "first bound here"),
+                    );
+                    continue;
+                }
+                self.out.lang.insert(role.clone(), id);
+                self.out.lang_of.insert(id, role);
+            }
+        }
+        self.current_module = None;
     }
 
     /// Record which module the following items belong to, so declarations

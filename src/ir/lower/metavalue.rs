@@ -8,10 +8,10 @@ impl<'a> Lowering<'a> {
     /// value normalization and truth tables in the package; SIOX follows that
     /// dependency direction instead of teaching IR passes the enum order.
     pub(super) fn compute_logic_encodings(&self) -> HashMap<String, LogicEncoding> {
-        const CONTRACT: &str = "std::logic::LogicEncoding";
+        // A compiler hook trait keeps its short key (`is_compiler_trait`).
         let mut out = HashMap::new();
         for ((trait_name, ty), methods) in &self.op_impls {
-            if trait_name != CONTRACT && trait_name != "LogicEncoding" {
+            if trait_name != "LogicEncoding" {
                 continue;
             }
             let Some(variants) = self.enum_variants.get(ty) else {

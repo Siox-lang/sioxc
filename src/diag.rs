@@ -467,6 +467,9 @@ pub mod codes {
     /// A macro invocation that cannot expand: no form matches its arguments,
     /// its body names no parameter, or expansions nest too deep.
     pub const MACRO_EXPANSION: &str = "E-P035";
+    /// A misused lang item: `attr lang` bound outside `core`/`std`, naming
+    /// nothing, or one role bound twice.
+    pub const LANG_ITEM: &str = "E-P036";
 
     // Warnings
     // W-P001 retired: parallel drivers are legal when their type implements
