@@ -45,26 +45,47 @@ both but should state whether they are intended for hardware or testbenches.
 
 ## Existing modules
 
-- `std::prelude` — auto-loaded core surface.
-- `std::ops` — `Operator`, Boolean/order contracts, literal hooks, `New`, and
-  related traits.
-- `std::logic` — `Bit`, nine-value `Logic`/`ULogic`, `Bool`, clock helpers,
-  truth tables, and resolution.
+`core` (compiled into `sioxc`, proposals/core-std.md) holds what the compiler
+gives meaning to: `Bool`, the hook traits, `Range`, `Ordering`, `string`, the
+directives, `Severity` and the built-in macros. std re-exports each.
+
+- `std::prelude` — auto-loaded surface: `Bit`, `Logic`, `unsigned`, `signed`,
+  `time`, `frequency`, and the `core` names again.
+- `std::ops` — `Bit`'s operators and condition; re-exports the `core::ops` hooks.
+- `std::logic` — `Bit`, nine-value `Logic`/`ULogic`, clock helpers, truth
+  tables, and resolution.
 - `std::bits` — `unsigned`/`signed`, numeric operators, comparisons,
   conversions, and resizing.
-- `std::attrs` — compiler/tool metadata declarations.
+- `std::attrs` — tool metadata; re-exports the `core::attrs` directives.
 - `std::sim` — time/frequency units and simulation helpers.
-- `std::assert` — severity and assertion-facing types.
+- `std::assert` — re-exports `Severity`.
 - `std::math` — real/complex math surfaces backed by native functions.
-- `std::text` — `Char` arrays/string-facing helpers.
+- `std::text` — encoding tables over `Char`.
 - `std::fs` — fixture reads and existence checks.
 
 ## Build order
 
-1. **Synchronizers and reset helpers**
-   - two-flop synchronizer;
-   - reset synchronizer;
-   - edge/pulse helpers with explicit clock domains.
+1. **Synchronizers and reset helpers** — `std::sync`, being implemented:
+
+   | entity | ports | behaviour |
+   | --- | --- | --- |
+   | `Sync2` | `clk`, `d` in; `q` out | two-flop synchronizer for a level crossing into `clk`'s domain |
+   | `ResetSync` | `clk`, `rst_in` in; `rst_out` out | active-high reset: asserts at once (asynchronously), releases two `clk` edges after `rst_in` falls |
+   | `EdgeDetect` | `clk`, `d` in; `rise`, `fall` out | one-cycle pulses when `d` (already in `clk`'s domain) changes |
+   | `PulseSync` | `src_clk`, `pulse_in`, `dst_clk` in; `pulse_out` out | carries single-cycle pulses between domains: a toggle in the source, `Sync2`, and an edge detector in the destination |
+
+   All are `Bit`-typed, as internal signals and clocks are. The flops of a
+   synchronizer are bound `async_reg` (below), so a synthesis flow keeps them
+   together and does not optimise them. Multi-bit values do not cross with
+   `Sync2`; they need a handshake or a Gray-coded FIFO (item 3).
+
+   With it, `std::attrs` gains the vendor-neutral metadata from
+   [core-std.md](core-std.md): `async_reg`, `ram_style`, `rom_style`,
+   `fsm_encoding`, `max_fanout`, `mark_debug`, `clock`, `io_standard` and
+   `pin`, with the enums `RamStyle`, `RomStyle` and `FsmEncoding`. The
+   compiler reads none of them; a later backend maps each to its vendor's
+   name. A `frequency` attribute waits until attribute values of a struct
+   type are checked.
 2. **Memories**
    - synchronous single/dual-port RAM shapes;
    - initialization from arrays/files;
