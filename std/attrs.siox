@@ -1,36 +1,20 @@
 module std::attrs;
 
-// Metadata attributes (spec 3.5): what tools and vendor flows read and the
-// compiler preserves without giving it semantics. Tool/vendor metadata such
-// as `top` is declared by the owning integration rather than by std.
+// The base metadata (spec 3.5): what nearly every flow needs to know about a
+// design, which the compiler preserves without giving it semantics. Vendor
+// settings — RAM styles, FSM encodings, pin assignments, I/O standards —
+// belong in vendor packages (`attr vivado::ram_style for …`), not here.
 //
 // Every declaration carries a default, so a read (`probe'keep`) always has a
 // value. Bind one from outside the declaration it describes:
-// `attr keep for probe = true;`, or objectless inside an impl,
-// `attr precedence = 40;`.
+// `attr keep for probe = true;`.
 //
 // Directives (`#[test]`, `#[allow(..)]`, …) are not attributes: they are
 // built into the compiler. The attributes the compiler itself reads
 // (`precedence`, `lang`) are in `core::attrs`.
 
 pub attr keep: Bool for let, port = false;  // keep through optimization
-pub attr library: string for entity = "";
-pub attr name: string for entity = "";
-
-// Vendor-neutral synthesis metadata (proposals/core-std.md). The compiler
-// reads none of these; a backend maps each to its vendor's spelling
-// (`async_reg` is Vivado's ASYNC_REG, Quartus's synchronizer identification).
-// Vendor-only names stay in vendor packages (`attr vivado::iob for …`).
-pub attr async_reg: Bool for let = false;          // a synchronizer flop: keep, place close
-pub attr ram_style: RamStyle for let = RamStyle::Auto;
-pub attr rom_style: RomStyle for let = RomStyle::Auto;
-pub attr fsm_encoding: FsmEncoding for let = FsmEncoding::Auto;
-pub attr max_fanout: integer for let, port = 0;    // 0: no limit
-pub attr mark_debug: Bool for let, port = false;   // expose to an on-chip analyzer
-pub attr clock: Bool for port = false;             // this port is a clock input
-pub attr io_standard: string for port = "";        // e.g. "LVCMOS33"
-pub attr pin: string for port = "";                // package pin, e.g. "E3"
-
-pub enum RamStyle { Auto, Block, Distributed, Registers }
-pub enum RomStyle { Auto, Block, Distributed, Logic }
-pub enum FsmEncoding { Auto, OneHot, Gray, Binary }
+pub attr top: Bool for entity = false;      // the design's top entity, for tools
+pub attr clock: Bool for port = false;      // this port is a clock input
+pub attr library: string for entity = "";   // a foreign entity's library
+pub attr name: string for entity = "";      // a foreign entity's name there

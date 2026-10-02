@@ -94,18 +94,32 @@ fn a_hook_name_alone_grants_nothing() {
 }
 
 /// A type head names a type: a library enum variant spelled like a type
-/// (`std::attrs::RomStyle::Logic`) must not capture `Logic` for the
-/// compiler's own uses of it. It used to make every `signed` division in
-/// `std::bits` fail to type-check as soon as `std::attrs` was imported.
+/// (`Style::Logic`) must not capture `Logic` for the compiler's own uses of
+/// it. It used to make every `signed` division in `std::bits` fail to
+/// type-check as soon as such a library module was loaded.
 #[test]
 fn a_variant_named_like_a_type_does_not_capture_it() {
+    // A standard library with one extra module declaring such a variant.
+    let std_copy =
+        std::env::temp_dir().join(format!("siox_core_std_variant_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&std_copy);
+    std::fs::create_dir_all(&std_copy).unwrap();
+    for entry in std::fs::read_dir(STD).unwrap() {
+        let path = entry.unwrap().path();
+        std::fs::copy(&path, std_copy.join(path.file_name().unwrap())).unwrap();
+    }
+    std::fs::write(
+        std_copy.join("style.siox"),
+        "module std::style;\npub enum Style { Auto, Logic }\n",
+    )
+    .unwrap();
     let (rendered, ok) = compile(
         "variant_named_logic",
-        "module main;\nuse std::attrs::RomStyle;\n\
-         enum Style { Logic, Bool }\n\
+        "module main;\nuse std::style::Style;\n\
          fn f(a: signed[8], b: signed[8]) -> signed[8] { return a / b; }\n\
-         fn g(s: RomStyle) -> Bool { return s == RomStyle::Logic; }\n",
-        STD,
+         fn g(s: Style) -> Bool { return s == Style::Logic; }\n",
+        std_copy.to_str().unwrap(),
     );
+    let _ = std::fs::remove_dir_all(&std_copy);
     assert!(ok, "{rendered}");
 }

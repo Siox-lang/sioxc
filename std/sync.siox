@@ -2,14 +2,13 @@ module std::sync;
 
 // Clock-domain crossing and reset helpers (proposals/std-buildout.md, item 1).
 // Every port is `Bit`: internal signals and clocks are. Synchronizer flops are
-// bound `async_reg`, so a synthesis flow keeps them together and leaves them
-// alone.
+// bound `keep`, so a synthesis flow leaves them alone.
 //
 // A single bit crosses with `Sync2`, a pulse with `PulseSync`. A multi-bit
 // value must NOT cross bit by bit through `Sync2`: the bits can land in
 // different cycles. Use a handshake or a Gray-coded FIFO instead.
 
-use std::attrs::async_reg;
+use std::attrs::keep;
 
 // Two-flop synchronizer: `d`, from any domain, appears on `q` two `clk`
 // edges later, with the first flop's metastability given a cycle to settle.
@@ -22,8 +21,8 @@ pub entity Sync2 {
 impl Sync2 {
     let meta: Bit;
     let stable: Bit;
-    attr async_reg for meta = true;
-    attr async_reg for stable = true;
+    attr keep for meta = true;
+    attr keep for stable = true;
 
     sample: process {
         if clk.rising() {
@@ -47,8 +46,8 @@ pub entity ResetSync {
 impl ResetSync {
     let meta: Bit = '1';
     let stable: Bit = '1';
-    attr async_reg for meta = true;
-    attr async_reg for stable = true;
+    attr keep for meta = true;
+    attr keep for stable = true;
 
     release: process {
         if rst_in == '1' {

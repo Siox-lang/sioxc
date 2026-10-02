@@ -826,9 +826,10 @@ They should not silently change language semantics.
 Examples:
 
 ```siox
-// Ordinary vendor metadata: preserved, but not interpreted by sioxc.
+// Metadata: preserved for tools, but not interpreted by sioxc.
+use std::attrs::top;
 entity Top { ... }
-attr vivado::top for Top = true;
+attr top for Top = true;
 
 // The one directive: compile this entity into the native test executable.
 #[test]
@@ -839,10 +840,9 @@ attr library for Counter = "work";
 attr name for Counter = "ExternalCounter";
 ```
 
-`top` is not a std or compiler attribute. An RTL/vendor/Cocotb integration may
-declare it (or a namespaced equivalent), and the frontend retains the applied
-attribute for that output consumer. It does not select sioxc elaboration roots
-or alter entity semantics. Ordinary elaboration reaches every uninstantiated
+`top` is std's base metadata (`std::attrs`), for tools that need to know the
+design's top entity; the frontend retains it for those output consumers. It
+does not select sioxc elaboration roots or alter entity semantics. Ordinary elaboration reaches every uninstantiated
 structural root; native object output accepts the sole root by default and
 requires `--top <entity>` when several roots exist.
 

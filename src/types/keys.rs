@@ -211,7 +211,7 @@ impl<'a> Checker<'a> {
                 len: 0,
             },
             // Only a type can be a type head: an enum variant or constant
-            // that happens to share the name (`RomStyle::Logic`) must not
+            // that happens to share the name (a variant `Style::Logic`) must not
             // capture it.
             name => self
                 .resolved

@@ -10750,3 +10750,12 @@ mirrors them (`std::cmp`, …) and the old aliases (`std::ops::Ordering`,
 impls moved into `std::logic`. A qualified `std::…`/`core::…` path now loads
 its module without a `use`. IR touches: two doc comments, `#[test]` in test
 stubs, `core::primitive::Bool` in `llvm/process/value_types.rs`.
+
+### 2026-10-02 — Claude — `std::attrs` is base metadata only
+
+Per Max, `std::attrs` is not a catalogue of vendor settings: it now holds
+only `keep`, `top`, `clock`, `library` and `name`. `async_reg`, `ram_style`,
+`rom_style`, `fsm_encoding`, `max_fanout`, `mark_debug`, `io_standard`,
+`pin` and their enums are gone; vendor settings belong in vendor packages.
+`top` is std metadata now (tools only; `--top` still selects sioxc's root).
+`std::sync` binds `keep` on its synchronizer flops.

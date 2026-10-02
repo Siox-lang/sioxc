@@ -65,7 +65,7 @@ directives, `Severity` and the built-in macros. std re-exports each.
 
 ## Build order
 
-1. **Synchronizers and reset helpers** — `std::sync`, being implemented:
+1. **Synchronizers and reset helpers** — `std::sync`, implemented:
 
    | entity | ports | behaviour |
    | --- | --- | --- |
@@ -75,17 +75,12 @@ directives, `Severity` and the built-in macros. std re-exports each.
    | `PulseSync` | `src_clk`, `pulse_in`, `dst_clk` in; `pulse_out` out | carries single-cycle pulses between domains: a toggle in the source, `Sync2`, and an edge detector in the destination |
 
    All are `Bit`-typed, as internal signals and clocks are. The flops of a
-   synchronizer are bound `async_reg` (below), so a synthesis flow keeps them
-   together and does not optimise them. Multi-bit values do not cross with
-   `Sync2`; they need a handshake or a Gray-coded FIFO (item 3).
+   synchronizer are bound `keep`, so a synthesis flow leaves them alone.
+   Multi-bit values do not cross with `Sync2`; they need a handshake or a
+   Gray-coded FIFO (item 3).
 
-   With it, `std::attrs` gains the vendor-neutral metadata from
-   [core-std.md](core-std.md): `async_reg`, `ram_style`, `rom_style`,
-   `fsm_encoding`, `max_fanout`, `mark_debug`, `clock`, `io_standard` and
-   `pin`, with the enums `RamStyle`, `RomStyle` and `FsmEncoding`. The
-   compiler reads none of them; a later backend maps each to its vendor's
-   name. A `frequency` attribute waits until attribute values of a struct
-   type are checked.
+   `std::attrs` holds only base metadata (`keep`, `top`, `clock`, `library`,
+   `name`); vendor settings belong in vendor packages.
 2. **Memories**
    - synchronous single/dual-port RAM shapes;
    - initialization from arrays/files;
