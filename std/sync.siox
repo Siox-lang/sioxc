@@ -1,0 +1,119 @@
+module std::sync;
+
+// Clock-domain crossing and reset helpers (proposals/std-buildout.md, item 1).
+// Every port is `Bit`: internal signals and clocks are. Synchronizer flops are
+// bound `async_reg`, so a synthesis flow keeps them together and leaves them
+// alone.
+//
+// A single bit crosses with `Sync2`, a pulse with `PulseSync`. A multi-bit
+// value must NOT cross bit by bit through `Sync2`: the bits can land in
+// different cycles. Use a handshake or a Gray-coded FIFO instead.
+
+use std::attrs::async_reg;
+
+// Two-flop synchronizer: `d`, from any domain, appears on `q` two `clk`
+// edges later, with the first flop's metastability given a cycle to settle.
+pub entity Sync2 {
+    clk: Bit in,
+    d: Bit in,
+    q: Bit out
+}
+
+impl Sync2 {
+    let meta: Bit;
+    let stable: Bit;
+    attr async_reg for meta = true;
+    attr async_reg for stable = true;
+
+    sample: process {
+        if clk.rising() {
+            meta = d;
+            stable = meta;
+        }
+    }
+
+    q = stable;
+}
+
+// Reset synchronizer, active high: `rst_out` rises as soon as `rst_in` does
+// (asynchronously), and falls two `clk` edges after `rst_in` falls, so every
+// flop in `clk`'s domain leaves reset on the same edge.
+pub entity ResetSync {
+    clk: Bit in,
+    rst_in: Bit in,
+    rst_out: Bit out
+}
+
+impl ResetSync {
+    let meta: Bit = '1';
+    let stable: Bit = '1';
+    attr async_reg for meta = true;
+    attr async_reg for stable = true;
+
+    release: process {
+        if rst_in == '1' {
+            meta = '1';
+            stable = '1';
+        } else if clk.rising() {
+            meta = '0';
+            stable = meta;
+        }
+    }
+
+    rst_out = stable;
+}
+
+// Edge detector for a signal already in `clk`'s domain: `rise` (`fall`) is
+// high from the moment `d` rises (falls) until the next `clk` edge records
+// it, which for a signal that changes on `clk` edges is exactly one cycle.
+pub entity EdgeDetect {
+    clk: Bit in,
+    d: Bit in,
+    rise: Bit out,
+    fall: Bit out
+}
+
+impl EdgeDetect {
+    let last: Bit;
+
+    sample: process {
+        if clk.rising() {
+            last = d;
+        }
+    }
+
+    rise = d and not last;
+    fall = last and not d;
+}
+
+// Carries single-cycle pulses from `src_clk`'s domain to `dst_clk`'s: each
+// pulse flips a toggle in the source domain, the toggle crosses through
+// `Sync2`, and each change of it is one pulse in the destination. Pulses must
+// be at least three destination cycles apart to be counted separately.
+pub entity PulseSync {
+    src_clk: Bit in,
+    pulse_in: Bit in,
+    dst_clk: Bit in,
+    pulse_out: Bit out
+}
+
+impl PulseSync {
+    let toggle: Bit;
+    let crossed: Bit;
+    let changed: Bit;
+    let rise: Bit;
+    let fall: Bit;
+
+    flip: process {
+        if src_clk.rising() {
+            if pulse_in == '1' {
+                toggle = not toggle;
+            }
+        }
+    }
+
+    let cross: Sync2 = { .clk = dst_clk, .d = toggle, .q = crossed };
+    let edges: EdgeDetect = { .clk = dst_clk, .d = crossed, .rise = rise, .fall = fall };
+    changed = rise or fall;
+    pulse_out = changed;
+}

@@ -92,3 +92,20 @@ fn a_hook_name_alone_grants_nothing() {
         "a namesake trait is not the condition hook:\n{rendered}"
     );
 }
+
+/// A type head names a type: a library enum variant spelled like a type
+/// (`std::attrs::RomStyle::Logic`) must not capture `Logic` for the
+/// compiler's own uses of it. It used to make every `signed` division in
+/// `std::bits` fail to type-check as soon as `std::attrs` was imported.
+#[test]
+fn a_variant_named_like_a_type_does_not_capture_it() {
+    let (rendered, ok) = compile(
+        "variant_named_logic",
+        "module main;\nuse std::attrs::RomStyle;\n\
+         enum Style { Logic, Bool }\n\
+         fn f(a: signed[8], b: signed[8]) -> signed[8] { return a / b; }\n\
+         fn g(s: RomStyle) -> Bool { return s == RomStyle::Logic; }\n",
+        STD,
+    );
+    assert!(ok, "{rendered}");
+}

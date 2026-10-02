@@ -52,8 +52,9 @@ is a documented shim, and the declaration here is canonical.
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
 | `std::text`   | std.standard `string` + `'pos`/`'val` | `string = Char[]`; encoding tables `Unicode`/`Ascii` |
 | `std::sim`    | std.standard `time`              | `time`, `frequency` + unit suffixes; FS..MS constants |
+| `std::sync`   | (vendor CDC macros)              | `Sync2`, `ResetSync`, `EdgeDetect`, `PulseSync` |
 | `std::fs`     | textio / impure host I/O         | typed `read<T>` construction and `exists` fixture probes |
-| `std::attrs`  | (attributes; VHDL has none)      | `keep`, `library`, `name`; re-exports the `core::attrs` directives |
+| `std::attrs`  | (attributes; VHDL has none)      | `keep`, `library`, `name`, vendor-neutral synthesis metadata; re-exports the `core::attrs` directives |
 | `std::assert` | `assert ... severity` levels     | re-exports `Severity` |
 
 ## `std::logic`
@@ -230,6 +231,26 @@ pub attr precedence: integer for impl = 0;  // custom operator binding power
 Bind them with `attr keep for probe = true;`, or objectless inside an
 implementation: `attr precedence = 40;`.
 
+Vendor-neutral synthesis metadata follows, spelled once and mapped by a
+later backend to each vendor's name (Vivado `ASYNC_REG`, Quartus `ramstyle`,
+…); the compiler reads none of it:
+
+```siox
+pub attr async_reg: Bool for let = false;          // a synchronizer flop
+pub attr ram_style: RamStyle for let = RamStyle::Auto;
+pub attr rom_style: RomStyle for let = RomStyle::Auto;
+pub attr fsm_encoding: FsmEncoding for let = FsmEncoding::Auto;
+pub attr max_fanout: integer for let, port = 0;    // 0: no limit
+pub attr mark_debug: Bool for let, port = false;   // expose to an on-chip analyzer
+pub attr clock: Bool for port = false;
+pub attr io_standard: string for port = "";
+pub attr pin: string for port = "";
+
+pub enum RamStyle { Auto, Block, Distributed, Registers }
+pub enum RomStyle { Auto, Block, Distributed, Logic }
+pub enum FsmEncoding { Auto, OneHot, Gray, Binary }
+```
+
 `core::attrs` also declares the compiler directives, like rustc's built-in
 attributes: `test` above, and the lint levels `allow`, `warn`, `deny` and
 `forbid`, each `for item`. The preludes re-export all of them, and the
@@ -242,6 +263,26 @@ lists every lint name a directive accepts (`possible_latch`, `unused_signal`,
 Vivado, Quartus, RTL, or Cocotb integration may declare and bind its own `top`
 attribute. The frontend preserves it as ordinary resolved metadata, while
 sioxc root selection remains structural or explicit through `--top`.
+
+## `std::sync`
+
+Clock-domain crossing and reset helpers, all `Bit`-typed. Synchronizer flops
+are bound `async_reg`.
+
+| entity | ports | behaviour |
+| --- | --- | --- |
+| `Sync2` | `clk`, `d` in; `q` out | two-flop synchronizer: `d` appears on `q` two `clk` edges later |
+| `ResetSync` | `clk`, `rst_in` in; `rst_out` out | active-high reset: asserts at once, releases two `clk` edges after `rst_in` falls |
+| `EdgeDetect` | `clk`, `d` in; `rise`, `fall` out | one-cycle pulses when `d`, already in `clk`'s domain, changes |
+| `PulseSync` | `src_clk`, `pulse_in`, `dst_clk` in; `pulse_out` out | single-cycle pulses across domains, through a toggle and `Sync2`; pulses at least three destination cycles apart |
+
+```siox
+use std::sync::Sync2;
+let ready_sync: Sync2 = { .clk = clk, .d = ready_from_other_domain, .q = ready };
+```
+
+A multi-bit value must not cross bit by bit through `Sync2`: its bits can
+land in different cycles. Use a handshake or a Gray-coded FIFO.
 
 ## `std::assert` and `core::assert`
 
