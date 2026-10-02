@@ -1,10 +1,9 @@
 # Macros
 
-Status: **slice 1 implemented** (language §3.30): declarations, forms,
-fragment kinds, all four invocation positions, hygiene, resolution through
-`use`, and `--emit expanded`. Repetition, `builtin #`, and call-site
-locations for assertions inside macros remain; see [Later
-slices](#later-slices).
+Status: **slices 1 and 2 implemented** (language §3.30): declarations,
+forms, fragment kinds, all four invocation positions, hygiene, resolution
+through `use`, `--emit expanded`, repetition, call-site locations and
+expansion notes. `builtin #` remains; see [Later slices](#later-slices).
 
 `macro` declares a user-defined syntax transformation. It is the third
 compile-time mechanism, next to the two that already exist:
@@ -181,9 +180,15 @@ Every token keeps the span it was written at:
 
 - a mistake in an **argument** points at the argument, at the call site;
 - a mistake in the **body** points into the macro's declaration, with a note
-  naming the macro being expanded.
+  `in an expansion of `name!`` — from the parser and from every later stage
+  alike.
 
-`sioxc --emit expanded file.siox` prints every module after expansion, so
+**Call-site locations.** A built-in `assert!`, `warn!` or `print!` written in
+a macro body reports the location of the *outermost* invocation when it fires
+at run time, as Rust's `line!()` and `panic!` do: a failing `check!(ready)`
+names the line that says `check!`, not the line inside `check`'s body.
+
+`sioxc --emit expanded file.siox` prints the entry module after expansion, so
 the generated hardware is never a mystery.
 
 ## Built-in macros
@@ -204,22 +209,54 @@ user-visible behavior.
 - Identifier concatenation (`${prefix}${i}`). Arrays and generate loops name
   repeated hardware better.
 
+## Repetition
+
+A macro takes a list of arguments with a **variadic** last parameter, written
+with `...` after its kind. It matches zero or more remaining arguments, each
+of that kind:
+
+```siox
+pub macro all($conds: expr...) {
+    for macro $c in $conds { assert!($c); }
+}
+
+pub macro any($first: expr, $rest: expr...) {
+    $first for macro $c in $rest { or $c }
+}
+
+pub macro all_of($cs: expr...) {
+    for macro $c in $cs join and { $c }
+}
+
+pub macro trace($fmt: expr, $args: expr...) {
+    print!($fmt, $args);
+}
+```
+
+In the body:
+
+| form | expands to |
+| --- | --- |
+| `for macro $x in $xs { … }` | the braces' contents once per argument, with `$x` bound to it |
+| `for macro $x in $xs join T { … }` | the same, with the token `T` between repetitions |
+| `$xs` | every argument, separated by commas: forwards the list |
+| `$xs'length` | the number of arguments, as an integer literal |
+
+`for macro` nests, and its body may use every parameter of the macro. It is
+expansion-time repetition; the generated code contains no loop. Ordinary
+parameters may be iterated too, as a list of one. `for`, `macro`, `in` and
+`join` are only read this way inside a macro body; `join` is not a keyword.
+
+The shape follows the proposal's earlier sketch instead of Rust's `$(…),*`:
+it reads like the `for` loops and generates around it, and the separator is
+named rather than encoded in punctuation.
+
 ## Later slices
 
-- **Repetition**, when a concrete std macro needs it. The intended shape binds
-  a list parameter and iterates it at expansion time:
-
-  ```siox
-  pub macro all($conds: expr...) {
-      for macro $c in $conds { assert!($c); }
-  }
-  ```
-
 - **`builtin #`**, the std-only form that lets `assert!`, `print!`, `warn!` and
-  `error!` (core-std.md) be declared in `core` instead of special-cased.
+  `error!` (core-std.md) be declared in `core` instead of special-cased. It
+  waits for `core` itself (core-std.md).
 - **Expansion notes in the language server**: generated declarations shown as
   generated, not as handwritten source.
-- **Call-site locations.** A failing `assert!` written in a macro body reports
-  the body's line today; Rust reports the outermost invocation. Later-stage
-  diagnostics in expanded body code do not yet carry the "while expanding"
-  note that parse errors get.
+- **Which invocation.** A note on an error in a body names the macro but not
+  the call that expanded it; spans carry no expansion identity yet.

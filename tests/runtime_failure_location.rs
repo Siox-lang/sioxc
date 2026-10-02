@@ -568,3 +568,25 @@ fn a_passing_test_reports_no_location() {
         "a passing run should report no location, got:\n{out}"
     );
 }
+
+/// An `assert!` written in a macro body reports the outermost invocation, as
+/// Rust's `line!()` does: the line to look at is the one that says `wrap!`.
+#[test]
+fn a_failing_assertion_in_a_macro_names_the_invocation() {
+    let src = "module m;\n\
+               macro check($c: expr) { assert!($c, \"check failed\"); }\n\
+               macro wrap($c: expr) { check!($c); }\n\
+               #[test] entity T {}\n\
+               impl T {\n\
+               \x20   process {\n\
+               \x20       await 1ns;\n\
+               \x20       wrap!(2 == 3);\n\
+               \x20   }\n\
+               }\n";
+    let out = run("macroassert", src);
+    assert!(out.contains("check failed"), "{out}");
+    assert!(
+        out.contains("macroassert.siox:8:9"),
+        "the invocation's line:\n{out}"
+    );
+}

@@ -194,7 +194,10 @@ impl Printer {
         let params = m
             .params
             .iter()
-            .map(|p| format!("${}: {}", p.name.text, p.kind.name()))
+            .map(|p| {
+                let many = if p.variadic { "..." } else { "" };
+                format!("${}: {}{many}", p.name.text, p.kind.name())
+            })
             .collect::<Vec<_>>()
             .join(", ");
         self.line(&format!(

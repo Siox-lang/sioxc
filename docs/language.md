@@ -2408,6 +2408,19 @@ impl Cpu {
   `$x = a + b` is `(a + b) * 2`), `ident`, `type`, `path`, `stmt` (without
   its `;`), `item`, and `tokens` (anything balanced). Each argument is checked
   against its kind at the call.
+- **Repetition.** A last parameter written `$xs: expr...` takes the
+  remaining arguments, zero or more. In the body, `for macro $x in $xs { … }`
+  repeats its contents once per argument, `for macro $x in $xs join T { … }`
+  puts the token `T` between repetitions, `$xs` forwards the arguments
+  separated by commas, and `$xs'length` is their count:
+
+  ```siox
+  macro all($cs: expr...) { for macro $c in $cs { assert!($c); } }
+  macro all_of($cs: expr...) { for macro $c in $cs join and { $c } }
+  macro trace($fmt: expr, $args: expr...) { print!($fmt, $args); }
+  ```
+
+  The repetition happens during expansion; the generated code has no loop.
 - **Forms.** A name may be declared several times; a call uses the first form,
   in declaration order, whose parameter count and kinds its arguments match.
   No match is an error listing the forms.
@@ -2431,11 +2444,13 @@ impl Cpu {
   generated code is checked exactly like handwritten code. A macro may invoke
   macros, at most 128 deep (rustc's default `recursion_limit`); an expansion
   may not declare a `macro`. Errors in an argument point at the call; errors
-  in the body point into the declaration and note which macro was expanding.
+  in the body point into the declaration with the note `in an expansion of
+  `name!``, from every stage. A built-in `assert!`, `warn!` or `print!` in a
+  body reports the location of the outermost invocation at run time, as
+  Rust's `line!()` does.
   `sioxc --emit expanded file.siox` prints the entry module after expansion.
 - There is no `macro_rules!`, no procedural macro, and no user-defined `#[…]`:
-  expansion substitutes syntax and runs no user code. Repetition is a later
-  addition (proposals/macros.md).
+  expansion substitutes syntax and runs no user code.
 
 ---
 

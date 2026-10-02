@@ -269,6 +269,9 @@ pub struct DiagnosticSink {
     diagnostics: Vec<Diagnostic>,
     /// Lint levels applied to each warning as it arrives, once configured.
     lints: Option<lints::LintLevels>,
+    /// Source regions whose diagnostics all get a note, such as a macro's
+    /// body: "in an expansion of `name!`".
+    regions: Vec<(Span, String)>,
 }
 
 impl DiagnosticSink {
@@ -279,7 +282,17 @@ impl DiagnosticSink {
 
     /// Record one diagnostic. Stages keep going after emitting, so that a
     /// single run reports as much as it can.
-    pub fn emit(&mut self, diag: Diagnostic) {
+    pub fn emit(&mut self, mut diag: Diagnostic) {
+        if let Some(primary) = diag.primary {
+            for (region, note) in &self.regions {
+                let inside = region.file == primary.file
+                    && region.start <= primary.start
+                    && primary.end <= region.end;
+                if inside && !diag.notes.contains(note) {
+                    diag.notes.push(note.clone());
+                }
+            }
+        }
         let diag = match &mut self.lints {
             Some(levels) => match levels.apply(diag) {
                 Some(diag) => diag,
@@ -288,6 +301,12 @@ impl DiagnosticSink {
             None => diag,
         };
         self.diagnostics.push(diag);
+    }
+
+    /// Add `note` to every diagnostic emitted from now on whose primary span
+    /// lies inside `region`.
+    pub fn note_inside(&mut self, region: Span, note: impl Into<String>) {
+        self.regions.push((region, note.into()));
     }
 
     /// Apply lint levels from the command line and the source's directives

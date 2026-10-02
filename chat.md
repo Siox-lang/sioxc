@@ -10683,3 +10683,14 @@ field, so no IR file changed; `Item::Macro`/`Item::MacroCall` got no-op arms
 in resolve, types, imports and the driver's `-v` trace. A `name!(…)` that is
 neither a user macro nor `assert!`/`print!`/`warn!` is now an error here
 ("cannot find macro").
+
+### 2026-10-02 — Claude — macros, slice 2
+
+Repetition: a last `$xs: kind...` parameter takes the remaining arguments;
+bodies use `for macro $x in $xs [join T] { … }`, `$xs` (forwards the list,
+comma-separated) and `$xs'length`. A built-in `assert!`/`warn!`/`print!`
+written in a macro body now carries the outermost invocation's span, so a
+runtime failure names the call site. `DiagnosticSink::note_inside(region,
+note)` adds "in an expansion of `name!`" to any diagnostic, from any stage,
+whose primary span lies in a macro body. Only `syntax/` files, `diag.rs` and
+tests changed.

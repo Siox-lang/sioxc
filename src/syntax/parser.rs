@@ -2749,10 +2749,28 @@ impl<'a> Parser<'a> {
                 );
                 FragmentKind::Tokens
             });
-            params.push(MacroParam { name: param, kind });
+            // `$xs: expr...` takes the remaining arguments.
+            let variadic =
+                self.at(TokenKind::DotDot) && self.kind_at(self.pos + 1) == &TokenKind::Dot;
+            if variadic {
+                self.bump();
+                self.bump();
+            }
+            params.push(MacroParam {
+                name: param,
+                kind,
+                variadic,
+            });
             if !self.eat(TokenKind::Comma) {
                 break;
             }
+        }
+        if let Some(early) = params.iter().rev().skip(1).find(|p| p.variadic) {
+            let span = early.name.span;
+            self.error_at(
+                span,
+                "only the last macro parameter can take several arguments (`...`)",
+            );
         }
         self.expect(TokenKind::RParen, "to close the macro's parameters");
         let body = if self.at(TokenKind::LBrace) {
