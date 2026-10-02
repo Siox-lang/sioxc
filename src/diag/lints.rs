@@ -389,15 +389,15 @@ mod tests {
     }
 
     #[test]
-    /// `std::attrs::Lint` lists exactly the compiler's lints and `warnings`,
+    /// `core::attrs::Lint` lists exactly the compiler's lints and `warnings`,
     /// so the vocabulary users read in std is the one the compiler accepts.
     fn std_lint_enum_matches_the_compiler() {
-        let attrs = include_str!("../../std/attrs.siox");
+        let attrs = include_str!("../../core/attrs.siox");
         let body = attrs
             .split("pub enum Lint {")
             .nth(1)
             .and_then(|rest| rest.split('}').next())
-            .expect("std::attrs declares `enum Lint`");
+            .expect("core::attrs declares `enum Lint`");
         let mut declared: Vec<&str> = body
             .lines()
             .map(|line| {

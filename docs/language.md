@@ -388,7 +388,7 @@ Trait identity includes its declaring module. Two modules may therefore export
 traits with the same leaf name; an import or qualified path selects the exact
 contract, and defaults or implementations from one trait never satisfy the
 other. The exact builtin and standard-library declarations of compiler hook
-traits such as `std::ops::Operator` and `std::logic::LogicEncoding` remain
+traits such as `core::ops::Operator` and `core::ops::LogicEncoding` remain
 canonical language contracts, while nominal types appearing in their template
 arguments retain their resolved module identity.
 A user module may declare a same-named trait such as `protocol::From`; it stays
@@ -695,7 +695,7 @@ so `x'length` keeps its meaning.
 accepts, or reports; removing metadata changes only what a tool sees. Metadata
 written as `#[...]` is `E-P032`, and the help names the binding that replaces
 it for that position. As with rustc's built-in attributes, the directives are
-declared in `std::attrs` and reach every module through the prelude, and the
+declared in `core::attrs` and reach every module through the prelude, and the
 compiler recognizes those declarations, not a spelling: a same-named attribute
 declared elsewhere is ordinary metadata.
 
@@ -706,7 +706,7 @@ declared elsewhere is ordinary metadata.
 ### 3.5a Lint levels
 
 Every warning is a *lint* with a snake_case name; the first one of each kind
-says so (``note: `#[warn(unused_signal)]` on by default``). `std::attrs::Lint`
+says so (``note: `#[warn(unused_signal)]` on by default``). `core::attrs::Lint`
 lists them:
 
 | lint | code | | lint | code |

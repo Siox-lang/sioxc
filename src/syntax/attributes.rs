@@ -128,8 +128,10 @@ fn visible_attrs(module: &Module, modules: &[Module]) -> HashSet<String> {
         }
     };
     collect(module, false);
-    if let Some(prelude) = modules.iter().find(|m| path_is(&m.path, "std::prelude")) {
-        collect(prelude, true);
+    for prelude in ["core::prelude", "std::prelude"] {
+        if let Some(prelude) = modules.iter().find(|m| path_is(&m.path, prelude)) {
+            collect(prelude, true);
+        }
     }
     out
 }
@@ -156,6 +158,21 @@ fn bind_module(
     let mut plan: Vec<(Target, Attr, Option<Ident>)> = Vec::new();
     for (index, item) in module.items.iter().enumerate() {
         match item {
+            // A lang item is read by the resolver (`core`/`std` only).
+            Item::AttrBinding(binding)
+                if path_is(&binding.name, "lang")
+                    && module
+                        .path
+                        .segments
+                        .first()
+                        .is_some_and(|root| root.text == "core" || root.text == "std") => {}
+            // `lang` naming no entity is the resolver's to judge.
+            Item::AttrBinding(binding)
+                if path_is(&binding.name, "lang")
+                    && binding
+                        .object
+                        .as_ref()
+                        .is_some_and(|object| entity_named(module, &object.text).is_none()) => {}
             Item::AttrBinding(binding) => {
                 let target = match &binding.object {
                     Some(object) => entity_named(module, &object.text).map(Target::Entity),

@@ -77,7 +77,7 @@ fn equal_struct_leaves_keep_independent_visibility_domains() {
 /// matching leaf name, so a user trait of the same name is not mistaken for
 /// one.
 fn compiler_hook_traits_are_selected_by_declaration_not_leaf() {
-    let ops = "module std::ops; pub trait Boolean {}";
+    let ops = "module std::ops; pub trait Boolean {} attr lang for Boolean = \"boolean\";";
     let custom = "module custom; \
             pub trait Boolean {} pub struct Flag(integer); impl Boolean for Flag {}";
     let canonical = "module canonical; \

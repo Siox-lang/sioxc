@@ -8,10 +8,8 @@ module std::text;
 // therefore goes through a named table here (VHDL's 'pos/'val made explicit
 // and table-scoped).
 
-// A string is an array of symbols; the empty `[]` leaves the range to be set
-// at use — by an explicit length (`string[5]`) or by the literal that
-// initializes it (`let s: string = "hello";` is `Char[5]`).
-pub type string = Char[];
+// `string` is the grammar's, in `core::text`.
+pub use core::text::string;
 
 // Encoding tables. `Char` stores Unicode code points, so `Unicode` is the
 // identity; `Ascii` is its 7-bit prefix, with `-1` for a character outside it.

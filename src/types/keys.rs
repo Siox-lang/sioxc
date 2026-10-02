@@ -231,9 +231,10 @@ impl<'a> Checker<'a> {
                         .enumerate()
                         .find(|(_, definition)| {
                             definition.name == name
-                                && definition.module.as_deref().is_some_and(|module| {
-                                    module == "std" || module.starts_with("std::")
-                                })
+                                && definition
+                                    .module
+                                    .as_deref()
+                                    .is_some_and(crate::resolve::is_library_module)
                         })
                 })
                 .or_else(|| {

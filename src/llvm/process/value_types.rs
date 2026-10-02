@@ -583,7 +583,7 @@ pub(super) fn process_bool_discriminant(design: &Design, value: bool) -> Option<
     let symbol = if value { "true" } else { "false" };
     design
         .enum_syms
-        .get("std::logic::Bool")
+        .get("core::ops::Bool")
         .or_else(|| design.enum_syms.get("Bool"))?
         .iter()
         .find_map(|(discriminant, candidate)| (candidate == symbol).then_some(*discriminant))

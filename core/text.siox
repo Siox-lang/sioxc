@@ -1,0 +1,6 @@
+module core::text;
+
+// A string is an array of symbols; the empty `[]` leaves the range to be set
+// at use — by an explicit length (`string[5]`) or by the literal that
+// initializes it (`let s: string = "hello";` is `Char[5]`).
+pub type string = Char[];

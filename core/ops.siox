@@ -1,0 +1,266 @@
+module core::ops;
+
+// The compiler's hooks (proposals/core-std.md): the traits expression syntax,
+// conditions, parallel drivers, defaults, conversions and metavalue planes
+// dispatch to, and the types the grammar produces. `std::ops` and
+// `std::logic` re-export them, so their old paths keep working.
+
+// Condition results and metadata values (VHDL `boolean`).
+pub enum Bool {
+    false,
+    true
+}
+
+// Operator overloading is Rust-style (spec 3.25) but goes through a single
+// symbol-parameterized trait: `a <op> b` dispatches to
+// `impl Operator<"<op>", Input, Output> for <type of a>` (method `apply`;
+// overloads select by the rhs/`Input` type, and the impl's `Output` names the
+// result type). The standard symbols (`+ - * / << >> and or not <=>`) carry
+// built-in precedence; a user operator such as `xor` binds its precedence
+// inside its impl with `attr precedence = N;`. Unary `not` implements
+// `apply(self)` with no rhs.
+// The three-way `<=>` returns `Ordering` and derives all of < <= > >= == !=.
+pub trait Operator<op: string, input, output> {
+    fn apply(self, rhs: input) -> output {}
+}
+
+// Literal affixes are symbol-parameterized the same way (spec 3.24): the first
+// argument is the affix string, the second the literal's data type.
+//   - a bit-string prefix `x"AB"` dispatches to `impl Prefix<"x", string> for T`
+//   - a numeric suffix `10ns` dispatches to `impl Suffix<"ns", integer> for T`
+// The impl's target type is what the literal produces; prefix evaluation is a
+// compiler intrinsic (radix expansion) until const string operations land, so
+// prefix impls inherit the empty default body.
+pub trait Prefix<char: string, T> {
+    fn prefix(data: T) {}
+}
+
+pub trait Suffix<char: string, T> {
+    fn suffix(data: T) {}
+}
+
+// Inclusive index ranges are ordinary values when indexing is overloaded.
+// Partial source forms (`..right`, `left..`, `..`) are completed from the indexed
+// object's declared bounds before dispatch.
+pub struct Range {
+    pub left: integer,
+    pub right: integer
+}
+
+// `value[index]` falls back to Index when `value` is not an intrinsic packed
+// vector or array. `value[index] = next` similarly uses IndexAssign.
+pub trait Index<I, Output> {
+    fn index(self, index: I) -> Output;
+}
+
+pub trait IndexAssign<I, Value> {
+    fn index_assign(self, index: I, value: Value);
+}
+
+// `and`/`or` have one type-directed meaning. For Bool-like operands they are
+// scalar boolean logic; for bit-derived operands they apply per bit.
+impl Operator<"and", Bool, Bool> for Bool {
+    fn apply(self, rhs: Bool) -> Bool {
+        if self {
+            return rhs;
+        }
+        return false;
+    }
+}
+
+impl Operator<"or", Bool, Bool> for Bool {
+    fn apply(self, rhs: Bool) -> Bool {
+        if self { return true; }
+        return rhs;
+    }
+}
+
+impl Operator<"not", Bool, Bool> for Bool {
+    fn apply(self) -> Bool {
+        if self { return false; }
+        return true;
+    }
+}
+
+impl Operator<"xor", Bool, Bool> for Bool {
+    attr precedence = 35;
+    fn apply(self, rhs: Bool) -> Bool {
+        if self { return not rhs; }
+        return rhs;
+    }
+}
+
+impl Operator<"nand", Bool, Bool> for Bool {
+    attr precedence = 40;
+    fn apply(self, rhs: Bool) -> Bool { return not (self and rhs); }
+}
+
+impl Operator<"nor", Bool, Bool> for Bool {
+    attr precedence = 30;
+    fn apply(self, rhs: Bool) -> Bool { return not (self or rhs); }
+}
+
+impl Operator<"xnor", Bool, Bool> for Bool {
+    attr precedence = 35;
+    fn apply(self, rhs: Bool) -> Bool {
+        if self == rhs { return true; }
+        return false;
+    }
+}
+
+// The result of a three-way comparison (`impl Operator<"<=>", T, Ordering>`,
+// spec 3.25). One `<=>` impl derives all of < <= > >= == != — like Rust's Ord.
+// Discriminants are fixed (Less=0, Equal=1, Greater=2); the derived
+// comparisons test against them.
+pub enum Ordering {
+    Less,
+    Equal,
+    Greater
+}
+
+// `Boolean` gives a type a truth representation so it can be used directly
+// as a condition (`if`, `assert!`). Truth is the system `Bool` type —
+// `true`/`false`, not an `integer` code. The conversion is applied only in
+// condition position — it is not a general implicit cast. The prelude
+// exports it; the `Bit`/`Bool` behaviour below is also mirrored inside the
+// type checker, and these impls keep the semantics on the record in source.
+pub trait Boolean {
+    fn as_bool(self) -> Bool;
+}
+
+impl Boolean for Bool {
+    fn as_bool(self) -> Bool {
+        return self;
+    }
+}
+
+// Parallel-driver resolution (spec 3.14): when one signal is driven from
+// several contexts, the compiler folds the contributions pairwise through
+// the type's `resolve` (associative, commutative). A type WITHOUT an impl
+// is unresolved — parallel drivers on it are an elaboration error.
+pub trait Resolve {
+    fn resolve(self, rhs: Self) -> Self;
+}
+
+// Array behavior is lifted from the element contract. Nominal newtypes over
+// arrays forward these implementations from their base without becoming
+// interchangeable with that base.
+impl<T: Resolve> Resolve for T[] {
+    fn resolve(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i].resolve(rhs[i]); }
+        return result;
+    }
+}
+
+impl<T: Operator<"and", T, T>> Operator<"and", T, T> for T[] {
+    fn apply(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i] and rhs[i]; }
+        return result;
+    }
+}
+
+impl<T: Operator<"or", T, T>> Operator<"or", T, T> for T[] {
+    fn apply(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i] or rhs[i]; }
+        return result;
+    }
+}
+
+impl<T: Operator<"xor", T, T>> Operator<"xor", T, T> for T[] {
+    attr precedence = 35;
+    fn apply(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i] xor rhs[i]; }
+        return result;
+    }
+}
+
+impl<T: Operator<"nand", T, T>> Operator<"nand", T, T> for T[] {
+    attr precedence = 40;
+    fn apply(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i] nand rhs[i]; }
+        return result;
+    }
+}
+
+impl<T: Operator<"nor", T, T>> Operator<"nor", T, T> for T[] {
+    attr precedence = 30;
+    fn apply(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i] nor rhs[i]; }
+        return result;
+    }
+}
+
+impl<T: Operator<"xnor", T, T>> Operator<"xnor", T, T> for T[] {
+    attr precedence = 35;
+    fn apply(self, rhs: T[]) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = self[i] xnor rhs[i]; }
+        return result;
+    }
+}
+
+impl<T: Operator<"not", T, T>> Operator<"not", T, T> for T[] {
+    fn apply(self) -> T[] {
+        let result: T[] = self;
+        for i in self'range { result[i] = not self[i]; }
+        return result;
+    }
+}
+
+// The default constructor (language.md 3.29): the value an uninitialized signal
+// of `T` powers on to, and the nullary member of the `T(...)` family. The body
+// must be a constant. Absent an impl, the compiler uses the type's first
+// variant / zero.
+pub trait New {
+    fn new() -> Self;
+}
+
+// Explicit conversion for named types (spec 3.17): `T(x)` on a struct/enum
+// dispatches to `impl From<Source> for T` (the trait argument names the
+// source, like `Operator<Rhs>`). Conversions NEVER fire implicitly — only at a
+// conversion expression. Kernel numeric conversions (`unsigned[16](x)`,
+// `integer(x)`, `resize`) stay width-driven builtins.
+pub trait From {
+    fn from(v: Self) -> Self;
+}
+
+// The source-owned interpretation of a packed multi-valued logic element.
+// This is intentionally behaviour rather than a marker: it is the SIOX
+// counterpart of std_logic_1164's To_X01 conversion plus the information an
+// optimized two-plane simulator needs to omit ordinary forcing 0/1 metadata.
+//
+// `to_bool` is the value plane (weak H/L included), `is_binary` identifies the
+// two values whose exact identity needs no companion entry,
+// `is_high_impedance` identifies the waveform/resolution neutral level, and
+// `to_x01` identifies the canonical X/0/1 result used by numeric operations.
+// During elaboration the compiler evaluates these methods for every variant
+// and puts the resulting table in the Design; no backend knows ULogic's
+// symbols or discriminants.
+pub trait LogicEncoding {
+    fn to_bool(self) -> Bool;
+    fn is_binary(self) -> Bool;
+    fn is_high_impedance(self) -> Bool;
+    fn to_x01(self) -> Self;
+}
+
+// What each declaration is to the compiler. The compiler finds its hooks by
+// these roles, never by path.
+attr lang for Operator = "operator";
+attr lang for Prefix = "prefix";
+attr lang for Suffix = "suffix";
+attr lang for Range = "range";
+attr lang for Index = "index";
+attr lang for IndexAssign = "index_assign";
+attr lang for Ordering = "ordering";
+attr lang for Boolean = "boolean";
+attr lang for Resolve = "resolve";
+attr lang for New = "new";
+attr lang for From = "from";
+attr lang for Bool = "bool";
+attr lang for LogicEncoding = "logic_encoding";

@@ -25,7 +25,7 @@ synthesis layer yet (those are Phase 2 and 3 — see
 | [Standard-library build-out](proposals/std-buildout.md) | The compiler/std boundary and the open std work tracked in TODO. |
 | [Macros](proposals/macros.md) | Implemented (language §3.30) except `builtin #`, which waits for `core`. |
 | [`#[derive]`](proposals/derive.md) | Proposed generated `Ord`/`Resolve` implementations as a directive; `#[cfg]` stays rejected. |
-| [`core` and `std`](proposals/core-std.md) | Proposed split: `core` (compiled in) holds what only the compiler can provide — kernel types, hooks, directives, macros, runtime services, a new `error!`; `std` holds everything users program with — logic and numeric types, math, vectors/matrices, encodings, common vendor attributes. |
+| [`core` and `std`](proposals/core-std.md) | Slice 1 implemented: built-in `core` with the hooks and directives, found by lang items. `builtin #` macros, `error!` and new `std` content remain. |
 | [Pipelined functions](proposals/pipelines.md) | Proposed `#[latched]` functions after Spade, with no new keywords: `#[latch]` marks each stage (a block or one statement), depth is checked in the body and at every call site, stages can be named and referenced, and `#[latch(enable = c)]` stalls. |
 | [Compiler foundations](proposals/compiler-foundations.md) | Proposed rustc-style internals: UI tests for diagnostics, `--explain` and JSON output, one constant evaluator, a resolved tree with no name lookups after `resolve`, and std-declared lang items. |
 | [Vendor-neutral RTL interchange](proposals/rtl-interface.md) | **Phase 3.** Proposed synthesis-facing RTL IR that SystemVerilog, VHDL and other backends serialize, instead of compiling to another HDL. |

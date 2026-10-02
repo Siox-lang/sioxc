@@ -2,6 +2,9 @@ module std::logic;
 
 use std::ops::{From, New, Resolve};
 
+// `Bool` and the `LogicEncoding` hook belong to the compiler, in `core`.
+pub use core::ops::{Bool, LogicEncoding};
+
 // Scalar logic types, modelled on VHDL's std.standard and
 // ieee.std_logic_1164 — where `bit`, `boolean` and `std_ulogic` are ordinary
 // enumeration types declared in library code, not compiler magic.
@@ -69,31 +72,6 @@ impl From<Bit> for ULogic {
 // ULogic, but a distinct nominal type that implements `Resolve`, so parallel
 // drivers fold instead of erroring.
 pub enum Logic(ULogic);
-
-// Condition results and metadata values (VHDL `boolean`).
-pub enum Bool {
-    false,
-    true
-}
-
-// The source-owned interpretation of a packed multi-valued logic element.
-// This is intentionally behaviour rather than a marker: it is the SIOX
-// counterpart of std_logic_1164's To_X01 conversion plus the information an
-// optimized two-plane simulator needs to omit ordinary forcing 0/1 metadata.
-//
-// `to_bool` is the value plane (weak H/L included), `is_binary` identifies the
-// two values whose exact identity needs no companion entry,
-// `is_high_impedance` identifies the waveform/resolution neutral level, and
-// `to_x01` identifies the canonical X/0/1 result used by numeric operations.
-// During elaboration the compiler evaluates these methods for every variant
-// and puts the resulting table in the Design; no backend knows ULogic's
-// symbols or discriminants.
-pub trait LogicEncoding {
-    fn to_bool(self) -> Bool;
-    fn is_binary(self) -> Bool;
-    fn is_high_impedance(self) -> Bool;
-    fn to_x01(self) -> Self;
-}
 
 impl LogicEncoding for Bit {
     fn to_bool(self) -> Bool {

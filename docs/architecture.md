@@ -153,7 +153,7 @@ tree requests do not continue through IR. Frontend-only requests stop before
 
 `siox::llvm` emits LLVM and compiles the `Design` ahead of time to native code.
 For a test build, `siox::testbench` resolves enabled uses of the canonical
-`std::attrs::test` declaration once, elaborates exactly those roots, and binds
+`test` lang item (`core::attrs::test`) once, elaborates exactly those roots, and binds
 them into a `TestPlan`. `ir::lower_processes` fills the canonical
 `Design::process_ir` with validated descriptors and CFGs directly from the
 typed/elaborated source context; the compiler has no separate adapter module or
@@ -273,7 +273,7 @@ and native lowering. Views with the same leaf may overload by backing type in
 one module, and equal view leaves in separate modules qualify at the IR/output
 boundary when needed. Custom trait contracts, defaults, implementations, and
 operator operand types use resolver-selected identity as well. The exact
-builtin and `std::ops` hook declarations such as `Operator` are the deliberate
+builtin and `core::ops` hook declarations such as `Operator` are the deliberate
 exception: they keep one canonical language key while their user-defined
 operand types remain identity-preserving. A same-named trait declared in any
 other module is an ordinary qualified contract and never enters hook tables.
@@ -419,7 +419,7 @@ and then use their normal integer representation/conversion.
   the stable codes in `diag::codes` (e.g. `WRITE_TO_INPUT_PORT`); add new
   codes to that catalogue rather than scattering string literals. Every
   warning code is also a lint (`diag::lints::LINTS`, mirrored by
-  `std::attrs::Lint`): once the compiler has parsed the program it gives the
+  `core::attrs::Lint`): once the compiler has parsed the program it gives the
   sink the `-A`/`-W`/`-D`/`-F` levels and every `#[allow(...)]`-style
   directive, and `emit` applies them as warnings arrive, so a denied lint is an
   error before the next stage checks `has_errors`. A new warning needs a lint
@@ -491,11 +491,14 @@ when needed, and generic aliases are substituted away.
 The binding pass `syntax::attributes::attach` then runs just before resolution: it copies each `attr … for … = …;` binding onto its
 target as an applied attribute (the form later stages read) and folds each
 `x'name` read of a declared attribute into its bound or default value.
-The resolver additionally bootstraps the `Operator`, `Prefix`, `Suffix`, and
-`LogicEncoding` hook identities plus syntax-level attributes; their canonical
-contracts and values remain declarations in `std::ops`, `std::logic`, and
-`std::attrs`. Hook selection follows the resolved canonical declaration, so a
-same-leaf user trait remains an ordinary namespaced trait.
+The compiler's own declarations live in `core`, compiled into `sioxc` and
+loaded with `core::prelude` into every compilation (proposals/core-std.md).
+Each tells the compiler its role with a lang item, `attr lang for Operator =
+"operator";`, which only `core` and `std` may bind; the resolver keeps a
+table from role to declaration (`Resolved::lang`, `Resolved::lang_of`),
+seeded by builtin fallbacks for compilations that load no library. Hook
+selection asks that table, never a path, so a same-leaf user trait remains an
+ordinary namespaced trait.
 Stage-4 typing represents all indexed collections with one `Ty::Array` shape.
 Array-derived newtypes retain their family name for trait dispatch, but there
 is no separate semantic vector type or `Vector` trait.

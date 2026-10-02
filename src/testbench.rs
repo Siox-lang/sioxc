@@ -247,8 +247,9 @@ mod tests {
     /// Parse `source` together with the minimal `std::logic` and `std::attrs`
     /// stubs test discovery needs, returning the modules and their sink.
     fn modules(source: &str) -> (Vec<Module>, DiagnosticSink) {
-        let std_logic = "module std::logic; pub enum Bool { false, true }";
-        let std_attrs = "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity;";
+        let std_logic =
+            "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";";
+        let std_attrs = "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";";
         let prelude = "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test;";
         let mut sink = DiagnosticSink::new();
         let modules = [source, std_logic, std_attrs, prelude]

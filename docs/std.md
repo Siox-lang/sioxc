@@ -8,10 +8,21 @@ transitively from `--std <dir>` (default `./std`): `use std::logic::{...}`
 parses `<dir>/logic.siox`, and imports bind to real `pub` declarations (a
 bad import is a hard error, `E-P011`).
 
-The compiler bootstraps the `Operator`, `Prefix`, `Suffix`, and
-`LogicEncoding` hook identities. Operator contracts live in `std::ops`; every
-operator is an `Operator<"symbol", Input, Output>` implementation, and a user
-operator (a non-standard symbol) binds its precedence inside its impl
+Beneath it sits **`core`**: the part of the compiler reachable through the
+language (proposals/core-std.md). Its sources are in the repository's `core/`
+directory, compiled into `sioxc`, so `core::…` never reads `--std`. It holds
+what the compiler gives meaning to: `Bool`, the hook traits (`Operator`,
+`Prefix`, `Suffix`, `Index`, `IndexAssign`, `Boolean`, `Resolve`, `New`,
+`From`, `LogicEncoding`), `Range`, `Ordering`, `string`, the directives and
+`precedence`, and `Severity`. Each declaration tells the compiler its role
+with a lang item, `attr lang for Operator = "operator";`, and the compiler
+finds its hooks by role, never by path; only `core` and `std` may bind
+`lang`. `core::prelude` reaches every module. `std` re-exports each of these
+from the path it always had, so `std::ops::Operator` and `std::logic::Bool`
+keep working and name the same declarations.
+
+Every operator is an `Operator<"symbol", Input, Output>` implementation, and
+a user operator (a non-standard symbol) binds its precedence inside its impl
 (`attr precedence = N;`), discovered before expression parsing.
 
 Design stance (see the spec's "type kernel"): the compiler provides exactly
@@ -28,17 +39,22 @@ is a documented shim, and the declaration here is canonical.
 
 | siox module   | VHDL analogue                    | Contents |
 | ------------- | -------------------------------- | -------- |
-| `std::prelude`| (implicit `std.standard`)          | auto-loaded scalar/array types, core traits (`Boolean`, `New`, `From`, `Resolve`, indexing/ranges), `string`, `time`/`frequency` |
-| `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `ULogic`, `Logic`, `Bool`; packed-logic encoding contract; resolution and logic tables |
+| `core::prelude` | (implicit `std.standard`)        | always loaded, built in: `Bool`, the hook traits, `Range`, `Ordering`, `string`, the directives |
+| `core::ops`   | std.standard `boolean`             | `Bool`, the operator, affix, index, condition, resolution, construction and conversion hooks, `LogicEncoding` |
+| `core::attrs` | (attributes; VHDL has none)        | `test`, `allow`/`warn`/`deny`/`forbid`, `Lint`, `precedence`, `lang` |
+| `core::text`  | std.standard `string`              | `string = Char[]` |
+| `core::assert`| `severity_level`                   | `Severity` |
+| `std::prelude`| (implicit `std.standard`)          | auto-loaded scalar/array types, `Bit`/`Logic`, `unsigned`/`signed`, `time`/`frequency`, and the `core` names again |
+| `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `ULogic`, `Logic`; resolution and logic tables; re-exports `Bool`, `LogicEncoding` |
 | `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Operator` impls (including unsigned and signed `<=>`) |
-| `std::ops`    | (operators are functions in VHDL packages) | the `Boolean` condition trait |
+| `std::ops`    | (operators are functions in VHDL packages) | `Bit`'s logical operators and condition; re-exports the `core::ops` hooks |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
 | `std::text`   | std.standard `string` + `'pos`/`'val` | `string = Char[]`; encoding tables `Unicode`/`Ascii` |
 | `std::sim`    | std.standard `time`              | `time`, `frequency` + unit suffixes; FS..MS constants |
 | `std::fs`     | textio / impure host I/O         | typed `read<T>` construction and `exists` fixture probes |
-| `std::attrs`  | (attributes; VHDL has none)      | `test`, `keep`, `library`, `name`, `precedence` |
-| `std::assert` | `assert ... severity` levels     | `Severity` |
+| `std::attrs`  | (attributes; VHDL has none)      | `keep`, `library`, `name`; re-exports the `core::attrs` directives |
+| `std::assert` | `assert ... severity` levels     | re-exports `Severity` |
 
 ## `std::logic`
 
@@ -94,7 +110,7 @@ declared by `impl Prefix<"x", _> for unsigned` in `std::bits` (spec 3.24); a pla
 `"0101"` covers the binary case with no prefix. A file that never imports
 `std::bits` falls back to kernel word semantics.
 
-## `std::ops`
+## `core::ops` (re-exported by `std::ops`)
 
 ```siox
 pub enum Ordering { Less, Equal, Greater }
@@ -195,12 +211,13 @@ pub type Natural = integer<0..9223372036854775807>;
 pub type Positive = integer<1..9223372036854775807>;
 ```
 
-## `std::attrs`
+## `std::attrs` and `core::attrs`
 
 The standard metadata attributes (spec 3.5), each with a default so a read
 (`probe'keep`) always answers. `test` is written as the directive `#[test]`
 because it changes what `sioxc --test` emits; `precedence` is read by the
-parser; the others are reserved for later output passes:
+parser; both are `core::attrs` declarations that `std::attrs` re-exports. The
+others are reserved for later output passes:
 
 ```siox
 pub attr test: Bool for entity = false;     // discovered by `sioxc --test`
@@ -213,10 +230,11 @@ pub attr precedence: integer for impl = 0;  // custom operator binding power
 Bind them with `attr keep for probe = true;`, or objectless inside an
 implementation: `attr precedence = 40;`.
 
-`std::attrs` also declares the compiler directives, like rustc's built-in
+`core::attrs` also declares the compiler directives, like rustc's built-in
 attributes: `test` above, and the lint levels `allow`, `warn`, `deny` and
-`forbid`, each `for item`. The prelude re-exports all of them, and the
-compiler recognizes these declarations rather than the spelling. `enum Lint`
+`forbid`, each `for item`. The preludes re-export all of them, and the
+compiler recognizes these declarations (through the `test` lang item, for
+`#[test]`) rather than the spelling. `enum Lint`
 lists every lint name a directive accepts (`possible_latch`, `unused_signal`,
 …, and `warnings` for all of them); see the spec's §3.5a.
 
@@ -225,12 +243,12 @@ Vivado, Quartus, RTL, or Cocotb integration may declare and bind its own `top`
 attribute. The frontend preserves it as ordinary resolved metadata, while
 sioxc root selection remains structural or explicit through `--top`.
 
-## `std::assert`
+## `std::assert` and `core::assert`
 
 `assert!(cond, "msg")` fails a test, `warn!(cond, "msg")` reports and counts
 without failing, and `print!` formats a line; all three are built-in macros,
-so they capture their source location. This module carries the severity
-ladder (VHDL `severity_level`) for when assertions grow a severity argument:
+so they capture their source location. `core::assert` carries the severity
+ladder (re-exported here) (VHDL `severity_level`) for when assertions grow a severity argument:
 
 ```siox
 pub enum Severity { Note, Warning, Error, Failure }
