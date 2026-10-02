@@ -63,7 +63,7 @@ is a documented shim, and the declaration here is canonical.
 | `std::sim`    | std.standard `time`              | `time`, `frequency` + unit suffixes; FS..MS constants |
 | `std::sync`   | (vendor CDC macros)              | `Sync2`, `ResetSync`, `EdgeDetect`, `PulseSync` |
 | `std::fs`     | textio / impure host I/O         | typed `read<T>` construction and `exists` fixture probes |
-| `std::attrs`  | (attributes; VHDL has none)      | `keep`, `library`, `name`, vendor-neutral synthesis metadata |
+| `std::attrs`  | (attributes; VHDL has none)      | base metadata: `keep`, `top`, `clock`, `library`, `name` |
 
 ## `std::logic`
 
@@ -222,55 +222,36 @@ pub type Positive = integer<1..9223372036854775807>;
 
 ## `std::attrs` and `core::attrs`
 
-The standard metadata attributes (spec 3.5), each with a default so a read
-(`probe'keep`) always answers. `precedence` is read by the parser and lives
-in `core::attrs` with `lang`; the others are reserved for later output
-passes:
+The base metadata (spec 3.5) nearly every flow needs, each with a default so
+a read (`probe'keep`) always answers. The compiler preserves it without
+giving it semantics; `precedence`, which the parser does read, lives in
+`core::attrs` with `lang`:
 
 ```siox
 pub attr keep: Bool for let, port = false;  // keep through optimization
-pub attr library: string for entity = "";
-pub attr name: string for entity = "";
-pub attr precedence: integer for impl = 0;  // custom operator binding power
+pub attr top: Bool for entity = false;      // the design's top entity, for tools
+pub attr clock: Bool for port = false;      // this port is a clock input
+pub attr library: string for entity = "";   // a foreign entity's library
+pub attr name: string for entity = "";      // a foreign entity's name there
 ```
 
-Bind them with `attr keep for probe = true;`, or objectless inside an
-implementation: `attr precedence = 40;`.
+Bind them with `attr keep for probe = true;`. `top` tells tools such as
+Vivado or a cocotb flow which entity is the design's top; it does not select
+`sioxc`'s root, which stays structural or explicit through `--top`.
 
-Vendor-neutral synthesis metadata follows, spelled once and mapped by a
-later backend to each vendor's name (Vivado `ASYNC_REG`, Quartus `ramstyle`,
-…); the compiler reads none of it:
-
-```siox
-pub attr async_reg: Bool for let = false;          // a synchronizer flop
-pub attr ram_style: RamStyle for let = RamStyle::Auto;
-pub attr rom_style: RomStyle for let = RomStyle::Auto;
-pub attr fsm_encoding: FsmEncoding for let = FsmEncoding::Auto;
-pub attr max_fanout: integer for let, port = 0;    // 0: no limit
-pub attr mark_debug: Bool for let, port = false;   // expose to an on-chip analyzer
-pub attr clock: Bool for port = false;
-pub attr io_standard: string for port = "";
-pub attr pin: string for port = "";
-
-pub enum RamStyle { Auto, Block, Distributed, Registers }
-pub enum RomStyle { Auto, Block, Distributed, Logic }
-pub enum FsmEncoding { Auto, OneHot, Gray, Binary }
-```
+Vendor settings — RAM and ROM styles, FSM encodings, fan-out limits, debug
+marks, I/O standards, pin assignments — are not std: they belong in vendor
+packages, in each vendor's own spelling (`attr vivado::ram_style for …`).
 
 The directives — `#[test]` and the lint levels `#[allow]`, `#[warn]`,
 `#[deny]`, `#[forbid]` — are not attributes and are declared nowhere: like
 rustc's, they are built into the compiler, which also owns the lint names
 (spec §3.5a). A module's own `attr test` is metadata and never makes a test.
 
-`top` intentionally is not standard metadata and is not compiler-seeded. A
-Vivado, Quartus, RTL, or Cocotb integration may declare and bind its own `top`
-attribute. The frontend preserves it as ordinary resolved metadata, while
-sioxc root selection remains structural or explicit through `--top`.
-
 ## `std::sync`
 
 Clock-domain crossing and reset helpers, all `Bit`-typed. Synchronizer flops
-are bound `async_reg`.
+are bound `keep`.
 
 | entity | ports | behaviour |
 | --- | --- | --- |

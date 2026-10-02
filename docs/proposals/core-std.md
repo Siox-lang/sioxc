@@ -68,7 +68,7 @@ Everything a user programs with, built on `core`:
 | Time | `time`, `frequency`, the `fs`…`ms` and `Hz`…`GHz` suffixes |
 | New: linear algebra | `Vector<T, N>` and `Matrix<T, R, C>` over any `T` with the needed operators, element-wise operations, dot and matrix products, transpose; fixed-point families once they exist |
 | New: hardware helpers | the reusable models in TODO: synchronizers, counters, memories, FIFOs, stream adapters |
-| Common metadata | below |
+| Base metadata | below |
 
 `Bit` and `Logic` move to `std` even though the compiler mentions them today.
 The compiler's real dependency is on `LogicEncoding` (how a multi-valued
@@ -78,29 +78,21 @@ by spelling become lang items (see
 [compiler-foundations.md](compiler-foundations.md) §5) or move behind
 `LogicEncoding`.
 
-### Common metadata in `std::attrs`
+### Base metadata in `std::attrs`
 
-Metadata the compiler never reads but vendor flows and tools expect,
-declared once in vendor-neutral spelling with defaults. A backend maps each
-one to its vendor's name.
+`std::attrs` holds only the base metadata nearly every flow needs, not a
+catalogue of vendor settings:
 
-| Attribute | For | Vivado | Quartus | Yosys |
-| --- | --- | --- | --- | --- |
-| `keep: Bool` | `let`, port | `KEEP`, `DONT_TOUCH` | `preserve`, `keep` | `keep` |
-| `async_reg: Bool` | `let` | `ASYNC_REG` | `altera_attribute -name SYNCHRONIZER_IDENTIFICATION` | — |
-| `ram_style: RamStyle` | `let` (array) | `RAM_STYLE` | `ramstyle` | `ram_style` |
-| `rom_style: RomStyle` | `let` (array) | `ROM_STYLE` | `romstyle` | `rom_style` |
-| `fsm_encoding: FsmEncoding` | `let` (enum) | `FSM_ENCODING` | `syn_encoding` | `fsm_encoding` |
-| `max_fanout: integer` | `let`, port | `MAX_FANOUT` | `maxfan` | — |
-| `mark_debug: Bool` | `let`, port | `MARK_DEBUG` | `preserve` (SignalTap) | — |
-| `clock: Bool`, `frequency: frequency` | port | `create_clock` constraint | `create_clock` | — |
-| `io_standard: string`, `pin: string` | port | `IOSTANDARD`, `PACKAGE_PIN` | `IO_STANDARD`, `chip_pin` | — |
-| `library: string`, `name: string` | entity | library and entity name for foreign HDL | same | same |
+| Attribute | For | Meaning |
+| --- | --- | --- |
+| `keep: Bool` | `let`, port | keep through optimization |
+| `top: Bool` | entity | the design's top entity, for tools (it does not select `sioxc`'s root; `--top` does) |
+| `clock: Bool` | port | this port is a clock input |
+| `library: string`, `name: string` | entity | a foreign entity's library and its name there |
 
-`RamStyle`, `RomStyle` and `FsmEncoding` are small `std` enums (`Block`,
-`Distributed`, `Registers`, `Auto`; `OneHot`, `Gray`, `Binary`, `Auto`).
-Vendor-specific names that have no neutral spelling stay in vendor packages
-(`attr vivado::iob for …`), as today.
+Vendor settings — RAM and ROM styles, FSM encodings, fan-out limits, debug
+marks, I/O standards, pin assignments — belong in vendor packages
+(`attr vivado::ram_style for …`), each in its vendor's own spelling.
 
 ## Prelude
 
@@ -209,9 +201,6 @@ Decided, with rustc's `core` and `std` as the reference:
 
 ## Open questions
 
-- Should `std::attrs`' common metadata live in `std` itself, or in a
-  `std::vendor` module so the vendor-facing names are one import away from
-  the language's own?
 - `Bool` is the condition type, so it is `core`. `Bit` is what most signals
   are. Does a clock edge (`'event`, `'old`) need anything from `std`, or is
   `ClockLike` enough as an ordinary trait?
