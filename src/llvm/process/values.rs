@@ -1123,6 +1123,27 @@ pub(super) fn process_value<'ctx>(
                     .ok()?;
                 fit_signed(builder, integer, width)?
             }
+            ProcessUnaryOp::IntegerToReal => {
+                let operand = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    64,
+                    true,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let real = builder
+                    .build_signed_int_to_float(operand, context.f64_type(), "pv.integer.real")
+                    .ok()?;
+                builder
+                    .build_bit_cast(real, context.i64_type(), "pv.real.bits")
+                    .ok()?
+                    .into_int_value()
+            }
         },
         ProcessValueKind::RawResize { operand } => {
             let operand = process_value(

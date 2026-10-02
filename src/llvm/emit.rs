@@ -2585,6 +2585,24 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                         // the same value assigned to a signal was correct.
                         self.fit_signed(i, self.value_ty(width))
                     }
+                    // The operand is a signed integer; produce the f64 bits of
+                    // the number it denotes.
+                    UnOp::IntToReal => {
+                        let f = self
+                            .builder
+                            .build_signed_int_to_float(
+                                self.fit_signed(a, self.ctx.i64_type()),
+                                self.ctx.f64_type(),
+                                "itor",
+                            )
+                            .unwrap();
+                        let bits = self
+                            .builder
+                            .build_bit_cast(f, self.ctx.i64_type(), "rbits")
+                            .unwrap()
+                            .into_int_value();
+                        self.fit(bits, self.value_ty(width))
+                    }
                 }
             }
             Expr::Binary { op, lhs, rhs } => {

@@ -555,6 +555,8 @@ pub enum ProcessUnaryOp {
     Not,
     /// Convert an IEEE-754 real to the signed kernel integer.
     RealToInteger,
+    /// Convert a signed kernel integer to the IEEE-754 real of its value.
+    IntegerToReal,
 }
 
 /// A binary operation after precedence has already shaped the expression tree.
@@ -1022,6 +1024,7 @@ impl ProcessIr {
                     UnOp::Neg => ProcessUnaryOp::Neg,
                     UnOp::Not => ProcessUnaryOp::Not,
                     UnOp::RealToInt => ProcessUnaryOp::RealToInteger,
+                    UnOp::IntToReal => ProcessUnaryOp::IntegerToReal,
                 },
                 operand: self.push_digital_expr(rhs, fallback_span),
             },

@@ -2698,6 +2698,7 @@ fn process_display_kind_from_value(
                 ProcessUnaryOp::Neg | ProcessUnaryOp::RealToInteger => {
                     Some(ProcessDisplayKind::Signed)
                 }
+                ProcessUnaryOp::IntegerToReal => Some(ProcessDisplayKind::Real),
                 ProcessUnaryOp::Not => Some(ProcessDisplayKind::Unsigned),
             }),
         ProcessValueKind::Binary { operation, .. } => match operation {
@@ -3380,6 +3381,7 @@ fn lower_process_kernel_conversion(
     let target = match name.as_str() {
         "integer" => crate::types::Ty::Integer,
         "Char" => crate::types::Ty::Char,
+        "real" => crate::types::Ty::Real,
         _ => return None,
     };
     let operand_type = context
@@ -3388,12 +3390,17 @@ fn lower_process_kernel_conversion(
         .filter(|ty| !matches!(ty, crate::types::Ty::Error))
         .cloned();
     let operand = value_ref_with_type(&args[0], process, context, operand_type.as_ref());
-    let kind = if name == "integer"
-        && (matches!(operand_type, Some(crate::types::Ty::Real))
-            || process_value_is_real(operand, context))
-    {
+    let operand_is_real = matches!(operand_type, Some(crate::types::Ty::Real))
+        || process_value_is_real(operand, context);
+    let kind = if name == "integer" && operand_is_real {
         ProcessValueKind::Unary {
             operation: ProcessUnaryOp::RealToInteger,
+            operand,
+        }
+    } else if name == "real" && !operand_is_real {
+        // `real(n)`: the number n, not its bits read as an f64.
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::IntegerToReal,
             operand,
         }
     } else {
@@ -4327,6 +4334,17 @@ fn inline_process_binary_operator(
     let left_type = checked_type(lhs)?;
     let right_type = checked_type(rhs);
     let symbol = crate::syntax::pretty::bin_op(operator);
+    if let Some(value) = inline_process_comparison(
+        operator,
+        lhs,
+        rhs,
+        &left_type,
+        right_type.as_ref(),
+        process,
+        context,
+    ) {
+        return Some(value);
+    }
     if matches!(left_type, crate::types::Ty::Array { family: None, .. })
         && right_type
             .as_ref()
@@ -4385,7 +4403,176 @@ fn inline_process_binary_operator(
     if result.is_none() {
         truncate_process_values(context, first_value);
     }
+    if let Some(result) = result {
+        inherit_receiver_layout(result, left, context);
+    }
     result
+}
+
+/// A comparison on a type with a three-way `<=>` impl (spec 3.25): `a < b` is
+/// `(a <=> b) == Ordering::Less`, and so on for all six. The discriminant comes
+/// from the declared `Ordering` (the `ordering` lang item). `None` when the
+/// operand type has no `<=>`, or inside that impl's own body, where the
+/// comparisons are the built-in ones.
+fn inline_process_comparison(
+    operator: &ast::BinOp,
+    lhs: &ast::Expr,
+    rhs: &ast::Expr,
+    left_type: &crate::types::Ty,
+    right_type: Option<&crate::types::Ty>,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let (variant, negate) = match operator {
+        ast::BinOp::Lt => ("Less", false),
+        ast::BinOp::Eq => ("Equal", false),
+        ast::BinOp::Gt => ("Greater", false),
+        ast::BinOp::Ge => ("Less", true),
+        ast::BinOp::Ne => ("Equal", true),
+        ast::BinOp::Le => ("Greater", true),
+        _ => return None,
+    };
+    let owner = process_type_key(left_type, context)?;
+    let input = right_type.and_then(|ty| process_type_key(ty, context));
+    let function = context
+        .functions
+        .get_binary_operator("<=>", &owner, input.as_deref())?;
+    if context.inline_functions.contains(&function.span) {
+        return None;
+    }
+    let ordering = context.resolved.lang("ordering")?;
+    let wanted = context
+        .resolved
+        .defs()
+        .iter()
+        .enumerate()
+        .find(|(_, definition)| definition.parent == Some(ordering) && definition.name == variant)
+        .map(|(index, _)| crate::resolve::DefId(index as u32))?;
+    let discriminant = definition_number(wanted, context)?;
+
+    let first_value = context.process_ir.values.len();
+    let left = value_ref_with_type(lhs, process, context, Some(left_type));
+    let right_context = if matches!(right_type, Some(crate::types::Ty::Integer))
+        && !matches!(left_type, crate::types::Ty::Integer)
+    {
+        Some(left_type)
+    } else {
+        right_type.or(Some(left_type))
+    };
+    let right = value_ref_with_type(rhs, process, context, right_context);
+    // An operand computed wider than its type (`min - 1` on `signed[8]`)
+    // wraps to the type first, as the built-in comparison would.
+    let left = narrow_to_type(left, Some(left_type), context);
+    let right = narrow_to_type(right, right_context, context);
+    let ordering_type = Some(crate::types::Ty::Named(ordering));
+    let Some(order) = inline_process_function(
+        function,
+        Some(left),
+        &[right],
+        process,
+        context,
+        ordering_type.as_ref(),
+    ) else {
+        truncate_process_values(context, first_value);
+        return None;
+    };
+    let width = context
+        .process_ir
+        .values
+        .get(order.0 as usize)
+        .and_then(|value| value.bit_width);
+    let span = ast::expr_span(lhs).to(ast::expr_span(rhs));
+    let expected = push_value(
+        span,
+        ordering_type,
+        width,
+        ProcessValueKind::Number(discriminant),
+        context,
+    );
+    Some(push_value(
+        span,
+        bool_type(context.resolved),
+        Some(1),
+        ProcessValueKind::Binary {
+            operation: if negate {
+                ProcessBinaryOp::Ne
+            } else {
+                ProcessBinaryOp::Eq
+            },
+            left: order,
+            right: expected,
+        },
+        context,
+    ))
+}
+
+/// A computed `value` truncated to the width of its fixed-width array type;
+/// a stored value is unchanged.
+fn narrow_to_type(
+    value: ProcessValueId,
+    ty: Option<&crate::types::Ty>,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    let Some(ty @ crate::types::Ty::Array { len, .. }) = ty else {
+        return value;
+    };
+    // A stored value already has its width; a computed one is evaluated in
+    // whatever width its consumer asks for, so it is masked here.
+    let stored = matches!(
+        context
+            .process_ir
+            .values
+            .get(value.0 as usize)
+            .map(|value| &value.kind),
+        Some(
+            ProcessValueKind::Storage(_)
+                | ProcessValueKind::StorageState { .. }
+                | ProcessValueKind::Local { .. }
+                | ProcessValueKind::Signal { .. }
+        )
+    );
+    if *len == 0 || stored {
+        return value;
+    }
+    let span = context.process_ir.values[value.0 as usize].span;
+    let narrowed = push_value(
+        span,
+        Some(ty.clone()),
+        Some(*len),
+        ProcessValueKind::RawResize { operand: value },
+        context,
+    );
+    if let Some(layout) = process_value_source_layout(value, context.process_ir).cloned() {
+        context.process_ir.value_layouts[narrowed.0 as usize] = Some(layout);
+    }
+    narrowed
+}
+
+/// An operator that returns its receiver's own type keeps the receiver's
+/// format: `a + b` on `ufixed[3..-4]` is a `ufixed[3..-4]`, so a body applied
+/// to that result (`(a + b) * c`, reading `self'low`) still finds its index
+/// range. Without a layout the result was a bare word with no bounds.
+fn inherit_receiver_layout(
+    result: ProcessValueId,
+    receiver: ProcessValueId,
+    context: &mut LoweringContext<'_>,
+) {
+    if process_value_source_layout(result, context.process_ir).is_some() {
+        return;
+    }
+    let same_type = {
+        let values = &context.process_ir.values;
+        let ty = |id: ProcessValueId| values.get(id.0 as usize).and_then(|value| value.ty.clone());
+        ty(result).is_some() && ty(result) == ty(receiver)
+    };
+    let Some(layout) = process_value_source_layout(receiver, context.process_ir).cloned() else {
+        return;
+    };
+    if same_type {
+        if let Some(slot) = context.process_ir.value_layouts.get_mut(result.0 as usize) {
+            *slot = Some(layout);
+        }
+    }
 }
 
 /// Unary counterpart of [`inline_process_binary_operator`]. Only a concrete
@@ -4757,6 +4944,47 @@ fn value_ref(
 /// `const HIGH: Bit = '1'` must remain the `Bit` discriminant rather than the
 /// Unicode code point of a standalone `Char` expression.
 fn value_ref_with_type(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    contextual_type: Option<&crate::types::Ty>,
+) -> crate::ir::ProcessValueId {
+    let value = value_ref_with_type_inner(expression, process, context, contextual_type);
+    // A kernel integer widens into `real` by value (language §3.17's one
+    // implicit promotion): convert it, rather than reading its bits as f64.
+    let integer = context
+        .typed
+        .expr_type(ast::expr_span(expression))
+        .is_some_and(|ty| matches!(ty, crate::types::Ty::Integer));
+    if integer && matches!(contextual_type, Some(crate::types::Ty::Real)) {
+        return promote_to_real(value, ast::expr_span(expression), context);
+    }
+    value
+}
+
+/// `value` as a real: unchanged when it already is one, else converted from
+/// the signed integer it holds.
+fn promote_to_real(
+    value: ProcessValueId,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    if process_value_is_real(value, context) {
+        return value;
+    }
+    push_value(
+        span,
+        Some(crate::types::Ty::Real),
+        Some(64),
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::IntegerToReal,
+            operand: value,
+        },
+        context,
+    )
+}
+
+fn value_ref_with_type_inner(
     expression: &ast::Expr,
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
@@ -5189,8 +5417,27 @@ fn value_ref_with_type(
                     );
                 }
             }
+            // An operand that is a real, by its checked type or its value
+            // (`real(n)`), makes the operation a float one; an integer beside
+            // it is then promoted by value.
+            let real_operand =
+                process_value_is_real(left, context) || process_value_is_real(right, context);
+            let real_type = Some(crate::types::Ty::Real);
+            let operation = if real_operand {
+                lower_binary_operator(op, real_type.as_ref(), right_type.as_ref())
+            } else {
+                lower_binary_operator(op, left_type.as_ref(), right_type.as_ref())
+            };
+            let (left, right) = if is_float_operation(&operation) {
+                (
+                    promote_to_real(left, span, context),
+                    promote_to_real(right, span, context),
+                )
+            } else {
+                (left, right)
+            };
             ProcessValueKind::Binary {
-                operation: lower_binary_operator(op, left_type.as_ref(), right_type.as_ref()),
+                operation,
                 left,
                 right,
             }
@@ -5610,7 +5857,7 @@ fn source_value_width(
             .get(table.0)
             .map(|table| table.element_width),
         ProcessValueKind::Unary { operation, operand } => match operation {
-            ProcessUnaryOp::RealToInteger => Some(64),
+            ProcessUnaryOp::RealToInteger | ProcessUnaryOp::IntegerToReal => Some(64),
             ProcessUnaryOp::Neg | ProcessUnaryOp::Not => value_width(operand),
         },
         ProcessValueKind::RawResize { operand } => value_width(operand),
@@ -5839,6 +6086,23 @@ fn parse_digits_words(digits: &str, radix: u32) -> Vec<u64> {
 }
 
 /// Convert a parsed operator to its precedence-free process form.
+/// Whether a lowered binary operation works on reals.
+fn is_float_operation(operation: &ProcessBinaryOp) -> bool {
+    matches!(
+        operation,
+        ProcessBinaryOp::FloatAdd
+            | ProcessBinaryOp::FloatSub
+            | ProcessBinaryOp::FloatMul
+            | ProcessBinaryOp::FloatDiv
+            | ProcessBinaryOp::FloatEq
+            | ProcessBinaryOp::FloatNe
+            | ProcessBinaryOp::FloatLt
+            | ProcessBinaryOp::FloatLe
+            | ProcessBinaryOp::FloatGt
+            | ProcessBinaryOp::FloatGe
+    )
+}
+
 fn lower_binary_operator(
     operator: &ast::BinOp,
     left: Option<&crate::types::Ty>,

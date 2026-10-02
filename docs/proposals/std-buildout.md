@@ -91,7 +91,7 @@ directives, `Severity` and the built-in macros. std re-exports each.
 
    `std::attrs` holds only base metadata (`keep`, `top`, `clock`, `library`,
    `name`); vendor settings belong in vendor packages.
-2. **Fixed point** — `std::fixed`, being implemented, after VHDL-2008's
+2. **Fixed point** — `std::fixed`, implemented, after VHDL-2008's
    `fixed_pkg`: the binary point lives in the index range, so no generics
    are needed and the types work like `unsigned`/`signed`.
 

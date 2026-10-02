@@ -1,0 +1,121 @@
+module std::fixed;
+
+use std::cmp::Ordering;
+
+// Fixed-point numbers, after VHDL-2008's `fixed_pkg`. The binary point lives in
+// the index range, exactly as in VHDL's `ufixed(3 downto -4)`:
+//
+//   ufixed[3..-4]   4 integer bits (indices 3..0) and 4 fraction bits (-1..-4)
+//   sfixed[7..-8]   the same in two's complement: 8 integer bits, 8 fraction
+//
+// so `x'high + 1` is the integer width and `-x'low` the fraction width, and
+// the types are ordinary newtypes over `Logic[]`, like `unsigned`/`signed`.
+//
+// Operands of one format give that format. A sum wraps on overflow, as
+// `unsigned` does; a product drops its extra fraction bits rounding toward
+// minus infinity (VHDL's truncate). Inside these impls the operands read as
+// kernel words: `self * rhs` is the full product, which the shift by the
+// fraction width brings back to the format before it is stored.
+pub struct ufixed(Logic[]);
+pub struct sfixed(Logic[]);
+
+// --- ufixed ------------------------------------------------------------------
+
+impl Operator<"+", ufixed, ufixed> for ufixed {
+    fn apply(self, rhs: ufixed) -> ufixed { return self + rhs; }
+}
+
+impl Operator<"-", ufixed, ufixed> for ufixed {
+    fn apply(self, rhs: ufixed) -> ufixed { return self - rhs; }
+}
+
+impl Operator<"*", ufixed, ufixed> for ufixed {
+    fn apply(self, rhs: ufixed) -> ufixed { return (self * rhs) >> (0 - self'low); }
+}
+
+impl Operator<"<=>", ufixed, Ordering> for ufixed {
+    fn apply(self, rhs: ufixed) -> Ordering {
+        if self < rhs { return Ordering::Less; }
+        if self > rhs { return Ordering::Greater; }
+        return Ordering::Equal;
+    }
+}
+
+impl ufixed {
+    // The number this holds.
+    pub fn to_real(self) -> real {
+        return real(integer(self)) / real(1 << (0 - self'low));
+    }
+}
+
+// --- sfixed ------------------------------------------------------------------
+
+impl Operator<"+", sfixed, sfixed> for sfixed {
+    fn apply(self, rhs: sfixed) -> sfixed { return self + rhs; }
+}
+
+impl Operator<"-", sfixed, sfixed> for sfixed {
+    fn apply(self, rhs: sfixed) -> sfixed { return self - rhs; }
+}
+
+// The words multiply as unsigned; a negative operand read unsigned is its
+// value plus 2^L, so the signed product is the unsigned one less 2^L times the
+// other operand for each negative operand. Its low 2L bits are then exact,
+// and the shift by the fraction width selects the result's bits.
+impl Operator<"*", sfixed, sfixed> for sfixed {
+    fn apply(self, rhs: sfixed) -> sfixed {
+        return ((self * rhs)
+            - (((self >> (self'length - 1)) * rhs) << self'length)
+            - (((rhs >> (rhs'length - 1)) * self) << rhs'length))
+            >> (0 - self'low);
+    }
+}
+
+// Sign-aware comparison: a negative orders below a non-negative; same-sign
+// two's-complement values order like their unsigned words.
+impl Operator<"<=>", sfixed, Ordering> for sfixed {
+    fn apply(self, rhs: sfixed) -> Ordering {
+        if (self >> (self'length - 1)) > (rhs >> (rhs'length - 1)) {
+            return Ordering::Less;
+        }
+        if (self >> (self'length - 1)) < (rhs >> (rhs'length - 1)) {
+            return Ordering::Greater;
+        }
+        if self < rhs { return Ordering::Less; }
+        if self > rhs { return Ordering::Greater; }
+        return Ordering::Equal;
+    }
+}
+
+impl sfixed {
+    // The number this holds.
+    pub fn to_real(self) -> real {
+        let word: integer = integer(self);
+        let value: integer = word - ((word >> (self'length - 1)) << self'length);
+        return real(value) / real(1 << (0 - self'low));
+    }
+}
+
+// --- from real ---------------------------------------------------------------
+
+// `value` in the format `[left..right]`, rounded to the nearest step (ties
+// away from zero) and saturated to the format's range, VHDL's defaults:
+//
+//   let gain: ufixed[3..-4] = to_ufixed(2.5, 3, -4);
+pub fn to_ufixed(value: real, left: integer, right: integer) -> integer {
+    let steps: real = value * real(1 << (0 - right));
+    let largest: integer = (1 << (left - right + 1)) - 1;
+    if steps <= 0.0 { return 0; }
+    if steps >= real(largest) { return largest; }
+    return integer(steps + 0.5);
+}
+
+pub fn to_sfixed(value: real, left: integer, right: integer) -> integer {
+    let steps: real = value * real(1 << (0 - right));
+    let largest: integer = (1 << (left - right)) - 1;
+    let smallest: integer = 0 - (1 << (left - right));
+    if steps >= real(largest) { return largest; }
+    if steps <= real(smallest) { return smallest; }
+    if steps < 0.0 { return 0 - integer(0.5 - steps); }
+    return integer(steps + 0.5);
+}

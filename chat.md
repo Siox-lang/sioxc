@@ -10759,3 +10759,26 @@ only `keep`, `top`, `clock`, `library` and `name`. `async_reg`, `ram_style`,
 `pin` and their enums are gone; vendor settings belong in vendor packages.
 `top` is std metadata now (tools only; `--top` still selects sioxc's root).
 `std::sync` binds `keep` on its synchronizer flops.
+
+### 2026-10-02 — Claude — fixed point, and the compiler fixes it needed
+
+`std::fixed` (`ufixed`/`sfixed`, binary point in the index range after VHDL's
+`fixed_pkg`). Getting there touched IR files (Max approved):
+
+- `ir/lower_helpers/builders.rs`: a generic newtype sized by its own
+  parameters (`struct W<N: integer>(Logic[N])`, `W<8>`) had width 0; now
+  binds the parameters first.
+- `real(n)` was unlowerable and `r = n` / `1.5 + n` read the integer's bits
+  as f64: new `UnOp::IntToReal` / `ProcessUnaryOp::IntegerToReal`, the
+  conversion in both paths, value promotion in `value_ref_with_type` and in
+  float binary ops (`source_processes.rs`), LLVM in `emit.rs` and
+  `process/values.rs`.
+- Operators keep their receiver's format: Process IR copies the receiver's
+  layout onto a same-typed operator result (`inherit_receiver_layout`); the
+  design path binds `self'left/right/high/low` (`bind_range_attrs`,
+  `operand_range` in `expressions.rs`, used in `calls.rs` too), including a
+  signal-range fallback in `values.rs`.
+- Process IR now derives comparisons from a type's `<=>` impl
+  (`inline_process_comparison`), as the design path's `inline_cmp` already
+  did; computed operands are narrowed to their type first. `std::bits`'
+  signed `<=>` reads `integer(resize(x, x'length))` so either shift works.

@@ -336,7 +336,7 @@ pub(super) fn process_packed_meta_in_layout<'ctx>(
                     .ok()
                     .map(|value| value.into_int_value())
             }
-            ProcessUnaryOp::RealToInteger => None,
+            ProcessUnaryOp::RealToInteger | ProcessUnaryOp::IntegerToReal => None,
         },
         ProcessValueKind::Binary {
             operation,

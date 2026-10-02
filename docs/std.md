@@ -62,6 +62,7 @@ is a documented shim, and the declaration here is canonical.
 | `std::text`   | `'pos`/`'val`                    | encoding tables `Unicode`/`Ascii` |
 | `std::sim`    | std.standard `time`              | `time`, `frequency` + unit suffixes; FS..MS constants |
 | `std::sync`   | (vendor CDC macros)              | `Sync2`, `ResetSync`, `EdgeDetect`, `PulseSync` |
+| `std::fixed`  | ieee.fixed_pkg                   | `ufixed`, `sfixed` (binary point in the index range), `to_ufixed`, `to_sfixed`, `.to_real()` |
 | `std::fs`     | textio / impure host I/O         | typed `read<T>` construction and `exists` fixture probes |
 | `std::attrs`  | (attributes; VHDL has none)      | base metadata: `keep`, `top`, `clock`, `library`, `name` |
 
@@ -247,6 +248,34 @@ The directives — `#[test]` and the lint levels `#[allow]`, `#[warn]`,
 `#[deny]`, `#[forbid]` — are not attributes and are declared nowhere: like
 rustc's, they are built into the compiler, which also owns the lint names
 (spec §3.5a). A module's own `attr test` is metadata and never makes a test.
+
+## `std::fixed`
+
+Fixed-point numbers after VHDL-2008's `fixed_pkg`: the binary point lives in
+the index range, so `ufixed[3..-4]` has 4 integer bits (indices 3..0) and 4
+fraction bits (-1..-4), and `sfixed[7..-8]` is 8.8 two's complement. Both are
+newtypes over `Logic[]`, like `unsigned` and `signed`.
+
+```siox
+use std::fixed::{ufixed, sfixed, to_ufixed, to_sfixed};
+
+let gain: ufixed[3..-4] = to_ufixed(2.5, 3, -4);   // the word 40
+let error: sfixed[7..-8] = to_sfixed(0.0 - 0.75, 7, -8);
+let scaled: ufixed[3..-4];
+scaled = (gain + gain) * gain;                      // formats carry through
+let r: real = gain.to_real();                       // 2.5
+```
+
+- `+`, `-`, `*` between operands of one format give that format. A sum wraps
+  on overflow, as `unsigned` does; a product drops its extra fraction bits
+  rounding toward minus infinity (VHDL's truncate).
+- `<`, `<=`, `>`, `>=`, `==`, `!=` come from each type's `<=>`; `sfixed`
+  compares signed.
+- `to_ufixed(value, left, right)` / `to_sfixed(…)` take a `real` to the
+  format `[left..right]`, rounding to nearest (ties away from zero) and
+  saturating; `x.to_real()` goes back.
+- Not yet: division, and a `resize` that chooses saturate/wrap and
+  round/truncate.
 
 ## `std::sync`
 

@@ -404,7 +404,7 @@ pub(super) fn process_packed_meta_supported(
             },
         ),
         ProcessValueKind::Unary {
-            operation: ProcessUnaryOp::RealToInteger,
+            operation: ProcessUnaryOp::RealToInteger | ProcessUnaryOp::IntegerToReal,
             ..
         } => false,
         ProcessValueKind::Binary {

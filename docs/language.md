@@ -1462,7 +1462,10 @@ r = resize(a, W + 1); // same rule, width as a const-evaluable value
 ```
 
 A conversion is a **raw resize**: zero-extend or truncate, whatever the
-families involved. The compiler tracks no signedness (§3.10), so it cannot
+families involved — except between `integer` and `real`, which convert the
+*number*: `integer(r)` truncates toward zero and `real(n)` is exactly n. An
+`integer` is also promoted to `real` implicitly, by value, where a `real` is
+expected (`let r: real = n;`, `1.5 + n`). The compiler tracks no signedness (§3.10), so it cannot
 know that a widening should copy a sign bit — sign extension is the library
 function [`std::bits::sext`](../std/bits.siox), and a signed value is widened
 by going through it:
@@ -2096,6 +2099,13 @@ the operand width produces zero. This applies identically in compiled design
 logic and native testbench expressions; it never inherits C undefined behavior
 or LLVM poison semantics. A constant expression can acquire a wider contextual
 width, so `unsigned[128](1) << 64` remains a valid cross-word shift.
+
+**An operator keeps its receiver's format.** When an impl returns its own
+receiver type, the result has the receiver's declared index range as well as
+its width: `(a + b) * c` on `ufixed[3..-4]` operands is still a
+`ufixed[3..-4]`, so a body applied to it can read `self'low`. Inside an impl,
+`self'left`, `'right`, `'high`, `'low` and `'length` describe the operand
+actually passed.
 
 **Reserved symbols cannot be overloaded.** The grammar owns `=`, `::`, `:`,
 `.`, `..`, `->`, `=>`, `,`, `;`, `#`, the brackets, and the like, so an
