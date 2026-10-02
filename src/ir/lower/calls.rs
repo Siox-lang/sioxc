@@ -1022,6 +1022,9 @@ impl<'a> Lowering<'a> {
         stmts: &[ast::Stmt],
         env: &HashMap<String, Val>,
     ) -> Option<Val> {
+        if !self.oversized.borrow().is_empty() {
+            return None;
+        }
         match stmts {
             [ast::Stmt::Return { value: Some(v), .. }, ..] => Some(self.lower_val_env(v, env)),
             [ast::Stmt::If(iff), rest @ ..] => {
@@ -1080,7 +1083,14 @@ impl<'a> Lowering<'a> {
             [ast::Stmt::Let(l), rest @ ..] => {
                 let value = l.value.as_ref()?;
                 let mut scoped = env.clone();
-                scoped.insert(l.name.text.clone(), self.lower_val_env(value, env));
+                let lowered = self.lower_val_env(value, env);
+                if !val_within_budget(&lowered) {
+                    self.oversized
+                        .borrow_mut()
+                        .push((l.name.text.clone(), l.span));
+                    return None;
+                }
+                scoped.insert(l.name.text.clone(), lowered);
                 scoped.insert(
                     format!("{}::length", l.name.text),
                     Val::Scalar(Expr::Const(self.ast_width(value) as u64)),
@@ -1090,5 +1100,49 @@ impl<'a> Lowering<'a> {
             }
             _ => None,
         }
+    }
+}
+
+/// How many design-IR nodes one inlined `let` value may have.
+pub(super) const INLINE_NODE_BUDGET: usize = 200_000;
+
+/// Whether `value` stays within [`INLINE_NODE_BUDGET`] nodes.
+fn val_within_budget(value: &Val) -> bool {
+    let mut budget = INLINE_NODE_BUDGET;
+    match value {
+        Val::Scalar(expr) => expr_within(expr, &mut budget),
+        Val::Fields(fields) => fields
+            .iter()
+            .all(|(_, expr)| expr_within(expr, &mut budget)),
+    }
+}
+
+/// Count `expr`'s nodes against `budget`, stopping as soon as it runs out.
+fn expr_within(expr: &Expr, budget: &mut usize) -> bool {
+    if *budget == 0 {
+        return false;
+    }
+    *budget -= 1;
+    match expr {
+        Expr::MetaCmp { inner, .. } => expr_within(inner, budget),
+        Expr::CCall { args, .. } => args.iter().all(|arg| expr_within(arg, budget)),
+        Expr::Unary { rhs, .. } => expr_within(rhs, budget),
+        Expr::Binary { lhs, rhs, .. } => expr_within(lhs, budget) && expr_within(rhs, budget),
+        Expr::Slice { base, .. } => expr_within(base, budget),
+        Expr::TableLookup { index, .. } => expr_within(index, budget),
+        Expr::CheckedIndex { index, valid, .. } => {
+            expr_within(index, budget) && expr_within(valid, budget)
+        }
+        Expr::Select { cond, then, els } => {
+            expr_within(cond, budget) && expr_within(then, budget) && expr_within(els, budget)
+        }
+        Expr::Const(_)
+        | Expr::WideConst(_)
+        | Expr::Real(_)
+        | Expr::Logic(_)
+        | Expr::Current(_)
+        | Expr::Old(_)
+        | Expr::Event(_)
+        | Expr::Unknown => true,
     }
 }

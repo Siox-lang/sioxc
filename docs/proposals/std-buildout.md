@@ -111,7 +111,9 @@ directives, `Severity` and the built-in macros. std re-exports each.
      format `[left..right]`, rounding to nearest and saturating, VHDL's
      defaults; `x.to_real()` goes back.
    - Later: division, and a `resize` choosing saturate/wrap and round/truncate.
-3. **Floating point** — `std::float`, being implemented, after VHDL-2008's
+3. **Floating point** — `std::float`, slice 1 implemented for simulation
+   (hardware use waits for hardware to lower through Process IR, see
+   std.md), after VHDL-2008's
    `float_pkg` and on the same range idea as fixed point:
 
    ```siox
