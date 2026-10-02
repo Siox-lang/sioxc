@@ -1,6 +1,8 @@
 # `core` and `std`
 
-Status: **proposal**. Slice 1 (below) is being implemented.
+Status: **slice 1 implemented**: `core` is compiled in, the compiler's hooks and
+directives live there, and the compiler finds them by lang item. `builtin #`
+macros, `error!`, the leaf-name lookups and the new `std` content remain.
 
 Today one flat `std/` holds two different kinds of thing: declarations the
 compiler cannot work without, and ordinary library code a user could have

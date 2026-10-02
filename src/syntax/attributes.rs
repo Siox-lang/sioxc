@@ -166,6 +166,13 @@ fn bind_module(
                         .segments
                         .first()
                         .is_some_and(|root| root.text == "core" || root.text == "std") => {}
+            // `lang` naming no entity is the resolver's to judge.
+            Item::AttrBinding(binding)
+                if path_is(&binding.name, "lang")
+                    && binding
+                        .object
+                        .as_ref()
+                        .is_some_and(|object| entity_named(module, &object.text).is_none()) => {}
             Item::AttrBinding(binding) => {
                 let target = match &binding.object {
                     Some(object) => entity_named(module, &object.text).map(Target::Entity),

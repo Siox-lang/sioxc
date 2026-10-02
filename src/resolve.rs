@@ -619,12 +619,13 @@ impl<'a> Resolver<'a> {
                     continue;
                 }
                 if !is_library_module(&here) {
-                    // A user's own `attr lang` is ordinary metadata.
-                    let is_core_lang = self
+                    // A user's own `attr lang` is ordinary metadata; the
+                    // core one is not visible outside `core` and `std`.
+                    let own = self
                         .lookup_attr("lang")
                         .and_then(|id| self.out.def(id))
-                        .is_some_and(|d| d.module.as_deref() == Some("core::attrs"));
-                    if !is_core_lang {
+                        .is_some_and(|d| d.module.as_deref() != Some("core::attrs"));
+                    if own {
                         continue;
                     }
                     self.error(
@@ -3937,5 +3938,30 @@ mod tests {
             .filter(|id| r.kind_of(**id) == Some(DefKind::EnumVariant))
             .count();
         assert_eq!(variant_uses, 1);
+    }
+
+    #[test]
+    /// A library binding gives a declaration its compiler role; the role
+    /// replaces the builtin fallback, and one role bound twice is an error.
+    fn lang_items_name_compiler_roles() {
+        let mut sink = DiagnosticSink::new();
+        let modules = [
+            "module core::a; pub trait Hook {} attr lang for Hook = \"operator\";",
+            "module core::b; pub trait Other {} attr lang for Other = \"operator\";",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, source)| crate::syntax::parse_module(FileId(index as u32), source, &mut sink))
+        .collect::<Vec<_>>();
+        let resolved = resolve(&modules, &mut sink);
+        let hook = resolved.lang("operator").and_then(|id| resolved.def(id));
+        assert_eq!(hook.map(|d| d.name.as_str()), Some("Hook"));
+        assert!(
+            sink.diagnostics()
+                .iter()
+                .any(|d| d.code == Some(codes::LANG_ITEM) && d.message.contains("bound twice")),
+            "{:#?}",
+            sink.diagnostics()
+        );
     }
 }

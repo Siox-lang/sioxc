@@ -267,7 +267,7 @@ mod tests {
     /// than the spelling, and must honour an explicit `= false`.
     fn discovery_uses_the_canonical_std_attribute_and_its_value() {
         let source = "module tests;\n\
-            pub attr test: Bool for entity; attr lang for test = \"test\";\n\
+            pub attr test: Bool for entity;\n\
             #[std::attrs::test] entity Enabled {}\n\
             #[std::attrs::test = false] entity Disabled {}\n\
             #[tests::test] entity Custom {}\n";

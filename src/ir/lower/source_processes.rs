@@ -682,7 +682,7 @@ fn constant_suffixes(
             continue;
         };
         let suffix = resolved.resolved(trait_path.span);
-        if !suffix.is_some_and(|definition| resolved.lang_of(definition) == Some("suffix")) {
+        if suffix.and_then(|definition| resolved.lang_of(definition)) != Some("suffix") {
             continue;
         }
         let Some(ast::GenericArg::Positional(ast::Expr::StrLit { text: symbol, .. })) =

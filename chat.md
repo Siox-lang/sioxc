@@ -10694,3 +10694,23 @@ runtime failure names the call site. `DiagnosticSink::note_inside(region,
 note)` adds "in an expansion of `name!`" to any diagnostic, from any stage,
 whose primary span lies in a macro body. Only `syntax/` files, `diag.rs` and
 tests changed.
+
+### 2026-10-02 — Claude — core/std slice 1: `core` and lang items
+
+`core/` (repo root) is compiled into `sioxc` and always loaded through
+`core::prelude`. It now declares `Bool`, the hook traits, `Range`,
+`Ordering`, `LogicEncoding` (`core::ops`), the directives, `Lint`,
+`precedence` and `lang` (`core::attrs`), `string` (`core::text`) and
+`Severity` (`core::assert`); std re-exports each from its old path. Each
+declaration gets a role with `attr lang for X = "role";` (core/std only), and
+`Resolved::lang(role)` / `Resolved::lang_of(id)` replace every `std::…` path
+match.
+
+**IR touches (announced, minimal, per Max):** in
+`ir/lower/source_processes.rs` the five `nominal_type_from_name("std::logic::Bool")`
+calls became `bool_type(resolved)` (lang `bool`), the `Suffix` and `time`
+checks ask `lang_of`, and test stubs gained `attr lang for …` lines;
+`ir/lower/metavalue.rs` keys `LogicEncoding` by its short key only;
+`ir/functions.rs` uses `resolve::is_library_module`;
+`llvm/process/value_types.rs` looks up `core::ops::Bool`. Expect small
+mechanical conflicts there when rebasing the uncommitted IR work.
