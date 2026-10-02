@@ -143,6 +143,7 @@ impl<'a> Checker<'a> {
                 },
                 value: Some(default.clone()),
                 span: a.span,
+                directive: false,
             });
         }
     }

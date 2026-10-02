@@ -1,7 +1,7 @@
 module std::bits;
 
 use std::logic::Logic;
-use std::ops::Ordering;
+use std::cmp::Ordering;
 
 // `unsigned` and `signed` are ordinary library types, not compiler-magic
 // names. Deriving from `Logic[]` supplies their array representation. The

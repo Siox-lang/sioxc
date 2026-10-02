@@ -1,0 +1,15 @@
+module core::cmp;
+
+// Comparison, as rustc's `core::cmp`.
+
+// The result of a three-way comparison (`impl Operator<"<=>", T, Ordering>`,
+// spec 3.25). One `<=>` impl derives all of < <= > >= == != — like Rust's Ord.
+// Discriminants are fixed (Less=0, Equal=1, Greater=2); the derived
+// comparisons test against them.
+pub enum Ordering {
+    Less,
+    Equal,
+    Greater
+}
+
+attr lang for Ordering = "ordering";

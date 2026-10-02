@@ -9,17 +9,22 @@ parses `<dir>/logic.siox`, and imports bind to real `pub` declarations (a
 bad import is a hard error, `E-P011`).
 
 Beneath it sits **`core`**: the part of the compiler reachable through the
-language (proposals/core-std.md). Its sources are in the repository's `core/`
-directory, compiled into `sioxc`, so `core::…` never reads `--std`. It holds
-what the compiler gives meaning to: `Bool`, the hook traits (`Operator`,
-`Prefix`, `Suffix`, `Index`, `IndexAssign`, `Boolean`, `Resolve`, `New`,
-`From`, `LogicEncoding`), `Range`, `Ordering`, `string`, the directives and
-`precedence`, and `Severity`. Each declaration tells the compiler its role
-with a lang item, `attr lang for Operator = "operator";`, and the compiler
-finds its hooks by role, never by path; only `core` and `std` may bind
-`lang`. `core::prelude` reaches every module. `std` re-exports each of these
-from the path it always had, so `std::ops::Operator` and `std::logic::Bool`
-keep working and name the same declarations.
+language (proposals/core-std.md), laid out like rustc's `core`. Its sources
+are in the repository's `core/` directory, compiled into `sioxc`, so
+`core::…` never reads `--std`. It holds what the compiler gives meaning to:
+`Bool` and `string` (`core::primitive`), the hook traits (`core::ops`),
+`Ordering` (`core::cmp`), `From` (`core::convert`), `New` (`core::default`),
+the built-in macros and `Severity` (`core::macros`), and the attributes the
+compiler reads, `precedence` and `lang` (`core::attrs`). Each declaration
+tells the compiler its role with a lang item, `attr lang for Operator =
+"operator";`, and the compiler finds its hooks by role, never by path; only
+`core` and `std` may bind `lang`. `core::prelude` reaches every module, and
+`std` re-exports `core`'s modules as rustc's does (`std::cmp::Ordering` is
+`core::cmp::Ordering`).
+
+Directives — `#[test]`, `#[allow(..)]`, `#[warn(..)]`, `#[deny(..)]`,
+`#[forbid(..)]` — are not declared anywhere: like rustc's, they are built into
+the compiler.
 
 Every operator is an `Operator<"symbol", Input, Output>` implementation, and
 a user operator (a non-standard symbol) binds its precedence inside its impl
@@ -39,23 +44,26 @@ is a documented shim, and the declaration here is canonical.
 
 | siox module   | VHDL analogue                    | Contents |
 | ------------- | -------------------------------- | -------- |
-| `core::prelude` | (implicit `std.standard`)        | always loaded, built in: `Bool`, the hook traits, `Range`, `Ordering`, `string`, the directives |
-| `core::ops`   | std.standard `boolean`             | `Bool`, the operator, affix, index, condition, resolution, construction and conversion hooks, `LogicEncoding` |
-| `core::attrs` | (attributes; VHDL has none)        | `test`, `allow`/`warn`/`deny`/`forbid`, `Lint`, `precedence`, `lang` |
-| `core::text`  | std.standard `string`              | `string = Char[]` |
-| `core::assert`| `severity_level`                   | `Severity` |
-| `std::prelude`| (implicit `std.standard`)          | auto-loaded scalar/array types, `Bit`/`Logic`, `unsigned`/`signed`, `time`/`frequency`, and the `core` names again |
-| `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `ULogic`, `Logic`; resolution and logic tables; re-exports `Bool`, `LogicEncoding` |
+| `core::prelude` | (implicit `std.standard`)        | always loaded, built in: `Bool`, `string`, `Boolean`, `Range`, indexing, `Resolve`, `Ordering`, `New`, `From`, `precedence`, the built-in macros |
+| `core::primitive` | std.standard `boolean`, `string` | `Bool`, `string = Char[]` |
+| `core::ops`   | (operators are VHDL functions)     | `Operator`, `Prefix`, `Suffix`, `Index`, `IndexAssign`, `Range`, `Boolean`, `Resolve`, `LogicEncoding` |
+| `core::cmp`   |                                    | `Ordering` |
+| `core::convert` |                                  | `From` |
+| `core::default` |                                  | `New` |
+| `core::macros` | `assert ... severity`             | `assert!`, `warn!`, `print!`, `error!`, `Severity` |
+| `core::attrs` | (attributes; VHDL has none)        | `precedence`, `lang`: the attributes the compiler reads |
+| `std::prelude`| (implicit `std.standard`)          | auto-loaded `Bit`/`Logic`, `unsigned`/`signed`/`sext`, `time`/`frequency` |
+| `std::primitive`, `std::cmp`, `std::convert`, `std::default` | | re-export the `core` modules of the same name |
+| `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `ULogic`, `Logic` and their operators; resolution and logic tables |
 | `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Operator` impls (including unsigned and signed `<=>`) |
-| `std::ops`    | (operators are functions in VHDL packages) | `Bit`'s logical operators and condition; re-exports the `core::ops` hooks |
+| `std::ops`    | (operators are functions in VHDL packages) | re-exports `core::ops` |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
-| `std::text`   | std.standard `string` + `'pos`/`'val` | `string = Char[]`; encoding tables `Unicode`/`Ascii` |
+| `std::text`   | `'pos`/`'val`                    | encoding tables `Unicode`/`Ascii` |
 | `std::sim`    | std.standard `time`              | `time`, `frequency` + unit suffixes; FS..MS constants |
 | `std::sync`   | (vendor CDC macros)              | `Sync2`, `ResetSync`, `EdgeDetect`, `PulseSync` |
 | `std::fs`     | textio / impure host I/O         | typed `read<T>` construction and `exists` fixture probes |
-| `std::attrs`  | (attributes; VHDL has none)      | `keep`, `library`, `name`, vendor-neutral synthesis metadata; re-exports the `core::attrs` directives |
-| `std::assert` | `assert ... severity` levels     | re-exports `Severity` |
+| `std::attrs`  | (attributes; VHDL has none)      | `keep`, `library`, `name`, vendor-neutral synthesis metadata |
 
 ## `std::logic`
 
@@ -215,13 +223,11 @@ pub type Positive = integer<1..9223372036854775807>;
 ## `std::attrs` and `core::attrs`
 
 The standard metadata attributes (spec 3.5), each with a default so a read
-(`probe'keep`) always answers. `test` is written as the directive `#[test]`
-because it changes what `sioxc --test` emits; `precedence` is read by the
-parser; both are `core::attrs` declarations that `std::attrs` re-exports. The
-others are reserved for later output passes:
+(`probe'keep`) always answers. `precedence` is read by the parser and lives
+in `core::attrs` with `lang`; the others are reserved for later output
+passes:
 
 ```siox
-pub attr test: Bool for entity = false;     // discovered by `sioxc --test`
 pub attr keep: Bool for let, port = false;  // keep through optimization
 pub attr library: string for entity = "";
 pub attr name: string for entity = "";
@@ -251,13 +257,10 @@ pub enum RomStyle { Auto, Block, Distributed, Logic }
 pub enum FsmEncoding { Auto, OneHot, Gray, Binary }
 ```
 
-`core::attrs` also declares the compiler directives, like rustc's built-in
-attributes: `test` above, and the lint levels `allow`, `warn`, `deny` and
-`forbid`, each `for item`. The preludes re-export all of them, and the
-compiler recognizes these declarations (through the `test` lang item, for
-`#[test]`) rather than the spelling. `enum Lint`
-lists every lint name a directive accepts (`possible_latch`, `unused_signal`,
-…, and `warnings` for all of them); see the spec's §3.5a.
+The directives — `#[test]` and the lint levels `#[allow]`, `#[warn]`,
+`#[deny]`, `#[forbid]` — are not attributes and are declared nowhere: like
+rustc's, they are built into the compiler, which also owns the lint names
+(spec §3.5a). A module's own `attr test` is metadata and never makes a test.
 
 `top` intentionally is not standard metadata and is not compiler-seeded. A
 Vivado, Quartus, RTL, or Cocotb integration may declare and bind its own `top`
@@ -284,13 +287,14 @@ let ready_sync: Sync2 = { .clk = clk, .d = ready_from_other_domain, .q = ready }
 A multi-bit value must not cross bit by bit through `Sync2`: its bits can
 land in different cycles. Use a handshake or a Gray-coded FIFO.
 
-## `std::assert` and `core::assert`
+## `core::macros`
 
 `assert!(cond, "msg")` fails a test, `warn!(cond, "msg")` reports and counts
 without failing, `print!` formats a line, and `error!("msg")` fails
-unconditionally. All four are macros declared in `core::assert` over the
-compiler primitive `builtin # …`, so a failure names the line of the call. `core::assert` carries the severity
-ladder (re-exported here) (VHDL `severity_level`) for when assertions grow a severity argument:
+unconditionally. All four are macros declared in `core::macros` over the
+compiler primitive `builtin # …`, so a failure names the line of the call.
+The module also carries the severity ladder (VHDL `severity_level`) for when
+assertions grow a severity argument:
 
 ```siox
 pub enum Severity { Note, Warning, Error, Failure }

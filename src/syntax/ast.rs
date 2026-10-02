@@ -591,6 +591,10 @@ pub struct Attr {
     pub value: Option<Expr>,
     /// The whole `#[...]` form's extent.
     pub span: Span,
+    /// Written as `#[...]`: a compiler directive, built in and resolved by
+    /// name, never an `attr` declaration. `false` for metadata bound with
+    /// `attr name for x = v;`.
+    pub directive: bool,
 }
 
 /// A function signature and optional body: a module function, an inherent or

@@ -174,7 +174,7 @@ pub(crate) fn is_clock_statement(statement: &Stmt) -> bool {
     crate::syntax::pretty::expr_string(target) == crate::syntax::pretty::expr_string(rhs)
 }
 
-/// Collect every entity carrying the canonical `std::attrs::test` attribute,
+/// Collect every entity carrying the built-in `#[test]` directive,
 /// with the attribute's value so `#[test = false]` can disable one.
 fn discover(modules: &[Module], resolved: &Resolved) -> Vec<DiscoveredTest> {
     modules
@@ -244,15 +244,15 @@ mod tests {
     use super::*;
     use crate::diag::{DiagnosticSink, FileId};
 
-    /// Parse `source` together with the minimal `std::logic` and `std::attrs`
-    /// stubs test discovery needs, returning the modules and their sink.
+    /// Parse `source` together with the minimal `Bool` stub test discovery
+    /// needs (`#[test]` itself is built in), returning the modules and their
+    /// sink.
     fn modules(source: &str) -> (Vec<Module>, DiagnosticSink) {
-        let std_logic =
-            "module std::logic; pub enum Bool { false, true } attr lang for Bool = \"bool\";";
-        let std_attrs = "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";";
-        let prelude = "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test;";
+        let primitive =
+            "module core::primitive; pub enum Bool { false, true } attr lang for Bool = \"bool\";";
+        let prelude = "module core::prelude; pub use core::primitive::Bool;";
         let mut sink = DiagnosticSink::new();
-        let modules = [source, std_logic, std_attrs, prelude]
+        let modules = [source, primitive, prelude]
             .iter()
             .enumerate()
             .map(|(index, source)| {
@@ -263,14 +263,14 @@ mod tests {
     }
 
     #[test]
-    /// Discovery must key on the resolved `std::attrs::test` definition rather
-    /// than the spelling, and must honour an explicit `= false`.
-    fn discovery_uses_the_canonical_std_attribute_and_its_value() {
+    /// `#[test]` is a built-in directive: a module's own `attr test`, bound
+    /// with `attr test for X = true;`, is metadata and never makes a test.
+    fn discovery_uses_the_builtin_directive_not_a_namesake_attribute() {
         let source = "module tests;\n\
-            pub attr test: Bool for entity;\n\
-            #[std::attrs::test] entity Enabled {}\n\
-            #[std::attrs::test = false] entity Disabled {}\n\
-            #[tests::test] entity Custom {}\n";
+            pub attr test: Bool for entity = false;\n\
+            #[test] entity Enabled {}\n\
+            entity Custom {}\n\
+            attr test for Custom = true;\n";
         let (modules, mut sink) = modules(source);
         let resolved = crate::resolve::resolve(&modules, &mut sink);
         let typed = crate::types::check(&modules, &resolved, &mut sink);
@@ -300,7 +300,7 @@ mod tests {
 
         assert_eq!(
             diagnostics(
-                "module tests;\n#[std::attrs::test] entity T {}\n\
+                "module tests;\n#[test] entity T {}\n\
                  impl T { first: process {} second: process {} }\n"
             ),
             1,
@@ -308,7 +308,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics(
-                "module tests;\n#[std::attrs::test] entity T {}\n\
+                "module tests;\n#[test] entity T {}\n\
                  impl T {\n\
                    let clk: Bool = false;\n\
                    clock: process { clk = not clk after 1; }\n\
@@ -320,7 +320,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics(
-                "module tests;\n#[std::attrs::test] entity T {}\n\
+                "module tests;\n#[test] entity T {}\n\
                  impl T { stimulus: process {} print!(\"legacy\"); }\n"
             ),
             1,

@@ -10735,3 +10735,18 @@ custom operators (`xor`) are recognised over macro tokens.
 `ty_from_head` now only matches type definitions, so a variant spelled like
 a type (`RomStyle::Logic`) no longer captures `Logic` and breaks every
 `signed` division in std.
+
+### 2026-10-02 — Claude — directives are built in; `core` follows rustc's layout
+
+`#[test]`, `#[allow]`, `#[warn]`, `#[deny]`, `#[forbid]` are compiler
+built-ins, declared nowhere (no `attr test`, no `enum Lint`); `Attr` gained
+`directive: bool` so `#[test]` never resolves to a same-named `attr`, and
+`#[test = …]` / `#[path::test]` are errors. `core` modules follow rustc:
+`core::primitive` (`Bool`, `string`), `core::ops`, `core::cmp` (`Ordering`),
+`core::convert` (`From`), `core::default` (`New`), `core::macros` (the
+built-in macros, `Severity`), `core::attrs` (`precedence`, `lang`); std
+mirrors them (`std::cmp`, …) and the old aliases (`std::ops::Ordering`,
+`std::logic::Bool`, `std::text::string`, `std::assert`) are gone. `Bit`'s
+impls moved into `std::logic`. A qualified `std::…`/`core::…` path now loads
+its module without a `use`. IR touches: two doc comments, `#[test]` in test
+stubs, `core::primitive::Bool` in `llvm/process/value_types.rs`.

@@ -1,5 +1,0 @@
-module std::assert;
-
-// The severity ladder belongs with the compiler's assertion macros, in
-// `core::assert`.
-pub use core::assert::Severity;

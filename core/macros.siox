@@ -1,6 +1,7 @@
-module core::assert;
+module core::macros;
 
-// Assertion support, modelled on VHDL's `assert ... report ... severity ...`.
+// The built-in macros, as rustc's `assert!` and `panic!`: assertion support
+// modelled on VHDL's `assert ... report ... severity ...`.
 //
 // The assertions are macros, so they keep their source location: a failure
 // names the line of the outermost invocation. Each is an ordinary macro over a

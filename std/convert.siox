@@ -1,0 +1,4 @@
+module std::convert;
+
+// Conversions: rustc's `std::convert` re-exports `core::convert`, and so does this.
+pub use core::convert::From;

@@ -1,0 +1,5 @@
+module std::default;
+
+// Default values: rustc's `std::default` re-exports `core::default`, and so does
+// this.
+pub use core::default::New;

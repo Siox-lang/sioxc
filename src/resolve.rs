@@ -100,37 +100,18 @@ pub(crate) fn is_compiler_trait(resolved: &Resolved, id: DefId) -> bool {
     })
 }
 
-/// Whether an applied attribute is the enabled canonical native-test marker.
-///
-/// Normal compiler invocations resolve this to the `test` lang item,
-/// `core::attrs::test`. The builtin fallback exists only for self-contained
-/// frontend users/tests that do not load core; a declaration in any other
-/// module is ordinary same-named metadata. Keeping this check here gives type
-/// checking, elaboration, digital IR, and test planning one identity/value
-/// rule.
+/// Whether an applied attribute is the `#[test]` directive. Directives are
+/// built in, as rustc's are: `#[test]` resolves to the compiler's own `test`
+/// (the `test` lang item), never to an `attr` in scope, and takes no value. A
+/// user's `attr test for X = …;` is metadata and never makes a test. Keeping
+/// this check here gives type checking, elaboration, digital IR and test
+/// planning one rule.
 pub(crate) fn is_enabled_std_test_attribute(resolved: &Resolved, attr: &Attr) -> bool {
-    let Some(attribute_id) = resolved.resolved(attr.name.span) else {
-        return false;
-    };
-    if resolved.lang_of(attribute_id) != Some("test") {
-        return false;
-    }
-
-    match &attr.value {
-        None => true,
-        Some(Expr::Path(path)) => resolved
-            .resolved(path.span)
-            .and_then(|id| resolved.def(id))
-            .is_some_and(|value| {
-                value.name == "true"
-                    && value
-                        .parent
-                        .is_some_and(|owner| resolved.lang_of(owner) == Some("bool"))
-            }),
-        // Type checking reports malformed Bool-valued attributes. Treat a
-        // partial/invalid result as disabled so it cannot acquire semantics.
-        Some(_) => false,
-    }
+    attr.directive
+        && attr.value.is_none()
+        && resolved
+            .resolved(attr.name.span)
+            .is_some_and(|id| resolved.lang_of(id) == Some("test"))
 }
 
 /// Stable id for a resolved declaration. Later stages key off this instead of
@@ -346,8 +327,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     r.inherit_enum_variants(modules);
     for m in modules {
         r.set_current_module(m);
-        // A lint directive's word (`allow`) is an attribute name like any
-        // other: declared in `std::attrs` and in scope through the prelude.
+        // A lint directive's word (`allow`) names a built-in directive.
         for directive in &m.lints {
             r.resolve_directive_word(directive);
         }
@@ -1781,28 +1761,42 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Resolve an applied attribute against the `attr` namespace, which is
-    /// separate from ordinary names.
-    /// Resolve a lint directive's level word to its attribute declaration.
+    /// Resolve a lint directive's level word to the compiler's built-in
+    /// directive. Directives are declared nowhere, so no `attr` in scope can
+    /// capture `#[allow(..)]`.
     fn resolve_directive_word(&mut self, directive: &crate::diag::lints::LintDirective) {
         let word = directive.level.word();
-        match self.lookup_attr(word) {
+        match self.builtin_attrs.get(word).copied() {
             Some(id) => {
                 self.out.uses.insert(directive.word, id);
             }
             None => self.error(
                 codes::UNKNOWN_NAME,
                 directive.word,
-                format!(
-                    "unknown attribute `{word}` (the lint directives are declared in `std::attrs`)"
-                ),
+                format!("unknown directive `{word}`"),
             ),
         }
     }
 
+    /// Resolve an applied attribute against the `attr` namespace, which is
+    /// separate from ordinary names; `#[test]` is the built-in directive.
     fn resolve_attr(&mut self, a: &Attr) {
         let segs = &a.name.segments;
         let last = segs.last().map(|s| s.text.as_str()).unwrap_or("");
+        // `#[test]` is a built-in directive, like rustc's: found by name,
+        // never by an `attr` in scope.
+        if a.directive && last == "test" {
+            if segs.len() > 1 {
+                self.error(
+                    codes::UNKNOWN_NAME,
+                    a.name.span,
+                    "directives are built in and have no path; write `#[test]`".to_string(),
+                );
+            } else if let Some(&id) = self.builtin_attrs.get("test") {
+                self.out.uses.insert(a.name.span, id);
+            }
+            return;
+        }
         if segs.len() == 1 {
             if let Some(id) = self.lookup_attr(last) {
                 self.out.uses.insert(a.name.span, id);

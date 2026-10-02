@@ -1,0 +1,13 @@
+module core::default;
+
+// Default values, as rustc's `core::default` (`Default` there, `New` here).
+
+// The default constructor (language.md 3.29): the value an uninitialized signal
+// of `T` powers on to, and the nullary member of the `T(...)` family. The body
+// must be a constant. Absent an impl, the compiler uses the type's first
+// variant / zero.
+pub trait New {
+    fn new() -> Self;
+}
+
+attr lang for New = "new";

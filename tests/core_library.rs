@@ -34,7 +34,7 @@ fn core_and_std_paths_name_the_same_hooks() {
          impl Boolean for A { fn as_bool(self) -> Bool { return true; } }\n\
          impl std::ops::Boolean for B { fn as_bool(self) -> Bool { return false; } }\n\
          fn f(a: A, b: B) -> integer { if a { return 1; } if b { return 2; } return 0; }\n\
-         fn g(x: core::ops::Bool) -> std::logic::Bool { return x; }\n",
+         fn g(x: core::primitive::Bool) -> std::primitive::Bool { return x; }\n",
         STD,
     );
     assert!(ok, "{rendered}");

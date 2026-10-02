@@ -1,9 +1,9 @@
 # `core` and `std`
 
-Status: **slice 1 implemented**: `core` is compiled in, the compiler's hooks and
-directives live there, and the compiler finds them by lang item. The
-built-in macros and `error!` are `core::assert` macros over `builtin #`. The
-leaf-name lookups and the new `std` content remain.
+Status: **slices 1 and 2 implemented**: `core` is compiled in and laid out like
+rustc's, the compiler finds its hooks by lang item, directives are built in,
+and the built-in macros and `error!` are `core::macros` over `builtin #`. The
+leaf-name lookups and the rest of the new `std` content remain.
 
 Today one flat `std/` holds two different kinds of thing: declarations the
 compiler cannot work without, and ordinary library code a user could have

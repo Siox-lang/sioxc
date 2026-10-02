@@ -9,11 +9,9 @@ module std::attrs;
 // `attr keep for probe = true;`, or objectless inside an impl,
 // `attr precedence = 40;`.
 //
-// The directives (`#[test]`, `#[allow(..)]`, …) and `precedence` change what
-// the compiler does, so they are declared in `core::attrs`; they are
-// re-exported here and reach every module through the prelude.
-
-pub use core::attrs::{test, allow, warn, deny, forbid, Lint, precedence};
+// Directives (`#[test]`, `#[allow(..)]`, …) are not attributes: they are
+// built into the compiler. The attributes the compiler itself reads
+// (`precedence`, `lang`) are in `core::attrs`.
 
 pub attr keep: Bool for let, port = false;  // keep through optimization
 pub attr library: string for entity = "";

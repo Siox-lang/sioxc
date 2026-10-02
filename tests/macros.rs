@@ -333,7 +333,7 @@ fn builtin_macros_are_core_declarations() {
     let (rendered, ok) = check(
         "core_path",
         "module main;\n#[test]\nentity T {}\n\
-         impl T { process { core::assert::assert!(true); core::assert::print!(\"x\"); } }\n",
+         impl T { process { core::macros::assert!(true); core::macros::print!(\"x\"); } }\n",
     );
     assert!(ok, "{rendered}");
 

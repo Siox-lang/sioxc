@@ -1,9 +1,9 @@
 module std::logic;
 
-use std::ops::{From, New, Resolve};
+use core::convert::From;
+use core::default::New;
+use core::ops::{LogicEncoding, Resolve};
 
-// `Bool` and the `LogicEncoding` hook belong to the compiler, in `core`.
-pub use core::ops::{Bool, LogicEncoding};
 
 // Scalar logic types, modelled on VHDL's std.standard and
 // ieee.std_logic_1164 — where `bit`, `boolean` and `std_ulogic` are ordinary
@@ -29,6 +29,66 @@ pub use core::ops::{Bool, LogicEncoding};
 pub enum Bit {
     '0',
     '1'
+}
+
+// `Bit`'s logical operators and its use as a condition.
+impl Operator<"and", Bit, Bit> for Bit {
+    fn apply(self, rhs: Bit) -> Bit {
+        if self == '1' {
+            return rhs;
+        }
+        return '0';
+    }
+}
+
+impl Operator<"or", Bit, Bit> for Bit {
+    fn apply(self, rhs: Bit) -> Bit {
+        if self == '1' { return '1'; }
+        return rhs;
+    }
+}
+
+impl Operator<"not", Bit, Bit> for Bit {
+    fn apply(self) -> Bit {
+        if self == '1' { return '0'; }
+        return '1';
+    }
+}
+
+impl Operator<"xor", Bit, Bit> for Bit {
+    attr precedence = 35;
+    fn apply(self, rhs: Bit) -> Bit {
+        if self == rhs { return '0'; }
+        return '1';
+    }
+}
+
+impl Operator<"nand", Bit, Bit> for Bit {
+    attr precedence = 40;
+    fn apply(self, rhs: Bit) -> Bit { return not (self and rhs); }
+}
+
+impl Operator<"nor", Bit, Bit> for Bit {
+    attr precedence = 30;
+    fn apply(self, rhs: Bit) -> Bit { return not (self or rhs); }
+}
+
+impl Operator<"xnor", Bit, Bit> for Bit {
+    attr precedence = 35;
+    fn apply(self, rhs: Bit) -> Bit {
+        if self == rhs { return '1'; }
+        return '0';
+    }
+}
+
+impl Boolean for Bit {
+    fn as_bool(self) -> Bool {
+        if self == '1' {
+            return true;
+        } else {
+            return false;
+        }
+    }
 }
 
 // Nine-valued scalar (VHDL `std_ulogic`, IEEE 1076-2019 / std_logic_1164): the

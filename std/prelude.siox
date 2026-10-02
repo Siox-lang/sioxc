@@ -7,9 +7,6 @@ module std::prelude;
 // truth tables, `10ns` works bare. Deliberately tiny — everything else
 // (Complex, Byte..Positive, encodings, ...) stays behind explicit imports.
 
-pub use std::logic::{Bit, Logic, Bool};
+pub use std::logic::{Bit, Logic};
 pub use std::bits::{unsigned, signed, sext};
-pub use std::ops::{Boolean, Ordering, Range, Index, IndexAssign, New, From, Resolve};
-pub use std::attrs::{test, precedence, allow, warn, deny, forbid};
-pub use std::text::string;
 pub use std::sim::{time, frequency};

@@ -1069,7 +1069,7 @@ fn direct_process_runtime_reports_unreachable_await_conditions() {
     std::fs::write(
         &source,
         r#"module direct_await_deadlock;
-           use std::logic::Bool;
+           use std::primitive::Bool;
            #[test] entity DirectAwaitDeadlock {}
            impl DirectAwaitDeadlock {
                let ready: Bool = false;

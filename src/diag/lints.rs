@@ -115,8 +115,8 @@ pub fn is_known(name: &str) -> bool {
 pub struct LintDirective {
     /// The level it sets.
     pub level: Level,
-    /// The directive word (`allow`), resolved like any attribute name to
-    /// its `std::attrs` declaration.
+    /// The directive word (`allow`), resolved to the compiler's built-in
+    /// directive.
     pub word: Span,
     /// The lint names inside the parentheses, with their spans.
     pub names: Vec<(String, Span)>,
@@ -386,34 +386,6 @@ mod tests {
                 assert!(lint_of(code).is_some(), "{code} has no lint name");
             }
         }
-    }
-
-    #[test]
-    /// `core::attrs::Lint` lists exactly the compiler's lints and `warnings`,
-    /// so the vocabulary users read in std is the one the compiler accepts.
-    fn std_lint_enum_matches_the_compiler() {
-        let attrs = include_str!("../../core/attrs.siox");
-        let body = attrs
-            .split("pub enum Lint {")
-            .nth(1)
-            .and_then(|rest| rest.split('}').next())
-            .expect("core::attrs declares `enum Lint`");
-        let mut declared: Vec<&str> = body
-            .lines()
-            .map(|line| {
-                line.split("//")
-                    .next()
-                    .unwrap()
-                    .trim()
-                    .trim_end_matches(',')
-            })
-            .filter(|name| !name.is_empty())
-            .collect();
-        let mut known: Vec<&str> = LINTS.iter().map(|(name, _)| *name).collect();
-        known.push(WARNINGS);
-        declared.sort();
-        known.sort();
-        assert_eq!(declared, known);
     }
 
     #[test]

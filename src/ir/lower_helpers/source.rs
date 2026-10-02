@@ -183,7 +183,7 @@ pub(in crate::ir) fn enum_reprs(
     out
 }
 
-/// Whether an entity carries the canonical `std::attrs::test` attribute.
+/// Whether an entity carries the built-in `#[test]` directive.
 pub(in crate::ir) fn is_test_entity(e: &ast::EntityDecl, resolved: &Resolved) -> bool {
     e.attrs
         .iter()
