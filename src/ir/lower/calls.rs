@@ -72,6 +72,7 @@ impl<'a> Lowering<'a> {
         let mut fenv: HashMap<String, Val> = HashMap::new();
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
+                self.bind_range_attrs(&mut fenv, &n.text, arg, env);
                 fenv.insert(n.text.clone(), self.lower_val_env(arg, env));
                 fenv.insert(
                     format!("{}::length", n.text),
@@ -266,6 +267,7 @@ impl<'a> Lowering<'a> {
                     format!("{}::length", n.text),
                     Val::Scalar(Expr::Const(self.ast_width(a) as u64)),
                 );
+                self.bind_range_attrs(&mut fenv, &n.text, a, env);
                 // Propagate the argument's family so the body dispatches
                 // operators on the caller's concrete type.
                 if let Some(fam) = self.operand_type_name(a) {
@@ -478,6 +480,7 @@ impl<'a> Lowering<'a> {
             "self::length".to_string(),
             Val::Scalar(Expr::Const(self.ast_width(base) as u64)),
         );
+        self.bind_range_attrs(&mut fenv, "self", base, env);
         // Family bindings to restore after the inline (nesting-safe).
         let mut saved: Vec<(String, Option<String>)> = Vec::new();
         let mut saved_widths: Vec<(String, Option<u32>)> = Vec::new();
@@ -514,6 +517,7 @@ impl<'a> Lowering<'a> {
                         self.literal_aware_width(a, receiver_width) as u64
                     )),
                 );
+                self.bind_range_attrs(&mut fenv, &n.text, a, env);
                 if let Some(fam) = self.operand_type_name(a) {
                     let prev = self.param_types.borrow_mut().insert(n.text.clone(), fam);
                     saved.push((n.text.clone(), prev));
@@ -802,6 +806,18 @@ impl<'a> Lowering<'a> {
         // ...except crossing out of `real`, which is a value conversion: the
         // operand carries f64 bits, and resizing them keeps a mantissa slice
         // rather than the number.
+        let to_real = matches!(callee, ast::Expr::Path(p) if p.segments.len() == 1
+            && p.segments[0].text == "real");
+        if to_real {
+            // ...and so is crossing into it: `real(n)` is the number n.
+            if !self.is_real_expr(&v) {
+                v = Expr::Unary {
+                    op: UnOp::IntToReal,
+                    rhs: Box::new(v),
+                };
+            }
+            return Some(v);
+        }
         if self.is_real_expr(&v) {
             v = Expr::Unary {
                 op: UnOp::RealToInt,
@@ -1069,6 +1085,7 @@ impl<'a> Lowering<'a> {
                     format!("{}::length", l.name.text),
                     Val::Scalar(Expr::Const(self.ast_width(value) as u64)),
                 );
+                self.bind_range_attrs(&mut scoped, &l.name.text, value, env);
                 self.inline_block(rest, &scoped)
             }
             _ => None,

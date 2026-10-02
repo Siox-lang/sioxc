@@ -308,10 +308,57 @@ pub(in crate::ir) fn type_width_at(
                 .map(|v| v.max(0) as u32)
                 .unwrap_or(0),
         },
-        ast::Type::Generic { base, .. } | ast::Type::View { target: base, .. } => {
-            type_width(base, env, fns, structs, ranges)
+        // `uf<8>` for `struct uf<N: integer>(Logic[N])`: the struct's base is
+        // sized by its own parameters, so bind them to the arguments first.
+        ast::Type::Generic { base, args, .. } => {
+            let name = fns.type_head_key(base);
+            let declaration = name.as_deref().and_then(|name| structs.get(name));
+            match (name, declaration) {
+                (Some(name), Some(declaration))
+                    if !declaration.params.params.is_empty() && declaration.base.is_some() =>
+                {
+                    if !seen.insert(name.clone()) {
+                        return 0;
+                    }
+                    let inner = bind_generic_values(&declaration.params, args, env, fns);
+                    let width = declaration
+                        .base
+                        .as_ref()
+                        .map(|b| type_width_at(b, &inner, fns, structs, ranges, seen))
+                        .unwrap_or(0);
+                    seen.remove(&name);
+                    width
+                }
+                _ => type_width(base, env, fns, structs, ranges),
+            }
+        }
+        ast::Type::View { target: base, .. } => type_width(base, env, fns, structs, ranges),
+    }
+}
+
+/// `env` extended with a generic declaration's value parameters bound to the
+/// constant arguments of one application (`<8>`, `<N = 8>`).
+fn bind_generic_values(
+    params: &ast::Params,
+    args: &[ast::GenericArg],
+    env: &HashMap<String, i64>,
+    fns: &FunctionIndex<'_>,
+) -> HashMap<String, i64> {
+    let mut inner = env.clone();
+    for (index, arg) in args.iter().enumerate() {
+        let (name, value) = match arg {
+            ast::GenericArg::Positional(value) => match params.params.get(index) {
+                Some(param) => (param.name.text.as_str(), value),
+                None => continue,
+            },
+            ast::GenericArg::Named { name, value } => (name.text.as_str(), value),
+            _ => continue,
+        };
+        if let Some(value) = eval_const_fns(value, env, fns, 0) {
+            inner.insert(name.to_string(), value);
         }
     }
+    inner
 }
 
 /// Whether a field-less nominal struct ultimately derives from `kernel`.

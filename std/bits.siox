@@ -205,16 +205,21 @@ impl Operator<">>", signed, signed> for signed {
     }
 }
 
-// Sign-aware comparison: `self'length` is the operand's bit width, so
-// `self >> (self'length - 1)` is the sign bit. A negative orders below a
-// non-negative; same-sign two's-complement values order like their unsigned
-// words. One impl derives < <= > >= == != (spec 3.25).
+// Sign-aware comparison: `self'length` is the operand's bit width, so the raw
+// word shifted by `self'length - 1` is the sign bit. It reads the RAW word,
+// narrowed to the operand's width as the `/` impl does: `self >> ..` would
+// dispatch signed's own arithmetic shift, and a value held sign-extended would
+// shift in ones. A negative orders below a non-negative;
+// same-sign two's-complement values order like their unsigned words. One impl
+// derives < <= > >= == != (spec 3.25).
 impl Operator<"<=>", signed, Ordering> for signed {
     fn apply(self, rhs: signed) -> Ordering {
-        if (self >> (self'length - 1)) > (rhs >> (rhs'length - 1)) {
+        if (integer(resize(self, self'length)) >> (self'length - 1))
+            > (integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) {
             return Ordering::Less;
         }
-        if (self >> (self'length - 1)) < (rhs >> (rhs'length - 1)) {
+        if (integer(resize(self, self'length)) >> (self'length - 1))
+            < (integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) {
             return Ordering::Greater;
         }
         if self < rhs { return Ordering::Less; }

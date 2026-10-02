@@ -264,7 +264,7 @@ fn normalized_value_width(
             .get(table.0)
             .map(|table| table.element_width),
         ProcessValueKind::Unary { operation, operand } => match operation {
-            ProcessUnaryOp::RealToInteger => Some(64),
+            ProcessUnaryOp::RealToInteger | ProcessUnaryOp::IntegerToReal => Some(64),
             ProcessUnaryOp::Neg | ProcessUnaryOp::Not => width(operand),
         },
         ProcessValueKind::RawResize { operand } => width(operand),

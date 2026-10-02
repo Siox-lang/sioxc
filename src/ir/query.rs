@@ -741,6 +741,7 @@ fn un_sym(op: UnOp) -> &'static str {
         UnOp::Not => "not ",
         UnOp::Neg => "-",
         UnOp::RealToInt => "integer",
+        UnOp::IntToReal => "real",
     }
 }
 

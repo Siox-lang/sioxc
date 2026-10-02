@@ -91,12 +91,34 @@ directives, `Severity` and the built-in macros. std re-exports each.
 
    `std::attrs` holds only base metadata (`keep`, `top`, `clock`, `library`,
    `name`); vendor settings belong in vendor packages.
-2. **Fixed-point numbers** — `ufixed`/`sfixed` with explicit integer and
-   fraction widths, saturation and rounding as explicit choices, and
-   conversions to and from integer and real.
-3. **Linear algebra** — `Vector<T, N>` and `Matrix<T, R, C>` over any `T`
-   with the needed operators: element-wise operations, dot and matrix
-   products, transpose.
+2. **Fixed point** — `std::fixed`, implemented, after VHDL-2008's
+   `fixed_pkg`: the binary point lives in the index range, so no generics
+   are needed and the types work like `unsigned`/`signed`.
+
+   ```siox
+   use std::fixed::{ufixed, sfixed, to_ufixed};
+   let gain: ufixed[3..-4] = to_ufixed(2.5, 3, -4);   // 4 integer, 4 fraction bits
+   let error: sfixed[7..-8];                          // two's complement, 8.8
+   let r: real = gain.to_real();                      // 2.5
+   ```
+
+   - `x'high + 1` integer bits and `-x'low` fraction bits.
+   - `+`, `-`, `*` between operands of one format give that format, wrapping
+     on overflow as `unsigned` does; a product drops its extra fraction bits
+     rounding toward minus infinity (VHDL's truncate). `<=>` compares (signed
+     for `sfixed`), deriving all six comparisons.
+   - `to_ufixed(value, left, right)` and `to_sfixed(…)` take a `real` to the
+     format `[left..right]`, rounding to nearest and saturating, VHDL's
+     defaults; `x.to_real()` goes back.
+   - Later: division, and a `resize` choosing saturate/wrap and round/truncate.
+3. **Floating point** — `std::float`, after VHDL-2008's `float_pkg` and on
+   the same idea: `float[8..-23]` is IEEE-754 binary32 (sign at the top index,
+   then 8 exponent bits, then 23 fraction bits); `float[5..-10]` is binary16.
+   Addition, subtraction, multiplication, comparison and conversions to and
+   from `real`, `integer` and fixed point, written in siox so they synthesize.
+   It is distinct from `real`, which is the simulator's f64.
+4. **Linear algebra** (optional) — `Vector<T, N>` and `Matrix<T, R, C>` over
+   any `T` with the needed operators.
 
 Every new public declaration needs:
 

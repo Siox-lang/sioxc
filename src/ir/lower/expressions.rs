@@ -757,8 +757,10 @@ impl<'a> Lowering<'a> {
             "self::length".to_string(),
             Val::Scalar(Expr::Const(self.ast_width(lhs) as u64)),
         );
+        self.bind_range_attrs(&mut fenv, "self", lhs, env);
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
+                self.bind_range_attrs(&mut fenv, &n.text, rhs, env);
                 fenv.insert(n.text.clone(), self.lower_val_env(rhs, env));
                 fenv.insert(
                     format!("{}::length", n.text),
@@ -769,6 +771,61 @@ impl<'a> Lowering<'a> {
             }
         }
         self.inline_block(&body.stmts, &fenv)
+    }
+
+    /// The declared index range of an operand, when it has one: a local or
+    /// signal declared `ufixed[3..-4]`, a parameter bound to such an operand,
+    /// or an operator expression, whose result keeps its left operand's
+    /// format (`(a + b) * c` reads `a`'s range).
+    pub(super) fn operand_range(
+        &self,
+        e: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<(i64, i64)> {
+        match e {
+            ast::Expr::Path(_) => {
+                let path = expr_path(e)?;
+                let bound = |attr: &str| match env.get(&format!("{path}::{attr}")) {
+                    Some(Val::Scalar(Expr::Const(value))) => Some(*value as i64),
+                    _ => None,
+                };
+                if let (Some(left), Some(right)) = (bound("left"), bound("right")) {
+                    return Some((left, right));
+                }
+                self.block_local_binding(e)
+                    .and_then(|binding| self.declared_range(&binding.ty, &self.cur_env))
+                    .or_else(|| self.persisted_range(&path))
+            }
+            ast::Expr::Binary { lhs, .. } => self.operand_range(lhs, env),
+            ast::Expr::Unary { rhs, .. } => self.operand_range(rhs, env),
+            _ => None,
+        }
+    }
+
+    /// Bind `name'left`/`'right`/`'high`/`'low` for an inlined body, beside
+    /// the `name'length` its callers already bind, so a library body can read
+    /// its operand's declared range (`self'low` in `std::fixed`).
+    pub(super) fn bind_range_attrs(
+        &self,
+        fenv: &mut HashMap<String, Val>,
+        name: &str,
+        operand: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) {
+        let Some((left, right)) = self.operand_range(operand, env) else {
+            return;
+        };
+        for (attr, value) in [
+            ("left", left),
+            ("right", right),
+            ("high", left.max(right)),
+            ("low", left.min(right)),
+        ] {
+            fenv.insert(
+                format!("{name}::{attr}"),
+                Val::Scalar(Expr::Const(value as u64)),
+            );
+        }
     }
 
     /// The written (left, right) constant bounds of a slice index: a range

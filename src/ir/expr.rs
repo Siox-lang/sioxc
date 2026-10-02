@@ -162,6 +162,9 @@ pub enum UnOp {
     /// reaching that path reinterpreted its bits — `integer(3.5)` gave the low
     /// word of `0x400C000000000000`, i.e. 0.
     RealToInt,
+    /// `real(x)` on an integer: the integer's *value* as an f64, not its bits
+    /// reinterpreted.
+    IntToReal,
 }
 
 /// An infix operation in the digital IR.

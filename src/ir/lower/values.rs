@@ -495,8 +495,21 @@ impl<'a> Lowering<'a> {
             let local_declared = self
                 .block_local_type(base)
                 .and_then(|ty| self.declared_range(&ty, &self.cur_env));
+            // An operand inlined into an operator body (`self'low`) is known
+            // only as the signal it reads, as for `'length` above; its range
+            // is recorded under that signal's name.
+            let signal_range = || {
+                let signal = self.base_signal(base)?;
+                let name = &self.out.signals.get(signal.0 as usize)?.path;
+                self.out
+                    .source_layouts
+                    .get(name)
+                    .and_then(SourceLayout::index_range)
+                    .map(|range| (range.left, range.right))
+            };
             if let Some((l, r)) = local_declared
                 .or_else(|| expr_path(base).and_then(|path| self.persisted_range(&path)))
+                .or_else(signal_range)
             {
                 let v = match attr {
                     "left" => l,
