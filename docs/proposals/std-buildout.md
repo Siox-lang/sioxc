@@ -4,6 +4,16 @@ Status: **active proposal**. Existing exports are documented in
 [`std.md`](../std.md); open work is tracked under `std` in
 [`TODO.md`](../../TODO.md).
 
+## What std is
+
+std is the mandatory, vendor-independent base every design can rely on:
+data types (logic values, numeric vectors, fixed point, complex numbers,
+vectors and matrices), the conversions between them, time, text, the base
+metadata, and small helpers that exist in every technology (the `std::sync`
+synchronizers). It is not a component library: memories, FIFOs, stream
+adapters, bus protocols and verification frameworks are IP, and belong to
+vendor packages or third-party libraries, where each can follow its target.
+
 ## Boundary
 
 The compiler owns mechanisms and representation:
@@ -77,26 +87,16 @@ directives, `Severity` and the built-in macros. std re-exports each.
    All are `Bit`-typed, as internal signals and clocks are. The flops of a
    synchronizer are bound `keep`, so a synthesis flow leaves them alone.
    Multi-bit values do not cross with `Sync2`; they need a handshake or a
-   Gray-coded FIFO (item 3).
+   Gray-coded FIFO, which belong to libraries.
 
    `std::attrs` holds only base metadata (`keep`, `top`, `clock`, `library`,
    `name`); vendor settings belong in vendor packages.
-2. **Memories**
-   - synchronous single/dual-port RAM shapes;
-   - initialization from arrays/files;
-   - collision behavior documented and tested.
-3. **Streams and FIFOs**
-   - canonical ready/valid backing structs and views;
-   - skid buffer, pipeline register, width adapter;
-   - synchronous FIFO first, asynchronous FIFO after CDC coverage.
-4. **Numeric families**
-   - fixed-point `ufixed`/`sfixed`;
-   - saturation/rounding policies as explicit types or template parameters;
-   - conversions to/from integer and real.
-5. **Verification helpers**
-   - deterministic random generation;
-   - scoreboards and monitors only after the external scheduler/API boundary is
-     stable.
+2. **Fixed-point numbers** — `ufixed`/`sfixed` with explicit integer and
+   fraction widths, saturation and rounding as explicit choices, and
+   conversions to and from integer and real.
+3. **Linear algebra** — `Vector<T, N>` and `Matrix<T, R, C>` over any `T`
+   with the needed operators: element-wise operations, dot and matrix
+   products, transpose.
 
 Every new public declaration needs:
 
@@ -108,6 +108,10 @@ Every new public declaration needs:
 ## Deliberate exclusions
 
 - Vendor primitives and generated IP belong to project/vendor packages.
+- Memories, FIFOs, stream adapters and bus protocols are IP, not std: their
+  best shape depends on the target, so they belong to vendor packages or
+  third-party libraries.
+- Verification components (scoreboards, monitors) belong to libraries too.
 - VHDL/Verilog package loading belongs to the future project/API layer.
 - A UVM-sized verification framework waits for cocotb integration rather than
   growing inside the compiler repository.

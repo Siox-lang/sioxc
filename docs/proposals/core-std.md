@@ -67,7 +67,7 @@ Everything a user programs with, built on `core`:
 | Text | the `Unicode`/`Ascii` encoding tables and their shorthands |
 | Time | `time`, `frequency`, the `fs`…`ms` and `Hz`…`GHz` suffixes |
 | New: linear algebra | `Vector<T, N>` and `Matrix<T, R, C>` over any `T` with the needed operators, element-wise operations, dot and matrix products, transpose; fixed-point families once they exist |
-| New: hardware helpers | the reusable models in TODO: synchronizers, counters, memories, FIFOs, stream adapters |
+| Helpers | small, technology-independent ones only: the `std::sync` synchronizers. Memories, FIFOs and stream adapters are IP for vendor packages and libraries |
 | Base metadata | below |
 
 `Bit` and `Logic` move to `std` even though the compiler mentions them today.
