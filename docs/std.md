@@ -65,8 +65,8 @@ is a documented shim, and the declaration here is canonical.
 | `std::text`   | `'pos`/`'val`                    | encoding tables `Unicode`/`Ascii` |
 | `std::sim`    | std.standard `time`              | `time`, `frequency` + unit suffixes; FS..MS constants |
 | `std::sync`   | (vendor CDC macros)              | `Sync2`, `ResetSync`, `EdgeDetect`, `PulseSync` |
-| `std::fixed`  | ieee.fixed_pkg                   | `ufixed`, `sfixed` (binary point in the index range), `to_ufixed`, `to_sfixed`, `.to_real()` |
-| `std::float`  | ieee.float_pkg                   | `float` (`float[8..-23]` is binary32), `to_float`, `.to_real()`, `+ - *`, comparisons, `is_nan` … |
+| `std::fixed`  | ieee.fixed_pkg                   | `ufixed`, `sfixed` (binary point in the index range), constructors from `real`/`integer` (`ufixed[3..-4](2.5)`), `.to_real()` |
+| `std::float`  | ieee.float_pkg                   | `float` (`float[8..-23]` is binary32), constructors from `real`/`integer` (`float[8..-23](1.5)`), `.to_real()`, `+ - *`, comparisons, `is_nan` … |
 | `std::fs`     | textio / impure host I/O         | typed `read<T>` construction and `exists` fixture probes |
 | `std::attrs`  | (attributes; VHDL has none)      | base metadata: `keep`, `top`, `clock`, `library`, `name` |
 
@@ -279,10 +279,10 @@ fraction bits (-1..-4), and `sfixed[7..-8]` is 8.8 two's complement. Both are
 newtypes over `Logic[]`, like `unsigned` and `signed`.
 
 ```siox
-use std::fixed::{ufixed, sfixed, to_ufixed, to_sfixed};
+use std::fixed::{ufixed, sfixed};
 
-let gain: ufixed[3..-4] = to_ufixed(2.5, 3, -4);   // the word 40
-let error: sfixed[7..-8] = to_sfixed(0.0 - 0.75, 7, -8);
+let gain: ufixed[3..-4] = ufixed[3..-4](2.5);       // the word 40
+let error: sfixed[7..-8] = sfixed[7..-8](0.0 - 0.75);
 let scaled: ufixed[3..-4];
 scaled = (gain + gain) * gain;                      // formats carry through
 let r: real = gain.to_real();                       // 2.5
@@ -294,9 +294,9 @@ let r: real = gain.to_real();                       // 2.5
 - `<`, `<=`, `>`, `>=`, `==`, `!=` come from each type's `Eq`/`Ord`;
   `sfixed` compares signed; `std::math::abs` gives the magnitude in the same
   format.
-- `to_ufixed(value, left, right)` / `to_sfixed(…)` take a `real` to the
-  format `[left..right]`, rounding to nearest (ties away from zero) and
-  saturating; `x.to_real()` goes back.
+- The constructor `ufixed[left..right](x)` / `sfixed[…](x)` takes a `real` or
+  an `integer` to that format, rounding to nearest (ties away from zero) and
+  saturating; it works in hardware too. `x.to_real()` goes back.
 - Not yet: division, and a `resize` that chooses saturate/wrap and
   round/truncate.
 
@@ -307,12 +307,12 @@ IEEE-754 floating point after VHDL-2008's `float_pkg`, on the same idea as
 index, then `x'high` exponent bits, then `-x'low` fraction bits.
 
 ```siox
-use std::float::{float, to_float};
+use std::float::float;
 
 let x: float[8..-23];             // binary32 (float[5..-10] is binary16)
 let y: float[8..-23];
-x = to_float(1.5, 8, 23);         // the word 0x3FC00000
-y = to_float(0.0 - 2.25, 8, 23);
+x = float[8..-23](1.5);           // the word 0x3FC00000
+y = float[8..-23](0.0 - 2.25);
 r = x * y + x;                    // rounds to nearest, ties to even
 let v: real = r.to_real();
 ```
@@ -322,8 +322,9 @@ let v: real = r.to_real();
   infinite, and a NaN is unordered — every comparison with one is false
   except `!=`, so `x != x` holds exactly for a NaN.
 - `-x` (`Neg`, the IEEE sign flip), `x.is_nan()`, `x.is_infinite()`,
-  `x.is_zero()`, `x.to_real()`; `std::math`'s `abs`, `min`, `max`. `to_float(value, e, f)` rounds a `real` to nearest even and
-  returns the *word*: store it in a `float` before doing arithmetic with it.
+  `x.is_zero()`, `x.to_real()`; `std::math`'s `abs`, `min`, `max`. The
+  constructor `float[e..-f](x)` takes a `real` or an `integer` to the format,
+  rounding to nearest even.
 - Subnormals are flushed to zero on input and output, VHDL's
   `denormalize => false` and the usual FPGA choice.
 - Everything is siox source over the packed word: no compiler intrinsic.

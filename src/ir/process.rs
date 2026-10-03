@@ -915,6 +915,21 @@ pub(crate) fn shifted_arena_width(
     left.checked_add(shift)
 }
 
+/// Whether an operation reads its operands as signed kernel integers.
+fn process_binary_is_signed(operation: &ProcessBinaryOp) -> bool {
+    matches!(
+        operation,
+        ProcessBinaryOp::SignedAdd
+            | ProcessBinaryOp::SignedSub
+            | ProcessBinaryOp::SignedMul
+            | ProcessBinaryOp::SignedDiv
+            | ProcessBinaryOp::SignedLt
+            | ProcessBinaryOp::SignedLe
+            | ProcessBinaryOp::SignedGt
+            | ProcessBinaryOp::SignedGe
+    )
+}
+
 /// Conservatively fold an integer-only Process value graph.
 ///
 /// Dependencies precede their users, so no recursion guard is needed. Values
@@ -935,11 +950,25 @@ pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]
         } => arena_constant_integer(*operand, values)?.checked_neg(),
         ProcessValueKind::Binary {
             operation,
-            left,
-            right,
+            left: left_id,
+            right: right_id,
         } => {
-            let left = arena_constant_integer(*left, values)?;
-            let right = arena_constant_integer(*right, values)?;
+            let mut left = arena_constant_integer(*left_id, values)?;
+            let mut right = arena_constant_integer(*right_id, values)?;
+            // A 64-bit operand of a signed operation is a kernel integer: its
+            // top bit is the sign. Read unsigned, `0 - x'low` with
+            // `x'low = -4` did not fold to 4, and `1 << (0 - x'low)` kept the
+            // one-bit width of its literal.
+            if process_binary_is_signed(operation) {
+                let as_i64 = |id: ProcessValueId, value: i128| match values.get(id.0 as usize) {
+                    Some(operand) if operand.bit_width == Some(64) => {
+                        i128::from(value as u64 as i64)
+                    }
+                    _ => value,
+                };
+                left = as_i64(*left_id, left);
+                right = as_i64(*right_id, right);
+            }
             match operation {
                 ProcessBinaryOp::Add | ProcessBinaryOp::SignedAdd => left.checked_add(right),
                 ProcessBinaryOp::Sub | ProcessBinaryOp::SignedSub => left.checked_sub(right),

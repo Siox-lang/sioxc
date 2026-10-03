@@ -2386,6 +2386,22 @@ including between two unrelated types whose values happen to line up, such as
 `ULogic(bit)` — requires an explicit `impl From<S> for T`, which `T(x)` also
 dispatches to. Because the mechanism is a constructor call, a conversion is
 always visible at the site.
+
+**A sized family's constructor.** For an array family, `T[range](x)` is the
+kernel's raw resize (`unsigned[16](x)`) unless the family declares
+`impl From<S> for T` for the argument's type: then it calls that impl, whose
+body reads the format being built as **`Self'left`, `'right`, `'high`, `'low`
+and `'length`**, VHDL's type attributes. That is how `std::fixed` and
+`std::float` construct a number in any format without a separate conversion
+function:
+
+```siox
+impl From<real> for float {
+    fn from(value: real) -> float { return float_word(value, Self'high, 0 - Self'low); }
+}
+
+let x: float[8..-23] = float[8..-23](1.5);   // IEEE binary32 1.5
+```
 ---
 
 ### 3.29 Uninitialized values (`new`)

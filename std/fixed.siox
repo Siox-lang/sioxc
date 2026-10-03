@@ -99,11 +99,27 @@ impl sfixed {
 
 // --- from real ---------------------------------------------------------------
 
-// `value` in the format `[left..right]`, rounded to the nearest step (ties
-// away from zero) and saturated to the format's range, VHDL's defaults:
-//
-//   let gain: ufixed[3..-4] = to_ufixed(2.5, 3, -4);
-pub fn to_ufixed(value: real, left: integer, right: integer) -> integer {
+// `ufixed[3..-4](2.5)`: a number in the format being built (`Self'high`
+// down to `Self'low`), rounded to the nearest step (ties away from zero) and
+// saturated to the format's range, VHDL's defaults.
+impl From<real> for ufixed {
+    fn from(value: real) -> ufixed { return ufixed_word(value, Self'high, Self'low); }
+}
+
+impl From<integer> for ufixed {
+    fn from(value: integer) -> ufixed { return ufixed_word(real(value), Self'high, Self'low); }
+}
+
+impl From<real> for sfixed {
+    fn from(value: real) -> sfixed { return sfixed_word(value, Self'high, Self'low); }
+}
+
+impl From<integer> for sfixed {
+    fn from(value: integer) -> sfixed { return sfixed_word(real(value), Self'high, Self'low); }
+}
+
+// The words of `value` in the format `[left..right]`.
+fn ufixed_word(value: real, left: integer, right: integer) -> integer {
     let steps: real = value * real(1 << (0 - right));
     let largest: integer = (1 << (left - right + 1)) - 1;
     if steps <= 0.0 { return 0; }
@@ -111,7 +127,7 @@ pub fn to_ufixed(value: real, left: integer, right: integer) -> integer {
     return integer(steps + 0.5);
 }
 
-pub fn to_sfixed(value: real, left: integer, right: integer) -> integer {
+fn sfixed_word(value: real, left: integer, right: integer) -> integer {
     let steps: real = value * real(1 << (0 - right));
     let largest: integer = (1 << (left - right)) - 1;
     let smallest: integer = 0 - (1 << (left - right));
