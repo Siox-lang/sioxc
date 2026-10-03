@@ -100,7 +100,7 @@ fn comparisons_and_value_branches_need_compatible_types() {
                  impl T { let state: State = State::Idle; let bad: Bool = state < 1; }\n"
         ),
         1,
-        "enum ordering still requires a matching `<=>` implementation"
+        "enum ordering still requires a matching `Ord` implementation"
     );
     assert_eq!(
             check_src(&tb(
@@ -323,9 +323,9 @@ fn operator_overloads_match_the_declared_input_type() {
 }
 
 #[test]
-/// The six comparisons derive from the three-way `<=>`, so struct equality
-/// follows from one impl.
-fn struct_equality_is_derived_from_three_way_comparison() {
+/// Struct equality comes from an `Eq` impl; the retired three-way `<=>` impl
+/// is rejected with a pointer to `Eq`/`Ord`.
+fn struct_equality_comes_from_an_eq_impl() {
     let base = |operator: &str| {
         format!(
             "module m;\nstruct V {{ a: Bit }}\n{operator}\n\
@@ -340,12 +340,30 @@ fn struct_equality_is_derived_from_three_way_comparison() {
     );
     assert_eq!(
         check_src(&base(
+            "impl Eq<V> for V {\n\
+                   fn eq(self, rhs: V) -> Bool { return true; }\n\
+                 }"
+        )),
+        0,
+        "one `Eq` implementation gives `==`"
+    );
+    assert_eq!(
+        check_src(&base(
             "impl Operator<\"<=>\", V, Ordering> for V {\n\
                    fn apply(self, rhs: V) -> Ordering { return Ordering::Equal; }\n\
                  }"
         )),
-        0,
-        "one `<=>` implementation derives equality"
+        2,
+        "`<=>` is rejected, and gives no equality"
+    );
+    let ordered = "module m;\nstruct V { a: Bit }\n\
+                   impl Eq<V> for V { fn eq(self, rhs: V) -> Bool { return true; } }\n\
+                   entity E { p: V in, q: V in, }\n\
+                   impl E { let before: Bool = p < q; }\n";
+    assert_eq!(
+        check_src(ordered),
+        1,
+        "equality without `Ord` gives no order"
     );
 }
 

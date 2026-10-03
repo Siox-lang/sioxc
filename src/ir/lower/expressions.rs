@@ -294,7 +294,7 @@ impl<'a> Lowering<'a> {
                 // `not` on an enum-typed operand inlines its impl (`impl
                 // "not" for Logic`), like binary operators.
                 if *op == ast::UnOp::Not {
-                    if let Some(Val::Scalar(v)) = self.inline_unary("not", rhs) {
+                    if let Some(Val::Scalar(v)) = self.inline_unary("not", rhs, &HashMap::new()) {
                         return v;
                     }
                     // "Boolean per bit": `not` on a vector-valued signal
@@ -329,7 +329,7 @@ impl<'a> Lowering<'a> {
             ast::Expr::Binary { op, lhs, rhs, .. } => {
                 // An operator on an enum/struct-typed operand inlines its
                 // operator-trait impl body (spec 3.25); `==`/`!=` stay
-                // built-in discriminant comparison unless `<=>` derives them.
+                // built-in discriminant comparison unless an `Eq` impl takes them.
                 let op_str = crate::syntax::pretty::bin_op(op);
                 if let Some(native) =
                     self.native_vector_logical(op_str, lhs, rhs, &|e| self.lower_expr(e))
@@ -337,7 +337,7 @@ impl<'a> Lowering<'a> {
                     return native;
                 }
                 // Every route to a comparison is marked, because they all owe
-                // the same answer: an `Operator` impl, the `<=>` derivation,
+                // the same answer: an `Operator` impl, an `Eq`/`Ord` method,
                 // and the built-in below.
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(Val::Scalar(inlined)) =
@@ -557,6 +557,29 @@ impl<'a> Lowering<'a> {
                         .map(|w| w as u32)
                         .unwrap_or(64)
                 }
+                // A method is as wide as its declared return type, or, when
+                // that is unsized (`fn rem(self, m: signed) -> signed`), as
+                // its receiver: the result keeps the receiver's format.
+                ast::Expr::Field { base, field, .. } => {
+                    let declared = self
+                        .operand_type_name(base)
+                        .and_then(|ty| self.find_method(&ty, &field.text, None))
+                        .and_then(|f| f.ret.as_ref())
+                        .map(|ret| {
+                            type_width(
+                                ret,
+                                &self.cur_env,
+                                &self.free_fns,
+                                &self.structs,
+                                &self.const_ranges,
+                            )
+                        });
+                    match declared {
+                        Some(0) => self.ast_width(base),
+                        Some(width) => width,
+                        None => 64,
+                    }
+                }
                 // An ordinary call is as wide as its declared return type. The
                 // 64 below is the kernel-integer default; taking it for a
                 // `signed[8]` result made a nested inline read `self'length`
@@ -758,6 +781,7 @@ impl<'a> Lowering<'a> {
             Val::Scalar(Expr::Const(self.ast_width(lhs) as u64)),
         );
         self.bind_range_attrs(&mut fenv, "self", lhs, env);
+        let mut hidden = vec!["self".to_string()];
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
                 self.bind_range_attrs(&mut fenv, &n.text, rhs, env);
@@ -768,9 +792,30 @@ impl<'a> Lowering<'a> {
                         self.literal_aware_width(rhs, self.ast_width(lhs)) as u64,
                     )),
                 );
+                hidden.push(n.text.clone());
             }
         }
-        self.inline_block(&body.stmts, &fenv)
+        // An operator body reads its operands as kernel words, so `self - rhs`
+        // in it is the built-in operator. An enclosing method's family and
+        // width for the same names would make it dispatch to this impl again.
+        let saved: Vec<_> = hidden
+            .into_iter()
+            .map(|name| {
+                let ty = self.param_types.borrow_mut().remove(&name);
+                let width = self.param_widths.borrow_mut().remove(&name);
+                (name, ty, width)
+            })
+            .collect();
+        let out = self.inline_block(&body.stmts, &fenv);
+        for (name, ty, width) in saved {
+            if let Some(ty) = ty {
+                self.param_types.borrow_mut().insert(name.clone(), ty);
+            }
+            if let Some(width) = width {
+                self.param_widths.borrow_mut().insert(name, width);
+            }
+        }
+        out
     }
 
     /// The declared index range of an operand, when it has one: a local or

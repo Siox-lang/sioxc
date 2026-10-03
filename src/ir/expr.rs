@@ -41,8 +41,8 @@ pub enum Expr {
     /// operand's companion does not exist until `propagate_metavalues` has run,
     /// so a guard emitted here would silently skip exactly the operands worth
     /// guarding. Nor can it be recovered afterwards by matching the finished
-    /// shape -- `<=`, `>=`, `==` and `/=` reach their answer through `<=>` and
-    /// an `Ordering`, leaving nothing that looks like a vector comparison.
+    /// shape -- `<=`, `>=`, `==` and `/=` reach their answer through an inlined
+    /// `Eq`/`Ord` method, leaving nothing that looks like a vector comparison.
     ///
     /// So the comparison is marked where it is built and resolved once the
     /// companions are known. `validate` rejects any that survive, since the

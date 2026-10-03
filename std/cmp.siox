@@ -1,4 +1,4 @@
 module std::cmp;
 
 // Comparison: rustc's `std::cmp` re-exports `core::cmp`, and so does this.
-pub use core::cmp::Ordering;
+pub use core::cmp::{Eq, Ord, Ordering};

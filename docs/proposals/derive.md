@@ -7,8 +7,8 @@ plus `-A`/`-W`/`-D`/`-F` (§3.5a).
 
 ## Idea
 
-`#[derive(Ord)]` on a struct would generate the `Operator<"<=>">`
-implementation that already drives all six comparisons, and `#[derive(Resolve)]`
+`#[derive(Eq, Ord)]` on a struct would generate the `Eq`/`Ord` impls that drive
+the six comparisons (field by field, lexicographically), and `#[derive(Resolve)]`
 would generate an element-wise fold. Both are code generation, so both are
 directives, declared in `std::attrs` beside `test` and the lint levels.
 

@@ -1,7 +1,6 @@
 module std::bits;
 
 use std::logic::Logic;
-use std::cmp::Ordering;
 
 // `unsigned` and `signed` are ordinary library types, not compiler-magic
 // names. Deriving from `Logic[]` supplies their array representation. The
@@ -11,7 +10,7 @@ use std::cmp::Ordering;
 //
 // The names are the only thing that says "signed": nothing in the compiler
 // tracks signedness. It is defined entirely by the operator impls below —
-// `signed`'s `<=>` is a signed compare, its `>>` an arithmetic shift, its `/`
+// `signed`'s `Ord` is a signed compare, its `>>` an arithmetic shift, its `/`
 // a signed divide — and the compiler just dispatches to whichever impls a
 // type declares. A type named neither would behave the same as its impls say.
 pub struct unsigned(Logic[]);
@@ -28,8 +27,8 @@ pub struct signed(Logic[]);
 // `self + rhs` below is the built-in integer add — results wrap to the
 // target's width when stored, which is what makes `unsigned[N]` modular.
 // Comparisons on `unsigned` use kernel unsigned semantics; the explicit
-// `<=>` below exposes them through the ordinary operator contract, and
-// `signed` declares its own sign-aware `<=>` further down.
+// `Eq`/`Ord` impls below expose them through the comparison traits, and
+// `signed` declares its own sign-aware `Ord` further down.
 
 // --- unsigned[N]: modular unsigned arithmetic -------------------------------
 
@@ -57,12 +56,21 @@ impl Operator<">>", unsigned, unsigned> for unsigned {
     fn apply(self, rhs: unsigned) -> unsigned { return self >> rhs; }
 }
 
-impl Operator<"<=>", unsigned, Ordering> for unsigned {
-    fn apply(self, rhs: unsigned) -> Ordering {
-        if self < rhs { return Ordering::Less; }
-        if self > rhs { return Ordering::Greater; }
-        return Ordering::Equal;
-    }
+impl Eq<unsigned> for unsigned {
+    fn eq(self, rhs: unsigned) -> Bool { return self == rhs; }
+}
+
+impl Ord<unsigned> for unsigned {
+    fn lt(self, rhs: unsigned) -> Bool { return self < rhs; }
+    fn le(self, rhs: unsigned) -> Bool { return self <= rhs; }
+}
+
+// `abs`, `rem` and `mod` are functions, as for `integer` (core::primitive).
+// An unsigned value is its own magnitude, and its `rem` and `mod` agree.
+impl unsigned {
+    pub fn abs(self) -> unsigned { return self; }
+    pub fn rem(self, m: unsigned) -> unsigned { return self - (self / m) * m; }
+    pub fn mod(self, m: unsigned) -> unsigned { return self - (self / m) * m; }
 }
 
 // Radix bit-string prefixes (spec 3.24), VHDL-style: `x"AB"` is hex (4
@@ -165,9 +173,9 @@ impl Operator<"*", signed, signed> for signed {
 // quotient as two's complement.
 // The sign test reads the RAW top bit, like `sext` above: `self >> ..` here
 // dispatches signed's own arithmetic shift, which fills with the sign, so a
-// negative operand tests as all-ones and never equals 1. (The `>>` and `<=>`
-// impls below spell it the short way safely — a `>>` nested inside those
-// bodies is the built-in shift, not a re-entry into this dispatch.)
+// negative operand tests as all-ones and never equals 1. (The `>>` impl
+// below spells it the short way safely — a `>>` nested inside that body is
+// the built-in shift, not a re-entry into this dispatch.)
 //
 // `resize(x, x'length)` narrows the operand to its own width first. A signal
 // already holds exactly that many bits, but a constant operand does not:
@@ -205,25 +213,41 @@ impl Operator<">>", signed, signed> for signed {
     }
 }
 
-// Sign-aware comparison: `self'length` is the operand's bit width, so the raw
-// word shifted by `self'length - 1` is the sign bit. It reads the RAW word,
+impl Eq<signed> for signed {
+    fn eq(self, rhs: signed) -> Bool { return self == rhs; }
+}
+
+// Sign-aware order: `self'length` is the operand's bit width, so the raw word
+// shifted by `self'length - 1` is non-zero exactly when the sign bit is set
+// (at 64 bits the kernel integer's own shift makes it -1, not 1). It reads
+// the RAW word,
 // narrowed to the operand's width as the `/` impl does: `self >> ..` would
-// dispatch signed's own arithmetic shift, and a value held sign-extended would
-// shift in ones. A negative orders below a non-negative;
-// same-sign two's-complement values order like their unsigned words. One impl
-// derives < <= > >= == != (spec 3.25).
-impl Operator<"<=>", signed, Ordering> for signed {
-    fn apply(self, rhs: signed) -> Ordering {
-        if (integer(resize(self, self'length)) >> (self'length - 1))
-            > (integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) {
-            return Ordering::Less;
+// dispatch signed's own arithmetic shift. A negative orders below a
+// non-negative; same-sign two's-complement values order like their unsigned
+// words, which is the built-in comparison inside these bodies (spec 3.25).
+impl Ord<signed> for signed {
+    fn lt(self, rhs: signed) -> Bool {
+        if ((integer(resize(self, self'length)) >> (self'length - 1)) != 0)
+            != ((integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) != 0) {
+            return (integer(resize(self, self'length)) >> (self'length - 1)) != 0;
         }
-        if (integer(resize(self, self'length)) >> (self'length - 1))
-            < (integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) {
-            return Ordering::Greater;
-        }
-        if self < rhs { return Ordering::Less; }
-        if self > rhs { return Ordering::Greater; }
-        return Ordering::Equal;
+        return self < rhs;
+    }
+    fn le(self, rhs: signed) -> Bool { return not rhs.lt(self); }
+}
+
+// `rem` takes the dividend's sign (VHDL `rem`), `mod` the divisor's (VHDL
+// `mod`); `/` truncates toward zero.
+impl signed {
+    pub fn abs(self) -> signed {
+        if self < 0 { return 0 - self; }
+        return self;
+    }
+
+    pub fn rem(self, m: signed) -> signed { return self - (self / m) * m; }
+
+    pub fn mod(self, m: signed) -> signed {
+        if self.rem(m) != 0 and (self.rem(m) < 0) != (m < 0) { return self.rem(m) + m; }
+        return self.rem(m);
     }
 }

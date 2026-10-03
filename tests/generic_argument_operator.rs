@@ -110,3 +110,16 @@ fn nested_generic_type_arguments_parse_without_aliases() {
         "nested generic types should parse directly, got {errors:?}"
     );
 }
+
+/// A `<` is a comparison unless a `>` closes it before the statement ends. The
+/// search for that `>` once ran to the end of the file, so `return a < b;`
+/// followed anywhere later by `> (` parsed as call type arguments
+/// (`a<b; … >(…)`) and reported four errors at the `;`.
+#[test]
+fn a_comparison_is_not_closed_by_a_later_angle() {
+    let src = "module m;\n\
+               fn lt(a: integer, b: integer) -> Bool { return a < b; }\n\
+               fn gt(a: integer, b: integer) -> Bool { return b > (a); }\n\
+               fn guard(k: integer) -> Bool { if k < 0 { return true; } return k > 9; }\n";
+    assert_eq!(parse_errors(src), Vec::<String>::new());
+}

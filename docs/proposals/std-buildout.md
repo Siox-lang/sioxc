@@ -105,8 +105,8 @@ directives, `Severity` and the built-in macros. std re-exports each.
    - `x'high + 1` integer bits and `-x'low` fraction bits.
    - `+`, `-`, `*` between operands of one format give that format, wrapping
      on overflow as `unsigned` does; a product drops its extra fraction bits
-     rounding toward minus infinity (VHDL's truncate). `<=>` compares (signed
-     for `sfixed`), deriving all six comparisons.
+     rounding toward minus infinity (VHDL's truncate). `Eq`/`Ord` give the
+     six comparisons (signed for `sfixed`).
    - `to_ufixed(value, left, right)` and `to_sfixed(…)` take a `real` to the
      format `[left..right]`, rounding to nearest and saturating, VHDL's
      defaults; `x.to_real()` goes back.
@@ -127,14 +127,14 @@ directives, `Severity` and the built-in macros. std re-exports each.
 
    - Layout as IEEE-754 and VHDL: the sign at the top index, then `x'high`
      exponent bits, then `-x'low` fraction bits; bias `2^(E-1) - 1`.
-   - Slice 1: `+`, `-`, `*`, comparisons through `<=>`, `to_float(value, E,
+   - Slice 1: `+`, `-`, `*`, the six comparisons, `to_float(value, E,
      F)` from `real`, `x.to_real()`, and `is_nan`, `is_infinite`,
      `is_zero`, `negate`, `abs`. Results round to nearest, ties to even.
      Zero, infinity and NaN follow IEEE-754 (`inf - inf` and `0 * inf` are
      NaN).
    - Subnormals are flushed to zero, on input and output: the usual FPGA
-     choice, and VHDL's `float_pkg` with `denormalize => false`. A NaN orders
-     above every number, since `<=>` has no "unordered" answer.
+     choice, and VHDL's `float_pkg` with `denormalize => false`. A NaN is unordered:
+     every comparison with one is false except `!=`.
    - Everything is written in siox over the packed word, with no compiler
      support beyond what fixed point needed, so it synthesizes. It is distinct
      from `real`, the simulator's f64.

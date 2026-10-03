@@ -18,7 +18,7 @@ layout. Agent-specific setup files (e.g. `CLAUDE.md`) are gitignored and local.
 
 Anything expressible in the language belongs in `std/*.siox` as siox source, not
 baked into Rust. The compiler may reference a type *name* (`"ULogic"`,
-`"Ordering"`, `"Bool"`) but must not hardcode its *values*, discriminants, or
+`"Logic"`, `"Bool"`) but must not hardcode its *values*, discriminants, or
 truth tables — read those from the enum/impl tables at elaboration.
 
 Why: it keeps the language self-describing, lets the runtime and external tools

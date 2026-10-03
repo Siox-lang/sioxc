@@ -527,11 +527,10 @@ impl<'a> Lowering<'a> {
             || declared_integer(rhs_ast)
     }
 
-    /// Derive a comparison from the three-way `<=>` impl (spaceship, spec
-    /// 3.25): `a < b` becomes `(a <=> b) == Ordering::Less`, etc. The impl
-    /// returns std::ops' `Ordering { Less, Equal, Greater }` (0/1/2), so no
-    /// signed arithmetic is needed. `None` when the operand type has no
-    /// `<=>` impl — built-in comparison applies.
+    /// A comparison on a type with an `Eq`/`Ord` impl (spec 3.25) is a call
+    /// of its method: `a == b` is `a.eq(b)`, `a < b` is `a.lt(b)`, and so on.
+    /// `None` when the operand type has no such impl, or inside that method's
+    /// own body, where the comparisons are the built-in ones.
     pub(super) fn inline_cmp(
         &self,
         op_str: &str,
@@ -539,43 +538,69 @@ impl<'a> Lowering<'a> {
         rhs: &ast::Expr,
         env: &HashMap<String, Val>,
     ) -> Option<Expr> {
-        // (`Ordering` variant to compare against, negate?). The discriminant
-        // comes from std's `Ordering` enum, not a baked-in 0/1/2 — the fallback
-        // is only the conventional layout for a std-less unit test.
-        let (variant, fallback, ne) = match op_str {
-            "<" => ("Less", 0u64, false),
-            "==" => ("Equal", 1, false),
-            ">" => ("Greater", 2, false),
-            ">=" => ("Less", 0, true),
-            "!=" => ("Equal", 1, true),
-            "<=" => ("Greater", 2, true),
-            _ => return None,
-        };
-        let want = self.enum_variant("Ordering", variant).unwrap_or(fallback);
-        let Val::Scalar(cmp) = self.inline_op("<=>", lhs, rhs, env)? else {
+        let (trait_name, method) = comparison_method(op_str)?;
+        let ty = self.operand_type_name(lhs)?;
+        if !self
+            .op_impls
+            .contains_key(&(trait_name.to_string(), ty.clone()))
+        {
             return None;
-        }; // -> Ord::cmp
-        Some(Expr::Binary {
-            op: if ne { BinOp::Ne } else { BinOp::Eq },
-            lhs: Box::new(cmp),
-            rhs: Box::new(Expr::Const(want)),
-        })
+        }
+        if self
+            .inlining_methods
+            .borrow()
+            .iter()
+            .any(|(owner, name)| *owner == ty && name == method)
+        {
+            return None;
+        }
+        let span = ast::expr_span(lhs);
+        let callee = ast::Expr::Field {
+            base: Box::new(lhs.clone()),
+            field: ast::Ident {
+                text: method.to_string(),
+                span,
+            },
+            span,
+        };
+        match self.lower_method_call(&callee, std::slice::from_ref(rhs), env)? {
+            Val::Scalar(value) => Some(value),
+            _ => None,
+        }
     }
 
     /// Inline a unary operator impl (`not a`): binds only `self`.
-    pub(super) fn inline_unary(&self, op: &str, rhs: &ast::Expr) -> Option<Val> {
+    pub(super) fn inline_unary(
+        &self,
+        op: &str,
+        rhs: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Val> {
         let ty = self.operand_type_name(rhs)?;
         let tr = op;
         let fns = self.op_impls.get(&(tr.to_string(), ty))?;
         let (f, _) = fns.first()?;
         let body = f.body.as_ref()?;
-        let mut env: HashMap<String, Val> = HashMap::new();
-        env.insert("self".to_string(), self.lower_val_env(rhs, &HashMap::new()));
-        env.insert(
+        let mut fenv: HashMap<String, Val> = HashMap::new();
+        fenv.insert("self".to_string(), self.lower_val_env(rhs, env));
+        fenv.insert(
             "self::length".to_string(),
             Val::Scalar(Expr::Const(self.ast_width(rhs) as u64)),
         );
-        self.inline_block(&body.stmts, &env)
+        // As in `inline_op`: the body's `self` is a kernel word, not an
+        // enclosing method's receiver.
+        let ty = self.param_types.borrow_mut().remove("self");
+        let width = self.param_widths.borrow_mut().remove("self");
+        let out = self.inline_block(&body.stmts, &fenv);
+        if let Some(ty) = ty {
+            self.param_types.borrow_mut().insert("self".to_string(), ty);
+        }
+        if let Some(width) = width {
+            self.param_widths
+                .borrow_mut()
+                .insert("self".to_string(), width);
+        }
+        out
     }
 
     /// Synthesize a total derivation conversion `target(x)` when no explicit
@@ -694,4 +719,17 @@ impl<'a> Lowering<'a> {
         seen.remove(name);
         out
     }
+}
+
+/// The comparison trait (`Eq`/`Ord`) and method a comparison operator calls.
+pub(crate) fn comparison_method(op: &str) -> Option<(&'static str, &'static str)> {
+    Some(match op {
+        "==" => ("Eq", "eq"),
+        "!=" => ("Eq", "ne"),
+        "<" => ("Ord", "lt"),
+        "<=" => ("Ord", "le"),
+        ">" => ("Ord", "gt"),
+        ">=" => ("Ord", "ge"),
+        _ => return None,
+    })
 }

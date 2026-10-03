@@ -1,7 +1,6 @@
 module std::float;
 
 use std::bits::unsigned;
-use std::cmp::Ordering;
 
 // Floating point, after VHDL-2008's `float_pkg`, on the same idea as
 // `std::fixed`: the index range gives the format.
@@ -187,31 +186,40 @@ fn add(a: integer, b: integer, e: integer, f: integer) -> integer {
 
 // --- comparison ----------------------------------------------------------------
 
-// IEEE order, with -0 equal to +0. `<=>` has no "unordered" answer, so a NaN
-// orders above every number (and equal to another NaN); test `x.is_nan()`
-// first where that matters.
-impl Operator<"<=>", float, Ordering> for float {
-    fn apply(self, rhs: float) -> Ordering {
+// IEEE-754 comparison: -0 equals +0, and a NaN is unordered — every
+// comparison with one is false except `!=` (the `ne` default).
+fn is_nan_word(w: integer, e: integer, f: integer) -> Bool {
+    return low_bits(w >> f, e) == (1 << e) - 1 and low_bits(w, f) != 0;
+}
+
+impl Eq<float> for float {
+    fn eq(self, rhs: float) -> Bool {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let a: integer = integer(self);
         let b: integer = integer(rhs);
-        let full: integer = (1 << e) - 1;
-        let a_nan: Bool = low_bits(a >> f, e) == full and low_bits(a, f) != 0;
-        let b_nan: Bool = low_bits(b >> f, e) == full and low_bits(b, f) != 0;
-        if a_nan and b_nan { return Ordering::Equal; }
-        if a_nan { return Ordering::Greater; }
-        if b_nan { return Ordering::Less; }
+        if is_nan_word(a, e, f) or is_nan_word(b, e, f) { return false; }
+        if low_bits(a, e + f) == 0 and low_bits(b, e + f) == 0 { return true; }
+        return a == b;
+    }
+}
+
+impl Ord<float> for float {
+    fn lt(self, rhs: float) -> Bool {
+        let e: integer = self'high;
+        let f: integer = 0 - self'low;
+        let a: integer = integer(self);
+        let b: integer = integer(rhs);
+        if is_nan_word(a, e, f) or is_nan_word(b, e, f) { return false; }
         let sa: integer = low_bits(a >> (e + f), 1);
         let sb: integer = low_bits(b >> (e + f), 1);
         let ma: integer = low_bits(a, e + f);
         let mb: integer = low_bits(b, e + f);
-        if ma == 0 and mb == 0 { return Ordering::Equal; }
-        if sa != sb { return if sa == 1 { Ordering::Less } else { Ordering::Greater }; }
-        if ma == mb { return Ordering::Equal; }
-        let less: Bool = if sa == 0 { ma < mb } else { ma > mb };
-        return if less { Ordering::Less } else { Ordering::Greater };
+        if ma == 0 and mb == 0 { return false; }
+        if sa != sb { return sa == 1; }
+        return if sa == 0 { ma < mb } else { ma > mb };
     }
+    fn le(self, rhs: float) -> Bool { return self.lt(rhs) or self.eq(rhs); }
 }
 
 // --- inspection and conversion -------------------------------------------------

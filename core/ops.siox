@@ -12,11 +12,11 @@ use core::primitive::Bool;
 // symbol-parameterized trait: `a <op> b` dispatches to
 // `impl Operator<"<op>", Input, Output> for <type of a>` (method `apply`;
 // overloads select by the rhs/`Input` type, and the impl's `Output` names the
-// result type). The standard symbols (`+ - * / << >> and or not <=>`) carry
+// result type). The standard symbols (`+ - * / << >> and or not`) carry
 // built-in precedence; a user operator such as `xor` binds its precedence
 // inside its impl with `attr precedence = N;`. Unary `not` implements
 // `apply(self)` with no rhs.
-// The three-way `<=>` returns `Ordering` and derives all of < <= > >= == !=.
+// Comparisons are not operators here: they are `core::cmp`'s `Eq` and `Ord`.
 pub trait Operator<op: string, input, output> {
     fn apply(self, rhs: input) -> output {}
 }

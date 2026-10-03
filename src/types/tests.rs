@@ -36,7 +36,8 @@ const VEC: &str = "\n\
         struct unsigned(Logic[]);\n\
         impl Operator<\"+\", unsigned, unsigned> for unsigned { fn apply(self, rhs: unsigned) -> unsigned { return self; } }\n\
         impl Operator<\"/\", unsigned, unsigned> for unsigned { fn apply(self, rhs: unsigned) -> unsigned { return self; } }\n\
-        impl Operator<\"<=>\", unsigned, Ordering> for unsigned { fn apply(self, rhs: unsigned) -> Ordering { return Equal; } }\n\
+        impl Eq<unsigned> for unsigned { fn eq(self, rhs: unsigned) -> Bool { return true; } }\n\
+        impl Ord<unsigned> for unsigned { fn lt(self, rhs: unsigned) -> Bool { return false; } fn le(self, rhs: unsigned) -> Bool { return true; } }\n\
         struct signed(Logic[]);\n";
 
 /// Type-check `src` with the vector prelude appended and return its error

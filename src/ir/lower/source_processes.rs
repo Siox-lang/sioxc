@@ -144,7 +144,13 @@ fn process_functions<'a>(
         .filter_map(|implementation| {
             let owner = functions.type_head_key(&implementation.target)?;
             let trait_key = functions.trait_path_key(implementation.trait_.as_ref()?)?;
-            Some((owner, *trait_declarations.get(&trait_key)?))
+            let declaration = *trait_declarations.get(&trait_key)?;
+            if matches!(trait_key.as_str(), "Eq" | "Ord") {
+                for function in declaration.items.iter().filter(|f| f.body.is_some()) {
+                    functions.insert_comparison_default(implementation, function);
+                }
+            }
+            Some((owner, declaration))
         })
         .flat_map(|(owner, declaration)| {
             declaration
@@ -4059,6 +4065,8 @@ fn inline_process_call(
     }
     // `y.negate().to_real()`: a method returning its receiver's type keeps
     // the receiver's format, as an operator does.
+    // Its width too: `a.rem(m)` on a `signed[8]` is a `signed[8]`, so a
+    // comparison on it reads `self'length` as 8 rather than the word's 64.
     if let (Some(result), Some(receiver)) = (result, receiver) {
         if returns_receiver_type(function, receiver, context) {
             if let Some(layout) = process_value_source_layout(receiver, context.process_ir).cloned()
@@ -4066,6 +4074,10 @@ fn inline_process_call(
                 if process_value_source_layout(result, context.process_ir).is_none() {
                     context.process_ir.value_layouts[result.0 as usize] = Some(layout);
                 }
+            }
+            let receiver_type = context.process_ir.values[receiver.0 as usize].ty.clone();
+            if matches!(receiver_type, Some(crate::types::Ty::Array { len, .. }) if len > 0) {
+                return Some(narrow_to_type(result, receiver_type.as_ref(), context));
             }
         }
     }
@@ -4377,6 +4389,9 @@ fn inline_process_binary_operator(
     ) {
         return Some(value);
     }
+    if crate::syntax::ast::is_comparison_operator(symbol) {
+        return None;
+    }
     if matches!(left_type, crate::types::Ty::Array { family: None, .. })
         && right_type
             .as_ref()
@@ -4441,11 +4456,10 @@ fn inline_process_binary_operator(
     result
 }
 
-/// A comparison on a type with a three-way `<=>` impl (spec 3.25): `a < b` is
-/// `(a <=> b) == Ordering::Less`, and so on for all six. The discriminant comes
-/// from the declared `Ordering` (the `ordering` lang item). `None` when the
-/// operand type has no `<=>`, or inside that impl's own body, where the
-/// comparisons are the built-in ones.
+/// A comparison on a type with an `Eq`/`Ord` impl (spec 3.25) calls its
+/// method: `a < b` is `a.lt(b)`, `a != b` is `a.ne(b)`, and so on. `None` when
+/// the operand type has no such impl, or inside that method's own body, where
+/// the comparison is the built-in one.
 fn inline_process_comparison(
     operator: &ast::BinOp,
     lhs: &ast::Expr,
@@ -4455,35 +4469,31 @@ fn inline_process_comparison(
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> Option<ProcessValueId> {
-    let (variant, negate) = match operator {
-        ast::BinOp::Lt => ("Less", false),
-        ast::BinOp::Eq => ("Equal", false),
-        ast::BinOp::Gt => ("Greater", false),
-        ast::BinOp::Ge => ("Less", true),
-        ast::BinOp::Ne => ("Equal", true),
-        ast::BinOp::Le => ("Greater", true),
-        _ => return None,
-    };
+    let symbol = crate::syntax::pretty::bin_op(operator);
+    if !crate::syntax::ast::is_comparison_operator(symbol) {
+        return None;
+    }
     let owner = process_type_key(left_type, context)?;
     let input = right_type.and_then(|ty| process_type_key(ty, context));
     let function = context
         .functions
-        .get_binary_operator("<=>", &owner, input.as_deref())?;
+        .get_binary_operator(symbol, &owner, input.as_deref())?;
     if context.inline_functions.contains(&function.span) {
         return None;
     }
-    let ordering = context.resolved.lang("ordering")?;
-    let wanted = context
-        .resolved
-        .defs()
-        .iter()
-        .enumerate()
-        .find(|(_, definition)| definition.parent == Some(ordering) && definition.name == variant)
-        .map(|(index, _)| crate::resolve::DefId(index as u32))?;
-    let discriminant = definition_number(wanted, context)?;
-
     let first_value = context.process_ir.values.len();
     let left = value_ref_with_type(lhs, process, context, Some(left_type));
+    // A method result's checked type is unsized (`-> signed`), but its value
+    // carries the receiver's sized type; a literal on the right needs that
+    // width to read as the same format.
+    let sized_left = context.process_ir.values[left.0 as usize].ty.clone();
+    let left_type = match (left_type, &sized_left) {
+        (
+            crate::types::Ty::Array { len: 0, .. },
+            Some(sized @ crate::types::Ty::Array { len, .. }),
+        ) if *len > 0 => sized,
+        _ => left_type,
+    };
     let right_context = if matches!(right_type, Some(crate::types::Ty::Integer))
         && !matches!(left_type, crate::types::Ty::Integer)
     {
@@ -4496,46 +4506,18 @@ fn inline_process_comparison(
     // wraps to the type first, as the built-in comparison would.
     let left = narrow_to_type(left, Some(left_type), context);
     let right = narrow_to_type(right, right_context, context);
-    let ordering_type = Some(crate::types::Ty::Named(ordering));
-    let Some(order) = inline_process_function(
+    let result = inline_process_function(
         function,
         Some(left),
         &[right],
         process,
         context,
-        ordering_type.as_ref(),
-    ) else {
-        truncate_process_values(context, first_value);
-        return None;
-    };
-    let width = context
-        .process_ir
-        .values
-        .get(order.0 as usize)
-        .and_then(|value| value.bit_width);
-    let span = ast::expr_span(lhs).to(ast::expr_span(rhs));
-    let expected = push_value(
-        span,
-        ordering_type,
-        width,
-        ProcessValueKind::Number(discriminant),
-        context,
+        bool_type(context.resolved).as_ref(),
     );
-    Some(push_value(
-        span,
-        bool_type(context.resolved),
-        Some(1),
-        ProcessValueKind::Binary {
-            operation: if negate {
-                ProcessBinaryOp::Ne
-            } else {
-                ProcessBinaryOp::Eq
-            },
-            left: order,
-            right: expected,
-        },
-        context,
-    ))
+    if result.is_none() {
+        truncate_process_values(context, first_value);
+    }
+    result
 }
 
 /// A computed `value` truncated to the width of its fixed-width array type;
@@ -6275,8 +6257,8 @@ mod tests {
                }\n\
              }\n\
              struct Wrap(integer);\n\
-             impl Operator<\"<=>\", Wrap, std::ops::Ordering> for Wrap {\n\
-               fn apply(self, rhs: Wrap) -> std::ops::Ordering { return std::ops::Ordering::Equal; }\n\
+             impl Eq<Wrap> for Wrap {\n\
+               fn eq(self, rhs: Wrap) -> Bool { return true; }\n\
              }\n\
              entity Device { input: Bool in, output: Bool out }\n\
              impl Device { output = input; }\n\

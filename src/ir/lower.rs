@@ -242,6 +242,9 @@ struct Lowering<'a> {
     /// Inline depth guard (recursive fns must const-fold; runaway inlining
     /// stops here).
     inline_depth: std::cell::Cell<u32>,
+    /// The methods (`(type, "lt")`) being inlined. Inside a comparison
+    /// method, the comparison it answers is the built-in one.
+    inlining_methods: std::cell::RefCell<Vec<(String, String)>>,
     /// Structs whose fields are currently being expanded, so a cyclic
     /// derivation terminates instead of overflowing the stack.
     expanding_structs: std::cell::RefCell<std::collections::HashSet<String>>,

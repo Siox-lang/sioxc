@@ -379,7 +379,7 @@ impl<'a> Checker<'a> {
                 // operator-trait overload (spec 3.25); overload resolution
                 // includes the right operand, not merely the impl owner.
                 // Equality on enums alone stays intrinsic (a discriminant
-                // compare); structs derive it from `<=>` like ordering does.
+                // compare); structs need an `Eq` impl, as ordering needs `Ord`.
                 if !matches!(op, BinOp::Custom { .. }) {
                     if let Some(name) = self.named_operand_name(lhs, sym) {
                         let intrinsic_enum_equality = matches!(op_str, "==" | "!=")
@@ -396,7 +396,11 @@ impl<'a> Checker<'a> {
                             ))
                             && self.is_packed_array_newtype(&name);
                         if !intrinsic_enum_equality && !intrinsic_vector_operator {
-                            let operator = if is_comparison(op) { "<=>" } else { op_str };
+                            let operator = if is_comparison(op) {
+                                super::operators::comparison_symbol(op)
+                            } else {
+                                op_str
+                            };
                             let left = self.type_of(lhs, sym);
                             let right = self.type_of(rhs, sym);
                             // `Error` is the recovery type for an expression this

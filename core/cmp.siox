@@ -1,15 +1,39 @@
 module core::cmp;
 
-// Comparison, as rustc's `core::cmp`.
+// Comparison, as rustc's `core::cmp`. Each comparison operator is a method
+// returning `Bool`, found through the `eq`/`ord` lang items:
+//
+//   a == b   a.eq(b)        a < b    a.lt(b)
+//   a != b   a.ne(b)        a <= b   a.le(b)
+//                           a > b    a.gt(b)
+//                           a >= b   a.ge(b)
+//
+// Equality and order are separate traits, so a type with `==` need not invent
+// an order, and an order may leave values unordered (an IEEE NaN compares
+// false with everything). These are rustc's `PartialEq` and `PartialOrd`;
+// nothing in siox relies on totality, so there is no separate total `Eq`/`Ord`.
 
-// The result of a three-way comparison (`impl Operator<"<=>", T, Ordering>`,
-// spec 3.25). One `<=>` impl derives all of < <= > >= == != — like Rust's Ord.
-// Discriminants are fixed (Less=0, Equal=1, Greater=2); the derived
-// comparisons test against them.
+// `==` and `!=`.
+pub trait Eq<Rhs> {
+    fn eq(self, rhs: Rhs) -> Bool;
+    fn ne(self, rhs: Rhs) -> Bool { return not self.eq(rhs); }
+}
+
+// `<`, `<=`, `>` and `>=`.
+pub trait Ord<Rhs> {
+    fn lt(self, rhs: Rhs) -> Bool;
+    fn le(self, rhs: Rhs) -> Bool;
+    fn gt(self, rhs: Rhs) -> Bool { return rhs.lt(self); }
+    fn ge(self, rhs: Rhs) -> Bool { return rhs.le(self); }
+}
+
+// A three-way answer, for code that wants one. The compiler gives it no
+// meaning: comparisons go through `Eq` and `Ord`.
 pub enum Ordering {
     Less,
     Equal,
     Greater
 }
 
-attr lang for Ordering = "ordering";
+attr lang for Eq = "eq";
+attr lang for Ord = "ord";

@@ -36,8 +36,7 @@ use crate::syntax::Module;
 /// `impl Operator<"<sym>", Input, Output> for T` (method `apply`), keyed by the
 /// symbol in its first template argument. `a + b` -> `Operator<"+", _, _>`,
 /// `and` -> `Operator<"and", _, _>`, unary `not` -> `Operator<"not", _, _>`,
-/// and one three-way `Operator<"<=>", _, Ordering>` derives all six
-/// comparisons. Seeded as a builtin so `impl Operator<..> for T` needs no
+/// while the comparisons go through `Eq`/`Ord` (`core::cmp`). Seeded as a builtin so `impl Operator<..> for T` needs no
 /// import.
 pub const OPERATORS: &[&str] = &["Operator"];
 
@@ -55,6 +54,8 @@ const COMPILER_TRAITS: &[&str] = &[
     "New",
     "From",
     "LogicEncoding",
+    "Eq",
+    "Ord",
 ];
 
 /// The lang role of each compiler hook trait, by its builtin fallback's name.
@@ -70,6 +71,8 @@ fn trait_role(name: &str) -> Option<&'static str> {
         "New" => "new",
         "From" => "from",
         "LogicEncoding" => "logic_encoding",
+        "Eq" => "eq",
+        "Ord" => "ord",
         _ => return None,
     })
 }
@@ -1540,6 +1543,15 @@ impl<'a> Resolver<'a> {
         let display = self
             .impl_owner_display(owner)
             .unwrap_or_else(|| definition.name.clone());
+        // The kernel types' own methods live in `core`, as rustc's integer
+        // methods do.
+        let in_core = self
+            .current_module
+            .as_deref()
+            .is_some_and(|module| module == "core" || module.starts_with("core::"));
+        if definition.kind == DefKind::Builtin && in_core {
+            return;
+        }
         if !matches!(
             definition.kind,
             DefKind::Struct | DefKind::View | DefKind::Enum | DefKind::Entity
