@@ -15,4 +15,24 @@ pub enum Bool {
 // initializes it (`let s: string = "hello";` is `Char[5]`).
 pub type string = Char[];
 
+// The kernel integer's methods, as rustc's `impl i32`. `abs`, `rem` and `mod`
+// are functions, as in mathematics: `rem` takes the dividend's sign (VHDL
+// `rem`, Rust `%`), `mod` the divisor's (VHDL `mod`). `/` truncates.
+impl integer {
+    pub fn abs(self) -> integer {
+        if self < 0 { return 0 - self; }
+        return self;
+    }
+
+    pub fn rem(self, m: integer) -> integer {
+        return self - (self / m) * m;
+    }
+
+    pub fn mod(self, m: integer) -> integer {
+        let r: integer = self - (self / m) * m;
+        if r != 0 and (r < 0) != (m < 0) { return r + m; }
+        return r;
+    }
+}
+
 attr lang for Bool = "bool";

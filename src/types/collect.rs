@@ -348,9 +348,16 @@ impl<'a> Checker<'a> {
                         };
                         if let Some(symbol) = &operator {
                             t = symbol.clone();
-                            if crate::syntax::ast::is_reserved_operator(symbol) {
+                            if symbol == "<=>" {
+                                self.error_with_help(
+                                    codes::TYPE_MISMATCH,
+                                    im.span,
+                                    "`<=>` is no longer an operator".to_string(),
+                                    "implement `Eq<Rhs>` (`fn eq`) for `==`/`!=` and `Ord<Rhs>` (`fn lt`, `fn le`) for `<`/`<=`/`>`/`>=`".to_string(),
+                                );
+                            } else if crate::syntax::ast::is_reserved_operator(symbol) {
                                 let hint = if crate::syntax::ast::is_comparison_operator(symbol) {
-                                    " — derive comparisons from a `<=>` impl instead"
+                                    " — implement `Eq` or `Ord` instead"
                                 } else {
                                     " and cannot be overloaded"
                                 };
@@ -456,6 +463,21 @@ impl<'a> Checker<'a> {
                                 .entry((t.clone(), ty.clone()))
                                 .or_default()
                                 .push((input, output));
+                        }
+                        // `impl Eq<Rhs> for T` / `impl Ord<Rhs> for T`: the
+                        // comparisons, keyed by their representative symbol
+                        // (`==` covers `!=`; `<` covers the other three).
+                        if t == "Eq" || t == "Ord" {
+                            let input = im.trait_args.first().and_then(|a| match a {
+                                GenericArg::Positional(Expr::Path(p)) => self.path_key(p),
+                                GenericArg::PositionalType(ty) => self.type_key(ty),
+                                _ => None,
+                            });
+                            let symbol = if t == "Eq" { "==" } else { "<" };
+                            self.operator_sigs
+                                .entry((symbol.to_string(), ty.clone()))
+                                .or_default()
+                                .push((input, Some("Bool".to_string())));
                         }
                         if matches!(t.as_str(), "Index" | "IndexAssign") {
                             let arg_name = |index: usize| {

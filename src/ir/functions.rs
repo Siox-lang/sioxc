@@ -111,7 +111,12 @@ impl<'a> FunctionIndex<'a> {
         let Some(trait_path) = implementation.trait_.as_ref() else {
             return;
         };
-        if self.trait_path_key(trait_path).as_deref() != Some("Operator") {
+        let trait_key = self.trait_path_key(trait_path);
+        if matches!(trait_key.as_deref(), Some("Eq" | "Ord")) {
+            self.insert_comparison_impl(implementation);
+            return;
+        }
+        if trait_key.as_deref() != Some("Operator") {
             return;
         }
         let Some(symbol) = implementation
@@ -155,6 +160,65 @@ impl<'a> FunctionIndex<'a> {
                     .push((function, input.clone()));
             }
         }
+    }
+
+    /// Register an `Eq`/`Ord` impl's methods under the comparison each one
+    /// answers (`lt` under `<`), so comparisons select by right operand type
+    /// as operators do. Trait defaults the impl omits are added by
+    /// [`Self::insert_comparison_default`].
+    fn insert_comparison_impl(&mut self, implementation: &'a ast::ImplDecl) {
+        let Some(owner) = self.type_head_key(&implementation.target) else {
+            return;
+        };
+        let input = self.comparison_input(implementation);
+        for item in &implementation.items {
+            let ast::ImplItem::Fn(function) = item else {
+                continue;
+            };
+            if let Some(symbol) = comparison_symbol(&function.name.text) {
+                self.operators
+                    .entry((symbol.to_string(), owner.clone()))
+                    .or_default()
+                    .push((function, input.clone()));
+            }
+        }
+    }
+
+    /// Register a comparison trait's default method (`gt`, `ge`, `ne`) for an
+    /// `Eq`/`Ord` impl that does not override it.
+    pub fn insert_comparison_default(
+        &mut self,
+        implementation: &'a ast::ImplDecl,
+        function: &'a ast::FnDecl,
+    ) {
+        let Some(symbol) = comparison_symbol(&function.name.text) else {
+            return;
+        };
+        let overridden = implementation.items.iter().any(
+            |item| matches!(item, ast::ImplItem::Fn(own) if own.name.text == function.name.text),
+        );
+        let Some(owner) = self.type_head_key(&implementation.target) else {
+            return;
+        };
+        if !overridden {
+            let input = self.comparison_input(implementation);
+            self.operators
+                .entry((symbol.to_string(), owner))
+                .or_default()
+                .push((function, input));
+        }
+    }
+
+    /// The right operand type of `impl Eq<Rhs>` / `impl Ord<Rhs>`.
+    fn comparison_input(&self, implementation: &ast::ImplDecl) -> Option<String> {
+        implementation
+            .trait_args
+            .first()
+            .and_then(|argument| match argument {
+                ast::GenericArg::Positional(ast::Expr::Path(path)) => self.type_path_key(path),
+                ast::GenericArg::PositionalType(ty) => self.type_head_key(ty),
+                _ => None,
+            })
     }
 
     /// Select a binary operator body by exact right-operand type. A kernel
@@ -652,4 +716,17 @@ fn is_blanket_array_impl(implementation: &ast::ImplDecl) -> bool {
         .params
         .iter()
         .any(|parameter| parameter.name.text == name.text)
+}
+
+/// The comparison operator an `Eq`/`Ord` method answers.
+fn comparison_symbol(method: &str) -> Option<&'static str> {
+    Some(match method {
+        "eq" => "==",
+        "ne" => "!=",
+        "lt" => "<",
+        "le" => "<=",
+        "gt" => ">",
+        "ge" => ">=",
+        _ => return None,
+    })
 }

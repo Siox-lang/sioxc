@@ -277,7 +277,7 @@ impl<'a> Lowering<'a> {
                 // `(not a) and b` gave '1' where 'X' was meant — while
                 // `let t = not a; t and b`, the same thing named, was right.
                 if *op == ast::UnOp::Not {
-                    if let Some(v) = self.inline_unary("not", rhs) {
+                    if let Some(v) = self.inline_unary("not", rhs, env) {
                         return v;
                     }
                     // `not` on a vector is `mask - x`, not a bitwise

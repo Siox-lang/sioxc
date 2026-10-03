@@ -8,7 +8,7 @@ module core::prelude;
 
 pub use core::primitive::{Bool, string};
 pub use core::ops::{Boolean, Range, Index, IndexAssign, Resolve};
-pub use core::cmp::Ordering;
+pub use core::cmp::{Eq, Ord, Ordering};
 pub use core::default::New;
 pub use core::convert::From;
 pub use core::attrs::precedence;

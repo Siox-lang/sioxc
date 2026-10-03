@@ -1049,8 +1049,9 @@ pub enum UnOp {
 /// `impl Operator<"+", Rhs, Out> for <type of a>`, with the implementation
 /// selected by the right-hand operand's type. Siox uses one type-directed
 /// contract for both scalar boolean and per-element `and`, so the same variant
-/// covers `Bool and Bool` and `Logic[] and Logic[]`. `==`/`!=` stay built-in,
-/// or derive from the three-way `<=>`.
+/// covers `Bool and Bool` and `Logic[] and Logic[]`. Comparisons call
+/// `Eq`/`Ord` methods where the operand type has them, and are built in
+/// otherwise.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BinOp {
     /// Addition, `+`.
@@ -1231,14 +1232,14 @@ pub fn expr_span(e: &Expr) -> Span {
 pub fn is_builtin_operator(sym: &str) -> bool {
     matches!(
         sym,
-        "+" | "-" | "*" | "/" | "<<" | ">>" | "and" | "or" | "not" | "<=>"
+        "+" | "-" | "*" | "/" | "<<" | ">>" | "and" | "or" | "not"
     )
 }
 
 /// Symbols the grammar reserves for the language itself — assignment, paths,
 /// ranges, separators, brackets, attributes — so an `Operator<sym, …>` impl
 /// cannot claim them (spec 3.25). The six comparisons are reserved too: they
-/// are derived from the three-way `<=>`, so overload that instead. An empty
+/// are `Eq`/`Ord` methods, so implement those instead. An empty
 /// symbol is rejected here as well.
 pub fn is_reserved_operator(sym: &str) -> bool {
     matches!(
@@ -1278,7 +1279,7 @@ pub fn is_reserved_operator(sym: &str) -> bool {
     )
 }
 
-/// Whether `sym` is one of the six comparison operators derived from `<=>`.
+/// Whether `sym` is one of the six comparison operators.
 pub fn is_comparison_operator(sym: &str) -> bool {
     matches!(sym, "<" | ">" | "==" | "!=" | "<=" | ">=")
 }

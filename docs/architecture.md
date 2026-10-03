@@ -464,8 +464,8 @@ when its element satisfies the constraint; direct nominal impls override them.
 This supplies element-wise Logic resolution and core logical operators without
 general trait inheritance. They accept `integer` on assignment (spec,
 "type kernel") and get their operators from `std/bits.siox` as Rust-style
-`Operator` impls — including
-`signed`'s sign-aware `<=>` (signed comparison is library source, not compiler
+`Operator` impls, with comparisons as `Eq`/`Ord` impls — including
+`signed`'s sign-aware `Ord` (signed comparison is library source, not compiler
 code). The CLI loads ordinary modules transitively relative to the entry file
 and loads `std::` modules from `--std <dir>` (default
 `./std`); the **prelude** (`std/prelude.siox`) is auto-loaded into every

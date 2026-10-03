@@ -111,8 +111,8 @@ precise reference.
 
 - Generics with trait bounds, `where` clauses, and recursive type arguments
   such as `Outer<Box<unsigned[8]>>`.
-- **One operator trait** — `impl Operator<"+", In, Out> for T`, with a single
-  three-way `Operator<"<=>", T, Ordering>` deriving all six comparisons.
+- **One operator trait** — `impl Operator<"+", In, Out> for T`; comparisons
+  are the `Eq`/`Ord` traits, whose methods return `Bool`.
 - **Methods** — `recv.method(args)` on a value's inherent or trait impl
   (`impl T { fn m(self, ..) }`); value-returning methods inline into an
   expression, statement methods (`s.send(v)`) inline as drivers on the
@@ -358,7 +358,9 @@ narrower than Rust's module-level field privacy: only implementations of
 that access only when declared in the type's own module; targeting a foreign
 type never grants representation access. Extensions from elsewhere must use
 traits and the type's public API. A type alias and a compiler kernel type are
-not new nominal owners, so neither may receive an inherent impl. Public
+not new nominal owners, so neither may receive an inherent impl — except that
+`core` declares the kernel types' own methods (`impl integer { fn abs … }`),
+as rustc's `core` does for its primitives. Public
 function and method signatures, public struct fields, public entity ports, and
 other exported interfaces may not name private types; such an interface would
 be impossible for its users to name and is rejected.
@@ -761,7 +763,7 @@ marker trait. Types derived from that family inherit its representation. The
 compiler tracks **no signedness at all** — `unsigned` and
 `signed` have the same representation (`Logic[]`), and their difference is
 entirely their **operator impls**:
-`signed` has a signed `<=>` (compare), an arithmetic `>>`, and a signed `/`;
+`signed` has a signed `Ord` (compare), an arithmetic `>>`, and a signed `/`;
 `unsigned` uses the kernel's unsigned operators. There is no `signed`/`unsigned`
 marker (attribute or trait) — signedness is behaviour, and behaviour lives in
 impls. The one thing that is not an operator — sign-extension when widening —
@@ -2060,8 +2062,9 @@ assignment/connection width rules (3.17) and in concatenation sizing.
 Operator overloading goes through a **single** trait,
 `std::ops::Operator<op, Input, Output>`, parameterized by the operator symbol
 (like Rust's `std::ops` collapsed into one). Every operator — arithmetic,
-logical, comparison, and user-defined — is `impl Operator<"<sym>", Input,
-Output> for T` with one method, `apply`. Public contracts live in std; the
+logical, and user-defined — is `impl Operator<"<sym>", Input, Output> for T`
+with one method, `apply`. Comparisons are the exception: they are the
+`core::cmp` traits `Eq` and `Ord` (below). Public contracts live in std; the
 compiler bootstraps the single `Operator` name so parsing and diagnostics
 proceed before std resolution completes:
 
@@ -2071,7 +2074,7 @@ proceed before std resolution completes:
 | `-` | `Operator<"-", In, Out>` | `or` | `Operator<"or", In, Out>` |
 | `*` | `Operator<"*", In, Out>` | `not` (unary) | `Operator<"not", In, Out>` |
 | `/` | `Operator<"/", In, Out>` | `xor`/`nand`/`nor`/`xnor` | `Operator<"xor", …>` … |
-| `<<` `>>` | `Operator<"<<", …>` … | `< <= > >= == !=` | `Operator<"<=>", T, Ordering>` |
+| `<<` `>>` | `Operator<"<<", …>` … | `== !=` / `< <= > >=` | `Eq<Rhs>` / `Ord<Rhs>` |
 
 ```siox
 impl Operator<"+", Complex, Complex> for Complex {
@@ -2081,7 +2084,7 @@ impl Operator<"+", Complex, Complex> for Complex {
 }
 ```
 
-The **standard symbols** (`+ - * / << >> and or not <=>`) carry built-in
+The **standard symbols** (`+ - * / << >> and or not`) carry built-in
 precedence. Any **other symbol** is a user operator (`xor`, `nand`, `^^`, …):
 its impl binds its binding power with `attr precedence = N;`. Unary `not`
 implements `apply(self)` with no rhs. Using an operator on a user struct/enum
@@ -2110,26 +2113,66 @@ actually passed.
 **Reserved symbols cannot be overloaded.** The grammar owns `=`, `::`, `:`,
 `.`, `..`, `->`, `=>`, `,`, `;`, `#`, the brackets, and the like, so an
 `Operator<"=", …>` impl is an error. The six comparison operators
-(`< <= > >= == !=`) are reserved too — overload the three-way `<=>` and they
-are all derived.
+(`< <= > >= == !=`) are reserved too — implement `Eq`/`Ord` instead. `<=>`
+is not an operator: an `Operator<"<=>", …>` impl is an error whose help shows
+the `Eq`/`Ord` impls that replace it.
 
-**Comparisons.** One three-way `Operator<"<=>", T, Ordering>` impl (`apply`
-returning `std::cmp::Ordering` — `Less`/`Equal`/`Greater`) derives all six
-comparisons — like Rust's `Ord` / C++'s `operator<=>`: `a < b` lowers to
-`(a <=> b) == Ordering::Less`, and struct equality comes with it:
+**Comparisons.** As rustc's `PartialEq`/`PartialOrd`, each comparison is a
+method of a `core::cmp` trait (in the prelude), returning `Bool`:
 
 ```siox
-impl Operator<"<=>", Version, Ordering> for Version {
-    fn apply(self, rhs: Version) -> Ordering {
-        if self.major < rhs.major { return Ordering::Less; }
-        if self.major > rhs.major { return Ordering::Greater; }
-        if self.minor < rhs.minor { return Ordering::Less; }
-        if self.minor > rhs.minor { return Ordering::Greater; }
-        return Ordering::Equal;
+pub trait Eq<Rhs> {
+    fn eq(self, rhs: Rhs) -> Bool;                                  // ==
+    fn ne(self, rhs: Rhs) -> Bool { return not self.eq(rhs); }      // !=
+}
+
+pub trait Ord<Rhs> {
+    fn lt(self, rhs: Rhs) -> Bool;                                  // <
+    fn le(self, rhs: Rhs) -> Bool;                                  // <=
+    fn gt(self, rhs: Rhs) -> Bool { return rhs.lt(self); }          // >
+    fn ge(self, rhs: Rhs) -> Bool { return rhs.le(self); }          // >=
+}
+```
+
+`a == b` calls `a.eq(b)`, `a < b` calls `a.lt(b)`, and so on. The compiler
+finds the traits by lang item (`eq`, `ord`), selects the impl by the right
+operand's type (an integer literal adopts the left operand's type), and
+inlines the method like any other. Equality and order are separate: a type
+with no order implements `Eq` alone, and an order may leave values unordered —
+`std::float` follows IEEE-754, where every comparison with a NaN is false
+except `!=`. Only `eq`, `lt` and `le` are required; a type may override the
+defaults. There are two traits, not rustc's four: nothing in siox relies on a
+total order, so the partial/total split would be names without behaviour.
+
+```siox
+impl Eq<Version> for Version {
+    fn eq(self, rhs: Version) -> Bool {
+        return self.major == rhs.major and self.minor == rhs.minor;
     }
+}
+
+impl Ord<Version> for Version {
+    fn lt(self, rhs: Version) -> Bool {
+        return self.major < rhs.major or (self.major == rhs.major and self.minor < rhs.minor);
+    }
+    fn le(self, rhs: Version) -> Bool { return not rhs.lt(self); }
 }
 // v1 < v2, v1 >= v2, v1 == v2, ... all work.
 ```
+
+Inside a comparison method, the comparison it answers is the built-in one:
+`unsigned`'s `lt` is `return self < rhs;`, the kernel's unsigned compare of
+the words. Built-in comparison also stays where no impl exists — the kernel
+types (`integer`, `real`, `Char`), enums by discriminant, and `Logic`-element
+vectors. `core::cmp::Ordering` (`Less`/`Equal`/`Greater`) remains an ordinary
+enum for code that wants a three-way answer; the compiler gives it no meaning.
+
+**`abs`, `rem` and `mod` are functions**, as in mathematics and in Rust, not
+operators: `x.abs()`; `x.rem(m)`, with the dividend's sign (VHDL `rem`, Rust
+`%`); `x.mod(m)`, with the divisor's sign (VHDL `mod`). `(0 - 7).rem(2)` is
+`-1` and `(0 - 7).mod(2)` is `1`. `integer` has them in `core`, `signed` and
+`unsigned` in `std::bits` (an unsigned value's `rem` and `mod` agree), and the
+fixed and floating formats have `abs`.
 
 The intrinsic numeric operators on `unsigned`/`signed`/`integer` keep their built-in
 semantics; operator traits extend the same syntax to std and user types
@@ -3021,7 +3064,7 @@ fn maxi<T: Operator>(a: T, b: T) -> T {   // or:  fn maxi<T>(a, b) where T: Oper
 ```
 
 Functions inline, so a call is its own monomorphization: the body dispatches
-operators on the caller's concrete type (`signed`'s signed `<=>`, not the kernel
+operators on the caller's concrete type (`signed`'s signed `Ord`, not the kernel
 compare), and the bound is checked at the call site — a named struct/enum must
 carry an explicit `impl Tr`, while kernel scalars and vectors satisfy the
 built-in capabilities. `T: Operator` is the capability bound "supports operator

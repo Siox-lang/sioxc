@@ -10798,3 +10798,36 @@ receiver's layout when it returns the receiver's type
 that tree substitution compounds past 8 GB. Floats in hardware entities are
 therefore an error until hardware lowers through Process IR (Phase 1 exit),
 where values are shared.
+
+### 2026-10-03 — Claude — comparison traits; `abs`/`rem`/`mod`
+
+`<=>` is gone. Comparisons are `core::cmp`'s `Eq<Rhs>` (`eq`, default `ne`)
+and `Ord<Rhs>` (`lt`, `le`, default `gt`/`ge`), returning `Bool`, found by
+the `eq`/`ord` lang items; `Ordering` is no longer a lang item. An
+`Operator<"<=>", …>` impl is an error with help. std's `unsigned`, `signed`,
+`time`, `frequency`, `ufixed`, `sfixed` and `float` moved over; `float`
+compares IEEE (NaN unordered). `integer` gets `abs`/`rem`/`mod` in
+`core::primitive` (resolve now lets `core` give a kernel type inherent
+methods), `signed`/`unsigned` in `std::bits`, `abs` on the fixed formats.
+
+IR touches, both paths:
+- Design path: `inline_cmp` (`operators.rs`) inlines the method through
+  `lower_method_call`; `lower_method_call` records the methods it is inside
+  (`inlining_methods`) so a comparison inside its own method is built in, and
+  binds `param_widths["self"]`. `inline_op`/`inline_unary` hide an enclosing
+  method's `param_types`/`param_widths` for their own parameter names (an
+  operator body inside a `signed` method recursed forever otherwise);
+  `inline_unary` takes the caller's env. A method call now has a type and a
+  width (`operand_type_name`, `ast_width`), and an integer literal argument
+  adopts the owner type, in `find_method` and when bound to a method
+  parameter not declared `integer` (`x >= -4` reaches `ge`'s `rhs.le(self)`).
+- Process path: `Eq`/`Ord` methods register in `ProcessFunctions::operators`
+  under their comparison symbol (defaults too); `inline_process_comparison`
+  calls them and only handles comparisons. A method returning its receiver's
+  type is narrowed to the receiver's sized type, and a comparison takes that
+  sized type for an unsized checked one.
+- Parser: `matched_angle_end` stops at `;`/`{`/`}`, so `return a < b;` is no
+  longer read as generic arguments closed by a `>` further down the file.
+
+Known gap, also on main: `x == Money(3)` (a newtype constructor as a
+comparison operand in a process) lowers to an unsupported call.

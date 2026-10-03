@@ -37,7 +37,7 @@ compiler's runtime and every target has one.
 | Area | Contents | Why it cannot be a library |
 | --- | --- | --- |
 | Kernel types | `integer`, `real`, `Char`, `Bool` (`true`/`false`), `string = Char[]`, `Range` | The grammar produces them: integer, real, character, string and range literals, and conditions. |
-| Operator hooks | `Operator<"sym", In, Out>`, `Ordering` (driving all six comparisons), `Prefix`, `Suffix`, `Index`, `IndexAssign` | Expression syntax dispatches to them. |
+| Operator hooks | `Operator<"sym", In, Out>`, `Eq`/`Ord` (the comparisons), `Prefix`, `Suffix`, `Index`, `IndexAssign` | Expression syntax dispatches to them. |
 | Value hooks | `Boolean`, `Resolve`, `New`, `From`, `LogicEncoding` | Conditions, parallel drivers, defaults, conversions and metavalue planes call them. |
 | Directives | `#[test]`, `#[allow]`/`#[warn]`/`#[deny]`/`#[forbid]` and `enum Lint`, `#[latched]`/`#[latch]` ([pipelines.md](pipelines.md)), `lang` | They change what the compiler emits or reports. |
 | Compiler-read attributes | `precedence` | The parser reads it to group expressions. |

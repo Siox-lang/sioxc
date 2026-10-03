@@ -421,8 +421,13 @@ impl<'a> Lowering<'a> {
             .filter(|((_, t), _)| t == ty)
             .flat_map(|(_, fns)| fns.iter())
             .find(|(f, rhs)| {
+                // An integer literal argument adopts the owner type, as an
+                // operator's right operand does (`x < 0` on `signed`).
                 f.name.text == name
-                    && input.is_none_or(|input| rhs.as_deref().is_none_or(|rhs| rhs == input))
+                    && input.is_none_or(|input| {
+                        rhs.as_deref()
+                            .is_none_or(|rhs| rhs == input || (input == "integer" && rhs == ty))
+                    })
             })
             .map(|(f, _)| *f)
         {
@@ -471,6 +476,9 @@ impl<'a> Lowering<'a> {
             return None;
         }
         self.inline_depth.set(self.inline_depth.get() + 1);
+        self.inlining_methods
+            .borrow_mut()
+            .push((ty.clone(), field.text.clone()));
         // Bind `self` to the receiver's signal so a `self'event`/`self'old`
         // sysattr in the body (the std `ClockLike` edge methods) resolves to it.
         let saved_self = self.self_signal.replace(self.base_signal(base));
@@ -518,7 +526,15 @@ impl<'a> Lowering<'a> {
                     )),
                 );
                 self.bind_range_attrs(&mut fenv, &n.text, a, env);
-                if let Some(fam) = self.operand_type_name(a) {
+                // An integer literal for a parameter not declared `integer`
+                // adopts the receiver's type, as an operator's right operand
+                // does: `x >= -4` on `signed` reaches `Ord::ge`'s default
+                // `rhs.le(self)` with `rhs` a `signed`.
+                if let Some(mut fam) = self.operand_type_name(a) {
+                    if fam == "integer" && p.ty.as_ref().and_then(type_head_name) != Some("integer")
+                    {
+                        fam = ty.clone();
+                    }
                     let prev = self.param_types.borrow_mut().insert(n.text.clone(), fam);
                     saved.push((n.text.clone(), prev));
                 }
@@ -540,6 +556,17 @@ impl<'a> Lowering<'a> {
                     ));
                 }
             }
+        }
+        // The receiver's width too, so a body passing `self` on (`rhs.le(self)`
+        // in a comparison default) gives the callee a width. Bound after the
+        // arguments, which read the caller's `self`.
+        if receiver_width > 0 {
+            saved_widths.push((
+                "self".to_string(),
+                self.param_widths
+                    .borrow_mut()
+                    .insert("self".to_string(), receiver_width),
+            ));
         }
         // A method's array parameter needs the same substitution a free
         // function's does — the value environment has no array case, so the
@@ -591,6 +618,7 @@ impl<'a> Lowering<'a> {
         for name in added_integers {
             self.param_integers.borrow_mut().remove(&name);
         }
+        self.inlining_methods.borrow_mut().pop();
         self.inline_depth.set(self.inline_depth.get() - 1);
         out
     }
@@ -884,6 +912,24 @@ impl<'a> Lowering<'a> {
             // family, so operators on it dispatch correctly (`signed[32](a) < ..`
             // uses signed's signed Ord).
             ast::Expr::Call { callee, .. } => {
+                // A method call is its declared return type, with `Self` (or
+                // the receiver's own family) read as the receiver's type:
+                // `x.rem(m) < 0` dispatches signed's Ord.
+                if let ast::Expr::Field { base, field, .. } = callee.as_ref() {
+                    let ty = self.operand_type_name(base)?;
+                    let ret = self
+                        .find_method(&ty, &field.text, None)?
+                        .ret
+                        .as_ref()
+                        .and_then(|ret| self.free_fns.type_head_key(ret))?;
+                    if ret == "Self" {
+                        return Some(ty);
+                    }
+                    return (self.array_families.contains(&ret)
+                        || self.enum_variants.contains_key(&ret)
+                        || self.structs.contains_key(&ret))
+                    .then_some(ret);
+                }
                 let head = match callee.as_ref() {
                     ast::Expr::Index { base, .. } => expr_path(base),
                     ast::Expr::Path(p) => self

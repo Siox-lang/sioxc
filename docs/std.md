@@ -12,8 +12,8 @@ Beneath it sits **`core`**: the part of the compiler reachable through the
 language (proposals/core-std.md), laid out like rustc's `core`. Its sources
 are in the repository's `core/` directory, compiled into `sioxc`, so
 `core::…` never reads `--std`. It holds what the compiler gives meaning to:
-`Bool` and `string` (`core::primitive`), the hook traits (`core::ops`),
-`Ordering` (`core::cmp`), `From` (`core::convert`), `New` (`core::default`),
+`Bool`, `string` and `integer`'s methods (`core::primitive`), the hook traits
+(`core::ops`), the comparison traits `Eq`/`Ord` and `Ordering` (`core::cmp`), `From` (`core::convert`), `New` (`core::default`),
 the built-in macros and `Severity` (`core::macros`), and the attributes the
 compiler reads, `precedence` and `lang` (`core::attrs`). Each declaration
 tells the compiler its role with a lang item, `attr lang for Operator =
@@ -44,10 +44,10 @@ is a documented shim, and the declaration here is canonical.
 
 | siox module   | VHDL analogue                    | Contents |
 | ------------- | -------------------------------- | -------- |
-| `core::prelude` | (implicit `std.standard`)        | always loaded, built in: `Bool`, `string`, `Boolean`, `Range`, indexing, `Resolve`, `Ordering`, `New`, `From`, `precedence`, the built-in macros |
-| `core::primitive` | std.standard `boolean`, `string` | `Bool`, `string = Char[]` |
+| `core::prelude` | (implicit `std.standard`)        | always loaded, built in: `Bool`, `string`, `Boolean`, `Range`, indexing, `Resolve`, `Eq`, `Ord`, `Ordering`, `New`, `From`, `precedence`, the built-in macros |
+| `core::primitive` | std.standard `boolean`, `string` | `Bool`, `string = Char[]`, `integer`'s `abs`/`rem`/`mod` |
 | `core::ops`   | (operators are VHDL functions)     | `Operator`, `Prefix`, `Suffix`, `Index`, `IndexAssign`, `Range`, `Boolean`, `Resolve`, `LogicEncoding` |
-| `core::cmp`   |                                    | `Ordering` |
+| `core::cmp`   |                                    | `Eq`, `Ord` (the comparisons, returning `Bool`), `Ordering` |
 | `core::convert` |                                  | `From` |
 | `core::default` |                                  | `New` |
 | `core::macros` | `assert ... severity`             | `assert!`, `warn!`, `print!`, `error!`, `Severity` |
@@ -55,7 +55,7 @@ is a documented shim, and the declaration here is canonical.
 | `std::prelude`| (implicit `std.standard`)          | auto-loaded `Bit`/`Logic`, `unsigned`/`signed`/`sext`, `time`/`frequency` |
 | `std::primitive`, `std::cmp`, `std::convert`, `std::default` | | re-export the `core` modules of the same name |
 | `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `ULogic`, `Logic` and their operators; resolution and logic tables |
-| `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Operator` impls (including unsigned and signed `<=>`) |
+| `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Operator` impls, `Eq`/`Ord` (signed compares signed), `abs`/`rem`/`mod` |
 | `std::ops`    | (operators are functions in VHDL packages) | re-exports `core::ops` |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
@@ -110,9 +110,10 @@ vectors with numeric interpretation, and accept `integer` on assignment
 (`let x: unsigned[8] = 42;`). Only the kernel types (`integer`/`real`) have
 built-in operators; unsigned/signed get theirs **here** as `Operator` impls:
 `"+"`/`"-"`/`"*"`/`"/"`/`"<<"`/`">>"` over the kernel word operators (wrap at
-the stored width), and `signed` gets a **sign-aware `Operator<"<=>", signed, Ordering>`** — signed
+the stored width), and `signed` gets a **sign-aware `impl Ord<signed> for signed`** — signed
 comparison is library source, not compiler code (`-1 < 1` on signed[8], while
-unsigned compares unsigned). Inside an operator impl, operands read as kernel
+unsigned compares unsigned). Both have `x.abs()`, `x.rem(m)` (the dividend's
+sign, VHDL `rem`) and `x.mod(m)` (the divisor's sign, VHDL `mod`). Inside an operator impl, operands read as kernel
 words and `self'length` gives the operand's bit width. Remaining kernel
 territory: slices (`x[7..4]`), concatenation (`{hi, lo}`), widths, and
 literal typing; signed `Div` and arithmetic `Shr` are library source too (magnitude divide + sign restore; top-bit mask fill), built on `resize` and `self'length`.
@@ -124,15 +125,15 @@ declared by `impl Prefix<"x", _> for unsigned` in `std::bits` (spec 3.24); a pla
 ## `core::ops` (re-exported by `std::ops`)
 
 ```siox
-pub enum Ordering { Less, Equal, Greater }
 pub trait Boolean { fn as_bool(self) -> Bool; }
 pub trait New { fn new() -> Self; }
 pub trait From { fn from(value: Self) -> Self; }
 pub trait Resolve { fn resolve(self, rhs: Self) -> Self; }
 ```
 
-**`Ordering`** — the result of `impl Operator<"<=>", T, Ordering>` (the `apply`
-three-way compare): one impl derives all of `< <= > >= == !=` (spec 3.25).
+**Comparisons** are `core::cmp`'s `Eq<Rhs>` (`eq`, and `ne` by default) and
+`Ord<Rhs>` (`lt`, `le`, and `gt`/`ge` by default), each returning `Bool`
+(spec 3.25). `Ordering` is an ordinary enum beside them.
 
 **`Boolean`** — a type usable as a condition provides `as_bool` returning the
 system `Bool` type (`true`/`false`), applied only in condition position.
@@ -175,8 +176,8 @@ pub struct frequency(real);   // nominal real, stored in hertz
 Unit suffixes `fs ps ns us ms` construct `time`; `Hz kHz MHz GHz` construct
 `frequency`, including fractional values such as `2.5MHz`. The simulator uses
 the 1 fs base tick (also the waveform timescale), and both nominal types implement
-`Operator<"<=>", Self, Ordering>` so all six comparisons are available without
-discarding their unit identity. `FS..MS` remain raw integer multipliers.
+`Eq` and `Ord` so all six comparisons are available without discarding their
+unit identity. `FS..MS` remain raw integer multipliers.
 Timing is the built-in `await`: `await 10ns;` advances time, `await
 clk.rising();` waits for an edge, and `await cond;` waits for a condition.
 `await 10ns` also works in bare files through a fixed fallback table typed as
@@ -270,8 +271,8 @@ let r: real = gain.to_real();                       // 2.5
 - `+`, `-`, `*` between operands of one format give that format. A sum wraps
   on overflow, as `unsigned` does; a product drops its extra fraction bits
   rounding toward minus infinity (VHDL's truncate).
-- `<`, `<=`, `>`, `>=`, `==`, `!=` come from each type's `<=>`; `sfixed`
-  compares signed.
+- `<`, `<=`, `>`, `>=`, `==`, `!=` come from each type's `Eq`/`Ord`;
+  `sfixed` compares signed. `x.abs()` gives the magnitude in the same format.
 - `to_ufixed(value, left, right)` / `to_sfixed(…)` take a `real` to the
   format `[left..right]`, rounding to nearest (ties away from zero) and
   saturating; `x.to_real()` goes back.
@@ -295,10 +296,10 @@ r = x * y + x;                    // rounds to nearest, ties to even
 let v: real = r.to_real();
 ```
 
-- `+`, `-`, `*` and the six comparisons (through `<=>`; `-0` equals `+0`).
-  Zero, infinity and NaN follow IEEE-754: `0 * inf` and `inf - inf` are NaN,
-  overflow is infinite. A NaN orders above every number, since `<=>` has no
-  "unordered" answer; test `x.is_nan()` first where that matters.
+- `+`, `-`, `*` and the six comparisons (`-0` equals `+0`). Zero, infinity
+  and NaN follow IEEE-754: `0 * inf` and `inf - inf` are NaN, overflow is
+  infinite, and a NaN is unordered — every comparison with one is false
+  except `!=`, so `x != x` holds exactly for a NaN.
 - `x.is_nan()`, `x.is_infinite()`, `x.is_zero()`, `x.negate()`, `x.abs()`,
   `x.to_real()`. `to_float(value, e, f)` rounds a `real` to nearest even and
   returns the *word*: store it in a `float` before doing arithmetic with it.

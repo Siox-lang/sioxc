@@ -242,7 +242,7 @@ impl<'a> Checker<'a> {
         });
         // Equality against an enum discriminant is deliberately a lint (the
         // warning below points users to a variant). Ordering has no analogous
-        // intrinsic meaning and must continue through normal `<=>` checking.
+        // intrinsic meaning and must continue through normal `Ord` checking.
         let suspicious_enum_equality = enum_integer && matches!(op, BinOp::Eq | BinOp::Ne);
         if char_numeric || suspicious_enum_equality {
             return true;
@@ -252,7 +252,7 @@ impl<'a> Checker<'a> {
         }
         let left = self.type_of(lhs, sym);
         let right = self.type_of(rhs, sym);
-        if self.operator_accepts_expr("<=>", &left, &right, rhs, sym) {
+        if self.operator_accepts_expr(comparison_symbol(op), &left, &right, rhs, sym) {
             return false;
         }
         self.error_with_help(
@@ -264,7 +264,7 @@ impl<'a> Checker<'a> {
                 self.ty_display(&right),
                 crate::syntax::pretty::bin_op(op)
             ),
-            "convert one operand to the other's type, or implement `Operator<\"<=>\", Input, Ordering>`"
+            "convert one operand to the other's type, or implement `Eq<Input>`/`Ord<Input>`"
                 .to_string(),
         );
         true
@@ -452,5 +452,15 @@ impl<'a> Checker<'a> {
             _ if matches!(lhs, Ty::Real) && matches!(self.type_of(value, sym), Ty::Integer) => true,
             _ => compatible(lhs, &self.type_of(value, sym)),
         }
+    }
+}
+
+/// The `operator_sigs` key for a comparison: `Eq` impls register as `==`
+/// (covering `!=`), `Ord` impls as `<` (covering `<=`, `>`, `>=`).
+pub(super) fn comparison_symbol(op: &BinOp) -> &'static str {
+    if matches!(op, BinOp::Eq | BinOp::Ne) {
+        "=="
+    } else {
+        "<"
     }
 }

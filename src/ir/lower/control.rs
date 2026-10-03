@@ -757,7 +757,7 @@ impl<'a> Lowering<'a> {
             }
             // An integer literal or inclusive range: `scrut == lo`, or
             // `lo <= scrut <= hi`. Reuse ordinary comparison selection so a
-            // signed-vector `<=>` implementation, kernel-integer signedness,
+            // signed-vector `Ord` implementation, kernel-integer signedness,
             // and real coercion all remain identical to expression syntax.
             ast::Pattern::Range { lo, hi, span } => {
                 let (low, high) = if lo <= hi { (*lo, *hi) } else { (*hi, *lo) };

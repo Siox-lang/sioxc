@@ -301,6 +301,9 @@ integers, fixed-point values, ordered enums, versions, and any type whose six
 relations all arise from one total order. It prevents inconsistent individual
 comparison impls.
 
+**Status:** resolved by going further — comparisons are now the `Eq`/`Ord`
+traits (rustc's partial ones) and `<=>` is gone (language §3.25).
+
 **Verdict — split equality from ordering; do not remove `<=>`.** Add a minimal
 equality contract for types that can answer equal/not-equal without ordering.
 Keep `<=>` for total order and derive equality from it only when no explicit

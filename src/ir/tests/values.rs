@@ -51,7 +51,7 @@ fn exhaustive_match_expression_needs_no_wildcard() {
 /// carried a full-width `0 - x`, and a nested inline then tested the wrong
 /// bit for the sign. Assigning to a signal masked it anyway, which hid it.
 ///
-/// The operator dispatch that goes with this needs std's `<=>` impl, which
+/// The operator dispatch that goes with this needs std's `Ord` impl, which
 /// this harness's minimal prelude does not have; `fn_return_type_test` in
 /// the corpus covers that end.
 #[test]

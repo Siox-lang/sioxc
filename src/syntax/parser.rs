@@ -3480,7 +3480,9 @@ impl<'a> Parser<'a> {
 
     /// The index of the `>` closing the angle list starting at `i`, accounting
     /// for nesting and for a `>>` that closes two levels at once. `None` when
-    /// nothing closes it, which is how a `<` is told from a comparison.
+    /// nothing closes it, which is how a `<` is told from a comparison. An
+    /// angle list never spans a `;` or a brace, so the search stops there:
+    /// otherwise `return a < b;` paired its `<` with a `>` lines later.
     fn matched_angle_end(&self, mut i: usize) -> Option<usize> {
         let mut depth = 0u32;
         loop {
@@ -3499,7 +3501,9 @@ impl<'a> Parser<'a> {
                         return Some(i + 1);
                     }
                 }
-                TokenKind::Eof => return None,
+                TokenKind::Eof | TokenKind::Semi | TokenKind::LBrace | TokenKind::RBrace => {
+                    return None
+                }
                 _ => {}
             }
             i += 1;
