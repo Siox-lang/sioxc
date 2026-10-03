@@ -578,8 +578,11 @@ impl<'a> Lowering<'a> {
     ) -> Option<Val> {
         let ty = self.operand_type_name(rhs)?;
         let tr = op;
+        // `-` keys `Sub` and `Neg` alike: the unary impl takes no operand.
         let fns = self.op_impls.get(&(tr.to_string(), ty))?;
-        let (f, _) = fns.first()?;
+        let (f, _) = fns
+            .iter()
+            .find(|(f, _)| f.params.iter().all(|param| param.is_self))?;
         let body = f.body.as_ref()?;
         let mut fenv: HashMap<String, Val> = HashMap::new();
         fenv.insert("self".to_string(), self.lower_val_env(rhs, env));

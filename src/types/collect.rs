@@ -452,7 +452,7 @@ impl<'a> Checker<'a> {
                         // operator's symbol; `Not<Out>` has no `Rhs`), falling
                         // back to the method's rhs-param / return types.
                         if operator.is_some() {
-                            let unary = trait_name == "Not";
+                            let unary = matches!(trait_name.as_str(), "Not" | "Neg");
                             let skip = usize::from(custom);
                             let arg_name = |index: usize| {
                                 let index = if unary { index.checked_sub(1)? } else { index };

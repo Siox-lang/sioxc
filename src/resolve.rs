@@ -47,6 +47,7 @@ const COMPILER_TRAITS: &[&str] = &[
     "And",
     "Or",
     "Not",
+    "Neg",
     "CustomOperator",
     "Prefix",
     "Suffix",
@@ -73,6 +74,7 @@ fn trait_role(name: &str) -> Option<&'static str> {
         "And" => "and",
         "Or" => "or",
         "Not" => "not",
+        "Neg" => "neg",
         "CustomOperator" => "custom_operator",
         "Prefix" => "prefix",
         "Suffix" => "suffix",
@@ -1555,15 +1557,6 @@ impl<'a> Resolver<'a> {
         let display = self
             .impl_owner_display(owner)
             .unwrap_or_else(|| definition.name.clone());
-        // The kernel types' own methods live in `core`, as rustc's integer
-        // methods do.
-        let in_core = self
-            .current_module
-            .as_deref()
-            .is_some_and(|module| module == "core" || module.starts_with("core::"));
-        if definition.kind == DefKind::Builtin && in_core {
-            return;
-        }
         if !matches!(
             definition.kind,
             DefKind::Struct | DefKind::View | DefKind::Enum | DefKind::Entity

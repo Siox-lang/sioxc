@@ -10849,3 +10849,23 @@ has the trait/symbol/method table (`OPERATOR_TRAITS`); `types/collect.rs`,
 map a named trait to its symbol, so neither IR path changed shape. A named
 trait also registers in `trait_impls` under its own name, so `T: Add<T, T>`
 is a real bound. The parser's precedence discovery reads `CustomOperator`.
+
+### 2026-10-03 — Claude — math functions in `std::math`; `Neg`
+
+`abs`, `rem`, `mod` moved out of `core::primitive` (integer), `std::bits`,
+`std::fixed` and `std::float` into `std::math`, beside `min`/`max`/`PI`/`E`:
+all five are generic functions over the numeric types (`abs(x)`,
+`rem(a, m)`). `core` no longer gives kernel types inherent methods (the
+resolver exemption is gone). Unary minus got its trait, `Neg<Out>` (`fn
+neg`); `float`'s `negate()` became `impl Neg`, so `abs` on a float is right.
+
+Generic bodies now lower with their arguments' types, which they did not:
+- Process path: `operand_type` (`source_processes.rs`) falls back to the
+  lowered value's type when the checked type is an error or an abstract
+  type parameter; a generic call's result takes the type and layout of the
+  argument bound to its return type's parameter (`inline_process_function`);
+  unary results keep their operand's layout.
+- Design path: `generic_return_argument` (`calls.rs`) gives a generic call's
+  result its argument's family and width; a generic parameter bound to a
+  kernel integer joins `param_integers`; `inline_unary` picks the
+  receiver-only impl, since `-` keys `Sub` and `Neg` alike.

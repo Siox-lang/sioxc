@@ -358,9 +358,7 @@ narrower than Rust's module-level field privacy: only implementations of
 that access only when declared in the type's own module; targeting a foreign
 type never grants representation access. Extensions from elsewhere must use
 traits and the type's public API. A type alias and a compiler kernel type are
-not new nominal owners, so neither may receive an inherent impl — except that
-`core` declares the kernel types' own methods (`impl integer { fn abs … }`),
-as rustc's `core` does for its primitives. Public
+not new nominal owners, so neither may receive an inherent impl. Public
 function and method signatures, public struct fields, public entity ports, and
 other exported interfaces may not name private types; such an interface would
 be impossible for its users to name and is rejected.
@@ -2071,7 +2069,8 @@ a method named after it, found by lang item; `Rhs` is the right operand's type
 | `*` | `Mul<Rhs, Out>` | `mul` | `not` (unary) | `Not<Out>` | `not` |
 | `/` | `Div<Rhs, Out>` | `div` | `== !=` | `Eq<Rhs>` (`core::cmp`) | `eq`, `ne` |
 | `<<` | `Shl<Rhs, Out>` | `shl` | `< <= > >=` | `Ord<Rhs>` (`core::cmp`) | `lt`, `le`, `gt`, `ge` |
-| `>>` | `Shr<Rhs, Out>` | `shr` | any other | `CustomOperator<"sym", Rhs, Out>` | `apply` |
+| `>>` | `Shr<Rhs, Out>` | `shr` | `-a` (unary) | `Neg<Out>` | `neg` |
+| | | | any other | `CustomOperator<"sym", Rhs, Out>` | `apply` |
 
 ```siox
 impl Add<Complex, Complex> for Complex {
@@ -2182,12 +2181,14 @@ types (`integer`, `real`, `Char`), enums by discriminant, and `Logic`-element
 vectors. `core::cmp::Ordering` (`Less`/`Equal`/`Greater`) remains an ordinary
 enum for code that wants a three-way answer; the compiler gives it no meaning.
 
-**`abs`, `rem` and `mod` are functions**, as in mathematics and in Rust, not
-operators: `x.abs()`; `x.rem(m)`, with the dividend's sign (VHDL `rem`, Rust
-`%`); `x.mod(m)`, with the divisor's sign (VHDL `mod`). `(0 - 7).rem(2)` is
-`-1` and `(0 - 7).mod(2)` is `1`. `integer` has them in `core`, `signed` and
-`unsigned` in `std::bits` (an unsigned value's `rem` and `mod` agree), and the
-fixed and floating formats have `abs`.
+**`abs`, `rem` and `mod` are functions**, as in mathematics, not operators
+(VHDL makes them operators). They live in `std::math` with `min`, `max` and
+the constants (`PI`, `E`), generic over the numeric types: `abs(x)`;
+`rem(a, m)`, with the dividend's sign (VHDL `rem`, Rust `%`); `mod(a, m)`,
+with the divisor's sign (VHDL `mod`). `rem(0 - 7, 2)` is `-1` and
+`mod(0 - 7, 2)` is `1`. A call inlines, so the body uses the argument type's
+own operators: `abs` on a `signed` compares signed and on a `float` negates
+by `Neg`.
 
 The intrinsic numeric operators on `unsigned`/`signed`/`integer` keep their built-in
 semantics; operator traits extend the same syntax to std and user types

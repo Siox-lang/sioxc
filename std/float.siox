@@ -222,6 +222,16 @@ impl Ord<float> for float {
     fn le(self, rhs: float) -> Bool { return self.lt(rhs) or self.eq(rhs); }
 }
 
+// `-x`: the same number with its sign flipped (IEEE `negate`, exact for
+// every value including zero, infinity and NaN).
+impl Neg<float> for float {
+    fn neg(self) -> float {
+        let w: integer = self'high - self'low;
+        let a: integer = integer(self);
+        return a + ((1 - 2 * low_bits(a >> w, 1)) << w);
+    }
+}
+
 // --- inspection and conversion -------------------------------------------------
 
 impl float {
@@ -241,17 +251,6 @@ impl float {
     pub fn is_zero(self) -> Bool {
         let f: integer = 0 - self'low;
         return low_bits(integer(self) >> f, self'high) == 0;
-    }
-
-    // The same number with its sign flipped.
-    pub fn negate(self) -> float {
-        let w: integer = self'high - self'low;
-        let a: integer = integer(self);
-        return a + ((1 - 2 * low_bits(a >> w, 1)) << w);
-    }
-
-    pub fn abs(self) -> float {
-        return low_bits(integer(self), self'high - self'low);
     }
 
     // The number this holds, as a `real`.
