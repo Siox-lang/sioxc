@@ -30,6 +30,18 @@ pub struct LookupTable {
 /// them directly; `clk.rising()` lowers into `Event`/`Old`/`Current`.
 #[derive(Clone, Debug)]
 pub enum Expr {
+    /// A derived scheduler view of an arena-owned value. Behavior and width
+    /// remain authoritative in `Design::process_ir`; `reads` is only a cached
+    /// sensitivity list, checked against that arena during Design validation.
+    /// Cloning a derived write therefore never expands a shared value graph.
+    /// In a finalized scheduler view this is a root, not a child of a legacy
+    /// tree expression; activity and width come from the canonical emitter.
+    Canonical {
+        /// Value in the design's canonical arena.
+        value: super::ProcessValueId,
+        /// First-seen distinct signal reads of that value graph.
+        reads: std::sync::Arc<[SignalId]>,
+    },
     /// An integer constant that fits one ABI word.
     Const(u64),
     /// An integer constant wider than one ABI word, low-word first.

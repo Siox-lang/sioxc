@@ -2,6 +2,19 @@
 
 use super::*;
 
+/// These historical fixtures inspect small normalized expression bodies;
+/// production compiler products and dedicated projection tests retain IDs.
+fn lower(
+    modules: &[Module],
+    resolved: &Resolved,
+    hierarchy: &Hierarchy,
+    sink: &mut DiagnosticSink,
+) -> Design {
+    let mut design = crate::ir::lower(modules, resolved, hierarchy, sink);
+    expand_fixture_expressions(&mut design);
+    design
+}
+
 #[test]
 /// Entities with the same leaf name in different modules lower their own
 /// resolved bodies rather than one shadowing the other.

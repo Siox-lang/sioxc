@@ -168,7 +168,41 @@ fn lower_src(src: &str) -> Design {
     let resolved = crate::resolve::resolve(modules, &mut sink);
     let typed = crate::types::check(modules, &resolved, &mut sink);
     let hier = crate::elab::elaborate(modules, &resolved, &typed, &mut sink);
-    lower(modules, &resolved, &hier, &mut sink)
+    let mut design = lower(modules, &resolved, &hier, &mut sink);
+    expand_fixture_expressions(&mut design);
+    design
+}
+
+fn expand_fixture_expressions(design: &mut Design) {
+    // These historical unit fixtures inspect normalized expression shapes.
+    // Expand only in this test helper; compiler products retain arena IDs.
+    let expand = |expression: &mut Expr| {
+        if let Expr::Canonical { value, .. } = expression {
+            *expression = super::derive::materialize_digital_expression(&design.process_ir, *value)
+                .expect("normalized fixture expression");
+        }
+    };
+    for driver in &mut design.drivers {
+        for expression in driver
+            .cond
+            .iter_mut()
+            .chain(std::iter::once(&mut driver.expr))
+        {
+            expand(expression);
+        }
+    }
+    for block in &mut design.event_blocks {
+        expand(&mut block.condition);
+        for update in &mut block.updates {
+            for expression in update
+                .cond
+                .iter_mut()
+                .chain(std::iter::once(&mut update.expr))
+            {
+                expand(expression);
+            }
+        }
+    }
 }
 
 /// Lower `src` and return the diagnostics it produced.

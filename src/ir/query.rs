@@ -8,6 +8,7 @@ use super::*;
 /// leaves) into `out`, in first-seen order.
 pub fn read_set(e: &Expr, out: &mut Vec<SignalId>) {
     match e {
+        Expr::Canonical { reads, .. } => out.extend(reads.iter().copied()),
         // The operands are read through `inner` too; walking both would list
         // them twice and `dedup` is not applied everywhere this feeds.
         Expr::MetaCmp { inner, .. } => read_set(inner, out),
@@ -43,8 +44,22 @@ fn dedup(v: &mut Vec<SignalId>) {
 }
 
 /// Validation walk over an expression (see [`Design::validate`]).
-fn check_expr(e: &Expr, n: u32, tables: &[LookupTable], issues: &mut Vec<String>, ctx: &str) {
+fn check_expr(
+    e: &Expr,
+    n: u32,
+    tables: &[LookupTable],
+    arena: &ProcessIr,
+    issues: &mut Vec<String>,
+    ctx: &str,
+) {
     match e {
+        Expr::Canonical { value, reads } => match arena.signal_reads(*value) {
+            Ok(expected) if expected.as_slice() == reads.as_ref() => {}
+            Ok(_) => issues.push(format!(
+                "{ctx}: canonical value {value:?} has stale sensitivity metadata"
+            )),
+            Err(error) => issues.push(format!("{ctx}: {error}")),
+        },
         // Every one is rewritten once companions are known; one surviving means
         // that pass did not reach it, and the backends have no meaning for it.
         Expr::MetaCmp { .. } => issues.push(format!(
@@ -52,7 +67,7 @@ fn check_expr(e: &Expr, n: u32, tables: &[LookupTable], issues: &mut Vec<String>
         )),
         Expr::CCall { args, .. } => {
             for a in args {
-                check_expr(a, n, tables, issues, ctx);
+                check_expr(a, n, tables, arena, issues, ctx);
             }
         }
         Expr::Current(id) | Expr::Old(id) | Expr::Event(id) => {
@@ -61,16 +76,16 @@ fn check_expr(e: &Expr, n: u32, tables: &[LookupTable], issues: &mut Vec<String>
             }
         }
         Expr::Unknown => issues.push(format!("{ctx}: contains an Unknown (unlowered) expression")),
-        Expr::Unary { rhs, .. } => check_expr(rhs, n, tables, issues, ctx),
+        Expr::Unary { rhs, .. } => check_expr(rhs, n, tables, arena, issues, ctx),
         Expr::Binary { lhs, rhs, .. } => {
-            check_expr(lhs, n, tables, issues, ctx);
-            check_expr(rhs, n, tables, issues, ctx);
+            check_expr(lhs, n, tables, arena, issues, ctx);
+            check_expr(rhs, n, tables, arena, issues, ctx);
         }
         Expr::Slice { base, hi, lo } => {
             if lo > hi {
                 issues.push(format!("{ctx}: slice bounds lo {lo} > hi {hi}"));
             }
-            check_expr(base, n, tables, issues, ctx);
+            check_expr(base, n, tables, arena, issues, ctx);
         }
         Expr::TableLookup { table, index } => {
             if table.0 >= tables.len() {
@@ -80,16 +95,16 @@ fn check_expr(e: &Expr, n: u32, tables: &[LookupTable], issues: &mut Vec<String>
                     tables.len()
                 ));
             }
-            check_expr(index, n, tables, issues, ctx);
+            check_expr(index, n, tables, arena, issues, ctx);
         }
         Expr::CheckedIndex { index, valid, .. } => {
-            check_expr(index, n, tables, issues, ctx);
-            check_expr(valid, n, tables, issues, ctx);
+            check_expr(index, n, tables, arena, issues, ctx);
+            check_expr(valid, n, tables, arena, issues, ctx);
         }
         Expr::Select { cond, then, els } => {
-            check_expr(cond, n, tables, issues, ctx);
-            check_expr(then, n, tables, issues, ctx);
-            check_expr(els, n, tables, issues, ctx);
+            check_expr(cond, n, tables, arena, issues, ctx);
+            check_expr(then, n, tables, arena, issues, ctx);
+            check_expr(els, n, tables, arena, issues, ctx);
         }
         Expr::Const(_) | Expr::WideConst(_) | Expr::Real(_) | Expr::Logic(_) => {}
     }
@@ -289,7 +304,8 @@ impl Design {
                     collect(then, sites, seen);
                     collect(els, sites, seen);
                 }
-                Expr::Const(_)
+                Expr::Canonical { .. }
+                | Expr::Const(_)
                 | Expr::WideConst(_)
                 | Expr::Real(_)
                 | Expr::Logic(_)
@@ -469,11 +485,19 @@ impl Design {
                     c,
                     n,
                     &self.lookup_tables,
+                    &self.process_ir,
                     &mut issues,
                     &format!("{ctx} (condition)"),
                 );
             }
-            check_expr(&d.expr, n, &self.lookup_tables, &mut issues, &ctx);
+            check_expr(
+                &d.expr,
+                n,
+                &self.lookup_tables,
+                &self.process_ir,
+                &mut issues,
+                &ctx,
+            );
         }
         for (bi, eb) in self.event_blocks.iter().enumerate() {
             // An event block has no single target, so name it by what it
@@ -486,6 +510,7 @@ impl Design {
                 &eb.condition,
                 n,
                 &self.lookup_tables,
+                &self.process_ir,
                 &mut issues,
                 &format!("{block} (condition)"),
             );
@@ -502,11 +527,19 @@ impl Design {
                         c,
                         n,
                         &self.lookup_tables,
+                        &self.process_ir,
                         &mut issues,
                         &format!("{ctx} (condition)"),
                     );
                 }
-                check_expr(&u.expr, n, &self.lookup_tables, &mut issues, &ctx);
+                check_expr(
+                    &u.expr,
+                    n,
+                    &self.lookup_tables,
+                    &self.process_ir,
+                    &mut issues,
+                    &ctx,
+                );
             }
         }
         issues.extend(self.process_ir.validate(n));
@@ -681,6 +714,7 @@ impl Design {
 /// Render an expression for the IR dump.
 pub(super) fn render(e: &Expr, d: &Design) -> String {
     match e {
+        Expr::Canonical { value, .. } => format!("%v{}", value.0),
         Expr::MetaCmp { inner, .. } => format!("metacmp({})", render(inner, d)),
         Expr::CCall { name, args, .. } => {
             let a = args

@@ -10,6 +10,10 @@ use super::*;
 pub(super) struct ProcessValueCache<'ctx, 'checks> {
     pub(super) emitted:
         HashMap<(ProcessValueId, Option<IntValue<'ctx>>, Option<u32>), IntValue<'ctx>>,
+    /// Contextually widened arithmetic is not a layout conversion. Keep its
+    /// width/signedness cache separate, so one shared node is evaluated once
+    /// per consumer format without colliding with packed-layout entries.
+    contextual: HashMap<(ProcessValueId, Option<IntValue<'ctx>>, u32, bool), IntValue<'ctx>>,
     pub(super) checked: &'checks [bool],
     pub(super) meta_free: &'checks [bool],
 }
@@ -18,6 +22,7 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
     pub(super) fn new(checked: &'checks [bool], meta_free: &'checks [bool]) -> Self {
         Self {
             emitted: HashMap::new(),
+            contextual: HashMap::new(),
             checked,
             meta_free,
         }
@@ -42,6 +47,7 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
 
     pub(super) fn clear(&mut self) {
         self.emitted.clear();
+        self.contextual.clear();
     }
 }
 
@@ -69,7 +75,11 @@ pub(super) fn process_value_at<'ctx>(
     // rule. Preserve explicit narrowing by taking this path only when a
     // consumer widens the expression.
     if width > natural_width {
-        match &value.kind {
+        let key = (id, cache.key(id, active, None).1, width, signed);
+        if let Some(value) = cache.contextual.get(&key).copied() {
+            return Some(value);
+        }
+        let contextual = match &value.kind {
             ProcessValueKind::Unary {
                 operation: ProcessUnaryOp::Neg,
                 operand,
@@ -86,47 +96,47 @@ pub(super) fn process_value_at<'ctx>(
                     index_sites,
                     cache,
                 )?;
-                return builder.build_int_neg(operand, "pv.context.neg").ok();
+                Some(builder.build_int_neg(operand, "pv.context.neg").ok()?)
             }
             ProcessValueKind::Binary {
                 operation,
                 left,
                 right,
-            } => {
-                return process_binary(
-                    context,
-                    module,
-                    builder,
-                    design,
-                    operation,
-                    *left,
-                    *right,
-                    width,
-                    active,
-                    index_sites,
-                    cache,
-                );
-            }
+            } => Some(process_binary(
+                context,
+                module,
+                builder,
+                design,
+                operation,
+                *left,
+                *right,
+                width,
+                active,
+                index_sites,
+                cache,
+            )?),
             ProcessValueKind::Select {
                 condition,
                 then_value,
                 else_value,
-            } => {
-                return process_select(
-                    context,
-                    module,
-                    builder,
-                    design,
-                    *condition,
-                    *then_value,
-                    *else_value,
-                    width,
-                    active,
-                    index_sites,
-                    cache,
-                );
-            }
-            _ => {}
+            } => Some(process_select(
+                context,
+                module,
+                builder,
+                design,
+                *condition,
+                *then_value,
+                *else_value,
+                width,
+                active,
+                index_sites,
+                cache,
+            )?),
+            _ => None,
+        };
+        if let Some(value) = contextual {
+            cache.contextual.insert(key, value);
+            return Some(value);
         }
     }
     let value = process_value(

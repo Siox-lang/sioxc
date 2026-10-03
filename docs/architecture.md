@@ -70,6 +70,8 @@ The LLVM lowering of Process IR, `src/llvm/process/`, is split the same way:
   value lowering itself;
 - `tables.rs` emits constant tables and strings, and `support.rs` holds the
   fail-closed support checks;
+- `hardware.rs` shares per-object value facts with Process metadata/entries
+  and routes derived hardware references through the common value emitter;
 - `places.rs`, `writes.rs`, and `flags.rs` handle assignment places, writes
   and schedule calls, and change/dirty flags with the emitted state helpers;
 - `blocks.rs`, `instructions.rs`, `loops.rs`, and `entry.rs` lower control:
@@ -108,7 +110,7 @@ flowchart TB
         TY -->|typed expressions| PROCESS_LOWER
         DIGITAL -->|retained hardware CFGs + layouts| PROCESS_LOWER
         PROCESS_LOWER -->|fills source/hardware CFGs + descriptors| PROCESSIR["canonical ProcessIr<br/>procedural / combinational / event regions"]
-        PROCESSIR --> DERIVE["derive compact<br/>Driver / EventBlock view"]
+        PROCESSIR --> DERIVE["derive compact<br/>value IDs + sensitivity"]
         DERIVE --> DESIGN["ir::Design<br/>canonical + derived forms"]
 
         DIAG["diag<br/>SourceMap + DiagnosticSink"] -. spans + diagnostics .-> SY
@@ -249,6 +251,19 @@ testbench clocks cannot be mistaken for combinational or event hardware.
 regions and rejects procedural CFG/value shapes. The normalized-hardware
 importer is deleted. Frontend expression normalization still uses temporary
 trees; native execution never traverses them or translates them into C.
+
+The derived scheduler view stores `Expr::Canonical` roots, not copies of
+those value graphs. Each root carries its `ProcessValueId` and a compact
+sensitivity list validated against the arena. IR dumps print `%vN` references
+to the canonical value declarations below them. Projection and sensitivity
+validation walk shared identities once, including deeply shared DAGs.
+Hardware helpers delegate these roots to the same exact-width Process value
+emitter as procedural CFGs, sharing per-object support/check/metavalue facts.
+Contextually widened arithmetic has a separate width/signedness-aware cache;
+checked subgraphs still distinguish activity predicates, and foreign calls
+invalidate state-dependent caches. This prevents backend projection from
+undoing source sharing; the remaining hardware source inliner still needs
+arena bindings before its temporary expression-tree budget can be removed.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The layering is a convention enforced by module discipline; do

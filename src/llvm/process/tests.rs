@@ -1,4 +1,70 @@
 use super::*;
+
+#[test]
+fn derived_hardware_keeps_shared_values_when_widening_arithmetic() {
+    use siox::ir::{Driver, Expr, ProcessIr, ProcessValue};
+    let span = siox::diag::Span::new(siox::diag::FileId(0), 0..1);
+    let signal = |name: &str, width| siox::ir::Signal {
+        path: name.into(),
+        declaration_span: span,
+        width,
+        real: false,
+        integer: false,
+        char: false,
+        range: None,
+        init: vec![0],
+        enum_type: None,
+    };
+    let mut ir = ProcessIr::default();
+    ir.values.push(ProcessValue {
+        span,
+        ty: None,
+        bit_width: Some(8),
+        kind: ProcessValueKind::Signal {
+            signals: vec![SignalId(0)],
+            state: ProcessSignalState::Current,
+        },
+    });
+    let mut previous = ProcessValueId(0);
+    for _ in 0..30 {
+        let id = ProcessValueId(ir.values.len() as u32);
+        ir.values.push(ProcessValue {
+            span,
+            ty: None,
+            bit_width: Some(8),
+            kind: ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Add,
+                left: previous,
+                right: previous,
+            },
+        });
+        previous = id;
+    }
+    let design = Design {
+        signals: vec![signal("input", 8), signal("output", 64)],
+        drivers: vec![Driver {
+            target: SignalId(1),
+            cond: None,
+            meta: None,
+            ctx: 0,
+            span: Some(span),
+            expr: Expr::Canonical {
+                value: previous,
+                reads: std::sync::Arc::from([SignalId(0)]),
+            },
+        }],
+        process_ir: ir,
+        ..Design::default()
+    };
+    let llvm = super::super::emit::emit_module_ir(&design).expect("canonical hardware emits");
+    assert_eq!(
+        llvm.lines()
+            .filter(|line| line.contains(" = add i64 ") && line.contains("pv.add"))
+            .count(),
+        30,
+        "each widened shared node should emit once, not 2^30 times"
+    );
+}
 use siox::diag::{FileId, Span};
 use siox::elab::InstanceId;
 use siox::ir::{

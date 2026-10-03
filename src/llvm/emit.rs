@@ -61,7 +61,8 @@ fn has_checked_index(expr: &Expr) -> bool {
             has_checked_index(cond) || has_checked_index(then) || has_checked_index(els)
         }
         Expr::CCall { args, .. } => args.iter().any(has_checked_index),
-        Expr::Const(_)
+        Expr::Canonical { .. }
+        | Expr::Const(_)
         | Expr::WideConst(_)
         | Expr::Real(_)
         | Expr::Logic(_)
@@ -70,6 +71,36 @@ fn has_checked_index(expr: &Expr) -> bool {
         | Expr::Event(_)
         | Expr::Unknown => false,
     }
+}
+
+/// Canonical scheduler roots cannot be nested inside legacy expression trees:
+/// the common emitter must receive the write's activity predicate directly.
+fn contains_canonical(expr: &Expr) -> bool {
+    let mut pending = vec![expr];
+    while let Some(expr) = pending.pop() {
+        match expr {
+            Expr::Canonical { .. } => return true,
+            Expr::Unary { rhs, .. }
+            | Expr::Slice { base: rhs, .. }
+            | Expr::TableLookup { index: rhs, .. } => pending.push(rhs),
+            Expr::Binary { lhs, rhs, .. } => pending.extend([lhs.as_ref(), rhs.as_ref()]),
+            Expr::Select { cond, then, els } => {
+                pending.extend([cond.as_ref(), then.as_ref(), els.as_ref()])
+            }
+            Expr::CheckedIndex { index, valid, .. } => {
+                pending.extend([index.as_ref(), valid.as_ref()])
+            }
+            Expr::MetaCmp {
+                operands, inner, ..
+            } => {
+                pending.push(inner);
+                pending.extend(operands);
+            }
+            Expr::CCall { args, .. } => pending.extend(args),
+            _ => {}
+        }
+    }
+    false
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -248,9 +279,30 @@ pub(crate) fn build_module_with_sources<'ctx>(
         ));
     }
     let cg = Codegen::new(ctx, design);
+    for expression in design
+        .drivers
+        .iter()
+        .flat_map(|write| write.cond.iter().chain(std::iter::once(&write.expr)))
+        .chain(design.event_blocks.iter().flat_map(|block| {
+            std::iter::once(&block.condition).chain(
+                block
+                    .updates
+                    .iter()
+                    .flat_map(|write| write.cond.iter().chain(std::iter::once(&write.expr))),
+            )
+        }))
+    {
+        if let Expr::Canonical { value, .. } = expression {
+            if !cg.canonical.supports(*value) {
+                return Err(format!("cannot lower canonical hardware value {value:?}"));
+            }
+        } else if contains_canonical(expression) {
+            return Err("canonical hardware references must be standalone scheduler roots".into());
+        }
+    }
     super::process::declare_state(ctx, &cg.module, design);
     cg.build();
-    super::process::emit_metadata(ctx, &cg.module, design, sources);
+    super::process::emit_metadata(ctx, &cg.module, design, sources, &cg.canonical);
     // LLVM's own verifier — a well-formedness net beyond textual checks.
     if let Err(e) = cg.module.verify() {
         return Err(format!(
@@ -283,6 +335,7 @@ struct Codegen<'ctx, 'd> {
     /// contain control flow where blindly reusing an SSA value would either
     /// cross a non-dominating block or observe stale simulation state.
     comb_values: RefCell<Option<CombValueCache<'ctx>>>,
+    canonical: super::process::HardwareValueFacts,
     /// The signal-state layout: one field per signal, each an integer sized to
     /// the signal's width (`i8`/`i16`/`i32`/`i64`), packed. A `Bit` or `Logic`
     /// takes one byte, not eight. The `cur`/`old`/`event`/`snap` globals all use
@@ -413,6 +466,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 .map(|(i, site)| (site, i as u32 + 1))
                 .collect(),
             comb_values: RefCell::new(None),
+            canonical: super::process::HardwareValueFacts::new(design),
             #[cfg(not(feature = "bitpack"))]
             state_ty,
             #[cfg(feature = "bitpack")]
@@ -2085,6 +2139,23 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.record_index_checks(expr, active);
         let signal = &self.design.signals[target.0 as usize];
         let width = self.signal_width(target);
+        if let Expr::Canonical { value, .. } = expr {
+            let check_width = if signal.range.is_some() {
+                self.expr_width(expr).max(width).max(64)
+            } else {
+                width
+            };
+            let emitted = self.emit_canonical(
+                *value,
+                check_width,
+                signal.integer || signal.range.is_some(),
+                active,
+            );
+            if signal.range.is_some() {
+                self.record_range_value(target, emitted, active, site);
+            }
+            return self.fit(emitted, self.value_ty(width));
+        }
         let Some(_) = signal.range else {
             return if signal.integer {
                 self.emit_signed_operand_at(expr, width)
@@ -2227,7 +2298,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 self.record_index_checks(lhs, active);
                 self.record_index_checks(rhs, active);
             }
-            Expr::Const(_)
+            Expr::Canonical { .. }
+            | Expr::Const(_)
             | Expr::WideConst(_)
             | Expr::Real(_)
             | Expr::Logic(_)
@@ -2442,6 +2514,39 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     // --- expressions ------------------------------------------------------
 
+    /// Evaluate a derived arena reference through the same value lowering used
+    /// by Process CFG entries. The active predicate belongs to the source
+    /// write, so checks in an unselected assignment remain inactive.
+    fn emit_canonical(
+        &self,
+        value: siox::ir::ProcessValueId,
+        width: u32,
+        signed: bool,
+        active: Option<IntValue<'ctx>>,
+    ) -> IntValue<'ctx> {
+        if self.canonical.has_effects(value) {
+            self.clear_comb_cache();
+        }
+        let emitted = self
+            .canonical
+            .emit(
+                self.ctx,
+                &self.module,
+                &self.builder,
+                self.design,
+                value,
+                width,
+                signed,
+                active,
+                &self.index_sites,
+            )
+            .expect("canonical hardware value passed direct-emitter preflight");
+        if self.canonical.has_effects(value) {
+            self.clear_comb_cache();
+        }
+        emitted
+    }
+
     /// A constant at the ABI word width.
     fn c(&self, v: u64) -> IntValue<'ctx> {
         self.c_at(v, 64)
@@ -2462,6 +2567,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// operation or assignment.
     fn expr_width(&self, e: &Expr) -> u32 {
         match e {
+            Expr::Canonical { value, .. } => self.design.process_ir.values[value.0 as usize]
+                .bit_width
+                .expect("validated canonical hardware width"),
             // Resolved away before code generation; `validate` rejects any that
             // survive. Falling through to the inner comparison keeps this total
             // rather than panicking on a shape that should not be here.
@@ -2541,6 +2649,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// Emit an expression at `width`, extending or truncating as needed.
     fn emit_at(&self, e: &Expr, width: u32) -> IntValue<'ctx> {
         match e {
+            Expr::Canonical { value, .. } => self.emit_canonical(*value, width, false, None),
             Expr::MetaCmp { inner, .. } => self.emit_at(inner, width),
             Expr::Const(v) => self.c_at(*v, width),
             Expr::WideConst(words) => self.value_ty(width).const_int_arbitrary_precision(words),
@@ -2786,6 +2895,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// accidentally acquire a sign from their minimum unsigned bit width.
     fn emit_signed_operand_at(&self, e: &Expr, width: u32) -> IntValue<'ctx> {
         match e {
+            Expr::Canonical { value, .. } => self.emit_canonical(*value, width, true, None),
             Expr::Current(id) | Expr::Old(id) => {
                 let signal = &self.design.signals[id.0 as usize];
                 let natural = self.signal_width(*id).max(1);

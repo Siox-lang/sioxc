@@ -1032,6 +1032,41 @@ pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]
 }
 
 impl ProcessIr {
+    /// First-seen distinct signal reads of one canonical value graph. Walk
+    /// arena identities once rather than recursively expanding a shared DAG.
+    /// Malformed dependencies fail closed even before Design validation.
+    pub fn signal_reads(&self, root: ProcessValueId) -> Result<Vec<SignalId>, String> {
+        let mut pending = vec![root];
+        let mut seen = HashSet::new();
+        let mut signals = HashSet::new();
+        let mut reads = Vec::new();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let value = self
+                .values
+                .get(id.0 as usize)
+                .ok_or_else(|| format!("missing Process value {id:?}"))?;
+            if let ProcessValueKind::Signal { signals: ids, .. } = &value.kind {
+                for signal in ids {
+                    if signals.insert(*signal) {
+                        reads.push(*signal);
+                    }
+                }
+            }
+            for child in process_value_dependencies(&value.kind).into_iter().rev() {
+                if child.0 >= id.0 {
+                    return Err(format!(
+                        "Process value {id:?} has non-dominating dependency {child:?}"
+                    ));
+                }
+                pending.push(child);
+            }
+        }
+        Ok(reads)
+    }
+
     /// Append one already elaborated digital expression to the shared value
     /// arena. Children are emitted first, preserving the arena's dominance
     /// invariant. Source lowering uses it for representation-normalized
@@ -1043,6 +1078,7 @@ impl ProcessIr {
         fallback_span: crate::diag::Span,
     ) -> ProcessValueId {
         let kind = match expression {
+            Expr::Canonical { value, .. } => return *value,
             Expr::Const(value) => ProcessValueKind::Number(ProcessNumber::Integer(vec![*value])),
             Expr::WideConst(words) => {
                 ProcessValueKind::Number(ProcessNumber::Integer(words.clone()))

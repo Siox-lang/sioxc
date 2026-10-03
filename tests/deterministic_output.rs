@@ -79,8 +79,9 @@ fn a_design_compiles_to_identical_output_every_time() {
     assert!(first.contains("mvx"), "{first}");
     assert!(first.contains("inner.o.lo"), "{first}");
     assert!(first.contains("never read"), "{first}");
-    assert!(first.contains("T.d.bus.req = T.s.bus.req"), "{first}");
-    assert!(first.contains("T.tb_pick.o.lo = 3"), "{first}");
+    assert!(first.contains("driver T.d.bus.req = %v"), "{first}");
+    assert!(first.contains("driver T.tb_pick.o.lo = %v"), "{first}");
+    assert!(first.contains("Number(Integer([3]))"), "{first}");
     for run in 1..20 {
         let next = compile_once(&entry);
         assert!(

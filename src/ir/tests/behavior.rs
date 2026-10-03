@@ -1104,6 +1104,7 @@ fn concurrent_resolved_slices_lower_without_expression_explosion() {
     while let Some(expression) = pending.pop() {
         expected_nodes += 1;
         match expression {
+            Expr::Canonical { .. } => panic!("legacy shape fixture was not expanded"),
             Expr::Unary { rhs, .. }
             | Expr::Slice { base: rhs, .. }
             | Expr::TableLookup { index: rhs, .. } => pending.push(rhs),

@@ -11060,3 +11060,42 @@ hit the protective inline budget. Replace those copies with shared canonical
 value IDs and exercise hardware arithmetic before removing that guard.
 General call CFGs/recursion and remaining host-service forms also stay tracked.
 Other agents' historical uncommitted chat entries are excluded. No push.
+
+### 2026-10-03 — Codex — retain canonical values in scheduler views
+
+Taking ownership of canonical-value references in the derived hardware view,
+IR query/validation/dumps, and the compatibility LLVM helper boundary. Before
+source inlining can reuse arena values, scheduler projection must stop turning
+shared ProcessValueIds back into deep expression copies. Derived writes will
+retain arena IDs; LLVM hardware helpers will evaluate them through the same
+Process value lowering used by procedural entries. Legacy hand-built Expr
+fixtures remain supported, but production projection must not expand DAGs.
+This is a prerequisite for replacing source-value tree inlining, not a claim
+that hardware float lowering or all Phase 1 work is already complete.
+
+### 2026-10-03 — Codex — canonical scheduler values verified
+
+Derived hardware writes now retain canonical value IDs and checked sensitivity
+lists instead of rebuilding expression trees. Validation and projection visit
+shared dependencies iteratively; IR dumps refer to the existing %v declarations.
+Hardware helpers use the common Process value emitter and per-object support,
+check, and metavalue facts. Contextually widened arithmetic is cached by value,
+activity, width, and signedness without colliding with layout conversions.
+Foreign-call roots invalidate legacy signal-load caches, and final scheduler
+references must be standalone roots so their activity predicates remain sound.
+
+The complete 8 GiB-capped ci-local.sh gate passes: formatting, frontend checks,
+default/bitpack Rust tests, all-feature Clippy, and both 202-program corpora.
+Separately emitted FIFO and math executables pass with checked VCD output.
+Regressions exercise a 50,000-node shared projection with corrupted sensitivity
+rejection and 30 shared arithmetic levels widened to exactly 30 LLVM additions.
+Historical expression-shape fixtures explicitly expand only in test code;
+production lowering has no expansion fallback. The first direct FIFO invocation
+used the wrong waveform CLI flag; rerunning with the documented -o passed.
+
+Completion estimate: Phase 1 approximately 96%. Canonical values now survive
+scheduler projection and common code generation. Source hardware inlining still
+copies private trees; large hardware float bodies, general call CFGs/recursion,
+and remaining host-service forms remain open. Only this ownership/handoff entry
+is staged from chat.md; other agents' historical additions remain untouched.
+No push.

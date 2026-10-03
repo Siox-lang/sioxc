@@ -256,10 +256,69 @@ fn append_assignments(
     Ok(())
 }
 
-/// Reconstruct the compact digital expression view from the canonical value
-/// arena. Only representation-neutral nodes emitted by hardware lowering are
-/// accepted; frontend/procedural values fail closed.
+/// Retain a canonical root and its checked sensitivity, without reconstructing
+/// expression trees. Only representation-neutral hardware nodes are accepted;
+/// frontend/procedural values fail closed. Shared dependencies are visited once.
 fn digital_expr(ir: &ProcessIr, id: ProcessValueId) -> Result<Expr, String> {
+    let mut pending = vec![id];
+    let mut visited = HashSet::new();
+    let mut signals = HashSet::new();
+    let mut reads = Vec::new();
+    while let Some(id) = pending.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let value = ir
+            .values
+            .get(id.0 as usize)
+            .ok_or_else(|| format!("missing Process value {id:?}"))?;
+        match &value.kind {
+            ProcessValueKind::Number(_)
+            | ProcessValueKind::Char(_)
+            | ProcessValueKind::Unary { .. }
+            | ProcessValueKind::BitSlice { .. }
+            | ProcessValueKind::TableLookup { .. }
+            | ProcessValueKind::CheckedIndex { .. }
+            | ProcessValueKind::Select { .. }
+            | ProcessValueKind::MetaCompare { .. }
+            | ProcessValueKind::ForeignCall { .. } => {}
+            ProcessValueKind::Signal { signals: ids, .. } if ids.len() == 1 => {
+                if signals.insert(ids[0]) {
+                    reads.push(ids[0]);
+                }
+            }
+            ProcessValueKind::Binary { operation, .. } => {
+                digital_binary(operation)?;
+            }
+            other => {
+                return Err(format!(
+                "Process value {id:?} cannot derive a digital scheduler expression from {other:?}"
+            ))
+            }
+        }
+        let dependencies = super::process::process_value_dependencies(&value.kind);
+        for child in dependencies.iter().rev() {
+            if child.0 >= id.0 {
+                return Err(format!(
+                    "Process value {id:?} has non-dominating dependency {child:?}"
+                ));
+            }
+            pending.push(*child);
+        }
+    }
+    Ok(Expr::Canonical {
+        value: id,
+        reads: reads.into(),
+    })
+}
+
+/// Explicit expansion for small legacy expression-shape unit fixtures only.
+/// Production scheduler projection must retain IDs, never call this helper.
+#[cfg(test)]
+pub(crate) fn materialize_digital_expression(
+    ir: &ProcessIr,
+    id: ProcessValueId,
+) -> Result<Expr, String> {
     let value = ir
         .values
         .get(id.0 as usize)
@@ -273,7 +332,7 @@ fn digital_expr(ir: &ProcessIr, id: ProcessValueId) -> Result<Expr, String> {
                 "Process value {id:?} has non-dominating dependency {child:?}"
             ));
         }
-        digital_expr(ir, child)
+        materialize_digital_expression(ir, child)
     };
     let recurse = |child| child_expression(child).map(Box::new);
     let expression = match &value.kind {
@@ -542,13 +601,25 @@ mod tests {
         let [event] = design.event_blocks.as_slice() else {
             panic!("expected exactly one derived event block");
         };
-        assert!(matches!(event.condition, Expr::Event(SignalId(2))));
+        assert!(matches!(
+            event.condition,
+            Expr::Canonical {
+                value: ProcessValueId(2),
+                ..
+            }
+        ));
         assert_eq!(event.ctx, 9);
         let [update] = event.updates.as_slice() else {
             panic!("expected exactly one derived update");
         };
         assert_eq!(update.target, SignalId(0));
-        assert!(matches!(update.expr, Expr::Current(SignalId(1))));
+        assert!(matches!(
+            update.expr,
+            Expr::Canonical {
+                value: ProcessValueId(1),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -575,7 +646,13 @@ mod tests {
             panic!("expected unconditional then guarded driver");
         };
         assert!(first.cond.is_none());
-        assert!(matches!(guarded.cond, Some(Expr::Event(SignalId(2)))));
+        assert!(matches!(
+            guarded.cond,
+            Some(Expr::Canonical {
+                value: ProcessValueId(2),
+                ..
+            })
+        ));
         assert_eq!(first.target, guarded.target);
         assert_eq!(first.ctx, 9);
         assert_eq!(guarded.ctx, 9);
@@ -637,9 +714,56 @@ mod tests {
         };
         let id = ir.push_digital_expr(&expression, Span::new(FileId(0), 0..1));
         let projected = digital_expr(&ir, id).expect("integer-to-real is a normalized opcode");
+        assert!(matches!(projected, Expr::Canonical { value, .. } if value == id));
         assert!(matches!(
-            projected,
-            Expr::Unary { op: UnOp::IntToReal, rhs } if matches!(*rhs, Expr::Const(42))
+            ir.values[id.0 as usize].kind,
+            ProcessValueKind::Unary {
+                operation: ProcessUnaryOp::IntegerToReal,
+                ..
+            }
         ));
+    }
+
+    #[test]
+    fn shared_value_dag_is_retained_not_expanded_by_scheduler_projection() {
+        let mut design = event_design();
+        let process = &mut design.process_ir.processes[0];
+        process.region = ProcessRegion::Combinational;
+        process.entry = ProcessBlockId(1);
+        let mut previous = ProcessValueId(1);
+        for _ in 0..50_000 {
+            let id = ProcessValueId(design.process_ir.values.len() as u32);
+            design.process_ir.values.push(ProcessValue {
+                span: process.span,
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::And,
+                    left: previous,
+                    right: previous,
+                },
+            });
+            previous = id;
+        }
+        let ProcessInstruction::Assign { value, .. } = &mut process.blocks[1].instructions[0]
+        else {
+            unreachable!()
+        };
+        *value = previous;
+        derive_scheduler_forms(&mut design).expect("shared graph is derivable");
+        let [driver] = design.drivers.as_slice() else {
+            panic!("one root reference")
+        };
+        assert!(matches!(&driver.expr, Expr::Canonical { value, reads }
+            if *value == previous && reads.as_ref() == [SignalId(1)]));
+        assert!(design.validate().is_empty(), "{:?}", design.validate());
+        let Expr::Canonical { reads, .. } = &mut design.drivers[0].expr else {
+            unreachable!()
+        };
+        *reads = std::sync::Arc::from([]);
+        assert!(design
+            .validate()
+            .iter()
+            .any(|issue| issue.contains("stale sensitivity")));
     }
 }

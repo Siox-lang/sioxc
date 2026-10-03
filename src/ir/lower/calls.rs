@@ -1230,7 +1230,8 @@ fn expr_within(expr: &Expr, budget: &mut usize) -> bool {
         Expr::Select { cond, then, els } => {
             expr_within(cond, budget) && expr_within(then, budget) && expr_within(els, budget)
         }
-        Expr::Const(_)
+        Expr::Canonical { .. }
+        | Expr::Const(_)
         | Expr::WideConst(_)
         | Expr::Real(_)
         | Expr::Logic(_)

@@ -430,7 +430,8 @@ impl<'a> Lowering<'a> {
             // Argument representations do not determine a foreign call's
             // declared return type.
             Expr::CCall { .. } => false,
-            Expr::Const(_)
+            Expr::Canonical { .. }
+            | Expr::Const(_)
             | Expr::WideConst(_)
             | Expr::Real(_)
             | Expr::Logic(_)

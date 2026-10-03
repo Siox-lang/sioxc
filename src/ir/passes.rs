@@ -41,7 +41,8 @@ pub(super) fn resolve_logic_expr(e: &mut Expr, lut: &HashMap<String, u64>) {
                 resolve_logic_expr(a, lut);
             }
         }
-        Expr::Const(_)
+        Expr::Canonical { .. }
+        | Expr::Const(_)
         | Expr::WideConst(_)
         | Expr::Real(_)
         | Expr::Current(_)

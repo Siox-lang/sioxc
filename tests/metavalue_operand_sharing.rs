@@ -12,7 +12,7 @@
 //! helper does not load.
 
 use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
-use siox::ir::{read_set, Design};
+use siox::ir::{Design, Expr, ProcessValueKind};
 
 fn lower_nested(width: usize) -> Design {
     let pad = "0".repeat(width - 8);
@@ -39,18 +39,10 @@ fn lower_nested(width: usize) -> Design {
     compilation.design.expect("digital IR")
 }
 
-/// Every occurrence of a signal read, so a duplicated operand counts once per
-/// copy — exactly what the hoisting is there to remove.
-fn reads(design: &Design) -> usize {
-    design
-        .drivers
-        .iter()
-        .map(|driver| {
-            let mut found = Vec::new();
-            read_set(&driver.expr, &mut found);
-            found.len()
-        })
-        .sum()
+/// Measure the actual canonical representation, not a derived sensitivity
+/// list. A duplicated operand contributes new nodes; sharing its ID does not.
+fn nodes(design: &Design) -> usize {
+    design.process_ir.values.len()
 }
 
 /// Asserted as a shape rather than a golden size, so it survives ordinary
@@ -67,10 +59,10 @@ fn nested_metavalue_operands_are_hoisted_not_duplicated() {
         "the nested operands were left inline, so nothing was hoisted"
     );
 
-    let (n, w) = (reads(&narrow), reads(&wide));
+    let (n, w) = (nodes(&narrow), nodes(&wide));
     assert!(
         w < n * 3,
-        "doubling the element count more than tripled the IR ({n} -> {w} signal reads): \
+        "doubling the element count more than tripled the IR ({n} -> {w} arena nodes): \
          a nested metavalue operand is being copied per element again"
     );
 }
@@ -89,9 +81,19 @@ fn std_logic_tables_finish_as_interned_lookups() {
         "the normalized IR did not define its shared lookup tables:\n{ir}"
     );
     assert!(
-        ir.lines()
-            .any(|line| line.starts_with("driver ") && line.contains("lookup#")),
-        "the normalized driver expressions did not reference a shared lookup:\n{ir}"
+        design
+            .drivers
+            .iter()
+            .all(|driver| matches!(driver.expr, Expr::Canonical { .. })),
+        "derived writes must retain canonical value IDs"
+    );
+    assert!(
+        design
+            .process_ir
+            .values
+            .iter()
+            .any(|value| matches!(value.kind, ProcessValueKind::TableLookup { .. })),
+        "the canonical value arena did not reference a shared lookup:\n{ir}"
     );
 }
 
@@ -139,10 +141,10 @@ fn resolved_multi_driver_contributions_are_hoisted_not_duplicated() {
         "the folded contributions were left inline, so nothing was hoisted"
     );
 
-    let (n, w) = (reads(&narrow), reads(&wide));
+    let (n, w) = (nodes(&narrow), nodes(&wide));
     assert!(
         w < n * 3,
-        "doubling the element count more than tripled the IR ({n} -> {w} signal reads): \
+        "doubling the element count more than tripled the IR ({n} -> {w} arena nodes): \
          a resolved driver contribution is being copied per element again"
     );
 }

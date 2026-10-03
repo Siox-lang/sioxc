@@ -57,9 +57,13 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
 
 - 🟡 **Complete canonical source-value lowering.** Hardware CFG construction
   now precedes public scheduler decomposition and retains source contexts;
-  the scheduler-to-Process importer is deleted. Hardware specialization,
-  source-method inlining, resolution, and metavalue expansion still use private
-  temporary expression trees before building the canonical arena. Replace
+  the scheduler-to-Process importer is deleted. Derived scheduling forms retain
+  canonical value IDs and checked sensitivity lists; their LLVM helpers
+  delegate to the common Process value emitter, so
+  projection no longer expands a shared value DAG back into expression trees.
+  Hardware specialization, source-method inlining, resolution, and metavalue
+  expansion still use private temporary expression trees before building the
+  canonical arena. Replace
   repeated tree copies with dependency-ordered value identities and shared
   subexpressions, preserving source spans, concrete types/widths, contexts,
   lookup-table compaction, and staged-write semantics. This remains Phase 1

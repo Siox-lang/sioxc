@@ -88,6 +88,10 @@ Representation normalization uses private source drafts confined to lowering;
 only canonical CFGs and their derived `Driver`/`EventBlock` compatibility view
 leave that pass. Source contexts retain multi-target combinational writes,
 independently of the backend's per-target scheduler grouping.
+Derived writes retain canonical `%vN` value references and checked sensitivity
+lists instead of expanding those graphs again. Hardware and procedural LLVM
+entries use the same Process value emitter. Source hardware inlining still
+uses private temporary trees and is the remaining value-sharing migration.
 See
 [the current Process IR ingress boundary](architecture.md#current-process-ir-ingress-boundary).
 
