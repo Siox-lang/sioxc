@@ -773,7 +773,7 @@ mod tests {
              entity E { clk: Bit in }\n\
              impl E { attr keep for probe = true; attr keep for clk = true; attr speed = 9; }\n\
              impl E { let probe: Bit; }\n\
-             impl Operator<\"^^\", Bit, Bit> for Bit { attr precedence = 40; }\n\
+             impl CustomOperator<\"^^\", Bit, Bit> for Bit { attr precedence = 40; }\n\
              entity F {}\n\
              attr speed for F = 3;\n"]);
         assert!(diags.is_empty(), "{diags:#?}");

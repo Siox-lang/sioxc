@@ -954,7 +954,7 @@ impl<'a> Lowering<'a> {
                     .and_then(|f| f.ret.as_ref())
                     .and_then(|ty| self.free_fns.type_head_key(ty))?;
                 // A struct return counts too: `twice(v) + v` needs a type for
-                // its left operand before any `Operator` impl can be found,
+                // its left operand before any operator impl can be found,
                 // and without one the whole expression produced nothing.
                 (self.array_families.contains(&ret)
                     || self.enum_variants.contains_key(&ret)

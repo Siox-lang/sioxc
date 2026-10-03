@@ -142,7 +142,7 @@ high impedance as `z`, and unknown-like metavalues as `x`, from the same
 scheduler samples.
 
 The per-element logical tables are also elaborated from the ordinary std
-`Operator` bodies and retained in `Design`, so neither IR nor a simulator
+operator bodies and retained in `Design`, so neither IR nor a simulator
 backend carries a second Rust/C copy of the library truth tables. Final IR
 normalization interns identical tables in `Design::lookup_tables` and replaces
 the expanded packed-constant shift with `Expr::TableLookup`. LLVM consequently

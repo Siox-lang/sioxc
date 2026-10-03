@@ -14,9 +14,9 @@ const CLK_PRELUDE: &str = "\n\
         impl LogicEncoding for Logic { fn to_bool(self) -> Bool { return self == '1' or self == 'H'; } fn is_binary(self) -> Bool { return self == '0' or self == '1'; } fn is_high_impedance(self) -> Bool { return self == 'Z'; } fn to_x01(self) -> Logic { if self == '0' or self == 'L' { return '0'; } if self == '1' or self == 'H' { return '1'; } return 'X'; } }\n\
         impl Boolean for Bit { fn as_bool(self) -> Bool { return true; } }\n\
         impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }\n\
-        impl Operator<\"and\", Bool, Bool> for Bool { fn apply(self, rhs: Bool) -> Bool { return self; } }\n\
-        impl Operator<\"or\", Bool, Bool> for Bool { fn apply(self, rhs: Bool) -> Bool { return self; } }\n\
-        impl Operator<\"not\", Bool, Bool> for Bool { fn apply(self) -> Bool { return self; } }\n\
+        impl And<Bool, Bool> for Bool { fn and(self, rhs: Bool) -> Bool { return self; } }\n\
+        impl Or<Bool, Bool> for Bool { fn or(self, rhs: Bool) -> Bool { return self; } }\n\
+        impl Not<Bool> for Bool { fn not(self) -> Bool { return self; } }\n\
         trait ClockLike { fn rising(self) -> Bool; fn falling(self) -> Bool; fn edge(self) -> Bool; }\n\
         impl ClockLike for Bit { fn rising(self) -> Bool { return self'event and self'old == '0' and self == '1'; } fn falling(self) -> Bool { return self'event and self'old == '1' and self == '0'; } fn edge(self) -> Bool { return self'event; } }\n";
 

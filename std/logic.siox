@@ -32,8 +32,8 @@ pub enum Bit {
 }
 
 // `Bit`'s logical operators and its use as a condition.
-impl Operator<"and", Bit, Bit> for Bit {
-    fn apply(self, rhs: Bit) -> Bit {
+impl And<Bit, Bit> for Bit {
+    fn and(self, rhs: Bit) -> Bit {
         if self == '1' {
             return rhs;
         }
@@ -41,21 +41,21 @@ impl Operator<"and", Bit, Bit> for Bit {
     }
 }
 
-impl Operator<"or", Bit, Bit> for Bit {
-    fn apply(self, rhs: Bit) -> Bit {
+impl Or<Bit, Bit> for Bit {
+    fn or(self, rhs: Bit) -> Bit {
         if self == '1' { return '1'; }
         return rhs;
     }
 }
 
-impl Operator<"not", Bit, Bit> for Bit {
-    fn apply(self) -> Bit {
+impl Not<Bit> for Bit {
+    fn not(self) -> Bit {
         if self == '1' { return '0'; }
         return '1';
     }
 }
 
-impl Operator<"xor", Bit, Bit> for Bit {
+impl CustomOperator<"xor", Bit, Bit> for Bit {
     attr precedence = 35;
     fn apply(self, rhs: Bit) -> Bit {
         if self == rhs { return '0'; }
@@ -63,17 +63,17 @@ impl Operator<"xor", Bit, Bit> for Bit {
     }
 }
 
-impl Operator<"nand", Bit, Bit> for Bit {
+impl CustomOperator<"nand", Bit, Bit> for Bit {
     attr precedence = 40;
     fn apply(self, rhs: Bit) -> Bit { return not (self and rhs); }
 }
 
-impl Operator<"nor", Bit, Bit> for Bit {
+impl CustomOperator<"nor", Bit, Bit> for Bit {
     attr precedence = 30;
     fn apply(self, rhs: Bit) -> Bit { return not (self or rhs); }
 }
 
-impl Operator<"xnor", Bit, Bit> for Bit {
+impl CustomOperator<"xnor", Bit, Bit> for Bit {
     attr precedence = 35;
     fn apply(self, rhs: Bit) -> Bit {
         if self == rhs { return '1'; }
@@ -213,8 +213,8 @@ pub const HIGH: Bit = '1';
 // against a reference simulator's std_logic_1164. `Bit` keeps the built-in
 // two-value operators.
 
-impl Operator<"and", Logic, Logic> for Logic {
-    fn apply(self, rhs: Logic) -> Logic {
+impl And<Logic, Logic> for Logic {
+    fn and(self, rhs: Logic) -> Logic {
         // A low input (0/L) forces low, even against 'U'.
         if self == '0' or self == 'L' or rhs == '0' or rhs == 'L' { return '0'; }
         if self == 'U' or rhs == 'U' { return 'U'; }
@@ -223,8 +223,8 @@ impl Operator<"and", Logic, Logic> for Logic {
     }
 }
 
-impl Operator<"or", Logic, Logic> for Logic {
-    fn apply(self, rhs: Logic) -> Logic {
+impl Or<Logic, Logic> for Logic {
+    fn or(self, rhs: Logic) -> Logic {
         if self == '1' or self == 'H' or rhs == '1' or rhs == 'H' { return '1'; }
         if self == 'U' or rhs == 'U' { return 'U'; }
         if (self == '0' or self == 'L') and (rhs == '0' or rhs == 'L') { return '0'; }
@@ -232,7 +232,7 @@ impl Operator<"or", Logic, Logic> for Logic {
     }
 }
 
-impl Operator<"xor", Logic, Logic> for Logic {
+impl CustomOperator<"xor", Logic, Logic> for Logic {
     attr precedence = 35;
     fn apply(self, rhs: Logic) -> Logic {
         if self == 'U' or rhs == 'U' { return 'U'; }
@@ -244,8 +244,8 @@ impl Operator<"xor", Logic, Logic> for Logic {
     }
 }
 
-impl Operator<"not", Logic, Logic> for Logic {
-    fn apply(self) -> Logic {
+impl Not<Logic> for Logic {
+    fn not(self) -> Logic {
         if self == '0' or self == 'L' { return '1'; }
         if self == '1' or self == 'H' { return '0'; }
         if self == 'U' { return 'U'; }
@@ -253,7 +253,7 @@ impl Operator<"not", Logic, Logic> for Logic {
     }
 }
 
-impl Operator<"nand", Logic, Logic> for Logic {
+impl CustomOperator<"nand", Logic, Logic> for Logic {
     attr precedence = 40;
     fn apply(self, rhs: Logic) -> Logic {
         if self == '0' or self == 'L' or rhs == '0' or rhs == 'L' { return '1'; }
@@ -263,7 +263,7 @@ impl Operator<"nand", Logic, Logic> for Logic {
     }
 }
 
-impl Operator<"nor", Logic, Logic> for Logic {
+impl CustomOperator<"nor", Logic, Logic> for Logic {
     attr precedence = 30;
     fn apply(self, rhs: Logic) -> Logic {
         if self == '1' or self == 'H' or rhs == '1' or rhs == 'H' { return '0'; }
@@ -273,7 +273,7 @@ impl Operator<"nor", Logic, Logic> for Logic {
     }
 }
 
-impl Operator<"xnor", Logic, Logic> for Logic {
+impl CustomOperator<"xnor", Logic, Logic> for Logic {
     attr precedence = 35;
     fn apply(self, rhs: Logic) -> Logic {
         if self == 'U' or rhs == 'U' { return 'U'; }

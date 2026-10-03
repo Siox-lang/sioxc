@@ -10,7 +10,7 @@
 //! The shape that finds it:
 //!
 //! ```siox
-//! impl Operator<"*", unsigned[8], Vec2> for Vec2 { .. }
+//! impl Mul<unsigned[8], Vec2> for Vec2 { .. }
 //! s = a * 3;      // silently nothing — 3 is `integer`, the impl wants `unsigned`
 //! s = a * unsigned[8](3);   // fine
 //! ```
@@ -25,17 +25,17 @@ use std::process::Command;
 const PRELUDE: &str = "module m;\n\
      use std::bits::unsigned;\n\
      use std::logic::Logic;\n\
-     use std::ops::Operator;\n\
+     use std::ops::{Add, Mul};\n\
      struct Vec2 { x: unsigned[8], y: unsigned[8] }\n\
-     impl Operator<\"*\", unsigned[8], Vec2> for Vec2 {\n\
-         fn apply(self, rhs: unsigned[8]) -> Vec2 { return Vec2 { .x = self.x * rhs, .y = self.y * rhs }; }\n\
+     impl Mul<unsigned[8], Vec2> for Vec2 {\n\
+         fn mul(self, rhs: unsigned[8]) -> Vec2 { return Vec2 { .x = self.x * rhs, .y = self.y * rhs }; }\n\
      }\n\
-     impl Operator<\"+\", Vec2, Vec2> for Vec2 {\n\
-         fn apply(self, rhs: Vec2) -> Vec2 { return Vec2 { .x = self.x + rhs.x, .y = self.y + rhs.y }; }\n\
+     impl Add<Vec2, Vec2> for Vec2 {\n\
+         fn add(self, rhs: Vec2) -> Vec2 { return Vec2 { .x = self.x + rhs.x, .y = self.y + rhs.y }; }\n\
      }\n\
      struct Q(unsigned[8]);\n\
-     impl Operator<\"*\", unsigned[8], Q> for Q {\n\
-         fn apply(self, rhs: unsigned[8]) -> Q { return Q(unsigned[8](self) * rhs); }\n\
+     impl Mul<unsigned[8], Q> for Q {\n\
+         fn mul(self, rhs: unsigned[8]) -> Q { return Q(unsigned[8](self) * rhs); }\n\
      }\n";
 
 fn diagnostics(name: &str, body: &str) -> String {
@@ -141,10 +141,10 @@ fn an_aggregate_struct_is_still_reported() {
     // operator dispatch silent again.
     let src = "module m;\n\
                use std::bits::unsigned;\n\
-               use std::ops::Operator;\n\
+               use std::ops::Mul;\n\
                struct Vec2 { x: unsigned[8], y: unsigned[8] }\n\
-               impl Operator<\"*\", unsigned[8], Vec2> for Vec2 {\n\
-                   fn apply(self, rhs: unsigned[8]) -> Vec2 { return Vec2 { .x = self.x * rhs, .y = self.y * rhs }; }\n\
+               impl Mul<unsigned[8], Vec2> for Vec2 {\n\
+                   fn mul(self, rhs: unsigned[8]) -> Vec2 { return Vec2 { .x = self.x * rhs, .y = self.y * rhs }; }\n\
                }\n\
                entity E { y: unsigned[8] out }\n\
                impl E { let a: Vec2; a = Vec2 { .x = 3, .y = 5 }; let s: Vec2; s = a * 3; y = s.x + s.y; }\n";

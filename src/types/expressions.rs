@@ -203,7 +203,7 @@ impl<'a> Checker<'a> {
                             self.error(
                                 codes::TYPE_MISMATCH,
                                 *span,
-                                format!("`not` needs an `impl Operator<\"not\", …> for {owner}`"),
+                                format!("`not` needs an `impl Not<Out> for {owner}`"),
                             );
                         }
                     }

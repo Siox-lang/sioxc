@@ -116,12 +116,12 @@ fn compiler_hook_traits_are_selected_by_declaration_not_leaf() {
 /// language operator.
 fn custom_operator_trait_does_not_define_language_operators() {
     let custom = "module custom; \
-            pub trait Operator<op: string, input, output> { \
-                fn apply(self, rhs: input) -> output; \
+            pub trait Add<Rhs, Out> { \
+                fn add(self, rhs: Rhs) -> Out; \
             } \
             pub struct Token(integer); \
-            impl Operator<\"+\", Token, Token> for Token { \
-                fn apply(self, rhs: Token) -> Token { return self; } \
+            impl Add<Token, Token> for Token { \
+                fn add(self, rhs: Token) -> Token { return self; } \
             }";
     let user = "module user; \
             entity E { a: custom::Token in, b: custom::Token in, y: custom::Token out } \
@@ -132,7 +132,7 @@ fn custom_operator_trait_does_not_define_language_operators() {
             diagnostic.code == Some(codes::TYPE_MISMATCH)
                 && diagnostic.message.contains("no `+` operator")
         }),
-        "a same-leaf custom trait must not become the Operator hook: {:#?}",
+        "a same-leaf custom trait must not become the `Add` hook: {:#?}",
         sink.diagnostics()
     );
 }

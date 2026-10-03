@@ -89,7 +89,7 @@ precise reference.
 - **Logic encoding is a std contract.** `std::logic::LogicEncoding` defines the
   packed value bit, the two ordinary binary values, high impedance, and
   VHDL-style X01 normalization as methods over the enum. Elaboration evaluates
-  that impl and the scalar `Operator` bodies into `Design` metadata/tables.
+  that impl and the scalar operator bodies into `Design` metadata/tables.
   Source order, discriminant values, unknown classification, and truth tables
   are therefore not duplicated in compiler or backend code.
 - **`'c'` is a value, `"c"` is a string.** A character literal (`'0'`, `'Z'`,
@@ -111,7 +111,7 @@ precise reference.
 
 - Generics with trait bounds, `where` clauses, and recursive type arguments
   such as `Outer<Box<unsigned[8]>>`.
-- **One operator trait** — `impl Operator<"+", In, Out> for T`; comparisons
+- **One operator trait** — `impl Add<In, Out> for T`; comparisons
   are the `Eq`/`Ord` traits, whose methods return `Bool`.
 - **Methods** — `recv.method(args)` on a value's inherent or trait impl
   (`impl T { fn m(self, ..) }`); value-returning methods inline into an
@@ -390,7 +390,7 @@ Trait identity includes its declaring module. Two modules may therefore export
 traits with the same leaf name; an import or qualified path selects the exact
 contract, and defaults or implementations from one trait never satisfy the
 other. The exact builtin and standard-library declarations of compiler hook
-traits such as `core::ops::Operator` and `core::ops::LogicEncoding` remain
+traits such as `core::ops::Add` and `core::ops::LogicEncoding` remain
 canonical language contracts, while nominal types appearing in their template
 arguments retain their resolved module identity.
 A user module may declare a same-named trait such as `protocol::From`; it stays
@@ -610,8 +610,8 @@ type Pair<T> = Packet<T>;              // a generic alias
   identity; a distinct type is the newtype form, `struct Word(Bit[]);`
   (§3.28). A generic alias takes the same binder as other declarations and is
   applied like its target: `Pair<unsigned[8]>` is `Packet<unsigned[8]>`.
-- Operators never need an import: `a + b` finds its `impl Operator<"+", …>`
-  through the operand's type (§3.25). Every module reached by any `use` form
+- Operators never need an import: `a + b` finds its `impl Add<…>` through
+  the operand's type (§3.25). Every module reached by any `use` form
   contributes its user operators' precedences.
 - `pub use` and glob imports are never reported by the `unused_import` lint.
 - The removed `using` keyword is an error whose help gives the `use` or `type`
@@ -669,7 +669,7 @@ signal assignment.
   must be one the declaration lists (`E-P006`).
 
 ```siox
-impl Operator<"nand", Logic, Logic> for Logic {
+impl CustomOperator<"nand", Logic, Logic> for Logic {
     attr precedence = 40;              // the enclosing implementation
     fn apply(self, rhs: Logic) -> Logic { ... }
 }
@@ -782,8 +782,8 @@ impl<T: Resolve> Resolve for T[] {
     }
 }
 
-impl<T: Operator<"and", T, T>> Operator<"and", T, T> for T[] {
-    fn apply(self, rhs: T[]) -> T[] {
+impl<T: And<T, T>> And<T, T> for T[] {
+    fn and(self, rhs: T[]) -> T[] {
         let result: T[] = self;
         for i in self'range { result[i] = self[i] and rhs[i]; }
         return result;
@@ -2059,39 +2059,54 @@ assignment/connection width rules (3.17) and in concatenation sizing.
 
 ### 3.25 Operator traits (Rust-style)
 
-Operator overloading goes through a **single** trait,
-`std::ops::Operator<op, Input, Output>`, parameterized by the operator symbol
-(like Rust's `std::ops` collapsed into one). Every operator — arithmetic,
-logical, and user-defined — is `impl Operator<"<sym>", Input, Output> for T`
-with one method, `apply`. Comparisons are the exception: they are the
-`core::cmp` traits `Eq` and `Ord` (below). Public contracts live in std; the
-compiler bootstraps the single `Operator` name so parsing and diagnostics
-proceed before std resolution completes:
+Operators are traits in `core::ops`, as rustc's. The **standard operators**
+are a closed set with grammar-fixed precedence, so each has a named trait with
+a method named after it, found by lang item; `Rhs` is the right operand's type
+(overloads select by it) and `Out` the result's:
 
-| operator | impl | operator | impl |
-|---|---|---|---|
-| `+` | `Operator<"+", In, Out>` | `and` | `Operator<"and", In, Out>` |
-| `-` | `Operator<"-", In, Out>` | `or` | `Operator<"or", In, Out>` |
-| `*` | `Operator<"*", In, Out>` | `not` (unary) | `Operator<"not", In, Out>` |
-| `/` | `Operator<"/", In, Out>` | `xor`/`nand`/`nor`/`xnor` | `Operator<"xor", …>` … |
-| `<<` `>>` | `Operator<"<<", …>` … | `== !=` / `< <= > >=` | `Eq<Rhs>` / `Ord<Rhs>` |
+| operator | trait | method | operator | trait | method |
+|---|---|---|---|---|---|
+| `+` | `Add<Rhs, Out>` | `add` | `and` | `And<Rhs, Out>` | `and` |
+| `-` | `Sub<Rhs, Out>` | `sub` | `or` | `Or<Rhs, Out>` | `or` |
+| `*` | `Mul<Rhs, Out>` | `mul` | `not` (unary) | `Not<Out>` | `not` |
+| `/` | `Div<Rhs, Out>` | `div` | `== !=` | `Eq<Rhs>` (`core::cmp`) | `eq`, `ne` |
+| `<<` | `Shl<Rhs, Out>` | `shl` | `< <= > >=` | `Ord<Rhs>` (`core::cmp`) | `lt`, `le`, `gt`, `ge` |
+| `>>` | `Shr<Rhs, Out>` | `shr` | any other | `CustomOperator<"sym", Rhs, Out>` | `apply` |
 
 ```siox
-impl Operator<"+", Complex, Complex> for Complex {
-    fn apply(self, rhs: Complex) -> Complex {
+impl Add<Complex, Complex> for Complex {
+    fn add(self, rhs: Complex) -> Complex {
         return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };
     }
 }
+// c1 + c2, or c1.add(c2)
 ```
 
-The **standard symbols** (`+ - * / << >> and or not`) carry built-in
-precedence. Any **other symbol** is a user operator (`xor`, `nand`, `^^`, …):
-its impl binds its binding power with `attr precedence = N;`. Unary `not`
-implements `apply(self)` with no rhs. Using an operator on a user struct/enum
+rustc's `BitAnd`/`BitOr` are `And`/`Or` here: siox's `and`/`or`/`not` are one
+boolean-per-bit family (below), not a bitwise/logical pair, so each trait takes
+its operator's name. The method can be called directly (`a.add(b)` is
+`a + b`), and a bound names the capability a generic body needs:
+`fn sum<T: Add<T, T>>(a: T, b: T) -> T`.
+
+Any **other symbol** — a word or punctuation the grammar does not reserve,
+such as `xor`, `nand` or `^^` — is a **user operator**,
+`impl CustomOperator<"sym", Rhs, Out> for T` with `fn apply`, and binds its
+precedence inside its impl:
+
+```siox
+impl CustomOperator<"xor", Logic, Logic> for Logic {
+    attr precedence = 35;
+    fn apply(self, rhs: Logic) -> Logic { … }
+}
+```
+
+A standard symbol in `CustomOperator` is an error whose help names its trait.
+`Operator`, the single symbol-parameterized trait these replaced, is gone; a
+use of it is an error naming the replacements. Using an operator on a user struct/enum
 without a matching impl is an error (`==`/`!=` stay built-in on enums as
 discriminant comparison). `Self` in an impl refers to the implementing type.
 
-Operator declarations may live in an imported module. Before parsing
+Custom operator declarations may live in an imported module. Before parsing
 expressions, the compiler follows the exact transitive `use` graph and reads
 their precedence attributes; it does not scan unrelated source files. Thus a
 re-exported operator behaves identically to one declared in the entry file,
@@ -2111,10 +2126,10 @@ its width: `(a + b) * c` on `ufixed[3..-4]` operands is still a
 actually passed.
 
 **Reserved symbols cannot be overloaded.** The grammar owns `=`, `::`, `:`,
-`.`, `..`, `->`, `=>`, `,`, `;`, `#`, the brackets, and the like, so an
-`Operator<"=", …>` impl is an error. The six comparison operators
+`.`, `..`, `->`, `=>`, `,`, `;`, `#`, the brackets, and the like, so a
+`CustomOperator<"=", …>` impl is an error. The six comparison operators
 (`< <= > >= == !=`) are reserved too — implement `Eq`/`Ord` instead. `<=>`
-is not an operator: an `Operator<"<=>", …>` impl is an error whose help shows
+is not an operator: a `CustomOperator<"<=>", …>` impl is an error whose help shows
 the `Eq`/`Ord` impls that replace it.
 
 **Comparisons.** As rustc's `PartialEq`/`PartialOrd`, each comparison is a
@@ -2204,16 +2219,16 @@ lowers to one driver per field).
 impls on `integer` catch literal left operands:
 
 ```siox
-impl Operator<"+", Complex, Complex> for Complex {
-    fn apply(self, rhs: Complex) -> Complex { ... }
+impl Add<Complex, Complex> for Complex {
+    fn add(self, rhs: Complex) -> Complex { ... }
 }
 
-impl Operator<"+", integer, Complex> for Complex {
-    fn apply(self, rhs: integer) -> Complex { ... }   // z + 3
+impl Add<integer, Complex> for Complex {
+    fn add(self, rhs: integer) -> Complex { ... }   // z + 3
 }
 
-impl Operator<"+", Complex, Complex> for integer {
-    fn apply(self, rhs: Complex) -> Complex { ... }   // 10 + 5i
+impl Add<Complex, Complex> for integer {
+    fn add(self, rhs: Complex) -> Complex { ... }   // 10 + 5i
 }
 ```
 
@@ -2390,7 +2405,7 @@ whose one-argument form `T(x)` is the conversion of §3.28. `T(...)` reads as
 nothing (`New::new()`), `T(x)` transforms an existing value. This is still a
 *function* acting to produce data — the type name in call position names the
 constructor, it does not invoke the inert data — consistent with every other
-trait (`From::from`, `Operator::apply`, `Boolean::as_bool`). A parameterized
+trait (`From::from`, `Add::add`, `Boolean::as_bool`). A parameterized
 `new(args)` (when a type provides one) is ordinary explicit construction.
 
 ```siox
@@ -3057,7 +3072,7 @@ does not expose explicit `transport` or custom `reject` syntax. See
 A function may be generic over a type with an optional trait bound:
 
 ```siox
-fn maxi<T: Operator>(a: T, b: T) -> T {   // or:  fn maxi<T>(a, b) where T: Operator
+fn maxi<T: Ord<T>>(a: T, b: T) -> T {   // or:  fn maxi<T>(a, b) where T: Ord<T>
     if a > b { return a; }
     return b;
 }
@@ -3067,8 +3082,7 @@ Functions inline, so a call is its own monomorphization: the body dispatches
 operators on the caller's concrete type (`signed`'s signed `Ord`, not the kernel
 compare), and the bound is checked at the call site — a named struct/enum must
 carry an explicit `impl Tr`, while kernel scalars and vectors satisfy the
-built-in capabilities. `T: Operator` is the capability bound "supports operator
-overloading". `where T: Operator` is exact sugar for `<T: Operator>`; the two
+built-in capabilities. `where T: Ord<T>` is exact sugar for `<T: Ord<T>>`; the two
 forms parse to the same declaration. Abstract bodies are not type-checked on
 their own — each call is.
 

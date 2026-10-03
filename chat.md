@@ -10831,3 +10831,21 @@ IR touches, both paths:
 
 Known gap, also on main: `x == Money(3)` (a newtype constructor as a
 comparison operand in a process) lowers to an unsupported call.
+
+### 2026-10-03 — Claude — named operator traits; `CustomOperator`
+
+`Operator<"sym", In, Out>` is gone. The standard operators are named
+`core::ops` traits found by lang item — `Add`/`Sub`/`Mul`/`Div`/`Shl`/`Shr`/
+`And`/`Or` (`Trait<Rhs, Out>`, method `add`, …) and `Not<Out>` (`fn not`) —
+and user symbols are `CustomOperator<"sym", Rhs, Out>` with `apply` and a
+required `attr precedence`. `CustomOperator<"+", …>` is an error naming
+`Add`; a leftover `Operator` gets a help naming the replacements. std, the
+corpus and the Rust tests moved over (`std::float`'s free `add` helper is now
+`add_words`: inside the impl a bare `add(…)` resolved to the new method).
+
+Compiler: the symbol stays the internal key everywhere. `syntax::ast`
+has the trait/symbol/method table (`OPERATOR_TRAITS`); `types/collect.rs`,
+`ir/lower/collect.rs`, `ir/functions.rs` and both blanket-requirement helpers
+map a named trait to its symbol, so neither IR path changed shape. A named
+trait also registers in `trait_impls` under its own name, so `T: Add<T, T>`
+is a real bound. The parser's precedence discovery reads `CustomOperator`.

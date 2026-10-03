@@ -9,28 +9,28 @@ pub struct Complex {
     pub im: real
 }
 
-impl Operator<"+", Complex, Complex> for Complex {
-    fn apply(self, rhs: Complex) -> Complex {
+impl Add<Complex, Complex> for Complex {
+    fn add(self, rhs: Complex) -> Complex {
         return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };
     }
 }
 
 // `z + 3`: the trait's type argument names the rhs operand type (Rust style).
-impl Operator<"+", integer, Complex> for Complex {
-    fn apply(self, rhs: integer) -> Complex {
+impl Add<integer, Complex> for Complex {
+    fn add(self, rhs: integer) -> Complex {
         return Complex { .re = self.re + rhs, .im = self.im };
     }
 }
 
 // `10 + 5i`: a numeric left operand promotes into the Complex plane.
-impl Operator<"+", Complex, Complex> for integer {
-    fn apply(self, rhs: Complex) -> Complex {
+impl Add<Complex, Complex> for integer {
+    fn add(self, rhs: Complex) -> Complex {
         return Complex { .re = self + rhs.re, .im = rhs.im };
     }
 }
 
-impl Operator<"-", Complex, Complex> for Complex {
-    fn apply(self, rhs: Complex) -> Complex {
+impl Sub<Complex, Complex> for Complex {
+    fn sub(self, rhs: Complex) -> Complex {
         return Complex { .re = self.re - rhs.re, .im = self.im - rhs.im };
     }
 }

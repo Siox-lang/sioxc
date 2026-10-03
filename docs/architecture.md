@@ -273,7 +273,7 @@ and native lowering. Views with the same leaf may overload by backing type in
 one module, and equal view leaves in separate modules qualify at the IR/output
 boundary when needed. Custom trait contracts, defaults, implementations, and
 operator operand types use resolver-selected identity as well. The exact
-builtin and `core::ops` hook declarations such as `Operator` are the deliberate
+builtin and `core::ops` hook declarations such as `Add` are the deliberate
 exception: they keep one canonical language key while their user-defined
 operand types remain identity-preserving. A same-named trait declared in any
 other module is an ordinary qualified contract and never enters hook tables.
@@ -464,7 +464,7 @@ when its element satisfies the constraint; direct nominal impls override them.
 This supplies element-wise Logic resolution and core logical operators without
 general trait inheritance. They accept `integer` on assignment (spec,
 "type kernel") and get their operators from `std/bits.siox` as Rust-style
-`Operator` impls, with comparisons as `Eq`/`Ord` impls — including
+operator-trait impls (`Add`, `Sub`, …), with comparisons as `Eq`/`Ord` impls — including
 `signed`'s sign-aware `Ord` (signed comparison is library source, not compiler
 code). The CLI loads ordinary modules transitively relative to the entry file
 and loads `std::` modules from `--std <dir>` (default
@@ -493,8 +493,8 @@ target as an applied attribute (the form later stages read) and folds each
 `x'name` read of a declared attribute into its bound or default value.
 The compiler's own declarations live in `core`, compiled into `sioxc` and
 loaded with `core::prelude` into every compilation (proposals/core-std.md).
-Each tells the compiler its role with a lang item, `attr lang for Operator =
-"operator";`, which only `core` and `std` may bind; the resolver keeps a
+Each tells the compiler its role with a lang item, `attr lang for Add =
+"add";`, which only `core` and `std` may bind; the resolver keeps a
 table from role to declaration (`Resolved::lang`, `Resolved::lang_of`),
 seeded by builtin fallbacks for compilations that load no library. Hook
 selection asks that table, never a path, so a same-leaf user trait remains an
@@ -505,7 +505,7 @@ is no separate semantic vector type or `Vector` trait.
 
 Multi-valued packed logic is source-directed as well. Elaboration evaluates
 the canonical `std::logic::LogicEncoding` impl over every enum variant and
-evaluates scalar logical `Operator` impls over every operand pair. The resulting
+evaluates scalar logical operator impls over every operand pair. The resulting
 value-bit, binary/metavalue, high-impedance, X01, and operator tables live in
 `Design::logic_encodings`; IR and native output consume them instead of testing
 enum positions or duplicating `std_logic_1164` tables. Final IR normalization

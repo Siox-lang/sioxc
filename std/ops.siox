@@ -3,5 +3,6 @@ module std::ops;
 // As rustc's `std::ops` re-exports `core::ops`, so does this. A type's
 // implementations of these hooks live with the type (`Bit`'s in `std::logic`).
 pub use core::ops::{
-    Operator, Prefix, Suffix, Range, Index, IndexAssign, Boolean, Resolve, LogicEncoding
+    Add, Sub, Mul, Div, Shl, Shr, And, Or, Not, CustomOperator,
+    Prefix, Suffix, Range, Index, IndexAssign, Boolean, Resolve, LogicEncoding
 };

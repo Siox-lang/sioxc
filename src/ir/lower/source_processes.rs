@@ -6250,8 +6250,8 @@ mod tests {
             "module tests;\n\
              enum Mode { Off, On }\n\
              enum Cell { Low, High }\n\
-             impl Operator<\"not\", Cell, Cell> for Cell {\n\
-               fn apply(self) -> Cell {\n\
+             impl Not<Cell> for Cell {\n\
+               fn not(self) -> Cell {\n\
                  if self == Cell::Low { return Cell::High; }\n\
                  return Cell::Low;\n\
                }\n\
@@ -6301,16 +6301,16 @@ mod tests {
             "module std::attrs; use std::logic::Bool; pub attr test: Bool for entity; attr lang for test = \"test\";",
             "module std::ops; use std::logic::Bool; pub enum Ordering { Less, Equal, Greater } \
              pub trait Boolean { fn as_bool(self) -> Bool; } attr lang for Boolean = \"boolean\"; \
-             pub trait Operator<op: string, input, output> { fn apply(self, rhs: input) -> output {} } attr lang for Operator = \"operator\"; \
+             pub trait Not<Out> { fn not(self) -> Out; } attr lang for Not = \"not\"; \
              impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } } \
-             impl Operator<\"not\", Bool, Bool> for Bool { fn apply(self) -> Bool { return self; } } \
-             impl<T: Operator<\"not\", T, T>> Operator<\"not\", T, T> for T[] { \
-               fn apply(self) -> T[] { let result: T[] = self; \
+             impl Not<Bool> for Bool { fn not(self) -> Bool { return self; } } \
+             impl<T: Not<T>> Not<T> for T[] { \
+               fn not(self) -> T[] { let result: T[] = self; \
                  for i in self'range { result[i] = not self[i]; } return result; } } \
              pub trait Suffix<symbol: string, input> { fn suffix(data: input) {} } \
              attr lang for Suffix = \"suffix\";",
             "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
-             pub use std::ops::{Boolean, Operator};",
+             pub use std::ops::{Boolean, Not};",
             "module std::sim; use std::ops::Suffix; pub struct time(integer); attr lang for time = \"time\"; \
              impl Suffix<\"ns\", integer> for time { \
                fn suffix(value: integer) -> time { return time(value * 37); } \

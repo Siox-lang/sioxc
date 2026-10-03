@@ -684,7 +684,8 @@ impl<'a> Lowering<'a> {
                 .with_code(crate::diag::codes::TYPE_MISMATCH)
                 .at(span)
                 .help(
-                    "an operator is `impl Operator<\"<sym>\", Rhs, Out> for T`, and the \
+                    "an operator impl names its right operand type (`impl Add<Rhs, Out> \
+                     for T`), and the \
                      right operand has to match `Rhs` — a bare integer literal only \
                      matches an `Rhs` of the same type as the left operand, so convert \
                      it explicitly (`x * unsigned[8](3)`)",

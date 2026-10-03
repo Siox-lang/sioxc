@@ -16,8 +16,8 @@ are in the repository's `core/` directory, compiled into `sioxc`, so
 (`core::ops`), the comparison traits `Eq`/`Ord` and `Ordering` (`core::cmp`), `From` (`core::convert`), `New` (`core::default`),
 the built-in macros and `Severity` (`core::macros`), and the attributes the
 compiler reads, `precedence` and `lang` (`core::attrs`). Each declaration
-tells the compiler its role with a lang item, `attr lang for Operator =
-"operator";`, and the compiler finds its hooks by role, never by path; only
+tells the compiler its role with a lang item, `attr lang for Add =
+"add";`, and the compiler finds its hooks by role, never by path; only
 `core` and `std` may bind `lang`. `core::prelude` reaches every module, and
 `std` re-exports `core`'s modules as rustc's does (`std::cmp::Ordering` is
 `core::cmp::Ordering`).
@@ -26,9 +26,11 @@ Directives — `#[test]`, `#[allow(..)]`, `#[warn(..)]`, `#[deny(..)]`,
 `#[forbid(..)]` — are not declared anywhere: like rustc's, they are built into
 the compiler.
 
-Every operator is an `Operator<"symbol", Input, Output>` implementation, and
-a user operator (a non-standard symbol) binds its precedence inside its impl
-(`attr precedence = N;`), discovered before expression parsing.
+Every standard operator is a named `core::ops` trait (`impl Add<Rhs, Out>
+for T` with `fn add`; `Sub`, `Mul`, `Div`, `Shl`, `Shr`, `And`, `Or`, `Not`),
+and a user operator is `CustomOperator<"symbol", Rhs, Out>` with `fn apply`,
+binding its precedence inside its impl (`attr precedence = N;`), discovered
+before expression parsing.
 
 Design stance (see the spec's "type kernel"): the compiler provides exactly
 three base types — `integer`, `real`, and `Char` (a non-numeric character
@@ -46,7 +48,7 @@ is a documented shim, and the declaration here is canonical.
 | ------------- | -------------------------------- | -------- |
 | `core::prelude` | (implicit `std.standard`)        | always loaded, built in: `Bool`, `string`, `Boolean`, `Range`, indexing, `Resolve`, `Eq`, `Ord`, `Ordering`, `New`, `From`, `precedence`, the built-in macros |
 | `core::primitive` | std.standard `boolean`, `string` | `Bool`, `string = Char[]`, `integer`'s `abs`/`rem`/`mod` |
-| `core::ops`   | (operators are VHDL functions)     | `Operator`, `Prefix`, `Suffix`, `Index`, `IndexAssign`, `Range`, `Boolean`, `Resolve`, `LogicEncoding` |
+| `core::ops`   | (operators are VHDL functions)     | `Add`, `Sub`, `Mul`, `Div`, `Shl`, `Shr`, `And`, `Or`, `Not`, `CustomOperator`, `Prefix`, `Suffix`, `Index`, `IndexAssign`, `Range`, `Boolean`, `Resolve`, `LogicEncoding` |
 | `core::cmp`   |                                    | `Eq`, `Ord` (the comparisons, returning `Bool`), `Ordering` |
 | `core::convert` |                                  | `From` |
 | `core::default` |                                  | `New` |
@@ -55,7 +57,7 @@ is a documented shim, and the declaration here is canonical.
 | `std::prelude`| (implicit `std.standard`)          | auto-loaded `Bit`/`Logic`, `unsigned`/`signed`/`sext`, `time`/`frequency` |
 | `std::primitive`, `std::cmp`, `std::convert`, `std::default` | | re-export the `core` modules of the same name |
 | `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `ULogic`, `Logic` and their operators; resolution and logic tables |
-| `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Operator` impls, `Eq`/`Ord` (signed compares signed), `abs`/`rem`/`mod` |
+| `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Add`/`Sub`/… impls, `Eq`/`Ord` (signed compares signed), `abs`/`rem`/`mod` |
 | `std::ops`    | (operators are functions in VHDL packages) | re-exports `core::ops` |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
@@ -95,7 +97,7 @@ pub const HIGH: Bit = '1';
 marker. Its `to_bool`, `is_binary`, `is_high_impedance`, and `to_x01` methods
 are the VHDL-directed source of packed value/metavalue classification.
 Elaboration evaluates them for every variant and evaluates the ordinary
-`Operator` bodies into per-element truth tables stored in `Design`. Backends
+operator bodies into per-element truth tables stored in `Design`. Backends
 therefore know neither ULogic symbols nor their discriminants. The declaration
 uses IEEE order while explicit discriminants keep the packed ABI stable.
 
@@ -108,7 +110,7 @@ detection is applied to it — `clk.rising()` / `clk.falling()` (the
 `unsigned[N]` (VHDL `unsigned`) and `signed[N]` (`signed`) are *derived* Logic
 vectors with numeric interpretation, and accept `integer` on assignment
 (`let x: unsigned[8] = 42;`). Only the kernel types (`integer`/`real`) have
-built-in operators; unsigned/signed get theirs **here** as `Operator` impls:
+built-in operators; unsigned/signed get theirs **here** as `Add`/`Sub`/… impls:
 `"+"`/`"-"`/`"*"`/`"/"`/`"<<"`/`">>"` over the kernel word operators (wrap at
 the stored width), and `signed` gets a **sign-aware `impl Ord<signed> for signed`** — signed
 comparison is library source, not compiler code (`-1 < 1` on signed[8], while
@@ -146,10 +148,11 @@ element type implements the scalar contract. Consequently `unsigned` and
 impls; their arithmetic and signed interpretation remain nominal impls in
 `std::bits`.
 
-`Operator`, `Suffix`, and `Prefix` are compiler bootstraps. Operator symbol,
-precedence, input, and output are std/user declarations. Impls are inlined
+The operator traits, `Suffix`, and `Prefix` are compiler bootstraps. A custom
+operator's symbol and precedence, and every impl's input and output, are
+std/user declarations. Impls are inlined
 at lowering as pure expression trees; mixed operand types overload by the
-`Input` parameter type, and `impl Operator<"+", Complex, _> for integer`
+`Input` parameter type, and `impl Add<Complex, _> for integer`
 catches literal left operands (`10 + 5i`). An `impl Suffix<"ns", _> for T` defines the literal suffix named
 by its symbol argument, its `suffix` method inlined at the use site (`10ns` →
 a `time`); two loaded types defining one suffix is an ambiguity error. See

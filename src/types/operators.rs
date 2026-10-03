@@ -337,7 +337,8 @@ impl<'a> Checker<'a> {
                     self.ty_display(&right)
                 ),
                 format!(
-                    "use numeric operands, convert explicitly, or implement `Operator<\"{symbol}\", Input, Output>`"
+                    "use numeric operands, convert explicitly, or implement `{}`",
+                    crate::syntax::ast::operator_impl_form(symbol)
                 ),
             );
         }

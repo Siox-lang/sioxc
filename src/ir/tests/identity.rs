@@ -690,11 +690,11 @@ fn equal_operator_operand_leaves_select_the_resolved_overload() {
         ("module b; pub struct Token(integer);", FileId(2)),
         (
             "module ops; \
-                 impl Operator<\"+\", a::Token, integer> for common::Acc { \
-                   fn apply(self, rhs: a::Token) -> integer { return 11; } \
+                 impl Add<a::Token, integer> for common::Acc { \
+                   fn add(self, rhs: a::Token) -> integer { return 11; } \
                  } \
-                 impl Operator<\"+\", b::Token, integer> for common::Acc { \
-                   fn apply(self, rhs: b::Token) -> integer { return 22; } \
+                 impl Add<b::Token, integer> for common::Acc { \
+                   fn add(self, rhs: b::Token) -> integer { return 22; } \
                  }",
             FileId(3),
         ),

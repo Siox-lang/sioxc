@@ -37,7 +37,7 @@ compiler's runtime and every target has one.
 | Area | Contents | Why it cannot be a library |
 | --- | --- | --- |
 | Kernel types | `integer`, `real`, `Char`, `Bool` (`true`/`false`), `string = Char[]`, `Range` | The grammar produces them: integer, real, character, string and range literals, and conditions. |
-| Operator hooks | `Operator<"sym", In, Out>`, `Eq`/`Ord` (the comparisons), `Prefix`, `Suffix`, `Index`, `IndexAssign` | Expression syntax dispatches to them. |
+| Operator hooks | `Add`/`Sub`/`Mul`/`Div`/`Shl`/`Shr`/`And`/`Or`/`Not`, `CustomOperator<"sym", Rhs, Out>`, `Eq`/`Ord` (the comparisons), `Prefix`, `Suffix`, `Index`, `IndexAssign` | Expression syntax dispatches to them. |
 | Value hooks | `Boolean`, `Resolve`, `New`, `From`, `LogicEncoding` | Conditions, parallel drivers, defaults, conversions and metavalue planes call them. |
 | Directives | `#[test]`, `#[allow]`/`#[warn]`/`#[deny]`/`#[forbid]` and `enum Lint`, `#[latched]`/`#[latch]` ([pipelines.md](pipelines.md)), `lang` | They change what the compiler emits or reports. |
 | Compiler-read attributes | `precedence` | The parser reads it to group expressions. |
@@ -100,8 +100,8 @@ marks, I/O standards, pin assignments — belong in vendor packages
   directives and the macros. It cannot be turned off.
 - `std` keeps its prelude: `Bit`, `Logic`, `unsigned`, `signed`, `sext`,
   `string`, `time`, `frequency`.
-- `std` re-exports `core` where today's paths name it, so `std::ops::Operator`
-  keeps working as a re-export of `core::ops::Operator`.
+- `std` re-exports `core` where today's paths name it, so `std::ops::Add`
+  keeps working as a re-export of `core::ops::Add`.
 
 There is no `#![no_std]` here: under this split `std` holds the logic and
 numeric types that hardware is written in. Restricting a design to what can be
@@ -138,7 +138,7 @@ What the first slice does, decided:
 
   | module | contents |
   | --- | --- |
-  | `core::ops` | `Bool` and its logical operators, `Operator`, `Prefix`, `Suffix`, `Range`, `Index`, `IndexAssign`, `Ordering`, `Boolean`, `Resolve`, `New`, `From`, `LogicEncoding`, and the element-wise impls over `T[]` |
+  | `core::ops` | `Bool` and its logical operators, the operator traits, `Prefix`, `Suffix`, `Range`, `Index`, `IndexAssign`, `Ordering`, `Boolean`, `Resolve`, `New`, `From`, `LogicEncoding`, and the element-wise impls over `T[]` |
   | `core::attrs` | `test`, `allow`/`warn`/`deny`/`forbid` and `Lint`, `precedence`, `lang` |
   | `core::text` | `string` |
   | `core::assert` | `Severity` |
@@ -149,11 +149,11 @@ What the first slice does, decided:
   declarations. `time` and `frequency` stay in `std::sim`, as the table above
   says; the compiler finds `time` through its lang item.
 - **`std` re-exports** each moved name from its old module (`pub use
-  core::ops::Operator;` in `std::ops`, `Bool` in `std::logic`), so no program
+  core::ops::Add;` in `std::ops`, `Bool` in `std::logic`), so no program
   changes. `std::prelude` keeps its list.
 - **Lang items replace path matching.** `core::attrs` declares
   `attr lang: string`, and the declaring modules bind it:
-  `attr lang for Operator = "operator";`. The resolver builds a table from
+  `attr lang for Add = "add";`. The resolver builds a table from
   lang name to declaration, and every compiler check that matched a
   `std::…` path asks it instead: the hook traits, `test`, `Bool`, `time`,
   `unsigned`, `LogicEncoding`. Only `core` and `std` modules may bind `lang`,
@@ -187,7 +187,7 @@ Decided, with rustc's `core` and `std` as the reference:
   | `core::cmp::Ordering` | `core::cmp::Ordering` |
   | `core::convert::From` | `core::convert::From` |
   | `core::default::Default` | `core::default::New` |
-  | `core::ops::{Add, Index, IndexMut, Range, …}` | `core::ops::{Operator, Prefix, Suffix, Index, IndexAssign, Range}`, and the hooks with no rustc counterpart: `Boolean`, `Resolve`, `LogicEncoding` |
+  | `core::ops::{Add, Index, IndexMut, Range, …}` | `core::ops::{Add, …, Not, CustomOperator, Prefix, Suffix, Index, IndexAssign, Range}`, and the hooks with no rustc counterpart: `Boolean`, `Resolve`, `LogicEncoding` |
   | `bool`, `str` (`core::primitive`) | `core::primitive::{Bool, string}` |
   | `assert!`, `panic!` (builtin macros in `core::prelude`) | `core::macros::{assert, warn, print, error}`, with `Severity` |
   | `#[lang]`, rustc-internal attributes | `core::attrs::{lang, precedence}`: the attributes the compiler reads |

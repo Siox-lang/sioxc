@@ -217,7 +217,7 @@ impl<'a> Checker<'a> {
                 if let Some(owner) = self.ty_head(&rhs_ty) {
                     if let Some((_, Some(output))) = self
                         .operator_sigs
-                        .get(&("Not".to_string(), owner.clone()))
+                        .get(&("not".to_string(), owner.clone()))
                         .and_then(|sigs| sigs.first())
                     {
                         if output == "Self" || output == &owner {
