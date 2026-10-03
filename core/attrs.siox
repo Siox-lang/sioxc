@@ -10,6 +10,6 @@ module core::attrs;
 pub attr precedence: integer for impl = 0;
 
 // What a `core` or `std` declaration is to the compiler: `attr lang for
-// Operator = "operator";`. Only `core` and `std` may bind it.
+// Add = "add";`. Only `core` and `std` may bind it.
 pub attr lang: string for trait, enum, struct, attr = "";
 

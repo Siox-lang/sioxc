@@ -32,19 +32,22 @@ use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
 
-/// The single operator trait (spec 3.25): every operator dispatches through
-/// `impl Operator<"<sym>", Input, Output> for T` (method `apply`), keyed by the
-/// symbol in its first template argument. `a + b` -> `Operator<"+", _, _>`,
-/// `and` -> `Operator<"and", _, _>`, unary `not` -> `Operator<"not", _, _>`,
-/// while the comparisons go through `Eq`/`Ord` (`core::cmp`). Seeded as a builtin so `impl Operator<..> for T` needs no
-/// import.
-pub const OPERATORS: &[&str] = &["Operator"];
-
-/// Trait names the compiler itself provides. They stay reachable as
+/// Trait names the compiler itself provides: the hooks expression syntax
+/// dispatches to, including the named operator traits (`Add`, … `Not`, spec
+/// 3.25) and `CustomOperator` for user symbols. They stay reachable as
 /// builtins even when std declares a trait with the same spelling, so a
 /// user module never has to import them to write an `impl`.
 const COMPILER_TRAITS: &[&str] = &[
-    "Operator",
+    "Add",
+    "Sub",
+    "Mul",
+    "Div",
+    "Shl",
+    "Shr",
+    "And",
+    "Or",
+    "Not",
+    "CustomOperator",
     "Prefix",
     "Suffix",
     "Index",
@@ -61,7 +64,16 @@ const COMPILER_TRAITS: &[&str] = &[
 /// The lang role of each compiler hook trait, by its builtin fallback's name.
 fn trait_role(name: &str) -> Option<&'static str> {
     Some(match name {
-        "Operator" => "operator",
+        "Add" => "add",
+        "Sub" => "sub",
+        "Mul" => "mul",
+        "Div" => "div",
+        "Shl" => "shl",
+        "Shr" => "shr",
+        "And" => "and",
+        "Or" => "or",
+        "Not" => "not",
+        "CustomOperator" => "custom_operator",
         "Prefix" => "prefix",
         "Suffix" => "suffix",
         "Index" => "index",
@@ -126,7 +138,7 @@ pub struct DefId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DefKind {
     /// Compiler-provided type, operator hook, or attribute (`integer`,
-    /// `Operator`, `top`, ...).
+    /// `Add`, `top`, ...).
     Builtin,
     /// A `struct` declaration.
     Struct,
@@ -1882,6 +1894,12 @@ impl<'a> Resolver<'a> {
                 self.mark_impl_param_use(id);
             } else {
                 let help = match self.suggest(&name) {
+                    // The retired single operator trait (spec 3.25).
+                    _ if name == "Operator" => "`Operator` was split: a standard operator \
+                        implements its named trait (`Add<Rhs, Out>`, `Sub`, `Mul`, `Div`, \
+                        `Shl`, `Shr`, `And`, `Or`, `Not<Out>`) and a user symbol \
+                        `CustomOperator<\"sym\", Rhs, Out>`"
+                        .to_string(),
                     Some(s) => format!("did you mean `{s}`?"),
                     None => "declare it, or import it with `use`".to_string(),
                 };
@@ -3669,7 +3687,7 @@ mod tests {
     fn operator_traits_resolve_and_reject_unknown_operators() {
         // The operator trait and its impl resolve cleanly.
         let (_, errs) = resolve_src(
-            "module m;\nstruct V { a: Bit }\nimpl Operator<\"+\", V, V> for V {\n  fn apply(self, rhs: V) -> V {\n    return self;\n  }\n}\n",
+            "module m;\nstruct V { a: Bit }\nimpl Add<V, V> for V {\n  fn add(self, rhs: V) -> V {\n    return self;\n  }\n}\n",
         );
         assert_eq!(errs, 0);
 
@@ -3952,20 +3970,40 @@ mod tests {
     fn lang_items_name_compiler_roles() {
         let mut sink = DiagnosticSink::new();
         let modules = [
-            "module core::a; pub trait Hook {} attr lang for Hook = \"operator\";",
-            "module core::b; pub trait Other {} attr lang for Other = \"operator\";",
+            "module core::a; pub trait Hook {} attr lang for Hook = \"add\";",
+            "module core::b; pub trait Other {} attr lang for Other = \"add\";",
         ]
         .iter()
         .enumerate()
         .map(|(index, source)| crate::syntax::parse_module(FileId(index as u32), source, &mut sink))
         .collect::<Vec<_>>();
         let resolved = resolve(&modules, &mut sink);
-        let hook = resolved.lang("operator").and_then(|id| resolved.def(id));
+        let hook = resolved.lang("add").and_then(|id| resolved.def(id));
         assert_eq!(hook.map(|d| d.name.as_str()), Some("Hook"));
         assert!(
             sink.diagnostics()
                 .iter()
                 .any(|d| d.code == Some(codes::LANG_ITEM) && d.message.contains("bound twice")),
+            "{:#?}",
+            sink.diagnostics()
+        );
+    }
+
+    #[test]
+    /// The retired single `Operator` trait points at what replaced it.
+    fn the_old_operator_trait_names_its_replacements() {
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(
+            FileId(0),
+            "module m; struct V { a: Bit } impl Operator<\"+\", V, V> for V {}",
+            &mut sink,
+        );
+        resolve(std::slice::from_ref(&module), &mut sink);
+        assert!(
+            sink.diagnostics().iter().any(|d| d
+                .help
+                .as_deref()
+                .is_some_and(|help| help.starts_with("`Operator` was split"))),
             "{:#?}",
             sink.diagnostics()
         );

@@ -539,7 +539,7 @@ pub struct TraitDecl {
     pub is_pub: bool,
     /// The trait's name, used in bounds and in `impl Trait for T`.
     pub name: Ident,
-    /// Trait parameters, such as the operand types of `Operator<sym, In, Out>`.
+    /// Trait parameters, such as the operand types of `Add<Rhs, Out>`.
     pub params: Params,
     /// Required methods. A body makes the requirement defaulted.
     pub items: Vec<FnDecl>,
@@ -1046,7 +1046,7 @@ pub enum UnOp {
 /// An infix operator as written in the source.
 ///
 /// Dispatch is Rust-shaped (spec 3.25): `a + b` resolves to an
-/// `impl Operator<"+", Rhs, Out> for <type of a>`, with the implementation
+/// `impl Add<Rhs, Out> for <type of a>`, with the implementation
 /// selected by the right-hand operand's type. Siox uses one type-directed
 /// contract for both scalar boolean and per-element `and`, so the same variant
 /// covers `Bool and Bool` and `Logic[] and Logic[]`. Comparisons call
@@ -1099,7 +1099,7 @@ impl BinOp {
     /// "how wide is it" the same way its operands do.
     ///
     /// `and`/`or` belong here: they are not fixed to `Bool` but overloaded
-    /// per type (`Operator<"and", Logic, Logic> for Logic`), so they return
+    /// per type (`And<Logic, Logic> for Logic`), so they return
     /// what they were given — `x and y` on `Logic` is a `Logic`.
     ///
     /// Comparisons yield `Bool` or `Ordering` whatever their operands were,
@@ -1226,18 +1226,64 @@ pub fn expr_span(e: &Expr) -> Span {
     }
 }
 
-/// The standard operator symbols that carry built-in precedence — an
-/// `impl Operator<sym, _, _>` for one of these needs no `#[precedence]`. Any
-/// other symbol (a user operator like `xor`) must declare its precedence.
+/// The standard operator symbols, which carry built-in precedence and have
+/// named traits. Any other symbol (a user operator like `xor`) is a
+/// `CustomOperator` and must declare its precedence.
 pub fn is_builtin_operator(sym: &str) -> bool {
-    matches!(
-        sym,
-        "+" | "-" | "*" | "/" | "<<" | ">>" | "and" | "or" | "not"
-    )
+    operator_symbol_trait(sym).is_some()
+}
+
+/// The standard operators' named traits (`core::ops`, spec 3.25): trait,
+/// symbol, and the method the impl provides. `not` is unary. User operators
+/// are `CustomOperator<"sym", Rhs, Out>` with `apply` instead.
+pub const OPERATOR_TRAITS: &[(&str, &str, &str)] = &[
+    ("Add", "+", "add"),
+    ("Sub", "-", "sub"),
+    ("Mul", "*", "mul"),
+    ("Div", "/", "div"),
+    ("Shl", "<<", "shl"),
+    ("Shr", ">>", "shr"),
+    ("And", "and", "and"),
+    ("Or", "or", "or"),
+    ("Not", "not", "not"),
+];
+
+/// The symbol a standard operator trait answers (`Add` -> `+`).
+pub fn operator_trait_symbol(trait_name: &str) -> Option<&'static str> {
+    OPERATOR_TRAITS
+        .iter()
+        .find(|(name, _, _)| *name == trait_name)
+        .map(|(_, symbol, _)| *symbol)
+}
+
+/// The named trait of a standard operator symbol (`+` -> `Add`).
+pub fn operator_symbol_trait(symbol: &str) -> Option<&'static str> {
+    OPERATOR_TRAITS
+        .iter()
+        .find(|(_, sym, _)| *sym == symbol)
+        .map(|(name, _, _)| *name)
+}
+
+/// The trait an impl of `symbol` names, for diagnostics: `Add<Rhs, Out>`,
+/// `Not<Out>`, or `CustomOperator<"xor", Rhs, Out>`.
+pub fn operator_impl_form(symbol: &str) -> String {
+    match operator_symbol_trait(symbol) {
+        Some("Not") => "Not<Out>".to_string(),
+        Some(named) => format!("{named}<Rhs, Out>"),
+        None => format!("CustomOperator<\"{symbol}\", Rhs, Out>"),
+    }
+}
+
+/// The method a standard operator trait's impl provides (`Add` -> `add`).
+pub fn operator_trait_method(trait_name: &str) -> Option<&'static str> {
+    OPERATOR_TRAITS
+        .iter()
+        .find(|(name, _, _)| *name == trait_name)
+        .map(|(_, _, method)| *method)
 }
 
 /// Symbols the grammar reserves for the language itself — assignment, paths,
-/// ranges, separators, brackets, attributes — so an `Operator<sym, …>` impl
+/// ranges, separators, brackets, attributes — so a `CustomOperator<sym, …>` impl
 /// cannot claim them (spec 3.25). The six comparisons are reserved too: they
 /// are `Eq`/`Ord` methods, so implement those instead. An empty
 /// symbol is rejected here as well.

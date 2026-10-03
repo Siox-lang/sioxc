@@ -102,10 +102,11 @@ detail — don't "migrate" them.
 - **Three accessors, one job each.** `.` values (fields, methods) · `::` types
   and modules (paths, enum variants, associated items, views) · `'` attributes
   (`sig'event`, `x'length`). Don't overload one to do another's job.
-- **One operator trait.** Every operator is
-  `impl Operator<"sym", Input, Output>` with a single `apply`. Standard symbols
-  carry built-in precedence; any other symbol is a user operator and must
-  declare `#[precedence = N]`.
+- **Named operator traits.** A standard operator is its `core::ops` trait
+  (`impl Add<Rhs, Out> for T` with `fn add`) and carries built-in precedence;
+  any other symbol is a user operator, `impl CustomOperator<"sym", Rhs, Out>`
+  with `fn apply`, and must declare `attr precedence = N;`. Comparisons are
+  `Eq`/`Ord`.
 - **The grammar's own symbols are reserved** (`=`, `::`, `.`, `..`, `->`, `=>`,
   brackets, the six comparisons) — they cannot be overloaded.
 - **Phase 2 is rejected, not implemented.** Analogue constructs (`domain`,

@@ -203,22 +203,27 @@ impl<'a> Lowering<'a> {
                                     }
                                 }
                             } else {
-                                // `impl Operator<"+", integer, _> for T`: the
-                                // symbol keys the impl and the next trait
-                                // argument names the rhs operand type. A
-                                // non-operator trait (Resolve/New/From) keys by
-                                // its own name and reads its first type arg.
-                                let op_symbol = (tr == "Operator")
-                                    .then(|| im.trait_args.first())
-                                    .flatten()
-                                    .and_then(|a| match a {
+                                // An operator keys by its symbol: a named trait
+                                // (`impl Add<integer, _> for T`) by its own, a
+                                // `CustomOperator<"xor", _, _>` by its first
+                                // argument, and the next argument names the rhs
+                                // operand type. A non-operator trait
+                                // (Resolve/New/From) keys by its own name and
+                                // reads its first type arg.
+                                let custom = tr == "CustomOperator";
+                                let op_symbol = if custom {
+                                    im.trait_args.first().and_then(|a| match a {
                                         ast::GenericArg::Positional(ast::Expr::StrLit {
                                             text,
                                             ..
                                         }) => Some(text.clone()),
                                         _ => None,
-                                    });
-                                let input_index = usize::from(op_symbol.is_some());
+                                    })
+                                } else {
+                                    crate::syntax::ast::operator_trait_symbol(tr)
+                                        .map(str::to_string)
+                                };
+                                let input_index = usize::from(custom);
                                 let rhs_arg =
                                     im.trait_args.get(input_index).and_then(|a| match a {
                                         ast::GenericArg::Positional(ast::Expr::Path(p)) => {

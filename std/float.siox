@@ -104,8 +104,8 @@ fn pow2(k: integer) -> real {
 
 // --- arithmetic ----------------------------------------------------------------
 
-impl Operator<"*", float, float> for float {
-    fn apply(self, rhs: float) -> float {
+impl Mul<float, float> for float {
+    fn mul(self, rhs: float) -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let a: integer = integer(self);
@@ -128,26 +128,26 @@ impl Operator<"*", float, float> for float {
     }
 }
 
-impl Operator<"+", float, float> for float {
-    fn apply(self, rhs: float) -> float {
-        return add(integer(self), integer(rhs), self'high, 0 - self'low);
+impl Add<float, float> for float {
+    fn add(self, rhs: float) -> float {
+        return add_words(integer(self), integer(rhs), self'high, 0 - self'low);
     }
 }
 
-impl Operator<"-", float, float> for float {
-    fn apply(self, rhs: float) -> float {
+impl Sub<float, float> for float {
+    fn sub(self, rhs: float) -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let b: integer = integer(rhs);
         // a - b is a + (-b): flip the sign bit.
         let flipped: integer = b + ((1 - 2 * low_bits(b >> (e + f), 1)) << (e + f));
-        return add(integer(self), flipped, e, f);
+        return add_words(integer(self), flipped, e, f);
     }
 }
 
 // The sum of two words of the format: the smaller magnitude is aligned to the
 // larger with three guard bits, the last of them sticky, then encoded.
-fn add(a: integer, b: integer, e: integer, f: integer) -> integer {
+fn add_words(a: integer, b: integer, e: integer, f: integer) -> integer {
     let sa: integer = low_bits(a >> (e + f), 1);
     let sb: integer = low_bits(b >> (e + f), 1);
     let ea: integer = low_bits(a >> f, e);

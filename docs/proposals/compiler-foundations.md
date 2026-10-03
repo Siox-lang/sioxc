@@ -158,7 +158,7 @@ registry.
 ## 5. Lang items: std marks what the compiler hooks
 
 **Problem.** The compiler depends on std declarations it finds by path and
-name. `COMPILER_TRAITS` lists `Operator`, `Prefix`, `Suffix`, …, and
+name. `COMPILER_TRAITS` lists `Add`, `Prefix`, `Suffix`, …, and
 `is_compiler_trait` checks that the definition sits in `std::ops` (or
 `std::logic` for `LogicEncoding`). `#[test]` is recognised by checking for a
 `test` declared in `std::attrs`. Builtin fallbacks are seeded by the same
@@ -174,10 +174,10 @@ an ordinary importable item whose expansion the compiler supplies.
 **Proposal.**
 
 - A std-only metadata attribute, `attr lang: string for trait, enum, struct,
-  attr = "";`, bound in std: `attr lang for Operator = "operator";`,
+  attr = "";`, bound in std: `attr lang for Add = "add";`,
   `attr lang for test = "test";`. Resolution builds a `lang → DefId` table,
   and the compiler asks for `lang("operator")` instead of matching
-  `std::ops::Operator`. A user module cannot bind `lang` (it is reserved to
+  `std::ops::Add`. A user module cannot bind `lang` (it is reserved to
   std), and two items claiming one lang name is an error.
 - Builtin fallbacks for std-less compilations seed the same table, so there is
   one lookup either way.
@@ -189,7 +189,7 @@ This needs module-level bindings to name traits, enums and attributes, not
 only entities. That is a small extension of the binding pass.
 
 **Acceptance.** No compiler code names a std path or a std declaration's
-spelling; renaming `std::ops::Operator` in std and its `lang` binding together
+spelling; renaming `std::ops::Add` in std and its `lang` binding together
 compiles and passes.
 
 ## Order

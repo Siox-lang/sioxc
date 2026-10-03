@@ -131,7 +131,10 @@ impl<'a> Checker<'a> {
             .bound
             .as_ref()?;
         let trait_key = self.trait_type_key(bound)?;
-        if trait_key == "Operator" {
+        if let Some(symbol) = crate::syntax::ast::operator_trait_symbol(&trait_key) {
+            return Some(symbol.to_string());
+        }
+        if trait_key == "CustomOperator" {
             let Type::Generic { args, .. } = bound else {
                 return Some(trait_key);
             };

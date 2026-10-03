@@ -16,13 +16,13 @@ fn imported_operator_fixture(name: &str) -> (std::path::PathBuf, std::path::Path
     std::fs::write(
         directory.join("local/operators.siox"),
         r#"module local::operators;
-           use std::ops::Operator;
+           use std::ops::CustomOperator;
            pub enum Flag { Off, On }
-           impl Operator<"unless", Flag, Bool> for Flag {
+           impl CustomOperator<"unless", Flag, Bool> for Flag {
                attr precedence = 45;
                fn apply(self, rhs: Flag) -> Bool { return true; }
            }
-           impl Operator<"^^", Flag, Bool> for Flag {
+           impl CustomOperator<"^^", Flag, Bool> for Flag {
                attr precedence = 44;
                fn apply(self, rhs: Flag) -> Bool { return true; }
            }"#,
@@ -38,9 +38,9 @@ fn imported_operator_fixture(name: &str) -> (std::path::PathBuf, std::path::Path
     std::fs::write(
         directory.join("unrelated.siox"),
         r#"module unrelated;
-           use std::ops::Operator;
+           use std::ops::CustomOperator;
            enum Other { A }
-           impl Operator<"unless", Other, Bool> for Other {
+           impl CustomOperator<"unless", Other, Bool> for Other {
                attr precedence = 1;
                fn apply(self, rhs: Other) -> Bool { return true; }
            }"#,

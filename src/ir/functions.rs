@@ -27,7 +27,7 @@ pub struct FunctionIndex<'a> {
     /// overload selection; the function body remains ordinary Siox source and
     /// is inlined by the IR consumer that selected it.
     operators: OperatorImpls<'a>,
-    /// Source-declared `Operator` implementations over unconstrained `T[]`.
+    /// Source-declared operator implementations over unconstrained `T[]`.
     /// Their loop-shaped bodies are expanded by Process lowering, while each
     /// element still dispatches through its concrete source implementation.
     blanket_array_operators: HashMap<String, &'a ast::FnDecl>,
@@ -103,7 +103,8 @@ impl<'a> FunctionIndex<'a> {
         self.associated.entry(key).or_insert(function);
     }
 
-    /// Register the executable `apply` body of one `Operator` impl. Blanket
+    /// Register the executable body of one operator impl: a named trait's
+    /// method (`Add::add`) or a `CustomOperator`'s `apply`. Blanket
     /// `T[]` declarations are indexed separately from concrete nominal owners;
     /// Process lowering expands their loop shape before selecting element
     /// implementations.
@@ -116,22 +117,37 @@ impl<'a> FunctionIndex<'a> {
             self.insert_comparison_impl(implementation);
             return;
         }
-        if trait_key.as_deref() != Some("Operator") {
+        let Some(trait_key) = trait_key else {
             return;
-        }
-        let Some(symbol) = implementation
-            .trait_args
-            .first()
-            .and_then(|argument| match argument {
-                ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => Some(text.clone()),
-                _ => None,
-            })
-        else {
-            return;
+        };
+        let custom = trait_key == "CustomOperator";
+        let (symbol, method) = if custom {
+            let Some(symbol) =
+                implementation
+                    .trait_args
+                    .first()
+                    .and_then(|argument| match argument {
+                        ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => {
+                            Some(text.clone())
+                        }
+                        _ => None,
+                    })
+            else {
+                return;
+            };
+            (symbol, "apply")
+        } else {
+            match (
+                ast::operator_trait_symbol(&trait_key),
+                ast::operator_trait_method(&trait_key),
+            ) {
+                (Some(symbol), Some(method)) => (symbol.to_string(), method),
+                _ => return,
+            }
         };
         if is_blanket_array_impl(implementation) {
             if let Some(function) = implementation.items.iter().find_map(|item| match item {
-                ast::ImplItem::Fn(function) if function.name.text == "apply" => Some(function),
+                ast::ImplItem::Fn(function) if function.name.text == method => Some(function),
                 _ => None,
             }) {
                 self.blanket_array_operators.insert(symbol, function);
@@ -141,9 +157,10 @@ impl<'a> FunctionIndex<'a> {
         let Some(owner) = self.type_head_key(&implementation.target) else {
             return;
         };
-        let input = implementation
-            .trait_args
-            .get(1)
+        // `Not<Out>` has no `Rhs`.
+        let input = (trait_key != "Not")
+            .then(|| implementation.trait_args.get(usize::from(custom)))
+            .flatten()
             .and_then(|argument| match argument {
                 ast::GenericArg::Positional(ast::Expr::Path(path)) => self.type_path_key(path),
                 ast::GenericArg::PositionalType(ty) => self.type_head_key(ty),
@@ -153,7 +170,7 @@ impl<'a> FunctionIndex<'a> {
             let ast::ImplItem::Fn(function) = item else {
                 continue;
             };
-            if function.name.text == "apply" {
+            if function.name.text == method {
                 self.operators
                     .entry((symbol.clone(), owner.clone()))
                     .or_default()
@@ -697,7 +714,7 @@ impl<'a> FunctionIndex<'a> {
 }
 
 /// Whether an implementation targets an unconstrained array of one of its
-/// own type parameters, as in `impl<T: Operator<...>> Operator<...> for T[]`.
+/// own type parameters, as in `impl<T: And<T, T>> And<T, T> for T[]`.
 fn is_blanket_array_impl(implementation: &ast::ImplDecl) -> bool {
     let ast::Type::Indexed {
         base, index: None, ..

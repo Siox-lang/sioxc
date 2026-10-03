@@ -20,16 +20,16 @@ pub struct sfixed(Logic[]);
 
 // --- ufixed ------------------------------------------------------------------
 
-impl Operator<"+", ufixed, ufixed> for ufixed {
-    fn apply(self, rhs: ufixed) -> ufixed { return self + rhs; }
+impl Add<ufixed, ufixed> for ufixed {
+    fn add(self, rhs: ufixed) -> ufixed { return self + rhs; }
 }
 
-impl Operator<"-", ufixed, ufixed> for ufixed {
-    fn apply(self, rhs: ufixed) -> ufixed { return self - rhs; }
+impl Sub<ufixed, ufixed> for ufixed {
+    fn sub(self, rhs: ufixed) -> ufixed { return self - rhs; }
 }
 
-impl Operator<"*", ufixed, ufixed> for ufixed {
-    fn apply(self, rhs: ufixed) -> ufixed { return (self * rhs) >> (0 - self'low); }
+impl Mul<ufixed, ufixed> for ufixed {
+    fn mul(self, rhs: ufixed) -> ufixed { return (self * rhs) >> (0 - self'low); }
 }
 
 impl Eq<ufixed> for ufixed {
@@ -53,20 +53,20 @@ impl ufixed {
 
 // --- sfixed ------------------------------------------------------------------
 
-impl Operator<"+", sfixed, sfixed> for sfixed {
-    fn apply(self, rhs: sfixed) -> sfixed { return self + rhs; }
+impl Add<sfixed, sfixed> for sfixed {
+    fn add(self, rhs: sfixed) -> sfixed { return self + rhs; }
 }
 
-impl Operator<"-", sfixed, sfixed> for sfixed {
-    fn apply(self, rhs: sfixed) -> sfixed { return self - rhs; }
+impl Sub<sfixed, sfixed> for sfixed {
+    fn sub(self, rhs: sfixed) -> sfixed { return self - rhs; }
 }
 
 // The words multiply as unsigned; a negative operand read unsigned is its
 // value plus 2^L, so the signed product is the unsigned one less 2^L times the
 // other operand for each negative operand. Its low 2L bits are then exact,
 // and the shift by the fraction width selects the result's bits.
-impl Operator<"*", sfixed, sfixed> for sfixed {
-    fn apply(self, rhs: sfixed) -> sfixed {
+impl Mul<sfixed, sfixed> for sfixed {
+    fn mul(self, rhs: sfixed) -> sfixed {
         return ((self * rhs)
             - (((self >> (self'length - 1)) * rhs) << self'length)
             - (((rhs >> (rhs'length - 1)) * self) << rhs'length))

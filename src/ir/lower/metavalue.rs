@@ -83,7 +83,7 @@ impl<'a> Lowering<'a> {
                     (!encoding.binary.contains(normalized)).then_some(disc)
                 }));
 
-            // Logical behaviour remains ordinary `Operator` source. Fold it
+            // Logical behaviour remains ordinary operator-impl source. Fold it
             // for every pair now, once, rather than rediscovering a second
             // truth table in each backend.
             for op in ["and", "or", "xor", "nand", "nor", "xnor"] {

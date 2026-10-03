@@ -36,7 +36,15 @@ fn decode_fst(fst: &std::path::Path) -> String {
         String::from_utf8_lossy(&decoded.stderr)
     );
     let _ = std::fs::remove_file(decoder);
-    String::from_utf8(decoded.stdout).expect("libfst produced non-UTF-8 VCD")
+    let vcd = String::from_utf8(decoded.stdout).expect("libfst produced non-UTF-8 VCD");
+    // The header's `$date` is the run's wall-clock time, not trace content:
+    // two runs straddling a second boundary differ only there.
+    match vcd.find("$date").zip(vcd.find("$end")) {
+        Some((start, end)) if start < end => {
+            format!("{}{}", &vcd[..start], &vcd[end + "$end".len()..])
+        }
+        _ => vcd,
+    }
 }
 
 fn waveform_times(trace: &str) -> Vec<u64> {

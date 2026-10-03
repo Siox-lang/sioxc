@@ -32,28 +32,28 @@ pub struct signed(Logic[]);
 
 // --- unsigned[N]: modular unsigned arithmetic -------------------------------
 
-impl Operator<"+", unsigned, unsigned> for unsigned {
-    fn apply(self, rhs: unsigned) -> unsigned { return self + rhs; }
+impl Add<unsigned, unsigned> for unsigned {
+    fn add(self, rhs: unsigned) -> unsigned { return self + rhs; }
 }
 
-impl Operator<"-", unsigned, unsigned> for unsigned {
-    fn apply(self, rhs: unsigned) -> unsigned { return self - rhs; }
+impl Sub<unsigned, unsigned> for unsigned {
+    fn sub(self, rhs: unsigned) -> unsigned { return self - rhs; }
 }
 
-impl Operator<"*", unsigned, unsigned> for unsigned {
-    fn apply(self, rhs: unsigned) -> unsigned { return self * rhs; }
+impl Mul<unsigned, unsigned> for unsigned {
+    fn mul(self, rhs: unsigned) -> unsigned { return self * rhs; }
 }
 
-impl Operator<"/", unsigned, unsigned> for unsigned {
-    fn apply(self, rhs: unsigned) -> unsigned { return self / rhs; }
+impl Div<unsigned, unsigned> for unsigned {
+    fn div(self, rhs: unsigned) -> unsigned { return self / rhs; }
 }
 
-impl Operator<"<<", unsigned, unsigned> for unsigned {
-    fn apply(self, rhs: unsigned) -> unsigned { return self << rhs; }
+impl Shl<unsigned, unsigned> for unsigned {
+    fn shl(self, rhs: unsigned) -> unsigned { return self << rhs; }
 }
 
-impl Operator<">>", unsigned, unsigned> for unsigned {
-    fn apply(self, rhs: unsigned) -> unsigned { return self >> rhs; }
+impl Shr<unsigned, unsigned> for unsigned {
+    fn shr(self, rhs: unsigned) -> unsigned { return self >> rhs; }
 }
 
 impl Eq<unsigned> for unsigned {
@@ -86,52 +86,52 @@ impl Prefix<"o", string> for unsigned {}
 // Core `and`/`or`/`not` are boolean-per-bit. The remaining familiar logic
 // words are ordinary custom operators declared here for numeric vectors.
 
-impl Operator<"xor", unsigned, unsigned> for unsigned {
+impl CustomOperator<"xor", unsigned, unsigned> for unsigned {
     attr precedence = 35;
     fn apply(self, rhs: unsigned) -> unsigned { return (self or rhs) - (self and rhs); }
 }
 
-impl Operator<"nand", unsigned, unsigned> for unsigned {
+impl CustomOperator<"nand", unsigned, unsigned> for unsigned {
     attr precedence = 40;
     fn apply(self, rhs: unsigned) -> unsigned {
         return ((1 << self'length) - 1) - (self and rhs);
     }
 }
 
-impl Operator<"nor", unsigned, unsigned> for unsigned {
+impl CustomOperator<"nor", unsigned, unsigned> for unsigned {
     attr precedence = 30;
     fn apply(self, rhs: unsigned) -> unsigned {
         return ((1 << self'length) - 1) - (self or rhs);
     }
 }
 
-impl Operator<"xnor", unsigned, unsigned> for unsigned {
+impl CustomOperator<"xnor", unsigned, unsigned> for unsigned {
     attr precedence = 35;
     fn apply(self, rhs: unsigned) -> unsigned {
         return ((1 << self'length) - 1) - ((self or rhs) - (self and rhs));
     }
 }
 
-impl Operator<"xor", signed, signed> for signed {
+impl CustomOperator<"xor", signed, signed> for signed {
     attr precedence = 35;
     fn apply(self, rhs: signed) -> signed { return (self or rhs) - (self and rhs); }
 }
 
-impl Operator<"nand", signed, signed> for signed {
+impl CustomOperator<"nand", signed, signed> for signed {
     attr precedence = 40;
     fn apply(self, rhs: signed) -> signed {
         return ((1 << self'length) - 1) - (self and rhs);
     }
 }
 
-impl Operator<"nor", signed, signed> for signed {
+impl CustomOperator<"nor", signed, signed> for signed {
     attr precedence = 30;
     fn apply(self, rhs: signed) -> signed {
         return ((1 << self'length) - 1) - (self or rhs);
     }
 }
 
-impl Operator<"xnor", signed, signed> for signed {
+impl CustomOperator<"xnor", signed, signed> for signed {
     attr precedence = 35;
     fn apply(self, rhs: signed) -> signed {
         return ((1 << self'length) - 1) - ((self or rhs) - (self and rhs));
@@ -154,16 +154,16 @@ pub fn sext(x: signed) -> integer {
 }
 
 
-impl Operator<"+", signed, signed> for signed {
-    fn apply(self, rhs: signed) -> signed { return self + rhs; }
+impl Add<signed, signed> for signed {
+    fn add(self, rhs: signed) -> signed { return self + rhs; }
 }
 
-impl Operator<"-", signed, signed> for signed {
-    fn apply(self, rhs: signed) -> signed { return self - rhs; }
+impl Sub<signed, signed> for signed {
+    fn sub(self, rhs: signed) -> signed { return self - rhs; }
 }
 
-impl Operator<"*", signed, signed> for signed {
-    fn apply(self, rhs: signed) -> signed { return self * rhs; }
+impl Mul<signed, signed> for signed {
+    fn mul(self, rhs: signed) -> signed { return self * rhs; }
 }
 
 // Signed division: divide the magnitudes with the kernel's unsigned divide,
@@ -181,8 +181,8 @@ impl Operator<"*", signed, signed> for signed {
 // already holds exactly that many bits, but a constant operand does not:
 // `0 - 2` is computed full-width, so its bit 7 was clear and a negative
 // literal divisor tested as positive.
-impl Operator<"/", signed, signed> for signed {
-    fn apply(self, rhs: signed) -> signed {
+impl Div<signed, signed> for signed {
+    fn div(self, rhs: signed) -> signed {
         if ((integer(resize(self, self'length)) >> (self'length - 1)) == 1)
             and ((integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) == 1) {
             return resize(0 - self, self'length) / resize(0 - rhs, rhs'length);
@@ -197,15 +197,15 @@ impl Operator<"/", signed, signed> for signed {
     }
 }
 
-impl Operator<"<<", signed, signed> for signed {
-    fn apply(self, rhs: signed) -> signed { return self << rhs; }
+impl Shl<signed, signed> for signed {
+    fn shl(self, rhs: signed) -> signed { return self << rhs; }
 }
 
 // Arithmetic shift-right: replicate the sign into the vacated top bits.
 // `(1 << w) - (1 << (w - n))` is a mask of the top n bits (the shifted-in
 // positions); the shifted value's top bits are zero, so `+` sets them.
-impl Operator<">>", signed, signed> for signed {
-    fn apply(self, rhs: signed) -> signed {
+impl Shr<signed, signed> for signed {
+    fn shr(self, rhs: signed) -> signed {
         if (self >> (self'length - 1)) == 1 {
             return (self >> rhs) + ((1 << self'length) - (1 << (self'length - rhs)));
         }

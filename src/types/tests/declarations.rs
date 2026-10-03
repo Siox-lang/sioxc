@@ -366,7 +366,7 @@ fn duplicate_literal_field_and_named_type_rendering() {
     assert_eq!(check_src(ok), 0);
 
     // The bound diagnostic names the offending type.
-    let bound = "module m;\nfn f<T: Operator>(a: T) -> T { return a; }\n\
+    let bound = "module m;\nfn f<T: Add<T, T>>(a: T) -> T { return a; }\n\
                      struct Q { z: Bit }\nentity E { y: Bit out, }\n\
                      impl E { let q: Q; y = f(q).z; }\n";
     let mut sink = DiagnosticSink::new();
@@ -496,7 +496,7 @@ fn unknown_field_and_method_are_reported() {
 
 /// Spec 3.20 calls a trait a compile-time contract, but a partial impl
 /// used to pass. A method the trait gives a default body is optional —
-/// that is how the compiler-recognized traits (`Operator`, `Prefix`,
+/// that is how the compiler-recognized traits (`Prefix`,
 /// `Suffix`) allow an empty impl.
 #[test]
 fn trait_impl_must_provide_the_required_methods() {

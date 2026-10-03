@@ -248,8 +248,11 @@ pub(in crate::ir) fn blanket_requirement(
         },
         _ => None,
     }?;
+    if let Some(symbol) = crate::syntax::ast::operator_trait_symbol(&trait_key) {
+        return Some(symbol.to_string());
+    }
     match bound {
-        ast::Type::Generic { args, .. } if trait_key == "Operator" => {
+        ast::Type::Generic { args, .. } if trait_key == "CustomOperator" => {
             args.first().and_then(|argument| match argument {
                 ast::GenericArg::Positional(ast::Expr::StrLit { text, .. }) => Some(text.clone()),
                 _ => None,

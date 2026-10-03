@@ -331,12 +331,14 @@ impl<'a> Checker<'a> {
                                 self.conversion_sigs.insert((ty.clone(), source));
                             }
                         }
-                        // `impl Operator<"<sym>", Input, Output> for T`: the
-                        // first trait argument is the operator symbol, which
-                        // keys the impl. A user operator (a non-standard symbol)
-                        // must declare `#[precedence = N]`; the standard symbols
-                        // carry built-in precedence.
-                        let operator = if t == "Operator" {
+                        // Operators key by symbol: a named trait (`impl Add<Rhs,
+                        // Out> for T`) by its own, a `CustomOperator<"sym", Rhs,
+                        // Out>` by its first argument. A custom operator must
+                        // declare `attr precedence = N;`; the standard symbols
+                        // carry built-in precedence (spec 3.25).
+                        let trait_name = t.clone();
+                        let custom = t == "CustomOperator";
+                        let operator = if custom {
                             im.trait_args.first().and_then(|a| match a {
                                 GenericArg::Positional(Expr::StrLit { text, .. }) => {
                                     Some(text.clone())
@@ -344,11 +346,27 @@ impl<'a> Checker<'a> {
                                 _ => None,
                             })
                         } else {
-                            None
+                            crate::syntax::ast::operator_trait_symbol(&t).map(str::to_string)
                         };
                         if let Some(symbol) = &operator {
                             t = symbol.clone();
-                            if symbol == "<=>" {
+                            if let Some(named) =
+                                crate::syntax::ast::operator_symbol_trait(symbol).filter(|_| custom)
+                            {
+                                let form = if named == "Not" {
+                                    format!("{named}<Out>")
+                                } else {
+                                    format!("{named}<Rhs, Out>")
+                                };
+                                self.error_with_help(
+                                    codes::TYPE_MISMATCH,
+                                    im.span,
+                                    format!("`{symbol}` is a standard operator, not a custom one"),
+                                    format!("implement `{form}` instead"),
+                                );
+                            } else if !custom {
+                                // A named trait's symbol is standard.
+                            } else if symbol == "<=>" {
                                 self.error_with_help(
                                     codes::TYPE_MISMATCH,
                                     im.span,
@@ -430,11 +448,15 @@ impl<'a> Checker<'a> {
                             }
                         }
                         // Operator overload signature: `input`/`output` are the
-                        // 2nd/3rd trait arguments (after the symbol), falling
-                        // back to the `apply` method's rhs-param / return types.
+                        // trait's `Rhs`/`Out` arguments (after a custom
+                        // operator's symbol; `Not<Out>` has no `Rhs`), falling
+                        // back to the method's rhs-param / return types.
                         if operator.is_some() {
+                            let unary = trait_name == "Not";
+                            let skip = usize::from(custom);
                             let arg_name = |index: usize| {
-                                im.trait_args.get(index + 1).and_then(|a| match a {
+                                let index = if unary { index.checked_sub(1)? } else { index };
+                                im.trait_args.get(index + skip).and_then(|a| match a {
                                     GenericArg::Positional(Expr::Path(p)) => self.path_key(p),
                                     GenericArg::PositionalType(ty) => self.type_key(ty),
                                     _ => None,
@@ -521,6 +543,14 @@ impl<'a> Checker<'a> {
                                 self.blanket_array_impls.insert(t, requirement);
                             }
                         } else {
+                            // A named operator trait is a bound by its own name
+                            // (`T: Add<T, T>`) as well as by its symbol.
+                            if operator.is_some() && !custom {
+                                self.trait_impls
+                                    .entry(trait_name)
+                                    .or_default()
+                                    .insert(ty.clone());
+                            }
                             self.trait_impls.entry(t).or_default().insert(ty);
                         }
                     }

@@ -337,7 +337,7 @@ impl<'a> Lowering<'a> {
                     return native;
                 }
                 // Every route to a comparison is marked, because they all owe
-                // the same answer: an `Operator` impl, an `Eq`/`Ord` method,
+                // the same answer: an operator impl, an `Eq`/`Ord` method,
                 // and the built-in below.
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(Val::Scalar(inlined)) =

@@ -221,8 +221,8 @@ fn integer_and_logic_literals_are_polymorphic() {
 fn nominal_array_newtype_forwards_matching_blanket_array_operator() {
     let errors = check_src(
         "module m;\n\
-             impl<T: Operator<\"and\", T, T>> Operator<\"and\", T, T> for T[] {\n\
-               fn apply(self, rhs: T[]) -> T[] { return self and rhs; }\n\
+             impl<T: And<T, T>> And<T, T> for T[] {\n\
+               fn and(self, rhs: T[]) -> T[] { return self and rhs; }\n\
              }\n\
              struct Flags(Bit[]);\n\
              entity E { a: Flags[4] in, b: Flags[4] in, y: Flags[4] out }\n\
@@ -237,8 +237,8 @@ fn nominal_array_newtype_does_not_forward_unsatisfied_array_operator() {
     let errors = check_src(
         "module m;\n\
              enum Cell { Off, On }\n\
-             impl<T: Operator<\"and\", T, T>> Operator<\"and\", T, T> for T[] {\n\
-               fn apply(self, rhs: T[]) -> T[] { return self and rhs; }\n\
+             impl<T: And<T, T>> And<T, T> for T[] {\n\
+               fn and(self, rhs: T[]) -> T[] { return self and rhs; }\n\
              }\n\
              struct Cells(Cell[]);\n\
              entity E { a: Cells[4] in, b: Cells[4] in, y: Cells[4] out }\n\
@@ -254,7 +254,7 @@ fn unsupported_blanket_array_operator_is_rejected_until_it_can_lower() {
     let blanket = |op: &str| {
         format!(
             "module m;\n\
-                 impl<T: Operator<\"{op}\", T, T>> Operator<\"{op}\", T, T> for T[] {{\n\
+                 impl<T: CustomOperator<\"{op}\", T, T>> CustomOperator<\"{op}\", T, T> for T[] {{\n\
                    attr precedence = 35;\n\
                    fn apply(self, rhs: T[]) -> T[] {{ return self; }}\n\
                  }}\n"
@@ -266,7 +266,32 @@ fn unsupported_blanket_array_operator_is_rejected_until_it_can_lower() {
     assert_eq!(check_src(&blanket("nand")), 0);
     // Arithmetic has no element-wise lowering, and saying so beats
     // accepting an impl nothing would call.
-    assert_eq!(check_src(&blanket("+")), 1);
+    assert_eq!(
+        check_src(
+            "module m;\n\
+             impl<T: Add<T, T>> Add<T, T> for T[] {\n\
+               fn add(self, rhs: T[]) -> T[] { return self; }\n\
+             }\n"
+        ),
+        1
+    );
+}
+
+#[test]
+/// A standard symbol has a named trait; `CustomOperator` is for the rest.
+fn a_standard_symbol_is_not_a_custom_operator() {
+    let src = "module m;\nstruct V { a: Bit }\n\
+               impl CustomOperator<\"+\", V, V> for V {\n\
+                 fn apply(self, rhs: V) -> V { return self; }\n\
+               }\n";
+    let sink = check_modules(&[(src, FileId(0))]);
+    assert!(
+        sink.diagnostics().iter().any(|d| d.message
+            == "`+` is a standard operator, not a custom one"
+            && d.help.as_deref() == Some("implement `Add<Rhs, Out>` instead")),
+        "{:#?}",
+        sink.diagnostics()
+    );
 }
 
 #[test]
@@ -275,22 +300,22 @@ fn operators_on_user_types_need_an_impl() {
     let base = "module m;\nstruct V { a: Bit }\nOPIMPL\nentity E { p: V in, q: V in, y: Bit out, }\nimpl E {\n  let r: V = p + q;\n  y = '0';\n}\n";
     // Without an impl, `+` on a struct is rejected.
     assert_eq!(check_src(&base.replace("OPIMPL\n", "")), 1);
-    // With `impl Operator<"+", V, V> for V`, it is accepted.
+    // With `impl Add<V, V> for V`, it is accepted.
     assert_eq!(
-            check_src(&base.replace(
-                "OPIMPL",
-                "impl Operator<\"+\", V, V> for V {\n  fn apply(self, rhs: V) -> V {\n    return self;\n  }\n}"
-            )),
-            0
-        );
+        check_src(&base.replace(
+            "OPIMPL",
+            "impl Add<V, V> for V {\n  fn add(self, rhs: V) -> V {\n    return self;\n  }\n}"
+        )),
+        0
+    );
 }
 
 #[test]
 /// An operator overload must match its declared input type.
 fn operator_overloads_match_the_declared_input_type() {
     let header = "module m;\nstruct Left { a: Bit }\nstruct Right { b: Bit }\n";
-    let explicit = "impl Operator<\"+\", Right, Left> for Left {\n\
-                          fn apply(self, rhs: Right) -> Left { return self; }\n\
+    let explicit = "impl Add<Right, Left> for Left {\n\
+                          fn add(self, rhs: Right) -> Left { return self; }\n\
                         }\n";
     assert_eq!(
         check_src(&format!(
@@ -309,8 +334,8 @@ fn operator_overloads_match_the_declared_input_type() {
         "an impl for another input type is not a wildcard"
     );
 
-    let self_typed = "impl Operator<\"+\", Self, Self> for Left {\n\
-                            fn apply(self, rhs: Self) -> Self { return self; }\n\
+    let self_typed = "impl Add<Self, Self> for Left {\n\
+                            fn add(self, rhs: Self) -> Self { return self; }\n\
                           }\n";
     assert_eq!(
         check_src(&format!(
@@ -349,7 +374,7 @@ fn struct_equality_comes_from_an_eq_impl() {
     );
     assert_eq!(
         check_src(&base(
-            "impl Operator<\"<=>\", V, Ordering> for V {\n\
+            "impl CustomOperator<\"<=>\", V, Ordering> for V {\n\
                    fn apply(self, rhs: V) -> Ordering { return Ordering::Equal; }\n\
                  }"
         )),
@@ -533,8 +558,8 @@ fn logical_operator_template_controls_output_type() {
             enum Left { L }\n\
             enum Right { R }\n\
             enum Result { Yes }\n\
-            impl Operator<\"and\", Right, Result> for Left {\n\
-              fn apply(self, rhs: Right) -> Result { return Result::Yes; }\n\
+            impl And<Right, Result> for Left {\n\
+              fn and(self, rhs: Right) -> Result { return Result::Yes; }\n\
             }\n\
             entity E { a: Left in, b: Right in, y: Result out }\n\
             impl E { y = a and b; }\n";
@@ -551,7 +576,7 @@ fn custom_operator_selects_input_and_output_templates() {
     let ok = "module m;\n\
             attr precedence: integer for impl;\n\
             enum Left { L } enum Right { R } enum Result { Yes }\n\
-            impl Operator<\"merge\", Right, Result> for Left {\n\
+            impl CustomOperator<\"merge\", Right, Result> for Left {\n\
               attr precedence = 45;\n\
               fn apply(self, rhs: Right) -> Result { return Result::Yes; }\n\
             }\n\
@@ -627,7 +652,7 @@ fn reserved_operators_cannot_be_overloaded() {
     // comparisons cannot be claimed by an operator impl.
     for sym in ["=", "::", ".", "..", "<", "=="] {
         let src = format!(
-                "{header}impl Operator<\"{sym}\", A, A> for A {{ attr precedence = 5; fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
+                "{header}impl CustomOperator<\"{sym}\", A, A> for A {{ attr precedence = 5; fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
             );
         assert!(
             check_src(&src) >= 1,
@@ -636,7 +661,7 @@ fn reserved_operators_cannot_be_overloaded() {
     }
     // A genuine custom punctuation operator is accepted.
     let ok = format!(
-            "{header}impl Operator<\"^^\", A, A> for A {{ attr precedence = 5; fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
+            "{header}impl CustomOperator<\"^^\", A, A> for A {{ attr precedence = 5; fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
         );
     assert_eq!(check_src(&ok), 0);
 }
@@ -648,14 +673,14 @@ fn custom_operator_precedence_is_required_and_consistent() {
     let header = "module m;\nattr precedence: integer for impl;\n\
             enum A { A0 } enum B { B0 }\n";
     let missing = format!(
-            "{header}impl Operator<\"join\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
+            "{header}impl CustomOperator<\"join\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
         );
     assert_eq!(check_src(&missing), 1);
 
     let conflict = format!(
             "{header}\
-             impl Operator<\"join\", A, A> for A {{ attr precedence = 40; fn apply(self, rhs: A) -> A {{ return self; }} }}\n\
-             impl Operator<\"join\", B, B> for B {{ attr precedence = 30; fn apply(self, rhs: B) -> B {{ return self; }} }}\n"
+             impl CustomOperator<\"join\", A, A> for A {{ attr precedence = 40; fn apply(self, rhs: A) -> A {{ return self; }} }}\n\
+             impl CustomOperator<\"join\", B, B> for B {{ attr precedence = 30; fn apply(self, rhs: B) -> B {{ return self; }} }}\n"
         );
     assert_eq!(check_src(&conflict), 1);
 }

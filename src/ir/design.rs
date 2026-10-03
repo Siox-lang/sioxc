@@ -54,7 +54,7 @@ pub struct Design {
     /// `'U'`), so testbench-local seeding matches the hardware signal default.
     pub new_defaults: HashMap<String, u64>,
     /// Enum type -> its std-owned packed logic interpretation. These tables are
-    /// elaborated from `impl LogicEncoding` and the ordinary `Operator` impls;
+    /// elaborated from `impl LogicEncoding` and the ordinary operator impls;
     /// engines consume them without knowing any logic symbols or discriminant
     /// ordering.
     pub logic_encodings: HashMap<String, LogicEncoding>,

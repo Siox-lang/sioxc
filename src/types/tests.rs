@@ -21,21 +21,21 @@ const VEC: &str = "\n\
         impl Boolean for Bit { fn as_bool(self) -> Bool { return true; } }\n\
         impl Boolean for Bool { fn as_bool(self) -> Bool { return self; } }\n\
         impl ClockLike for Bit { fn rising(self) -> Bool { return false; } }\n\
-        impl Operator<\"and\", Bool, Bool> for Bool { fn apply(self, rhs: Bool) -> Bool { return self; } }\n\
-        impl Operator<\"or\", Bool, Bool> for Bool { fn apply(self, rhs: Bool) -> Bool { return self; } }\n\
-        impl Operator<\"not\", Bool, Bool> for Bool { fn apply(self) -> Bool { return self; } }\n\
-        impl Operator<\"and\", Bit, Bit> for Bit { fn apply(self, rhs: Bit) -> Bit { return self; } }\n\
-        impl Operator<\"or\", Bit, Bit> for Bit { fn apply(self, rhs: Bit) -> Bit { return self; } }\n\
-        impl Operator<\"not\", Bit, Bit> for Bit { fn apply(self) -> Bit { return self; } }\n\
-        impl Operator<\"and\", Logic, Logic> for Logic { fn apply(self, rhs: Logic) -> Logic { return self; } }\n\
-        impl Operator<\"or\", Logic, Logic> for Logic { fn apply(self, rhs: Logic) -> Logic { return self; } }\n\
-        impl Operator<\"not\", Logic, Logic> for Logic { fn apply(self) -> Logic { return self; } }\n\
-        impl<T: Operator<\"and\", T, T>> Operator<\"and\", T, T> for T[] { fn apply(self, rhs: T[]) -> T[] { return self; } }\n\
-        impl<T: Operator<\"or\", T, T>> Operator<\"or\", T, T> for T[] { fn apply(self, rhs: T[]) -> T[] { return self; } }\n\
-        impl<T: Operator<\"not\", T, T>> Operator<\"not\", T, T> for T[] { fn apply(self) -> T[] { return self; } }\n\
+        impl And<Bool, Bool> for Bool { fn and(self, rhs: Bool) -> Bool { return self; } }\n\
+        impl Or<Bool, Bool> for Bool { fn or(self, rhs: Bool) -> Bool { return self; } }\n\
+        impl Not<Bool> for Bool { fn not(self) -> Bool { return self; } }\n\
+        impl And<Bit, Bit> for Bit { fn and(self, rhs: Bit) -> Bit { return self; } }\n\
+        impl Or<Bit, Bit> for Bit { fn or(self, rhs: Bit) -> Bit { return self; } }\n\
+        impl Not<Bit> for Bit { fn not(self) -> Bit { return self; } }\n\
+        impl And<Logic, Logic> for Logic { fn and(self, rhs: Logic) -> Logic { return self; } }\n\
+        impl Or<Logic, Logic> for Logic { fn or(self, rhs: Logic) -> Logic { return self; } }\n\
+        impl Not<Logic> for Logic { fn not(self) -> Logic { return self; } }\n\
+        impl<T: And<T, T>> And<T, T> for T[] { fn and(self, rhs: T[]) -> T[] { return self; } }\n\
+        impl<T: Or<T, T>> Or<T, T> for T[] { fn or(self, rhs: T[]) -> T[] { return self; } }\n\
+        impl<T: Not<T>> Not<T> for T[] { fn not(self) -> T[] { return self; } }\n\
         struct unsigned(Logic[]);\n\
-        impl Operator<\"+\", unsigned, unsigned> for unsigned { fn apply(self, rhs: unsigned) -> unsigned { return self; } }\n\
-        impl Operator<\"/\", unsigned, unsigned> for unsigned { fn apply(self, rhs: unsigned) -> unsigned { return self; } }\n\
+        impl Add<unsigned, unsigned> for unsigned { fn add(self, rhs: unsigned) -> unsigned { return self; } }\n\
+        impl Div<unsigned, unsigned> for unsigned { fn div(self, rhs: unsigned) -> unsigned { return self; } }\n\
         impl Eq<unsigned> for unsigned { fn eq(self, rhs: unsigned) -> Bool { return true; } }\n\
         impl Ord<unsigned> for unsigned { fn lt(self, rhs: unsigned) -> Bool { return false; } fn le(self, rhs: unsigned) -> Bool { return true; } }\n\
         struct signed(Logic[]);\n";
