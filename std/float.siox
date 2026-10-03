@@ -270,11 +270,23 @@ impl float {
     }
 }
 
-// `value` in the format with `e` exponent and `f` fraction bits, rounded to
-// nearest even; beyond the range it is infinite, below it zero:
-//
-//   let x: float[8..-23] = to_float(1.5, 8, 23);
-pub fn to_float(value: real, e: integer, f: integer) -> integer {
+// `float[8..-23](1.5)`: a number in the format being built — `Self'high`
+// exponent and `-Self'low` fraction bits — rounded to nearest even; beyond
+// the range it is infinite, below it zero.
+impl From<real> for float {
+    fn from(value: real) -> float {
+        return float_word(value, Self'high, 0 - Self'low);
+    }
+}
+
+impl From<integer> for float {
+    fn from(value: integer) -> float {
+        return float_word(real(value), Self'high, 0 - Self'low);
+    }
+}
+
+// The word of `value` with `e` exponent and `f` fraction bits.
+fn float_word(value: real, e: integer, f: integer) -> integer {
     let sign: integer = if 0.0 > value { 1 } else { 0 };
     let magnitude: real = if 0.0 > value { 0.0 - value } else { value };
     if magnitude != magnitude { return nan_word(e, f); }

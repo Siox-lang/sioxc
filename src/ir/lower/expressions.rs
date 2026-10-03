@@ -872,17 +872,7 @@ impl<'a> Lowering<'a> {
         let Some((left, right)) = self.operand_range(operand, env) else {
             return;
         };
-        for (attr, value) in [
-            ("left", left),
-            ("right", right),
-            ("high", left.max(right)),
-            ("low", left.min(right)),
-        ] {
-            fenv.insert(
-                format!("{name}::{attr}"),
-                Val::Scalar(Expr::Const(value as u64)),
-            );
-        }
+        bind_format_attrs(fenv, name, left, right);
     }
 
     /// The written (left, right) constant bounds of a slice index: a range
@@ -1163,5 +1153,25 @@ impl<'a> Lowering<'a> {
             };
             ty = alias;
         }
+    }
+}
+
+/// Bind `name'left`, `'right`, `'high` and `'low` for an index range.
+pub(super) fn bind_format_attrs(
+    fenv: &mut HashMap<String, Val>,
+    name: &str,
+    left: i64,
+    right: i64,
+) {
+    for (attr, value) in [
+        ("left", left),
+        ("right", right),
+        ("high", left.max(right)),
+        ("low", left.min(right)),
+    ] {
+        fenv.insert(
+            format!("{name}::{attr}"),
+            Val::Scalar(Expr::Const(value as u64)),
+        );
     }
 }

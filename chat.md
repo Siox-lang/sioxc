@@ -10869,3 +10869,25 @@ Generic bodies now lower with their arguments' types, which they did not:
   result its argument's family and width; a generic parameter bound to a
   kernel integer joins `param_integers`; `inline_unary` picks the
   receiver-only impl, since `-` keys `Sub` and `Neg` alike.
+
+### 2026-10-03 — Claude — fixed/float constructors replace `to_*`
+
+`to_float(v, e, f)`, `to_ufixed(v, l, r)` and `to_sfixed` are gone: the
+format's own constructor converts, `float[8..-23](1.5)`, `ufixed[3..-4](2.5)`,
+from a `real` or an `integer`. They are `impl From<real/integer>` in std, whose
+bodies read the format being built as `Self'high`/`'low`/`'left`/`'right`/
+`'length` (VHDL type attributes).
+
+Compiler: `family[range](x)` dispatches to the family's `From<S>` impl when
+there is one (`lower_family_from` in `calls.rs`, `lower_process_family_from`
+in `source_processes.rs`, which binds `Self` to a value carrying the target
+layout via `LoweringContext::self_formats`). Fixes found making it work in
+hardware:
+- `real(x)` never lowered on the design path (`lower_conversion` had no
+  `real` arm); `is_real_expr` now knows an `IntToReal` result.
+- `IntegerToReal` sign-extended every operand; it now follows the operand's
+  signedness (`1 << 4` in five bits is 16).
+- `arena_constant_integer` reads a 64-bit operand of a signed operation as
+  i64, so `0 - x'low` with `x'low = -4` folds.
+- A result keeps a same-type operand's layout whatever its length
+  (`inherit_receiver_layout` compares type keys).

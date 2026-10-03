@@ -96,8 +96,8 @@ directives, `Severity` and the built-in macros. std re-exports each.
    are needed and the types work like `unsigned`/`signed`.
 
    ```siox
-   use std::fixed::{ufixed, sfixed, to_ufixed};
-   let gain: ufixed[3..-4] = to_ufixed(2.5, 3, -4);   // 4 integer, 4 fraction bits
+   use std::fixed::{ufixed, sfixed};
+   let gain: ufixed[3..-4] = ufixed[3..-4](2.5);   // 4 integer, 4 fraction bits
    let error: sfixed[7..-8];                          // two's complement, 8.8
    let r: real = gain.to_real();                      // 2.5
    ```
@@ -107,8 +107,8 @@ directives, `Severity` and the built-in macros. std re-exports each.
      on overflow as `unsigned` does; a product drops its extra fraction bits
      rounding toward minus infinity (VHDL's truncate). `Eq`/`Ord` give the
      six comparisons (signed for `sfixed`).
-   - `to_ufixed(value, left, right)` and `to_sfixed(…)` take a `real` to the
-     format `[left..right]`, rounding to nearest and saturating, VHDL's
+   - The constructor `ufixed[left..right](x)` (and `sfixed`) takes a `real`
+     or `integer` to the format, rounding to nearest and saturating, VHDL's
      defaults; `x.to_real()` goes back.
    - Later: division, and a `resize` choosing saturate/wrap and round/truncate.
 3. **Floating point** — `std::float`, slice 1 implemented for simulation
@@ -117,8 +117,8 @@ directives, `Severity` and the built-in macros. std re-exports each.
    `float_pkg` and on the same range idea as fixed point:
 
    ```siox
-   use std::float::{float, to_float};
-   let x: float[8..-23] = to_float(1.5, 8, 23);   // IEEE-754 binary32
+   use std::float::float;
+   let x: float[8..-23] = float[8..-23](1.5);   // IEEE-754 binary32
    let h: float[5..-10];                           // binary16
    let y: float[8..-23];
    y = x * x + x;
@@ -127,9 +127,9 @@ directives, `Severity` and the built-in macros. std re-exports each.
 
    - Layout as IEEE-754 and VHDL: the sign at the top index, then `x'high`
      exponent bits, then `-x'low` fraction bits; bias `2^(E-1) - 1`.
-   - Slice 1: `+`, `-`, `*`, the six comparisons, `to_float(value, E,
-     F)` from `real`, `x.to_real()`, and `is_nan`, `is_infinite`,
-     `is_zero`, `negate`, `abs`. Results round to nearest, ties to even.
+   - Slice 1: `+`, `-`, `*`, the six comparisons, the constructor
+     `float[E..-F](x)` from `real`/`integer`, `x.to_real()`, `-x`, and
+     `is_nan`, `is_infinite`, `is_zero`. Results round to nearest, ties to even.
      Zero, infinity and NaN follow IEEE-754 (`inf - inf` and `0 * inf` are
      NaN).
    - Subnormals are flushed to zero, on input and output: the usual FPGA
