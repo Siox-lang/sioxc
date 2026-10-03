@@ -10,24 +10,25 @@ impl<'a> Lowering<'a> {
     /// (sequential) targets break a cycle, so only comb→comb edges count.
     pub(super) fn lint_combinational_loops(&mut self) {
         use std::collections::{BTreeSet, HashMap, HashSet};
-        let procs = self.out.processes();
         // Signals driven combinationally, and for each its comb dependencies
         // (reads that are themselves combinational targets).
-        let comb_targets: HashSet<u32> = procs
+        let comb_targets: HashSet<u32> = self
+            .hardware
+            .drivers
             .iter()
-            .filter_map(|p| match p.kind {
-                ProcessKind::Comb { target, .. } => Some(target.0),
-                _ => None,
-            })
+            .map(|write| write.target.0)
             .collect();
         let mut deps: HashMap<u32, Vec<u32>> = HashMap::new();
-        for p in &procs {
-            if let ProcessKind::Comb { target, .. } = p.kind {
-                let e = deps.entry(target.0).or_default();
-                for r in &p.reads {
-                    if comb_targets.contains(&r.0) {
-                        e.push(r.0);
-                    }
+        for write in &self.hardware.drivers {
+            let mut reads = Vec::new();
+            if let Some(condition) = &write.cond {
+                read_set(condition, &mut reads);
+            }
+            read_set(&write.expr, &mut reads);
+            let e = deps.entry(write.target.0).or_default();
+            for r in reads {
+                if comb_targets.contains(&r.0) {
+                    e.push(r.0);
                 }
             }
         }
@@ -73,10 +74,10 @@ impl<'a> Lowering<'a> {
     /// never driven inside its entity — its value is stuck at the reset default.
     pub(super) fn lint_undriven_outputs(&mut self) {
         let mut driven: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        for d in &self.out.drivers {
+        for d in &self.hardware.drivers {
             driven.insert(d.target.0);
         }
-        for eb in &self.out.event_blocks {
+        for eb in &self.hardware.event_blocks {
             for u in &eb.updates {
                 driven.insert(u.target.0);
             }
@@ -119,18 +120,30 @@ impl<'a> Lowering<'a> {
     /// behavior. Root locals are excluded because an external harness
     /// reads them outside the hardware IR.
     pub(super) fn lint_unused_signals(&mut self) {
-        let processes = self.out.processes();
-        let read: std::collections::HashSet<u32> = processes
-            .iter()
-            .flat_map(|process| process.reads.iter().map(|id| id.0))
-            .collect();
+        let mut reads = Vec::new();
+        for write in &self.hardware.drivers {
+            if let Some(condition) = &write.cond {
+                read_set(condition, &mut reads);
+            }
+            read_set(&write.expr, &mut reads);
+        }
+        for event in &self.hardware.event_blocks {
+            read_set(&event.condition, &mut reads);
+            for write in &event.updates {
+                if let Some(condition) = &write.cond {
+                    read_set(condition, &mut reads);
+                }
+                read_set(&write.expr, &mut reads);
+            }
+        }
+        let read: std::collections::HashSet<u32> = reads.into_iter().map(|id| id.0).collect();
         let driven: std::collections::HashSet<u32> = self
-            .out
+            .hardware
             .drivers
             .iter()
             .map(|driver| driver.target.0)
             .chain(
-                self.out
+                self.hardware
                     .event_blocks
                     .iter()
                     .flat_map(|block| block.updates.iter().map(|update| update.target.0)),
@@ -162,7 +175,7 @@ impl<'a> Lowering<'a> {
         use std::collections::{BTreeMap, BTreeSet};
         // Sequential state: any signal a clocked block updates.
         let mut sequential: BTreeSet<u32> = BTreeSet::new();
-        for eb in &self.out.event_blocks {
+        for eb in &self.hardware.event_blocks {
             for u in &eb.updates {
                 sequential.insert(u.target.0);
             }
@@ -170,7 +183,7 @@ impl<'a> Lowering<'a> {
         // Per signal: its driver contexts, and whether any driver is a default.
         let mut ctxs: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
         let mut has_default: BTreeMap<u32, bool> = BTreeMap::new();
-        for d in &self.out.drivers {
+        for d in &self.hardware.drivers {
             ctxs.entry(d.target.0).or_default().insert(d.ctx);
             let e = has_default.entry(d.target.0).or_insert(false);
             *e |= d.cond.is_none();

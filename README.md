@@ -37,9 +37,10 @@ default features and do not need LLVM; see the
 
 Native execution has one path: canonical Process IR is emitted through LLVM
 and linked with the fixed runtime; no design-specific C is generated. Typed
-source/test processes lower directly under `ir/lower` into that product. One
-input-side migration remains: normalized `Driver`/`EventBlock` hardware is
-still imported into Process IR until those scheduler forms are derived from it.
+hardware and source/test processes lower directly under `ir/lower` into that
+product. Hardware CFGs are constructed before scheduler decomposition;
+`Driver`/`EventBlock` compatibility forms are derived from the canonical CFGs,
+not imported back into them.
 See the [architecture status](docs/architecture.md#current-process-ir-ingress-boundary).
 
 ## Write your first circuit

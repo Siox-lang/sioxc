@@ -97,8 +97,8 @@ fn check_expr(e: &Expr, n: u32, tables: &[LookupTable], issues: &mut Vec<String>
 
 /// A unit of behaviour the scheduler dispatches, with its **sensitivity**
 /// (the signals it reads) and **write set** (the signals it drives). This is
-/// the normalized scheduler view consumed while hardware behavior is imported
-/// into canonical Process IR and by the LLVM hardware emitter.
+/// a derived scheduler view consumed by the compatibility LLVM hardware
+/// emitter, never an input to canonical Process IR construction.
 #[derive(Clone, Debug)]
 pub struct Process {
     /// What kind of scheduled process this is.

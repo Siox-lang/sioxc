@@ -12,7 +12,7 @@ mod collect;
 mod control;
 mod diagnostics;
 mod expressions;
-mod hardware_processes;
+mod hardware;
 mod initializers;
 mod layout;
 mod metavalue;
@@ -22,7 +22,6 @@ mod source_processes;
 mod values;
 mod writes;
 
-pub(crate) use hardware_processes::import_hardware_processes;
 pub(crate) use source_processes::lower as lower_processes;
 
 /// A design ready to simulate: signals, combinational drivers, and event blocks.
@@ -163,8 +162,44 @@ pub fn lower_in(
     // in std's default logic type, so the IR the backends consume carries only
     // `Const`s — no raw chars, no compiler-side value table.
     l.normalize_logic_literals();
-    compact_lookup_tables(&mut l.out);
+    compact_lookup_writes(
+        &mut l.hardware.drivers,
+        &mut l.hardware.event_blocks,
+        &mut l.out.lookup_tables,
+    );
+    l.out.process_ir = hardware::lower(hier, &l.out, &l.hardware, l.sink);
+    // Values and CFGs now own every normalized write. Release source trees
+    // before allocating the derived compatibility view, rather than holding
+    // three complete behavior representations at the projection peak.
+    drop(l.hardware);
+    // Backend compatibility forms are always a projection of canonical CFGs,
+    // not the source normalization draft. Failed source expressions remain in
+    // Process IR for validation; the compiler reports projection failure.
+    if let Err(error) = derive_scheduler_forms(&mut l.out) {
+        if !l.sink.has_errors() {
+            let mut diagnostic = crate::diag::Diagnostic::error(format!(
+                "cannot construct the hardware scheduler view from canonical source CFGs: {error}"
+            ))
+            .with_code(crate::diag::codes::UNSUPPORTED_EXPR);
+            if let Some(process) = l.out.process_ir.processes.first() {
+                diagnostic = diagnostic.at(process.span);
+            }
+            l.sink.emit(diagnostic);
+        }
+    }
     l.out
+}
+
+/// Source normalization state, confined to this lowering pass. Resolution and
+/// metavalue lowering need ordered guarded writes before constructing CFGs;
+/// these drafts are never executable products or published in `Design`.
+#[derive(Default)]
+struct HardwareDraft {
+    drivers: Vec<Driver>,
+    event_blocks: Vec<EventBlock>,
+    /// Source scope for context-owned implementation temporaries, including
+    /// constant helpers that have neither a hierarchical path nor signal reads.
+    context_paths: HashMap<u32, String>,
 }
 
 /// Lowers one elaborated hierarchy to a [`Design`].
@@ -357,6 +392,9 @@ struct Lowering<'a> {
     unused_lets: Vec<SignalId>,
     /// The design being built; returned once the walk completes.
     out: Design,
+    /// Private, non-executable source writes while their representation is
+    /// being normalized. Finalization lowers these once into canonical CFGs.
+    hardware: HardwareDraft,
     /// Signal name -> id, valid while lowering a single entity.
     locals: HashMap<String, SignalId>,
     /// Local name -> its enum type name (operator-impl operands).

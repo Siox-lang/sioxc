@@ -1,11 +1,11 @@
 //! Unified execution and digital simulation IR for siox Phase 1 (spec Stage 6).
 //!
 //! [`Design::process_ir`] owns independently scheduled process CFGs, locals,
-//! suspension, activation, and test descriptors. During the compatibility
-//! migration, ordinary hardware behavior is also normalized into explicit
-//! event dependencies, combinational drivers, and sequential next-state
-//! updates; those `Driver`/`EventBlock` forms will become derived process
-//! optimizations. `::event` and `::old` are explicit IR operations.
+//! suspension, activation, and test descriptors. Source hardware lowers into
+//! this same canonical product before scheduler decomposition. Explicit event
+//! dependencies, combinational drivers, and sequential next-state updates in
+//! the `Driver`/`EventBlock` view are derived compatibility optimizations.
+//! `'event` and `'old` are explicit IR operations.
 //!
 //! Current compatibility forms:
 //! ```text
@@ -48,8 +48,8 @@ pub use design::*;
 pub use expr::*;
 pub use functions::FunctionIndex;
 pub use layout::*;
+pub(crate) use lower::lower_processes;
 use lower::AccessStep;
-pub(crate) use lower::{import_hardware_processes, lower_processes};
 pub use lower::{lower, lower_in};
 use lower_helpers::*;
 pub use lower_helpers::{

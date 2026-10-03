@@ -183,6 +183,11 @@ impl<'a> Lowering<'a> {
     /// writes across contexts resolve.
     pub(super) fn next_ctx(&mut self) -> u32 {
         self.cur_ctx += 1;
+        if !self.cur_instance_path.is_empty() {
+            self.hardware
+                .context_paths
+                .insert(self.cur_ctx, self.cur_instance_path.clone());
+        }
         self.cur_ctx
     }
 
@@ -507,7 +512,7 @@ impl<'a> Lowering<'a> {
             let companion_ids: std::collections::HashSet<u32> =
                 self.out.meta_of.values().copied().collect();
             let mut discovered = Vec::new();
-            for d in &self.out.drivers {
+            for d in &self.hardware.drivers {
                 if companion_ids.contains(&d.target.0) || self.out.meta_of.contains_key(&d.target.0)
                 {
                     continue;
@@ -526,7 +531,7 @@ impl<'a> Lowering<'a> {
                     discovered.push(d.target);
                 }
             }
-            for block in &self.out.event_blocks {
+            for block in &self.hardware.event_blocks {
                 for update in &block.updates {
                     if companion_ids.contains(&update.target.0)
                         || self.out.meta_of.contains_key(&update.target.0)
@@ -575,8 +580,8 @@ impl<'a> Lowering<'a> {
             .map(|signal| signal.declaration_span)
             .unwrap_or_else(|| crate::diag::Span::new(crate::diag::FileId(0), 0..0));
         let mut temps = MetaTemps::new(self.out.signals.len() as u32, 0, anchor);
-        let mut drivers = Vec::with_capacity(self.out.drivers.len() * 2);
-        for mut driver in std::mem::take(&mut self.out.drivers) {
+        let mut drivers = Vec::with_capacity(self.hardware.drivers.len() * 2);
+        for mut driver in std::mem::take(&mut self.hardware.drivers) {
             if companion_ids.contains(&driver.target.0) {
                 driver.meta = None;
                 drivers.push(driver);
@@ -608,13 +613,13 @@ impl<'a> Lowering<'a> {
                 });
             }
         }
-        self.out.drivers = drivers;
+        self.hardware.drivers = drivers;
 
-        for block_index in 0..self.out.event_blocks.len() {
-            let block_ctx = self.out.event_blocks[block_index].ctx;
+        for block_index in 0..self.hardware.event_blocks.len() {
+            let block_ctx = self.hardware.event_blocks[block_index].ctx;
             let mut updates =
-                Vec::with_capacity(self.out.event_blocks[block_index].updates.len() * 2);
-            for mut update in std::mem::take(&mut self.out.event_blocks[block_index].updates) {
+                Vec::with_capacity(self.hardware.event_blocks[block_index].updates.len() * 2);
+            for mut update in std::mem::take(&mut self.hardware.event_blocks[block_index].updates) {
                 if companion_ids.contains(&update.target.0) {
                     update.meta = None;
                     updates.push(update);
@@ -644,7 +649,7 @@ impl<'a> Lowering<'a> {
                     });
                 }
             }
-            self.out.event_blocks[block_index].updates = updates;
+            self.hardware.event_blocks[block_index].updates = updates;
         }
 
         self.materialize_meta_temps(&mut temps);
@@ -671,7 +676,7 @@ impl<'a> Lowering<'a> {
                 enum_type: None,
             });
             self.out.metavalue_temps.insert(temp.id);
-            self.out.drivers.push(Driver {
+            self.hardware.drivers.push(Driver {
                 target: SignalId(temp.id),
                 cond: None,
                 expr: temp.expr,
@@ -718,13 +723,13 @@ impl<'a> Lowering<'a> {
                     .map(|encoding| (companion, encoding))
             })
             .collect();
-        for d in &mut self.out.drivers {
+        for d in &mut self.hardware.drivers {
             if let Some(c) = &mut d.cond {
                 reconstruct_expr(c, &meta_of, &elems, &encodings);
             }
             reconstruct_expr(&mut d.expr, &meta_of, &elems, &encodings);
         }
-        for b in &mut self.out.event_blocks {
+        for b in &mut self.hardware.event_blocks {
             reconstruct_expr(&mut b.condition, &meta_of, &elems, &encodings);
             for u in &mut b.updates {
                 if let Some(c) = &mut u.cond {

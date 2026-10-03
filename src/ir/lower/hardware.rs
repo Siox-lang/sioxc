@@ -1,8 +1,8 @@
-//! Import the normalized digital scheduler decomposition into Process IR.
+//! Canonical CFG construction for normalized source hardware writes.
 //!
-//! This is the temporary hardware-side bridge during the Process-first
-//! migration. It belongs to IR lowering: it consumes only elaborated hierarchy
-//! data and canonical digital IR, never typed testbench syntax or a `TestPlan`.
+//! This is part of source lowering, before any public scheduler decomposition.
+//! The private normalization draft is consumed once; only canonical Process IR
+//! and its derived backend views leave the lowering pass.
 
 use super::*;
 
@@ -14,141 +14,221 @@ struct InstanceLocation {
     path: String,
 }
 
-/// Convert the normalized hardware scheduler decomposition into ordinary
-/// Process IR CFGs.
-///
-/// Keep invocation after test processes are lowered until Process IDs no
-/// longer encode scheduler order. Moving ownership here must not reorder the
-/// executable process table.
-pub(crate) fn import_hardware_processes(
+/// Finish source hardware into canonical CFGs. A source context retains all
+/// of its combinational writes, including multiple targets and companion
+/// planes; it is not split by the compatibility scheduler's target grouping.
+pub(super) fn lower(
     hierarchy: &Hierarchy,
     design: &Design,
-    process_ir: &mut ProcessIr,
-) {
+    draft: &HardwareDraft,
+    sink: &mut DiagnosticSink,
+) -> ProcessIr {
     let locations = hierarchy_locations(hierarchy);
-    for scheduled in design.processes() {
-        let primary = match &scheduled.kind {
-            ProcessKind::Comb { target, .. } => Some(*target),
-            ProcessKind::Event { block } => design
-                .event_blocks
-                .get(*block)
-                .and_then(|event| event.updates.first())
-                .map(|update| update.target)
-                .or_else(|| scheduled.reads.first().copied()),
-        };
-        let Some(primary) = primary else {
+    let mut ir = ProcessIr::default();
+
+    // First-seen source context order, with source-order writes inside it.
+    let mut contexts = Vec::<Vec<&Driver>>::new();
+    let mut by_context = HashMap::new();
+    for driver in &draft.drivers {
+        let index = *by_context.entry(driver.ctx).or_insert_with(|| {
+            contexts.push(Vec::new());
+            contexts.len() - 1
+        });
+        contexts[index].push(driver);
+    }
+    for writes in contexts {
+        // Hoisted implementation signals can precede the source target. Use
+        // any owned target in this context before falling back to read-owner
+        // inference; otherwise a constant helper could hide the whole CFG.
+        let primary = writes
+            .iter()
+            .map(|write| write.target)
+            .find(|target| signal_location(*target, design, &locations).is_some())
+            .unwrap_or(writes[0].target);
+        let span = writes
+            .iter()
+            .find_map(|write| write.span)
+            .unwrap_or(design.signals[primary.0 as usize].declaration_span);
+        let mut reads = Vec::new();
+        let mut labels = Vec::new();
+        for write in &writes {
+            if let Some(condition) = &write.cond {
+                read_set(condition, &mut reads);
+            }
+            read_set(&write.expr, &mut reads);
+            if let Some(label) = design.process_labels.get(&write.ctx) {
+                labels.push(label.clone());
+            }
+            if let Some(resolved) = design.resolved_process_labels.get(&write.target.0) {
+                labels.extend(resolved.iter().cloned());
+            }
+        }
+        labels.sort();
+        labels.dedup();
+        let Some(mut process) = new_process(
+            &ir,
+            primary,
+            reads,
+            labels,
+            span,
+            design,
+            &locations,
+            draft.context_paths.get(&writes[0].ctx).map(String::as_str),
+        ) else {
+            report_missing_owner(span, sink);
             continue;
         };
-        let Some(location) =
-            hardware_process_location(primary, &scheduled.reads, design, &locations)
+        process.region = ProcessRegion::Combinational;
+        let mut tail = process.entry;
+        for write in writes {
+            tail = append_digital_assignment(
+                &mut ir,
+                &mut process,
+                tail,
+                design,
+                SourceAssignment {
+                    signal: write.target,
+                    expression: &write.expr,
+                    condition: write.cond.as_ref(),
+                    driver_context: write.ctx,
+                    span: write.span.unwrap_or(span),
+                },
+            );
+        }
+        ir.processes.push(process);
+    }
+
+    for event in &draft.event_blocks {
+        let mut reads = Vec::new();
+        read_set(&event.condition, &mut reads);
+        for write in &event.updates {
+            if let Some(condition) = &write.cond {
+                read_set(condition, &mut reads);
+            }
+            read_set(&write.expr, &mut reads);
+        }
+        let Some(primary) = event
+            .updates
+            .first()
+            .map(|write| write.target)
+            .or_else(|| reads.first().copied())
         else {
             continue;
         };
-        let id = ProcessId(process_ir.processes.len() as u32);
-        let span = hardware_process_span(&scheduled.kind, primary, design);
-        let label = if scheduled.labels.is_empty() {
-            Some(format!(
-                "{}::<hardware:{}>",
-                location.path, design.signals[primary.0 as usize].path
-            ))
-        } else {
-            Some(scheduled.labels.join(" + "))
-        };
-        let activation = ProcessActivation::Reactive {
-            sensitivity: scheduled
-                .reads
-                .iter()
-                .copied()
-                .map(ProcessSensitivity::Signal)
-                .collect(),
-        };
-        let mut process = ProcessCfg {
-            id,
-            root: location.root,
-            owner: location.id,
-            label,
+        let span = event
+            .updates
+            .iter()
+            .find_map(|write| write.span)
+            .unwrap_or(design.signals[primary.0 as usize].declaration_span);
+        let labels = design
+            .process_labels
+            .get(&event.ctx)
+            .cloned()
+            .into_iter()
+            .collect();
+        let Some(mut process) = new_process(
+            &ir,
+            primary,
+            reads,
+            labels,
             span,
-            activation,
-            region: match &scheduled.kind {
-                ProcessKind::Comb { .. } => ProcessRegion::Combinational,
-                ProcessKind::Event { .. } => ProcessRegion::Procedural,
-            },
-            entry: ProcessBlockId(0),
-            locals: Vec::new(),
-            blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
+            design,
+            &locations,
+            draft.context_paths.get(&event.ctx).map(String::as_str),
+        ) else {
+            report_missing_owner(span, sink);
+            continue;
         };
-        match scheduled.kind {
-            ProcessKind::Comb { drivers, .. } => {
-                let mut tail = ProcessBlockId(0);
-                for driver in drivers {
-                    let Some(driver) = design.drivers.get(driver) else {
-                        continue;
-                    };
-                    let assignment_span = driver.span.unwrap_or(span);
-                    tail = append_digital_assignment(
-                        process_ir,
-                        &mut process,
-                        tail,
-                        design,
-                        ImportedAssignment {
-                            signal: driver.target,
-                            expression: &driver.expr,
-                            condition: driver.cond.as_ref(),
-                            driver_context: driver.ctx,
-                            span: assignment_span,
-                        },
-                    );
-                }
-            }
-            ProcessKind::Event { block } => {
-                let Some(event) = design.event_blocks.get(block) else {
-                    continue;
-                };
-                let body = process.push_block();
-                let exit = process.push_block();
-                let condition = push_normalized_value(process_ir, &event.condition, span, design);
-                process.region = ProcessRegion::Event {
-                    condition,
-                    body,
+        let body = process.push_block();
+        let exit = process.push_block();
+        let condition = push_normalized_value(&mut ir, &event.condition, span, design);
+        process.region = ProcessRegion::Event {
+            condition,
+            body,
+            driver_context: event.ctx,
+        };
+        process.blocks[0].terminator = ProcessTerminator::Branch {
+            condition,
+            then_block: body,
+            else_block: exit,
+        };
+        let mut tail = body;
+        for write in &event.updates {
+            tail = append_digital_assignment(
+                &mut ir,
+                &mut process,
+                tail,
+                design,
+                SourceAssignment {
+                    signal: write.target,
+                    expression: &write.expr,
+                    condition: write.cond.as_ref(),
                     driver_context: event.ctx,
-                };
-                process.blocks[0].terminator = ProcessTerminator::Branch {
-                    condition,
-                    then_block: body,
-                    else_block: exit,
-                };
-                let mut tail = body;
-                for update in &event.updates {
-                    tail = append_digital_assignment(
-                        process_ir,
-                        &mut process,
-                        tail,
-                        design,
-                        ImportedAssignment {
-                            signal: update.target,
-                            expression: &update.expr,
-                            condition: update.cond.as_ref(),
-                            driver_context: event.ctx,
-                            span: update.span.unwrap_or(span),
-                        },
-                    );
-                }
-                process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(exit);
-            }
+                    span: write.span.unwrap_or(span),
+                },
+            );
         }
-        process_ir.processes.push(process);
-        if let Some(test) = process_ir
-            .tests
-            .iter_mut()
-            .find(|test| test.root == location.root)
-        {
-            test.processes.push(id);
-        }
+        process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(exit);
+        ir.processes.push(process);
     }
+    ir
 }
 
-/// One assignment imported from the normalized digital scheduler product.
-struct ImportedAssignment<'a> {
+fn report_missing_owner(span: crate::diag::Span, sink: &mut DiagnosticSink) {
+    sink.emit(
+        crate::diag::Diagnostic::error(
+            "cannot determine the owning instance for a source hardware context",
+        )
+        .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+        .at(span),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn new_process(
+    ir: &ProcessIr,
+    primary: SignalId,
+    mut reads: Vec<SignalId>,
+    labels: Vec<String>,
+    span: crate::diag::Span,
+    design: &Design,
+    locations: &[InstanceLocation],
+    context_path: Option<&str>,
+) -> Option<ProcessCfg> {
+    let mut seen = HashSet::new();
+    reads.retain(|id| seen.insert(*id));
+    // A parent process can write a child input and its own output. Its owner
+    // is the source container, not whichever target happens to be first.
+    let location = locations
+        .iter()
+        .find(|location| Some(location.path.as_str()) == context_path)
+        .or_else(|| hardware_process_location(primary, &reads, design, locations))?;
+    let label = if labels.is_empty() {
+        format!(
+            "{}::<hardware:{}>",
+            location.path, design.signals[primary.0 as usize].path
+        )
+    } else {
+        labels.join(" + ")
+    };
+    Some(ProcessCfg {
+        id: ProcessId(ir.processes.len() as u32),
+        root: location.root,
+        owner: location.id,
+        label: Some(label),
+        span,
+        activation: ProcessActivation::Reactive {
+            sensitivity: reads.into_iter().map(ProcessSensitivity::Signal).collect(),
+        },
+        region: ProcessRegion::Procedural,
+        entry: ProcessBlockId(0),
+        locals: Vec::new(),
+        blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
+    })
+}
+
+/// One representation-normalized source write.
+struct SourceAssignment<'a> {
     signal: SignalId,
     expression: &'a Expr,
     condition: Option<&'a Expr>,
@@ -163,9 +243,9 @@ fn append_digital_assignment(
     process: &mut ProcessCfg,
     tail: ProcessBlockId,
     design: &Design,
-    assignment: ImportedAssignment<'_>,
+    assignment: SourceAssignment<'_>,
 ) -> ProcessBlockId {
-    let ImportedAssignment {
+    let SourceAssignment {
         signal,
         expression,
         condition,
@@ -402,24 +482,6 @@ fn hardware_process_location<'a>(
     })
 }
 
-fn hardware_process_span(
-    kind: &ProcessKind,
-    primary: SignalId,
-    design: &Design,
-) -> crate::diag::Span {
-    match kind {
-        ProcessKind::Comb { drivers, .. } => drivers
-            .iter()
-            .filter_map(|index| design.drivers.get(*index)?.span)
-            .next(),
-        ProcessKind::Event { block } => design
-            .event_blocks
-            .get(*block)
-            .and_then(|event| event.updates.iter().find_map(|update| update.span)),
-    }
-    .unwrap_or(design.signals[primary.0 as usize].declaration_span)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,5 +562,45 @@ mod tests {
             .expect("internal helper should inherit an owner from its read set");
         assert_eq!(location.id, crate::elab::InstanceId(1));
         assert_eq!(location.root, crate::elab::InstanceId(0));
+    }
+
+    #[test]
+    fn constant_helper_keeps_its_context_owner_without_signal_reads() {
+        let span = crate::diag::Span::new(FileId(0), 0..1);
+        let design = Design {
+            signals: vec![Signal {
+                path: "$metatmp0".into(),
+                declaration_span: span,
+                width: 8,
+                real: false,
+                integer: false,
+                char: false,
+                range: None,
+                init: vec![0],
+                enum_type: None,
+            }],
+            ..Design::default()
+        };
+        let locations = vec![InstanceLocation {
+            id: crate::elab::InstanceId(3),
+            root: crate::elab::InstanceId(1),
+            path: "Bench.dut".into(),
+        }];
+        let process = new_process(
+            &ProcessIr::default(),
+            SignalId(0),
+            vec![],
+            vec![],
+            span,
+            &design,
+            &locations,
+            Some("Bench.dut"),
+        )
+        .expect("source context owns a constant implementation helper");
+        assert_eq!(process.owner, crate::elab::InstanceId(3));
+        assert_eq!(process.root, crate::elab::InstanceId(1));
+        assert!(
+            matches!(process.activation, ProcessActivation::Reactive { ref sensitivity } if sensitivity.is_empty())
+        );
     }
 }

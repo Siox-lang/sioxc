@@ -409,8 +409,12 @@ pub(super) fn logic_unary_table_result(operand: Expr, table: &HashMap<u64, u64>)
 /// and optimizing a very large amount of wide-integer IR. This final lowering
 /// pass recognizes the representation-independent expression shape and gives
 /// every backend the compact operation directly.
-pub(super) fn compact_lookup_tables(design: &mut Design) {
-    let mut tables = std::mem::take(&mut design.lookup_tables);
+pub(super) fn compact_lookup_writes(
+    drivers: &mut [Driver],
+    event_blocks: &mut [EventBlock],
+    lookup_tables: &mut Vec<LookupTable>,
+) {
+    let mut tables = std::mem::take(lookup_tables);
     let mut intern: HashMap<LookupTable, LookupTableId> = tables
         .iter()
         .cloned()
@@ -423,7 +427,7 @@ pub(super) fn compact_lookup_tables(design: &mut Design) {
             let owned = std::mem::replace(expr, Expr::Unknown);
             *expr = compact_lookup_expr(owned, &mut tables, &mut intern);
         };
-        for driver in &mut design.drivers {
+        for driver in drivers {
             if let Some(cond) = &mut driver.cond {
                 compact(cond);
             }
@@ -432,7 +436,7 @@ pub(super) fn compact_lookup_tables(design: &mut Design) {
                 compact(meta);
             }
         }
-        for block in &mut design.event_blocks {
+        for block in event_blocks {
             compact(&mut block.condition);
             for update in &mut block.updates {
                 if let Some(cond) = &mut update.cond {
@@ -445,7 +449,7 @@ pub(super) fn compact_lookup_tables(design: &mut Design) {
             }
         }
     }
-    design.lookup_tables = tables;
+    *lookup_tables = tables;
 }
 
 /// Replace an unrolled table expression with a shared [`LookupTable`],

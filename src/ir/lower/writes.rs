@@ -259,7 +259,7 @@ impl<'a> Lowering<'a> {
         };
         if sequential {
             let seed = self
-                .out
+                .hardware
                 .event_blocks
                 .iter()
                 .flat_map(|block| {
@@ -298,7 +298,7 @@ impl<'a> Lowering<'a> {
             .resolved_neutral_planes(signal)
             .map(|(_, meta)| meta)
             .unwrap_or(Expr::Const(0));
-        self.out
+        self.hardware
             .drivers
             .iter()
             .filter(|driver| driver.target == signal && driver.ctx == self.cur_ctx)
@@ -339,7 +339,7 @@ impl<'a> Lowering<'a> {
             // state, so folding them symbolically is exactly what the backend
             // computes.
             let seed = self
-                .out
+                .hardware
                 .event_blocks
                 .iter()
                 .filter(|block| block.ctx == self.cur_ctx)
@@ -384,7 +384,7 @@ impl<'a> Lowering<'a> {
             .resolved_neutral_planes(signal)
             .map(|(value, _)| value)
             .unwrap_or(Expr::Const(0));
-        self.out
+        self.hardware
             .drivers
             .iter()
             .filter(|driver| driver.target == signal && driver.ctx == self.cur_ctx)

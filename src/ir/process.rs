@@ -29,12 +29,11 @@ pub struct ProcessValueId(pub u32);
 /// The canonical control-flow product owned by an elaborated
 /// [`Design`](super::Design).
 ///
-/// Typed source/test CFGs lower directly under `ir::lower`; normalized hardware
-/// CFGs still enter through the scheduler-decomposition bridge. The
-/// representation and its invariants live here so no backend needs a second
-/// process product. Finalized [`Driver`](super::Driver) /
+/// Source hardware and typed procedural/test CFGs lower directly under
+/// `ir::lower`. The representation and its invariants live here so no backend
+/// needs a second process product. Finalized [`Driver`](super::Driver) /
 /// [`EventBlock`](super::EventBlock) compatibility forms are derived from this
-/// arena; the remaining migration removes the source-side hardware bridge.
+/// arena; scheduler decomposition is never input to source CFG construction.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProcessIr {
     /// Every process control-flow graph, indexed by [`ProcessId`].
@@ -932,7 +931,7 @@ pub enum ProcessValueKind {
 
 /// Natural width of an arbitrary-precision little-endian integer literal.
 ///
-/// Both source Process values and values imported from normalized hardware use
+/// Both procedural and representation-normalized hardware source values use
 /// this rule, so it belongs with the canonical arena rather than either input
 /// lowerer.
 pub(crate) fn integer_words_width(words: &[u64]) -> Option<u32> {
@@ -1035,8 +1034,9 @@ pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]
 impl ProcessIr {
     /// Append one already elaborated digital expression to the shared value
     /// arena. Children are emitted first, preserving the arena's dominance
-    /// invariant. This is the migration bridge from the normalized hardware
-    /// representation; it deliberately carries no frontend-only type text.
+    /// invariant. Source lowering uses it for representation-normalized
+    /// expressions; it deliberately carries no frontend-only type text and
+    /// does not consume a scheduler decomposition.
     pub(crate) fn push_digital_expr(
         &mut self,
         expression: &Expr,

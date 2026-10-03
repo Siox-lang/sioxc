@@ -172,13 +172,13 @@ impl<'a> Lowering<'a> {
             .get(DEFAULT_LOGIC_TYPE)
             .cloned()
             .unwrap_or_default();
-        for d in &mut self.out.drivers {
+        for d in &mut self.hardware.drivers {
             if let Some(c) = &mut d.cond {
                 resolve_logic_expr(c, &lut);
             }
             resolve_logic_expr(&mut d.expr, &lut);
         }
-        for b in &mut self.out.event_blocks {
+        for b in &mut self.hardware.event_blocks {
             resolve_logic_expr(&mut b.condition, &lut);
             for u in &mut b.updates {
                 if let Some(c) = &mut u.cond {

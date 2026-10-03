@@ -2,10 +2,9 @@
 //!
 //! Process/CFG types, validation, test descriptors, and ownership live in
 //! [`crate::ir::Design`]. Test stimulus enters from typed Siox AST;
-//! hardware enters through the elaborated, normalized digital scheduler graph
-//! so generic/generate/std semantics are not repeated. Finalized scheduler
-//! forms are derived from this canonical product; the remaining Phase 1
-//! inversion removes the hardware-side source import.
+//! hardware CFGs are already built by source hardware lowering. This entry
+//! attaches procedural state and test descriptors without repeating hardware
+//! elaboration or reading a compatibility scheduler graph.
 
 use crate::elab::Hierarchy;
 use crate::ir::{
@@ -945,13 +944,13 @@ fn normalized_suffix(
     }
 }
 
-/// Fill the canonical process product from normalized hardware plus an
-/// optional native-test plan.
+/// Attach typed procedural behavior and an optional native-test plan to the
+/// canonical hardware process product already built by source lowering.
 ///
 /// One explicit test process becomes one CFG. Legacy impl-scope test statements
 /// remain one implicit foreground process so their existing sequential/`await`
-/// behavior is preserved until the syntax is retired. Hardware scheduler units
-/// become CFGs after elaboration, including for non-test compiler outputs.
+/// behavior is preserved until the syntax is retired. Hardware CFGs retain
+/// their existing values, control flow, and ownership for every compiler output.
 pub fn lower(
     modules: &[Module],
     resolved: &Resolved,
@@ -960,7 +959,12 @@ pub fn lower(
     plan: Option<&TestPlan>,
     design: &mut Design,
 ) -> Result<(), String> {
-    let mut process_ir = ProcessIr::default();
+    // Hardware CFGs already exist from source hardware lowering. Retain their
+    // arena and ownership; lowering stimulus must never reconstruct hardware
+    // from a scheduler view. Procedural entries stay before hardware entries
+    // to preserve the runtime's foreground/clock dispatch order.
+    let mut process_ir = std::mem::take(&mut design.process_ir);
+    let hardware_processes = std::mem::take(&mut process_ir.processes);
     let suffixes = constant_suffixes(modules, resolved);
     let constants = source_constants(modules, resolved);
     let functions = process_functions(modules, resolved);
@@ -1249,7 +1253,18 @@ pub fn lower(
         });
     }
 
-    crate::ir::import_hardware_processes(hierarchy, design, &mut process_ir);
+    let hardware_offset = process_ir.processes.len() as u32;
+    for mut process in hardware_processes {
+        process.id = ProcessId(process.id.0 + hardware_offset);
+        if let Some(test) = process_ir
+            .tests
+            .iter_mut()
+            .find(|test| test.root == process.root)
+        {
+            test.processes.push(process.id);
+        }
+        process_ir.processes.push(process);
+    }
 
     design.process_ir = process_ir;
     crate::ir::derive_scheduler_forms(design)
@@ -4228,10 +4243,10 @@ fn inline_process_function(
     context.value_bindings.pop();
     context.inline_functions.remove(&function.span);
     // ...and that argument's format: `abs(x)` on a `ufixed[3..-4]` is one.
-    if let (Some(result), Some(argument)) = (result, generic_argument) {
-        inherit_receiver_layout(result, argument, context);
+    match (result, generic_argument) {
+        (Some(result), Some(argument)) => Some(inherit_receiver_layout(result, argument, context)),
+        (result, _) => result,
     }
-    result
 }
 
 /// Materialize one source-array operand as element projections in its written
@@ -4721,10 +4736,7 @@ fn inline_process_unary_operator(
         truncate_process_values(context, first_value);
     }
     // `(-y).to_real()` reads the operand's format, as a binary result does.
-    if let Some(result) = result {
-        inherit_receiver_layout(result, operand, context);
-    }
-    result
+    result.map(|result| inherit_receiver_layout(result, operand, context))
 }
 
 /// Evaluate a pure function statement sequence symbolically. `return`, local
@@ -7026,8 +7038,17 @@ mod tests {
         let mut design = crate::ir::lower(&modules, &resolved, &hierarchy, &mut sink);
         assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
 
+        // The source hardware walk already produced canonical CFGs. Clear
+        // the public compatibility view to prove attaching a test plan (or
+        // no plan) preserves those CFGs instead of importing scheduler units.
+        let hardware = design.process_ir.clone();
+        assert_eq!(hardware.processes.len(), 1);
+        design.drivers.clear();
+        design.event_blocks.clear();
         lower(&modules, &resolved, &typed, &hierarchy, None, &mut design)
             .expect("hardware scheduler view derives from Process IR");
+        assert_eq!(design.process_ir, hardware);
+        assert_eq!(design.drivers.len(), 1);
         assert!(design.process_ir.tests.is_empty());
         assert_eq!(design.process_ir.processes.len(), 1);
         let process = &design.process_ir.processes[0];

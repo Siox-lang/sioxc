@@ -54,10 +54,10 @@ flowchart LR
     TYPE --> ELAB["Elaborate<br/>Hierarchy"]
     TYPE -->|test build| PLAN["testbench<br/>TestPlan"]
     PLAN -->|selected roots| ELAB
-    ELAB --> DIGITAL["ir lowering<br/>signals + layouts + drivers/events"]
+    ELAB --> DIGITAL["ir lowering<br/>signals + layouts + hardware CFGs"]
     TYPE -->|typed process expressions| PROCESS_LOWER["ir::lower_processes<br/>source/test CFG lowering"]
     PLAN -->|descriptors + roots| PROCESS_LOWER
-    DIGITAL -->|layouts + normalized hardware bridge| PROCESS_LOWER
+    DIGITAL -->|retained hardware CFGs + layouts| PROCESS_LOWER
     PROCESS_LOWER --> PROCESS["Design::process_ir<br/>canonical CFGs + values"]
 
     PROCESS --> FRONT["frontend artifact<br/>metadata / dumps"]
@@ -79,14 +79,15 @@ to one fixed scheduler/CLI without generating design-specific C. VCD/FST,
 source-located diagnostics, and host services consume descriptors and metadata
 emitted in the design object.
 
-Typed source/test expressions now lower through the IR-owned
-`ir/lower/source_processes.rs` entry directly into the `ProcessIr` owned by
-`ir::Design`; the transitional public `test_ir` module is gone. The input side
-is not completely straight-line yet because normalized hardware still enters
-through `ir/lower/hardware_processes.rs`. After that import, the compiler now
-discards the original scheduling graph and derives its optimized
-`Driver`/`EventBlock` compatibility view from explicitly classified Process
-CFG regions. The remaining Phase 1 inversion removes the source-side import.
+Source hardware lowering builds canonical CFGs in `ir/lower/hardware.rs`
+before scheduler decomposition. Typed source/test expressions then enter the
+same owned arena through `ir/lower/source_processes.rs`, which retains the
+hardware CFGs and attaches procedural state and test descriptors. Neither the
+former public `test_ir` adapter nor the scheduler-to-Process importer exists.
+Representation normalization uses private source drafts confined to lowering;
+only canonical CFGs and their derived `Driver`/`EventBlock` compatibility view
+leave that pass. Source contexts retain multi-target combinational writes,
+independently of the backend's per-target scheduler grouping.
 See
 [the current Process IR ingress boundary](architecture.md#current-process-ir-ingress-boundary).
 

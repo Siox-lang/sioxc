@@ -10997,3 +10997,66 @@ remain; runtime general calls/recursion and host-service coverage are separate
 documented gaps. No push performed. Future source-method changes must preserve
 the normalized-result layout invariant; inherit_receiver_layout returns the
 possibly resized ProcessValueId.
+
+### 2026-10-03 — Codex — source-owned hardware CFG construction
+
+Taking ownership of the hardware lowering boundary: statement/connection,
+resolution, metavalue, and literal/table normalization in src/ir/lower, plus
+canonical hardware CFG construction and source-test attachment. Hardware will
+finish directly into Process IR before the public scheduler decomposition;
+temporary source normalization writes stay private to lowering, not in the
+returned Design. Combinational CFGs retain their source driver context rather
+than being reconstructed from per-target scheduler units. The old normalized
+Design::processes importer will be removed, with ordering, labels, root/test
+ownership, width, and direct executable behavior gated across both corpora.
+
+### 2026-10-03 — Codex — synchronize pending CFG cut with math/Neg landing
+
+Claude's math-fns PR #30 is now on origin/main (4b34549), and the shared
+siox-tests checkout moved to faf8604 during the final gate. The default
+corpus consequently reported 200 passes and two API-mismatch failures;
+the previous paired runs on the pre-migration corpus were both green.
+Stopping the mismatched gate before changing its source inputs. Preserving
+the pending hardware CFG cut and unrelated chat additions in a named stash,
+rebasing the three local commits, then restoring the pending work. The new
+generic/unary layout propagation must use the resized ID returned by
+inherit_receiver_layout; source width validation stays strict. No push.
+
+### 2026-10-03 — Codex — math/Neg synchronization restored
+
+The mismatched gate had already finished with two corpus API failures when
+checked; no live gate was interrupted. Rebased all three local commits onto
+4b34549, keeping both sides of the chat-only conflict, and restored the named
+stash without dropping the backup. Generic math and unary operator returns
+now retain the resized ID from inherit_receiver_layout. The source-owned CFG
+batch is restored for verification against the current sibling corpus.
+
+### 2026-10-03 — Codex — source-owned hardware CFG cut gated
+
+Hardware specialization, resolution, metavalue propagation, literal handling,
+and table compaction now keep their normalization writes private to lowering.
+hardware.rs constructs canonical CFGs before public scheduler decomposition;
+the Design::processes importer is removed. Source contexts keep multi-target
+writes together, parent processes retain their container ownership when writing
+child inputs, independent resolved targets retain separate root contexts, and
+constant helpers keep their recorded source owner. Source draft trees are
+released before allocating the derived compatibility view. Test attachment
+retains existing hardware CFGs/values rather than importing scheduler forms.
+
+The rebased math/Neg integration preserves resized return IDs for generic
+math functions and unary operators. Regression tests cover all the ownership
+and grouping cases, attachment with an erased compatibility view, and exact
+linear canonical construction from normalized writes. All 121 IR tests pass.
+The complete 8 GiB-capped ci-local.sh gate passes on compiler base 4b34549
+and sibling corpus faf8604: formatting, frontend checks/Clippy, default and
+bitpack Rust tests, all-target/all-feature Clippy, and both 202-program corpora.
+Separately emitted math, FIFO, and 44-pair float conformance executables and
+their VCD checks pass. Verification uses the real cached LLVM/Clang 22 tools.
+
+Completion estimate: Phase 1 approximately 96%. This completes source-owned
+CFG construction, not source-value arena lowering: hardware method/function
+inlining still deep-copies private trees and large hardware float bodies still
+hit the protective inline budget. Replace those copies with shared canonical
+value IDs and exercise hardware arithmetic before removing that guard.
+General call CFGs/recursion and remaining host-service forms also stay tracked.
+Other agents' historical uncommitted chat entries are excluded. No push.

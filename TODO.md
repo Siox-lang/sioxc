@@ -55,26 +55,17 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
 Owns signals, canonical process control flow, initializers, layouts, enum/logic
 metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
 
-- 🟡 **Make Process IR the lowering authority.** All finalized hardware and
-  test behavior is present in `Design::process_ir`, and the finalized
-  `Driver`/`EventBlock` scheduler view is now derived back from explicitly
-  classified Process CFG regions. Derivation fails closed on procedural value
-  or control-flow shapes, so downstream consumers cannot silently retain the
-  pre-Process graph. Normalized hardware is still imported through a
-  source-side migration bridge before that projection.
-  Typed expressions, values, calls, places, CFGs, test descriptors, storage,
-  clocks, and stimulus now lower through
-  `src/ir/lower/source_processes.rs`; `Compiler::compile` calls that IR-owned
-  entry directly and the transitional `test_ir` module has been deleted. The
-  dependency-closed normalized-hardware importer lives beside it in
-  `src/ir/lower/hardware_processes.rs` and still runs after source CFG
-  construction to preserve current Process IDs and scheduler order.
-  Complete the remaining source-side migration in order:
-
-  1. lower explicit hardware processes and implicit continuous behavior into
-     `Design::process_ir` before scheduler decomposition;
-  2. delete the normalized-hardware importer once default and `bitpack`
-     native/corpus behavior remains unchanged.
+- 🟡 **Complete canonical source-value lowering.** Hardware CFG construction
+  now precedes public scheduler decomposition and retains source contexts;
+  the scheduler-to-Process importer is deleted. Hardware specialization,
+  source-method inlining, resolution, and metavalue expansion still use private
+  temporary expression trees before building the canonical arena. Replace
+  repeated tree copies with dependency-ordered value identities and shared
+  subexpressions, preserving source spans, concrete types/widths, contexts,
+  lookup-table compaction, and staged-write semantics. This remains Phase 1
+  work: large std-defined arithmetic (notably hardware floating-point bodies)
+  can still exceed the protective tree-inlining budget. Exercise these source
+  bodies in hardware as well as procedural tests before removing that budget.
 
 ## LLVM
 
@@ -91,10 +82,14 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   observable.
 - 🟡 **Move all host services behind the fixed ABI.** Deterministic
   `seed`/`rand`/`randint`/`uniform`, runtime UTF-8 `read<string>`, string
-  indexing/length/equality, and `exists` use explicit Process IR operations
-  and fixed runtime state. Add general runtime-owned dynamic arrays and
-  non-string `read<T>` forms. LLVM emits value semantics; the runtime owns
-  allocation, persistent state, and host contact.
+  indexing/length/equality, fixed strings, little-endian `read<integer>` and
+  packed scalar/array binary reads (including multiword elements), and `exists`
+  use explicit Process IR operations and fixed runtime state. Add general
+  runtime-owned dynamic arrays and runtime-computed file-path arguments. LLVM
+  emits value semantics; the runtime owns allocation, persistent state, and
+  host contact. `tests/runtime_file_io.rs` verifies that runtime fixtures can
+  be created after compilation, capacity/UTF-8/index failures are actionable,
+  and hardware ROM initialization remains compile-time.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` operations, constants/conversions, ABI rules, formatting,
   and a software fallback before exposing a language feature.

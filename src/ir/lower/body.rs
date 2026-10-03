@@ -658,7 +658,7 @@ impl<'a> Lowering<'a> {
                     if dir == Some(ast::Direction::Out) {
                         if let Some(target) = self.target_signal(value) {
                             let ctx = self.next_ctx_at(ast::expr_span(value));
-                            self.out.drivers.push(Driver {
+                            self.hardware.drivers.push(Driver {
                                 span: self.cur_span,
                                 target,
                                 cond: None,
@@ -670,7 +670,7 @@ impl<'a> Lowering<'a> {
                     } else {
                         let expr = self.lower_expr(value);
                         let ctx = self.next_ctx_at(ast::expr_span(value));
-                        self.out.drivers.push(Driver {
+                        self.hardware.drivers.push(Driver {
                             span: self.cur_span,
                             target: child_id,
                             cond: None,
@@ -700,7 +700,7 @@ impl<'a> Lowering<'a> {
                             };
                             let expr = self.lower_expr(field_value);
                             let ctx = self.next_ctx_at(ast::expr_span(field_value));
-                            self.out.drivers.push(Driver {
+                            self.hardware.drivers.push(Driver {
                                 span: self.cur_span,
                                 target: *child_id,
                                 cond: None,
@@ -733,7 +733,7 @@ impl<'a> Lowering<'a> {
                             }
                             let expr = self.lower_expr(elem);
                             let ctx = self.next_ctx_at(ast::expr_span(elem));
-                            self.out.drivers.push(Driver {
+                            self.hardware.drivers.push(Driver {
                                 span: self.cur_span,
                                 target: *child_id,
                                 cond: None,
@@ -765,7 +765,7 @@ impl<'a> Lowering<'a> {
                     }
                     let ctx = self.next_ctx_at(ast::expr_span(value));
                     if dir == Some(ast::Direction::Out) {
-                        self.out.drivers.push(Driver {
+                        self.hardware.drivers.push(Driver {
                             span: self.cur_span,
                             target: parent_id,
                             cond: None,
@@ -774,7 +774,7 @@ impl<'a> Lowering<'a> {
                             ctx,
                         });
                     } else {
-                        self.out.drivers.push(Driver {
+                        self.hardware.drivers.push(Driver {
                             span: self.cur_span,
                             target: child_id,
                             cond: None,
@@ -795,7 +795,7 @@ impl<'a> Lowering<'a> {
                 match item {
                     ast::ImplItem::Process(process) => {
                         self.lint_generated_dead_assignments(process.body.stmts.iter());
-                        self.cur_ctx += 1;
+                        self.next_ctx();
                         // A conflicting-driver error points at the process.
                         self.ctx_span.insert(self.cur_ctx, process.span);
                         if let Some(label) = &process.label {
@@ -809,7 +809,7 @@ impl<'a> Lowering<'a> {
                         }
                     }
                     ast::ImplItem::Stmt(statement) => {
-                        self.cur_ctx += 1;
+                        self.next_ctx();
                         self.ctx_span
                             .insert(self.cur_ctx, ast::stmt_span(statement));
                         // A labelled concurrent assignment is its own driver

@@ -107,7 +107,7 @@ impl<'a> Lowering<'a> {
         use std::collections::BTreeMap;
         // target -> ctx -> ordered driver indices
         let mut by_target: BTreeMap<u32, BTreeMap<u32, Vec<usize>>> = BTreeMap::new();
-        for (i, d) in self.out.drivers.iter().enumerate() {
+        for (i, d) in self.hardware.drivers.iter().enumerate() {
             by_target
                 .entry(d.target.0)
                 .or_default()
@@ -115,7 +115,7 @@ impl<'a> Lowering<'a> {
                 .or_default()
                 .push(i);
         }
-        let mut replaced: Vec<(u32, Expr, Option<Expr>, Vec<String>)> = Vec::new();
+        let mut replaced = Vec::new();
         for (t, ctxs) in &by_target {
             // Metavalue companions are an implementation plane of their parent
             // signal. The parent's element-wise Resolve replaces their drivers
@@ -199,6 +199,18 @@ impl<'a> Lowering<'a> {
                 )));
                 continue;
             }
+            // Each resolved target is an independent implicit source context.
+            // A shared synthetic context zero would merge unrelated targets
+            // (even from different test roots) into one canonical CFG.
+            self.cur_ctx += 1;
+            let resolved_ctx = self.cur_ctx;
+            if let Some(owner) = ctxs
+                .keys()
+                .find_map(|ctx| self.hardware.context_paths.get(ctx))
+                .cloned()
+            {
+                self.hardware.context_paths.insert(resolved_ctx, owner);
+            }
             // A forwarded array Resolve operates per element and preserves the
             // separate value/discriminant planes.
             if let Some(element) = element_resolve {
@@ -206,11 +218,11 @@ impl<'a> Lowering<'a> {
                 // Folding unrolls per element, so an operand it repeats is
                 // hoisted rather than deep-copied `width` times. Nothing
                 // between the arm and the flush creates a signal.
-                self.arm_meta_temps(0, declaration_span);
+                self.arm_meta_temps(resolved_ctx, declaration_span);
                 let folded = self.resolve_vector_contexts(ctxs, width, &element);
                 self.flush_meta_temps();
                 if let Some((value, meta)) = folded {
-                    replaced.push((*t, value, Some(meta), labels));
+                    replaced.push((*t, value, Some(meta), labels, resolved_ctx));
                 } else {
                     self.sink.emit(
                         crate::diag::Diagnostic::error(format!(
@@ -236,7 +248,7 @@ impl<'a> Lowering<'a> {
             for idxs in ctxs.values() {
                 let mut acc = Expr::Const(neutral);
                 for &i in idxs {
-                    let d = &self.out.drivers[i];
+                    let d = &self.hardware.drivers[i];
                     acc = match &d.cond {
                         None => d.expr.clone(),
                         Some(c) => Expr::Select {
@@ -274,20 +286,20 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
-            replaced.push((*t, folded, None, labels));
+            replaced.push((*t, folded, None, labels, resolved_ctx));
         }
-        for (t, expr, meta, labels) in replaced {
-            self.out.drivers.retain(|d| d.target.0 != t);
+        for (t, expr, meta, labels, ctx) in replaced {
+            self.hardware.drivers.retain(|d| d.target.0 != t);
             if !labels.is_empty() {
                 self.out.resolved_process_labels.insert(t, labels);
             }
-            self.out.drivers.push(Driver {
+            self.hardware.drivers.push(Driver {
                 span: self.cur_span,
                 target: SignalId(t),
                 cond: None,
                 expr,
                 meta,
-                ctx: 0,
+                ctx,
             });
         }
     }
@@ -309,7 +321,7 @@ impl<'a> Lowering<'a> {
             value = repeat_element_plane(value, width, 1);
             meta = repeat_element_plane(meta, width, 4);
             for &index in indices {
-                let driver = &self.out.drivers[index];
+                let driver = &self.hardware.drivers[index];
                 let next_value = driver.expr.clone();
                 let next_meta = driver
                     .meta

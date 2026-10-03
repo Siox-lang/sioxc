@@ -197,7 +197,7 @@ impl<'a> Lowering<'a> {
                                         self.locals.get(&format!("{tpath}[{target_index}]"));
                                     if let (Some((_, expression)), Some(&target)) = (source, target)
                                     {
-                                        self.out.drivers.push(Driver {
+                                        self.hardware.drivers.push(Driver {
                                             span: self.cur_span,
                                             target,
                                             cond: cond.clone(),
@@ -245,7 +245,7 @@ impl<'a> Lowering<'a> {
                                             .clone()
                                             .and_then(|en| self.char_disc(*c, &en))
                                             .unwrap_or(*c as u32 as u64);
-                                        self.out.drivers.push(Driver {
+                                        self.hardware.drivers.push(Driver {
                                             span: self.cur_span,
                                             target: sig,
                                             cond: cond.clone(),
@@ -274,7 +274,7 @@ impl<'a> Lowering<'a> {
                                 for (e, i) in elems.iter().zip(&indices) {
                                     if let Some(&sig) = self.locals.get(&format!("{tpath}[{i}]")) {
                                         let expr = self.coerce_to_target(sig, self.lower_expr(e));
-                                        self.out.drivers.push(Driver {
+                                        self.hardware.drivers.push(Driver {
                                             span: self.cur_span,
                                             target: sig,
                                             cond: cond.clone(),
@@ -293,7 +293,7 @@ impl<'a> Lowering<'a> {
                                             let t = self.locals.get(&format!("{tpath}[{ti}]"));
                                             let sv = self.locals.get(&format!("{vpath}[{vi}]"));
                                             if let (Some(&t), Some(&sv)) = (t, sv) {
-                                                self.out.drivers.push(Driver {
+                                                self.hardware.drivers.push(Driver {
                                                     span: self.cur_span,
                                                     target: t,
                                                     cond: cond.clone(),
@@ -335,7 +335,7 @@ impl<'a> Lowering<'a> {
                                 }
                                 if !lowered.is_empty() {
                                     for (target, expr) in lowered {
-                                        self.out.drivers.push(Driver {
+                                        self.hardware.drivers.push(Driver {
                                             span: self.cur_span,
                                             target,
                                             cond: cond.clone(),
@@ -376,7 +376,7 @@ impl<'a> Lowering<'a> {
                         for (sig, expr) in
                             self.struct_assign_leaves(target, value).unwrap_or_default()
                         {
-                            self.out.drivers.push(Driver {
+                            self.hardware.drivers.push(Driver {
                                 span: self.cur_span,
                                 target: sig,
                                 cond: cond.clone(),
@@ -390,7 +390,7 @@ impl<'a> Lowering<'a> {
                 }
                 if let Some(target) = self.target_signal(target) {
                     let expr = self.coerce_to_target(target, self.lower_expr(value));
-                    self.out.drivers.push(Driver {
+                    self.hardware.drivers.push(Driver {
                         span: self.cur_span,
                         target,
                         cond,
@@ -400,7 +400,7 @@ impl<'a> Lowering<'a> {
                     });
                 } else if let Some(ups) = self.dynamic_write(target, value, &cond, false, &[]) {
                     for u in ups {
-                        self.out.drivers.push(Driver {
+                        self.hardware.drivers.push(Driver {
                             span: self.cur_span,
                             target: u.target,
                             cond: u.cond,
@@ -411,7 +411,7 @@ impl<'a> Lowering<'a> {
                     }
                 } else if let Some(ups) = self.dynamic_struct_write(target, value, &cond) {
                     for u in ups {
-                        self.out.drivers.push(Driver {
+                        self.hardware.drivers.push(Driver {
                             span: self.cur_span,
                             target: u.target,
                             cond: u.cond,
@@ -458,16 +458,16 @@ impl<'a> Lowering<'a> {
                     // Otherwise it has to be a new driver, or a guarded write
                     // would be applied unconditionally.
                     let last = self
-                        .out
+                        .hardware
                         .drivers
                         .iter()
                         .rposition(|d| d.target == sig && d.ctx == self.cur_ctx);
                     match last {
-                        Some(i) if cond.is_none() && self.out.drivers[i].cond.is_none() => {
-                            self.out.drivers[i].expr = merged;
-                            self.out.drivers[i].meta = meta;
+                        Some(i) if cond.is_none() && self.hardware.drivers[i].cond.is_none() => {
+                            self.hardware.drivers[i].expr = merged;
+                            self.hardware.drivers[i].meta = meta;
                         }
-                        _ => self.out.drivers.push(Driver {
+                        _ => self.hardware.drivers.push(Driver {
                             span: self.cur_span,
                             target: sig,
                             cond,
@@ -500,7 +500,7 @@ impl<'a> Lowering<'a> {
                             hi: off - 1,
                             lo: off - w,
                         };
-                        self.out.drivers.push(Driver {
+                        self.hardware.drivers.push(Driver {
                             span: self.cur_span,
                             target: t,
                             cond: cond.clone(),
@@ -530,7 +530,7 @@ impl<'a> Lowering<'a> {
                         let neg = Some(not(self.lower_expr(&iff.cond)));
                         self.lower_event_else(eb, neg, &mut updates);
                     }
-                    self.out.event_blocks.push(EventBlock {
+                    self.hardware.event_blocks.push(EventBlock {
                         condition,
                         updates,
                         ctx: self.cur_ctx,

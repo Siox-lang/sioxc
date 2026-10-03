@@ -3,6 +3,110 @@
 use super::*;
 
 #[test]
+fn source_process_keeps_multiple_targets_in_one_canonical_cfg() {
+    let design = lower_src(
+        "module source; entity E { input: integer in, a: integer out, b: integer out, c: integer out }\n\
+         impl E { pair: process { a = input; b = input; } other: process { c = input; } }",
+    );
+    assert!(design.validate().is_empty(), "{:?}", design.validate());
+    assert_eq!(design.process_ir.processes.len(), 2);
+    let pair = &design.process_ir.processes[0];
+    assert_eq!(pair.label.as_deref(), Some("E::pair"));
+    assert_eq!(pair.region, ProcessRegion::Combinational);
+    assert_eq!(pair.blocks.len(), 1);
+    assert_eq!(pair.blocks[0].instructions.len(), 2);
+    let writes = pair.blocks[0]
+        .instructions
+        .iter()
+        .map(|instruction| {
+            let ProcessInstruction::Assign {
+                target,
+                driver_context,
+                ..
+            } = instruction
+            else {
+                panic!("expected a canonical source signal write");
+            };
+            let ProcessValueKind::Signal { signals, .. } =
+                &design.process_ir.values[target.0 as usize].kind
+            else {
+                panic!("expected a flattened source signal");
+            };
+            (
+                design.signals[signals[0].0 as usize].path.as_str(),
+                *driver_context,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        writes.iter().map(|write| write.0).collect::<Vec<_>>(),
+        ["E.a", "E.b"]
+    );
+    assert_eq!(writes[0].1, writes[1].1);
+    assert_eq!(
+        design.process_ir.processes[1].label.as_deref(),
+        Some("E::other")
+    );
+    assert!(
+        matches!(pair.activation, ProcessActivation::Reactive { ref sensitivity } if sensitivity.len() == 1)
+    );
+    // Backend target decomposition remains a derived optimization. It must
+    // not split the source process or become the input to CFG construction.
+    assert_eq!(design.processes().len(), 3);
+}
+
+#[test]
+fn independent_resolved_targets_keep_separate_root_contexts() {
+    let design = lower_src(
+        "module roots; impl Resolve for Logic { fn resolve(self, rhs: Logic) -> Logic { return self; } }\n\
+         entity A { q: Logic out } impl A { one: process { q = '1'; } two: process { q = '0'; } }\n\
+         entity B { q: Logic out } impl B { one: process { q = '0'; } two: process { q = '1'; } }",
+    );
+    assert!(design.validate().is_empty(), "{:?}", design.validate());
+    assert_eq!(design.process_ir.processes.len(), 2);
+    let processes = &design.process_ir.processes;
+    assert_ne!(processes[0].root, processes[1].root);
+    assert_eq!(processes[0].root, processes[0].owner);
+    assert_eq!(processes[1].root, processes[1].owner);
+    let context = |process: &ProcessCfg| {
+        let ProcessInstruction::Assign {
+            driver_context: Some(ctx),
+            ..
+        } = process.blocks[0].instructions[0]
+        else {
+            panic!("expected a resolved implicit source context");
+        };
+        ctx
+    };
+    assert_ne!(context(&processes[0]), context(&processes[1]));
+    assert!(processes[0].label.as_ref().unwrap().starts_with("A::"));
+    assert!(processes[1].label.as_ref().unwrap().starts_with("B::"));
+}
+
+#[test]
+fn source_process_owner_is_its_container_not_its_first_child_target() {
+    let design = lower_src(
+        "module ownership; entity Child { input: integer in, output: integer out } impl Child { output = input; }\n\
+         entity Parent { input: integer in, output: integer out } impl Parent {\n\
+           let child: Child = {};\n\
+           link: process { child.input = input; output = input; }\n\
+         }",
+    );
+    assert!(design.validate().is_empty(), "{:?}", design.validate());
+    let process = design
+        .process_ir
+        .processes
+        .iter()
+        .find(|process| process.label.as_deref() == Some("Parent::link"))
+        .expect("parent source context");
+    assert_eq!(
+        process.owner, process.root,
+        "parent owns a process that drives a child endpoint"
+    );
+    assert_eq!(process.blocks[0].instructions.len(), 2);
+}
+
+#[test]
 /// The basic lowering produces the expected signals, driver and event block.
 fn lowers_signals_driver_and_event_block() {
     let d = lower_src(COUNTER);
@@ -789,7 +893,11 @@ fn packed_logic_tables_are_interned_as_compact_lookups() {
         ..Design::default()
     };
 
-    compact_lookup_tables(&mut design);
+    compact_lookup_writes(
+        &mut design.drivers,
+        &mut design.event_blocks,
+        &mut design.lookup_tables,
+    );
 
     assert_eq!(design.lookup_tables.len(), 1);
     assert_eq!(design.lookup_tables[0].element_width, 4);
@@ -882,6 +990,7 @@ fn resolved_process_keeps_every_contributing_label() {
                bit_three: process { q[3] = '1'; }\n\
              }\n",
     );
+    assert!(d.validate().is_empty(), "{:?}", d.validate());
     let target = SignalId(
         d.signals
             .iter()
@@ -971,10 +1080,61 @@ fn concurrent_resolved_slices_lower_without_expression_explosion() {
     );
     assert!(d.validate().is_empty());
     let rendered = d.to_ir_string();
+    // Source hardware lowering now includes the canonical arena dump too.
+    // Keep the original bound on the expanded expression representation,
+    // rather than confusing verbose per-node CFG metadata with tree growth.
+    let canonical = d.process_ir.to_ir_string();
+    let expressions = rendered
+        .strip_suffix(&canonical)
+        .expect("canonical dump suffix");
     assert!(
-        rendered.len() < 250_000,
+        expressions.len() < 250_000,
         "three resolved slice contexts expanded to {} bytes",
-        rendered.len()
+        expressions.len()
+    );
+    // CFG construction contributes one place per write and exactly one node
+    // per normalized expression node. It must not expand the source draft a
+    // second time when constructing sensitivities or attaching test metadata.
+    let mut expected_nodes = d.drivers.len();
+    let mut pending = d
+        .drivers
+        .iter()
+        .flat_map(|driver| std::iter::once(&driver.expr).chain(driver.cond.iter()))
+        .collect::<Vec<_>>();
+    while let Some(expression) = pending.pop() {
+        expected_nodes += 1;
+        match expression {
+            Expr::Unary { rhs, .. }
+            | Expr::Slice { base: rhs, .. }
+            | Expr::TableLookup { index: rhs, .. } => pending.push(rhs),
+            Expr::Binary { lhs, rhs, .. } => pending.extend([lhs.as_ref(), rhs.as_ref()]),
+            Expr::Select { cond, then, els } => {
+                pending.extend([cond.as_ref(), then.as_ref(), els.as_ref()])
+            }
+            Expr::CheckedIndex { index, valid, .. } => {
+                pending.extend([index.as_ref(), valid.as_ref()])
+            }
+            Expr::MetaCmp {
+                inner, operands, ..
+            } => {
+                pending.push(inner);
+                pending.extend(operands);
+            }
+            Expr::CCall { args, .. } => pending.extend(args),
+            Expr::Const(_)
+            | Expr::WideConst(_)
+            | Expr::Real(_)
+            | Expr::Logic(_)
+            | Expr::Current(_)
+            | Expr::Old(_)
+            | Expr::Event(_)
+            | Expr::Unknown => {}
+        }
+    }
+    assert_eq!(
+        d.process_ir.values.len(),
+        expected_nodes,
+        "canonical construction must remain linear in normalized source writes"
     );
 }
 

@@ -84,6 +84,7 @@ impl<'a> Lowering<'a> {
             undriven_lets: Vec::new(),
             unused_lets: Vec::new(),
             out: Design::default(),
+            hardware: HardwareDraft::default(),
             locals: HashMap::new(),
             local_enum: HashMap::new(),
             local_struct: HashMap::new(),
@@ -486,7 +487,7 @@ impl<'a> Lowering<'a> {
                                             let expression = self.lower_expr(&value);
                                             if !matches!(expression, Expr::Unknown) {
                                                 let ctx = self.next_ctx_at(ast::expr_span(&value));
-                                                self.out.drivers.push(Driver {
+                                                self.hardware.drivers.push(Driver {
                                                     span: Some(ast::expr_span(&value)),
                                                     target: signal,
                                                     cond: None,
@@ -530,7 +531,7 @@ impl<'a> Lowering<'a> {
                                                 continue;
                                             }
                                             let ctx = self.next_ctx_at(ast::expr_span(field));
-                                            self.out.drivers.push(Driver {
+                                            self.hardware.drivers.push(Driver {
                                                 span: Some(ast::expr_span(field)),
                                                 target: signal,
                                                 cond: None,
@@ -564,7 +565,7 @@ impl<'a> Lowering<'a> {
                                                 continue;
                                             }
                                             let ctx = self.next_ctx_at(ast::expr_span(element));
-                                            self.out.drivers.push(Driver {
+                                            self.hardware.drivers.push(Driver {
                                                 span: Some(ast::expr_span(element)),
                                                 target: signal,
                                                 cond: None,
@@ -662,7 +663,7 @@ impl<'a> Lowering<'a> {
             for &o in &outs {
                 let ctx = self.next_ctx();
                 for &i in &ins {
-                    self.out.drivers.push(Driver {
+                    self.hardware.drivers.push(Driver {
                         span: self.cur_span,
                         target: i,
                         cond: None,
