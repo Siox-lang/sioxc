@@ -970,10 +970,10 @@ pub enum Expr {
         /// What is being called: a path, or a `.method` field access whose
         /// base becomes the receiver.
         callee: Box<Expr>,
-        /// Explicit type construction arguments. Phase 1 uses this for
-        /// constructor-like intrinsics such as `read<T>`; ordinary generic
-        /// functions continue to infer their type parameters from values.
-        type_args: Vec<Type>,
+        /// Explicit generic arguments, types or values: `read<string>(path)`,
+        /// and a parameterized type's constructor `float<32, 23>(x)`.
+        /// Ordinary generic functions infer their parameters from values.
+        type_args: Vec<GenericArg>,
         /// The value arguments, in order.
         args: Vec<Expr>,
         /// Whether the call was written with `!`, as in `assert!(...)`.
@@ -1180,6 +1180,37 @@ pub enum GenericArg {
         /// The type bound to it.
         ty: Type,
     },
+}
+
+impl GenericArg {
+    /// The type of a type-shaped argument; `None` for a value.
+    pub fn type_ref(&self) -> Option<&Type> {
+        match self {
+            GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => Some(ty),
+            _ => None,
+        }
+    }
+
+    /// The argument read as a type: a type-shaped one as is, a bare or
+    /// indexed name (`string`, `unsigned[8]`) as the type it spells. `None`
+    /// for a value such as `32`.
+    pub fn as_type(&self) -> Option<Type> {
+        fn expr_type(expression: &Expr) -> Option<Type> {
+            match expression {
+                Expr::Path(path) => Some(Type::Path(path.clone())),
+                Expr::Index { base, index, span } => Some(Type::Indexed {
+                    base: Box::new(expr_type(base)?),
+                    index: Some(index.clone()),
+                    span: *span,
+                }),
+                _ => None,
+            }
+        }
+        match self {
+            GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => Some(ty.clone()),
+            GenericArg::Positional(value) | GenericArg::Named { value, .. } => expr_type(value),
+        }
+    }
 }
 
 /// The source span of a statement.

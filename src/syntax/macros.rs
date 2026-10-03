@@ -1098,12 +1098,49 @@ impl Expander<'_> {
 }
 
 /// A call's arguments, split at top-level commas. A trailing comma is
-/// allowed; no tokens are no arguments.
+/// allowed; no tokens are no arguments. A generic argument list in call or
+/// construction position (`float<32, 23>(x)`) nests like a bracket, by the
+/// parser's own rule: a `<` after a name whose matching `>` is followed by
+/// `(` or `{`. Any other `<` is a comparison.
 fn split_args(tokens: &[MacroToken]) -> Vec<Vec<MacroToken>> {
     use TokenKind as K;
+    let mut generic_close = HashSet::new();
+    let mut generic_open = HashSet::new();
+    for open in 1..tokens.len() {
+        if tokens[open].kind != K::Lt || tokens[open - 1].kind != K::Ident {
+            continue;
+        }
+        let mut level = 0usize;
+        for (close, token) in tokens.iter().enumerate().skip(open) {
+            match token.kind {
+                K::Lt => level += 1,
+                K::Shl => level += 2,
+                K::Gt | K::Shr => {
+                    level = level.saturating_sub(if token.kind == K::Gt { 1 } else { 2 });
+                    if level == 0 {
+                        if tokens
+                            .get(close + 1)
+                            .is_some_and(|next| matches!(next.kind, K::LParen | K::LBrace))
+                        {
+                            generic_open.insert(open);
+                            generic_close.insert(close);
+                        }
+                        break;
+                    }
+                }
+                K::Semi | K::LBrace | K::RBrace => break,
+                _ => {}
+            }
+        }
+    }
     let mut args = vec![Vec::new()];
     let mut depth = 0usize;
-    for token in tokens {
+    for (position, token) in tokens.iter().enumerate() {
+        if generic_open.contains(&position) {
+            depth += 1;
+        } else if generic_close.contains(&position) {
+            depth = depth.saturating_sub(1);
+        }
         match token.kind {
             K::LParen | K::LBracket | K::LBrace => depth += 1,
             K::RParen | K::RBracket | K::RBrace => depth = depth.saturating_sub(1),

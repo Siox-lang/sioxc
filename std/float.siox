@@ -2,23 +2,24 @@ module std::float;
 
 use std::bits::unsigned;
 
-// Floating point, after VHDL-2008's `float_pkg`, on the same idea as
-// `std::fixed`: the index range gives the format.
+// Floating point, after VHDL-2008's `float_pkg`. The parameters are the
+// format: W bits in all, M of them the mantissa (fraction).
 //
-//   float[8..-23]   IEEE-754 binary32: sign at index 8, exponent 7..0,
-//                   fraction -1..-23
-//   float[5..-10]   binary16
-//   float[11..-52]  binary64
+//   float<32, 23>   IEEE-754 binary32: 1 sign, 8 exponent, 23 mantissa bits
+//   float<16, 10>   binary16
+//   float<64, 52>   binary64
 //
-// so `x'high` is the exponent width E, `-x'low` the fraction width F, and the
-// exponent bias is 2^(E-1) - 1. Results round to nearest, ties to even. Zero,
+// Internally the word is indexed as VHDL's float is — sign at the top index,
+// exponent down to 0, fraction from -1 — so `x'high` is the exponent width E
+// (W - M - 1), `-x'low` the fraction width M, and the exponent bias is
+// 2^(E-1) - 1. Results round to nearest, ties to even. Zero,
 // infinity and NaN follow IEEE-754; subnormals are flushed to zero on input
 // and output (VHDL's `denormalize => false`, the usual FPGA choice).
 //
 // Everything below is ordinary siox over the packed word, so it synthesizes.
 // The helpers are unrolled `let` chains rather than loops. Inside the impls
 // the operands read as kernel words.
-pub struct float(Logic[]);
+pub struct float<W: integer, M: integer>(Logic[W - M - 1 .. 0 - M]);
 
 // --- word helpers --------------------------------------------------------------
 
@@ -270,7 +271,7 @@ impl float {
     }
 }
 
-// `float[8..-23](1.5)`: a number in the format being built — `Self'high`
+// `float<32, 23>(1.5)`: a number in the format being built — `Self'high`
 // exponent and `-Self'low` fraction bits — rounded to nearest even; beyond
 // the range it is infinite, below it zero.
 impl From<real> for float {

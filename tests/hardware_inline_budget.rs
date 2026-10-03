@@ -15,7 +15,7 @@ fn an_oversized_hardware_inline_is_an_error_not_unbounded_growth() {
     std::fs::write(
         &entry,
         "module main;\nuse std::float::float;\n\
-         entity E { a: float[8..-23] in, b: float[8..-23] in, s: float[8..-23] out }\n\
+         entity E { a: float<32, 23> in, b: float<32, 23> in, s: float<32, 23> out }\n\
          impl E { s = a * b; }\n",
     )
     .unwrap();

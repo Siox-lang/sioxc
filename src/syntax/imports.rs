@@ -54,6 +54,56 @@ struct Decl {
 struct GenericAlias {
     params: Vec<String>,
     ty: Type,
+    /// A struct whose parameters shape its base's index range (see
+    /// [`format_struct_alias`]): its bare name is the family itself, and
+    /// importing it imports the struct.
+    structure: bool,
+}
+
+/// A struct whose integer parameters only shape its base's index *range* —
+/// `struct float<W: integer, M: integer>(Logic[W - M - 1 .. 0 - M]);` — is
+/// that family over the range: `float<32, 23>` stands for `float[8..-23]`,
+/// and the struct itself is the plain family `float(Logic[])`. A base sized
+/// by a width (`Word<N>(Logic[N])`) keeps its ordinary generic meaning.
+fn format_struct_alias(s: &StructDecl) -> Option<GenericAlias> {
+    if s.params.params.is_empty() || !s.fields.is_empty() {
+        return None;
+    }
+    let integer_bound = |param: &Param| {
+        matches!(&param.bound, Some(Type::Path(path))
+            if path.segments.last().is_some_and(|last| last.text == "integer"))
+    };
+    if !s.params.params.iter().all(integer_bound) {
+        return None;
+    }
+    let Some(Type::Indexed {
+        index: Some(index),
+        span,
+        ..
+    }) = &s.base
+    else {
+        return None;
+    };
+    if !matches!(index.as_ref(), Expr::Range { .. }) {
+        return None;
+    }
+    Some(GenericAlias {
+        params: s
+            .params
+            .params
+            .iter()
+            .map(|p| p.name.text.clone())
+            .collect(),
+        ty: Type::Indexed {
+            base: Box::new(Type::Path(Path {
+                segments: vec![s.name.clone()],
+                span: s.name.span,
+            })),
+            index: Some(index.clone()),
+            span: *span,
+        },
+        structure: true,
+    })
 }
 
 /// Every loaded module's declarations, public names and generic aliases.
@@ -63,6 +113,9 @@ struct Index {
     decls: HashMap<(String, String), Decl>,
     public: HashMap<String, Vec<String>>,
     generic: HashMap<(String, String), GenericAlias>,
+    /// Non-generic aliases (`type Word = unsigned[8];`) and what they name,
+    /// for their use as a constructor (`Word(x)`).
+    plain: HashMap<(String, String), Type>,
     /// `pub use a::b;` where `a::b` is a module: `(module, local) -> a::b`.
     module_exports: HashMap<(String, String), Vec<String>>,
 }
@@ -92,9 +145,18 @@ pub fn desugar(modules: &mut [Module], sink: &mut DiagnosticSink) {
     for module in modules.iter_mut() {
         envs.push(plan_module(module, &mut index, sink));
     }
+    // Every module's scope, for an alias used as a constructor elsewhere:
+    // its type is read where it was written.
+    let scopes: HashMap<String, Env> = modules
+        .iter()
+        .zip(&envs)
+        .map(|(module, env)| (path_segments(&module.path).join("::"), env.clone()))
+        .collect();
     for (module, env) in modules.iter_mut().zip(envs) {
         let here = path_segments(&module.path);
         let rewriter = Rewriter {
+            generated: false,
+            scopes: &scopes,
             index: &index,
             module: here,
             hidden: RefCell::default(),
@@ -160,7 +222,14 @@ fn index(modules: &[Module]) -> Index {
                     let variants = e.variants.iter().map(|v| v.name.text.clone()).collect();
                     add(&e.name, Kind::Enum, e.is_pub, variants, &mut index);
                 }
-                Item::Struct(s) => add(&s.name, Kind::Other, s.is_pub, Vec::new(), &mut index),
+                Item::Struct(s) => {
+                    add(&s.name, Kind::Other, s.is_pub, Vec::new(), &mut index);
+                    if let Some(alias) = format_struct_alias(s) {
+                        index
+                            .generic
+                            .insert((here.clone(), s.name.text.clone()), alias);
+                    }
+                }
                 Item::View(v) => add(&v.name, Kind::Other, v.is_pub, Vec::new(), &mut index),
                 Item::Entity(e) => add(&e.name, Kind::Other, e.is_pub, Vec::new(), &mut index),
                 Item::Trait(t) => add(&t.name, Kind::Other, t.is_pub, Vec::new(), &mut index),
@@ -175,7 +244,11 @@ fn index(modules: &[Module]) -> Index {
                 Item::Using(u) => match &u.kind {
                     UsingKind::Alias { name, params, ty } => {
                         add(name, Kind::Alias, u.is_pub, Vec::new(), &mut index);
-                        if !params.params.is_empty() {
+                        if params.params.is_empty() {
+                            index
+                                .plain
+                                .insert((here.clone(), name.text.clone()), ty.clone());
+                        } else {
                             index.generic.insert(
                                 (here.clone(), name.text.clone()),
                                 GenericAlias {
@@ -185,6 +258,7 @@ fn index(modules: &[Module]) -> Index {
                                         .map(|p| p.name.text.clone())
                                         .collect(),
                                     ty: ty.clone(),
+                                    structure: false,
                                 },
                             );
                         }
@@ -449,13 +523,13 @@ fn plan_module(module: &mut Module, index: &mut Index, sink: &mut DiagnosticSink
                 }
             }
             let owner_str = owner.join("::");
-            if index
-                .generic
-                .contains_key(&(owner_str.clone(), n.name.text.clone()))
-            {
+            if let Some(alias) = index.generic.get(&(owner_str.clone(), n.name.text.clone())) {
                 explicit.insert(local.clone());
-                env.generic.insert(local, (owner_str, n.name.text.clone()));
-                return false;
+                env.generic
+                    .insert(local.clone(), (owner_str, n.name.text.clone()));
+                if !alias.structure {
+                    return false;
+                }
             }
             explicit.insert(local.clone());
             env.items.insert(local, target.join("::"));
@@ -525,12 +599,12 @@ fn plan_module(module: &mut Module, index: &mut Index, sink: &mut DiagnosticSink
             env.aliases.insert(name, module_path.clone());
             continue;
         }
-        if index
-            .generic
-            .contains_key(&(target_str.clone(), name.clone()))
-        {
-            env.generic.insert(name.clone(), (target_str, name));
-            continue;
+        if let Some(alias) = index.generic.get(&(target_str.clone(), name.clone())) {
+            env.generic
+                .insert(name.clone(), (target_str.clone(), name.clone()));
+            if !alias.structure {
+                continue;
+            }
         }
         env.items
             .insert(name.clone(), format!("{target_str}::{name}"));
@@ -640,7 +714,12 @@ fn full_path(base: &Path, n: &ImportName) -> Vec<String> {
 /// Rewrites the paths of one module.
 struct Rewriter<'a> {
     index: &'a Index,
+    /// Every module's scope, by module path.
+    scopes: &'a HashMap<String, Env>,
     module: Vec<String>,
+    /// Rewriting a substituted alias body: its `float[8..-23]` is the
+    /// expansion of `float<32, 23>`, not a range the user wrote.
+    generated: bool,
     /// Enums a block-level variant import needs visible: name -> module.
     hidden: RefCell<HashMap<String, String>>,
 }
@@ -667,6 +746,14 @@ impl Rewriter<'_> {
                     }
                 }
                 Item::Struct(s) => {
+                    // A format struct is the plain family; its parameters
+                    // live on as the alias `float<W, M>` (`format_struct_alias`).
+                    if format_struct_alias(s).is_some() {
+                        s.params.params.clear();
+                        if let Some(Type::Indexed { index, .. }) = &mut s.base {
+                            *index = None;
+                        }
+                    }
                     self.params(&mut s.params, env, sink);
                     if let Some(base) = &mut s.base {
                         self.ty(base, env, sink);
@@ -943,13 +1030,16 @@ impl Rewriter<'_> {
                 continue;
             }
             let owner = target[..target.len() - 1].join("::");
-            if self
+            if let Some(alias) = self
                 .index
                 .generic
-                .contains_key(&(owner.clone(), n.name.text.clone()))
+                .get(&(owner.clone(), n.name.text.clone()))
             {
-                env.generic.insert(local, (owner, n.name.text.clone()));
-                continue;
+                env.generic
+                    .insert(local.clone(), (owner, n.name.text.clone()));
+                if !alias.structure {
+                    continue;
+                }
             }
             env.shadow.remove(&local);
             env.names.insert(local, target);
@@ -1056,11 +1146,44 @@ impl Rewriter<'_> {
                 callee,
                 type_args,
                 args,
+                span,
                 ..
             } => {
-                self.expr(callee, env, sink);
-                for ty in type_args {
-                    self.ty(ty, env, sink);
+                if let Expr::Index { base, .. } = callee.as_ref() {
+                    if let Expr::Path(p) = base.as_ref() {
+                        self.reject_format_range(p, env, sink);
+                    }
+                }
+                for arg in type_args.iter_mut() {
+                    self.generic_arg(arg, env, sink);
+                }
+                // `float<32, 23>(x)`: the applied alias's constructor, as
+                // `float[8..-23](x)`.
+                let alias = match callee.as_ref() {
+                    Expr::Path(p) if !type_args.is_empty() => {
+                        self.generic_alias(p, env).map(|alias| (p.clone(), alias))
+                    }
+                    _ => None,
+                };
+                // ...and `Word(x)` for `type Word = unsigned[8];` as
+                // `unsigned[8](x)`: an alias is transparent.
+                let plain = match callee.as_ref() {
+                    Expr::Path(p) if type_args.is_empty() => self.plain_alias(p, env, sink),
+                    _ => None,
+                };
+                if let Some((site, (key, alias))) = alias {
+                    if let Some(body) =
+                        self.expand_alias(&site, &key, alias, type_args, *span, sink)
+                    {
+                        if let Some(constructor) = type_constructor(body) {
+                            **callee = constructor;
+                            type_args.clear();
+                        }
+                    }
+                } else if let Some(constructor) = plain.and_then(type_constructor) {
+                    **callee = constructor;
+                } else {
+                    self.expr(callee, env, sink);
                 }
                 for arg in args {
                     self.expr(arg, env, sink);
@@ -1151,7 +1274,10 @@ impl Rewriter<'_> {
     fn ty(&self, ty: &mut Type, env: &Env, sink: &mut DiagnosticSink) {
         match ty {
             Type::Path(p) => {
-                if let Some((key, alias)) = self.generic_alias(p, env) {
+                if let Some((key, alias)) = self
+                    .generic_alias(p, env)
+                    .filter(|(_, alias)| !alias.structure)
+                {
                     sink.emit(
                         Diagnostic::error(format!(
                             "the generic type alias `{}` needs {} argument(s)",
@@ -1171,50 +1297,20 @@ impl Rewriter<'_> {
                 }
                 if let Type::Path(p) = base.as_mut() {
                     if let Some((key, alias)) = self.generic_alias(p, env) {
-                        if args.len() != alias.params.len() {
-                            sink.emit(
-                                Diagnostic::error(format!(
-                                    "the generic type alias `{}` takes {} argument(s), not {}",
-                                    key.1,
-                                    alias.params.len(),
-                                    args.len()
-                                ))
-                                .with_code(codes::TYPE_MISMATCH)
-                                .at(*span),
-                            );
-                            return;
+                        let site = p.clone();
+                        if let Some(body) = self.expand_alias(&site, &key, alias, args, *span, sink)
+                        {
+                            *ty = body;
                         }
-                        let mut bindings: HashMap<String, GenericArg> = HashMap::new();
-                        for (position, arg) in args.iter().enumerate() {
-                            match arg {
-                                GenericArg::Named { name, .. }
-                                | GenericArg::NamedType { name, .. } => {
-                                    bindings.insert(name.text.clone(), arg.clone());
-                                }
-                                _ => {
-                                    bindings.insert(alias.params[position].clone(), arg.clone());
-                                }
-                            }
-                        }
-                        let mut body = alias.ty.clone();
-                        // The alias body is written in its own module.
-                        let alias_module: Vec<String> =
-                            key.0.split("::").map(str::to_string).collect();
-                        let home = Rewriter {
-                            index: self.index,
-                            module: alias_module,
-                            hidden: RefCell::default(),
-                        };
-                        qualify_home(&mut body, &key.0, &alias.params, self.index);
-                        substitute_type(&mut body, &bindings);
-                        home.ty(&mut body, &Env::default(), sink);
-                        *ty = body;
                         return;
                     }
                 }
                 self.ty(base, env, sink);
             }
             Type::Indexed { base, index, .. } => {
+                if let Type::Path(p) = base.as_ref() {
+                    self.reject_format_range(p, env, sink);
+                }
                 self.ty(base, env, sink);
                 if let Some(index) = index {
                     self.expr(index, env, sink);
@@ -1223,6 +1319,128 @@ impl Rewriter<'_> {
             Type::View { view, target, .. } => {
                 self.path(view, env, sink);
                 self.ty(target, env, sink);
+            }
+        }
+    }
+
+    /// A generic alias applied to `args`, substituted: `Pair<u8>` is
+    /// `Packet<u8>`, `float<32, 23>` is `float[8..-23]`. `None` after an
+    /// arity error.
+    fn expand_alias(
+        &self,
+        site: &Path,
+        key: &(String, String),
+        alias: &GenericAlias,
+        args: &[GenericArg],
+        span: Span,
+        sink: &mut DiagnosticSink,
+    ) -> Option<Type> {
+        if args.len() != alias.params.len() {
+            sink.emit(
+                Diagnostic::error(format!(
+                    "the generic type `{}` takes {} argument(s), not {}",
+                    key.1,
+                    alias.params.len(),
+                    args.len()
+                ))
+                .with_code(codes::TYPE_MISMATCH)
+                .at(span),
+            );
+            return None;
+        }
+        let mut bindings: HashMap<String, GenericArg> = HashMap::new();
+        for (position, arg) in args.iter().enumerate() {
+            match arg {
+                GenericArg::Named { name, .. } | GenericArg::NamedType { name, .. } => {
+                    bindings.insert(name.text.clone(), arg.clone());
+                }
+                _ => {
+                    bindings.insert(alias.params[position].clone(), arg.clone());
+                }
+            }
+        }
+        let mut body = alias.ty.clone();
+        // The alias body is written in its own module.
+        let alias_module: Vec<String> = key.0.split("::").map(str::to_string).collect();
+        let home = Rewriter {
+            generated: true,
+            scopes: self.scopes,
+            index: self.index,
+            module: alias_module,
+            hidden: RefCell::default(),
+        };
+        qualify_home(&mut body, &key.0, &alias.params, self.index);
+        substitute_type(&mut body, &bindings);
+        // A format struct is named as the use site names it (`float`, or a
+        // renamed import), so that import is the one in use.
+        if alias.structure {
+            if let Type::Indexed { base, .. } = &mut body {
+                **base = Type::Path(site.clone());
+            }
+        }
+        home.ty(&mut body, &Env::default(), sink);
+        Some(body)
+    }
+
+    /// The non-generic alias `path` names, with its type read in its own
+    /// module and qualified so it means the same wherever it is used.
+    fn plain_alias(&self, path: &Path, env: &Env, sink: &mut DiagnosticSink) -> Option<Type> {
+        let key = match &path.segments[..] {
+            [only] if !env.shadow.contains(&only.text) => match env.items.get(&only.text) {
+                Some(full) => {
+                    let (module, name) = full.rsplit_once("::")?;
+                    (module.to_string(), name.to_string())
+                }
+                None => (self.module.join("::"), only.text.clone()),
+            },
+            [prefix @ .., last] if !prefix.is_empty() => {
+                let abs = expand_aliases(prefix.to_vec(), env, self.index);
+                (
+                    abs.iter()
+                        .map(|s| s.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("::"),
+                    last.text.clone(),
+                )
+            }
+            _ => return None,
+        };
+        let mut ty = self.index.plain.get(&key)?.clone();
+        let home_env = self.scopes.get(&key.0).cloned().unwrap_or_default();
+        let home = Rewriter {
+            generated: true,
+            scopes: self.scopes,
+            index: self.index,
+            module: key.0.split("::").map(str::to_string).collect(),
+            hidden: RefCell::default(),
+        };
+        home.ty(&mut ty, &home_env, sink);
+        qualify_with_scope(&mut ty, &key.0, &home_env, self.index);
+        Some(ty)
+    }
+
+    /// A format struct's range written by hand (`float[8..-23]`): its
+    /// parameters are the format, so `[...]` keeps meaning an array's size or
+    /// range.
+    fn reject_format_range(&self, path: &Path, env: &Env, sink: &mut DiagnosticSink) {
+        if self.generated {
+            return;
+        }
+        if let Some((key, alias)) = self.generic_alias(path, env) {
+            if alias.structure {
+                sink.emit(
+                    Diagnostic::error(format!(
+                        "`{}` takes its format as parameters, not an index range",
+                        key.1
+                    ))
+                    .with_code(codes::TYPE_MISMATCH)
+                    .at(path.span)
+                    .help(format!(
+                        "write `{}<{}>`",
+                        key.1,
+                        alias.params.join(", ")
+                    )),
+                );
             }
         }
     }
@@ -1286,6 +1504,51 @@ fn qualify_home(ty: &mut Type, home: &str, params: &[String], index: &Index) {
     }
 }
 
+/// Qualify the names an alias's type uses where it was written — imported
+/// ones by the import, local ones by their module — so it means the same in
+/// the module that uses the alias.
+fn qualify_with_scope(ty: &mut Type, home: &str, env: &Env, index: &Index) {
+    let qualify = |p: &mut Path| {
+        if let [only] = &p.segments[..] {
+            let full = env.items.get(&only.text).cloned().or_else(|| {
+                index
+                    .decls
+                    .contains_key(&(home.to_string(), only.text.clone()))
+                    .then(|| format!("{home}::{}", only.text))
+            });
+            if let Some(full) = full {
+                let span = only.span;
+                p.segments = full.split("::").map(|s| ident(s, span)).collect();
+            }
+        }
+    };
+    match ty {
+        Type::Path(p) => qualify(p),
+        Type::Generic { base, .. } | Type::Indexed { base, .. } => {
+            qualify_with_scope(base, home, env, index)
+        }
+        Type::View { target, .. } => qualify_with_scope(target, home, env, index),
+    }
+}
+
+/// The constructor expression of a type: `float[8..-23]` as the callee
+/// `float[8..-23](x)` is written with.
+fn type_constructor(ty: Type) -> Option<Expr> {
+    match ty {
+        Type::Path(path) => Some(Expr::Path(path)),
+        Type::Indexed {
+            base,
+            index: Some(index),
+            span,
+        } => Some(Expr::Index {
+            base: Box::new(type_constructor(*base)?),
+            index,
+            span,
+        }),
+        _ => None,
+    }
+}
+
 /// Replace a generic alias's parameters in its body with the arguments.
 fn substitute_type(ty: &mut Type, bindings: &HashMap<String, GenericArg>) {
     match ty {
@@ -1338,6 +1601,10 @@ fn substitute_expr(expression: &mut Expr, bindings: &HashMap<String, GenericArg>
                 match bindings.get(&only.text) {
                     Some(GenericArg::Positional(e)) | Some(GenericArg::Named { value: e, .. }) => {
                         *expression = e.clone();
+                    }
+                    // A call's name argument (`float<W, M>(x)`) parses as a type.
+                    Some(GenericArg::PositionalType(Type::Path(path))) => {
+                        *expression = Expr::Path(path.clone());
                     }
                     _ => {}
                 }

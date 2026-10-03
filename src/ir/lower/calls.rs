@@ -35,7 +35,7 @@ impl<'a> Lowering<'a> {
         found
     }
 
-    /// `float[8..-23](1.5)`: a family's `From<Source>` impl, inlined with
+    /// `float<32, 23>(1.5)`: a family's `From<Source>` impl, inlined with
     /// `Self'left`/`'right`/`'high`/`'low`/`'length` describing the format being
     /// built. `None` when the family has no impl for the argument's type, and
     /// the conversion is the kernel's raw resize.

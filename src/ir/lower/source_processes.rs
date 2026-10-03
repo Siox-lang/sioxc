@@ -47,6 +47,9 @@ struct LoweringContext<'a> {
     process_ir: &'a mut ProcessIr,
     suffixes: &'a std::collections::HashMap<String, Vec<ConstantSuffix>>,
     constants: &'a std::collections::HashMap<crate::resolve::DefId, &'a ast::Expr>,
+    /// Type aliases by resolver identity, for a local declared through one
+    /// (`let h: binary16`) to find the index range its type denotes.
+    type_aliases: &'a std::collections::HashMap<crate::resolve::DefId, &'a ast::Type>,
     constant_stack: std::collections::HashSet<crate::resolve::DefId>,
     functions: &'a crate::ir::FunctionIndex<'a>,
     constant_integers: &'a std::collections::HashMap<String, i64>,
@@ -57,6 +60,24 @@ struct LoweringContext<'a> {
     inline_self_values: Vec<Option<ProcessValueId>>,
     inline_return_types: Vec<Option<crate::types::Ty>>,
     inline_functions: std::collections::HashSet<crate::diag::Span>,
+}
+
+/// Non-generic type aliases indexed by resolver identity.
+fn source_type_aliases<'a>(
+    modules: &'a [Module],
+    resolved: &Resolved,
+) -> std::collections::HashMap<crate::resolve::DefId, &'a ast::Type> {
+    modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            ast::Item::Using(using) => match &using.kind {
+                ast::UsingKind::Alias { name, ty, .. } => Some((resolved.declared(name.span)?, ty)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 /// Source constants indexed by resolver identity. Module and impl-scoped
@@ -965,6 +986,7 @@ pub fn lower(
     let mut process_ir = ProcessIr::default();
     let suffixes = constant_suffixes(modules, resolved);
     let constants = source_constants(modules, resolved);
+    let type_aliases = source_type_aliases(modules, resolved);
     let functions = process_functions(modules, resolved);
     let constant_integers = module_constant_integers(modules, &functions);
 
@@ -1051,6 +1073,7 @@ pub fn lower(
                 process_ir: &mut process_ir,
                 suffixes: &suffixes,
                 constants: &constants,
+                type_aliases: &type_aliases,
                 constant_stack: std::collections::HashSet::new(),
                 functions: &functions,
                 constant_integers: &constant_integers,
@@ -1110,6 +1133,7 @@ pub fn lower(
                             process_ir: &mut process_ir,
                             suffixes: &suffixes,
                             constants: &constants,
+                            type_aliases: &type_aliases,
                             constant_stack: std::collections::HashSet::new(),
                             functions: &functions,
                             constant_integers: &constant_integers,
@@ -1158,6 +1182,7 @@ pub fn lower(
                             process_ir: &mut process_ir,
                             suffixes: &suffixes,
                             constants: &constants,
+                            type_aliases: &type_aliases,
                             constant_stack: std::collections::HashSet::new(),
                             functions: &functions,
                             constant_integers: &constant_integers,
@@ -1222,6 +1247,7 @@ pub fn lower(
                     process_ir: &mut process_ir,
                     suffixes: &suffixes,
                     constants: &constants,
+                    type_aliases: &type_aliases,
                     constant_stack: std::collections::HashSet::new(),
                     functions: &functions,
                     constant_integers: &constant_integers,
@@ -3151,9 +3177,24 @@ fn process_local_layout(
     context: &LoweringContext<'_>,
 ) -> Option<crate::ir::SourceLayout> {
     let mut layout = process_layout_for_type(ty?, declaration.span, context)?;
+    // Through an alias chain to the type it denotes.
+    let mut declared = declaration.ty.as_ref();
+    for _ in 0..16 {
+        let Some(ast::Type::Path(path)) = declared else {
+            break;
+        };
+        let Some(aliased) = context
+            .resolved
+            .resolved(path.span)
+            .and_then(|id| context.type_aliases.get(&id).copied())
+        else {
+            break;
+        };
+        declared = Some(aliased);
+    }
     let Some(ast::Type::Indexed {
         index: Some(index), ..
-    }) = declaration.ty.as_ref()
+    }) = declared
     else {
         return Some(layout);
     };
@@ -3725,7 +3766,7 @@ fn lower_process_raw_resize(
     Some(push_value(*span, Some(target), Some(width), kind, context))
 }
 
-/// `float[8..-23](1.5)`: a family's `From<Source>` impl, inlined with `Self`
+/// `float<32, 23>(1.5)`: a family's `From<Source>` impl, inlined with `Self`
 /// standing for the format being built, so the body can read `Self'high`.
 /// `None` when the family has no impl for the argument's type, and the
 /// conversion is the kernel's raw resize.
@@ -4068,8 +4109,8 @@ fn lower_process_file_call(
     else {
         return None;
     };
-    let direct_string =
-        matches!(type_args.as_slice(), [requested] if type_leaf(requested) == Some("string"));
+    let direct_string = matches!(type_args.as_slice(), [ast::GenericArg::PositionalType(requested)]
+            if type_leaf(requested) == Some("string"));
     let operation = if builtin_callee_is(callee, "read", context) {
         if process_type_is_string(return_type) || return_type.is_none() && direct_string {
             match return_type {
@@ -4343,7 +4384,7 @@ fn inline_process_function(
     context.inline_self_values.pop();
     context.value_bindings.pop();
     context.inline_functions.remove(&function.span);
-    // ...and that argument's format: `abs(x)` on a `ufixed[3..-4]` is one.
+    // ...and that argument's format: `abs(x)` on a `ufixed<8, 4>` is one.
     if let (Some(result), Some(argument)) = (result, generic_argument) {
         inherit_receiver_layout(result, argument, context);
     }
@@ -4749,7 +4790,7 @@ fn narrow_to_type(
 }
 
 /// An operator that returns its receiver's own type keeps the receiver's
-/// format: `a + b` on `ufixed[3..-4]` is a `ufixed[3..-4]`, so a body applied
+/// format: `a + b` on `ufixed<8, 4>` is a `ufixed<8, 4>`, so a body applied
 /// to that result (`(a + b) * c`, reading `self'low`) still finds its index
 /// range. Without a layout the result was a bare word with no bounds.
 fn inherit_receiver_layout(
@@ -4761,7 +4802,7 @@ fn inherit_receiver_layout(
         return;
     }
     // The same nominal type, sized or not: a product typed `float` takes the
-    // format of its `float[8..-23]` operand.
+    // format of its `float<32, 23>` operand.
     let same_type = {
         let key = |id: ProcessValueId| {
             let ty = context.process_ir.values.get(id.0 as usize)?.ty.as_ref()?;
