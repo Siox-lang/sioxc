@@ -1234,7 +1234,8 @@ pub fn is_builtin_operator(sym: &str) -> bool {
 }
 
 /// The standard operators' named traits (`core::ops`, spec 3.25): trait,
-/// symbol, and the method the impl provides. `not` is unary. User operators
+/// symbol, and the method the impl provides. `Not` and `Neg` (unary `-`,
+/// after `Sub` so `-` names `Sub` in diagnostics) are unary. User operators
 /// are `CustomOperator<"sym", Rhs, Out>` with `apply` instead.
 pub const OPERATOR_TRAITS: &[(&str, &str, &str)] = &[
     ("Add", "+", "add"),
@@ -1246,6 +1247,7 @@ pub const OPERATOR_TRAITS: &[(&str, &str, &str)] = &[
     ("And", "and", "and"),
     ("Or", "or", "or"),
     ("Not", "not", "not"),
+    ("Neg", "-", "neg"),
 ];
 
 /// The symbol a standard operator trait answers (`Add` -> `+`).

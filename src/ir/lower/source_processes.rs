@@ -2851,6 +2851,43 @@ fn process_value_type_for_storage(
 /// omits types for projections such as `instance.port`; every consumer must
 /// use the same recovery rule so character literals, formatting, and operator
 /// selection cannot disagree about the value's enum domain.
+/// The type an operand is known by. That is its checked type, except inside
+/// an inlined generic body: the checker types `v` in `fn abs<T>(v: T)` as the
+/// abstract `T` (each call is checked, not the body), so there the operand is
+/// lowered and takes the type of the value it is bound to. Without this a
+/// signed argument compared unsigned and dispatched no operator impl.
+fn operand_type(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<crate::types::Ty> {
+    let checked = context
+        .typed
+        .expr_type(ast::expr_span(expression))
+        .filter(|ty| is_concrete_type(ty, context))
+        .cloned();
+    if checked.is_some() || context.value_bindings.is_empty() {
+        return checked;
+    }
+    let first_value = context.process_ir.values.len();
+    let value = value_ref(expression, process, context);
+    let ty = process_value_type(value, context);
+    truncate_process_values(context, first_value);
+    ty
+}
+
+/// Whether a checked type says something: not an error, and not a generic
+/// body's abstract type parameter.
+fn is_concrete_type(ty: &crate::types::Ty, context: &LoweringContext<'_>) -> bool {
+    match ty {
+        crate::types::Ty::Error => false,
+        crate::types::Ty::Named(id) => {
+            context.resolved.kind_of(*id) != Some(crate::resolve::DefKind::Param)
+        }
+        _ => true,
+    }
+}
+
 fn process_value_type(
     value: ProcessValueId,
     context: &LoweringContext<'_>,
@@ -4130,6 +4167,35 @@ fn inline_process_function(
         return None;
     }
 
+    // A generic return type is the type of the argument bound to a parameter
+    // of that type: `fn rem<T>(a: T, m: T) -> T` called on integers returns
+    // an integer. Without it a nested generic call's result had no type, and
+    // `rem(a, m) < 0` inside `mod` compared unsigned.
+    let generic_name = |ty: &ast::Type| match ty {
+        ast::Type::Path(path) if path.segments.len() == 1 => {
+            let name = &path.segments[0].text;
+            (function.generics.params.iter())
+                .any(|param| &param.name.text == name)
+                .then(|| name.clone())
+        }
+        _ => None,
+    };
+    let generic_argument = function
+        .ret
+        .as_ref()
+        .and_then(generic_name)
+        .and_then(|name| {
+            parameters
+                .iter()
+                .zip(arguments)
+                .find(|(parameter, _)| {
+                    parameter.ty.as_ref().and_then(generic_name).as_deref() == Some(name.as_str())
+                })
+                .map(|(_, argument)| *argument)
+        });
+    let generic_return =
+        generic_argument.and_then(|argument| process_value_type(argument, context));
+
     let mut bindings = std::collections::HashMap::new();
     for (parameter, argument) in parameters.into_iter().zip(arguments.iter().copied()) {
         let name = parameter.name.as_ref()?;
@@ -4140,12 +4206,16 @@ fn inline_process_function(
         return None;
     }
 
-    let return_type = return_type.cloned().or_else(|| {
-        function
-            .ret
-            .as_ref()
-            .and_then(|ty| declared_process_type(ty, context.resolved))
-    });
+    let return_type = return_type
+        .filter(|ty| is_concrete_type(ty, context))
+        .cloned()
+        .or(generic_return)
+        .or_else(|| {
+            function
+                .ret
+                .as_ref()
+                .and_then(|ty| declared_process_type(ty, context.resolved))
+        });
     context.value_bindings.push(bindings);
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(return_type);
@@ -4154,6 +4224,10 @@ fn inline_process_function(
     context.inline_self_values.pop();
     context.value_bindings.pop();
     context.inline_functions.remove(&function.span);
+    // ...and that argument's format: `abs(x)` on a `ufixed[3..-4]` is one.
+    if let (Some(result), Some(argument)) = (result, generic_argument) {
+        inherit_receiver_layout(result, argument, context);
+    }
     result
 }
 
@@ -4368,15 +4442,8 @@ fn inline_process_binary_operator(
     context: &mut LoweringContext<'_>,
     return_type: Option<&crate::types::Ty>,
 ) -> Option<ProcessValueId> {
-    let checked_type = |expression: &ast::Expr| {
-        context
-            .typed
-            .expr_type(ast::expr_span(expression))
-            .filter(|ty| !matches!(ty, crate::types::Ty::Error))
-            .cloned()
-    };
-    let left_type = checked_type(lhs)?;
-    let right_type = checked_type(rhs);
+    let left_type = operand_type(lhs, process, context)?;
+    let right_type = operand_type(rhs, process, context);
     let symbol = crate::syntax::pretty::bin_op(operator);
     if let Some(value) = inline_process_comparison(
         operator,
@@ -4599,11 +4666,7 @@ fn inline_process_unary_operator(
     context: &mut LoweringContext<'_>,
     return_type: Option<&crate::types::Ty>,
 ) -> Option<ProcessValueId> {
-    let operand_type = context
-        .typed
-        .expr_type(ast::expr_span(rhs))
-        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
-        .cloned()?;
+    let operand_type = operand_type(rhs, process, context)?;
     let symbol = match operator {
         ast::UnOp::Neg => "-",
         ast::UnOp::Not => "not",
@@ -4636,6 +4699,10 @@ fn inline_process_unary_operator(
         inline_process_function(function, Some(operand), &[], process, context, return_type);
     if result.is_none() {
         truncate_process_values(context, first_value);
+    }
+    // `(-y).to_real()` reads the operand's format, as a binary result does.
+    if let Some(result) = result {
+        inherit_receiver_layout(result, operand, context);
     }
     result
 }
@@ -5358,12 +5425,8 @@ fn value_ref_with_type_inner(
             // records the counterpart but deliberately keeps the literal's
             // standalone `Char` identity, so retain the counterpart here
             // before its declaration identity disappears.
-            let checked_type = |ty: Option<&crate::types::Ty>| {
-                ty.filter(|ty| !matches!(ty, crate::types::Ty::Error))
-                    .cloned()
-            };
-            let mut left_type = checked_type(context.typed.expr_type(ast::expr_span(lhs)));
-            let mut right_type = checked_type(context.typed.expr_type(ast::expr_span(rhs)));
+            let mut left_type = operand_type(lhs, process, context);
+            let mut right_type = operand_type(rhs, process, context);
             let (left, right) = if matches!(left_type, Some(crate::types::Ty::Real))
                 || matches!(right_type, Some(crate::types::Ty::Real))
             {

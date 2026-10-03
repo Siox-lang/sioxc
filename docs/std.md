@@ -27,7 +27,8 @@ Directives — `#[test]`, `#[allow(..)]`, `#[warn(..)]`, `#[deny(..)]`,
 the compiler.
 
 Every standard operator is a named `core::ops` trait (`impl Add<Rhs, Out>
-for T` with `fn add`; `Sub`, `Mul`, `Div`, `Shl`, `Shr`, `And`, `Or`, `Not`),
+for T` with `fn add`; `Sub`, `Mul`, `Div`, `Shl`, `Shr`, `And`, `Or`, `Not`,
+`Neg`),
 and a user operator is `CustomOperator<"symbol", Rhs, Out>` with `fn apply`,
 binding its precedence inside its impl (`attr precedence = N;`), discovered
 before expression parsing.
@@ -47,8 +48,8 @@ is a documented shim, and the declaration here is canonical.
 | siox module   | VHDL analogue                    | Contents |
 | ------------- | -------------------------------- | -------- |
 | `core::prelude` | (implicit `std.standard`)        | always loaded, built in: `Bool`, `string`, `Boolean`, `Range`, indexing, `Resolve`, `Eq`, `Ord`, `Ordering`, `New`, `From`, `precedence`, the built-in macros |
-| `core::primitive` | std.standard `boolean`, `string` | `Bool`, `string = Char[]`, `integer`'s `abs`/`rem`/`mod` |
-| `core::ops`   | (operators are VHDL functions)     | `Add`, `Sub`, `Mul`, `Div`, `Shl`, `Shr`, `And`, `Or`, `Not`, `CustomOperator`, `Prefix`, `Suffix`, `Index`, `IndexAssign`, `Range`, `Boolean`, `Resolve`, `LogicEncoding` |
+| `core::primitive` | std.standard `boolean`, `string` | `Bool`, `string = Char[]` |
+| `core::ops`   | (operators are VHDL functions)     | `Add`, `Sub`, `Mul`, `Div`, `Shl`, `Shr`, `And`, `Or`, `Not`, `Neg`, `CustomOperator`, `Prefix`, `Suffix`, `Index`, `IndexAssign`, `Range`, `Boolean`, `Resolve`, `LogicEncoding` |
 | `core::cmp`   |                                    | `Eq`, `Ord` (the comparisons, returning `Bool`), `Ordering` |
 | `core::convert` |                                  | `From` |
 | `core::default` |                                  | `New` |
@@ -57,7 +58,7 @@ is a documented shim, and the declaration here is canonical.
 | `std::prelude`| (implicit `std.standard`)          | auto-loaded `Bit`/`Logic`, `unsigned`/`signed`/`sext`, `time`/`frequency` |
 | `std::primitive`, `std::cmp`, `std::convert`, `std::default` | | re-export the `core` modules of the same name |
 | `std::logic`  | std.standard + ieee.std_logic_1164 | `Bit`, `ULogic`, `Logic` and their operators; resolution and logic tables |
-| `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Add`/`Sub`/… impls, `Eq`/`Ord` (signed compares signed), `abs`/`rem`/`mod` |
+| `std::bits`   | ieee.numeric_std                 | `unsigned[N]` / `signed[N]` operators as `Add`/`Sub`/… impls, `Eq`/`Ord` (signed compares signed) |
 | `std::ops`    | (operators are functions in VHDL packages) | re-exports `core::ops` |
 | `std::math`   | ieee.math_complex                | `Complex` over `real`, `+`/`-` impls, the `i` suffix |
 | `std::numeric`| natural/positive subtypes        | ranged integers: `Byte`, `Short`, `Int`, `Long`, `Natural`, `Positive` |
@@ -114,8 +115,7 @@ built-in operators; unsigned/signed get theirs **here** as `Add`/`Sub`/… impls
 `"+"`/`"-"`/`"*"`/`"/"`/`"<<"`/`">>"` over the kernel word operators (wrap at
 the stored width), and `signed` gets a **sign-aware `impl Ord<signed> for signed`** — signed
 comparison is library source, not compiler code (`-1 < 1` on signed[8], while
-unsigned compares unsigned). Both have `x.abs()`, `x.rem(m)` (the dividend's
-sign, VHDL `rem`) and `x.mod(m)` (the divisor's sign, VHDL `mod`). Inside an operator impl, operands read as kernel
+unsigned compares unsigned); `std::math`'s `abs`/`rem`/`mod` work on both. Inside an operator impl, operands read as kernel
 words and `self'length` gives the operand's bit width. Remaining kernel
 territory: slices (`x[7..4]`), concatenation (`{hi, lo}`), widths, and
 literal typing; signed `Div` and arithmetic `Shr` are library source too (magnitude divide + sign restore; top-bit mask fill), built on `resize` and `self'length`.
@@ -168,6 +168,23 @@ Complex over the **reals** (f64 in simulation): `+`/`-` component-wise,
 `integer` promotion both ways, and the `i` suffix, so `10 + 5i` works as
 written. Real arithmetic uses the float operators in the IR; integer
 literals coerce (`.re = 10` stores 10.0).
+
+The math functions and constants:
+
+| function | meaning |
+| --- | --- |
+| `abs(x)` | magnitude |
+| `min(a, b)`, `max(a, b)` | the smaller / larger |
+| `rem(a, m)` | remainder with the dividend's sign (VHDL `rem`, Rust `%`) |
+| `mod(a, m)` | remainder with the divisor's sign (VHDL `mod`) |
+| `sqrt`, `sin`, `cos`, `exp`, `log`, `pow`, `floor`, `ceil`, `round` | on `real`, from the C math library |
+| `PI`, `E` | `real` constants |
+
+`abs`, `min`, `max`, `rem` and `mod` are generic over the numeric types —
+`integer`, `real`, `signed`, `unsigned`, the fixed formats and `float`
+(`abs`, `min`, `max`) — and inline with the argument type's own operators.
+`abs` of a `float` is `-x` below zero, so `abs(-0.0)` stays `-0.0` (equal to
+`+0.0`) and a NaN keeps its sign.
 
 ## `std::sim`
 
@@ -275,7 +292,8 @@ let r: real = gain.to_real();                       // 2.5
   on overflow, as `unsigned` does; a product drops its extra fraction bits
   rounding toward minus infinity (VHDL's truncate).
 - `<`, `<=`, `>`, `>=`, `==`, `!=` come from each type's `Eq`/`Ord`;
-  `sfixed` compares signed. `x.abs()` gives the magnitude in the same format.
+  `sfixed` compares signed; `std::math::abs` gives the magnitude in the same
+  format.
 - `to_ufixed(value, left, right)` / `to_sfixed(…)` take a `real` to the
   format `[left..right]`, rounding to nearest (ties away from zero) and
   saturating; `x.to_real()` goes back.
@@ -303,8 +321,8 @@ let v: real = r.to_real();
   and NaN follow IEEE-754: `0 * inf` and `inf - inf` are NaN, overflow is
   infinite, and a NaN is unordered — every comparison with one is false
   except `!=`, so `x != x` holds exactly for a NaN.
-- `x.is_nan()`, `x.is_infinite()`, `x.is_zero()`, `x.negate()`, `x.abs()`,
-  `x.to_real()`. `to_float(value, e, f)` rounds a `real` to nearest even and
+- `-x` (`Neg`, the IEEE sign flip), `x.is_nan()`, `x.is_infinite()`,
+  `x.is_zero()`, `x.to_real()`; `std::math`'s `abs`, `min`, `max`. `to_float(value, e, f)` rounds a `real` to nearest even and
   returns the *word*: store it in a `float` before doing arithmetic with it.
 - Subnormals are flushed to zero on input and output, VHDL's
   `denormalize => false` and the usual FPGA choice.

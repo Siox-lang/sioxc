@@ -291,6 +291,12 @@ impl<'a> Lowering<'a> {
             }
             ast::Expr::SysAttr { base, attr, .. } => self.lower_sysattr(base, &attr.text),
             ast::Expr::Unary { op, rhs, .. } => {
+                // `-x` on a type with a `Neg` impl inlines it.
+                if *op == ast::UnOp::Neg {
+                    if let Some(Val::Scalar(v)) = self.inline_unary("-", rhs, &HashMap::new()) {
+                        return v;
+                    }
+                }
                 // `not` on an enum-typed operand inlines its impl (`impl
                 // "not" for Logic`), like binary operators.
                 if *op == ast::UnOp::Not {
@@ -541,6 +547,12 @@ impl<'a> Lowering<'a> {
                 self.ast_width(lhs).max(self.ast_width(rhs))
             }
             // A conversion is as wide as its target (64 for kernel integer).
+            // A generic call is as wide as the argument its result takes.
+            ast::Expr::Call { callee, args, .. }
+                if self.generic_return_argument(callee, args).is_some() =>
+            {
+                self.ast_width(self.generic_return_argument(callee, args).unwrap())
+            }
             ast::Expr::Call { callee, args, .. } => match callee.as_ref() {
                 ast::Expr::Index { base, index, .. }
                     if expr_path(base)

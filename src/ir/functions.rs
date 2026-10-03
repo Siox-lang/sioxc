@@ -157,8 +157,8 @@ impl<'a> FunctionIndex<'a> {
         let Some(owner) = self.type_head_key(&implementation.target) else {
             return;
         };
-        // `Not<Out>` has no `Rhs`.
-        let input = (trait_key != "Not")
+        // `Not<Out>` and `Neg<Out>` have no `Rhs`.
+        let input = (!matches!(trait_key.as_str(), "Not" | "Neg"))
             .then(|| implementation.trait_args.get(usize::from(custom)))
             .flatten()
             .and_then(|argument| match argument {

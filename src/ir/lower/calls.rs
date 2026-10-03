@@ -275,8 +275,22 @@ impl<'a> Lowering<'a> {
                     saved.push((n.text.clone(), prev));
                 }
                 // A parameter declared `integer` makes the body's operations
-                // signed, which its recorded types cannot say.
-                if p.ty.as_ref().and_then(type_head_name) == Some("integer")
+                // signed, which its recorded types cannot say — and so does a
+                // generic one bound to a kernel integer (`abs(n)` for
+                // `fn abs<T>(v: T)`).
+                let generic = p.ty.as_ref().and_then(type_head_name).is_some_and(|name| {
+                    f.generics
+                        .params
+                        .iter()
+                        .any(|param| param.name.text == name)
+                });
+                let integer_argument = self.declares_kernel_integer(a)
+                    || matches!(
+                        self.expr_types.get(&ast::expr_span(a)),
+                        Some(crate::types::Ty::Integer)
+                    );
+                if (p.ty.as_ref().and_then(type_head_name) == Some("integer")
+                    || (generic && integer_argument))
                     && self.param_integers.borrow_mut().insert(n.text.clone())
                 {
                     added_integers.push(n.text.clone());
@@ -442,6 +456,35 @@ impl<'a> Lowering<'a> {
             .filter_map(|tr| self.trait_decls.get(tr.as_str()))
             .flat_map(|t| t.items.iter())
             .find(|f| f.name.text == name && f.body.is_some())
+    }
+
+    /// The argument whose type a generic function's result takes: for
+    /// `fn rem<T>(a: T, m: T) -> T`, the first argument bound to a `T`.
+    pub(super) fn generic_return_argument<'e>(
+        &self,
+        callee: &ast::Expr,
+        args: &'e [ast::Expr],
+    ) -> Option<&'e ast::Expr> {
+        let function = self.free_fns.get(callee)?;
+        let generic = |ty: &ast::Type| match ty {
+            ast::Type::Path(path) if path.segments.len() == 1 => {
+                let name = &path.segments[0].text;
+                (function.generics.params.iter())
+                    .any(|param| &param.name.text == name)
+                    .then_some(name.clone())
+            }
+            _ => None,
+        };
+        let name = generic(function.ret.as_ref()?)?;
+        function
+            .params
+            .iter()
+            .filter(|param| !param.is_self)
+            .zip(args)
+            .find(|(param, _)| {
+                param.ty.as_ref().and_then(generic).as_deref() == Some(name.as_str())
+            })
+            .map(|(_, argument)| argument)
     }
 
     /// Lower a method call `recv.method(args)` (spec 3.20) by inlining the
@@ -911,7 +954,12 @@ impl<'a> Lowering<'a> {
             // A conversion expression `F[N](x)` / `F(x)` reads as its target
             // family, so operators on it dispatch correctly (`signed[32](a) < ..`
             // uses signed's signed Ord).
-            ast::Expr::Call { callee, .. } => {
+            ast::Expr::Call { callee, args, .. } => {
+                // A generic call is its argument's type: `rem(a, m)` on
+                // `signed` values is a `signed`.
+                if let Some(argument) = self.generic_return_argument(callee, args) {
+                    return self.operand_type_name(argument);
+                }
                 // A method call is its declared return type, with `Self` (or
                 // the receiver's own family) read as the receiver's type:
                 // `x.rem(m) < 0` dispatches signed's Ord.

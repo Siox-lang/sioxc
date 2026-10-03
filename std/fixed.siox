@@ -46,9 +46,6 @@ impl ufixed {
     pub fn to_real(self) -> real {
         return real(integer(self)) / real(1 << (0 - self'low));
     }
-
-    // An unsigned value is its own magnitude.
-    pub fn abs(self) -> ufixed { return self; }
 }
 
 // --- sfixed ------------------------------------------------------------------
@@ -97,12 +94,6 @@ impl sfixed {
         let word: integer = integer(self);
         let value: integer = word - ((word >> (self'length - 1)) << self'length);
         return real(value) / real(1 << (0 - self'low));
-    }
-
-    // The magnitude, in the same format.
-    pub fn abs(self) -> sfixed {
-        if self < 0 { return 0 - self; }
-        return self;
     }
 }
 

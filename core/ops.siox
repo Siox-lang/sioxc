@@ -23,6 +23,7 @@ pub trait Shr<Rhs, Out> { fn shr(self, rhs: Rhs) -> Out; }   // a >> b
 pub trait And<Rhs, Out> { fn and(self, rhs: Rhs) -> Out; }   // a and b
 pub trait Or<Rhs, Out> { fn or(self, rhs: Rhs) -> Out; }     // a or b
 pub trait Not<Out> { fn not(self) -> Out; }                  // not a
+pub trait Neg<Out> { fn neg(self) -> Out; }                  // -a
 
 // A user operator: any symbol or word the grammar does not reserve, such as
 // `xor`. It binds its precedence inside its impl with `attr precedence = N;`.
@@ -239,6 +240,7 @@ attr lang for Shr = "shr";
 attr lang for And = "and";
 attr lang for Or = "or";
 attr lang for Not = "not";
+attr lang for Neg = "neg";
 attr lang for CustomOperator = "custom_operator";
 attr lang for Prefix = "prefix";
 attr lang for Suffix = "suffix";

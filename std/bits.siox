@@ -65,14 +65,6 @@ impl Ord<unsigned> for unsigned {
     fn le(self, rhs: unsigned) -> Bool { return self <= rhs; }
 }
 
-// `abs`, `rem` and `mod` are functions, as for `integer` (core::primitive).
-// An unsigned value is its own magnitude, and its `rem` and `mod` agree.
-impl unsigned {
-    pub fn abs(self) -> unsigned { return self; }
-    pub fn rem(self, m: unsigned) -> unsigned { return self - (self / m) * m; }
-    pub fn mod(self, m: unsigned) -> unsigned { return self - (self / m) * m; }
-}
-
 // Radix bit-string prefixes (spec 3.24), VHDL-style: `x"AB"` is hex (4
 // bits/digit) and `o"17"` octal (3 bits/digit). The symbol parameterizes the
 // `Prefix` trait — the compiler names the trait, std owns which prefixes exist
@@ -234,20 +226,4 @@ impl Ord<signed> for signed {
         return self < rhs;
     }
     fn le(self, rhs: signed) -> Bool { return not rhs.lt(self); }
-}
-
-// `rem` takes the dividend's sign (VHDL `rem`), `mod` the divisor's (VHDL
-// `mod`); `/` truncates toward zero.
-impl signed {
-    pub fn abs(self) -> signed {
-        if self < 0 { return 0 - self; }
-        return self;
-    }
-
-    pub fn rem(self, m: signed) -> signed { return self - (self / m) * m; }
-
-    pub fn mod(self, m: signed) -> signed {
-        if self.rem(m) != 0 and (self.rem(m) < 0) != (m < 0) { return self.rem(m) + m; }
-        return self.rem(m);
-    }
 }
