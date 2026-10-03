@@ -21,7 +21,9 @@ impl<'a> Lowering<'a> {
             return None;
         }
         match (type_args.as_slice(), args.as_slice()) {
-            ([requested], [ast::Expr::StrLit { text, .. }]) => Some((requested, text)),
+            ([ast::GenericArg::PositionalType(requested)], [ast::Expr::StrLit { text, .. }]) => {
+                Some((requested, text))
+            }
             _ => None,
         }
     }

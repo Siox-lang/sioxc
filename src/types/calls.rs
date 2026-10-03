@@ -444,7 +444,7 @@ impl<'a> Checker<'a> {
     pub(super) fn check_runtime_call_contract(
         &mut self,
         callee: &Expr,
-        type_args: &[Type],
+        type_args: &[GenericArg],
         args: &[Expr],
         bang: bool,
         sym: &HashMap<String, Ty>,
@@ -484,8 +484,8 @@ impl<'a> Checker<'a> {
                     "write `read<string>(\"text.txt\")` for UTF-8 or `read<integer>(\"data.bin\")` for binary"
                         .to_string(),
                 );
-            } else {
-                let requested = self.ast_ty(&type_args[0]);
+            } else if let Some(requested_type) = type_args[0].type_ref() {
+                let requested = self.ast_ty(requested_type);
                 let supported = matches!(requested, Ty::Integer)
                     || matches!(
                         requested,
@@ -506,11 +506,17 @@ impl<'a> Checker<'a> {
                 if !supported {
                     self.error(
                         codes::TYPE_MISMATCH,
-                        type_head_span(&type_args[0]).unwrap_or(expr_span(callee)),
+                        type_head_span(requested_type).unwrap_or(expr_span(callee)),
                         "`read<T>` needs `string`, `integer`, or a sized packed numeric type constructible from `integer`"
                             .to_string(),
                     );
                 }
+            } else {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    expr_span(callee),
+                    "`read<T>` needs a type, not a value".to_string(),
+                );
             }
         } else if !type_args.is_empty() {
             self.error(

@@ -1087,7 +1087,7 @@ fn expr_inner(e: &Expr) -> (String, u8) {
                     "<{}>",
                     type_args
                         .iter()
-                        .map(type_str)
+                        .map(generic_arg)
                         .collect::<Vec<_>>()
                         .join(", ")
                 )

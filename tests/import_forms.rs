@@ -185,3 +185,30 @@ fn explicit_names_conflict_and_locals_beat_globs() {
     );
     assert!(ok, "a local declaration shadows a glob:\n{rendered}");
 }
+
+#[test]
+/// A struct whose parameters shape its base's index range is that family
+/// over the range: `F<8, 4>` is `F[3..-4]`, in a type, a constructor and
+/// through an alias; the range written by hand is an error naming the
+/// parameter form.
+fn a_format_struct_is_its_family_over_the_range() {
+    let format = "struct F<W: integer, R: integer>(Logic[W - R - 1 .. 0 - R]);\n";
+    let (rendered, ok) = compile(
+        "format_struct",
+        &format!(
+            "module main;\n{format}type Q = F<8, 4>;\n\
+             #[test] entity T {{}}\n\
+             impl T {{\n  let a: F<8, 4>;\n  let b: Q;\n\
+             check: process {{ assert!(a'high == 3 and a'low == 0 - 4 and b'length == 8, \"F<8, 4>\"); }}\n}}\n"
+        ),
+    );
+    assert!(ok, "{rendered}");
+    let (rendered, ok) = compile(
+        "format_struct_range",
+        &format!("module main;\n{format}entity E {{ a: F[3..-4] in }}\nimpl E {{}}\n"),
+    );
+    assert!(
+        !ok && rendered.contains("`F` takes its format as parameters"),
+        "{rendered}"
+    );
+}

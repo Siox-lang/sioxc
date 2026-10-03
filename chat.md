@@ -10891,3 +10891,27 @@ hardware:
   i64, so `0 - x'low` with `x'low = -4` folds.
 - A result keeps a same-type operand's layout whatever its length
   (`inherit_receiver_layout` compares type keys).
+
+### 2026-10-04 — Claude — number formats as type parameters
+
+`float<W, M>` (W bits, M mantissa) and `ufixed<W, F>`/`sfixed<W, F>` (W bits,
+F fraction) replace the VHDL index-range spelling: `float<32, 23>` is
+binary32, `ufixed<8, 4>` is 4.4; constructors `float<32, 23>(1.5)`. Still pure
+std: `pub struct float<W: integer, M: integer>(Logic[W - M - 1 .. 0 - M]);`.
+
+Language mechanism, all in the import pass (`syntax/imports.rs`), so later
+stages see exactly `float[8..-23]` as before:
+- A struct whose integer parameters shape its base's index *range* is its
+  own generic alias (`format_struct_alias`): `float<32, 23>` expands to
+  `float[8..-23]` (named as the use site names it), and the declaration
+  becomes the plain family `float(Logic[])`. Writing the range by hand is an
+  error naming the parameter form. `Word<N>(Logic[N])` is untouched.
+- A call's generic arguments may be values (`Expr::Call::type_args` is now
+  `Vec<GenericArg>`; name-shaped ones parse as types), and an applied alias
+  in call position becomes its target's constructor. A plain alias does too
+  (`Word(x)` for `type Word = unsigned[8]`), which silently produced an
+  unsupported call before.
+- Macro arguments: `split_args` (`macros.rs`) keeps a call-position generic
+  list's commas together, by the parser's own `<`-then-`(` rule.
+- Process IR: a local typed through an alias (`let h: binary16`) finds its
+  index range (`LoweringContext::type_aliases`, `process_local_layout`).

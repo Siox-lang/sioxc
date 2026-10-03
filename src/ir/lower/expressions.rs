@@ -831,7 +831,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// The declared index range of an operand, when it has one: a local or
-    /// signal declared `ufixed[3..-4]`, a parameter bound to such an operand,
+    /// signal declared `ufixed<8, 4>`, a parameter bound to such an operand,
     /// or an operator expression, whose result keeps its left operand's
     /// format (`(a + b) * c` reads `a`'s range).
     pub(super) fn operand_range(

@@ -213,6 +213,17 @@ impl<'a> Checker<'a> {
         index: &Expr,
         sym: &HashMap<String, Ty>,
     ) {
+        // `std::fixed::ufixed[3..-4](x)`, an expanded `ufixed<8, 4>(x)`: a
+        // family named by its path is the family's sized type, not a value
+        // to index.
+        if let Expr::Path(path) = base {
+            if self
+                .path_key(path)
+                .is_some_and(|key| self.is_array_family(&key))
+            {
+                return;
+            }
+        }
         let base_ty = self.type_of(base, sym);
         if matches!(base_ty, Ty::Array { .. }) {
             return;
