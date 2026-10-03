@@ -440,7 +440,9 @@ pub(in crate::llvm) fn emit_metadata<'ctx>(
     sources: Option<&siox::diag::SourceMap>,
 ) {
     let process_ir = &design.process_ir;
-    emit_state_helpers(context, module, design);
+    let supported_values = supported_process_values(design);
+    let checked_values = checked_process_values(design);
+    emit_state_helpers(context, module, design, &supported_values, &checked_values);
     emit_wave_metadata(context, module, design);
     emit_source_locations(context, module, design, sources);
     u32_global(
@@ -462,7 +464,7 @@ pub(in crate::llvm) fn emit_metadata<'ctx>(
         process_ir.processes.len() as u32,
     );
     test_name_table(context, module, design);
-    process_entry_table(context, module, design);
+    process_entry_table(context, module, design, &supported_values, &checked_values);
 
     let test_roots = process_ir
         .tests

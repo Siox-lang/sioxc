@@ -84,13 +84,13 @@ pub(super) fn emit_state_helpers<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
     design: &Design,
+    supported_values: &ProcessValueSupport,
+    checked_values: &[bool],
 ) {
     let builder = context.create_builder();
     let byte = context.i8_type();
     let storage_count = u32::try_from(design.process_ir.storages.len())
         .expect("ProcessStorageId is a u32 ABI index");
-    let supported_values = supported_process_values(design);
-    let checked_values = checked_process_values(design);
     let index_sites = design
         .index_sites()
         .into_iter()
@@ -190,7 +190,7 @@ pub(super) fn emit_state_helpers<'ctx>(
             }
         }
     }
-    let mut cache = ProcessValueCache::new(&checked_values);
+    let mut cache = ProcessValueCache::new(checked_values, &supported_values.meta_free);
     for storage in &design.process_ir.storages {
         builder
             .build_store(
@@ -231,7 +231,7 @@ pub(super) fn emit_state_helpers<'ctx>(
                                 design,
                                 *initializer,
                                 layout,
-                                &supported_values,
+                                supported_values,
                             )
                         }
                     },

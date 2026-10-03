@@ -2,6 +2,20 @@
 
 use super::*;
 
+/// Immutable arena facts shared by support preflight and every emitted CFG.
+pub(super) struct ProcessValueSupport {
+    pub(super) values: Vec<bool>,
+    pub(super) meta_free: Vec<bool>,
+}
+
+impl std::ops::Deref for ProcessValueSupport {
+    type Target = [bool];
+
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
+}
+
 /// Assertions, warnings, and prints use a deliberately small fixed ABI.
 /// Accept formatting only when finalized Process metadata is sufficient to
 /// render the value without consulting source syntax.
@@ -130,7 +144,7 @@ pub(super) fn process_value_supported_in_layout(
     design: &Design,
     id: ProcessValueId,
     layout: &SourceLayout,
-    supported: &[bool],
+    supported: &ProcessValueSupport,
 ) -> bool {
     let Some(width) = process_value_width_in_layout(design, id, layout) else {
         return false;
@@ -328,7 +342,7 @@ pub(super) fn process_packed_meta_supported(
     design: &Design,
     id: ProcessValueId,
     layout: &SourceLayout,
-    supported: &[bool],
+    supported: &ProcessValueSupport,
 ) -> bool {
     let Some((width, _)) = packed_logic_layout(design, layout) else {
         return false;
@@ -349,7 +363,12 @@ pub(super) fn process_packed_meta_supported(
     {
         return supported.get(id.0 as usize).copied().unwrap_or(false);
     }
-    if process_value_meta_free(design, id) {
+    if supported
+        .meta_free
+        .get(id.0 as usize)
+        .copied()
+        .unwrap_or(false)
+    {
         return true;
     }
     match &value.kind {
@@ -521,7 +540,7 @@ pub(super) fn process_value_supported_for_target(
     design: &Design,
     target: ProcessValueId,
     assigned: ProcessValueId,
-    supported: &[bool],
+    supported: &ProcessValueSupport,
 ) -> bool {
     let value_supported = match process_value_layout(design, target) {
         Some(layout) => process_value_supported_in_layout(design, assigned, layout, supported),
@@ -561,8 +580,11 @@ pub(super) fn process_value_supported_for_target(
         .is_some_and(|layout| process_packed_meta_supported(design, assigned, layout, supported))
 }
 
-pub(super) fn supported_process_values(design: &Design) -> Vec<bool> {
-    let mut supported = Vec::with_capacity(design.process_ir.values.len());
+pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
+    let mut supported = ProcessValueSupport {
+        values: Vec::with_capacity(design.process_ir.values.len()),
+        meta_free: meta_free_process_values(design),
+    };
     let has = |supported: &[bool], id: ProcessValueId| {
         supported.get(id.0 as usize).copied().unwrap_or(false)
     };
@@ -860,7 +882,7 @@ pub(super) fn supported_process_values(design: &Design) -> Vec<bool> {
             | ProcessValueKind::Call { .. }
             | ProcessValueKind::Invalid => false,
         };
-        supported.push(packed_width && shape);
+        supported.values.push(packed_width && shape);
     }
     supported
 }

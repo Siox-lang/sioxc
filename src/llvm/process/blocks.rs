@@ -23,7 +23,7 @@ pub(super) fn block_is_supported(
     design: &Design,
     process: &ProcessCfg,
     block: &siox::ir::ProcessBlock,
-    values: &[bool],
+    values: &ProcessValueSupport,
 ) -> bool {
     let value = |id: ProcessValueId| values.get(id.0 as usize).copied().unwrap_or(false);
     let assignment_supported =

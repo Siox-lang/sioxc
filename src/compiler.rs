@@ -632,7 +632,7 @@ impl Compiler {
             &mut result.diagnostics,
             base_dir,
         );
-        crate::ir::lower_processes(
+        let process_result = crate::ir::lower_processes(
             &result.modules,
             resolved,
             typed,
@@ -645,6 +645,13 @@ impl Compiler {
         result.stats.event_blocks = Some(design.event_blocks.len());
         result.hierarchy = Some(hierarchy);
         result.design = Some(design);
+        if let Err(error) = process_result {
+            result.failure = Some(CompileFailure::new(
+                FailureKind::Validation,
+                format!("cannot derive hardware scheduling forms from Process IR: {error}"),
+            ));
+            return result;
+        }
 
         if request.emit == Emit::Ir {
             result.artifact = result

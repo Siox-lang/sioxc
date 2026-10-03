@@ -2,7 +2,7 @@ use super::*;
 use siox::diag::{FileId, Span};
 use siox::elab::InstanceId;
 use siox::ir::{
-    ProcessBinaryOp, ProcessBlock, ProcessBlockId, ProcessCfg, ProcessId, ProcessIr,
+    ProcessBinaryOp, ProcessBlock, ProcessBlockId, ProcessCfg, ProcessId, ProcessIr, ProcessRegion,
     ProcessSignalState, ProcessTerminator, ProcessTest, ProcessValue, ProcessValueId,
     ProcessValueKind, Signal, SignalId,
 };
@@ -11,6 +11,100 @@ use siox::resolve::DefId;
 /// A source-less span for hand-built backend fixtures.
 fn span() -> Span {
     Span::new(FileId(0), 0..0)
+}
+
+#[test]
+fn metavalue_facts_handle_a_deeply_shared_dag_without_recursion() {
+    let mut values = vec![ProcessValue {
+        span: span(),
+        ty: Some(siox::types::Ty::Integer),
+        bit_width: Some(64),
+        kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+    }];
+    // Each node references its predecessor twice: a recursive walk revisits
+    // 2^depth paths, while the arena contains only depth + 1 values.
+    for index in 0..50_000 {
+        let previous = ProcessValueId(index);
+        values.push(ProcessValue {
+            span: span(),
+            ty: Some(siox::types::Ty::Integer),
+            bit_width: Some(64),
+            kind: ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::And,
+                left: previous,
+                right: previous,
+            },
+        });
+    }
+    let design = Design {
+        process_ir: ProcessIr {
+            values,
+            ..ProcessIr::default()
+        },
+        ..Design::default()
+    };
+    let facts = supported_process_values(&design);
+    assert_eq!(facts.meta_free.len(), 50_001);
+    assert!(facts.meta_free.iter().all(|free| *free));
+    assert!(facts.values.iter().all(|supported| *supported));
+}
+
+#[test]
+fn metavalue_facts_preserve_unknown_inputs_and_explicit_integer_conversion() {
+    let node = |kind, ty| ProcessValue {
+        span: span(),
+        ty,
+        bit_width: Some(8),
+        kind,
+    };
+    let design = Design {
+        meta_of: HashMap::from([(0, 1)]),
+        process_ir: ProcessIr {
+            values: vec![
+                node(
+                    ProcessValueKind::Signal {
+                        signals: vec![SignalId(0)],
+                        state: ProcessSignalState::Current,
+                    },
+                    None,
+                ),
+                node(
+                    ProcessValueKind::Unary {
+                        operation: ProcessUnaryOp::Not,
+                        operand: ProcessValueId(0),
+                    },
+                    None,
+                ),
+                node(
+                    ProcessValueKind::RawResize {
+                        operand: ProcessValueId(1),
+                    },
+                    Some(siox::types::Ty::Integer),
+                ),
+                node(
+                    ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::And,
+                        left: ProcessValueId(1),
+                        right: ProcessValueId(2),
+                    },
+                    None,
+                ),
+                // A forward/cyclic dependency is never treated as known.
+                node(
+                    ProcessValueKind::RawResize {
+                        operand: ProcessValueId(4),
+                    },
+                    None,
+                ),
+            ],
+            ..ProcessIr::default()
+        },
+        ..Design::default()
+    };
+    assert_eq!(
+        meta_free_process_values(&design),
+        [false, false, true, false, false]
+    );
 }
 
 fn scheduled_process(id: u32, schedules: &[(Option<u32>, ProcessValueId)]) -> ProcessCfg {
@@ -22,6 +116,7 @@ fn scheduled_process(id: u32, schedules: &[(Option<u32>, ProcessValueId)]) -> Pr
         label: None,
         span,
         activation: ProcessActivation::TimeZero,
+        region: ProcessRegion::Procedural,
         entry: ProcessBlockId(0),
         locals: Vec::new(),
         blocks: vec![ProcessBlock {
@@ -128,6 +223,7 @@ fn emits_runtime_discovery_metadata() {
                 label: Some("stimulus".into()),
                 span: span(),
                 activation: ProcessActivation::TimeZero,
+                region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
                 locals: vec![],
                 blocks: vec![ProcessBlock {
@@ -148,6 +244,7 @@ fn emits_runtime_discovery_metadata() {
                 activation: ProcessActivation::Reactive {
                     sensitivity: vec![ProcessSensitivity::Signal(siox::ir::SignalId(0))],
                 },
+                region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
                 locals: vec![],
                 blocks: vec![ProcessBlock {
@@ -315,6 +412,7 @@ fn fixed_and_empty_strings_are_executable_process_values() {
             label: Some("string-values".into()),
             span: span(),
             activation: ProcessActivation::TimeZero,
+            region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
             locals: vec![],
             blocks: vec![
@@ -348,7 +446,10 @@ fn fixed_and_empty_strings_are_executable_process_values() {
     };
 
     let supported = supported_process_values(&design);
-    assert_eq!(supported, [true, true, true, false, false, true, true]);
+    assert_eq!(
+        supported.values,
+        [true, true, true, false, false, true, true]
+    );
     let llvm = crate::llvm::emit_module_ir(&design).expect("fixed string Process values lower");
     assert!(llvm.contains("define internal i8 @sx.process.0(i32"));
     assert!(llvm.contains("br i1"), "{llvm}");
@@ -366,6 +467,7 @@ fn process_entries_dispatch_control_only_cfgs() {
             label: Some("control".into()),
             span: span(),
             activation: ProcessActivation::TimeZero,
+            region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
             locals: vec![],
             blocks: vec![
@@ -433,6 +535,7 @@ fn process_branch_reads_exact_width_state_and_operations() {
             label: Some("wide-branch".into()),
             span: span(),
             activation: ProcessActivation::TimeZero,
+            region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
             locals: vec![],
             blocks: vec![

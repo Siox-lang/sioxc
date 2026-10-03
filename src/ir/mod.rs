@@ -32,6 +32,7 @@ use crate::resolve::{DefId, Resolved};
 use crate::syntax::ast::{self, BinOp as AstBinOp, UnOp as AstUnOp};
 use crate::syntax::Module;
 
+mod derive;
 pub(crate) mod design;
 pub(crate) mod expr;
 mod functions;
@@ -42,6 +43,7 @@ mod passes;
 pub(crate) mod process;
 pub(crate) mod query;
 
+pub(crate) use derive::derive_scheduler_forms;
 pub use design::*;
 pub use expr::*;
 pub use functions::FunctionIndex;

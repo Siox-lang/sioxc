@@ -3,8 +3,9 @@
 //! Process/CFG types, validation, test descriptors, and ownership live in
 //! [`crate::ir::Design`]. Test stimulus enters from typed Siox AST;
 //! hardware enters through the elaborated, normalized digital scheduler graph
-//! so generic/generate/std semantics are not repeated. The remaining Phase 1
-//! inversion derives those optimized digital forms from this canonical product.
+//! so generic/generate/std semantics are not repeated. Finalized scheduler
+//! forms are derived from this canonical product; the remaining Phase 1
+//! inversion removes the hardware-side source import.
 
 use crate::elab::Hierarchy;
 use crate::ir::{
@@ -12,10 +13,10 @@ use crate::ir::{
     LayoutKind, ProcessActivation, ProcessAggregateField, ProcessAssignment, ProcessBinaryOp,
     ProcessBlock, ProcessBlockId, ProcessCfg, ProcessDisplayKind, ProcessFormatPart,
     ProcessHostValueOp, ProcessId, ProcessInstruction, ProcessIr, ProcessLocal, ProcessLocalId,
-    ProcessMatchArm, ProcessNumber, ProcessPattern, ProcessRuntimeOp, ProcessSensitivity,
-    ProcessSignalState, ProcessStorage, ProcessStorageBinding, ProcessStorageId, ProcessSuspendOp,
-    ProcessTerminator, ProcessTest, ProcessUnaryOp, ProcessValue, ProcessValueId, ProcessValueKind,
-    ProcessValueMatchArm, SignalId, SourceLayout,
+    ProcessMatchArm, ProcessNumber, ProcessPattern, ProcessRegion, ProcessRuntimeOp,
+    ProcessSensitivity, ProcessSignalState, ProcessStorage, ProcessStorageBinding,
+    ProcessStorageId, ProcessSuspendOp, ProcessTerminator, ProcessTest, ProcessUnaryOp,
+    ProcessValue, ProcessValueId, ProcessValueKind, ProcessValueMatchArm, SignalId, SourceLayout,
 };
 use crate::resolve::Resolved;
 use crate::syntax::ast::{self, ElseBranch, ImplItem, Stmt};
@@ -958,7 +959,7 @@ pub fn lower(
     hierarchy: &Hierarchy,
     plan: Option<&TestPlan>,
     design: &mut Design,
-) {
+) -> Result<(), String> {
     let mut process_ir = ProcessIr::default();
     let suffixes = constant_suffixes(modules, resolved);
     let constants = source_constants(modules, resolved);
@@ -1022,6 +1023,7 @@ pub fn lower(
             label: Some(format!("{root_path}::<initializers>")),
             span: test.span,
             activation: ProcessActivation::TimeZero,
+            region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
             locals: Vec::new(),
             blocks: Vec::new(),
@@ -1250,6 +1252,7 @@ pub fn lower(
     crate::ir::import_hardware_processes(hierarchy, design, &mut process_ir);
 
     design.process_ir = process_ir;
+    crate::ir::derive_scheduler_forms(design)
 }
 
 /// Register persistent state declared by one test root and connect each
@@ -1509,6 +1512,7 @@ fn lower_process(
         label,
         span,
         activation,
+        region: ProcessRegion::Procedural,
         entry: ProcessBlockId(0),
         locals: Vec::new(),
         blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
@@ -1537,6 +1541,7 @@ fn lower_legacy_process(
         label,
         span,
         activation,
+        region: ProcessRegion::Procedural,
         entry: ProcessBlockId(0),
         locals: Vec::new(),
         blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
@@ -4106,16 +4111,14 @@ fn inline_process_call(
     // comparison on it reads `self'length` as 8 rather than the word's 64.
     if let (Some(result), Some(receiver)) = (result, receiver) {
         if returns_receiver_type(function, receiver, context) {
-            if let Some(layout) = process_value_source_layout(receiver, context.process_ir).cloned()
-            {
-                if process_value_source_layout(result, context.process_ir).is_none() {
-                    context.process_ir.value_layouts[result.0 as usize] = Some(layout);
-                }
-            }
             let receiver_type = context.process_ir.values[receiver.0 as usize].ty.clone();
-            if matches!(receiver_type, Some(crate::types::Ty::Array { len, .. }) if len > 0) {
-                return Some(narrow_to_type(result, receiver_type.as_ref(), context));
-            }
+            let result = if matches!(receiver_type, Some(crate::types::Ty::Array { len, .. }) if len > 0)
+            {
+                narrow_to_type(result, receiver_type.as_ref(), context)
+            } else {
+                result
+            };
+            return Some(inherit_receiver_layout(result, receiver, context));
         }
     }
     result
@@ -4430,7 +4433,7 @@ fn inline_process_array_unary_operator(
     push_process_array(span, result_type, elements, context)
 }
 
-/// Inline a binary operator's selected `Operator::apply` body. Symbols remain
+/// Inline a binary operator's selected source trait-method body. Symbols remain
 /// frontend metadata only: a successful inline leaves ordinary Process value
 /// nodes, while a recursion guard deliberately falls through to the primitive
 /// node used inside std wrappers such as `unsigned + unsigned`.
@@ -4517,10 +4520,7 @@ fn inline_process_binary_operator(
     if result.is_none() {
         truncate_process_values(context, first_value);
     }
-    if let Some(result) = result {
-        inherit_receiver_layout(result, left, context);
-    }
-    result
+    result.map(|result| inherit_receiver_layout(result, left, context))
 }
 
 /// A comparison on a type with an `Eq`/`Ord` impl (spec 3.25) calls its
@@ -4637,9 +4637,9 @@ fn inherit_receiver_layout(
     result: ProcessValueId,
     receiver: ProcessValueId,
     context: &mut LoweringContext<'_>,
-) {
+) -> ProcessValueId {
     if process_value_source_layout(result, context.process_ir).is_some() {
-        return;
+        return result;
     }
     let same_type = {
         let values = &context.process_ir.values;
@@ -4647,13 +4647,33 @@ fn inherit_receiver_layout(
         ty(result).is_some() && ty(result) == ty(receiver)
     };
     let Some(layout) = process_value_source_layout(receiver, context.process_ir).cloned() else {
-        return;
+        return result;
     };
     if same_type {
+        // An inlined body can calculate in a wider temporary representation.
+        // The returned receiver-format value wraps at its declared width;
+        // its intermediate does not acquire that narrower layout by mutation.
+        let result = match layout.packed_width() {
+            Some(width)
+                if context.process_ir.values[result.0 as usize].bit_width != Some(width) =>
+            {
+                let value = &context.process_ir.values[result.0 as usize];
+                push_value(
+                    value.span,
+                    value.ty.clone(),
+                    Some(width),
+                    ProcessValueKind::RawResize { operand: result },
+                    context,
+                )
+            }
+            _ => result,
+        };
         if let Some(slot) = context.process_ir.value_layouts.get_mut(result.0 as usize) {
             *slot = Some(layout);
         }
+        return result;
     }
+    result
 }
 
 /// Unary counterpart of [`inline_process_binary_operator`]. Only a concrete
@@ -6300,6 +6320,76 @@ mod tests {
     use crate::diag::{DiagnosticSink, FileId};
 
     #[test]
+    fn receiver_format_normalizes_the_result_without_retyping_its_intermediate() {
+        let span = crate::diag::Span::new(FileId(0), 0..1);
+        let ty = crate::types::Ty::Array {
+            elem: Box::new(crate::types::Ty::Error),
+            len: 8,
+            family: Some("Format".into()),
+        };
+        let layout = SourceLayout {
+            span,
+            kind: LayoutKind::Packed {
+                width: 8,
+                family: "Format".into(),
+                range: Some(crate::ir::LayoutRange { left: 3, right: -4 }),
+                element_enum: None,
+            },
+        };
+        let mut ir = ProcessIr {
+            values: vec![
+                ProcessValue {
+                    span,
+                    ty: Some(ty.clone()),
+                    bit_width: Some(8),
+                    kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+                },
+                ProcessValue {
+                    span,
+                    ty: Some(ty),
+                    bit_width: Some(64),
+                    kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![0x1ff])),
+                },
+            ],
+            value_layouts: vec![Some(layout.clone()), None],
+            ..ProcessIr::default()
+        };
+        let resolved = Resolved::default();
+        let mut context = LoweringContext {
+            modules: &[],
+            resolved: &resolved,
+            typed: &Typed::default(),
+            design: &Design::default(),
+            hierarchy: &Hierarchy::default(),
+            root_path: "",
+            process_ir: &mut ir,
+            suffixes: &Default::default(),
+            constants: &Default::default(),
+            constant_stack: Default::default(),
+            functions: &crate::ir::FunctionIndex::new(&resolved),
+            constant_integers: &Default::default(),
+            value_bindings: vec![],
+            inline_self_values: vec![],
+            inline_return_types: vec![],
+            inline_functions: Default::default(),
+        };
+
+        let result = inherit_receiver_layout(ProcessValueId(1), ProcessValueId(0), &mut context);
+        assert_eq!(result, ProcessValueId(2));
+        assert_eq!(ir.values[1].bit_width, Some(64));
+        assert!(ir.value_layouts[1].is_none());
+        assert_eq!(ir.values[2].bit_width, Some(8));
+        assert_eq!(ir.value_layouts[2], Some(layout));
+        assert!(matches!(
+            ir.values[2].kind,
+            ProcessValueKind::RawResize {
+                operand: ProcessValueId(1)
+            }
+        ));
+        assert!(ir.validate(0).is_empty(), "{:?}", ir.validate(0));
+    }
+
+    #[test]
     /// End-to-end check that a test body fills `Design::process_ir` with the
     /// branches and suspension points its source implies.
     fn fills_design_process_cfg_with_branches_and_suspension() {
@@ -6394,7 +6484,8 @@ mod tests {
             &hierarchy,
             Some(&plan),
             &mut design,
-        );
+        )
+        .expect("hardware scheduler view derives from Process IR");
         assert!(design
             .process_ir
             .validate(design.signals.len() as u32)
@@ -6461,6 +6552,7 @@ mod tests {
             .id;
         let clock = &design.process_ir.processes[0];
         assert_eq!(clock.label.as_deref(), Some("Smoke::clock"));
+        assert_eq!(clock.region, ProcessRegion::Procedural);
         assert_eq!(
             clock.activation,
             ProcessActivation::Reactive {
@@ -6484,6 +6576,7 @@ mod tests {
             ));
         let process = &design.process_ir.processes[1];
         assert_eq!(process.label.as_deref(), Some("Smoke::stimulus"));
+        assert_eq!(process.region, ProcessRegion::Procedural);
         assert_eq!(process.locals.len(), 3);
         assert!(process
             .blocks
@@ -6528,6 +6621,7 @@ mod tests {
             .expect("DUT output signal");
         assert_eq!(hardware.root, descriptor.root);
         assert_ne!(hardware.owner, descriptor.root);
+        assert_eq!(hardware.region, ProcessRegion::Combinational);
         assert_eq!(
             hardware.activation,
             ProcessActivation::Reactive {
@@ -6777,7 +6871,8 @@ mod tests {
             &hierarchy,
             Some(&plan),
             &mut design,
-        );
+        )
+        .expect("hardware scheduler view derives from Process IR");
 
         let formatted = design
             .process_ir
@@ -6880,7 +6975,8 @@ mod tests {
             &hierarchy,
             Some(&plan),
             &mut design,
-        );
+        )
+        .expect("hardware scheduler view derives from Process IR");
         let link = design
             .process_ir
             .storages
@@ -6930,11 +7026,13 @@ mod tests {
         let mut design = crate::ir::lower(&modules, &resolved, &hierarchy, &mut sink);
         assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
 
-        lower(&modules, &resolved, &typed, &hierarchy, None, &mut design);
+        lower(&modules, &resolved, &typed, &hierarchy, None, &mut design)
+            .expect("hardware scheduler view derives from Process IR");
         assert!(design.process_ir.tests.is_empty());
         assert_eq!(design.process_ir.processes.len(), 1);
         let process = &design.process_ir.processes[0];
         assert_eq!(process.root, process.owner);
+        assert_eq!(process.region, ProcessRegion::Combinational);
         assert!(matches!(
             process.activation,
             ProcessActivation::Reactive { ref sensitivity }
@@ -6997,7 +7095,8 @@ mod tests {
             &hierarchy,
             Some(&plan),
             &mut design,
-        );
+        )
+        .expect("hardware scheduler view derives from Process IR");
 
         assert!(design.process_ir.values.iter().any(|value| matches!(
             value.kind,
@@ -7071,7 +7170,8 @@ mod tests {
             &hierarchy,
             Some(&plan),
             &mut design,
-        );
+        )
+        .expect("hardware scheduler view derives from Process IR");
 
         assert_eq!(
             design.process_ir.value_layouts.len(),
@@ -7199,6 +7299,7 @@ mod tests {
                     label: None,
                     span,
                     activation: ProcessActivation::TimeZero,
+                    region: ProcessRegion::Procedural,
                     entry: ProcessBlockId(1),
                     locals: Vec::new(),
                     blocks: vec![ProcessBlock {

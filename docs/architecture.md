@@ -19,9 +19,11 @@ The IR module is directory-backed and split by responsibility:
 
 - `mod.rs` is the stable `siox::ir::*` facade, while `functions.rs` owns the
   resolver-backed function and nominal-owner index;
-- `design.rs`, `layout.rs`, and `expr.rs` define language-neutral data;
+- `design.rs`, `layout.rs`, and `expr.rs` define language-neutral data, while
+  `derive.rs` projects canonical hardware Process regions into the compact
+  compatibility scheduler view;
 - `process.rs` owns the canonical process CFG, value arena, and descriptors;
-- `query.rs` owns validation, scheduler decomposition, and textual dumps;
+- `query.rs` owns validation, scheduler queries, and textual dumps;
 - `passes.rs` owns representation-neutral normalization;
 - `lower.rs` is the Siox frontend-lowering facade and shared state. Focused
   modules in `lower/` own collection, entity bodies, expressions, operators,
@@ -86,8 +88,9 @@ Cargo Git and depends only on the backend-independent `siox` crate.
 The following diagram describes the current implementation. Process IR has one
 owner and one native execution path. Typed source/test constructs lower there
 directly under `ir/lower`; the remaining transition is the normalized-hardware
-bridge, which still imports scheduler forms that should ultimately be derived
-from the canonical CFGs.
+bridge. It still imports source-emitted scheduler forms, but the finalized
+`Driver`/`EventBlock` view is regenerated from canonical CFG regions rather
+than passed through to downstream consumers.
 
 ```mermaid
 flowchart TB
@@ -100,12 +103,13 @@ flowchart TB
         TY -->|ordinary output| EL["elab<br/>Hierarchy"]
         TY -->|test executable requested| TESTPLAN["testbench<br/>TestPlan"]
         TESTPLAN -->|exact canonical std test roots| EL
-        EL -->|concrete hierarchy| DIGITAL["ir lowering<br/>signals + layouts + drivers/events"]
-        DIGITAL --> DESIGN["ir::Design<br/>owned ProcessIr"]
+        EL -->|concrete hierarchy| DIGITAL["ir lowering<br/>signals + layouts + normalized hardware"]
         TESTPLAN -->|descriptors + roots| PROCESS_LOWER["ir::lower_processes<br/>typed source/test lowering"]
         TY -->|typed expressions| PROCESS_LOWER
         DIGITAL -->|concrete layouts + normalized hardware bridge| PROCESS_LOWER
-        PROCESS_LOWER -->|fills source/hardware CFGs + descriptors| DESIGN
+        PROCESS_LOWER -->|fills source/hardware CFGs + descriptors| PROCESSIR["canonical ProcessIr<br/>procedural / combinational / event regions"]
+        PROCESSIR --> DERIVE["derive compact<br/>Driver / EventBlock view"]
+        DERIVE --> DESIGN["ir::Design<br/>canonical + derived forms"]
 
         DIAG["diag<br/>SourceMap + DiagnosticSink"] -. spans + diagnostics .-> SY
         DIAG -.-> RE
@@ -190,8 +194,9 @@ editor build needs neither LLVM nor the native-output toolchain.
 
 ## Unified process pipeline (Phase 1 endpoint)
 
-`process [name] { ... }` supplies the common scheduling boundary that the
-earlier architecture lacked. Explicit hardware processes, implicit reactive
+`process { ... }` (optionally labelled `name: process { ... }`) supplies the
+common scheduling boundary that the earlier architecture lacked. Explicit
+hardware processes, implicit reactive
 processes created for concurrent statements, clocks, and test stimulus can all
 lower once into one CFG-capable Process IR. `#[test]` contributes root and
 descriptor metadata; it does not select another IR.
@@ -225,16 +230,19 @@ public `test_ir` adapter module has been deleted. Typed expressions, control
 flow, storage, clocks, stimulus, and `TestPlan` descriptors therefore enter the
 canonical arena through its owning layer.
 
-One migration bridge remains. `source_processes.rs` invokes
+One source-side migration bridge remains. `source_processes.rs` invokes
 `src/ir/lower/hardware_processes.rs` after source/test CFG construction, and
 that bridge imports normalized `Driver`/`EventBlock` scheduler units as
-reactive Process CFGs. Keeping it last preserves current Process IDs and
-scheduler order. Phase 1 completes the inversion by:
+reactive Process CFGs. Each CFG carries an explicit `ProcessRegion`, so
+reactive testbench clocks cannot be mistaken for combinational or event
+hardware. `derive.rs` then reconstructs the compatibility scheduler forms only
+from those hardware regions and rejects procedural CFG/value shapes. Keeping
+the importer last preserves current Process IDs and scheduler order. Phase 1
+completes the inversion by:
 
 1. lowering explicit hardware processes and implicit concurrent behavior into
    Process IR before scheduler decomposition;
-2. deriving optimized `Driver`/`EventBlock` forms from Process IR;
-3. deleting the normalized-hardware importer while keeping default and
+2. deleting the normalized-hardware importer while keeping default and
    `bitpack` native/corpus behavior unchanged.
 
 **Layering rule:** a module may use only the modules above it in this list
@@ -343,11 +351,12 @@ flowchart LR
     TYPED -->|test build| TESTPLAN["TestPlan<br/>canonical std tests + bound roots"]
     TESTPLAN --> HIERARCHY
     HIERARCHY --> DIGITAL["digital IR lowering"]
-    DIGITAL --> DESIGN["ir::Design<br/>signals + ProcessIr"]
+    PROCESSIR["canonical ProcessIr<br/>CFGs + values + region metadata"] --> DERIVED["derived Driver / EventBlock view"]
+    DERIVED --> DESIGN["ir::Design<br/>signals + canonical / derived behavior"]
     TESTPLAN --> PROCESS_LOWER["ir::lower_processes<br/>typed source/test CFGs"]
     TYPED --> PROCESS_LOWER
     DIGITAL -->|shared layouts + normalized hardware bridge| PROCESS_LOWER
-    PROCESS_LOWER -->|fills owned ProcessIr| DESIGN
+    PROCESS_LOWER -->|fills owned ProcessIr| PROCESSIR
 
     TOKENS -->|Emit::Tokens| TEXT["Artifact::Text"]
     MODULES -->|Emit::Source / Ast| TEXT
@@ -452,9 +461,10 @@ and then use their normal integer representation/conversion.
   processes created for concurrent statements resolve and run in parallel.
   Process IDs, optional instance-qualified labels, activation conditions,
   locals, staged signal writes, suspension points, and source spans must
-  survive lowering. Today combinational `Driver` and sequential `EventBlock`
-  forms are lowered directly; the unified pipeline derives those optimized
-  forms from Process IR instead of treating them as another semantic path.
+  survive lowering. The finalized combinational `Driver` and sequential
+  `EventBlock` forms are derived from explicitly classified Process regions;
+  the remaining source-side bridge still uses an equivalent normalized graph
+  while building those canonical CFGs.
 
 - **Reject Phase-2 syntax, don't implement it.** Analogue constructs (`domain`,
   `across`/`through`, `'ddt`, layout attrs) must produce errors
@@ -542,6 +552,15 @@ accessors. The cache is disabled in control-flow-bearing functions, keeping the
 dominance rule explicit. Bounds-diagnostic lowering also scans for
 `CheckedIndex` before constructing path predicates, so an expression without a
 dynamic access creates no diagnostic-only LLVM values.
+
+Canonical Process code generation computes immutable value-support,
+checked-index, and metavalue-free facts once per object, in arena dependency
+order. Reset helpers, support preflight, and every process/block emitter share
+those tables. Unknown-plane queries are table lookups rather than recursive
+walks of shared subgraphs; runtime writes invalidate emitted LLVM values, not
+these static representation facts. A returned value that inherits its
+receiver's packed format is explicitly resized before the layout is attached,
+so wider arithmetic intermediates retain their own widths.
 
 IR signals retain kernel scalar identity independently from packed-family
 signedness: `real`, `integer`, `Char`, and enum identity survive flattening.

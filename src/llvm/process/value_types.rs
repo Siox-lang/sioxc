@@ -11,13 +11,15 @@ pub(super) struct ProcessValueCache<'ctx, 'checks> {
     pub(super) emitted:
         HashMap<(ProcessValueId, Option<IntValue<'ctx>>, Option<u32>), IntValue<'ctx>>,
     pub(super) checked: &'checks [bool],
+    pub(super) meta_free: &'checks [bool],
 }
 
 impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
-    pub(super) fn new(checked: &'checks [bool]) -> Self {
+    pub(super) fn new(checked: &'checks [bool], meta_free: &'checks [bool]) -> Self {
         Self {
             emitted: HashMap::new(),
             checked,
+            meta_free,
         }
     }
 

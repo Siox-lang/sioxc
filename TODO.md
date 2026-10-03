@@ -7,8 +7,8 @@ layer that owns each change:
 
 This file tracks active work, not implementation history. Completed migration
 details and measurements belong in [`chat.md`](chat.md) and the documents under
-[`docs/`](docs/). Status last audited 2026-09-28 against the compiler, standard
-library, `siox-tests`, and CI.
+[`docs/`](docs/). Phase 1 pipeline status last audited 2026-10-03 against the
+compiler, standard library, `siox-tests`, and the local CI gate.
 
 Legend: 🔴 not started · 🟡 partial / constrained.
 
@@ -56,8 +56,12 @@ Owns signals, canonical process control flow, initializers, layouts, enum/logic
 metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
 
 - 🟡 **Make Process IR the lowering authority.** All finalized hardware and
-  test behavior is present in `Design::process_ir`, but normalized
-  `Driver`/`EventBlock` hardware is still imported through a migration bridge.
+  test behavior is present in `Design::process_ir`, and the finalized
+  `Driver`/`EventBlock` scheduler view is now derived back from explicitly
+  classified Process CFG regions. Derivation fails closed on procedural value
+  or control-flow shapes, so downstream consumers cannot silently retain the
+  pre-Process graph. Normalized hardware is still imported through a
+  source-side migration bridge before that projection.
   Typed expressions, values, calls, places, CFGs, test descriptors, storage,
   clocks, and stimulus now lower through
   `src/ir/lower/source_processes.rs`; `Compiler::compile` calls that IR-owned
@@ -65,12 +69,11 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   dependency-closed normalized-hardware importer lives beside it in
   `src/ir/lower/hardware_processes.rs` and still runs after source CFG
   construction to preserve current Process IDs and scheduler order.
-  Complete this migration in order:
+  Complete the remaining source-side migration in order:
 
   1. lower explicit hardware processes and implicit continuous behavior into
      `Design::process_ir` before scheduler decomposition;
-  2. derive optimized `Driver`/`EventBlock` scheduling forms from Process IR;
-  3. delete the normalized-hardware importer once default and `bitpack`
+  2. delete the normalized-hardware importer once default and `bitpack`
      native/corpus behavior remains unchanged.
 
 ## LLVM

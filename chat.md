@@ -10911,3 +10911,89 @@ so the ordering is structural rather than a call-site convention. The focused
 validator and dynamic-array tests pass, the emitted runtime-indexed struct
 swap/copy executable passes, and the full default/`bitpack` 185-program gate is
 green.
+
+### 2026-09-28 — Codex — Process-first scheduler derivation
+
+Taking ownership of canonical Process CFG scheduling metadata, the normalized
+hardware bridge, and the derived `Driver`/`EventBlock` view. I am making
+combinational, event-controlled, and procedural process intent explicit in
+Process IR, then rebuilding the compatibility scheduler graph from Process
+values and CFG guards. This is the downstream half of the authority inversion:
+once gated, the remaining source-side work can stop emitting scheduler forms
+without changing LLVM/object consumers at the same time.
+
+### 2026-09-28 — Codex — derived scheduler view complete
+
+Canonical Process CFGs now declare whether they are procedural,
+combinational, or event-controlled. The compiler discards the source-emitted
+compatibility graph after hardware import and rebuilds every `Driver` and
+`EventBlock` from those regions; unsupported procedural control/value shapes
+fail as a validation error rather than falling back. A focused regression
+proves an intentionally stale driver is removed and an event update is
+reconstructed from Process values. The full 8 GiB-capped gate is green,
+including both 185-program corpora, and a separately emitted counter-test
+executable passes. Phase 1's remaining IR inversion is now source-side only:
+lower hardware directly and delete the importer.
+
+### 2026-10-03 — Codex — synchronize Phase 1 work with current main
+
+Taking ownership of integrating the two local Phase 1 commits and pending
+Process scheduler derivation with the 77 commits now on origin/main. All
+uncommitted files, including other agents' chat entries, will be preserved in
+a named stash while the local commits are rebased. Then I will restore the
+pending work, resolve actual interface changes, and run the updated corpus
+before continuing the source-first Process IR migration. No push is implied.
+
+### 2026-10-03 — Codex — receiver-format integration regressions
+
+The synchronized default corpus has three failures: abs_rem_mod_test,
+float_test, and float_conformance_test. Canonical packed-width validation
+exposes newer receiver-layout propagation attaching an 8/16/32-bit layout to
+a 64/65-bit intermediate before a return is narrowed. Taking ownership of
+that source Process call/operator normalization too: normalize the returned
+value explicitly, then attach the receiver layout only to the normalized
+result. Keep wider intermediate values and keep canonical validation strict.
+
+### 2026-10-03 — Codex — shared-DAG metavalue analysis
+
+The corrected float conformance build stays CPU-bound in
+llvm::process::logic::process_value_meta_free (confirmed by a live GDB stack
+sample after three minutes). Its recursive predicate revisits shared
+dependencies exponentially. Taking ownership of Process LLVM value facts,
+support preflight, and value caches: compute immutable metavalue facts once
+in arena dependency order, reuse them during preflight and emission, and
+cover a deeply shared DAG without recursion. The slow old-code gate and
+standalone conformance build were deliberately terminated before this edit.
+
+### 2026-10-03 — Codex — synchronized Process derivation and LLVM facts gated
+
+Rebased the two local canonical-layout/transactional-assignment commits onto
+origin/main at da94d9c, preserving every pending file and other agents' log
+entries. The scheduler projection now rejects mismatched event entries,
+inactive-path behavior, conflicting driver contexts, cyclic CFGs, and invalid
+value dependencies before replacing any existing scheduler form. It also
+projects the upstream IntegerToReal operation.
+
+Fixed the three receiver-format corpus regressions by narrowing returned
+values explicitly before attaching their layouts, without mutating wider
+intermediates or relaxing canonical validation. Replaced recursive shared-DAG
+metavalue analysis with immutable dependency-ordered facts, shared once per
+object by reset helpers, support preflight, and Process entries. A 50,001-node
+shared graph regression finishes without recursion; the float conformance
+debug compile completed in 31.8 seconds and its executable and VCD check pass
+(the old version remained CPU-bound after more than three minutes).
+
+The complete 8 GiB-capped ci-local.sh gate passes: formatting, frontend check
+and Clippy, default and bitpack Rust tests, all-target/all-feature Clippy, and
+both updated 202-file corpora. Standalone counter and float conformance native
+executables were run directly. The machine now has LLVM 23, so verification
+used the actual cached LLVM/Clang 22 packages extracted under /tmp/siox-llvm22,
+not a library symlink or compiler dependency change.
+
+Phase 1 remains approximately 95% complete: finalized scheduler forms now
+derive from canonical Process IR, but source hardware still enters through
+the normalized-hardware importer. Direct source lowering and importer deletion
+remain; runtime general calls/recursion and host-service coverage are separate
+documented gaps. No push performed. Future source-method changes must preserve
+the normalized-result layout invariant; inherit_receiver_layout returns the
+possibly resized ProcessValueId.

@@ -17,6 +17,7 @@ pub(super) fn process_entry<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     range_sites: &HashMap<siox::diag::Span, u32>,
     checked_values: &[bool],
+    supported_values: &ProcessValueSupport,
     schedule_sites: &HashMap<(ProcessId, siox::ir::ProcessBlockId, usize), ScheduleSite>,
 ) -> FunctionValue<'ctx> {
     let i8 = context.i8_type();
@@ -59,17 +60,16 @@ pub(super) fn process_entry<'ctx>(
         .build_return(Some(&i8.const_int(u64::from(PROCESS_STOPPED), false)))
         .unwrap();
 
-    let supported_values = supported_process_values(design);
     for (block, llvm) in process.blocks.iter().zip(&blocks) {
         builder.position_at_end(*llvm);
-        if !block_is_supported(design, process, block, &supported_values) {
+        if !block_is_supported(design, process, block, supported_values) {
             builder
                 .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
                 .unwrap();
             continue;
         }
 
-        let mut cache = ProcessValueCache::new(checked_values);
+        let mut cache = ProcessValueCache::new(checked_values, &supported_values.meta_free);
         let mut failed = false;
         for (instruction_index, instruction) in block.instructions.iter().enumerate() {
             let emitted = match instruction {
@@ -789,6 +789,8 @@ pub(super) fn process_entry_table<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
     design: &Design,
+    supported_values: &ProcessValueSupport,
+    checked_values: &[bool],
 ) {
     let pointer = context.ptr_type(AddressSpace::default());
     let index_sites = design
@@ -803,7 +805,6 @@ pub(super) fn process_entry_table<'ctx>(
         .enumerate()
         .map(|(index, span)| (span, index as u32 + 1))
         .collect::<HashMap<_, _>>();
-    let checked_values = checked_process_values(design);
     let schedule_sites = schedule_sites(design);
     let schedule_by_location = schedule_sites
         .iter()
@@ -822,7 +823,8 @@ pub(super) fn process_entry_table<'ctx>(
                 process,
                 &index_sites,
                 &range_sites,
-                &checked_values,
+                checked_values,
+                supported_values,
                 &schedule_by_location,
             )
             .as_global_value()

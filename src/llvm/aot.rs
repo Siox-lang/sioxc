@@ -100,10 +100,10 @@ mod tests {
         BinOp, Driver, Expr, LayoutDirection, LayoutField, LayoutKind, LookupTable, LookupTableId,
         ProcessActivation, ProcessAggregateField, ProcessAssignment, ProcessBinaryOp, ProcessBlock,
         ProcessBlockId, ProcessCfg, ProcessId, ProcessInstruction, ProcessIr, ProcessLocal,
-        ProcessLocalId, ProcessNumber, ProcessSensitivity, ProcessSignalState, ProcessStorage,
-        ProcessStorageBinding, ProcessStorageId, ProcessSuspendOp, ProcessTerminator, ProcessTest,
-        ProcessValue, ProcessValueId, ProcessValueKind, ScalarDomain, Signal, SignalId,
-        SourceLayout,
+        ProcessLocalId, ProcessNumber, ProcessRegion, ProcessSensitivity, ProcessSignalState,
+        ProcessStorage, ProcessStorageBinding, ProcessStorageId, ProcessSuspendOp,
+        ProcessTerminator, ProcessTest, ProcessValue, ProcessValueId, ProcessValueKind,
+        ScalarDomain, Signal, SignalId, SourceLayout,
     };
     use siox::resolve::DefId;
     use std::process::Command;
@@ -143,6 +143,7 @@ mod tests {
                 label: Some("a-gt-127".into()),
                 span,
                 activation: ProcessActivation::TimeZero,
+                region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
                 locals: vec![],
                 blocks: vec![
@@ -421,6 +422,7 @@ signed main(void) {
                     label: Some("wide-writer".into()),
                     span,
                     activation: ProcessActivation::TimeZero,
+                    region: ProcessRegion::Procedural,
                     entry: ProcessBlockId(0),
                     locals: vec![],
                     blocks: vec![ProcessBlock {
@@ -436,6 +438,7 @@ signed main(void) {
                     label: Some("edge-observer".into()),
                     span,
                     activation: ProcessActivation::TimeZero,
+                    region: ProcessRegion::Procedural,
                     entry: ProcessBlockId(0),
                     locals: vec![],
                     blocks: vec![
@@ -467,6 +470,7 @@ signed main(void) {
                     label: Some("unsupported-is-transactional".into()),
                     span,
                     activation: ProcessActivation::TimeZero,
+                    region: ProcessRegion::Procedural,
                     entry: ProcessBlockId(0),
                     locals: vec![],
                     blocks: vec![
@@ -759,6 +763,7 @@ signed main(void) {
                 label: Some("immediate-state".into()),
                 span,
                 activation: ProcessActivation::TimeZero,
+                region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
                 locals: vec![ProcessLocal {
                     id: ProcessLocalId(0),
@@ -1097,6 +1102,7 @@ signed main(void) {
                 label: Some("aggregate".into()),
                 span,
                 activation: ProcessActivation::TimeZero,
+                region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
                 locals: vec![ProcessLocal {
                     id: ProcessLocalId(0),
@@ -1346,6 +1352,7 @@ signed main(void) {
                 label: Some("per-place".into()),
                 span,
                 activation: ProcessActivation::TimeZero,
+                region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
                 locals: vec![ProcessLocal {
                     id: ProcessLocalId(0),
@@ -1552,6 +1559,7 @@ signed main(void) {
             label: Some(format!("failure-{id}")),
             span,
             activation: ProcessActivation::TimeZero,
+            region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
             locals: vec![],
             blocks: vec![ProcessBlock {
@@ -1570,6 +1578,7 @@ signed main(void) {
             label: Some("guarded-failure".into()),
             span,
             activation: ProcessActivation::TimeZero,
+            region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
             locals: vec![],
             blocks: vec![
@@ -1795,6 +1804,7 @@ signed main(void) {
             label: Some(format!("delta-{id}")),
             span,
             activation,
+            region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
             locals: vec![],
             blocks: vec![ProcessBlock {
@@ -1854,6 +1864,7 @@ signed main(void) {
             label: Some("timed-suspend".into()),
             span,
             activation: ProcessActivation::TimeZero,
+            region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
             locals: vec![],
             blocks: vec![

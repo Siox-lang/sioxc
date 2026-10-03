@@ -32,9 +32,9 @@ pub struct ProcessValueId(pub u32);
 /// Typed source/test CFGs lower directly under `ir::lower`; normalized hardware
 /// CFGs still enter through the scheduler-decomposition bridge. The
 /// representation and its invariants live here so no backend needs a second
-/// process product. The remaining migration inversion derives
-/// [`Driver`](super::Driver) / [`EventBlock`](super::EventBlock) compatibility
-/// forms from this arena.
+/// process product. Finalized [`Driver`](super::Driver) /
+/// [`EventBlock`](super::EventBlock) compatibility forms are derived from this
+/// arena; the remaining migration removes the source-side hardware bridge.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProcessIr {
     /// Every process control-flow graph, indexed by [`ProcessId`].
@@ -136,6 +136,11 @@ pub struct ProcessCfg {
     pub span: crate::diag::Span,
     /// When the process runs.
     pub activation: ProcessActivation,
+    /// Which simulation region owns the process's writes. This is independent
+    /// of activation: procedural test stimulus and hardware logic can both be
+    /// reactive, but only hardware regions participate in the derived
+    /// `Driver`/`EventBlock` scheduler view.
+    pub region: ProcessRegion,
     /// The block execution starts in.
     pub entry: ProcessBlockId,
     /// Locals owned by this process, indexed by [`ProcessLocalId`].
@@ -165,6 +170,34 @@ pub enum ProcessActivation {
     Reactive {
         /// Storage objects or signals whose change wakes the process.
         sensitivity: Vec<ProcessSensitivity>,
+    },
+}
+
+/// The semantic simulation region of one canonical process.
+///
+/// This metadata is intentionally explicit. Inferring it from sensitivity or
+/// from an `Event` operand would misclassify reactive testbench clocks as
+/// hardware, and would make scheduler derivation depend on expression shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessRegion {
+    /// Ordinary procedural behavior: test stimulus, clocks, and resumable
+    /// source processes. It executes only through the Process runtime.
+    Procedural,
+    /// Continuously settled hardware behavior. Its staged writes derive
+    /// combinational [`Driver`](super::Driver) compatibility entries.
+    Combinational,
+    /// Edge/event-controlled hardware behavior. `condition` is evaluated once
+    /// for the event block, while `body` contains its conditionally guarded
+    /// staged writes.
+    Event {
+        /// The event condition in the shared Process value arena.
+        condition: ProcessValueId,
+        /// The first block containing event-controlled writes.
+        body: ProcessBlockId,
+        /// Source driver identity shared by this event block's writes. This is
+        /// retained while compatibility scheduler forms exist; source-first
+        /// lowering can allocate it from the owning process.
+        driver_context: u32,
     },
 }
 
@@ -1196,6 +1229,52 @@ impl ProcessIr {
                     process.id
                 ));
             }
+            match process.region {
+                ProcessRegion::Procedural => {}
+                ProcessRegion::Combinational => {
+                    if !matches!(process.activation, ProcessActivation::Reactive { .. }) {
+                        issues.push(format!(
+                            "combinational process {:?} is not reactively activated",
+                            process.id
+                        ));
+                    }
+                }
+                ProcessRegion::Event {
+                    condition, body, ..
+                } => {
+                    if condition.0 >= value_count {
+                        issues.push(format!(
+                            "event process {:?} references invalid condition {:?}",
+                            process.id, condition
+                        ));
+                    }
+                    if process.blocks.get(body.0 as usize).map(|block| block.id) != Some(body) {
+                        issues.push(format!(
+                            "event process {:?} references invalid body block {:?}",
+                            process.id, body
+                        ));
+                    }
+                    if !matches!(process.activation, ProcessActivation::Reactive { .. }) {
+                        issues.push(format!(
+                            "event process {:?} is not reactively activated",
+                            process.id
+                        ));
+                    }
+                    if !matches!(
+                        process.blocks.get(process.entry.0 as usize).map(|block| &block.terminator),
+                        Some(ProcessTerminator::Branch {
+                            condition: entry_condition,
+                            then_block,
+                            ..
+                        }) if *entry_condition == condition && *then_block == body
+                    ) {
+                        issues.push(format!(
+                            "event process {:?} entry does not branch through its declared condition and body",
+                            process.id
+                        ));
+                    }
+                }
+            }
             if let ProcessActivation::Reactive { sensitivity } = &process.activation {
                 for item in sensitivity {
                     match item {
@@ -1654,8 +1733,8 @@ impl ProcessIr {
                 .map(|label| format!(" [{label}]"))
                 .unwrap_or_default();
             output.push_str(&format!(
-                "process %p{} root {} owner {}{label} {:?} {{\n",
-                process.id.0, process.root.0, process.owner.0, process.activation
+                "process %p{} root {} owner {}{label} {:?} {:?} {{\n",
+                process.id.0, process.root.0, process.owner.0, process.activation, process.region
             ));
             for local in &process.locals {
                 output.push_str(&format!("  local %{} {}\n", local.id.0, local.name));

@@ -82,71 +82,75 @@ pub(super) fn logic_unary_discriminant<'ctx>(
     Some(result)
 }
 
-pub(super) fn process_value_meta_free(design: &Design, id: ProcessValueId) -> bool {
-    let Some(value) = design.process_ir.values.get(id.0 as usize) else {
-        return false;
-    };
-    let free = |id| process_value_meta_free(design, id);
-    match &value.kind {
-        ProcessValueKind::Number(_)
-        | ProcessValueKind::Suffixed { .. }
-        | ProcessValueKind::BitString { .. }
-        | ProcessValueKind::Char(_)
-        | ProcessValueKind::Default
-        | ProcessValueKind::Attribute { .. }
-        | ProcessValueKind::TableLookup { .. }
-        | ProcessValueKind::ForeignCall { .. }
-        | ProcessValueKind::HostCall { .. }
-        | ProcessValueKind::MetaCompare { .. } => true,
-        ProcessValueKind::Signal { signals, state } => {
-            !matches!(state, ProcessSignalState::Event)
-                && signals
-                    .iter()
-                    .all(|signal| !design.meta_of.contains_key(&signal.0))
-        }
-        ProcessValueKind::Local { process, local } => {
-            local_meta_width(design, *process, *local).is_none()
-        }
-        ProcessValueKind::Storage(storage) | ProcessValueKind::StorageState { storage, .. } => {
-            storage_meta_width(design, *storage).is_none()
-        }
-        // `integer(x)` leaves the logic domain: a kernel integer has no
-        // metavalues, so arithmetic over one stores into a packed word with
-        // every element known (VHDL's `to_integer` likewise yields a number).
-        ProcessValueKind::RawResize { .. }
-            if matches!(value.ty, Some(siox::types::Ty::Integer)) =>
-        {
-            true
-        }
-        ProcessValueKind::Unary { operand, .. }
-        | ProcessValueKind::RawResize { operand }
-        | ProcessValueKind::Field { base: operand, .. }
-        | ProcessValueKind::BitSlice { base: operand, .. }
-        | ProcessValueKind::PackedSlice { base: operand, .. } => free(*operand),
-        ProcessValueKind::CheckedIndex { index, valid, .. } => free(*index) && free(*valid),
-        ProcessValueKind::Binary { left, right, .. } => free(*left) && free(*right),
-        ProcessValueKind::Select {
-            condition,
-            then_value,
-            else_value,
-        } => free(*condition) && free(*then_value) && free(*else_value),
-        ProcessValueKind::Match { scrutinee, arms } => {
-            free(*scrutinee) && arms.iter().all(|arm| free(arm.value))
-        }
-        ProcessValueKind::Construct { fields, spread, .. } => {
-            spread.is_none_or(free) && fields.iter().all(|field| field.value.is_none_or(free))
-        }
-        ProcessValueKind::Array(values) | ProcessValueKind::Concat(values) => {
-            values.iter().all(|value| free(*value))
-        }
-        ProcessValueKind::Index { base, index } => free(*base) && free(*index),
-        ProcessValueKind::String(_)
-        | ProcessValueKind::Definition(_)
-        | ProcessValueKind::Intrinsic(_)
-        | ProcessValueKind::Range { .. }
-        | ProcessValueKind::Call { .. }
-        | ProcessValueKind::Invalid => false,
+/// Static unknown-plane facts in dependency order. Shared subgraphs are
+/// classified once, not recursively revisited for each path or consumer.
+pub(super) fn meta_free_process_values(design: &Design) -> Vec<bool> {
+    let mut facts = Vec::with_capacity(design.process_ir.values.len());
+    for value in &design.process_ir.values {
+        let free = |id: ProcessValueId| facts.get(id.0 as usize).copied().unwrap_or(false);
+        let meta_free = match &value.kind {
+            ProcessValueKind::Number(_)
+            | ProcessValueKind::Suffixed { .. }
+            | ProcessValueKind::BitString { .. }
+            | ProcessValueKind::Char(_)
+            | ProcessValueKind::Default
+            | ProcessValueKind::Attribute { .. }
+            | ProcessValueKind::TableLookup { .. }
+            | ProcessValueKind::ForeignCall { .. }
+            | ProcessValueKind::HostCall { .. }
+            | ProcessValueKind::MetaCompare { .. } => true,
+            ProcessValueKind::Signal { signals, state } => {
+                !matches!(state, ProcessSignalState::Event)
+                    && signals
+                        .iter()
+                        .all(|signal| !design.meta_of.contains_key(&signal.0))
+            }
+            ProcessValueKind::Local { process, local } => {
+                local_meta_width(design, *process, *local).is_none()
+            }
+            ProcessValueKind::Storage(storage) | ProcessValueKind::StorageState { storage, .. } => {
+                storage_meta_width(design, *storage).is_none()
+            }
+            // `integer(x)` leaves the logic domain: a kernel integer has no
+            // metavalues, so arithmetic over one stores into a packed word with
+            // every element known (VHDL's `to_integer` likewise yields a number).
+            ProcessValueKind::RawResize { .. }
+                if matches!(value.ty, Some(siox::types::Ty::Integer)) =>
+            {
+                true
+            }
+            ProcessValueKind::Unary { operand, .. }
+            | ProcessValueKind::RawResize { operand }
+            | ProcessValueKind::Field { base: operand, .. }
+            | ProcessValueKind::BitSlice { base: operand, .. }
+            | ProcessValueKind::PackedSlice { base: operand, .. } => free(*operand),
+            ProcessValueKind::CheckedIndex { index, valid, .. } => free(*index) && free(*valid),
+            ProcessValueKind::Binary { left, right, .. } => free(*left) && free(*right),
+            ProcessValueKind::Select {
+                condition,
+                then_value,
+                else_value,
+            } => free(*condition) && free(*then_value) && free(*else_value),
+            ProcessValueKind::Match { scrutinee, arms } => {
+                free(*scrutinee) && arms.iter().all(|arm| free(arm.value))
+            }
+            ProcessValueKind::Construct { fields, spread, .. } => {
+                spread.is_none_or(free) && fields.iter().all(|field| field.value.is_none_or(free))
+            }
+            ProcessValueKind::Array(values) | ProcessValueKind::Concat(values) => {
+                values.iter().all(|value| free(*value))
+            }
+            ProcessValueKind::Index { base, index } => free(*base) && free(*index),
+            ProcessValueKind::String(_)
+            | ProcessValueKind::Definition(_)
+            | ProcessValueKind::Intrinsic(_)
+            | ProcessValueKind::Range { .. }
+            | ProcessValueKind::Call { .. }
+            | ProcessValueKind::Invalid => false,
+        };
+        facts.push(meta_free);
     }
+    facts
 }
 
 /// Emit the exact discriminant plane for one packed Process value. A zero
@@ -197,7 +201,7 @@ pub(super) fn process_packed_meta_in_layout<'ctx>(
         )?;
         return compact_discriminant(context, builder, encoding, value);
     }
-    if process_value_meta_free(design, id) {
+    if cache.meta_free.get(id.0 as usize).copied().unwrap_or(false) {
         return Some(ty.const_zero());
     }
     match &value.kind {

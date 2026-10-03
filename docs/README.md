@@ -83,8 +83,11 @@ Typed source/test expressions now lower through the IR-owned
 `ir/lower/source_processes.rs` entry directly into the `ProcessIr` owned by
 `ir::Design`; the transitional public `test_ir` module is gone. The input side
 is not completely straight-line yet because normalized hardware still enters
-through `ir/lower/hardware_processes.rs`. The Phase 1 endpoint derives those
-optimized digital scheduler forms from Process IR instead. See
+through `ir/lower/hardware_processes.rs`. After that import, the compiler now
+discards the original scheduling graph and derives its optimized
+`Driver`/`EventBlock` compatibility view from explicitly classified Process
+CFG regions. The remaining Phase 1 inversion removes the source-side import.
+See
 [the current Process IR ingress boundary](architecture.md#current-process-ir-ingress-boundary).
 
 The arrows through parse, resolve, type-check, elaboration, and IR are compiler

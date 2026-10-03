@@ -382,7 +382,7 @@ pub(super) fn signal_value<'ctx>(
 pub(super) fn process_meta_operand_supported(
     design: &Design,
     id: ProcessValueId,
-    supported: &[bool],
+    supported: &ProcessValueSupport,
 ) -> bool {
     let Some(value) = design.process_ir.values.get(id.0 as usize) else {
         return false;

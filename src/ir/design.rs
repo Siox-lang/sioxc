@@ -23,10 +23,11 @@ pub struct Design {
     pub drivers: Vec<Driver>,
     /// Event-controlled next-state writes, applied together after settling.
     pub event_blocks: Vec<EventBlock>,
-    /// Canonical independently scheduled behavior. During migration test CFGs
-    /// enter from typed AST and hardware CFGs are imported from normalized
-    /// drivers/event blocks. The remaining inversion makes this product the
-    /// lowering authority and derives those compatibility forms from it.
+    /// Canonical independently scheduled behavior. Test CFGs enter from typed
+    /// source; hardware CFGs still enter through a temporary normalized import.
+    /// Finalized drivers/event blocks are derived from these CFGs, never kept
+    /// as an independent executable source of truth. The remaining migration
+    /// removes the source-side hardware import.
     pub process_ir: ProcessIr,
     /// Driver-context labels retained from `name: process { ... }`, qualified
     /// by instance path for diagnostics and backend tracing.

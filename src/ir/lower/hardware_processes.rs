@@ -69,6 +69,10 @@ pub(crate) fn import_hardware_processes(
             label,
             span,
             activation,
+            region: match &scheduled.kind {
+                ProcessKind::Comb { .. } => ProcessRegion::Combinational,
+                ProcessKind::Event { .. } => ProcessRegion::Procedural,
+            },
             entry: ProcessBlockId(0),
             locals: Vec::new(),
             blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
@@ -103,6 +107,11 @@ pub(crate) fn import_hardware_processes(
                 let body = process.push_block();
                 let exit = process.push_block();
                 let condition = push_normalized_value(process_ir, &event.condition, span, design);
+                process.region = ProcessRegion::Event {
+                    condition,
+                    body,
+                    driver_context: event.ctx,
+                };
                 process.blocks[0].terminator = ProcessTerminator::Branch {
                     condition,
                     then_block: body,

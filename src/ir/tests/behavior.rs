@@ -628,6 +628,7 @@ fn process_assignment_snapshot_requires_capturable_operands() {
             label: None,
             span,
             activation: ProcessActivation::TimeZero,
+            region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
             locals: vec![ProcessLocal {
                 id: ProcessLocalId(0),
