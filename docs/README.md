@@ -24,6 +24,7 @@ synthesis layer yet (those are Phase 2 and 3 — see
 | [Entity methods](proposals/entity-methods.md) | `pub fn` members on entities whose calls elaborate into ports. Tier 1 (associated functions) is implemented; receiver methods remain proposed. |
 | [Standard-library build-out](proposals/std-buildout.md) | The compiler/std boundary and the open std work tracked in TODO. |
 | [Macros](proposals/macros.md) | Implemented (language §3.30), including the built-in macros as `core` declarations. Remaining: expansion identity for notes, language-server views. |
+| [Comparison traits](proposals/comparison-traits.md) | Decided, being implemented: `Eq`/`Ord` in `core::cmp` replace the `<=>` derivation (comparisons are `Bool` methods; IEEE NaN works); `abs`/`rem`/`mod` are methods, not operators. |
 | [`#[derive]`](proposals/derive.md) | Proposed generated `Ord`/`Resolve` implementations as a directive; `#[cfg]` stays rejected. |
 | [`core` and `std`](proposals/core-std.md) | Slice 1 implemented: built-in `core` with the hooks, directives and built-in macros, found by lang items. Leaf-name lookups and new `std` content remain. |
 | [Pipelined functions](proposals/pipelines.md) | Proposed `#[latched]` functions after Spade, with no new keywords: `#[latch]` marks each stage (a block or one statement), depth is checked in the body and at every call site, stages can be named and referenced, and `#[latch(enable = c)]` stalls. |
