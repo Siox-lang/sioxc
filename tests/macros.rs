@@ -394,3 +394,18 @@ fn custom_operators_work_in_arguments_and_bodies() {
     // Left-associative: the printer drops the redundant left parentheses.
     assert!(text.contains("return a xor b xor (a xor b);"), "{text}");
 }
+
+#[test]
+/// A generic list in call position keeps its commas: `float<32, 23>(1.5)` is
+/// one macro argument, while a `<` with no such `>` is still a comparison.
+fn a_generic_call_argument_keeps_its_commas() {
+    let (rendered, ok) = check(
+        "generic_call_argument",
+        "module main;\nuse std::float::float;\n\
+         #[test] entity T {}\n\
+         impl T {\n  check: process {\n    let a: integer = 1;\n    let b: integer = 2;\n\
+             assert!(float<32, 23>(1.5) == float<32, 23>(1.5), \"one argument\");\n\
+             print!(\"{} {}\", a < b, b > a);\n  }\n}\n",
+    );
+    assert!(ok, "{rendered}");
+}

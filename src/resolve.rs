@@ -2002,8 +2002,15 @@ impl<'a> Resolver<'a> {
                 ..
             } => {
                 self.resolve_expr(callee);
-                for ty in type_args {
-                    self.resolve_type(ty);
+                for arg in type_args {
+                    match arg {
+                        GenericArg::Positional(e) | GenericArg::Named { value: e, .. } => {
+                            self.resolve_expr(e)
+                        }
+                        GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => {
+                            self.resolve_type(ty)
+                        }
+                    }
                 }
                 for a in args {
                     self.resolve_expr(a);

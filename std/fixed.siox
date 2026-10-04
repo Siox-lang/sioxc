@@ -1,22 +1,23 @@
 module std::fixed;
 
 
-// Fixed-point numbers, after VHDL-2008's `fixed_pkg`. The binary point lives in
-// the index range, exactly as in VHDL's `ufixed(3 downto -4)`:
+// Fixed-point numbers, after VHDL-2008's `fixed_pkg`. The parameters are the
+// format: W bits in all, F of them fraction.
 //
-//   ufixed[3..-4]   4 integer bits (indices 3..0) and 4 fraction bits (-1..-4)
-//   sfixed[7..-8]   the same in two's complement: 8 integer bits, 8 fraction
+//   ufixed<8, 4>    4 integer bits and 4 fraction bits (4.4)
+//   sfixed<16, 8>   8.8 in two's complement
 //
-// so `x'high + 1` is the integer width and `-x'low` the fraction width, and
-// the types are ordinary newtypes over `Logic[]`, like `unsigned`/`signed`.
+// Internally the word is indexed as VHDL's `ufixed(3 downto -4)` is, so
+// `x'high + 1` is the integer width and `-x'low` the fraction width, and the
+// types are ordinary newtypes over `Logic[]`, like `unsigned`/`signed`.
 //
 // Operands of one format give that format. A sum wraps on overflow, as
 // `unsigned` does; a product drops its extra fraction bits rounding toward
 // minus infinity (VHDL's truncate). Inside these impls the operands read as
 // kernel words: `self * rhs` is the full product, which the shift by the
 // fraction width brings back to the format before it is stored.
-pub struct ufixed(Logic[]);
-pub struct sfixed(Logic[]);
+pub struct ufixed<W: integer, F: integer>(Logic[W - F - 1 .. 0 - F]);
+pub struct sfixed<W: integer, F: integer>(Logic[W - F - 1 .. 0 - F]);
 
 // --- ufixed ------------------------------------------------------------------
 
@@ -99,11 +100,27 @@ impl sfixed {
 
 // --- from real ---------------------------------------------------------------
 
-// `value` in the format `[left..right]`, rounded to the nearest step (ties
-// away from zero) and saturated to the format's range, VHDL's defaults:
-//
-//   let gain: ufixed[3..-4] = to_ufixed(2.5, 3, -4);
-pub fn to_ufixed(value: real, left: integer, right: integer) -> integer {
+// `ufixed<8, 4>(2.5)`: a number in the format being built (`Self'high`
+// down to `Self'low`), rounded to the nearest step (ties away from zero) and
+// saturated to the format's range, VHDL's defaults.
+impl From<real> for ufixed {
+    fn from(value: real) -> ufixed { return ufixed_word(value, Self'high, Self'low); }
+}
+
+impl From<integer> for ufixed {
+    fn from(value: integer) -> ufixed { return ufixed_word(real(value), Self'high, Self'low); }
+}
+
+impl From<real> for sfixed {
+    fn from(value: real) -> sfixed { return sfixed_word(value, Self'high, Self'low); }
+}
+
+impl From<integer> for sfixed {
+    fn from(value: integer) -> sfixed { return sfixed_word(real(value), Self'high, Self'low); }
+}
+
+// The words of `value` in the format `[left..right]`.
+fn ufixed_word(value: real, left: integer, right: integer) -> integer {
     let steps: real = value * real(1 << (0 - right));
     let largest: integer = (1 << (left - right + 1)) - 1;
     if steps <= 0.0 { return 0; }
@@ -111,7 +128,7 @@ pub fn to_ufixed(value: real, left: integer, right: integer) -> integer {
     return integer(steps + 0.5);
 }
 
-pub fn to_sfixed(value: real, left: integer, right: integer) -> integer {
+fn sfixed_word(value: real, left: integer, right: integer) -> integer {
     let steps: real = value * real(1 << (0 - right));
     let largest: integer = (1 << (left - right)) - 1;
     let smallest: integer = 0 - (1 << (left - right));

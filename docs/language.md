@@ -608,6 +608,19 @@ type Pair<T> = Packet<T>;              // a generic alias
   identity; a distinct type is the newtype form, `struct Word(Bit[]);`
   (§3.28). A generic alias takes the same binder as other declarations and is
   applied like its target: `Pair<unsigned[8]>` is `Packet<unsigned[8]>`.
+  An alias also names its type's constructor: `Word(x)` for
+  `type Word = unsigned[8];` is `unsigned[8](x)`.
+- **A struct whose parameters shape its base's index range** is that family
+  over the range: for `struct float<W: integer, M: integer>(Logic[W - M - 1 ..
+  0 - M]);`, `float<32, 23>` is `float` over `[8..-23]`, as a type and as a
+  constructor (`float<32, 23>(1.5)`). The parameters are the only spelling —
+  `float[8..-23]` written by hand is an error that names them — so `[...]`
+  keeps meaning an array's size or range. Impls are written once for the
+  family (`impl Mul<float, float> for float`) and read the range through
+  `self'high`/`self'low`. A base sized by a width (`struct Word<N:
+  integer>(Logic[N])`) keeps the ordinary generic meaning.
+- A call's explicit generic arguments may be values as well as types, as a
+  type's may: `float<32, 23>(1.5)`, `read<string>(path)`.
 - Operators never need an import: `a + b` finds its `impl Add<…>` through
   the operand's type (§3.25). Every module reached by any `use` form
   contributes its user operators' precedences.
@@ -2119,8 +2132,8 @@ width, so `unsigned[128](1) << 64` remains a valid cross-word shift.
 
 **An operator keeps its receiver's format.** When an impl returns its own
 receiver type, the result has the receiver's declared index range as well as
-its width: `(a + b) * c` on `ufixed[3..-4]` operands is still a
-`ufixed[3..-4]`, so a body applied to it can read `self'low`. Inside an impl,
+its width: `(a + b) * c` on `ufixed<8, 4>` operands is still a
+`ufixed<8, 4>`, so a body applied to it can read `self'low`. Inside an impl,
 `self'left`, `'right`, `'high`, `'low` and `'length` describe the operand
 actually passed.
 
@@ -2388,6 +2401,23 @@ including between two unrelated types whose values happen to line up, such as
 `ULogic(bit)` — requires an explicit `impl From<S> for T`, which `T(x)` also
 dispatches to. Because the mechanism is a constructor call, a conversion is
 always visible at the site.
+
+**A sized family's constructor.** For an array family, `T[range](x)` — or
+`T<args>(x)` for a family shaped by its parameters (§3.4) — is the kernel's
+raw resize (`unsigned[16](x)`) unless the family declares
+`impl From<S> for T` for the argument's type: then it calls that impl, whose
+body reads the format being built as **`Self'left`, `'right`, `'high`, `'low`
+and `'length`**, VHDL's type attributes. That is how `std::fixed` and
+`std::float` construct a number in any format without a separate conversion
+function:
+
+```siox
+impl From<real> for float {
+    fn from(value: real) -> float { return float_word(value, Self'high, 0 - Self'low); }
+}
+
+let x: float<32, 23> = float<32, 23>(1.5);   // IEEE binary32 1.5
+```
 ---
 
 ### 3.29 Uninitialized values (`new`)

@@ -7,7 +7,7 @@ layer that owns each change:
 
 This file tracks active work, not implementation history. Completed migration
 details and measurements belong in [`chat.md`](chat.md) and the documents under
-[`docs/`](docs/). Phase 1 pipeline status last audited 2026-10-03 against the
+[`docs/`](docs/). Phase 1 pipeline status last audited 2026-10-04 against the
 compiler, standard library, `siox-tests`, and the local CI gate.
 
 Legend: 🔴 not started · 🟡 partial / constrained.

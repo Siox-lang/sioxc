@@ -35,6 +35,88 @@ impl<'a> Lowering<'a> {
         found
     }
 
+    /// `float<32, 23>(1.5)`: a family's `From<Source>` impl, inlined with
+    /// `Self'left`/`'right`/`'high`/`'low`/`'length` describing the format being
+    /// built. `None` when the family has no impl for the argument's type, and
+    /// the conversion is the kernel's raw resize.
+    pub(super) fn lower_family_from(
+        &self,
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+        env: &HashMap<String, Val>,
+    ) -> Option<Expr> {
+        let ast::Expr::Index { base, index, .. } = callee else {
+            return None;
+        };
+        let ast::Expr::Path(path) = base.as_ref() else {
+            return None;
+        };
+        let [arg] = args else {
+            return None;
+        };
+        let target = self
+            .free_fns
+            .struct_path_key(path)
+            .or_else(|| expr_path(base))?;
+        let fns = self.op_impls.get(&("From".to_string(), target))?;
+        let source = match self.expr_types.get(&ast::expr_span(arg)) {
+            Some(crate::types::Ty::Real) => "real".to_string(),
+            Some(crate::types::Ty::Integer) => "integer".to_string(),
+            _ => self.operand_type_name(arg)?,
+        };
+        let (f, _) = fns.iter().find(|(f, declared)| {
+            declared.clone().or_else(|| {
+                f.params
+                    .iter()
+                    .find(|p| !p.is_self)
+                    .and_then(|p| p.ty.as_ref())
+                    .and_then(|ty| self.free_fns.type_head_key(ty))
+            }) == Some(source.clone())
+        })?;
+        let body = f.body.as_ref()?;
+        let (left, right) = match index.as_ref() {
+            ast::Expr::Range { lo, hi, .. } => (
+                self.eval_const(lo, &self.cur_env)?,
+                self.eval_const(hi, &self.cur_env)?,
+            ),
+            width => (self.eval_const(width, &self.cur_env)? - 1, 0),
+        };
+        let mut fenv: HashMap<String, Val> = HashMap::new();
+        // Each bound as the source `0 - 4` would lower: a negative one is a
+        // signed subtraction, which every width rule downstream reads as a
+        // small kernel integer. Its 64-bit pattern instead read as a huge
+        // unsigned number, and `1 << (0 - Self'low)` lost its bits.
+        let bound = |value: i64| {
+            if value < 0 {
+                Expr::Binary {
+                    op: BinOp::SSub,
+                    lhs: Box::new(Expr::Const(0)),
+                    rhs: Box::new(Expr::Const(value.unsigned_abs())),
+                }
+            } else {
+                Expr::Const(value as u64)
+            }
+        };
+        for (attr, value) in [
+            ("left", left),
+            ("right", right),
+            ("high", left.max(right)),
+            ("low", left.min(right)),
+        ] {
+            fenv.insert(format!("Self::{attr}"), Val::Scalar(bound(value)));
+        }
+        fenv.insert(
+            "Self::length".to_string(),
+            Val::Scalar(Expr::Const(left.abs_diff(right) + 1)),
+        );
+        let param = f.params.iter().find(|p| !p.is_self)?.name.as_ref()?;
+        fenv.insert(param.text.clone(), self.lower_val_env(arg, env));
+        match self.inline_block(&body.stmts, &fenv)? {
+            Val::Scalar(value) => Some(value),
+            _ => None,
+        }
+    }
+
     /// Inline a `From` conversion's body for the target type.
     pub(super) fn lower_from_inner(
         &self,
@@ -778,6 +860,9 @@ impl<'a> Lowering<'a> {
         args: &[ast::Expr],
         env: &HashMap<String, Val>,
     ) -> Option<Expr> {
+        if let Some(value) = self.lower_family_from(callee, args, env) {
+            return Some(value);
+        }
         // A field-less struct derived from a scalar kernel type is a nominal
         // newtype with the same representation. Its constructor is therefore
         // value-transparent (`time(v)`, `frequency(v)`), just as derivation is;
@@ -832,7 +917,12 @@ impl<'a> Lowering<'a> {
             _ => None,
         };
         let (target_w, resize) = match callee {
-            ast::Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "integer" => {
+            // `real(n)` is converted by value below; without this arm it
+            // never got there and lowered to `Unknown`.
+            ast::Expr::Path(p)
+                if p.segments.len() == 1
+                    && matches!(p.segments[0].text.as_str(), "integer" | "real") =>
+            {
                 (None, false)
             }
             // `Char(n)`: a code point becomes a symbol (32-bit storage).

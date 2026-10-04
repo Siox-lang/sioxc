@@ -47,13 +47,37 @@ struct LoweringContext<'a> {
     process_ir: &'a mut ProcessIr,
     suffixes: &'a std::collections::HashMap<String, Vec<ConstantSuffix>>,
     constants: &'a std::collections::HashMap<crate::resolve::DefId, &'a ast::Expr>,
+    /// Type aliases by resolver identity, for a local declared through one
+    /// (`let h: binary16`) to find the index range its type denotes.
+    type_aliases: &'a std::collections::HashMap<crate::resolve::DefId, &'a ast::Type>,
     constant_stack: std::collections::HashSet<crate::resolve::DefId>,
     functions: &'a crate::ir::FunctionIndex<'a>,
     constant_integers: &'a std::collections::HashMap<String, i64>,
     value_bindings: Vec<std::collections::HashMap<crate::resolve::DefId, ProcessValueId>>,
+    /// A value carrying the format a family `From` impl is building, which
+    /// its body reads as `Self'high` (`lower_process_family_from`).
+    self_formats: Vec<ProcessValueId>,
     inline_self_values: Vec<Option<ProcessValueId>>,
     inline_return_types: Vec<Option<crate::types::Ty>>,
     inline_functions: std::collections::HashSet<crate::diag::Span>,
+}
+
+/// Non-generic type aliases indexed by resolver identity.
+fn source_type_aliases<'a>(
+    modules: &'a [Module],
+    resolved: &Resolved,
+) -> std::collections::HashMap<crate::resolve::DefId, &'a ast::Type> {
+    modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            ast::Item::Using(using) => match &using.kind {
+                ast::UsingKind::Alias { name, ty, .. } => Some((resolved.declared(name.span)?, ty)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 /// Source constants indexed by resolver identity. Module and impl-scoped
@@ -967,6 +991,7 @@ pub fn lower(
     let hardware_processes = std::mem::take(&mut process_ir.processes);
     let suffixes = constant_suffixes(modules, resolved);
     let constants = source_constants(modules, resolved);
+    let type_aliases = source_type_aliases(modules, resolved);
     let functions = process_functions(modules, resolved);
     let constant_integers = module_constant_integers(modules, &functions);
 
@@ -1054,10 +1079,12 @@ pub fn lower(
                 process_ir: &mut process_ir,
                 suffixes: &suffixes,
                 constants: &constants,
+                type_aliases: &type_aliases,
                 constant_stack: std::collections::HashSet::new(),
                 functions: &functions,
                 constant_integers: &constant_integers,
                 value_bindings: Vec::new(),
+                self_formats: Vec::new(),
                 inline_self_values: Vec::new(),
                 inline_return_types: Vec::new(),
                 inline_functions: std::collections::HashSet::new(),
@@ -1112,10 +1139,12 @@ pub fn lower(
                             process_ir: &mut process_ir,
                             suffixes: &suffixes,
                             constants: &constants,
+                            type_aliases: &type_aliases,
                             constant_stack: std::collections::HashSet::new(),
                             functions: &functions,
                             constant_integers: &constant_integers,
                             value_bindings: Vec::new(),
+                            self_formats: Vec::new(),
                             inline_self_values: Vec::new(),
                             inline_return_types: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
@@ -1159,10 +1188,12 @@ pub fn lower(
                             process_ir: &mut process_ir,
                             suffixes: &suffixes,
                             constants: &constants,
+                            type_aliases: &type_aliases,
                             constant_stack: std::collections::HashSet::new(),
                             functions: &functions,
                             constant_integers: &constant_integers,
                             value_bindings: Vec::new(),
+                            self_formats: Vec::new(),
                             inline_self_values: Vec::new(),
                             inline_return_types: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
@@ -1222,10 +1253,12 @@ pub fn lower(
                     process_ir: &mut process_ir,
                     suffixes: &suffixes,
                     constants: &constants,
+                    type_aliases: &type_aliases,
                     constant_stack: std::collections::HashSet::new(),
                     functions: &functions,
                     constant_integers: &constant_integers,
                     value_bindings: Vec::new(),
+                    self_formats: Vec::new(),
                     inline_self_values: Vec::new(),
                     inline_return_types: Vec::new(),
                     inline_functions: std::collections::HashSet::new(),
@@ -3164,9 +3197,24 @@ fn process_local_layout(
     context: &LoweringContext<'_>,
 ) -> Option<crate::ir::SourceLayout> {
     let mut layout = process_layout_for_type(ty?, declaration.span, context)?;
+    // Through an alias chain to the type it denotes.
+    let mut declared = declaration.ty.as_ref();
+    for _ in 0..16 {
+        let Some(ast::Type::Path(path)) = declared else {
+            break;
+        };
+        let Some(aliased) = context
+            .resolved
+            .resolved(path.span)
+            .and_then(|id| context.type_aliases.get(&id).copied())
+        else {
+            break;
+        };
+        declared = Some(aliased);
+    }
     let Some(ast::Type::Indexed {
         index: Some(index), ..
-    }) = declaration.ty.as_ref()
+    }) = declared
     else {
         return Some(layout);
     };
@@ -3738,6 +3786,115 @@ fn lower_process_raw_resize(
     Some(push_value(*span, Some(target), Some(width), kind, context))
 }
 
+/// `float<32, 23>(1.5)`: a family's `From<Source>` impl, inlined with `Self`
+/// standing for the format being built, so the body can read `Self'high`.
+/// `None` when the family has no impl for the argument's type, and the
+/// conversion is the kernel's raw resize.
+fn lower_process_family_from(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let ast::Expr::Call {
+        callee,
+        type_args,
+        args,
+        bang: false,
+        span,
+    } = expression
+    else {
+        return None;
+    };
+    let (ast::Expr::Index { base, index, .. }, [argument], true) =
+        (callee.as_ref(), args.as_slice(), type_args.is_empty())
+    else {
+        return None;
+    };
+    let ast::Expr::Path(path) = base.as_ref() else {
+        return None;
+    };
+    let definition = context.resolved.resolved(path.span)?;
+    let family = context.resolved.qualified_name(definition)?;
+    let target = context.functions.canonical_type_key(&family);
+    let first_value = context.process_ir.values.len();
+    // The checker reads `family[range](x)` as a kernel conversion and records
+    // no type for a literal argument, so the value says what it is.
+    let checked = operand_type(argument, process, context);
+    let operand = value_ref_with_type(argument, process, context, checked.as_ref());
+    let source_type = checked
+        .or_else(|| process_value_type(operand, context))
+        .or_else(|| {
+            Some(if process_value_is_real(operand, context) {
+                crate::types::Ty::Real
+            } else {
+                crate::types::Ty::Integer
+            })
+        })?;
+    let Some(function) = process_type_key(&source_type, context)
+        .and_then(|source| context.functions.get_conversion(&target, &source))
+    else {
+        truncate_process_values(context, first_value);
+        return None;
+    };
+    let eval = |bound: &ast::Expr| {
+        crate::ir::eval_const_fns(bound, context.constant_integers, context.functions, 0)
+    };
+    let Some((left, right)) = (match index.as_ref() {
+        ast::Expr::Range { lo, hi, .. } => eval(lo).zip(eval(hi)),
+        width => eval(width).map(|width| (width - 1, 0)),
+    }) else {
+        truncate_process_values(context, first_value);
+        return None;
+    };
+    let Some(len) = u32::try_from(left.abs_diff(right) + 1).ok() else {
+        truncate_process_values(context, first_value);
+        return None;
+    };
+    let elem = match return_type {
+        Some(crate::types::Ty::Array { elem, .. }) => elem.clone(),
+        _ => Box::new(crate::types::Ty::Error),
+    };
+    let target_type = crate::types::Ty::Array {
+        elem,
+        family: Some(family),
+        len,
+    };
+    let Some(mut layout) = process_layout_for_type(&target_type, *span, context) else {
+        truncate_process_values(context, first_value);
+        return None;
+    };
+    if let LayoutKind::Packed { width, range, .. } = &mut layout.kind {
+        *width = len;
+        *range = Some(crate::ir::LayoutRange { left, right });
+    }
+    let format = push_value(
+        *span,
+        Some(target_type.clone()),
+        Some(len),
+        ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
+        context,
+    );
+    context.process_ir.value_layouts[format.0 as usize] = Some(layout);
+    context.self_formats.push(format);
+    let result = inline_process_function(
+        function,
+        None,
+        &[operand],
+        process,
+        context,
+        Some(&target_type),
+    );
+    context.self_formats.pop();
+    match result {
+        Some(result) => Some(inherit_receiver_layout(result, format, context)),
+        None => {
+            truncate_process_values(context, first_value);
+            None
+        }
+    }
+}
+
 /// Lower zero-argument type construction to the type's retained recursive
 /// default rather than leaving `T()`/`T::new()` as an executable call. The
 /// resolver check distinguishes constructors from ordinary zero-argument
@@ -3969,8 +4126,8 @@ fn lower_process_file_call(
     else {
         return None;
     };
-    let direct_string =
-        matches!(type_args.as_slice(), [requested] if type_leaf(requested) == Some("string"));
+    let direct_string = matches!(type_args.as_slice(), [ast::GenericArg::PositionalType(requested)]
+            if type_leaf(requested) == Some("string"));
     let operation = if builtin_callee_is(callee, "read", context) {
         if process_type_is_string(return_type) || return_type.is_none() && direct_string {
             match return_type {
@@ -4242,7 +4399,7 @@ fn inline_process_function(
     context.inline_self_values.pop();
     context.value_bindings.pop();
     context.inline_functions.remove(&function.span);
-    // ...and that argument's format: `abs(x)` on a `ufixed[3..-4]` is one.
+    // ...and that argument's format: `abs(x)` on a `ufixed<8, 4>` is one.
     match (result, generic_argument) {
         (Some(result), Some(argument)) => Some(inherit_receiver_layout(result, argument, context)),
         (result, _) => result,
@@ -4645,7 +4802,7 @@ fn narrow_to_type(
 }
 
 /// An operator that returns its receiver's own type keeps the receiver's
-/// format: `a + b` on `ufixed[3..-4]` is a `ufixed[3..-4]`, so a body applied
+/// format: `a + b` on `ufixed<8, 4>` is a `ufixed<8, 4>`, so a body applied
 /// to that result (`(a + b) * c`, reading `self'low`) still finds its index
 /// range. Without a layout the result was a bare word with no bounds.
 fn inherit_receiver_layout(
@@ -4656,10 +4813,14 @@ fn inherit_receiver_layout(
     if process_value_source_layout(result, context.process_ir).is_some() {
         return result;
     }
+    // The same nominal type, sized or not: a product typed `float` takes the
+    // format of its `float<32, 23>` operand.
     let same_type = {
-        let values = &context.process_ir.values;
-        let ty = |id: ProcessValueId| values.get(id.0 as usize).and_then(|value| value.ty.clone());
-        ty(result).is_some() && ty(result) == ty(receiver)
+        let key = |id: ProcessValueId| {
+            let ty = context.process_ir.values.get(id.0 as usize)?.ty.as_ref()?;
+            process_type_key(ty, context)
+        };
+        key(result).is_some() && key(result) == key(receiver)
     };
     let Some(layout) = process_value_source_layout(receiver, context.process_ir).cloned() else {
         return result;
@@ -5183,6 +5344,9 @@ fn value_ref_with_type_inner(
         {
             return value;
         }
+        if let Some(value) = lower_process_family_from(expression, process, context, ty.as_ref()) {
+            return value;
+        }
         if let Some(value) = lower_process_raw_resize(expression, process, context, ty.as_ref()) {
             return value;
         }
@@ -5317,7 +5481,12 @@ fn value_ref_with_type_inner(
             {
                 kind
             } else {
-                let base = value_ref(base, process, context);
+                let is_self_type = matches!(base.as_ref(), ast::Expr::Path(path)
+                    if path.segments.len() == 1 && path.segments[0].text == "Self");
+                let base = match context.self_formats.last().copied() {
+                    Some(format) if is_self_type => format,
+                    _ => value_ref(base, process, context),
+                };
                 if attr.text == "length" && process_value_is_runtime_string(base, context) {
                     ProcessValueKind::HostCall {
                         operation: ProcessHostValueOp::StringLength,
@@ -6377,10 +6546,12 @@ mod tests {
             process_ir: &mut ir,
             suffixes: &Default::default(),
             constants: &Default::default(),
+            type_aliases: &Default::default(),
             constant_stack: Default::default(),
             functions: &crate::ir::FunctionIndex::new(&resolved),
             constant_integers: &Default::default(),
             value_bindings: vec![],
+            self_formats: vec![],
             inline_self_values: vec![],
             inline_return_types: vec![],
             inline_functions: Default::default(),

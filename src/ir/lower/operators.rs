@@ -252,6 +252,11 @@ impl<'a> Lowering<'a> {
             }
             Expr::Select { then, els, .. } => self.is_real_expr(then) || self.is_real_expr(els),
             Expr::CCall { f64_ret, .. } => *f64_ret,
+            // `real(n)`: an integer converted by value.
+            Expr::Unary {
+                op: UnOp::IntToReal,
+                ..
+            } => true,
             _ => false,
         }
     }

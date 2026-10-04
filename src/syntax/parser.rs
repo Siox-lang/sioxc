@@ -2590,7 +2590,19 @@ impl<'a> Parser<'a> {
                     };
                 }
                 TokenKind::Lt if matches!(e, Expr::Path(_)) && self.angle_then_lparen(self.pos) => {
-                    let type_args = self.parse_call_type_args();
+                    // A name-shaped argument (`string`, `unsigned[8]`) is a
+                    // type here; a value (`32`) stays an expression.
+                    let type_args = self
+                        .parse_generic_args()
+                        .into_iter()
+                        .map(|arg| match arg {
+                            GenericArg::Positional(_) => match arg.as_type() {
+                                Some(ty) => GenericArg::PositionalType(ty),
+                                None => arg,
+                            },
+                            other => other,
+                        })
+                        .collect();
                     let args = self.parse_call_args();
                     e = Expr::Call {
                         callee: Box::new(e),
@@ -2829,22 +2841,6 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RParen, "to close a call");
-        args
-    }
-
-    /// Explicit type arguments on a constructor-like call: `read<T>(path)`.
-    /// These are deliberately type-only; value-generic function arguments are
-    /// inferred from ordinary parameters in Phase 1.
-    fn parse_call_type_args(&mut self) -> Vec<Type> {
-        self.expect(TokenKind::Lt, "to open call type arguments");
-        let mut args = Vec::new();
-        while !self.at_generic_end() && !self.at(TokenKind::Eof) {
-            args.push(self.parse_type());
-            if !self.eat(TokenKind::Comma) {
-                break;
-            }
-        }
-        self.close_generic("to close call type arguments");
         args
     }
 
@@ -4444,7 +4440,7 @@ mod tests {
         assert_eq!(type_args.len(), 1);
         assert_eq!(args.len(), 1);
         assert_eq!(
-            crate::syntax::pretty::type_str(&type_args[0]),
+            crate::syntax::pretty::type_str(type_args[0].type_ref().unwrap()),
             "unsigned[16]"
         );
     }

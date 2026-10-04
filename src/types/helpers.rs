@@ -92,8 +92,10 @@ pub(super) fn read_call_type(expression: &Expr) -> Option<&Type> {
     let Expr::Path(path) = callee.as_ref() else {
         return None;
     };
-    (path.segments.len() == 1 && path.segments[0].text == "read" && type_args.len() == 1)
-        .then(|| &type_args[0])
+    match type_args.as_slice() {
+        [arg] if path.segments.len() == 1 && path.segments[0].text == "read" => arg.type_ref(),
+        _ => None,
+    }
 }
 
 /// A dotted path string for a write target: `Expr::Path` or a `Field` chain

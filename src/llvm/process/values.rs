@@ -1124,6 +1124,8 @@ pub(super) fn process_value<'ctx>(
                 fit_signed(builder, integer, width)?
             }
             ProcessUnaryOp::IntegerToReal => {
+                // Extended by the operand's own signedness: `1 << 4` held in
+                // five bits is 16, not -16.
                 let operand = process_value_at(
                     context,
                     module,
@@ -1131,7 +1133,7 @@ pub(super) fn process_value<'ctx>(
                     design,
                     *operand,
                     64,
-                    true,
+                    process_value_is_signed(design, *operand),
                     active,
                     index_sites,
                     cache,

@@ -831,7 +831,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// The declared index range of an operand, when it has one: a local or
-    /// signal declared `ufixed[3..-4]`, a parameter bound to such an operand,
+    /// signal declared `ufixed<8, 4>`, a parameter bound to such an operand,
     /// or an operator expression, whose result keeps its left operand's
     /// format (`(a + b) * c` reads `a`'s range).
     pub(super) fn operand_range(
@@ -876,24 +876,7 @@ impl<'a> Lowering<'a> {
         let Some((left, right)) = self.operand_range(operand, env) else {
             return;
         };
-        for (attr, value) in [
-            ("left", left),
-            ("right", right),
-            ("high", left.max(right)),
-            ("low", left.min(right)),
-        ] {
-            fenv.insert(
-                format!("{name}::{attr}"),
-                Val::Scalar(if value < 0 {
-                    Expr::Unary {
-                        op: UnOp::Neg,
-                        rhs: Box::new(Expr::Const(value.unsigned_abs())),
-                    }
-                } else {
-                    Expr::Const(value as u64)
-                }),
-            );
-        }
+        bind_format_attrs(fenv, name, left, right);
     }
 
     /// The written (left, right) constant bounds of a slice index: a range
@@ -1174,5 +1157,32 @@ impl<'a> Lowering<'a> {
             };
             ty = alias;
         }
+    }
+}
+
+/// Bind `name'left`, `'right`, `'high` and `'low` for an index range.
+pub(super) fn bind_format_attrs(
+    fenv: &mut HashMap<String, Val>,
+    name: &str,
+    left: i64,
+    right: i64,
+) {
+    for (attr, value) in [
+        ("left", left),
+        ("right", right),
+        ("high", left.max(right)),
+        ("low", left.min(right)),
+    ] {
+        fenv.insert(
+            format!("{name}::{attr}"),
+            Val::Scalar(if value < 0 {
+                Expr::Unary {
+                    op: UnOp::Neg,
+                    rhs: Box::new(Expr::Const(value.unsigned_abs())),
+                }
+            } else {
+                Expr::Const(value as u64)
+            }),
+        );
     }
 }

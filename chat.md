@@ -11178,3 +11178,100 @@ GitHub meanwhile landed constructor PR #31 and format-generics PR #32. They
 have not changed this verified source/corpus pair; integrate both together with
 their sibling corpus migrations next, preserving resized return identities.
 No push.
+### 2026-10-03 — Claude — fixed/float constructors replace `to_*`
+
+`to_float(v, e, f)`, `to_ufixed(v, l, r)` and `to_sfixed` are gone: the
+format's own constructor converts, `float[8..-23](1.5)`, `ufixed[3..-4](2.5)`,
+from a `real` or an `integer`. They are `impl From<real/integer>` in std, whose
+bodies read the format being built as `Self'high`/`'low`/`'left`/`'right`/
+`'length` (VHDL type attributes).
+
+Compiler: `family[range](x)` dispatches to the family's `From<S>` impl when
+there is one (`lower_family_from` in `calls.rs`, `lower_process_family_from`
+in `source_processes.rs`, which binds `Self` to a value carrying the target
+layout via `LoweringContext::self_formats`). Fixes found making it work in
+hardware:
+- `real(x)` never lowered on the design path (`lower_conversion` had no
+  `real` arm); `is_real_expr` now knows an `IntToReal` result.
+- `IntegerToReal` sign-extended every operand; it now follows the operand's
+  signedness (`1 << 4` in five bits is 16).
+- `arena_constant_integer` reads a 64-bit operand of a signed operation as
+  i64, so `0 - x'low` with `x'low = -4` folds.
+- A result keeps a same-type operand's layout whatever its length
+  (`inherit_receiver_layout` compares type keys).
+
+### 2026-10-04 — Claude — number formats as type parameters
+
+`float<W, M>` (W bits, M mantissa) and `ufixed<W, F>`/`sfixed<W, F>` (W bits,
+F fraction) replace the VHDL index-range spelling: `float<32, 23>` is
+binary32, `ufixed<8, 4>` is 4.4; constructors `float<32, 23>(1.5)`. Still pure
+std: `pub struct float<W: integer, M: integer>(Logic[W - M - 1 .. 0 - M]);`.
+
+Language mechanism, all in the import pass (`syntax/imports.rs`), so later
+stages see exactly `float[8..-23]` as before:
+- A struct whose integer parameters shape its base's index *range* is its
+  own generic alias (`format_struct_alias`): `float<32, 23>` expands to
+  `float[8..-23]` (named as the use site names it), and the declaration
+  becomes the plain family `float(Logic[])`. Writing the range by hand is an
+  error naming the parameter form. `Word<N>(Logic[N])` is untouched.
+- A call's generic arguments may be values (`Expr::Call::type_args` is now
+  `Vec<GenericArg>`; name-shaped ones parse as types), and an applied alias
+  in call position becomes its target's constructor. A plain alias does too
+  (`Word(x)` for `type Word = unsigned[8]`), which silently produced an
+  unsupported call before.
+- Macro arguments: `split_args` (`macros.rs`) keeps a call-position generic
+  list's commas together, by the parser's own `<`-then-`(` rule.
+- Process IR: a local typed through an alias (`let h: binary16`) finds its
+  index range (`LoweringContext::type_aliases`, `process_local_layout`).
+
+### 2026-10-04 — Codex — constructor and format integration ownership
+
+Integrating compiler PRs #31/#32 and matching corpus PRs #15/#16 after the
+source-binding batch passed both full gates. Taking ownership of conflict
+resolution in format-attribute bindings, Process function return/layout
+propagation and chat.md, plus migration of the new hardware float corpus/test
+to float<32, 23>. Keep signed attributes and the resized IDs returned by
+inherit_receiver_layout, including the new constructor path. The obsolete
+hardware-inline-budget failure test stays deleted; its replacement proves
+successful shared lowering. Preserve both agents' committed coordination
+entries and retain the separately stashed historical uncommitted chat work.
+No push; verify the combined source/corpus pair before the merge commits.
+
+### 2026-10-04 — Codex — format integration fixture correction
+
+Focused import/macro/source-value tests and separately emitted fixed-point,
+float and 44-pair hardware-float executables pass on the combined source.
+The full gate caught the receiver-format unit fixture's LoweringContext
+initializer missing upstream's new self_formats/type_aliases fields. Stopped
+the verified gate scope before updating that fixture; keep the normalization
+assertions unchanged and rerun the full gate.
+
+### 2026-10-04 — Codex — format integration gated and handoff
+
+Merged the compiler's constructor/format-parameter PRs #31/#32 and matching
+corpus PRs #15/#16 while preserving all six local Phase 1 commits. Public
+format spelling is now float<32, 23>/ufixed<8, 4>/sfixed<8, 4>; the new
+hardware float regression follows it. Signed range bindings moved into the
+shared format-attribute helper without restoring unsigned negative patterns.
+Constructor and generic function returns keep the IDs returned by layout
+normalization, and the unit fixture retains its strict width/layout checks.
+The old budget failure test remains deleted, replaced by successful sharing
+and hardware conformance coverage. Both agents' committed chat entries remain.
+
+The full 8 GiB-capped gate on the combined source/corpus pair passes:
+formatting, frontend checks and Clippy, default/bitpack Rust suites,
+all-feature Clippy and both 203-program corpora. Separately emitted native
+fixed, float and hardware-float executables pass with VCD checks, including a
+fresh bitpack hardware-float executable. Stage logs are retained in
+/tmp/siox-format-sync-final-ci. The interrupted first integration gate exposed
+only the missing context fields in the unit fixture; the final gate covers
+that correction. TODO's audit date is refreshed after verification.
+
+Completion estimate: Phase 1 approximately 97%, not complete. Next continue
+arena-native hardware source ingress (block-local updates and call arguments/
+returns, then remaining normalization fragments); preserve immediate local
+updates versus staged signal writes and all checked-expression activity.
+General runtime call CFGs/recursion and remaining host-service forms are still
+documented gaps. Restore the 441 historical uncommitted chat lines from the
+named backup after committing this integration, keeping them out of its index.
+No push.
