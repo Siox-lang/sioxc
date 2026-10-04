@@ -537,8 +537,29 @@ impl<'a> Lowering<'a> {
             .as_ref()
             .map(|value| self.lower_block_value(value, &ty))
             .unwrap_or_else(|| self.block_local_default(&ty));
-        if let Some(scope) = self.block_scopes.borrow_mut().last_mut() {
-            scope.insert(declaration.name.text.clone(), BlockLocal { value, ty });
+        let index = self.block_scopes.borrow().len().checked_sub(1);
+        if let Some(index) = index {
+            self.store_block_local(
+                index,
+                declaration.name.text.clone(),
+                value,
+                ty,
+                declaration.span,
+            );
+        }
+    }
+
+    fn store_block_local(
+        &self,
+        scope_index: usize,
+        name: String,
+        value: Val,
+        ty: ast::Type,
+        span: crate::diag::Span,
+    ) {
+        let value = self.bind_block_value(value, &ty, span);
+        if let Some(scope) = self.block_scopes.borrow_mut().get_mut(scope_index) {
+            scope.insert(name, BlockLocal { value, ty });
         }
     }
 
@@ -587,16 +608,13 @@ impl<'a> Lowering<'a> {
                                 },
                                 None => next,
                             };
-                            if let Some(scope) = self.block_scopes.borrow_mut().get_mut(scope_index)
-                            {
-                                scope.insert(
-                                    name,
-                                    BlockLocal {
-                                        value: Val::Scalar(next),
-                                        ty: previous.ty,
-                                    },
-                                );
-                            }
+                            self.store_block_local(
+                                scope_index,
+                                name,
+                                Val::Scalar(next),
+                                previous.ty,
+                                ast::expr_span(target),
+                            );
                             return true;
                         }
                         if let Val::Scalar(old) = previous.value.clone() {
@@ -640,17 +658,13 @@ impl<'a> Lowering<'a> {
                                             els: Box::new(next),
                                         };
                                     }
-                                    if let Some(scope) =
-                                        self.block_scopes.borrow_mut().get_mut(scope_index)
-                                    {
-                                        scope.insert(
-                                            name,
-                                            BlockLocal {
-                                                value: Val::Scalar(next),
-                                                ty: previous.ty,
-                                            },
-                                        );
-                                    }
+                                    self.store_block_local(
+                                        scope_index,
+                                        name,
+                                        Val::Scalar(next),
+                                        previous.ty,
+                                        ast::expr_span(target),
+                                    );
                                     return true;
                                 }
                             }
@@ -708,16 +722,13 @@ impl<'a> Lowering<'a> {
                                     }
                                 }
                             }
-                            if let Some(scope) = self.block_scopes.borrow_mut().get_mut(scope_index)
-                            {
-                                scope.insert(
-                                    name,
-                                    BlockLocal {
-                                        value: Val::Fields(fields),
-                                        ty: previous.ty,
-                                    },
-                                );
-                            }
+                            self.store_block_local(
+                                scope_index,
+                                name,
+                                Val::Fields(fields),
+                                previous.ty,
+                                ast::expr_span(target),
+                            );
                             return true;
                         }
                     }
@@ -783,15 +794,7 @@ impl<'a> Lowering<'a> {
         } else {
             next
         };
-        if let Some(scope) = self.block_scopes.borrow_mut().get_mut(scope_index) {
-            scope.insert(
-                name,
-                BlockLocal {
-                    value: next,
-                    ty: previous.ty,
-                },
-            );
-        }
+        self.store_block_local(scope_index, name, next, previous.ty, ast::expr_span(target));
         true
     }
 
@@ -862,15 +865,13 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        if let Some(scope) = self.block_scopes.borrow_mut().get_mut(scope_index) {
-            scope.insert(
-                root,
-                BlockLocal {
-                    value: Val::Fields(fields),
-                    ty: previous.ty,
-                },
-            );
-        }
+        self.store_block_local(
+            scope_index,
+            root,
+            Val::Fields(fields),
+            previous.ty,
+            ast::expr_span(target),
+        );
         true
     }
 

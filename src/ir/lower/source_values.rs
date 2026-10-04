@@ -114,8 +114,47 @@ impl SourceValues {
             bit_width: None,
             kind: ProcessValueKind::RawResize { operand },
         });
+        if !self.ir.value_layouts.is_empty() {
+            self.ir.value_layouts.push(None);
+        }
         self.reads.push(self.reads[operand.0 as usize].clone());
         id
+    }
+
+    /// Storage-free locals still have a declared representation. Keep that
+    /// boundary in the arena, including signed ranges and nominal families.
+    fn bind_layout(
+        &mut self,
+        expression: &Expr,
+        layout: SourceLayout,
+        span: crate::diag::Span,
+    ) -> ProcessValueId {
+        let operand = self.append(expression, span, None);
+        if matches!(
+            self.ir.values[operand.0 as usize].kind,
+            ProcessValueKind::RawResize { .. }
+        ) && self
+            .ir
+            .value_layouts
+            .get(operand.0 as usize)
+            .and_then(Option::as_ref)
+            == Some(&layout)
+        {
+            return operand;
+        }
+        let id = self.bind_scalar(operand, None, span);
+        self.ir.values[id.0 as usize].bit_width = layout.packed_width();
+        self.ir.value_layouts.resize(self.ir.values.len(), None);
+        self.ir.value_layouts[id.0 as usize] = Some(layout);
+        id
+    }
+
+    fn retain_format(&mut self, id: ProcessValueId, old: &Self, index: usize) {
+        self.ir.values[id.0 as usize].bit_width = old.ir.values[index].bit_width;
+        if let Some(Some(layout)) = old.ir.value_layouts.get(index) {
+            self.ir.value_layouts.resize(self.ir.values.len(), None);
+            self.ir.value_layouts[id.0 as usize] = Some(layout.clone());
+        }
     }
 
     /// Rewrite each dependency once. New operands precede their users and
@@ -129,11 +168,9 @@ impl SourceValues {
         let mut mapped = Vec::with_capacity(old.ir.values.len());
         for (index, value) in old.ir.values.iter().enumerate() {
             if let ProcessValueKind::RawResize { operand } = value.kind {
-                mapped.push(self.bind_scalar(
-                    mapped[operand.0 as usize],
-                    value.ty.clone(),
-                    value.span,
-                ));
+                let id = self.bind_scalar(mapped[operand.0 as usize], value.ty.clone(), value.span);
+                self.retain_format(id, &old, index);
+                mapped.push(id);
                 continue;
             }
             let mut expression = super::super::derive::digital_node(
@@ -203,6 +240,7 @@ impl SourceValues {
             if let ProcessValueKind::RawResize { operand } = value.kind {
                 mapped[index] =
                     self.bind_scalar(mapped[operand.0 as usize], value.ty.clone(), value.span);
+                self.retain_format(mapped[index], &old, index);
                 continue;
             }
             let expression = super::super::derive::digital_node(&old.ir, id, |child| {
@@ -279,6 +317,101 @@ impl HardwareDraft {
 }
 
 impl Lowering<'_> {
+    pub(super) fn bind_source_expression(&self, expression: Expr, span: crate::diag::Span) -> Expr {
+        let Val::Scalar(expression) = self.bind_source_value(Val::Scalar(expression), span, None)
+        else {
+            unreachable!()
+        };
+        expression
+    }
+
+    /// Match flattened value paths against the same recursive layout used for
+    /// signals. Do not infer a leaf's representation from its expression.
+    pub(super) fn bind_block_value(
+        &self,
+        value: Val,
+        ty: &ast::Type,
+        span: crate::diag::Span,
+    ) -> Val {
+        fn leaves(layout: &SourceLayout, prefix: String, out: &mut HashMap<String, SourceLayout>) {
+            match &layout.kind {
+                LayoutKind::Struct { fields, .. } => {
+                    for field in fields {
+                        let path = if prefix.is_empty() {
+                            field.name.clone()
+                        } else {
+                            format!("{prefix}.{}", field.name)
+                        };
+                        leaves(&field.layout, path, out);
+                    }
+                }
+                LayoutKind::Array {
+                    range: Some(range),
+                    element,
+                } => {
+                    for index in loop_range(range.left, range.right) {
+                        leaves(element, format!("{prefix}[{index}]"), out);
+                    }
+                }
+                _ => {
+                    out.insert(prefix, layout.clone());
+                }
+            }
+        }
+        let layout = self.source_layout(ty, &self.cur_env);
+        let bind = |expression: Expr, layout: SourceLayout| {
+            let expression = match (&layout.kind, expression) {
+                (
+                    LayoutKind::Scalar {
+                        domain: ScalarDomain::Character,
+                        ..
+                    },
+                    Expr::Logic(character),
+                ) => Expr::Const(u64::from(character as u32)),
+                (
+                    LayoutKind::Scalar {
+                        domain: ScalarDomain::Enum(name),
+                        ..
+                    },
+                    Expr::Logic(character),
+                ) => self
+                    .char_disc(character, name)
+                    .map(Expr::Const)
+                    .unwrap_or(Expr::Logic(character)),
+                (
+                    LayoutKind::Scalar {
+                        domain: ScalarDomain::Real,
+                        ..
+                    },
+                    expression,
+                ) => self.coerce_real(expression),
+                (_, expression) => expression,
+            };
+            let mut arena = self.source_values.borrow_mut();
+            let id = arena.bind_layout(&expression, layout, span);
+            arena.reference(id)
+        };
+        match value {
+            Val::Scalar(expression) => Val::Scalar(bind(expression, layout)),
+            Val::Fields(fields) => {
+                let mut layouts = HashMap::new();
+                leaves(&layout, String::new(), &mut layouts);
+                Val::Fields(
+                    fields
+                        .into_iter()
+                        .map(|(name, expression)| {
+                            let expression = match layouts.remove(&name) {
+                                Some(layout) => bind(expression, layout),
+                                None => self.bind_source_expression(expression, span),
+                            };
+                            (name, expression)
+                        })
+                        .collect(),
+                )
+            }
+        }
+    }
+
     pub(super) fn bind_source_value(
         &self,
         value: Val,
@@ -341,6 +474,47 @@ impl Lowering<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concrete_local_formats_survive_rewrites_and_reachability_compaction() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 0..1);
+        let layout = SourceLayout {
+            span,
+            kind: LayoutKind::Scalar {
+                width: 4,
+                domain: ScalarDomain::Integer,
+                nominal: Some("integer".to_owned()),
+                value_range: Some((-8, 7)),
+            },
+        };
+        let mut arena = SourceValues::default();
+        arena.append(&Expr::Const(99), span, None); // deliberately unreachable
+        let local = arena.bind_layout(&Expr::Current(SignalId(0)), layout.clone(), span);
+        let scalar = arena.bind_scalar(local, Some(crate::types::Ty::Integer), span);
+        assert_eq!(arena.ir.value_layouts.len(), arena.ir.values.len());
+        let mapped = arena.rewrite(|_, _| {});
+        let mut draft = HardwareDraft::default();
+        draft.drivers.push(Driver {
+            target: SignalId(1),
+            cond: None,
+            expr: arena.reference(mapped[scalar.0 as usize]),
+            meta: None,
+            ctx: 0,
+            span: Some(span),
+        });
+        arena.retain_reachable(&mut draft);
+        assert_eq!(arena.ir.values.len(), 3);
+        assert_eq!(arena.ir.value_layouts.len(), 3);
+        assert_eq!(arena.ir.values[1].bit_width, Some(4));
+        assert_eq!(arena.ir.value_layouts[1], Some(layout));
+        assert_eq!(arena.reads[2].as_ref(), &[SignalId(0)]);
+        assert!(matches!(
+            arena.ir.values[2].kind,
+            ProcessValueKind::RawResize {
+                operand: ProcessValueId(1)
+            }
+        ));
+    }
 
     #[test]
     fn table_recognition_preserves_a_typed_stride_boundary() {

@@ -637,7 +637,10 @@ impl<'a> Lowering<'a> {
             .find(|(f, _)| f.params.iter().all(|param| param.is_self))?;
         let body = f.body.as_ref()?;
         let mut fenv: HashMap<String, Val> = HashMap::new();
-        fenv.insert("self".to_string(), self.lower_val_env(rhs, env));
+        fenv.insert(
+            "self".to_string(),
+            self.bind_source_value(self.lower_val_env(rhs, env), ast::expr_span(rhs), None),
+        );
         fenv.insert(
             "self::length".to_string(),
             Val::Scalar(Expr::Const(self.ast_width(rhs) as u64)),

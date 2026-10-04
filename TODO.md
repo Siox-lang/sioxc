@@ -64,9 +64,13 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   rewrites retain sharing, types, spans and sensitivity. Typed scalar aliases
   freeze their evaluation format before later consumers widen them. The old
   tree-size guard is removed, with binary32 hardware/procedural conformance and
-  long source-chain regressions. Complete the remaining ingress migration:
-  block-local assignments, parameters/returns and some resolution/metavalue
-  construction still assemble private expression fragments around those IDs.
+  long source-chain regressions. Block-local stores now retain declared leaf
+  layouts and immediate value IDs; inlined call arguments, receivers and return
+  selections share IDs.
+  Complete the remaining ingress migration: resolution/metavalue construction,
+  expression construction between these boundaries and array-argument AST
+  substitution still assemble private
+  expression fragments around those IDs.
   Make every source expression a canonical value at construction, preserving
   concrete layouts, contexts, lookup compaction and staged-write semantics.
 

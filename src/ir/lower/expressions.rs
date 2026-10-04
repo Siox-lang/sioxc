@@ -787,7 +787,10 @@ impl<'a> Lowering<'a> {
         // right — plus each operand's bit width, so a body can say
         // `self::length` (needed for e.g. sign-aware `signed` comparison).
         let mut fenv: HashMap<String, Val> = HashMap::new();
-        fenv.insert("self".to_string(), self.lower_val_env(lhs, env));
+        fenv.insert(
+            "self".to_string(),
+            self.bind_source_value(self.lower_val_env(lhs, env), ast::expr_span(lhs), None),
+        );
         fenv.insert(
             "self::length".to_string(),
             Val::Scalar(Expr::Const(self.ast_width(lhs) as u64)),
@@ -797,7 +800,10 @@ impl<'a> Lowering<'a> {
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
                 self.bind_range_attrs(&mut fenv, &n.text, rhs, env);
-                fenv.insert(n.text.clone(), self.lower_val_env(rhs, env));
+                fenv.insert(
+                    n.text.clone(),
+                    self.bind_source_value(self.lower_val_env(rhs, env), ast::expr_span(rhs), None),
+                );
                 fenv.insert(
                     format!("{}::length", n.text),
                     Val::Scalar(Expr::Const(

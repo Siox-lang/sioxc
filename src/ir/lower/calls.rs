@@ -110,7 +110,10 @@ impl<'a> Lowering<'a> {
             Val::Scalar(Expr::Const(left.abs_diff(right) + 1)),
         );
         let param = f.params.iter().find(|p| !p.is_self)?.name.as_ref()?;
-        fenv.insert(param.text.clone(), self.lower_val_env(arg, env));
+        fenv.insert(
+            param.text.clone(),
+            self.bind_source_value(self.lower_val_env(arg, env), ast::expr_span(arg), None),
+        );
         match self.inline_block(&body.stmts, &fenv)? {
             Val::Scalar(value) => Some(value),
             _ => None,
@@ -155,7 +158,10 @@ impl<'a> Lowering<'a> {
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
                 self.bind_range_attrs(&mut fenv, &n.text, arg, env);
-                fenv.insert(n.text.clone(), self.lower_val_env(arg, env));
+                fenv.insert(
+                    n.text.clone(),
+                    self.bind_source_value(self.lower_val_env(arg, env), ast::expr_span(arg), None),
+                );
                 fenv.insert(
                     format!("{}::length", n.text),
                     Val::Scalar(Expr::Const(self.ast_width(arg) as u64)),
@@ -309,7 +315,7 @@ impl<'a> Lowering<'a> {
                 return Some(Val::Scalar(Expr::Const(v as u64)));
             }
         }
-        // Dynamic arguments: inline the body as an expression tree.
+        // Dynamic arguments: inline against shared source-value handles.
         if self.inline_depth.get() > 16 {
             // Bailing here leaves an `Unknown` in the middle of a driver, so
             // record it — otherwise lowering "succeeds" and the design only
@@ -344,7 +350,10 @@ impl<'a> Lowering<'a> {
                     ),
                     other => other,
                 };
-                fenv.insert(n.text.clone(), value);
+                fenv.insert(
+                    n.text.clone(),
+                    self.bind_source_value(value, ast::expr_span(a), None),
+                );
                 fenv.insert(
                     format!("{}::length", n.text),
                     Val::Scalar(Expr::Const(self.ast_width(a) as u64)),
@@ -445,7 +454,12 @@ impl<'a> Lowering<'a> {
         // Only a scalar result has a declared width to wrap to; a struct's
         // leaves were already masked field by field as the body built them.
         let out = match (out, f.ret.as_ref()) {
-            (Some(Val::Scalar(v)), Some(ret)) => Some(Val::Scalar(self.mask_to_type_width(v, ret))),
+            (Some(Val::Scalar(v)), Some(ret)) => {
+                Some(Val::Scalar(self.bind_source_expression(
+                    self.mask_to_type_width(v, ret),
+                    ast::expr_span(callee),
+                )))
+            }
             (v, _) => v,
         };
         for (name, prev) in saved.into_iter().rev() {
@@ -608,7 +622,10 @@ impl<'a> Lowering<'a> {
         // sysattr in the body (the std `ClockLike` edge methods) resolves to it.
         let saved_self = self.self_signal.replace(self.base_signal(base));
         let mut fenv: HashMap<String, Val> = HashMap::new();
-        fenv.insert("self".to_string(), self.lower_val_env(base, env));
+        fenv.insert(
+            "self".to_string(),
+            self.bind_source_value(self.lower_val_env(base, env), ast::expr_span(base), None),
+        );
         fenv.insert(
             "self::length".to_string(),
             Val::Scalar(Expr::Const(self.ast_width(base) as u64)),
@@ -643,7 +660,10 @@ impl<'a> Lowering<'a> {
                     ),
                     other => other,
                 };
-                fenv.insert(n.text.clone(), value);
+                fenv.insert(
+                    n.text.clone(),
+                    self.bind_source_value(value, ast::expr_span(a), None),
+                );
                 fenv.insert(
                     format!("{}::length", n.text),
                     Val::Scalar(Expr::Const(
@@ -1237,9 +1257,14 @@ impl<'a> Lowering<'a> {
         }
         let env = scoped.as_ref();
         match stmts {
-            [ast::Stmt::Return { value: Some(v), .. }, ..] => Some(self.lower_val_env(v, env)),
+            [ast::Stmt::Return { value: Some(v), .. }, ..] => {
+                Some(self.bind_source_value(self.lower_val_env(v, env), ast::expr_span(v), None))
+            }
             [ast::Stmt::If(iff), rest @ ..] => {
-                let cond = self.lower_scalar_env(&iff.cond, env);
+                let cond = self.bind_source_expression(
+                    self.lower_scalar_env(&iff.cond, env),
+                    ast::expr_span(&iff.cond),
+                );
                 let then = self.inline_block(&iff.then.stmts, env)?;
                 // The else value: an explicit else branch, or the statements
                 // after the if.
@@ -1252,14 +1277,17 @@ impl<'a> Lowering<'a> {
                     },
                     None => self.inline_block(rest, env)?,
                 };
-                Some(select_val(cond, then, els))
+                Some(self.bind_source_value(select_val(cond, then, els), iff.span, None))
             }
             // A `match` whose arms return is the same shape as an `if`
             // chain, and only the `if` form was handled — the two share
             // `MatchArm` and have drifted apart repeatedly. First-match
             // priority comes from folding the arms in reverse.
             [ast::Stmt::Match(m), rest @ ..] => {
-                let scrut = self.lower_scalar_env(&m.scrutinee, env);
+                let scrut = self.bind_source_expression(
+                    self.lower_scalar_env(&m.scrutinee, env),
+                    ast::expr_span(&m.scrutinee),
+                );
                 // What the body yields when no arm returns.
                 let after = self.inline_block(rest, env);
                 let mut acc: Option<Val> = after.clone();
@@ -1270,7 +1298,7 @@ impl<'a> Lowering<'a> {
                         // through to the statements after the match.
                         None => after.clone()?,
                     };
-                    acc = Some(
+                    acc = Some(self.bind_source_value(
                         match (
                             self.arm_match_cond(&arm.pattern, &m.scrutinee, &scrut, env),
                             acc,
@@ -1282,7 +1310,9 @@ impl<'a> Lowering<'a> {
                             (Some(_), None) => value,
                             (Some(cond), Some(otherwise)) => select_val(cond, value, otherwise),
                         },
-                    );
+                        arm.span,
+                        None,
+                    ));
                 }
                 acc
             }

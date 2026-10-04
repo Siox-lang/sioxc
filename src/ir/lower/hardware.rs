@@ -324,6 +324,11 @@ fn normalized_value_width(
     design: &Design,
 ) -> Option<u32> {
     let value = process_ir.values.get(id.0 as usize)?;
+    if matches!(value.kind, ProcessValueKind::RawResize { .. }) {
+        if let Some(width) = value.bit_width {
+            return (width != 0).then_some(width);
+        }
+    }
     let width = |id: &ProcessValueId| process_ir.values.get(id.0 as usize)?.bit_width;
     let signal_width = |signals: &[SignalId]| {
         signals.iter().try_fold(0u32, |total, signal| {

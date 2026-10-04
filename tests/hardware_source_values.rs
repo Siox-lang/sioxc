@@ -48,6 +48,78 @@ fn alias_source(count: usize) -> String {
 }
 
 #[test]
+fn repeated_block_local_updates_keep_linear_graphs_and_declared_widths() {
+    let mut source = "module updates;\nuse std::bits::unsigned;\nentity E { a: unsigned[8] in, s: unsigned[8] out }\nimpl E { if a != 0 { let x: unsigned[8] = a;\n".to_owned();
+    for _ in 0..1_000 {
+        source.push_str("x = x + x;\n");
+    }
+    source.push_str("s = x; } else { s = 0; } }\n");
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/updates.siox", source),
+            Emit::Metadata,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let design = compilation.design.unwrap();
+    assert!(design.validate().is_empty(), "{:?}", design.validate());
+    assert!(
+        design.process_ir.values.len() < 15_000,
+        "{} values",
+        design.process_ir.values.len()
+    );
+    let local_boundaries = design
+        .process_ir
+        .values
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| {
+            matches!(value.kind, siox::ir::ProcessValueKind::RawResize { .. })
+                && value.bit_width == Some(8)
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        local_boundaries.len() >= 1_001,
+        "each update must retain the local format"
+    );
+    for (index, _) in local_boundaries {
+        assert!(
+            matches!(design.process_ir.value_layouts[index].as_ref().map(|layout| &layout.kind),
+            Some(siox::ir::LayoutKind::Packed { width: 8, family, .. }) if family.ends_with("unsigned"))
+        );
+    }
+}
+
+#[test]
+fn nested_calls_share_repeated_arguments_without_intermediate_lets() {
+    let mut expression = "a".to_owned();
+    for _ in 0..12 {
+        expression = format!("double({expression})");
+    }
+    let source = format!("module nested;\nfn double(x: integer) -> integer {{ return x + x; }}\nentity E {{ a: integer in, s: integer out }}\nimpl E {{ s = {expression}; }}\n");
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/nested.siox", source),
+            Emit::Metadata,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let design = compilation.design.unwrap();
+    assert!(design.validate().is_empty(), "{:?}", design.validate());
+    assert!(
+        design.process_ir.values.len() < 100,
+        "{} values",
+        design.process_ir.values.len()
+    );
+}
+
+#[test]
 fn long_source_alias_chains_are_linear_and_do_not_recurse_per_statement() {
     let source = alias_source(2_000);
     let compilation =

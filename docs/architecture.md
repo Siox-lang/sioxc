@@ -267,18 +267,24 @@ undoing source sharing.
 
 `lower/source_values.rs` owns canonical bindings while hardware source is
 normalized. Inlined function locals retain value IDs instead of copied trees;
-straight-line let chains iterate with one scoped environment. Normalization
-rewrites each dependency once and compacts reachable values before constructing
-hardware CFGs. Typed scalar aliases retain their evaluation format through
+straight-line let chains iterate with one scoped environment. Block-local
+declarations and every immediate write bind shared values with the declared
+recursive leaf layouts. Narrow signed ranges, packed families, real values,
+enum literals and Unicode characters therefore retain their representation
+without turning locals into staged signals. Inlined arguments, receivers and
+return selections share values even without intermediate source lets.
+Normalization rewrites each dependency once and compacts reachable values
+before constructing hardware CFGs. Typed scalar aliases retain their evaluation format through
 `RawResize` boundaries, so a wider consumer does not reevaluate a whole alias
 chain at successively wider widths. Metavalue presence and representation
 queries are cached, and lookup compaction inspects only its fixed pattern.
 Library lexical integer/real types outrank same-spelled caller ports; negative
 range attributes retain signed arithmetic rather than unsigned word constants.
 The old tree-inlining size guard is deleted. Binary32 hardware multiply/add/sub
-now pass the same 44 reference pairs as procedural arithmetic. Some source
-parameters/returns, block locals and resolution still construct small private
-expression fragments; fully arena-native ingress remains tracked in TODO.
+now pass the same 44 reference pairs as procedural arithmetic. Resolution,
+metavalue construction, intermediate expression construction and array-argument
+AST substitution still use private fragments; fully arena-native ingress
+remains tracked in TODO.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The layering is a convention enforced by module discipline; do

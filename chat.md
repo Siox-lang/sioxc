@@ -11275,3 +11275,43 @@ General runtime call CFGs/recursion and remaining host-service forms are still
 documented gaps. Restore the 441 historical uncommitted chat lines from the
 named backup after committing this integration, keeping them out of its index.
 No push.
+
+### 2026-10-04 — Codex — block-local and call-value arena ownership
+
+Taking ownership of hardware block-local storage-free value updates and
+inlined free/method/operator/conversion call value boundaries. All local store
+paths will retain arena handles, preserving their declared representation and
+immediate-update semantics. Arguments, receivers and returned branch selections
+will share value identities rather than copied subtrees. Add long local-update
+and nested no-let call regressions, plus native hardware local/packed/aggregate
+checks in the sibling corpus. Source normalization fragments and general
+runtime call CFGs remain later work; do not claim a completed ingress migration.
+
+### 2026-10-04 — Codex — block-local and call values gated
+
+All hardware block-local declaration/write paths now store canonical value
+handles with concrete leaf layouts. RawResize boundaries preserve those widths
+and layouts through representation rewrites, reachability compaction and CFG
+construction. Unchanged leaves reuse their boundaries. Inlined free/method/
+operator/conversion arguments and returned branch selections share compound
+values instead of copying them. Keep primitive intermediate arithmetic at its
+existing format; this does not claim every source expression is arena-native.
+
+New Rust regressions cover 1,000 repeated local updates retaining 8-bit layouts,
+nested repeated call arguments without lets, and signed-format metadata through
+rewrite/compaction. The new sibling hardware_local_values_test also exposed and
+fixed Char literals inside aggregate locals being normalized as logic literals;
+leaf conversion now uses the declared layout and source enum tables.
+
+The full 8 GiB-capped gate passes formatting, frontend checks/Clippy, default/
+bitpack Rust suites, all-feature Clippy and both 204-program corpora. Logs:
+/tmp/siox-block-call-values-ci. Direct default and bitpack native executables
+pass snapshots, dynamic packed/nested writes, constrained signed comparisons,
+inactive checked indices, nested calls, and immediate locals versus staged
+signals. Their VCDs are byte-identical, including a repeated default run.
+
+Completion estimate: Phase 1 approximately 97%, still incomplete. Remaining:
+fully direct source-expression/normalization construction, array-argument AST
+substitution, general runtime call CFGs/recursion and remaining host-service
+forms. Preserve the 441 unrelated historical chat lines outside this commit.
+No push.
