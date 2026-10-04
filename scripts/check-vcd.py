@@ -51,7 +51,24 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
 
 
 def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile == "hardware_procedure_places_test":
+    if profile == "aggregate_operator_values_test":
+        root = "AggregateOperatorValuesTest.dut."
+        assert values(changes, root + "meta[-1]") == ["1xz0"]
+        assert values(changes, root + "meta[0]") == ["0zx1"]
+        assert values(changes, root + "flipped[3]") == ["0xx1"]
+        assert values(changes, root + "flipped[2]") == ["1xx0"]
+        assert values(changes, root + "literal_meta[7]") == ["1xx0"]
+        assert values(changes, root + "literal_meta[6]") == ["0xx0"]
+        assert values(changes, root + "masked[4]") == [f"{1 << 127:0128b}"]
+        assert values(changes, root + "masked[3]") == [f"{2:0128b}"]
+        assert values(changes, root + "inverted[2]") == [f"{(1 << 127) - 1:0128b}"]
+        assert values(changes, root + "inverted[1]") == ["0" * 128]
+        assert values(changes, root + "selected[5]") == ["1", "x"]
+        assert values(changes, root + "selected[3]") == ["0", "x"]
+        assert values(changes, root + "y[11]") == ["1", "x"]
+        assert values(changes, root + "joined[3].n") == [f"{7:064b}"]
+        assert values(changes, root + "joined[2].n") == [f"{12:064b}"]
+    elif profile == "hardware_procedure_places_test":
         root = "HardwareProcedurePlacesTest.dut."
         assert values(changes, root + "packed_meta") == ["1xz0"]
         assert values(changes, root + "packed_result") == ["00000000", "10100011"]

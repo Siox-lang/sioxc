@@ -216,7 +216,11 @@ impl SourceValues {
             return;
         };
         if let Expr::Canonical { value, .. } = base.as_ref() {
-            **base = self.node(*value);
+            let node = self.node(*value);
+            if !matches!(node, Expr::Binary { op: BinOp::Shr, .. }) {
+                return;
+            }
+            **base = node;
         }
         let Expr::Binary {
             op: BinOp::Shr,
@@ -227,7 +231,10 @@ impl SourceValues {
             return;
         };
         if let Expr::Canonical { value, .. } = rhs.as_ref() {
-            **rhs = self.node(*value);
+            let node = self.node(*value);
+            if matches!(node, Expr::Binary { op: BinOp::Mul, .. }) {
+                **rhs = node;
+            }
         }
     }
 
@@ -560,7 +567,11 @@ impl Lowering<'_> {
             .map(|(index, table)| (table, LookupTableId(index)))
             .collect();
         let mapped = arena.rewrite(|arena, expression| {
+            let original = expression.clone();
             arena.expose_lookup_shape(expression);
+            if packed_lookup(expression).is_none() {
+                *expression = original;
+            }
             *expression = compact_lookup_expr(expression.clone(), tables, &mut intern);
         });
         for expression in self.hardware.expressions_mut() {

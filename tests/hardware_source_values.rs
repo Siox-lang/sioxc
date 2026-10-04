@@ -6,6 +6,84 @@ use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
 
 #[cfg(feature = "llvm")]
 #[test]
+fn array_operators_share_returned_foreign_values_instead_of_expanding_caller_syntax() {
+    let source = "module operator_sharing;\n\
+        use std::bits::unsigned;\n\
+        extern \"C\" { fn labs(value: integer) -> integer; }\n\
+        fn supply(a: integer) -> unsigned[64][-1..0] {\n\
+          let value: unsigned[64] = unsigned[64](labs(a)); return [value, value]; }\n\
+        entity E { a: integer in, b: unsigned[64][7..6] in, y: unsigned[64][2..3] out }\n\
+        impl E { y = supply(a) and b; }\n";
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/operator_sharing.siox", source),
+            Emit::LlvmIr,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let Some(siox::compiler::Artifact::Text(llvm)) = compilation.artifact else {
+        panic!("LLVM IR expected");
+    };
+    let mut maximum = 0;
+    for definition in llvm.split("define ").skip(1) {
+        let body = definition.split("\n}").next().unwrap();
+        let calls = body.matches("call i64 @labs(").count();
+        assert!(
+            calls <= 1,
+            "one entry duplicated the returned operand {calls} times:\n{body}"
+        );
+        maximum = maximum.max(calls);
+    }
+    assert_eq!(maximum, 1, "returned foreign operand was not exercised");
+}
+
+#[test]
+fn packed_constant_array_and_struct_leaves_retain_literal_planes() {
+    let source = "module literal_planes;\nuse std::bits::unsigned;\n\
+        struct Record { pub bits: unsigned[4] }\n\
+        entity E { y: unsigned[4] out }\n\
+        impl E { let a: unsigned[4][-1..0] = [\"1XZ0\", \"0ZX1\"];\n\
+          let r: Record = Record { .bits = \"1XZ0\" }; y = a[-1]; }\n";
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/literal_planes.siox", source),
+            Emit::Metadata,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let design = compilation.design.unwrap();
+    let mut companions = Vec::new();
+    for suffix in ["a[-1]", "a[0]", "r.bits"] {
+        let id = design
+            .signals
+            .iter()
+            .position(|signal| signal.path.ends_with(suffix))
+            .unwrap();
+        let companion = *design
+            .meta_of
+            .get(&(id as u32))
+            .unwrap_or_else(|| panic!("missing literal plane for {suffix}"));
+        companions.push(design.signals[companion as usize].init.clone());
+    }
+    assert_eq!(
+        companions[0], companions[2],
+        "scalar and aggregate literals disagree"
+    );
+    assert_ne!(
+        companions[0], companions[1],
+        "directed literal positions were lost"
+    );
+    assert!(design.validate().is_empty(), "{:?}", design.validate());
+}
+
+#[cfg(feature = "llvm")]
+#[test]
 fn procedure_arguments_share_foreign_values_without_caller_name_capture() {
     let source = "module procedure_sharing;\n\
         extern \"C\" { fn labs(value: integer) -> integer; }\n\

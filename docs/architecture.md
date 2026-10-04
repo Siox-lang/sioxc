@@ -286,7 +286,17 @@ dimension. Runtime-selected aggregate reads and subarray stores retain checked
 activity. Function returns consume their original bodies and concrete layouts;
 the return-body rewrite and returned-call AST substitution helpers are deleted.
 Nested array initializers recurse through their layouts, and literal/constant
-multiword leaves retain all ABI words instead of only their low word.
+multiword leaves retain all ABI words instead of only their low word. Scalar,
+array and struct constant storage leaves share initialization of value words
+and literal X/Z companions; procedural local packed aggregate planes still
+need explicit Process storage support.
+`lower/source_array_ops.rs` lowers array operands once and pairs canonical
+elements recursively in written position order. Negative labels, different
+directions, returned arrays and runtime-selected subarrays need no synthetic
+element AST. Contextual packed literals bind their discriminant planes to the
+same value identities. `lower/source_operators.rs` shares overload selection
+and original implementation bodies between scalar and array-element ingress;
+user enum/struct behavior remains source-defined, including wide packed leaves.
 `lower/source_calls.rs` binds hardware statement procedures without rewriting
 their bodies. Arguments are either canonical values or captured places;
 `lower/source_places.rs` owns storage identities, recursive projections,
@@ -301,18 +311,21 @@ reachability compaction. A captured foreign call result is retained within one
 straight-line LLVM helper/block even when a call invalidates mutable state
 loads. These caches do not cross CFG blocks; general effectful call CFGs and
 guarded evaluation remain separate unfinished work.
+Procedural signal reads retain their declaration-owned layout before projection,
+so entity-qualified packed ports use the same labelled slices as local aliases.
 Normalization rewrites each dependency once and compacts reachable values
 before constructing hardware CFGs. Typed scalar aliases retain their evaluation format through
 `RawResize` boundaries, so a wider consumer does not reevaluate a whole alias
 chain at successively wider widths. Metavalue presence and representation
 queries are cached, and lookup compaction inspects only its fixed pattern.
+Unsuccessful lookup recognition leaves the original canonical dependencies
+intact, rather than rebuilding a foreign call beneath each ordinary slice.
 Library lexical integer/real types outrank same-spelled caller ports; negative
 range attributes retain signed arithmetic rather than unsigned word constants.
 The old tree-inlining size guard is deleted. Binary32 hardware multiply/add/sub
 now pass the same 44 reference pairs as procedural arithmetic. Resolution,
 metavalue construction, intermediate expression construction,
-element-operator expansion and compile-time
-initializer normalization still use private fragments; fully arena-native
+and compile-time initializer normalization still use private fragments; fully arena-native
 ingress remains tracked in TODO.
 
 **Layering rule:** a module may use only the modules above it in this list

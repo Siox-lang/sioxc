@@ -34,6 +34,21 @@ impl Lowering<'_> {
             }
         }
         match (expression, &layout.kind) {
+            (ast::Expr::StrLit { .. } | ast::Expr::BitStrLit { .. }, LayoutKind::Packed { .. }) => {
+                let value = self.bind_value_layout(
+                    self.lower_val_env(expression, env),
+                    layout.clone(),
+                    ast::expr_span(expression),
+                );
+                if let (Val::Scalar(Expr::Canonical { value, .. }), Some(meta)) =
+                    (&value, self.bit_string_meta(expression))
+                {
+                    self.source_values
+                        .borrow_mut()
+                        .set_explicit_meta(*value, meta);
+                }
+                value
+            }
             (
                 ast::Expr::Array { elems, .. },
                 LayoutKind::Array {
@@ -181,33 +196,8 @@ impl Lowering<'_> {
             }
             (
                 ast::Expr::Binary { .. } | ast::Expr::Unary { .. },
-                LayoutKind::Array {
-                    range: Some(range),
-                    element,
-                },
-            ) => {
-                // Element operator dispatch still owns a source-normalization
-                // fragment. Keep its output in the same canonical value path;
-                // never rebuild an aggregate returning call as caller syntax.
-                let labels = loop_range(range.left, range.right);
-                let mut fields = Vec::new();
-                for (position, label) in labels.iter().enumerate() {
-                    let Some(value) = self.elementwise_at(expression, position, labels.len())
-                    else {
-                        return Val::Scalar(Expr::Unknown);
-                    };
-                    Self::prefix_block_value(
-                        &format!("[{label}]"),
-                        self.lower_shaped_source(&value, env, element),
-                        &mut fields,
-                    );
-                }
-                self.bind_value_layout(
-                    Val::Fields(fields),
-                    layout.clone(),
-                    ast::expr_span(expression),
-                )
-            }
+                LayoutKind::Array { range: Some(_), .. },
+            ) => self.lower_source_array_operator(expression, env, layout),
             _ => {
                 let value = self.lower_val_env(expression, env);
                 if matches!(

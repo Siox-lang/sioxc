@@ -678,34 +678,21 @@ impl<'a> Lowering<'a> {
         if !matches!(op, "xor" | "nand" | "nor" | "xnor") {
             return None;
         }
-        if ![lhs, rhs].iter().all(|e| {
-            self.operand_type_name(e)
-                .is_some_and(|f| self.out.array_element_of_family.contains_key(&f))
+        let operand = |expression| source_operators::OperatorOperand {
+            value: Val::Scalar(lower(expression)),
+            family: self.operand_type_name(expression),
+            width: self.ast_width(expression),
+            range: None,
+            layout: None,
+        };
+        // Test families before lowering either operand.
+        if ![lhs, rhs].iter().all(|expression| {
+            self.operand_type_name(expression)
+                .is_some_and(|family| self.out.array_element_of_family.contains_key(&family))
         }) {
             return None;
         }
-        let (a, b) = (lower(lhs), lower(rhs));
-        let bin = |op, lhs, rhs| Expr::Binary {
-            op,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-        };
-        let inner = match op {
-            "xor" | "xnor" => bin(BinOp::Xor, a, b),
-            "nand" => bin(BinOp::And, a, b),
-            _ => bin(BinOp::Or, a, b),
-        };
-        if op == "xor" {
-            return Some(inner);
-        }
-        // The complement is `x xor all-ones`, which the companion lowering
-        // reads per element the same way it reads any other `xor`.
-        let width = self.ast_width(lhs);
-        let mut ones = vec![0u64; (width as usize).max(1).div_ceil(64)];
-        for i in 0..width {
-            ones[i as usize / 64] |= 1u64 << (i % 64);
-        }
-        Some(bin(BinOp::Xor, inner, words_const(ones)))
+        self.native_bound_vector_logical(op, &operand(lhs), &operand(rhs))
     }
 
     /// Inline an operator impl's body at the call site, since hardware has no
@@ -717,139 +704,23 @@ impl<'a> Lowering<'a> {
         rhs: &ast::Expr,
         env: &HashMap<String, Val>,
     ) -> Option<Val> {
-        let lhs_ty = self.operand_type_name(lhs)?;
-        let rhs_ty = self.operand_type_name(rhs);
-        // `a + b` dispatches to the Rust-style trait (`Add`), spec 3.25.
-        let tr = op;
-        let fns = self.op_impls.get(&(tr.to_string(), lhs_ty.clone()))?;
-
-        // Overload selection. Each candidate's declared rhs type is the
-        // impl's trait argument (`impl Add<integer>`) or the fn's rhs
-        // parameter type, with `Self` reading as the impl target. Pass 1:
-        // exact rhs match. Pass 2: an `integer` operand (a literal) coerces
-        // to a Self-typed rhs (`a + 1`). A sole candidate is accepted only
-        // when the rhs operand's type is unknown — never on a known mismatch
-        // (so `10 + x` with x: unsigned does not inline a Complex impl).
-        let declared = |f: &ast::FnDecl, rhs_arg: &Option<String>| -> Option<String> {
-            let d = rhs_arg.clone().or_else(|| {
-                f.params
-                    .iter()
-                    .find(|p| !p.is_self)
-                    .and_then(|p| p.ty.as_ref())
-                    .and_then(|ty| self.free_fns.type_head_key(ty))
-            })?;
-            Some(if d == "Self" { lhs_ty.clone() } else { d })
-        };
-        let f = match &rhs_ty {
-            Some(r) => fns
-                .iter()
-                .find(|(f, a)| declared(f, a).as_deref() == Some(r.as_str()))
-                .or_else(|| {
-                    if r == "integer" {
-                        fns.iter()
-                            .find(|(f, a)| declared(f, a).as_deref() == Some(lhs_ty.as_str()))
-                    } else {
-                        None
-                    }
-                }),
-            None => {
-                if fns.len() == 1 {
-                    fns.first()
-                } else {
-                    None
-                }
-            }
-        };
-        // No candidate accepted this right operand. For a packed nominal array that
-        // is fine — the caller falls back to builtin arithmetic on the packed
-        // word. For an aggregate struct there is nothing to fall back to: the
-        // expression yields no fields, and the assignment it feeds is dropped
-        // without a word, leaving only a downstream "never driven" warning
-        // that names the symptom rather than the operator.
-        // An *aggregate* struct is the test, not "not an array family": a
-        // multi-field struct is still many signals with no packed-word
-        // arithmetic to fall back on. A
-        // field-less newtype (`struct Q(unsigned[8])`) is a word and is
-        // correctly left to builtin arithmetic.
-        // Only an *aggregate* struct. A field-less newtype is one word with
-        // builtin arithmetic behind it, and std's families are exactly that
-        // shape (`pub struct unsigned(Logic[])`), so `contains_key` alone
-        // would report on ordinary vector expressions. Testing for "not a
-        // nominal-array-family test would be wrong for unrelated aggregate
-        // structs, which still have nothing to fall back on.
-        if f.is_none()
-            && self
-                .structs
-                .get(lhs_ty.as_str())
-                .is_some_and(|st| !st.fields.is_empty())
-        {
-            self.bad_operators.borrow_mut().push((
-                op.to_string(),
-                lhs_ty.clone(),
-                rhs_ty.clone(),
-                ast::expr_span(lhs).to(ast::expr_span(rhs)),
-            ));
-        }
-        let (f, _) = f?;
-        let body = f.body.as_ref()?;
-
-        // Bind `self` to the left operand and the first named param to the
-        // right — plus each operand's bit width, so a body can say
-        // `self::length` (needed for e.g. sign-aware `signed` comparison).
-        let mut fenv: HashMap<String, Val> = HashMap::new();
-        fenv.insert(
-            "self".to_string(),
-            self.bind_source_value(self.lower_val_env(lhs, env), ast::expr_span(lhs), None),
-        );
-        fenv.insert(
-            "self::length".to_string(),
-            Val::Scalar(Expr::Const(self.ast_width(lhs) as u64)),
-        );
-        self.bind_range_attrs(&mut fenv, "self", lhs, env);
-        let mut hidden = vec!["self".to_string()];
-        if let Some(p) = f.params.iter().find(|p| !p.is_self) {
-            if let Some(n) = &p.name {
-                self.bind_range_attrs(&mut fenv, &n.text, rhs, env);
-                fenv.insert(
-                    n.text.clone(),
-                    self.bind_source_value(self.lower_val_env(rhs, env), ast::expr_span(rhs), None),
-                );
-                fenv.insert(
-                    format!("{}::length", n.text),
-                    Val::Scalar(Expr::Const(
-                        self.literal_aware_width(rhs, self.ast_width(lhs)) as u64,
-                    )),
-                );
-                hidden.push(n.text.clone());
-            }
-        }
-        // An operator body reads its operands as kernel words, so `self - rhs`
-        // in it is the built-in operator. An enclosing method's family and
-        // width for the same names would make it dispatch to this impl again.
-        let saved: Vec<_> = hidden
-            .into_iter()
-            .map(|name| {
-                let ty = self.param_types.borrow_mut().remove(&name);
-                let width = self.param_widths.borrow_mut().remove(&name);
-                (name, ty, width)
-            })
-            .collect();
-        let _shapes = self.source_shape_scope(
-            HashMap::new(),
-            f.ret
-                .as_ref()
-                .map(|ty| self.source_layout(ty, &self.cur_env)),
-        );
-        let out = self.inline_block(&body.stmts, &fenv);
-        for (name, ty, width) in saved {
-            if let Some(ty) = ty {
-                self.param_types.borrow_mut().insert(name.clone(), ty);
-            }
-            if let Some(width) = width {
-                self.param_widths.borrow_mut().insert(name, width);
-            }
-        }
-        out
+        let family = self.operand_type_name(lhs)?;
+        let rhs_family = self.operand_type_name(rhs);
+        let function = self.source_binary_operator(
+            op,
+            &family,
+            rhs_family.as_deref(),
+            ast::expr_span(lhs).to(ast::expr_span(rhs)),
+        )?;
+        self.inline_source_operator(
+            function,
+            self.source_operator_operand(lhs, env, self.ast_width(lhs)),
+            Some(self.source_operator_operand(
+                rhs,
+                env,
+                self.literal_aware_width(rhs, self.ast_width(lhs)),
+            )),
+        )
     }
 
     /// The declared index range of an operand, when it has one: a local or

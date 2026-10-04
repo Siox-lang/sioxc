@@ -531,35 +531,8 @@ impl<'a> Lowering<'a> {
                     }
                     // A constant initializer is the signal's reset value.
                     if let (Some(v), Some(&id)) = (&l.value, self.locals.get(&l.name.text)) {
-                        let en = self.out.signals[id.0 as usize].enum_type.clone();
-                        let is_char = self.out.signals[id.0 as usize].char;
-                        if let Some(mut words) = self.const_init_words(v, en.as_deref(), is_char) {
-                            let width = self.out.signals[id.0 as usize].width;
-                            if width > 0 {
-                                words.truncate(width.div_ceil(64) as usize);
-                                if !width.is_multiple_of(64)
-                                    && words.len() == width.div_ceil(64) as usize
-                                {
-                                    if let Some(last) = words.last_mut() {
-                                        *last &= (1u64 << (width % 64)) - 1;
-                                    }
-                                }
-                            }
-                            self.out.signals[id.0 as usize].init = words;
-                        } else {
+                        if !self.seed_constant_leaf(id, v) {
                             self.report_non_constant_init(&l.name.text, l.span);
-                        }
-                        // A metavalue-carrying string init (`"01X0"`) needs a
-                        // companion signal to record which elements are `'X'`/… —
-                        // the storage half of X/Z vector propagation (stage 1c).
-                        if let Some((base, digits)) = Self::bit_string_parts(v) {
-                            let (value_words, discs) = self.decode_bit_string_words(base, digits);
-                            if value_words.len() > 1 {
-                                self.out.signals[id.0 as usize].init = value_words;
-                            }
-                            if self.has_metavalue(&discs) {
-                                self.ensure_meta_companion(id, discs);
-                            }
                         }
                     }
                 }

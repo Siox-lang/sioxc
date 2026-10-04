@@ -198,7 +198,7 @@ impl<'a> Lowering<'a> {
                     continue;
                 }
                 // `{ .name = "abc" }` seeds one element per character.
-                ast::Expr::StrLit { text, .. } => {
+                ast::Expr::StrLit { text, .. } if self.local_array.contains_key(&path) => {
                     let indices = self.local_array.get(&path).cloned().unwrap_or_default();
                     for (c, i) in text.chars().zip(&indices) {
                         if let Some(&id) = self.locals.get(&format!("{path}[{i}]")) {
@@ -222,11 +222,7 @@ impl<'a> Lowering<'a> {
             };
             // The field's own enum type resolves a character literal
             // (`.state = 'Z'`) to its variant.
-            let en = self.out.signals[id.0 as usize].enum_type.clone();
-            let is_char = self.out.signals[id.0 as usize].char;
-            if let Some(words) = self.const_init_words(value, en.as_deref(), is_char) {
-                self.out.signals[id.0 as usize].init = words;
-            } else {
+            if !self.seed_constant_leaf(id, value) {
                 self.report_non_constant_init(&path, span);
             }
         }
@@ -279,14 +275,39 @@ impl<'a> Lowering<'a> {
                 }
                 continue;
             };
-            let en = self.out.signals[id.0 as usize].enum_type.clone();
-            let is_char = self.out.signals[id.0 as usize].char;
-            if let Some(words) = self.const_init_words(elem, en.as_deref(), is_char) {
-                self.out.signals[id.0 as usize].init = words;
-            } else {
+            if !self.seed_constant_leaf(id, elem) {
                 self.report_non_constant_init(&path, span);
             }
         }
+    }
+
+    /// Every constant storage leaf owns both its value bits and literal
+    /// metadata. Array elements and struct fields must not silently use a
+    /// value-only initializer while an equivalent scalar retains X/Z.
+    pub(super) fn seed_constant_leaf(&mut self, id: SignalId, expression: &ast::Expr) -> bool {
+        let signal = &self.out.signals[id.0 as usize];
+        let Some(mut words) =
+            self.const_init_words(expression, signal.enum_type.as_deref(), signal.char)
+        else {
+            return false;
+        };
+        let width = signal.width;
+        if width > 0 {
+            words.truncate(width.div_ceil(64) as usize);
+            if !width.is_multiple_of(64) && words.len() == width.div_ceil(64) as usize {
+                if let Some(last) = words.last_mut() {
+                    *last &= (1u64 << (width % 64)) - 1;
+                }
+            }
+        }
+        self.out.signals[id.0 as usize].init = words;
+        if let Some((base, digits)) = Self::bit_string_parts(expression) {
+            let (_, discs) = self.decode_bit_string_words(base, digits);
+            if self.has_metavalue(&discs) {
+                self.ensure_meta_companion(id, discs);
+            }
+        }
+        true
     }
 
     /// An initializer is a power-on value, folded at elaboration (spec 3.29).

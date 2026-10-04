@@ -5910,6 +5910,19 @@ fn push_value(
     // their aggregate representation; otherwise `Bit[3..0]` would silently
     // become `Bit[0..3]` merely because it was read into the arena.
     let layout = match &kind {
+        // Entity-qualified ports do not enter through a lexical storage node.
+        // Carry their declaration's range/nominal shape before indexing; a
+        // backend cannot recover a missing source slice from a Range value.
+        ProcessValueKind::Signal { signals, state }
+            if signals.len() == 1 && !matches!(state, ProcessSignalState::Event) =>
+        {
+            context
+                .design
+                .signals
+                .get(signals[0].0 as usize)
+                .and_then(|signal| context.design.source_layouts.get(&signal.path))
+                .cloned()
+        }
         // A default needs its scalar nominal identity too: a derived enum's
         // first discriminant may be nonzero and can collide by leaf name with
         // another module's enum. LLVM cannot recover that from width alone.

@@ -628,43 +628,13 @@ impl<'a> Lowering<'a> {
         rhs: &ast::Expr,
         env: &HashMap<String, Val>,
     ) -> Option<Val> {
-        let ty = self.operand_type_name(rhs)?;
-        let tr = op;
-        // `-` keys `Sub` and `Neg` alike: the unary impl takes no operand.
-        let fns = self.op_impls.get(&(tr.to_string(), ty))?;
-        let (f, _) = fns
-            .iter()
-            .find(|(f, _)| f.params.iter().all(|param| param.is_self))?;
-        let body = f.body.as_ref()?;
-        let mut fenv: HashMap<String, Val> = HashMap::new();
-        fenv.insert(
-            "self".to_string(),
-            self.bind_source_value(self.lower_val_env(rhs, env), ast::expr_span(rhs), None),
-        );
-        fenv.insert(
-            "self::length".to_string(),
-            Val::Scalar(Expr::Const(self.ast_width(rhs) as u64)),
-        );
-        // As in `inline_op`: the body's `self` is a kernel word, not an
-        // enclosing method's receiver.
-        let ty = self.param_types.borrow_mut().remove("self");
-        let width = self.param_widths.borrow_mut().remove("self");
-        let _shapes = self.source_shape_scope(
-            HashMap::new(),
-            f.ret
-                .as_ref()
-                .map(|ty| self.source_layout(ty, &self.cur_env)),
-        );
-        let out = self.inline_block(&body.stmts, &fenv);
-        if let Some(ty) = ty {
-            self.param_types.borrow_mut().insert("self".to_string(), ty);
-        }
-        if let Some(width) = width {
-            self.param_widths
-                .borrow_mut()
-                .insert("self".to_string(), width);
-        }
-        out
+        let family = self.operand_type_name(rhs)?;
+        let function = self.source_unary_operator(op, &family)?;
+        self.inline_source_operator(
+            function,
+            self.source_operator_operand(rhs, env, self.ast_width(rhs)),
+            None,
+        )
     }
 
     /// Synthesize a total derivation conversion `target(x)` when no explicit

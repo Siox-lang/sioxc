@@ -11482,3 +11482,57 @@ and initializer normalization, general runtime call CFGs/recursion and host
 service forms. Also recorded the native preflight gap for entity-qualified
 packed-slice comparisons (the equivalent connected signal works). Preserve
 the 441 unrelated historical chat lines outside the commit. No push.
+
+### 2026-10-04 — Codex — source projection ingress ownership
+
+Continue Phase 1 by retaining declaration-owned layouts on procedural signal
+reads before projection, including entity-qualified packed ports. Then replace
+hardware element-operator AST expansion with canonical aggregate operands and
+source-owned operator dispatch. Own lower/source_processes.rs, expression/value
+ingress and a focused aggregate-operator module; migrate regressions in the
+sibling corpus. Preserve the historical chat diff, run full gates and direct
+native simulations before committing, and do not push.
+
+The aggregate-operator native regression exposed a pre-existing initializer
+gap: packed string leaves inside arrays lose their X/Z companions. Also own
+lower/{initializers,body}.rs to share constant leaf seeding with the scalar
+path, preserve full-width value/metadata words, and cover packed struct fields.
+
+### 2026-10-04 — Codex — canonical array operators gated
+
+Deleted elementwise_at and its per-element AST rebuilding. The focused
+source_array_ops.rs module evaluates aggregate operands once, pairs recursive
+elements in written position order, and calls source-owned element operators
+through shared source_operators.rs bindings. Scalar dispatch uses the same
+overload selection and borrowed bodies. Negative/directed ranges, literal and
+returned arrays, scoped parameters, runtime-selected subarrays, user struct
+operators and 128-bit packed complements retain layouts and canonical IDs.
+Contextual packed literals carry their exact discriminant planes.
+
+Ordinary packed slices exposed a separate sharing bug: lookup recognition
+unwrapped a canonical foreign call before confirming the lookup pattern.
+Recognition now preserves the original dependency when the pattern fails;
+the regression verifies one foreign call per LLVM entry even when two returned
+array elements use its result. Entity-qualified signal reads also retain their
+declaration-owned layout before projection, removing the connected-signal
+workaround from the procedure-place regression.
+
+Scalar, array and struct constant leaves share value/metadata initialization,
+fixing lost X/Z companions and skipped packed string fields. The native array
+regression checks exact logic values, conditional/dynamic selections, struct
+fields, wide elements and packed planes. The remaining procedural-local packed
+array metadata/connection gap is explicitly recorded in TODO; this hardware
+initializer fix does not claim to solve Process storage planes.
+
+Full CI passes under the 8 GiB cap: formatting, frontend checks/Clippy,
+default/bitpack Rust suites, all-feature Clippy and both 208-program corpora.
+Logs: /tmp/siox-array-operands-ci. Direct default/bitpack native executables for
+both regressions pass their exact VCD profiles and produce byte-identical
+traces; repeated default array runs match too. New unit tests preserve IDs when
+splitting nested negative-labelled elements and reject incomplete shapes.
+
+Completion estimate: Phase 1 approximately 97%, still incomplete. Remaining:
+direct source expression/resolution/metavalue construction, compile-time
+initializer normalization, procedural packed storage planes, general runtime
+call CFGs/recursion, non-packed conversions and remaining host-service forms.
+Preserve the 441 unrelated historical chat lines outside this commit. No push.
