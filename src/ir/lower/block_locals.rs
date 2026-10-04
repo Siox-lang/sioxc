@@ -266,11 +266,15 @@ impl<'a> Lowering<'a> {
         right: i64,
     ) -> Option<Expr> {
         let (&first, rest) = labels.split_first()?;
-        let lowered = self.lower_expr(index);
-        let valid = rest.iter().copied().fold(
-            eq(lowered.clone(), Expr::Const(first as u64)),
-            |valid, label| or_expr(valid, eq(lowered.clone(), Expr::Const(label as u64))),
-        );
+        let span = ast::expr_span(index);
+        let lowered = self.bind_source_expression(self.lower_expr(index), span);
+        let mut valid = self.bind_source_expression(eq(lowered.clone(), index_label(first)), span);
+        for &label in rest {
+            valid = self.bind_source_expression(
+                or_expr(valid, eq(lowered.clone(), index_label(label))),
+                span,
+            );
+        }
         Some(Expr::CheckedIndex {
             index: Box::new(lowered),
             valid: Box::new(valid),
@@ -310,7 +314,7 @@ impl<'a> Lowering<'a> {
         let mut result = Expr::Const(0);
         for (logical, physical) in positions.into_iter().rev() {
             result = Expr::Select {
-                cond: Box::new(eq(lowered_index.clone(), Expr::Const(logical as u64))),
+                cond: Box::new(eq(lowered_index.clone(), index_label(logical))),
                 then: Box::new(Expr::Slice {
                     base: Box::new(value.clone()),
                     hi: physical,
@@ -372,7 +376,7 @@ impl<'a> Lowering<'a> {
                     let mut result = element(last)?;
                     for &position in earlier.iter().rev() {
                         result = Expr::Select {
-                            cond: Box::new(eq(lowered_index.clone(), Expr::Const(position as u64))),
+                            cond: Box::new(eq(lowered_index.clone(), index_label(position))),
                             then: Box::new(element(position)?),
                             els: Box::new(result),
                         };
@@ -460,33 +464,12 @@ impl<'a> Lowering<'a> {
     /// an array literal needs exactly that context to name its flattened
     /// elements.
     pub(super) fn lower_block_value(&self, value: &ast::Expr, ty: &ast::Type) -> Val {
-        if let Some((element, indices)) = array_of(
-            ty,
-            &self.cur_env,
-            &self.const_ranges,
-            &self.array_families,
-            &self.free_fns,
+        let layout = self.source_layout(ty, &self.cur_env);
+        if matches!(
+            layout.kind,
+            LayoutKind::Array { .. } | LayoutKind::Struct { .. }
         ) {
-            if let ast::Expr::Array { elems, .. } = value {
-                let mut fields = Vec::new();
-                for (index, expression) in indices.into_iter().zip(elems) {
-                    Self::prefix_block_value(
-                        &format!("[{index}]"),
-                        self.lower_block_value(expression, element),
-                        &mut fields,
-                    );
-                }
-                return Val::Fields(fields);
-            }
-            if let ast::Expr::StrLit { text, .. } = value {
-                let mut fields = Vec::new();
-                for (index, character) in indices.into_iter().zip(text.chars()) {
-                    let scalar =
-                        self.coerce_block_local(element, Val::Scalar(Expr::Logic(character)));
-                    Self::prefix_block_value(&format!("[{index}]"), scalar, &mut fields);
-                }
-                return Val::Fields(fields);
-            }
+            return self.lower_shaped_source(value, &HashMap::new(), &layout);
         }
         self.coerce_block_local(ty, self.lower_val_env(value, &HashMap::new()))
     }
@@ -644,7 +627,7 @@ impl<'a> Lowering<'a> {
                                     for (logical, physical) in positions.into_iter().rev() {
                                         let fire = and(
                                             cond.clone(),
-                                            eq(lowered_index.clone(), Expr::Const(logical as u64)),
+                                            eq(lowered_index.clone(), index_label(logical)),
                                         );
                                         next = Expr::Select {
                                             cond: Box::new(fire),
@@ -689,7 +672,7 @@ impl<'a> Lowering<'a> {
                                 let hit = Expr::Binary {
                                     op: BinOp::Eq,
                                     lhs: Box::new(lowered_index.clone()),
-                                    rhs: Box::new(Expr::Const(position as u64)),
+                                    rhs: Box::new(index_label(position)),
                                 };
                                 let fire = and(cond.clone(), hit);
                                 for (field, old) in &mut fields {
@@ -916,7 +899,7 @@ impl<'a> Lowering<'a> {
                 let lowered_index = self.checked_runtime_index(index, &indices)?;
                 let mut target_ty = None;
                 for position in indices {
-                    let matches = eq(lowered_index.clone(), Expr::Const(position as u64));
+                    let matches = eq(lowered_index.clone(), index_label(position));
                     let found = self.block_dynamic_targets(
                         element_ty,
                         &format!("{prefix}[{position}]"),

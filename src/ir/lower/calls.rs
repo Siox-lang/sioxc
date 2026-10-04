@@ -417,10 +417,10 @@ impl<'a> Lowering<'a> {
         }
         let return_layout = self.source_function_return_layout(f, &shapes);
         let _shapes = self.source_shape_scope(shapes, return_layout);
-        let out = f.body.as_ref().and_then(|b| {
-            let stmts = self.normalize_struct_returns(&b.stmts, f.ret.as_ref());
-            self.inline_block(&stmts, &fenv)
-        });
+        let out = f
+            .body
+            .as_ref()
+            .and_then(|b| self.inline_block(&b.stmts, &fenv));
         // The result is a value of the declared return type, so it wraps to
         // that width. Assigning it to a signal masked it anyway, which hid
         // this — but used in place (`neg(x) < 0`) the extra bits survived and
@@ -1118,64 +1118,6 @@ impl<'a> Lowering<'a> {
                     .cloned()
             }
         }
-    }
-
-    /// Read every `return` in `stmts` against the function's declared return
-    /// type, so a positional literal returned from a struct-returning function
-    /// (`return { 3, 4 }`) is a struct literal rather than the concatenation it
-    /// lexes as. Returned as the concat it produced no fields, and the caller's
-    /// destination was left undriven.
-    ///
-    /// Only the shapes the inliner itself understands are walked; anything else
-    /// is carried through unchanged.
-    pub(super) fn normalize_struct_returns(
-        &self,
-        stmts: &[ast::Stmt],
-        ret: Option<&ast::Type>,
-    ) -> Vec<ast::Stmt> {
-        stmts
-            .iter()
-            .map(|stmt| match stmt {
-                ast::Stmt::Return {
-                    value: Some(value),
-                    span,
-                } => ast::Stmt::Return {
-                    value: Some(self.as_struct_literal(ret, value)),
-                    span: *span,
-                },
-                ast::Stmt::If(iff) => {
-                    let mut iff = iff.clone();
-                    iff.then.stmts = self.normalize_struct_returns(&iff.then.stmts, ret);
-                    iff.else_ = iff.else_.map(|branch| {
-                        Box::new(match *branch {
-                            ast::ElseBranch::Block(mut b) => {
-                                b.stmts = self.normalize_struct_returns(&b.stmts, ret);
-                                ast::ElseBranch::Block(b)
-                            }
-                            ast::ElseBranch::If(inner) => {
-                                let rewritten = self.normalize_struct_returns(
-                                    std::slice::from_ref(&ast::Stmt::If(inner.clone())),
-                                    ret,
-                                );
-                                match rewritten.into_iter().next() {
-                                    Some(ast::Stmt::If(inner)) => ast::ElseBranch::If(inner),
-                                    _ => ast::ElseBranch::If(inner),
-                                }
-                            }
-                        })
-                    });
-                    ast::Stmt::If(iff)
-                }
-                ast::Stmt::Match(m) => {
-                    let mut m = m.clone();
-                    for arm in &mut m.arms {
-                        arm.body.stmts = self.normalize_struct_returns(&arm.body.stmts, ret);
-                    }
-                    ast::Stmt::Match(m)
-                }
-                other => other.clone(),
-            })
-            .collect()
     }
 
     /// The value a straight-line `return`/`if-else` block produces, or `None`

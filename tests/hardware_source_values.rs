@@ -5,6 +5,33 @@
 use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
 
 #[test]
+fn complete_aggregate_stores_cover_all_leaves_without_hiding_partial_latches() {
+    for (alternative, expected_latch) in [("else { y = [3, 4]; }", false), ("", true)] {
+        let source = format!("module aggregate_coverage;\nuse std::bits::unsigned;\nentity E {{ c: Bool in, y: unsigned[8][2] out }}\nimpl E {{ if c {{ y = [1, 2]; }} {alternative} }}\n");
+        let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+            CompileRequest::new(
+                SourceInput::memory("/virtual/aggregate_coverage.siox", source),
+                Emit::Metadata,
+            ),
+        );
+        assert!(
+            compilation.succeeded(),
+            "{}",
+            compilation.render_diagnostics()
+        );
+        assert_eq!(
+            compilation
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code == Some(siox::diag::codes::POSSIBLE_LATCH)),
+            expected_latch,
+            "{}",
+            compilation.render_diagnostics()
+        );
+    }
+}
+
+#[test]
 fn hardware_float_inline_retains_shared_values_and_lexical_types() {
     let dir = std::env::temp_dir().join(format!("siox_inline_budget_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

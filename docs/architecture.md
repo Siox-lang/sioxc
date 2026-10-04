@@ -278,6 +278,13 @@ and aggregate projection over those leaves. Pure free/method array arguments
 no longer substitute a caller AST into every parameter use. Returned arrays,
 runtime-selected structs/subarrays, packed bit projections and directed slices
 use the same bindings; checked accesses retain written bounds and activity.
+`lower/source_aggregates.rs` owns contextual arrays, strings, positional struct
+literals, spreads and matches, plus recursive source-to-target leaf mapping.
+Combinational, clocked and immediate local aggregate stores share that mapping;
+different array labels/directions map in written position order at every
+dimension. Runtime-selected aggregate reads and subarray stores retain checked
+activity. Function returns consume their original bodies and concrete layouts;
+the return-body rewrite and returned-call AST substitution helpers are deleted.
 Nested array initializers recurse through their layouts, and literal/constant
 multiword leaves retain all ABI words instead of only their low word.
 Normalization rewrites each dependency once and compacts reachable values
@@ -290,8 +297,9 @@ range attributes retain signed arithmetic rather than unsigned word constants.
 The old tree-inlining size guard is deleted. Binary32 hardware multiply/add/sub
 now pass the same 44 reference pairs as procedural arithmetic. Resolution,
 metavalue construction, intermediate expression construction, effectful
-statement-call substitution and compile-time initializer normalization still
-use private fragments; fully arena-native ingress remains tracked in TODO.
+statement-call substitution, element-operator expansion and compile-time
+initializer normalization still use private fragments; fully arena-native
+ingress remains tracked in TODO.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The layering is a convention enforced by module discipline; do

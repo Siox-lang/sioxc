@@ -70,10 +70,14 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   arrays now use scoped concrete shapes and canonical leaves instead of
   substituting caller ASTs. Nested arrays/structs, selected subarrays, checked
   packed projections and directed slices retain their source labels.
+  Whole aggregate writes now share recursive canonical leaf mapping across
+  combinational signals, clocked signals and immediate block locals; nested
+  stores/read selections, directed reindexing, matches and struct spreads keep
+  that path. Pure functions borrow their bodies without return-AST rewriting.
   Complete the remaining ingress migration: resolution/metavalue construction,
   expression construction between these boundaries, effectful statement-call
-  substitution and compile-time initializer normalization still assemble
-  private fragments around those IDs.
+  substitution, element-operator expansion and compile-time initializer
+  normalization still assemble private fragments around those IDs.
   Make every source expression a canonical value at construction, preserving
   concrete layouts, contexts, lookup compaction and staged-write semantics.
 

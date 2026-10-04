@@ -18,6 +18,7 @@ mod layout;
 mod metavalue;
 mod operators;
 mod resolution;
+mod source_aggregates;
 mod source_bindings;
 mod source_processes;
 mod source_values;

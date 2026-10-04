@@ -52,33 +52,6 @@ impl<'a> Lowering<'a> {
         self.free_fns.get(callee).is_some()
     }
 
-    /// The expression a call returns, with the arguments written at the call
-    /// substituted for the parameters.
-    ///
-    /// `None` unless the callee is a declared function whose body is a single
-    /// returned expression — anything else has no one expression to stand for
-    /// the call, and the caller keeps its own handling.
-    pub(super) fn returned_expr_from_call(&self, value: &ast::Expr) -> Option<ast::Expr> {
-        let ast::Expr::Call { callee, args, .. } = value else {
-            return None;
-        };
-        let f = self.free_fns.get(callee)?;
-        let [ast::Stmt::Return {
-            value: Some(returned),
-            ..
-        }] = f.body.as_ref()?.stmts.as_slice()
-        else {
-            return None;
-        };
-        let mut bound: HashMap<String, ast::Expr> = HashMap::new();
-        for (param, arg) in f.params.iter().filter(|p| !p.is_self).zip(args) {
-            if let Some(name) = param.name.as_ref() {
-                bound.insert(name.text.clone(), arg.clone());
-            }
-        }
-        Some(subst_expr_paths(returned, &bound))
-    }
-
     /// The struct literal a call returns, with the arguments written at the
     /// call substituted for the parameters — so a struct-typed `let` can seed
     /// its fields from `let p: Pair = make(6)` the way it already does from

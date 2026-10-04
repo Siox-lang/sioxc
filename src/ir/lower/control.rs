@@ -170,223 +170,41 @@ impl<'a> Lowering<'a> {
                         }
                     }
                 }
-                // A struct-typed target takes one driver per flattened field
-                // (struct copy, struct literal, or an inlined operator impl).
-                if let Some(tpath) = expr_path(target) {
-                    // Whole-array assignment: a string literal fills a Char
-                    // array per element; an array of the same shape copies.
-                    if let Some(indices) = self.local_array.get(&tpath).cloned() {
-                        if let Some(binding) = self.block_local_binding(value) {
-                            if let (Val::Fields(fields), Some((_, source_indices))) = (
-                                binding.value,
-                                array_of(
-                                    &binding.ty,
-                                    &self.cur_env,
-                                    &self.const_ranges,
-                                    &self.array_families,
-                                    &self.free_fns,
-                                ),
-                            ) {
-                                for (target_index, source_index) in
-                                    indices.iter().zip(source_indices)
-                                {
-                                    let source = fields
-                                        .iter()
-                                        .find(|(name, _)| *name == format!("[{source_index}]"));
-                                    let target =
-                                        self.locals.get(&format!("{tpath}[{target_index}]"));
-                                    if let (Some((_, expression)), Some(&target)) = (source, target)
-                                    {
-                                        self.hardware.drivers.push(Driver {
-                                            span: self.cur_span,
-                                            target,
-                                            cond: cond.clone(),
-                                            expr: self.coerce_to_target(target, expression.clone()),
-                                            meta: None,
-                                            ctx: self.cur_ctx,
-                                        });
-                                    }
-                                }
-                                return;
-                            }
-                        }
-                        // An array-returning call has no array form of its own —
-                        // the inliner's result is a scalar or named fields, and
-                        // an array is neither — so `g = gives()` reported that
-                        // `gives()` had no element-wise form. Reducing the call
-                        // to the expression it returns, with the arguments
-                        // substituted, hands it to the arms below: the literal
-                        // it returns is driven element by element exactly as a
-                        // literal written at the assignment would be.
-                        let reduced = self.returned_expr_from_call(value);
-                        let value = reduced.as_ref().unwrap_or(value);
-                        match value {
-                            ast::Expr::StrLit { text, .. } => {
-                                let chars: Vec<char> = text.chars().collect();
-                                if chars.len() != indices.len() {
-                                    self.sink.emit(
-                                        crate::diag::Diagnostic::error(format!(
-                                            "string literal length {} does not match `{tpath}` length {}",
-                                            chars.len(),
-                                            indices.len()
-                                        ))
-                                        .with_code(crate::diag::codes::TYPE_MISMATCH)
-                                        .at(ast::expr_span(value)),
-                                    );
-                                    return;
-                                }
-                                for (c, i) in chars.iter().zip(&indices) {
-                                    if let Some(&sig) = self.locals.get(&format!("{tpath}[{i}]")) {
-                                        // A char-enum element (`Color[3] = "rgb"`)
-                                        // takes the variant's discriminant; a
-                                        // plain `Char` array takes the code point.
-                                        let val = self.out.signals[sig.0 as usize]
-                                            .enum_type
-                                            .clone()
-                                            .and_then(|en| self.char_disc(*c, &en))
-                                            .unwrap_or(*c as u32 as u64);
-                                        self.hardware.drivers.push(Driver {
-                                            span: self.cur_span,
-                                            target: sig,
-                                            cond: cond.clone(),
-                                            expr: Expr::Const(val),
-                                            meta: None,
-                                            ctx: self.cur_ctx,
-                                        });
-                                    }
-                                }
-                                return;
-                            }
-                            // `a = [e0, e1, ...];` drives one element per value.
-                            ast::Expr::Array { elems, .. } => {
-                                if elems.len() != indices.len() {
-                                    self.sink.emit(
-                                        crate::diag::Diagnostic::error(format!(
-                                            "array literal length {} does not match `{tpath}` length {}",
-                                            elems.len(),
-                                            indices.len()
-                                        ))
-                                        .with_code(crate::diag::codes::TYPE_MISMATCH)
-                                        .at(ast::expr_span(value)),
-                                    );
-                                    return;
-                                }
-                                for (e, i) in elems.iter().zip(&indices) {
-                                    if let Some(&sig) = self.locals.get(&format!("{tpath}[{i}]")) {
-                                        let expr = self.coerce_to_target(sig, self.lower_expr(e));
-                                        self.hardware.drivers.push(Driver {
-                                            span: self.cur_span,
-                                            target: sig,
-                                            cond: cond.clone(),
-                                            expr,
-                                            meta: None,
-                                            ctx: self.cur_ctx,
-                                        });
-                                    }
-                                }
-                                return;
-                            }
-                            v => {
-                                if let Some(vpath) = expr_path(v) {
-                                    if let Some(vidx) = self.local_array.get(&vpath).cloned() {
-                                        for (ti, vi) in indices.iter().zip(&vidx) {
-                                            let t = self.locals.get(&format!("{tpath}[{ti}]"));
-                                            let sv = self.locals.get(&format!("{vpath}[{vi}]"));
-                                            if let (Some(&t), Some(&sv)) = (t, sv) {
-                                                self.hardware.drivers.push(Driver {
-                                                    span: self.cur_span,
-                                                    target: t,
-                                                    cond: cond.clone(),
-                                                    expr: Expr::Current(sv),
-                                                    meta: None,
-                                                    ctx: self.cur_ctx,
-                                                });
-                                            }
-                                        }
-                                        return;
-                                    }
-                                }
-                                // An elementwise operator over arrays
-                                // (`y = a and b`, `y = not a`). std declares
-                                // these as blanket impls over `T[]`, and
-                                // lowering had no form for them: the
-                                // assignment fell through to the scalar path,
-                                // which reported the *target* as unassignable
-                                // even though `y = a` is fine.
-                                let mut lowered = Vec::with_capacity(indices.len());
-                                for (k, i) in indices.iter().enumerate() {
-                                    let element = self.elementwise_at(v, k, indices.len());
-                                    let signal = self.locals.get(&format!("{tpath}[{i}]"));
-                                    match (element, signal) {
-                                        (Some(element), Some(&signal)) => {
-                                            let expr = self.coerce_to_target(
-                                                signal,
-                                                self.lower_expr(&element),
-                                            );
-                                            lowered.push((signal, expr));
-                                        }
-                                        // Not elementwise after all; leave the
-                                        // existing paths to diagnose it.
-                                        _ => {
-                                            lowered.clear();
-                                            break;
-                                        }
-                                    }
-                                }
-                                if !lowered.is_empty() {
-                                    for (target, expr) in lowered {
-                                        self.hardware.drivers.push(Driver {
-                                            span: self.cur_span,
-                                            target,
-                                            cond: cond.clone(),
-                                            expr,
-                                            meta: None,
-                                            ctx: self.cur_ctx,
-                                        });
-                                    }
-                                    return;
-                                }
-                                // `tpath` is a perfectly good target — the
-                                // *value* has no array form. Falling through
-                                // reached the scalar path, which failed on the
-                                // target and reported it as unassignable,
-                                // naming the innocent half of the statement.
-                                self.sink.emit(
-                                    crate::diag::Diagnostic::error(format!(
-                                        "`{}` has no element-wise form, so `{tpath}` \
-                                         cannot be driven from it",
-                                        crate::syntax::pretty::expr_string(v)
-                                    ))
-                                    .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
-                                    .at(ast::expr_span(v))
-                                    .help(
-                                        "an array is driven by another array, an array \
-                                         literal, or an element-wise expression over \
-                                         arrays of the same length",
-                                    ),
-                                );
-                                return;
-                            }
-                        }
+                // Array and struct stores share one recursive canonical
+                // value path, including nested and returned aggregates.
+                if let Some(leaves) = self.aggregate_assign_leaves(target, value) {
+                    for (target, expression) in leaves {
+                        self.hardware.drivers.push(Driver {
+                            span: self.cur_span,
+                            target,
+                            cond: cond.clone(),
+                            expr: expression,
+                            meta: None,
+                            ctx: self.cur_ctx,
+                        });
                     }
-                    if self.local_struct.contains_key(&tpath) {
-                        // Same expansion the clocked path uses — one write per
-                        // leaf. Keeping two copies is how the clocked one came
-                        // to be missing in the first place.
-                        for (sig, expr) in
-                            self.struct_assign_leaves(target, value).unwrap_or_default()
-                        {
-                            self.hardware.drivers.push(Driver {
-                                span: self.cur_span,
-                                target: sig,
-                                cond: cond.clone(),
-                                expr,
-                                meta: None,
-                                ctx: self.cur_ctx,
-                            });
-                        }
-                        return;
-                    }
+                    return;
+                }
+                if self
+                    .folded_elem_path(target)
+                    .or_else(|| expr_path(target))
+                    .and_then(|path| self.persisted_layout(&path))
+                    .is_some_and(|layout| {
+                        matches!(
+                            layout.kind,
+                            LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+                        )
+                    })
+                {
+                    self.sink.emit(
+                        crate::diag::Diagnostic::error(format!(
+                            "\x60{}\x60 has no compatible aggregate value form",
+                            crate::syntax::pretty::expr_string(value)
+                        ))
+                        .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+                        .at(ast::expr_span(value)),
+                    );
+                    return;
                 }
                 if let Some(target) = self.target_signal(target) {
                     let expr = self.coerce_to_target(target, self.lower_expr(value));
@@ -409,7 +227,7 @@ impl<'a> Lowering<'a> {
                             ctx: self.cur_ctx,
                         });
                     }
-                } else if let Some(ups) = self.dynamic_struct_write(target, value, &cond) {
+                } else if let Some(ups) = self.dynamic_aggregate_write(target, value, &cond) {
                     for u in ups {
                         self.hardware.drivers.push(Driver {
                             span: self.cur_span,
@@ -893,7 +711,7 @@ impl<'a> Lowering<'a> {
                         });
                     } else if let Some(ups) = self.dynamic_write(target, value, &cond, true, out) {
                         out.extend(ups);
-                    } else if let Some(ups) = self.dynamic_struct_write(target, value, &cond) {
+                    } else if let Some(ups) = self.dynamic_aggregate_write(target, value, &cond) {
                         out.extend(ups);
                     } else if let Some((sig, hi, lo)) = self.slice_target(target) {
                         // Register bit-field update: next(y) holds the other

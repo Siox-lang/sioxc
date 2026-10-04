@@ -46,7 +46,7 @@ impl<'a> Lowering<'a> {
                             cond: Box::new(Expr::Binary {
                                 op: BinOp::Eq,
                                 lhs: Box::new(lowered_index.clone()),
-                                rhs: Box::new(Expr::Const(position as u64)),
+                                rhs: Box::new(index_label(position)),
                             }),
                             then: Box::new(element(position)?),
                             els: Box::new(result),
@@ -81,7 +81,7 @@ impl<'a> Lowering<'a> {
                 let mut result = Expr::Const(0);
                 for (logical, physical) in positions.into_iter().rev() {
                     result = Expr::Select {
-                        cond: Box::new(eq(lowered_index.clone(), Expr::Const(logical as u64))),
+                        cond: Box::new(eq(lowered_index.clone(), index_label(logical))),
                         then: Box::new(Expr::Slice {
                             base: Box::new(Expr::Current(signal)),
                             hi: physical,
@@ -188,7 +188,7 @@ impl<'a> Lowering<'a> {
     ///
     /// One update per element per field, each gated on the index matching that
     /// element, which is the same shape the scalar expansion produces.
-    pub(super) fn dynamic_struct_write(
+    pub(super) fn dynamic_aggregate_write(
         &self,
         target: &ast::Expr,
         value: &ast::Expr,
@@ -209,19 +209,27 @@ impl<'a> Lowering<'a> {
         }
         let base_path = expr_path(base)?;
         let indices = self.local_array.get(&base_path)?.clone();
-        // The elements must be structs; an array of scalars is the existing
-        // expansion's business.
-        self.local_struct
-            .get(&format!("{base_path}[{}]", indices.first()?))?;
-        let Val::Fields(fields) = self.lower_val_env(value, &HashMap::new()) else {
+        // Scalars are the existing dynamic_write path's business. Aggregate
+        // elements share the contextual value and recursive leaf mapping.
+        let layout = self.persisted_layout(&format!("{base_path}[{}]", indices.first()?))?;
+        if !matches!(
+            layout.kind,
+            LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+        ) {
+            return None;
+        }
+        let Val::Fields(fields) = self.lower_shaped_source(value, &HashMap::new(), layout) else {
             return None;
         };
         let lowered_index = self.checked_runtime_index(index, &indices)?;
         let mut updates = Vec::new();
         for position in indices {
-            let hit = eq(lowered_index.clone(), Expr::Const(position as u64));
+            let hit = eq(lowered_index.clone(), index_label(position));
             for (field, expr) in &fields {
-                let Some(&signal) = self.locals.get(&format!("{base_path}[{position}].{field}"))
+                let separator = if field.starts_with('[') { "" } else { "." };
+                let Some(&signal) = self
+                    .locals
+                    .get(&format!("{base_path}[{position}]{separator}{field}"))
                 else {
                     continue;
                 };
@@ -470,7 +478,7 @@ impl<'a> Lowering<'a> {
                 if let Some(indices) = self.local_array.get(path) {
                     let lowered_index = self.checked_runtime_index(index, indices)?;
                     for &position in indices {
-                        let matches = eq(lowered_index.clone(), Expr::Const(position as u64));
+                        let matches = eq(lowered_index.clone(), index_label(position));
                         self.dynamic_write_targets(
                             &format!("{path}[{position}]"),
                             rest,
@@ -509,10 +517,7 @@ impl<'a> Lowering<'a> {
                     out.push(DynamicWriteTarget::PackedBit {
                         signal,
                         position,
-                        hit: and(
-                            hit.clone(),
-                            eq(lowered_index.clone(), Expr::Const(logical as u64)),
-                        ),
+                        hit: and(hit.clone(), eq(lowered_index.clone(), index_label(logical))),
                     });
                 }
                 Some(())
@@ -597,33 +602,16 @@ impl<'a> Lowering<'a> {
         target: &ast::Expr,
         value: &ast::Expr,
     ) -> Option<Vec<(SignalId, Expr)>> {
-        let tpath = self
+        let path = self
             .folded_elem_path(target)
             .or_else(|| expr_path(target))?;
-        let struct_name = self.local_struct.get(&tpath).cloned()?;
-        // The target's type decides how to read the braces: against a struct
-        // `{ 6, 7 }` is a positional literal, not the bit concatenation it
-        // lexes as. Without this the whole assignment produced no fields and
-        // was dropped, leaving its leaves reported as never driven.
-        let positional = self.positional_struct_args(&struct_name, value);
-        let value = &match positional {
-            Some(args) => ast::Expr::Construct {
-                ty: None,
-                args,
-                spread: None,
-                span: ast::expr_span(value),
-            },
-            None => value.clone(),
-        };
-        let mut out = Vec::new();
-        if let Val::Fields(fields) = self.lower_val_env(value, &HashMap::new()) {
-            for (fname, expr) in fields {
-                if let Some(&sig) = self.locals.get(&format!("{tpath}.{fname}")) {
-                    out.push((sig, self.coerce_to_target(sig, expr)));
-                }
-            }
+        if !matches!(
+            self.persisted_layout(&path)?.kind,
+            LayoutKind::Struct { .. }
+        ) {
+            return None;
         }
-        Some(out)
+        self.aggregate_assign_leaves(target, value)
     }
 
     /// Expand a whole-array assignment (`g = src`, `g = [3, 4]`, `g = f()`)
@@ -641,57 +629,13 @@ impl<'a> Lowering<'a> {
         target: &ast::Expr,
         value: &ast::Expr,
     ) -> Option<Vec<(SignalId, Expr)>> {
-        let tpath = self
+        let path = self
             .folded_elem_path(target)
             .or_else(|| expr_path(target))?;
-        let indices = self.local_array.get(&tpath).cloned()?;
-        // A call stands for the expression it returns, as it does
-        // combinationally.
-        let reduced = self.returned_expr_from_call(value);
-        let value = reduced.as_ref().unwrap_or(value);
-        let leaf = |index: &i64| self.locals.get(&format!("{tpath}[{index}]")).copied();
-        let mut out = Vec::new();
-        match value {
-            ast::Expr::Array { elems, .. } if elems.len() == indices.len() => {
-                for (element, index) in elems.iter().zip(&indices) {
-                    let signal = leaf(index)?;
-                    out.push((
-                        signal,
-                        self.coerce_to_target(signal, self.lower_expr(element)),
-                    ));
-                }
-            }
-            // Another array signal: element for element, from its pre-commit
-            // value like every other read in an event block.
-            value
-                if expr_path(value)
-                    .and_then(|p| self.local_array.get(&p))
-                    .is_some_and(|source| source.len() == indices.len()) =>
-            {
-                let source_path = expr_path(value)?;
-                let source = self.local_array.get(&source_path)?;
-                for (target_index, source_index) in indices.iter().zip(source) {
-                    let signal = leaf(target_index)?;
-                    let from = self
-                        .locals
-                        .get(&format!("{source_path}[{source_index}]"))
-                        .copied()?;
-                    out.push((signal, self.coerce_to_target(signal, Expr::Current(from))));
-                }
-            }
-            // An element-wise expression over arrays (`g = a and b`).
-            value => {
-                for (position, index) in indices.iter().enumerate() {
-                    let element = self.elementwise_at(value, position, indices.len())?;
-                    let signal = leaf(index)?;
-                    out.push((
-                        signal,
-                        self.coerce_to_target(signal, self.lower_expr(&element)),
-                    ));
-                }
-            }
+        if !matches!(self.persisted_layout(&path)?.kind, LayoutKind::Array { .. }) {
+            return None;
         }
-        Some(out)
+        self.aggregate_assign_leaves(target, value)
     }
 
     /// The signal an assignment target names, or `None` when it is not a simple
@@ -781,11 +725,37 @@ impl<'a> Lowering<'a> {
     /// plus any target fully covered by a nested if/else.
     pub(super) fn block_covered_targets(&self, b: &ast::Block) -> std::collections::BTreeSet<u32> {
         let mut out = std::collections::BTreeSet::new();
+        let mut local_names = std::collections::HashSet::new();
         for s in &b.stmts {
             match s {
+                ast::Stmt::Let(declaration) => {
+                    local_names.insert(declaration.name.text.as_str());
+                }
                 ast::Stmt::Assign { target, .. } => {
+                    let root = access_steps(target).map(|(root, _)| root);
+                    if root.as_deref().is_some_and(|root| {
+                        local_names.contains(root) || self.block_local_named(root).is_some()
+                    }) {
+                        continue;
+                    }
                     if let Some(id) = self.target_signal(target) {
                         out.insert(id.0);
+                    } else if let Some(path) =
+                        self.folded_elem_path(target).or_else(|| expr_path(target))
+                    {
+                        if self.persisted_layout(&path).is_some_and(|layout| {
+                            matches!(
+                                layout.kind,
+                                LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+                            )
+                        }) {
+                            let fields = format!("{path}.");
+                            let elements = format!("{path}[");
+                            out.extend(self.locals.iter().filter_map(|(name, signal)| {
+                                (name.starts_with(&fields) || name.starts_with(&elements))
+                                    .then_some(signal.0)
+                            }));
+                        }
                     }
                 }
                 ast::Stmt::If(inner) => out.extend(self.if_covered_targets(inner)),

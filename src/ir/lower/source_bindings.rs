@@ -2,20 +2,6 @@
 
 use super::*;
 
-/// A negative label is a signed value, not an unsigned word containing the
-/// same bits. Mixed-domain equality must still recognize that index.
-fn index_label(value: i64) -> Expr {
-    if value < 0 {
-        Expr::Binary {
-            op: BinOp::SSub,
-            lhs: Box::new(Expr::Const(0)),
-            rhs: Box::new(Expr::Const(value.unsigned_abs())),
-        }
-    } else {
-        Expr::Const(value as u64)
-    }
-}
-
 #[derive(Default)]
 pub(super) struct SourceShapeFrame {
     pub(super) values: HashMap<String, SourceLayout>,
@@ -142,11 +128,7 @@ impl Lowering<'_> {
         if let Some(ty) = self.block_local_type(expression) {
             return Some(self.source_layout(&ty, &self.cur_env));
         }
-        if let Some(layout) = self
-            .folded_elem_path(expression)
-            .and_then(|path| self.persisted_layout(&path))
-            .cloned()
-        {
+        if let Some(layout) = self.persisted_operand_layout(expression) {
             return Some(layout);
         }
         match expression {
@@ -180,116 +162,24 @@ impl Lowering<'_> {
         }
     }
 
-    /// Literal aggregates need a contextual layout, unlike ordinary scalar
-    /// expressions. Flatten them in written order and retain each leaf's
-    /// representation before an argument or return crosses its boundary.
-    pub(super) fn lower_shaped_source(
-        &self,
-        expression: &ast::Expr,
-        env: &HashMap<String, Val>,
-        layout: &SourceLayout,
-    ) -> Val {
-        if let LayoutKind::Array {
-            range: Some(range), ..
-        } = &layout.kind
-        {
-            if let Some(values) = self
-                .free_fns
-                .constant_expr_key(expression)
-                .and_then(|key| self.const_arrays.get(&key))
-            {
-                let fields = loop_range(range.left, range.right)
-                    .into_iter()
-                    .zip(values)
-                    .map(|(index, value)| (format!("[{index}]"), value.clone()))
-                    .collect();
-                return self.bind_value_layout(
-                    Val::Fields(fields),
-                    layout.clone(),
-                    ast::expr_span(expression),
-                );
-            }
+    fn persisted_operand_layout(&self, expression: &ast::Expr) -> Option<SourceLayout> {
+        let (root, steps) = access_steps(expression)?;
+        let mut layout = self.persisted_layout(&root)?.clone();
+        for step in steps {
+            layout = match (step, &layout.kind) {
+                (AccessStep::Field(name), LayoutKind::Struct { fields, .. }) => fields
+                    .iter()
+                    .find(|field| field.name == name)?
+                    .layout
+                    .clone(),
+                (AccessStep::Index(_), LayoutKind::Array { element, .. }) => (**element).clone(),
+                (AccessStep::Index(index), LayoutKind::Packed { .. }) => {
+                    self.source_packed_result_layout(&layout, index)?
+                }
+                _ => return None,
+            };
         }
-        match (expression, &layout.kind) {
-            (
-                ast::Expr::Array { elems, .. },
-                LayoutKind::Array {
-                    range: Some(range),
-                    element,
-                },
-            ) => {
-                let mut fields = Vec::new();
-                for (index, expression) in
-                    loop_range(range.left, range.right).into_iter().zip(elems)
-                {
-                    Self::prefix_block_value(
-                        &format!("[{index}]"),
-                        self.lower_shaped_source(expression, env, element),
-                        &mut fields,
-                    );
-                }
-                self.bind_value_layout(
-                    Val::Fields(fields),
-                    layout.clone(),
-                    ast::expr_span(expression),
-                )
-            }
-            (
-                ast::Expr::Construct {
-                    args, spread: None, ..
-                },
-                LayoutKind::Struct { fields, .. },
-            ) => {
-                let mut values = Vec::new();
-                for (position, argument) in args.iter().enumerate() {
-                    let field = match &argument.field {
-                        Some(name) => fields.iter().find(|field| field.name == name.text),
-                        None => fields.get(position),
-                    };
-                    let (Some(field), Some(value)) = (field, &argument.value) else {
-                        continue;
-                    };
-                    Self::prefix_block_value(
-                        &field.name,
-                        self.lower_shaped_source(value, env, &field.layout),
-                        &mut values,
-                    );
-                }
-                self.bind_value_layout(
-                    Val::Fields(values),
-                    layout.clone(),
-                    ast::expr_span(expression),
-                )
-            }
-            (
-                ast::Expr::IfExpr {
-                    cond, then, els, ..
-                },
-                LayoutKind::Array { .. } | LayoutKind::Struct { .. },
-            ) => {
-                let condition = self
-                    .bind_source_expression(self.lower_scalar_env(cond, env), ast::expr_span(cond));
-                let value = select_val(
-                    condition,
-                    self.lower_shaped_source(then, env, layout),
-                    self.lower_shaped_source(els, env, layout),
-                );
-                self.bind_source_value(value, ast::expr_span(expression), None)
-            }
-            _ => {
-                let value = self.lower_val_env(expression, env);
-                if matches!(
-                    layout.kind,
-                    LayoutKind::Array { .. } | LayoutKind::Struct { .. }
-                ) {
-                    self.bind_value_layout(value, layout.clone(), ast::expr_span(expression))
-                } else {
-                    // Keep general scalar call arguments' existing evaluation
-                    // format. Only contextual literal leaves require coercion.
-                    self.bind_source_value(value, ast::expr_span(expression), None)
-                }
-            }
-        }
+        Some(layout)
     }
 
     pub(super) fn lower_source_argument(
@@ -528,6 +418,42 @@ impl Lowering<'_> {
         expression: &ast::Expr,
         env: &HashMap<String, Val>,
     ) -> Option<Val> {
+        let (root, _) = access_steps(expression)?;
+        let value = env.get(&root)?.clone();
+        self.source_access_value(expression, env, value, self.source_bound_layout(&root))
+    }
+
+    /// Runtime-selected signal aggregates have no scalar root. Project their
+    /// existing leaf values exactly like argument aggregates, without copying
+    /// a selected source expression once per destination leaf.
+    pub(super) fn source_signal_aggregate_access(
+        &self,
+        expression: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Val> {
+        let (root, _) = access_steps(expression)?;
+        if env.contains_key(&root) || self.block_local_named(&root).is_some() {
+            return None;
+        }
+        let selected_layout = self.persisted_operand_layout(expression)?;
+        if !matches!(
+            selected_layout.kind,
+            LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+        ) {
+            return None;
+        }
+        let layout = self.persisted_layout(&root)?.clone();
+        let value = self.aggregate_signal_val(&root)?;
+        self.source_access_value(expression, env, value, Some(layout))
+    }
+
+    fn source_access_value(
+        &self,
+        expression: &ast::Expr,
+        env: &HashMap<String, Val>,
+        mut value: Val,
+        mut layout: Option<SourceLayout>,
+    ) -> Option<Val> {
         fn project(value: &Val, prefix: &str) -> Option<Val> {
             let Val::Fields(fields) = value else {
                 return None;
@@ -562,9 +488,7 @@ impl Lowering<'_> {
                 ),
             }
         }
-        let (root, steps) = access_steps(expression)?;
-        let mut value = env.get(&root)?.clone();
-        let mut layout = self.source_bound_layout(&root);
+        let (_, steps) = access_steps(expression)?;
         for step in steps {
             match step {
                 AccessStep::Field(name) => {

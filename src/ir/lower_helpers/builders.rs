@@ -2,6 +2,20 @@
 
 use super::*;
 
+/// Source index labels keep their signed domain. A negative label's raw u64
+/// bit pattern instead compares as a large positive value against an integer.
+pub(in crate::ir) fn index_label(value: i64) -> Expr {
+    if value < 0 {
+        Expr::Binary {
+            op: BinOp::SSub,
+            lhs: Box::new(Expr::Const(0)),
+            rhs: Box::new(Expr::Const(value.unsigned_abs())),
+        }
+    } else {
+        Expr::Const(value as u64)
+    }
+}
+
 /// Logical negation of a 0/1 expression.
 pub(in crate::ir) fn not(e: Expr) -> Expr {
     Expr::Unary {

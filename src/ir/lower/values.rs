@@ -57,6 +57,9 @@ impl<'a> Lowering<'a> {
             if let Some(value) = self.source_env_access(e, env) {
                 return value;
             }
+            if let Some(value) = self.source_signal_aggregate_access(e, env) {
+                return value;
+            }
         }
         match e {
             // `self::length` inside an operator-impl body: the bound operand's

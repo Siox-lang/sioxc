@@ -11376,3 +11376,57 @@ fully direct source-expression/normalization construction, effectful
 statement-call substitution, general runtime call CFGs/recursion and remaining
 host-service forms. Preserve the 441 unrelated historical chat lines outside
 this commit. No push.
+
+### 2026-10-04 — Codex — canonical aggregate write ownership
+
+Working toward effectful call/place bindings. The current whole-array writer
+still expands returned calls into substituted ASTs, so replace that common
+writer first with canonical aggregate values and recursive source/target leaf
+mapping. Cover directed array reindexing, nested arrays/structs, aggregate
+matches/spreads and both combinational/clocked writes. Remove pure function
+return normalization where contextual layouts can lower the original body.
+Keep compile-time ROM/initializer evaluation and effectful place bindings
+distinct; do not claim general call CFG support. Full gates before commits,
+preserve the historical chat diff, and no push.
+
+The native aggregate-write regression found the same negative-label bug in
+signal/block-local checked accesses that the prior call ingress fixed only
+for bound arguments. Also own the shared index-label builder and migrate all
+index-domain predicates/selections to signed negative labels consistently.
+
+### 2026-10-04 — Codex — canonical aggregate writes gated
+
+Whole aggregate writes now share canonical leaf construction/mapping across
+combinational drivers, clocked updates and immediate block locals. Arrays map
+source positions to target positions recursively without requiring equal
+labels or direction; struct fields retain their names. Runtime-selected
+signal aggregates reuse the argument projection path, and selected subarray
+stores use the same contextual leaf values. Contextual matches, Unicode
+arrays, positional struct returns and complete-subtree spread overrides are
+owned by the focused lower/source_aggregates.rs module.
+
+Deleted returned_expr_from_call and normalize_struct_returns, plus the
+duplicate combinational/clocked array expansion. Pure free functions now
+borrow their original body. Shared checked-index construction and selections
+preserve negative labels consistently for signals, block locals and arguments;
+domain predicates bind canonical dependencies instead of growing an OR tree.
+Complete aggregate if/else writes now cover every signal leaf for the latch
+lint without treating shadowing locals or partial branches as complete writes.
+
+Full local CI passes under the 8 GiB cap: formatting, frontend checks/Clippy,
+default/bitpack Rust suites, all-feature Clippy and both 206-program corpora.
+Logs: /tmp/siox-aggregate-writes-ci. Direct default and bitpack native regression
+executables pass every 128-bit matrix leaf, branch/match returns, recursive
+reindexing, spreads, immediate locals, negative-label dynamic stores/read
+selections, Unicode and pre-commit pipeline copies. Their validated VCDs are
+byte-identical; repeated default runs match too. Unit regressions retain
+canonical IDs during reindexing, reject missing/mismatched shapes, and verify
+complete aggregate coverage does not hide a genuine partial-write latch.
+
+Completion estimate: Phase 1 approximately 97%, still incomplete. Next:
+effectful call/place bindings (values versus writable locations, immediate
+local versus staged signal publication). Remaining also includes direct
+source expression/resolution/metavalue construction, element-operator source
+expansion, compile-time initializer normalization, general runtime call CFGs/
+recursion and remaining host-service forms. Preserve the 441 historical chat
+lines outside this commit. No push.
