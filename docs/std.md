@@ -151,7 +151,7 @@ impls; their arithmetic and signed interpretation remain nominal impls in
 The operator traits, `Suffix`, and `Prefix` are compiler bootstraps. A custom
 operator's symbol and precedence, and every impl's input and output, are
 std/user declarations. Impls are inlined
-at lowering as pure expression trees; mixed operand types overload by the
+at lowering as shared value graphs; mixed operand types overload by the
 `Input` parameter type, and `impl Add<Complex, _> for integer`
 catches literal left operands (`10 + 5i`). An `impl Suffix<"ns", _> for T` defines the literal suffix named
 by its symbol argument, its `suffix` method inlined at the use site (`10ns` →
@@ -327,11 +327,10 @@ let v: real = r.to_real();
 - Subnormals are flushed to zero on input and output, VHDL's
   `denormalize => false` and the usual FPGA choice.
 - Everything is siox source over the packed word: no compiler intrinsic.
-- **Simulation only for now.** The operators run in test processes. In a
-  hardware entity they exceed the hardware lowering's inline budget (its
-  expressions are trees, and these bodies reuse values heavily), which is an
-  error rather than a slow compile; hardware use waits for hardware to lower
-  through Process IR, where values are shared.
+- Operators execute in both test processes and ordinary hardware entities.
+  Source-defined function locals retain shared Process value IDs; the old
+  hardware tree-inlining size restriction is gone. The hardware and procedural
+  binary32 conformance tests check the same 44 operand pairs for `*`, `+`, `-`.
 - Not yet: division, square root, subnormals, other rounding modes,
   conversions to and from fixed point.
 

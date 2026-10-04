@@ -742,28 +742,6 @@ impl<'a> Lowering<'a> {
     /// hardware has to terminate at elaboration — either the arguments
     /// const-fold, or the recursion is unbounded and there is no finite circuit
     /// for it. Without this the bail-out silently leaves `Unknown` mid-driver.
-    pub(super) fn report_oversized(&mut self) {
-        let lets = std::mem::take(&mut *self.oversized.borrow_mut());
-        if let Some((name, span)) = lets.first() {
-            self.sink.emit(
-                crate::diag::Diagnostic::error(format!(
-                    "`{name}` grew past {} nodes in the hardware lowering",
-                    super::calls::INLINE_NODE_BUDGET
-                ))
-                .with_code(crate::diag::codes::UNBOUNDED_RECURSION)
-                .at(*span)
-                .note(
-                    "a hardware expression is a tree, so a function that reuses a value copies \
-                     it into every use; this one compounds past what can be built",
-                )
-                .help(
-                    "keep such functions in testbench processes for now, or store \
-                     intermediate values in signals",
-                ),
-            );
-        }
-    }
-
     pub(super) fn report_depth_exceeded(&mut self) {
         let mut calls = std::mem::take(&mut *self.depth_exceeded.borrow_mut());
         calls.sort_by_key(|(name, span)| (span.file.0, span.start, name.clone()));

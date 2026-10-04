@@ -524,7 +524,14 @@ impl<'a> Lowering<'a> {
                     "ascending" => (l <= r) as i64,
                     _ => unreachable!(),
                 };
-                return Expr::Const(v as u64);
+                return if v < 0 {
+                    Expr::Unary {
+                        op: UnOp::Neg,
+                        rhs: Box::new(Expr::Const(v.unsigned_abs())),
+                    }
+                } else {
+                    Expr::Const(v as u64)
+                };
             }
             return Expr::Unknown;
         }

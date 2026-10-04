@@ -650,6 +650,9 @@ pub(super) struct MetaTemps {
     pub(super) anchor: crate::diag::Span,
     /// Hoists made so far, in id order.
     pub(super) made: Vec<MetaTemp>,
+    /// Companion values are memoized per source node, width and context.
+    /// A shared arithmetic body must not be recursively re-expanded here.
+    pub(super) source_meta: HashMap<(ProcessValueId, u32, u32), Option<Expr>>,
 }
 
 impl MetaTemps {
@@ -662,6 +665,7 @@ impl MetaTemps {
             ctx,
             anchor,
             made: Vec::new(),
+            source_meta: HashMap::new(),
         }
     }
 
@@ -676,6 +680,7 @@ impl MetaTemps {
             ctx: 0,
             anchor: crate::diag::Span::new(crate::diag::FileId(0), 0..0),
             made: Vec::new(),
+            source_meta: HashMap::new(),
         }
     }
 }

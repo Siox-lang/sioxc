@@ -250,7 +250,8 @@ testbench clocks cannot be mistaken for combinational or event hardware.
 `derive.rs` reconstructs compatibility scheduler forms from those hardware
 regions and rejects procedural CFG/value shapes. The normalized-hardware
 importer is deleted. Frontend expression normalization still uses temporary
-trees; native execution never traverses them or translates them into C.
+fragments around arena references; native execution never traverses them or
+translates them into C.
 
 The derived scheduler view stores `Expr::Canonical` roots, not copies of
 those value graphs. Each root carries its `ProcessValueId` and a compact
@@ -262,8 +263,22 @@ emitter as procedural CFGs, sharing per-object support/check/metavalue facts.
 Contextually widened arithmetic has a separate width/signedness-aware cache;
 checked subgraphs still distinguish activity predicates, and foreign calls
 invalidate state-dependent caches. This prevents backend projection from
-undoing source sharing; the remaining hardware source inliner still needs
-arena bindings before its temporary expression-tree budget can be removed.
+undoing source sharing.
+
+`lower/source_values.rs` owns canonical bindings while hardware source is
+normalized. Inlined function locals retain value IDs instead of copied trees;
+straight-line let chains iterate with one scoped environment. Normalization
+rewrites each dependency once and compacts reachable values before constructing
+hardware CFGs. Typed scalar aliases retain their evaluation format through
+`RawResize` boundaries, so a wider consumer does not reevaluate a whole alias
+chain at successively wider widths. Metavalue presence and representation
+queries are cached, and lookup compaction inspects only its fixed pattern.
+Library lexical integer/real types outrank same-spelled caller ports; negative
+range attributes retain signed arithmetic rather than unsigned word constants.
+The old tree-inlining size guard is deleted. Binary32 hardware multiply/add/sub
+now pass the same 44 reference pairs as procedural arithmetic. Some source
+parameters/returns, block locals and resolution still construct small private
+expression fragments; fully arena-native ingress remains tracked in TODO.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The layering is a convention enforced by module discipline; do

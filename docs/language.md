@@ -2211,9 +2211,11 @@ that takes the other operand's width: `b and 0xFF`). Comparison operators
 boolean operators: `(a >= b) and (c < d)` is the idiomatic way to build a
 compound condition from numbers.
 
-Operator impls are **inlined at lowering time** as pure expression trees: the
-body must be `return e;` or `if`/`else` chains ending in returns (no loops,
-no state). Enum- and struct-typed operands are supported (a struct result
+Operator impls are **inlined at lowering time** into shared value graphs: the
+body may use local `let` aliases, `return e;`, and `if`/`else` or `match`
+branches ending in returns (no runtime loops or state in value operators).
+Repeated uses of a local reuse its value identity, rather than copying its
+expression. Enum- and struct-typed operands are supported (a struct result
 lowers to one driver per field).
 
 **Mixed operands** use the `Input` type argument (the second parameter);

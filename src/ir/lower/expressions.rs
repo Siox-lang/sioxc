@@ -844,6 +844,10 @@ impl<'a> Lowering<'a> {
                 let path = expr_path(e)?;
                 let bound = |attr: &str| match env.get(&format!("{path}::{attr}")) {
                     Some(Val::Scalar(Expr::Const(value))) => Some(*value as i64),
+                    Some(Val::Scalar(Expr::Unary { op: UnOp::Neg, rhs })) => match rhs.as_ref() {
+                        Expr::Const(value) => i64::try_from(-i128::from(*value)).ok(),
+                        _ => None,
+                    },
                     _ => None,
                 };
                 if let (Some(left), Some(right)) = (bound("left"), bound("right")) {
@@ -880,7 +884,14 @@ impl<'a> Lowering<'a> {
         ] {
             fenv.insert(
                 format!("{name}::{attr}"),
-                Val::Scalar(Expr::Const(value as u64)),
+                Val::Scalar(if value < 0 {
+                    Expr::Unary {
+                        op: UnOp::Neg,
+                        rhs: Box::new(Expr::Const(value.unsigned_abs())),
+                    }
+                } else {
+                    Expr::Const(value as u64)
+                }),
             );
         }
     }

@@ -172,6 +172,11 @@ impl<'a> Lowering<'a> {
             .get(DEFAULT_LOGIC_TYPE)
             .cloned()
             .unwrap_or_default();
+        let arena = self.source_values.get_mut();
+        let mapped = arena.rewrite(|_, expression| resolve_logic_expr(expression, &lut));
+        for expression in self.hardware.expressions_mut() {
+            arena.remap_expression(expression, &mapped);
+        }
         for d in &mut self.hardware.drivers {
             if let Some(c) = &mut d.cond {
                 resolve_logic_expr(c, &lut);
@@ -232,6 +237,14 @@ impl<'a> Lowering<'a> {
     /// Whether a lowered expression produces f64-bit (`real`) values.
     pub(super) fn is_real_expr(&self, e: &Expr) -> bool {
         match e {
+            Expr::Canonical { value, .. } => {
+                if let Some(real) = self.source_values.borrow().real.get(value).copied() {
+                    return real;
+                }
+                let real = self.is_real_expr(&self.source_node(*value));
+                self.source_values.borrow_mut().real.insert(*value, real);
+                real
+            }
             Expr::Real(_) => true,
             Expr::Current(id) | Expr::Old(id) => self.out.signals[id.0 as usize].real,
             Expr::Binary { op, .. } => {
@@ -251,6 +264,29 @@ impl<'a> Lowering<'a> {
             return e;
         }
         match e {
+            Expr::Canonical { value, .. } => {
+                if let Some(real) = self
+                    .source_values
+                    .borrow()
+                    .coerced_real
+                    .get(&value)
+                    .cloned()
+                {
+                    return real;
+                }
+                let node = self.source_node(value);
+                let real = self.coerce_real(node);
+                let span = self.source_values.borrow().ir.values[value.0 as usize].span;
+                let real = match self.bind_source_value(Val::Scalar(real), span, None) {
+                    Val::Scalar(real) => real,
+                    Val::Fields(_) => unreachable!(),
+                };
+                self.source_values
+                    .borrow_mut()
+                    .coerced_real
+                    .insert(value, real.clone());
+                real
+            }
             Expr::Const(v) => Expr::Real(v as f64),
             Expr::Unary { op: UnOp::Neg, rhs } => Expr::Binary {
                 op: BinOp::FSub,
@@ -411,6 +447,17 @@ impl<'a> Lowering<'a> {
     /// which decides whether signed operators apply.
     pub(super) fn has_non_integer_signal(&self, e: &Expr) -> bool {
         match e {
+            Expr::Canonical { value, .. } => {
+                if let Some(found) = self.source_values.borrow().non_integer.get(value).copied() {
+                    return found;
+                }
+                let found = self.has_non_integer_signal(&self.source_node(*value));
+                self.source_values
+                    .borrow_mut()
+                    .non_integer
+                    .insert(*value, found);
+                found
+            }
             Expr::MetaCmp { inner, .. } => self.has_non_integer_signal(inner),
             Expr::Current(id) | Expr::Old(id) => !self.out.signals[id.0 as usize].integer,
             Expr::Event(_) => true,
@@ -430,8 +477,7 @@ impl<'a> Lowering<'a> {
             // Argument representations do not determine a foreign call's
             // declared return type.
             Expr::CCall { .. } => false,
-            Expr::Canonical { .. }
-            | Expr::Const(_)
+            Expr::Const(_)
             | Expr::WideConst(_)
             | Expr::Real(_)
             | Expr::Logic(_)

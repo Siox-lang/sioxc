@@ -276,6 +276,7 @@ fn digital_expr(ir: &ProcessIr, id: ProcessValueId) -> Result<Expr, String> {
             ProcessValueKind::Number(_)
             | ProcessValueKind::Char(_)
             | ProcessValueKind::Unary { .. }
+            | ProcessValueKind::RawResize { .. }
             | ProcessValueKind::BitSlice { .. }
             | ProcessValueKind::TableLookup { .. }
             | ProcessValueKind::CheckedIndex { .. }
@@ -319,6 +320,16 @@ pub(crate) fn materialize_digital_expression(
     ir: &ProcessIr,
     id: ProcessValueId,
 ) -> Result<Expr, String> {
+    digital_node(ir, id, |child| materialize_digital_expression(ir, child))
+}
+
+/// Inspect one arena node with caller-supplied child handles. Source
+/// normalization uses compact references, never recursive tree expansion.
+pub(super) fn digital_node(
+    ir: &ProcessIr,
+    id: ProcessValueId,
+    child: impl Fn(ProcessValueId) -> Result<Expr, String>,
+) -> Result<Expr, String> {
     let value = ir
         .values
         .get(id.0 as usize)
@@ -326,13 +337,13 @@ pub(crate) fn materialize_digital_expression(
     // Production values are appended after their operands. Enforce that
     // invariant here as well: projection runs before full Design validation,
     // and a malformed arena must return an error, not recurse forever.
-    let child_expression = |child: ProcessValueId| {
-        if child.0 >= id.0 {
+    let child_expression = |dependency: ProcessValueId| {
+        if dependency.0 >= id.0 {
             return Err(format!(
-                "Process value {id:?} has non-dominating dependency {child:?}"
+                "Process value {id:?} has non-dominating dependency {dependency:?}"
             ));
         }
-        materialize_digital_expression(ir, child)
+        child(dependency)
     };
     let recurse = |child| child_expression(child).map(Box::new);
     let expression = match &value.kind {
@@ -365,6 +376,7 @@ pub(crate) fn materialize_digital_expression(
             },
             rhs: recurse(*operand)?,
         },
+        ProcessValueKind::RawResize { operand } => child_expression(*operand)?,
         ProcessValueKind::Binary {
             operation,
             left,
@@ -435,6 +447,7 @@ pub(crate) fn materialize_digital_expression(
             f64_ret: *float_result,
             integer_ret: *integer_result,
         },
+        ProcessValueKind::Invalid => Expr::Unknown,
         other => {
             return Err(format!(
                 "Process value {id:?} cannot derive a digital scheduler expression from {other:?}"

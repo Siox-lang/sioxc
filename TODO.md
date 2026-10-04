@@ -59,17 +59,16 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   now precedes public scheduler decomposition and retains source contexts;
   the scheduler-to-Process importer is deleted. Derived scheduling forms retain
   canonical value IDs and checked sensitivity lists; their LLVM helpers
-  delegate to the common Process value emitter, so
-  projection no longer expands a shared value DAG back into expression trees.
-  Hardware specialization, source-method inlining, resolution, and metavalue
-  expansion still use private temporary expression trees before building the
-  canonical arena. Replace
-  repeated tree copies with dependency-ordered value identities and shared
-  subexpressions, preserving source spans, concrete types/widths, contexts,
-  lookup-table compaction, and staged-write semantics. This remains Phase 1
-  work: large std-defined arithmetic (notably hardware floating-point bodies)
-  can still exceed the protective tree-inlining budget. Exercise these source
-  bodies in hardware as well as procedural tests before removing that budget.
+  delegate to the common Process value emitter, so projection does not expand
+  shared DAGs. Inlined function locals now bind arena IDs; representation
+  rewrites retain sharing, types, spans and sensitivity. Typed scalar aliases
+  freeze their evaluation format before later consumers widen them. The old
+  tree-size guard is removed, with binary32 hardware/procedural conformance and
+  long source-chain regressions. Complete the remaining ingress migration:
+  block-local assignments, parameters/returns and some resolution/metavalue
+  construction still assemble private expression fragments around those IDs.
+  Make every source expression a canonical value at construction, preserving
+  concrete layouts, contexts, lookup compaction and staged-write semantics.
 
 ## LLVM
 

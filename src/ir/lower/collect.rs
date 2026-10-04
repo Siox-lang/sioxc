@@ -60,7 +60,7 @@ impl<'a> Lowering<'a> {
             meta_temps: std::cell::RefCell::new(MetaTemps::inline_only()),
             expanding_structs: std::cell::RefCell::new(std::collections::HashSet::new()),
             depth_exceeded: std::cell::RefCell::new(Vec::new()),
-            oversized: std::cell::RefCell::new(Vec::new()),
+            source_values: std::cell::RefCell::new(source_values::SourceValues::default()),
             unresolved_names: std::cell::RefCell::new(Vec::new()),
             block_scopes: std::cell::RefCell::new(Vec::new()),
             unsupported_exprs: std::cell::RefCell::new(Vec::new()),

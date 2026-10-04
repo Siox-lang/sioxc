@@ -292,6 +292,29 @@ impl<'a> Lowering<'a> {
         temps: &mut MetaTemps,
     ) -> Option<Expr> {
         match e {
+            Expr::Canonical { value, .. } => {
+                if !self
+                    .source_values
+                    .borrow_mut()
+                    .may_have_meta(*value, &self.out.meta_of)
+                {
+                    return None;
+                }
+                let key = (*value, width, temps.ctx);
+                if let Some(result) = temps.source_meta.get(&key) {
+                    return result.clone();
+                }
+                let node = self.source_node(*value);
+                let meta = self.lower_meta_ir(&node, width, temps);
+                let meta = meta.map(|expression| {
+                    match self.bind_source_value(Val::Scalar(expression), temps.anchor, None) {
+                        Val::Scalar(expression) => expression,
+                        Val::Fields(_) => unreachable!(),
+                    }
+                });
+                temps.source_meta.insert(key, meta.clone());
+                meta
+            }
             Expr::Current(id) => self
                 .out
                 .meta_of
@@ -426,6 +449,18 @@ impl<'a> Lowering<'a> {
     /// in a wider computed operand.
     pub(super) fn meta_expr_width(&self, expr: &Expr, fallback: u32) -> u32 {
         match expr {
+            Expr::Canonical { value, .. } => {
+                let key = (*value, fallback);
+                if let Some(width) = self.source_values.borrow().meta_width.get(&key).copied() {
+                    return width;
+                }
+                let width = self.meta_expr_width(&self.source_node(*value), fallback);
+                self.source_values
+                    .borrow_mut()
+                    .meta_width
+                    .insert(key, width);
+                width
+            }
             Expr::Current(id) | Expr::Old(id) => self
                 .out
                 .signals
@@ -723,6 +758,12 @@ impl<'a> Lowering<'a> {
                     .map(|encoding| (companion, encoding))
             })
             .collect();
+        let arena = self.source_values.get_mut();
+        let mapped = arena
+            .rewrite(|_, expression| reconstruct_expr(expression, &meta_of, &elems, &encodings));
+        for expression in self.hardware.expressions_mut() {
+            arena.remap_expression(expression, &mapped);
+        }
         for d in &mut self.hardware.drivers {
             if let Some(c) = &mut d.cond {
                 reconstruct_expr(c, &meta_of, &elems, &encodings);

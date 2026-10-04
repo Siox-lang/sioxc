@@ -11099,3 +11099,82 @@ copies private trees; large hardware float bodies, general call CFGs/recursion,
 and remaining host-service forms remain open. Only this ownership/handoff entry
 is staged from chat.md; other agents' historical additions remain untouched.
 No push.
+
+### 2026-10-03 — Codex — source hardware value bindings
+
+Taking ownership of hardware source-value binding, its normalization passes,
+and hardware float regressions. Inlined let values will bind canonical arena
+IDs rather than repeatedly cloned trees. Representation rewrites will retain
+sharing and visit dependencies in arena order; metadata queries must inspect
+the arena without expansion. The final CFG construction will keep reachable
+values, source spans, types, sensitivity, and staged-write contexts. The old
+inline-size guard stays until hardware arithmetic and both corpora prove that
+its removal is safe. No other agents' historical chat additions are included.
+
+### 2026-10-03 — Codex — source binding documentation and corpus ownership
+
+Updating docs/language.md's implementation description (not syntax), std.md,
+architecture/README, and TODO to describe shared function-local values. The
+sibling corpus gains hardware_float_conformance_test.siox, using the same 44
+reference pairs as the procedural test, and its obsolete hardware-float caveat
+is removed. The debugger confirmed recursion per let and caller/library name
+collisions behind the oversized float attempt; those are fixed, not masked by
+a larger stack. Diagnostic runs with growing memory were stopped by their
+verified scope handles before editing. The first native conformance failure
+exposed unsigned encoding of negative range attributes; signed expression
+nodes now preserve their mathematical value across widened consumers. Native
+hardware arithmetic, VCD checks, a 2,000-alias source chain, and per-entry
+linear LLVM alias emission pass. Full default/bitpack gates follow.
+
+### 2026-10-03 — Codex — retain lookup evaluation boundaries
+
+The initial full gate passed formatting, frontend checks, both Rust suites and
+Clippy and was live in the default corpus when reviewed. Stopped its verified
+scope before changing inputs. Lookup recognition must not unwrap a typed
+RawResize binding: doing so could bypass an index multiplication's evaluation
+width. The recognizer now preserves that boundary rather than assuming source
+integer arithmetic cannot wrap. Adding a boundary regression and rerunning the
+gate on the exact final source/corpus pair.
+
+### 2026-10-03 — Codex — fixed-point precision regression
+
+The retained default corpus log identifies the previously hidden failure as
+fixed_test.siox's hardware 2.5 * 1.5 check (202 passed, one failed). Stopped
+the verified final gate scope before editing; the bitpack corpus had started
+but was not completed. Negative attributes now have a small signed expression
+instead of an accidental 64-bit unsigned pattern. That exposed the hardware
+normalizer's raw multiplication width: it retained only one operand's width,
+so a following fraction shift consumed an already-truncated product. Fixing
+the actual precision rule and adding a regression, not restoring the unsigned
+attribute encoding. Incoming constructor PR #31 is inspected but not yet
+integrated; its overlapping edits will be reconciled after this batch passes.
+
+### 2026-10-04 — Codex — source hardware bindings gated
+
+Inlined function lets retain shared Process value IDs; their representation
+rewrites and reachability compaction preserve dependencies, types, spans and
+sensitivity. Straight-line let chains iterate instead of consuming one stack
+frame per declaration. Kernel aliases freeze their evaluation format before
+wider consumers, and lookup compaction cannot unwrap that boundary. Lexical
+integer/real types outrank same-spelled caller ports. Negative range attributes
+remain signed expressions; raw hardware multiplication retains its full
+product before fractional shifts. Removed the obsolete tree-size guard.
+
+The complete 8 GiB-capped gate passes on local compiler b2415c4 plus this batch
+and sibling corpus faf8604 plus the new hardware float test: frontend checks,
+formatting, default/bitpack Rust tests, all-feature Clippy and both 203-program
+corpora. Separately emitted fixed-point and hardware float executables pass
+with VCD checks; hardware float was also emitted/run in bitpack mode. The 44
+reference pairs cover multiply/add/subtract, and focused tests cover 2,000
+source aliases, per-entry linear LLVM emission and lookup width boundaries.
+Per-stage CI logs now retain earlier failures; a log-directory failure returns
+failure rather than silently reporting a successful gate.
+
+Completion estimate: Phase 1 approximately 97%. Remaining source ingress still
+includes block-local assignments, parameters/returns and resolution fragments;
+general call CFGs/recursion and remaining runtime host-service forms also stay
+open. Other agents' historical chat additions are excluded from this commit.
+GitHub meanwhile landed constructor PR #31 and format-generics PR #32. They
+have not changed this verified source/corpus pair; integrate both together with
+their sibling corpus migrations next, preserving resized return identities.
+No push.

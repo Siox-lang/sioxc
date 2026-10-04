@@ -19,6 +19,7 @@ mod metavalue;
 mod operators;
 mod resolution;
 mod source_processes;
+mod source_values;
 mod values;
 mod writes;
 
@@ -138,13 +139,6 @@ pub fn lower_in(
     for (entity, path) in &roots {
         l.lower_entity(*entity, path);
     }
-    // An oversized inline stopped every inline after it, so the depth and
-    // name errors that follow from that would only bury the real one.
-    if !l.oversized.borrow().is_empty() {
-        l.depth_exceeded.borrow_mut().clear();
-        l.unresolved_names.borrow_mut().clear();
-    }
-    l.report_oversized();
     l.report_depth_exceeded();
     l.report_bad_operators();
     l.report_bad_conversions();
@@ -162,12 +156,20 @@ pub fn lower_in(
     // in std's default logic type, so the IR the backends consume carries only
     // `Const`s — no raw chars, no compiler-side value table.
     l.normalize_logic_literals();
+    l.compact_source_lookups();
     compact_lookup_writes(
         &mut l.hardware.drivers,
         &mut l.hardware.event_blocks,
         &mut l.out.lookup_tables,
     );
-    l.out.process_ir = hardware::lower(hier, &l.out, &l.hardware, l.sink);
+    l.source_values.get_mut().retain_reachable(&mut l.hardware);
+    l.out.process_ir = hardware::lower(
+        hier,
+        &l.out,
+        &l.hardware,
+        l.source_values.into_inner().ir,
+        l.sink,
+    );
     // Values and CFGs now own every normalized write. Release source trees
     // before allocating the derived compatibility view, rather than holding
     // three complete behavior representations at the projection peak.
@@ -287,12 +289,8 @@ struct Lowering<'a> {
     /// `&self`, so the diagnostic is recorded here and flushed by `lower`
     /// instead of silently leaving an `Unknown` in the driver.
     depth_exceeded: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
-    /// `let` values in inlined bodies whose hardware form outgrew
-    /// [`INLINE_NODE_BUDGET`]. The design IR is a tree, so a body that reuses
-    /// a value copies it into every use; past the budget the expression would
-    /// grow without bound (and once took the machine's memory). Once one is
-    /// recorded, inlining stops.
-    oversized: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
+    /// Arena-owned values bound by source functions and lexical locals.
+    source_values: std::cell::RefCell<source_values::SourceValues>,
     /// Operands hoisted out of a per-element metavalue unroll by a helper that
     /// holds only `&self` -- resolution folding and the two partial-write
     /// helpers. Those cannot append a signal themselves, so they hoist here and

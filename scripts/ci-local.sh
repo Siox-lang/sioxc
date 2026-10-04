@@ -24,13 +24,24 @@ else
 fi
 step() {
     local name="$1"; shift
+    local log=/tmp/ci-local.log
+    # Optional retained per-stage evidence. The shared scratch log otherwise
+    # overwrites an earlier corpus failure as soon as the bitpack step starts.
+    if [ -n "${SIOX_CI_LOG_DIR:-}" ]; then
+        if ! mkdir -p "$SIOX_CI_LOG_DIR"; then
+            fail=1
+            return 1
+        fi
+        local file="${name//[^a-zA-Z0-9]/_}"
+        log="$SIOX_CI_LOG_DIR/$file.log"
+    fi
     printf '%-44s ' "$name"
-    if "$@" >/tmp/ci-local.log 2>&1; then
+    if "$@" >"$log" 2>&1; then
         echo "ok"
         return 0
     fi
     echo "FAIL"
-    tail -20 /tmp/ci-local.log | sed 's/^/    /'
+    tail -20 "$log" | sed 's/^/    /'
     fail=1
     return 1
 }

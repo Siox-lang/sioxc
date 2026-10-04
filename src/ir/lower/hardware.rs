@@ -21,10 +21,14 @@ pub(super) fn lower(
     hierarchy: &Hierarchy,
     design: &Design,
     draft: &HardwareDraft,
+    mut ir: ProcessIr,
     sink: &mut DiagnosticSink,
 ) -> ProcessIr {
     let locations = hierarchy_locations(hierarchy);
-    let mut ir = ProcessIr::default();
+    for index in 0..ir.values.len() {
+        ir.values[index].bit_width =
+            normalized_value_width(&ir, ProcessValueId(index as u32), design);
+    }
 
     // First-seen source context order, with source-order writes inside it.
     let mut contexts = Vec::<Vec<&Driver>>::new();
@@ -382,6 +386,13 @@ fn normalized_value_width(
             | ProcessBinaryOp::FloatSub
             | ProcessBinaryOp::FloatMul
             | ProcessBinaryOp::FloatDiv => Some(64),
+            // Raw kernel multiplication is evaluated before a consuming
+            // slice, shift, or assignment selects the result's bits. Keeping
+            // only max(lhs, rhs) here would drop fixed-point fraction bits
+            // before the source-defined operator shifts them into place.
+            ProcessBinaryOp::Mul | ProcessBinaryOp::SignedMul => {
+                width(left)?.checked_add(width(right)?)
+            }
             ProcessBinaryOp::Shl => shifted_arena_width(width(left)?, *right, &process_ir.values),
             _ => Some(width(left)?.max(width(right)?)),
         },
@@ -411,6 +422,12 @@ fn normalized_value_width(
         | ProcessValueKind::Construct { .. }
         | ProcessValueKind::Array(_)
         | ProcessValueKind::Invalid => None,
+    };
+    let width = match (&value.ty, width) {
+        (Some(crate::types::Ty::Integer | crate::types::Ty::Real), Some(width)) => {
+            Some(width.max(64))
+        }
+        (_, width) => width,
     };
     width.filter(|width| *width != 0)
 }
@@ -525,6 +542,25 @@ mod tests {
         let shifted = push_normalized_value(&mut process_ir, &expression, span, &Design::default());
 
         assert_eq!(process_ir.values[shifted.0 as usize].bit_width, Some(8));
+    }
+
+    #[test]
+    fn a_fraction_shift_keeps_the_full_raw_product() {
+        let span = crate::diag::Span::new(FileId(0), 0..1);
+        let mut process_ir = ProcessIr::default();
+        let expression = Expr::Binary {
+            op: BinOp::Shr,
+            lhs: Box::new(Expr::Binary {
+                op: BinOp::Mul,
+                lhs: Box::new(Expr::Const(40)),
+                rhs: Box::new(Expr::Const(24)),
+            }),
+            rhs: Box::new(Expr::Const(4)),
+        };
+        let shifted = push_normalized_value(&mut process_ir, &expression, span, &Design::default());
+        // 40 needs six bits, 24 five. Their full product must survive until
+        // the consumer shifts it: (40 * 24) >> 4 == 60, not 12 or 4.
+        assert_eq!(process_ir.values[shifted.0 as usize].bit_width, Some(11));
     }
 
     #[test]
