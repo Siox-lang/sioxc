@@ -51,7 +51,17 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
 
 
 def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile == "fifo_test":
+    if profile == "hardware_procedure_places_test":
+        root = "HardwareProcedurePlacesTest.dut."
+        assert values(changes, root + "packed_meta") == ["1xz0"]
+        assert values(changes, root + "packed_result") == ["00000000", "10100011"]
+        assert values(changes, root + "dynamic_bit") == ["00000000", "00001000", "00011000"]
+        assert values(changes, root + "signal_twice") == [f"{n:0128b}" for n in (0, 1, 2)]
+        assert values(changes, root + "selected") == [f"{n:0128b}" for n in (0, 1 << 127)]
+        assert values(changes, root + "untouched") == ["0" * 128]
+        assert values(changes, root + "local_result") == [f"{(1 << 127) + 2:0128b}"]
+        assert values(changes, root + "local_tag") == [f"{ord('λ'):032b}"]
+    elif profile == "fifo_test":
         assert values(changes, "FifoTest.d.count") == [
             "000",
             "001",

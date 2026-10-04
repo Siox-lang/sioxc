@@ -5,6 +5,9 @@ use super::*;
 impl<'a> Lowering<'a> {
     /// Lower an expression into IR.
     pub(super) fn lower_expr(&self, e: &ast::Expr) -> Expr {
+        if let Some(Val::Scalar(value)) = self.source_call_value(e, &HashMap::new()) {
+            return value;
+        }
         match e {
             ast::Expr::Call { callee, args, .. } => {
                 // `T()` — the nullary constructor — resolves to the type's
@@ -517,6 +520,13 @@ impl<'a> Lowering<'a> {
 
     /// The width an expression produces, from its operands and context.
     pub(super) fn ast_width(&self, e: &ast::Expr) -> u32 {
+        if let Some(width) = self
+            .source_call_layout(e)
+            .and_then(|layout| layout.bit_width())
+            .and_then(|width| u32::try_from(width).ok())
+        {
+            return width;
+        }
         if let Some(ty) = self.block_local_type(e) {
             return self.block_local_width(&ty);
         }

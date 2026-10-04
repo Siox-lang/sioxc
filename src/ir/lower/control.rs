@@ -115,25 +115,26 @@ impl<'a> Lowering<'a> {
                         .at(*span),
                     );
                 }
-                if self.assign_block_local(target, value, &cond) {
+                if self.lower_source_index_assign(target, value, cond.clone(), None) {
                     return;
                 }
-                if let ast::Expr::Index { base, index, .. } = target {
-                    if expr_path(base)
-                        .as_deref()
-                        .is_some_and(|path| self.local_struct.contains_key(path))
-                    {
-                        if let Some(index) = self.index_argument(index) {
-                            if self.lower_method_stmt(
-                                base,
-                                "index_assign",
-                                &[index, value.clone()],
-                                cond.clone(),
-                            ) {
-                                return;
-                            }
-                        }
+                if let Some(updates) =
+                    self.assign_source_call_place(target, value, &cond, false, &[])
+                {
+                    for update in updates {
+                        self.hardware.drivers.push(Driver {
+                            span: update.span,
+                            target: update.target,
+                            cond: update.cond,
+                            expr: update.expr,
+                            meta: update.meta,
+                            ctx: self.cur_ctx,
+                        });
                     }
+                    return;
+                }
+                if self.assign_block_local(target, value, &cond) {
+                    return;
                 }
                 // Strict assignment width: a scalar signal target and a direct
                 // signal-reference value must have equal, both-known widths
@@ -675,6 +676,15 @@ impl<'a> Lowering<'a> {
                             .at(*span),
                         );
                     }
+                    if self.lower_source_index_assign(target, value, cond.clone(), Some(out)) {
+                        continue;
+                    }
+                    if let Some(updates) =
+                        self.assign_source_call_place(target, value, &cond, true, out)
+                    {
+                        out.extend(updates);
+                        continue;
+                    }
                     if self.assign_block_local(target, value, &cond) {
                         continue;
                     }
@@ -827,21 +837,20 @@ impl<'a> Lowering<'a> {
                 // a.bump(step); }` left the register at its reset value with
                 // no diagnostic. The body itself is shared, so a call means
                 // the same thing in both positions.
-                ast::Stmt::Expr(ast::Expr::Call {
-                    callee, args, span, ..
-                }) => {
-                    let inlined = match callee.as_ref() {
-                        ast::Expr::Field { base, field, .. } => {
-                            let (base, field) = (base.clone(), field.text.clone());
-                            self.method_stmt_body(&base, &field, args)
-                        }
-                        _ => self.free_stmt_body(callee, args),
-                    };
-                    if let Some(stmts) = inlined {
-                        let block = ast::Block { stmts, span: *span };
-                        self.lower_event_block(&block, cond.clone(), out);
+                ast::Stmt::Expr(ast::Expr::Call { callee, args, .. }) => match callee.as_ref() {
+                    ast::Expr::Field { base, field, .. } => {
+                        self.lower_source_procedure(
+                            Some((base, &field.text)),
+                            callee,
+                            args,
+                            cond.clone(),
+                            Some(out),
+                        );
                     }
-                }
+                    _ => {
+                        self.lower_source_procedure(None, callee, args, cond.clone(), Some(out));
+                    }
+                },
                 // A generate `for` unrolls here exactly as it does in
                 // combinational position (spec: a loop unrolls over a static
                 // range, "instances *and* per-iteration drivers"). The

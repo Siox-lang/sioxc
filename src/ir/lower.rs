@@ -20,6 +20,8 @@ mod operators;
 mod resolution;
 mod source_aggregates;
 mod source_bindings;
+mod source_calls;
+mod source_places;
 mod source_processes;
 mod source_values;
 mod values;
@@ -355,6 +357,9 @@ struct Lowering<'a> {
     /// Lexical aggregate shapes beside canonical leaf bindings. These are
     /// source normalization context, not a second executable representation.
     source_shapes: std::cell::RefCell<Vec<source_bindings::SourceShapeFrame>>,
+    /// Statement-call arguments own values or captured writable locations,
+    /// never caller ASTs. Pure call shape scopes isolate these bindings.
+    source_calls: Vec<source_calls::SourceCallFrame>,
     /// Module-level integer constants (`const N: integer = 4`).
     consts: HashMap<String, i64>,
     /// Exact literal values for module constants, including values wider than

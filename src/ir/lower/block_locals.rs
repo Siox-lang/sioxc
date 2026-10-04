@@ -132,7 +132,12 @@ impl<'a> Lowering<'a> {
             .folded_elem_path(expression)
             .or_else(|| expr_path(expression))?;
         let scopes = self.block_scopes.borrow();
-        for (scope_index, scope) in scopes.iter().enumerate().rev() {
+        for (scope_index, scope) in scopes
+            .iter()
+            .enumerate()
+            .skip(self.source_call_block_base())
+            .rev()
+        {
             for name in scope.keys() {
                 let suffix = if path == *name {
                     ""
@@ -168,6 +173,7 @@ impl<'a> Lowering<'a> {
             .borrow()
             .iter()
             .enumerate()
+            .skip(self.source_call_block_base())
             .rev()
             .find_map(|(scope, bindings)| {
                 bindings.get(name).cloned().map(|binding| (scope, binding))
@@ -532,7 +538,7 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    fn store_block_local(
+    pub(super) fn store_block_local(
         &self,
         scope_index: usize,
         name: String,

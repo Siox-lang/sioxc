@@ -293,6 +293,9 @@ impl<'a> Lowering<'a> {
     ) -> Option<Expr> {
         match e {
             Expr::Canonical { value, .. } => {
+                if let Some(meta) = self.source_values.borrow().explicit_meta.get(value) {
+                    return Some(meta.clone());
+                }
                 if !self
                     .source_values
                     .borrow_mut()

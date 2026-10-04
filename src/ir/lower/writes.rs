@@ -641,6 +641,9 @@ impl<'a> Lowering<'a> {
     /// The signal an assignment target names, or `None` when it is not a simple
     /// place.
     pub(super) fn target_signal(&self, target: &ast::Expr) -> Option<SignalId> {
+        if let Some(signal) = self.source_call_signal(target) {
+            return signal;
+        }
         // Prefer a constant-folded element path (`w[i+1]` with `i` bound in a
         // generate loop -> `w[3]`), so an unrolled constant index resolves to a
         // static element rather than falling through to a dynamic array write.
@@ -736,6 +739,10 @@ impl<'a> Lowering<'a> {
                     if root.as_deref().is_some_and(|root| {
                         local_names.contains(root) || self.block_local_named(root).is_some()
                     }) {
+                        continue;
+                    }
+                    if let Some(covered) = self.source_call_covered_targets(target) {
+                        out.extend(covered);
                         continue;
                     }
                     if let Some(id) = self.target_signal(target) {

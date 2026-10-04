@@ -11430,3 +11430,55 @@ source expression/resolution/metavalue construction, element-operator source
 expansion, compile-time initializer normalization, general runtime call CFGs/
 recursion and remaining host-service forms. Preserve the 441 historical chat
 lines outside this commit. No push.
+
+### 2026-10-04 — Codex — effectful source call binding ownership
+
+Replace hardware statement-call AST substitution with scoped canonical value
+arguments and explicit writable places. Borrow original function bodies for
+both combinational and clocked calls, capture dynamic receiver selections at
+entry, and distinguish immediate block-local updates from staged signal writes.
+Preserve aggregate layouts, nested forwarding, lexical shadowing and metavalue
+planes. Validate native behavior and run the complete gate before committing;
+leave unrelated historical chat edits untouched and do not push.
+
+The sharing regression found that the derived hardware LLVM helper creates a
+new value cache per target and emits a captured foreign argument twice. Also
+own llvm/process/{values,value_types,hardware}.rs and llvm/emit.rs to retain
+evaluated call identities within a straight-line helper/block while still
+invalidating mutable state loads after foreign calls. Do not extend memoization
+across CFG blocks or claim general guarded effectful-call semantics.
+
+### 2026-10-04 — Codex — effectful source call bindings gated
+
+Deleted method_stmt_body/free_stmt_body and their statement-call substitution.
+Both hardware walkers borrow original function bodies through source_calls.rs.
+Arguments own canonical values or captured places; source_places.rs owns scoped
+local/signal identities, recursive fields/arrays, checked selections and packed
+bit maps. Nested forwarding retains captured indices; callee locals shadow
+arguments without capturing caller locals. Local writes are immediate, signal
+writes/readbacks retain pre-commit semantics, and custom IndexAssign uses this
+same path in clocked and combinational contexts. Literal scalar parameters
+remain available for elaboration-time loops. Selected local aggregates can
+cross pure calls through the common shape-aware projection.
+
+Explicit literal planes now survive value binding, arena rewrites and
+reachability compaction. LLVM retains evaluated foreign call identities within
+one helper/block while invalidating state loads; it does not reuse them across
+CFG boundaries or establish general guarded-call evaluation semantics.
+
+Full local CI passes under the 8 GiB cap: formatting, frontend checks/Clippy,
+default/bitpack Rust suites, all-feature Clippy and both 207-program corpora.
+Logs: /tmp/siox-procedure-places-ci. Native default/bitpack regressions cover
+128-bit records/subarrays, caller-local selector mutation, nested writes,
+shadowing, Unicode, custom indexing, literal-bound loops and partial packed
+writes. The exact VCD profile checks captured X/Z planes, staged signal state,
+untouched receivers and local results; all modes and repeated default runs are
+byte-identical. A LLVM regression verifies one foreign argument call per
+helper/process entry; a unit test retains plane identities during compaction.
+
+Completion estimate: Phase 1 approximately 97%, still incomplete. Remaining:
+direct source expression/resolution/metavalue construction, element-operator
+and initializer normalization, general runtime call CFGs/recursion and host
+service forms. Also recorded the native preflight gap for entity-qualified
+packed-slice comparisons (the equivalent connected signal works). Preserve
+the 441 unrelated historical chat lines outside the commit. No push.

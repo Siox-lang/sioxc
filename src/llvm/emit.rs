@@ -141,6 +141,9 @@ struct CastKey {
 
 #[derive(Default)]
 struct CombValueCache<'ctx> {
+    /// Source call identities are captured once within this helper. Foreign
+    /// calls invalidate state caches, not already evaluated argument values.
+    evaluated_calls: HashMap<(siox::ir::ProcessValueId, Option<IntValue<'ctx>>), IntValue<'ctx>>,
     loads: HashMap<(u8, SignalId), IntValue<'ctx>>,
     slices: HashMap<StateSliceKey, IntValue<'ctx>>,
     comparisons: HashMap<ComparisonKey, IntValue<'ctx>>,
@@ -2527,6 +2530,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         if self.canonical.has_effects(value) {
             self.clear_comb_cache();
         }
+        let mut evaluated_calls = self
+            .comb_values
+            .borrow_mut()
+            .as_mut()
+            .map(|cache| std::mem::take(&mut cache.evaluated_calls))
+            .unwrap_or_default();
         let emitted = self
             .canonical
             .emit(
@@ -2539,10 +2548,14 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 signed,
                 active,
                 &self.index_sites,
+                &mut evaluated_calls,
             )
             .expect("canonical hardware value passed direct-emitter preflight");
         if self.canonical.has_effects(value) {
             self.clear_comb_cache();
+        }
+        if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
+            cache.evaluated_calls = evaluated_calls;
         }
         emitted
     }

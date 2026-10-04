@@ -48,9 +48,11 @@ impl HardwareValueFacts {
         signed: bool,
         active: Option<IntValue<'ctx>>,
         index_sites: &HashMap<IndexSite, u32>,
+        evaluated_calls: &mut HashMap<(ProcessValueId, Option<IntValue<'ctx>>), IntValue<'ctx>>,
     ) -> Option<IntValue<'ctx>> {
         let mut cache = ProcessValueCache::new(&self.checked, &self.supported.meta_free);
-        process_value_at(
+        cache.evaluated_calls = std::mem::take(evaluated_calls);
+        let result = process_value_at(
             context,
             module,
             builder,
@@ -61,6 +63,8 @@ impl HardwareValueFacts {
             active,
             index_sites,
             &mut cache,
-        )
+        );
+        *evaluated_calls = cache.evaluated_calls;
+        result
     }
 }

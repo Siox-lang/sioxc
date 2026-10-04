@@ -74,9 +74,16 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   combinational signals, clocked signals and immediate block locals; nested
   stores/read selections, directed reindexing, matches and struct spreads keep
   that path. Pure functions borrow their bodies without return-AST rewriting.
+  Hardware statement procedures now borrow their bodies too: scoped value
+  arguments share canonical IDs, writable arguments capture storage identities,
+  dynamic selections and physical slice maps. Nested calls forward places;
+  block-local writes remain immediate and signal writes remain staged. Literal
+  planes survive binding/rewriting/compaction, and captured foreign results are
+  reused within a straight-line LLVM helper/block without caching mutable state
+  across calls or CFG boundaries.
   Complete the remaining ingress migration: resolution/metavalue construction,
-  expression construction between these boundaries, effectful statement-call
-  substitution, element-operator expansion and compile-time initializer
+  expression construction between these boundaries, element-operator expansion
+  and compile-time initializer
   normalization still assemble private fragments around those IDs.
   Make every source expression a canonical value at construction, preserving
   concrete layouts, contexts, lookup compaction and staged-write semantics.
@@ -94,6 +101,11 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   recursion/general call CFGs and non-packed conversions. Unsupported forms
   must continue to fail transactionally before calls or staged writes become
   observable.
+  Preserve packed layout through entity-qualified testbench slices/comparisons:
+  the procedure-place regression accepts a connected `packed_meta[2..2]`, but
+  `dut.packed_meta[2..2]` in the equivalent comparison still fails Process
+  preflight. Do not confuse successful waveform emission with support for that
+  source expression.
 - 🟡 **Move all host services behind the fixed ABI.** Deterministic
   `seed`/`rand`/`randint`/`uniform`, runtime UTF-8 `read<string>`, string
   indexing/length/equality, fixed strings, little-endian `read<integer>` and

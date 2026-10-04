@@ -53,8 +53,14 @@ impl<'a> Lowering<'a> {
     /// Lower an expression to a value in `env`, which may be an aggregate of
     /// leaves rather than a single expression.
     pub(super) fn lower_val_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Val {
+        if let Some(value) = self.source_call_value(e, env) {
+            return value;
+        }
         if matches!(e, ast::Expr::Field { .. } | ast::Expr::Index { .. }) {
             if let Some(value) = self.source_env_access(e, env) {
+                return value;
+            }
+            if let Some(value) = self.source_block_aggregate_access(e, env) {
                 return value;
             }
             if let Some(value) = self.source_signal_aggregate_access(e, env) {
@@ -476,6 +482,28 @@ impl<'a> Lowering<'a> {
 
     /// Lower a system attribute (`'event`, `'old`, `'length`) into its IR form.
     pub(super) fn lower_sysattr(&self, base: &ast::Expr, attr: &str) -> Expr {
+        if let Some(layout) = self.source_call_layout(base) {
+            let range = layout.index_range();
+            let value = match attr {
+                "length" => match &layout.kind {
+                    LayoutKind::Array { range, .. } => range
+                        .and_then(LayoutRange::len)
+                        .and_then(|length| i64::try_from(length).ok()),
+                    _ => layout
+                        .bit_width()
+                        .and_then(|width| i64::try_from(width).ok()),
+                },
+                "left" => range.map(|range| range.left),
+                "right" => range.map(|range| range.right),
+                "low" => range.map(|range| range.left.min(range.right)),
+                "high" => range.map(|range| range.left.max(range.right)),
+                "ascending" => range.map(|range| i64::from(range.ascending())),
+                _ => None,
+            };
+            if let Some(value) = value {
+                return index_label(value);
+            }
+        }
         // `::length` is elaboration-time metadata: an array's element count,
         // else a signal's bit width (they coincide for a flat vector, so one
         // attribute serves both — VHDL's `'length`).
@@ -680,6 +708,9 @@ impl<'a> Lowering<'a> {
 
     /// The signal at the base of an access expression.
     pub(super) fn base_signal(&self, base: &ast::Expr) -> Option<SignalId> {
+        if let Some(signal) = self.source_call_signal(base) {
+            return signal;
+        }
         if let ast::Expr::Path(p) = base {
             if p.segments.len() == 1 {
                 // `self` inside an inlined method body binds to the receiver.

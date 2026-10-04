@@ -719,49 +719,7 @@ impl<'a> Lowering<'a> {
         out
     }
 
-    /// Lower a method call used as a *statement* (`s.send(v)`): inline the
-    /// method's body as drivers, substituting `self` -> receiver and each
-    /// parameter -> its argument, so a body of `self.valid = '1'; self.data =
-    /// value;` drives the receiver's flattened field signals. Returns `false`
-    /// when the receiver's type or the method can't be resolved (the caller
-    /// then leaves the statement to the existing fall-through).
-    /// The body of a method call in statement position, with `self` and the
-    /// parameters substituted — shared by the combinational and sequential
-    /// walkers so a call means the same thing in both. `None` when the call is
-    /// not a known method with a body.
-    pub(super) fn method_stmt_body(
-        &mut self,
-        recv: &ast::Expr,
-        method: &str,
-        args: &[ast::Expr],
-    ) -> Option<Vec<ast::Stmt>> {
-        let ty = self.operand_type_name(recv)?;
-        // `f` borrows the AST (`'a`), not `self`, so it survives the `&mut self`
-        // lowering calls below.
-        let input = args.first().and_then(|arg| match arg {
-            ast::Expr::Construct { ty: Some(ty), .. } if type_head_name(ty) == Some("Range") => {
-                Some("Range".to_string())
-            }
-            _ => self.operand_type_name(arg),
-        });
-        let f = self.find_method(&ty, method, input.as_deref())?;
-        let body = f.body.as_ref()?;
-        let mut map: HashMap<String, ast::Expr> = HashMap::new();
-        map.insert("self".to_string(), recv.clone());
-        for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
-            if let Some(n) = &p.name {
-                map.insert(n.text.clone(), a.clone());
-            }
-        }
-        Some(
-            body.stmts
-                .iter()
-                .map(|s| subst_stmt_paths(s, &map))
-                .collect(),
-        )
-    }
-
-    /// Inline a method call in statement position as combinational drivers.
+    /// Borrow a procedure body and bind its receiver/arguments explicitly.
     pub(super) fn lower_method_stmt(
         &mut self,
         recv: &ast::Expr,
@@ -769,52 +727,17 @@ impl<'a> Lowering<'a> {
         args: &[ast::Expr],
         cond: Option<Expr>,
     ) -> bool {
-        let Some(stmts) = self.method_stmt_body(recv, method, args) else {
-            return false;
-        };
-        let span = ast::expr_span(recv);
-        self.lower_combinational_block(&ast::Block { stmts, span }, cond);
-        true
+        self.lower_source_procedure(Some((recv, method)), recv, args, cond, None)
     }
 
-    /// Inline a free function called in statement position. This is the
-    /// procedure-shaped counterpart of `lower_free_call`: parameters are
-    /// substituted with their concrete expressions, then assignments and
-    /// nested method calls are lowered as ordinary drivers.
-    pub(super) fn free_stmt_body(
-        &mut self,
-        callee: &ast::Expr,
-        args: &[ast::Expr],
-    ) -> Option<Vec<ast::Stmt>> {
-        let f = self.free_fns.get(callee)?;
-        let body = f.body.as_ref()?;
-        let mut map: HashMap<String, ast::Expr> = HashMap::new();
-        for (param, arg) in f.params.iter().filter(|param| !param.is_self).zip(args) {
-            if let Some(name) = &param.name {
-                map.insert(name.text.clone(), arg.clone());
-            }
-        }
-        Some(
-            body.stmts
-                .iter()
-                .map(|stmt| subst_stmt_paths(stmt, &map))
-                .collect(),
-        )
-    }
-
-    /// Inline a free call in statement position as combinational drivers.
+    /// Borrow a free procedure body without caller-expression substitution.
     pub(super) fn lower_free_stmt(
         &mut self,
         callee: &ast::Expr,
         args: &[ast::Expr],
         cond: Option<Expr>,
     ) -> bool {
-        let Some(stmts) = self.free_stmt_body(callee, args) else {
-            return false;
-        };
-        let span = ast::expr_span(callee);
-        self.lower_combinational_block(&ast::Block { stmts, span }, cond);
-        true
+        self.lower_source_procedure(None, callee, args, cond, None)
     }
 
     /// Lower a conversion expression (spec 3.17): `unsigned[16](x)` resizes,
@@ -970,6 +893,18 @@ impl<'a> Lowering<'a> {
     /// declared enum/struct, a suffix literal's target type, an enum variant's
     /// enum, or `integer` for a bare numeric literal.
     pub(super) fn operand_type_name(&self, e: &ast::Expr) -> Option<String> {
+        if let Some(family) = self.source_call_family(e) {
+            return Some(family);
+        }
+        if matches!(e, ast::Expr::Field { .. } | ast::Expr::Index { .. }) {
+            if let Some(family) = self
+                .source_operand_layout(e, &HashMap::new())
+                .as_ref()
+                .and_then(Self::source_layout_family)
+            {
+                return Some(family);
+            }
+        }
         // Resolver-owned source types outrank same-spelled caller signals.
         // A library's `let a: integer` must not inherit the float family of
         // the caller's port `a` and recursively dispatch float arithmetic.

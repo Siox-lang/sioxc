@@ -6,7 +6,7 @@ use super::*;
 pub(super) struct SourceShapeFrame {
     pub(super) values: HashMap<String, SourceLayout>,
     pub(super) return_layout: Option<SourceLayout>,
-    function: bool,
+    pub(super) function: bool,
 }
 
 pub(super) struct SourceShapeGuard<'a>(&'a std::cell::RefCell<Vec<SourceShapeFrame>>);
@@ -103,6 +103,12 @@ impl Lowering<'_> {
         expression: &ast::Expr,
         env: &HashMap<String, Val>,
     ) -> Option<SourceLayout> {
+        if let Some(layout) = self.source_call_layout(expression) {
+            let root = access_steps(expression).map(|(root, _)| root);
+            if root.as_ref().is_none_or(|root| !env.contains_key(root)) {
+                return Some(layout);
+            }
+        }
         if let Some((root, steps)) = access_steps(expression) {
             if env.contains_key(&root) {
                 let mut layout = self.source_bound_layout(&root)?;
@@ -243,7 +249,7 @@ impl Lowering<'_> {
         })
     }
 
-    fn source_packed_slice_bounds(
+    pub(super) fn source_packed_slice_bounds(
         &self,
         layout: &SourceLayout,
         index: &ast::Expr,
@@ -275,7 +281,7 @@ impl Lowering<'_> {
         ))
     }
 
-    fn source_packed_result_layout(
+    pub(super) fn source_packed_result_layout(
         &self,
         layout: &SourceLayout,
         index: &ast::Expr,
@@ -447,7 +453,30 @@ impl Lowering<'_> {
         self.source_access_value(expression, env, value, Some(layout))
     }
 
-    fn source_access_value(
+    /// A selected local aggregate has no signal root. Use the same shape-aware
+    /// projection as parameters instead of forcing it through scalar access.
+    pub(super) fn source_block_aggregate_access(
+        &self,
+        expression: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Val> {
+        let (root, steps) = access_steps(expression)?;
+        if steps.is_empty() || env.contains_key(&root) {
+            return None;
+        }
+        let (_, binding) = self.block_local_named(&root)?;
+        let layout = self.source_operand_layout(expression, env)?;
+        if !matches!(
+            layout.kind,
+            LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+        ) {
+            return None;
+        }
+        let layout = self.source_layout(&binding.ty, &self.cur_env);
+        self.source_access_value(expression, env, binding.value, Some(layout))
+    }
+
+    pub(super) fn source_access_value(
         &self,
         expression: &ast::Expr,
         env: &HashMap<String, Val>,

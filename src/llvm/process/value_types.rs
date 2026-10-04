@@ -8,6 +8,9 @@ use super::*;
 /// that predicate in its key so a shared arena node can latch independently
 /// on different source control-flow paths without cloning the whole cache.
 pub(super) struct ProcessValueCache<'ctx, 'checks> {
+    /// Captured call results are values, not mutable state loads. Clearing
+    /// state-dependent expressions must not execute a captured call again.
+    pub(super) evaluated_calls: HashMap<(ProcessValueId, Option<IntValue<'ctx>>), IntValue<'ctx>>,
     pub(super) emitted:
         HashMap<(ProcessValueId, Option<IntValue<'ctx>>, Option<u32>), IntValue<'ctx>>,
     /// Contextually widened arithmetic is not a layout conversion. Keep its
@@ -21,6 +24,7 @@ pub(super) struct ProcessValueCache<'ctx, 'checks> {
 impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
     pub(super) fn new(checked: &'checks [bool], meta_free: &'checks [bool]) -> Self {
         Self {
+            evaluated_calls: HashMap::new(),
             emitted: HashMap::new(),
             contextual: HashMap::new(),
             checked,

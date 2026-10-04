@@ -72,6 +72,7 @@ impl<'a> Lowering<'a> {
             param_integers: std::cell::RefCell::new(HashSet::new()),
             param_widths: std::cell::RefCell::new(HashMap::new()),
             source_shapes: std::cell::RefCell::new(Vec::new()),
+            source_calls: Vec::new(),
             consts: HashMap::new(),
             const_values: HashMap::new(),
             const_arrays: HashMap::new(),
@@ -835,6 +836,9 @@ impl<'a> Lowering<'a> {
         expression: &ast::Expr,
         env: &HashMap<String, i64>,
     ) -> Option<i64> {
+        if let Some(env) = self.source_call_constants(env) {
+            return eval_const_fns(expression, &env, &self.free_fns, 0);
+        }
         eval_const_fns(expression, env, &self.free_fns, 0)
     }
 }

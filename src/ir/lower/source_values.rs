@@ -14,11 +14,18 @@ pub(super) struct SourceValues {
     pub(super) non_integer: HashMap<ProcessValueId, bool>,
     pub(super) meta_width: HashMap<(ProcessValueId, u32), u32>,
     pub(super) coerced_real: HashMap<ProcessValueId, Expr>,
+    /// Explicit literal planes survive a captured argument without retaining
+    /// its syntax. Computed planes still follow arena dependencies normally.
+    pub(super) explicit_meta: HashMap<ProcessValueId, Expr>,
     meta_epoch: usize,
     meta_presence: Vec<bool>,
 }
 
 impl SourceValues {
+    pub(super) fn set_explicit_meta(&mut self, value: ProcessValueId, meta: Expr) {
+        self.explicit_meta.insert(value, meta);
+        self.meta_presence.clear();
+    }
     pub(super) fn reference(&self, id: ProcessValueId) -> Expr {
         Expr::Canonical {
             value: id,
@@ -52,16 +59,25 @@ impl SourceValues {
             self.meta_presence.clear();
             self.meta_epoch = meta_of.len();
         }
-        for node in &self.ir.values[self.meta_presence.len()..] {
-            let has_meta = match &node.kind {
-                ProcessValueKind::Signal { signals, state } => {
-                    !matches!(state, ProcessSignalState::Event)
-                        && signals.iter().any(|signal| meta_of.contains_key(&signal.0))
-                }
-                kind => super::super::process::process_value_dependencies(kind)
-                    .iter()
-                    .any(|dependency| self.meta_presence[dependency.0 as usize]),
-            };
+        for (index, node) in self
+            .ir
+            .values
+            .iter()
+            .enumerate()
+            .skip(self.meta_presence.len())
+        {
+            let has_meta = self
+                .explicit_meta
+                .contains_key(&ProcessValueId(index as u32))
+                || match &node.kind {
+                    ProcessValueKind::Signal { signals, state } => {
+                        !matches!(state, ProcessSignalState::Event)
+                            && signals.iter().any(|signal| meta_of.contains_key(&signal.0))
+                    }
+                    kind => super::super::process::process_value_dependencies(kind)
+                        .iter()
+                        .any(|dependency| self.meta_presence[dependency.0 as usize]),
+                };
             self.meta_presence.push(has_meta);
         }
         self.meta_presence[id.0 as usize]
@@ -184,6 +200,11 @@ impl SourceValues {
             rewrite(self, &mut expression);
             mapped.push(self.append(&expression, value.span, value.ty.clone()));
         }
+        for (value, meta) in old.explicit_meta {
+            let mut meta = meta;
+            self.remap_expression(&mut meta, &mapped);
+            self.set_explicit_meta(mapped[value.0 as usize], meta);
+        }
         mapped
     }
 
@@ -227,6 +248,12 @@ impl SourceValues {
         let mut live = HashSet::new();
         while let Some(id) = pending.pop() {
             if live.insert(id) {
+                if let Some(meta) = self.explicit_meta.get(&id) {
+                    visit_references(&mut meta.clone(), &mut |id| {
+                        pending.push(id);
+                        self.reference(id)
+                    });
+                }
                 pending.extend(super::super::process::process_value_dependencies(
                     &self.ir.values[id.0 as usize].kind,
                 ));
@@ -253,6 +280,13 @@ impl SourceValues {
         }
         for expression in draft.expressions_mut() {
             self.remap_expression(expression, &mapped);
+        }
+        for (value, meta) in old.explicit_meta {
+            if live.contains(&value) {
+                let mut meta = meta;
+                self.remap_expression(&mut meta, &mapped);
+                self.set_explicit_meta(mapped[value.0 as usize], meta);
+            }
         }
     }
 }
@@ -319,7 +353,7 @@ impl HardwareDraft {
 }
 
 impl Lowering<'_> {
-    fn source_evaluated_width(&self, expression: &Expr) -> Option<u32> {
+    pub(super) fn source_evaluated_width(&self, expression: &Expr) -> Option<u32> {
         match expression {
             Expr::Current(signal) | Expr::Old(signal) => self.out.signal_width(*signal),
             Expr::Event(_) => Some(1),
@@ -612,5 +646,41 @@ mod tests {
             packed_lookup(&bound).is_none(),
             "compaction would bypass the bound stride's evaluation width"
         );
+    }
+
+    #[test]
+    fn captured_literal_planes_survive_rewrite_and_compaction() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 0..1);
+        let mut arena = SourceValues::default();
+        arena.append(&Expr::Const(99), span, None);
+        let value = arena.append(&Expr::Const(8), span, None);
+        let metadata = arena.append(&Expr::Const(0x120), span, None);
+        arena.set_explicit_meta(value, arena.reference(metadata));
+        assert!(arena.may_have_meta(value, &HashMap::new()));
+        let mapped = arena.rewrite(|_, _| {});
+        let value = mapped[value.0 as usize];
+        assert!(arena.may_have_meta(value, &HashMap::new()));
+        let mut draft = HardwareDraft::default();
+        draft.drivers.push(Driver {
+            span: Some(span),
+            target: SignalId(0),
+            cond: None,
+            expr: arena.reference(value),
+            meta: None,
+            ctx: 0,
+        });
+        arena.retain_reachable(&mut draft);
+        assert_eq!(arena.ir.values.len(), 2);
+        let Expr::Canonical { value, .. } = draft.drivers[0].expr else {
+            panic!("canonical value expected");
+        };
+        assert!(arena.may_have_meta(value, &HashMap::new()));
+        let Expr::Canonical {
+            value: metadata, ..
+        } = arena.explicit_meta[&value]
+        else {
+            panic!("canonical plane expected");
+        };
+        assert!(matches!(arena.node(metadata), Expr::Const(0x120)));
     }
 }

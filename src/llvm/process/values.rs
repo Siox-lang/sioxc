@@ -811,6 +811,14 @@ pub(super) fn process_value<'ctx>(
             use inkwell::types::BasicMetadataTypeEnum as MetadataType;
             use inkwell::values::BasicMetadataValueEnum as MetadataValue;
 
+            if let Some(returned) = cache.evaluated_calls.get(&(id, active)).copied() {
+                return if *integer_result {
+                    fit_signed(builder, returned, width)
+                } else {
+                    fit(builder, returned, width)
+                };
+            }
+
             let float = context.f64_type();
             let mut parameter_types = Vec::<MetadataType>::with_capacity(arguments.len());
             let mut argument_values = Vec::<MetadataValue>::with_capacity(arguments.len());
@@ -872,6 +880,7 @@ pub(super) fn process_value<'ctx>(
             } else {
                 returned.into_int_value()
             };
+            cache.evaluated_calls.insert((id, active), returned);
             if *integer_result {
                 fit_signed(builder, returned, width)?
             } else {

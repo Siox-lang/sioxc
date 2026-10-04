@@ -287,6 +287,20 @@ activity. Function returns consume their original bodies and concrete layouts;
 the return-body rewrite and returned-call AST substitution helpers are deleted.
 Nested array initializers recurse through their layouts, and literal/constant
 multiword leaves retain all ABI words instead of only their low word.
+`lower/source_calls.rs` binds hardware statement procedures without rewriting
+their bodies. Arguments are either canonical values or captured places;
+`lower/source_places.rs` owns storage identities, recursive projections,
+selection guards and physical bit maps. Nested calls forward those identities
+instead of reevaluating caller selectors. Callee locals shadow parameters, and
+pure function shape scopes isolate caller procedure bindings. Writes to caller
+locals update their scoped value immediately; signal writes remain staged and
+later signal reads still observe pre-commit state. Combinational and clocked
+calls use the same binding path, including custom index assignment.
+Literal discriminant planes accompany value IDs through normalization and
+reachability compaction. A captured foreign call result is retained within one
+straight-line LLVM helper/block even when a call invalidates mutable state
+loads. These caches do not cross CFG blocks; general effectful call CFGs and
+guarded evaluation remain separate unfinished work.
 Normalization rewrites each dependency once and compacts reachable values
 before constructing hardware CFGs. Typed scalar aliases retain their evaluation format through
 `RawResize` boundaries, so a wider consumer does not reevaluate a whole alias
@@ -296,8 +310,8 @@ Library lexical integer/real types outrank same-spelled caller ports; negative
 range attributes retain signed arithmetic rather than unsigned word constants.
 The old tree-inlining size guard is deleted. Binary32 hardware multiply/add/sub
 now pass the same 44 reference pairs as procedural arithmetic. Resolution,
-metavalue construction, intermediate expression construction, effectful
-statement-call substitution, element-operator expansion and compile-time
+metavalue construction, intermediate expression construction,
+element-operator expansion and compile-time
 initializer normalization still use private fragments; fully arena-native
 ingress remains tracked in TODO.
 

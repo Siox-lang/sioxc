@@ -4,6 +4,51 @@
 
 use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
 
+#[cfg(feature = "llvm")]
+#[test]
+fn procedure_arguments_share_foreign_values_without_caller_name_capture() {
+    let source = "module procedure_sharing;\n\
+        extern \"C\" { fn labs(value: integer) -> integer; }\n\
+        struct Pair { pub first: integer, pub second: integer }\n\
+        fn store(pair: Pair, value: integer) { pair.first = value; pair.second = value; }\n\
+        fn forward(pair: Pair, value: integer) { store(pair, value); }\n\
+        entity E { a: integer in, first: integer out, second: integer out }\n\
+        impl E { let pair: Pair; forward(pair, labs(a)); first = pair.first; second = pair.second; }\n";
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/procedure_sharing.siox", source),
+            Emit::LlvmIr,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let Some(siox::compiler::Artifact::Text(llvm)) = compilation.artifact else {
+        panic!("LLVM IR expected");
+    };
+    let mut calls = 0;
+    let mut maximum = 0;
+    let mut function = "";
+    for line in llvm.lines() {
+        if line.starts_with("define ") {
+            calls = 0;
+            function = line;
+        }
+        if line.contains("call i64 @labs(") {
+            calls += 1;
+        }
+        if line == "}" {
+            assert!(
+                calls <= 1,
+                "{function}: emitted {calls} foreign argument calls"
+            );
+            maximum = maximum.max(calls);
+        }
+    }
+    assert_eq!(maximum, 1, "foreign argument was not exercised");
+}
+
 #[test]
 fn complete_aggregate_stores_cover_all_leaves_without_hiding_partial_latches() {
     for (alternative, expected_latch) in [("else { y = [3, 4]; }", false), ("", true)] {
