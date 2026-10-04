@@ -251,8 +251,8 @@ impl<'a> Lowering<'a> {
             // (`.state = 'Z'`) to its variant.
             let en = self.out.signals[id.0 as usize].enum_type.clone();
             let is_char = self.out.signals[id.0 as usize].char;
-            if let Some(v) = self.const_init_value(value, en.as_deref(), is_char) {
-                self.out.signals[id.0 as usize].init = vec![v];
+            if let Some(words) = self.const_init_words(value, en.as_deref(), is_char) {
+                self.out.signals[id.0 as usize].init = words;
             } else {
                 self.report_non_constant_init(&path, span);
             }
@@ -270,6 +270,12 @@ impl<'a> Lowering<'a> {
         for (elem, i) in elems.into_iter().zip(indices) {
             let path = format!("{prefix}[{i}]");
             let Some(&id) = self.locals.get(&path) else {
+                if self.local_array.contains_key(&path) {
+                    if let ast::Expr::Array { elems, .. } = elem {
+                        self.seed_elements(&path, elems.iter().collect(), span);
+                    }
+                    continue;
+                }
                 // An element that is itself a struct has no scalar leaf of its
                 // own — its fields are `ps[0].a` — so the lookup above found
                 // nothing and the element was skipped in silence, leaving every
@@ -302,8 +308,8 @@ impl<'a> Lowering<'a> {
             };
             let en = self.out.signals[id.0 as usize].enum_type.clone();
             let is_char = self.out.signals[id.0 as usize].char;
-            if let Some(v) = self.const_init_value(elem, en.as_deref(), is_char) {
-                self.out.signals[id.0 as usize].init = vec![v];
+            if let Some(words) = self.const_init_words(elem, en.as_deref(), is_char) {
+                self.out.signals[id.0 as usize].init = words;
             } else {
                 self.report_non_constant_init(&path, span);
             }
@@ -459,6 +465,30 @@ impl<'a> Lowering<'a> {
                  declare `{name}` without a value, then assign it"
             )),
         );
+    }
+
+    /// Literal/constant initializers retain every low-word-first ABI word.
+    pub(super) fn const_init_words(
+        &self,
+        expression: &ast::Expr,
+        target: Option<&str>,
+        is_char: bool,
+    ) -> Option<Vec<u64>> {
+        if let Some((base, digits)) = Self::bit_string_parts(expression) {
+            return Some(self.decode_bit_string_words(base, digits).0);
+        }
+        match lower_const_value(
+            expression,
+            &self.const_values,
+            &self.cur_env,
+            &self.free_fns,
+        ) {
+            Some(Expr::WideConst(words)) => Some(words),
+            Some(Expr::Const(value)) => Some(vec![value]),
+            _ => self
+                .const_init_value(expression, target, is_char)
+                .map(|value| vec![value]),
+        }
     }
 
     /// The initial value of a constant `let` initializer, folded at compile

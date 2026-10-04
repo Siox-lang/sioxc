@@ -119,6 +119,43 @@ fn nested_calls_share_repeated_arguments_without_intermediate_lets() {
     );
 }
 
+#[cfg(feature = "llvm")]
+#[test]
+fn repeated_static_array_parameter_reads_do_not_duplicate_foreign_argument_calls() {
+    let source = "module shared_array;\nextern \"C\" { fn labs(x: integer) -> integer; }\nfn twice(v: integer[2]) -> integer { return v[0] + v[0]; }\nentity E { a: integer in, s: integer out }\nimpl E { s = twice([labs(a), 0]); }\n";
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/shared_array.siox", source),
+            Emit::LlvmIr,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let Some(siox::compiler::Artifact::Text(llvm)) = compilation.artifact else {
+        panic!("LLVM IR expected");
+    };
+    let mut calls = 0;
+    let mut maximum = 0;
+    for line in llvm.lines() {
+        if line.starts_with("define ") {
+            calls = 0;
+        }
+        if line.contains("call i64 @labs(") {
+            calls += 1;
+        }
+        if line == "}" {
+            assert!(
+                calls <= 1,
+                "one entry duplicated the argument call {calls} times"
+            );
+            maximum = maximum.max(calls);
+        }
+    }
+    assert_eq!(maximum, 1, "foreign array argument was not exercised");
+}
+
 #[test]
 fn long_source_alias_chains_are_linear_and_do_not_recurse_per_statement() {
     let source = alias_source(2_000);

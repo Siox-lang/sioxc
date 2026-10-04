@@ -114,6 +114,12 @@ impl<'a> Lowering<'a> {
             param.text.clone(),
             self.bind_source_value(self.lower_val_env(arg, env), ast::expr_span(arg), None),
         );
+        let _shapes = self.source_shape_scope(
+            HashMap::new(),
+            f.ret
+                .as_ref()
+                .map(|ty| self.source_layout(ty, &self.cur_env)),
+        );
         match self.inline_block(&body.stmts, &fenv)? {
             Val::Scalar(value) => Some(value),
             _ => None,
@@ -168,6 +174,12 @@ impl<'a> Lowering<'a> {
                 );
             }
         }
+        let _shapes = self.source_shape_scope(
+            HashMap::new(),
+            f.ret
+                .as_ref()
+                .map(|ty| self.source_layout(ty, &self.cur_env)),
+        );
         self.inline_block(&body.stmts, &fenv)
     }
 
@@ -327,6 +339,7 @@ impl<'a> Lowering<'a> {
         }
         self.inline_depth.set(self.inline_depth.get() + 1);
         let mut fenv: HashMap<String, Val> = HashMap::new();
+        let mut shapes = HashMap::new();
         // Saved param-family bindings to restore after this inline (nesting).
         let mut saved: Vec<(String, Option<String>)> = Vec::new();
         let mut saved_widths: Vec<(String, Option<u32>)> = Vec::new();
@@ -344,7 +357,11 @@ impl<'a> Lowering<'a> {
                 // ...and a character literal for a `Char` parameter is its
                 // code point, not the logic-literal placeholder, which would
                 // otherwise resolve to `Logic` and read 0 for `'A'`.
-                let value = match self.lower_val_env(a, env) {
+                let (argument, layout) = self.lower_source_argument(a, p.ty.as_ref(), env);
+                if let Some(layout) = layout {
+                    shapes.insert(n.text.clone(), layout);
+                }
+                let value = match argument {
                     Val::Scalar(v) => Val::Scalar(
                         self.resolve_char_literal(p.ty.as_ref().and_then(type_head_name), v),
                     ),
@@ -398,53 +415,10 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        // An array-typed parameter has no `Val` to bind to: a `Val` is a scalar
-        // or a set of named fields, and an array is neither — its elements are
-        // separate signals. So `fenv` held nothing useful for it and the body's
-        // `v[0]` resolved to nothing, reporting "has no hardware form" with
-        // help about runtime indices, pointing inside the callee at a line the
-        // caller never wrote. Substituting the parameter's *name* with the
-        // argument turns `v[0]` into `d[0]`, an ordinary element read.
-        //
-        // When one parameter is an array, *every* parameter is substituted:
-        // the body's `v[i]` has to become `q[idx]`, and an index left bound in
-        // the value environment instead reports `i` as an unknown name — that
-        // environment is consulted for a value, not for the index of an
-        // element read. A function with no array parameter keeps its value
-        // bindings, which carry the width and family that a substituted
-        // expression does not.
-        let has_array_param = f.params.iter().filter(|p| !p.is_self).any(|p| {
-            p.ty.as_ref().is_some_and(|ty| {
-                array_of(
-                    ty,
-                    &self.cur_env,
-                    &self.const_ranges,
-                    &self.array_families,
-                    &self.free_fns,
-                )
-                .is_some()
-            })
-        });
-        let array_args: HashMap<String, ast::Expr> = if has_array_param {
-            f.params
-                .iter()
-                .filter(|p| !p.is_self)
-                .zip(args)
-                .filter_map(|(p, a)| Some((p.name.as_ref()?.text.clone(), a.clone())))
-                .collect()
-        } else {
-            HashMap::new()
-        };
+        let return_layout = self.source_function_return_layout(f, &shapes);
+        let _shapes = self.source_shape_scope(shapes, return_layout);
         let out = f.body.as_ref().and_then(|b| {
             let stmts = self.normalize_struct_returns(&b.stmts, f.ret.as_ref());
-            let stmts: Vec<ast::Stmt> = if array_args.is_empty() {
-                stmts
-            } else {
-                stmts
-                    .iter()
-                    .map(|s| subst_stmt_paths(s, &array_args))
-                    .collect()
-            };
             self.inline_block(&stmts, &fenv)
         });
         // The result is a value of the declared return type, so it wraps to
@@ -622,6 +596,10 @@ impl<'a> Lowering<'a> {
         // sysattr in the body (the std `ClockLike` edge methods) resolves to it.
         let saved_self = self.self_signal.replace(self.base_signal(base));
         let mut fenv: HashMap<String, Val> = HashMap::new();
+        let mut shapes = HashMap::new();
+        if let Some(layout) = self.source_operand_layout(base, env) {
+            shapes.insert("self".to_owned(), layout);
+        }
         fenv.insert(
             "self".to_string(),
             self.bind_source_value(self.lower_val_env(base, env), ast::expr_span(base), None),
@@ -654,7 +632,11 @@ impl<'a> Lowering<'a> {
                 // ...and a character literal for a `Char` parameter is its
                 // code point, not the logic-literal placeholder, which would
                 // otherwise resolve to `Logic` and read 0 for `'A'`.
-                let value = match self.lower_val_env(a, env) {
+                let (argument, layout) = self.lower_source_argument(a, p.ty.as_ref(), env);
+                if let Some(layout) = layout {
+                    shapes.insert(n.text.clone(), layout);
+                }
+                let value = match argument {
                     Val::Scalar(v) => Val::Scalar(
                         self.resolve_char_literal(p.ty.as_ref().and_then(type_head_name), v),
                     ),
@@ -713,40 +695,9 @@ impl<'a> Lowering<'a> {
                     .insert("self".to_string(), receiver_width),
             ));
         }
-        // A method's array parameter needs the same substitution a free
-        // function's does — the value environment has no array case, so the
-        // body's `v[0]` resolved to nothing.
-        let array_args: HashMap<String, ast::Expr> =
-            if f.params.iter().filter(|p| !p.is_self).any(|p| {
-                p.ty.as_ref().is_some_and(|ty| {
-                    array_of(
-                        ty,
-                        &self.cur_env,
-                        &self.const_ranges,
-                        &self.array_families,
-                        &self.free_fns,
-                    )
-                    .is_some()
-                })
-            }) {
-                f.params
-                    .iter()
-                    .filter(|p| !p.is_self)
-                    .zip(args)
-                    .filter_map(|(p, a)| Some((p.name.as_ref()?.text.clone(), a.clone())))
-                    .collect()
-            } else {
-                HashMap::new()
-            };
-        let stmts: Vec<ast::Stmt> = if array_args.is_empty() {
-            body.stmts.clone()
-        } else {
-            body.stmts
-                .iter()
-                .map(|s| subst_stmt_paths(s, &array_args))
-                .collect()
-        };
-        let out = self.inline_block(&stmts, &fenv);
+        let return_layout = self.source_function_return_layout(f, &shapes);
+        let _shapes = self.source_shape_scope(shapes, return_layout);
+        let out = self.inline_block(&body.stmts, &fenv);
         for (name, prev) in saved.into_iter().rev() {
             match prev {
                 Some(v) => self.param_types.borrow_mut().insert(name, v),
@@ -1234,18 +1185,37 @@ impl<'a> Lowering<'a> {
         mut stmts: &[ast::Stmt],
         env: &HashMap<String, Val>,
     ) -> Option<Val> {
+        let _scope = self.source_lexical_scope();
         // A long straight-line let chain is not recursion. Clone the lexical
         // environment at most once, then update its compact value bindings.
         let mut scoped = std::borrow::Cow::Borrowed(env);
         while let [ast::Stmt::Let(l), rest @ ..] = stmts {
             let value = l.value.as_ref()?;
+            let layout =
+                l.ty.as_ref()
+                    .map(|ty| self.source_layout(ty, &self.cur_env))
+                    .or_else(|| self.source_operand_layout(value, scoped.as_ref()));
+            let value_ir = match &layout {
+                Some(layout)
+                    if matches!(
+                        layout.kind,
+                        LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+                    ) =>
+                {
+                    self.lower_shaped_source(value, scoped.as_ref(), layout)
+                }
+                _ => self.lower_val_env(value, scoped.as_ref()),
+            };
             let lowered = self.bind_source_value(
-                self.lower_val_env(value, scoped.as_ref()),
+                value_ir,
                 l.span,
                 self.expr_types.get(&ast::expr_span(value)).cloned(),
             );
             let mut attrs = HashMap::new();
             self.bind_range_attrs(&mut attrs, &l.name.text, value, scoped.as_ref());
+            if let Some(layout) = layout {
+                self.bind_source_shape(l.name.text.clone(), layout);
+            }
             let scoped = scoped.to_mut();
             scoped.insert(l.name.text.clone(), lowered);
             scoped.insert(
@@ -1258,7 +1228,18 @@ impl<'a> Lowering<'a> {
         let env = scoped.as_ref();
         match stmts {
             [ast::Stmt::Return { value: Some(v), .. }, ..] => {
-                Some(self.bind_source_value(self.lower_val_env(v, env), ast::expr_span(v), None))
+                let value = match self.source_return_layout() {
+                    Some(layout)
+                        if matches!(
+                            layout.kind,
+                            LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+                        ) =>
+                    {
+                        self.lower_shaped_source(v, env, &layout)
+                    }
+                    _ => self.lower_val_env(v, env),
+                };
+                Some(self.bind_source_value(value, ast::expr_span(v), None))
             }
             [ast::Stmt::If(iff), rest @ ..] => {
                 let cond = self.bind_source_expression(

@@ -273,6 +273,13 @@ recursive leaf layouts. Narrow signed ranges, packed families, real values,
 enum literals and Unicode characters therefore retain their representation
 without turning locals into staged signals. Inlined arguments, receivers and
 return selections share values even without intermediate source lets.
+`lower/source_bindings.rs` owns scoped concrete argument/local/return shapes
+and aggregate projection over those leaves. Pure free/method array arguments
+no longer substitute a caller AST into every parameter use. Returned arrays,
+runtime-selected structs/subarrays, packed bit projections and directed slices
+use the same bindings; checked accesses retain written bounds and activity.
+Nested array initializers recurse through their layouts, and literal/constant
+multiword leaves retain all ABI words instead of only their low word.
 Normalization rewrites each dependency once and compacts reachable values
 before constructing hardware CFGs. Typed scalar aliases retain their evaluation format through
 `RawResize` boundaries, so a wider consumer does not reevaluate a whole alias
@@ -282,9 +289,9 @@ Library lexical integer/real types outrank same-spelled caller ports; negative
 range attributes retain signed arithmetic rather than unsigned word constants.
 The old tree-inlining size guard is deleted. Binary32 hardware multiply/add/sub
 now pass the same 44 reference pairs as procedural arithmetic. Resolution,
-metavalue construction, intermediate expression construction and array-argument
-AST substitution still use private fragments; fully arena-native ingress
-remains tracked in TODO.
+metavalue construction, intermediate expression construction, effectful
+statement-call substitution and compile-time initializer normalization still
+use private fragments; fully arena-native ingress remains tracked in TODO.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The layering is a convention enforced by module discipline; do

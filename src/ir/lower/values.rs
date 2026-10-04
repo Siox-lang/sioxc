@@ -53,10 +53,18 @@ impl<'a> Lowering<'a> {
     /// Lower an expression to a value in `env`, which may be an aggregate of
     /// leaves rather than a single expression.
     pub(super) fn lower_val_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Val {
+        if matches!(e, ast::Expr::Field { .. } | ast::Expr::Index { .. }) {
+            if let Some(value) = self.source_env_access(e, env) {
+                return value;
+            }
+        }
         match e {
             // `self::length` inside an operator-impl body: the bound operand's
             // width (inline_op stashes it under the "param::attr" key).
             ast::Expr::SysAttr { base, attr, .. } => {
+                if let Some(value) = self.source_env_attribute(base, &attr.text, env) {
+                    return Val::Scalar(value);
+                }
                 if let Some(v) =
                     expr_path(base).and_then(|p| env.get(&format!("{p}::{}", attr.text)))
                 {
@@ -327,6 +335,12 @@ impl<'a> Lowering<'a> {
                 env.insert(n.text.clone(), Val::Scalar(v));
             }
         }
+        let _shapes = self.source_shape_scope(
+            HashMap::new(),
+            f.ret
+                .as_ref()
+                .map(|ty| self.source_layout(ty, &self.cur_env)),
+        );
         self.inline_block(&body.stmts, &env)
     }
 

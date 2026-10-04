@@ -113,7 +113,7 @@ pub(in crate::ir) fn array_of<'t>(
         && fns
             .type_head_key(base)
             .is_some_and(|head| families.contains(&head));
-    if is_int_type(base) || base_is_family {
+    if base_is_family {
         return None;
     }
     let bounds = match index.as_ref() {
@@ -132,13 +132,6 @@ pub(in crate::ir) fn array_of<'t>(
         None => (0..eval_const_fns(index, env, fns, 0).unwrap_or(0).max(0)).collect(),
     };
     Some((base, indices))
-}
-
-/// The kernel `integer` scalar (a bare word). Unsigned and signed are nominal
-/// array families recognized structurally, not by name.
-pub(in crate::ir) fn is_int_type(ty: &ast::Type) -> bool {
-    matches!(ty, ast::Type::Path(p)
-        if p.segments.last().map(|s| s.text.as_str()) == Some("integer"))
 }
 
 /// Build `enum name -> bit width`: the `repr` width if given (`enum S: unsigned[2]`),

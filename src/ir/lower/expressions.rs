@@ -824,6 +824,12 @@ impl<'a> Lowering<'a> {
                 (name, ty, width)
             })
             .collect();
+        let _shapes = self.source_shape_scope(
+            HashMap::new(),
+            f.ret
+                .as_ref()
+                .map(|ty| self.source_layout(ty, &self.cur_env)),
+        );
         let out = self.inline_block(&body.stmts, &fenv);
         for (name, ty, width) in saved {
             if let Some(ty) = ty {

@@ -129,19 +129,21 @@ impl SourceValues {
         layout: SourceLayout,
         span: crate::diag::Span,
     ) -> ProcessValueId {
-        let operand = self.append(expression, span, None);
-        if matches!(
-            self.ir.values[operand.0 as usize].kind,
-            ProcessValueKind::RawResize { .. }
-        ) && self
-            .ir
-            .value_layouts
-            .get(operand.0 as usize)
-            .and_then(Option::as_ref)
-            == Some(&layout)
-        {
-            return operand;
+        if let Expr::Canonical { value, .. } = expression {
+            if matches!(
+                self.ir.values[value.0 as usize].kind,
+                ProcessValueKind::RawResize { .. }
+            ) && self
+                .ir
+                .value_layouts
+                .get(value.0 as usize)
+                .and_then(Option::as_ref)
+                == Some(&layout)
+            {
+                return *value;
+            }
         }
+        let operand = self.append(expression, span, None);
         let id = self.bind_scalar(operand, None, span);
         self.ir.values[id.0 as usize].bit_width = layout.packed_width();
         self.ir.value_layouts.resize(self.ir.values.len(), None);
@@ -317,6 +319,36 @@ impl HardwareDraft {
 }
 
 impl Lowering<'_> {
+    fn source_evaluated_width(&self, expression: &Expr) -> Option<u32> {
+        match expression {
+            Expr::Current(signal) | Expr::Old(signal) => self.out.signal_width(*signal),
+            Expr::Event(_) => Some(1),
+            Expr::Const(_) | Expr::Real(_) => Some(64),
+            Expr::WideConst(words) => u32::try_from(words.len()).ok()?.checked_mul(64),
+            Expr::Slice { hi, lo, .. } => hi.checked_sub(*lo)?.checked_add(1),
+            Expr::Canonical { value, .. } => {
+                let arena = self.source_values.borrow();
+                let node = &arena.ir.values[value.0 as usize];
+                node.bit_width.or_else(|| match &node.kind {
+                    ProcessValueKind::Signal {
+                        state: ProcessSignalState::Event,
+                        ..
+                    } => Some(1),
+                    ProcessValueKind::Signal { signals, .. } => {
+                        signals.iter().try_fold(0u32, |total, signal| {
+                            total.checked_add(self.out.signal_width(*signal)?)
+                        })
+                    }
+                    ProcessValueKind::BitSlice { high, low, .. } => {
+                        high.checked_sub(*low)?.checked_add(1)
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn bind_source_expression(&self, expression: Expr, span: crate::diag::Span) -> Expr {
         let Val::Scalar(expression) = self.bind_source_value(Val::Scalar(expression), span, None)
         else {
@@ -331,6 +363,15 @@ impl Lowering<'_> {
         &self,
         value: Val,
         ty: &ast::Type,
+        span: crate::diag::Span,
+    ) -> Val {
+        self.bind_value_layout(value, self.source_layout(ty, &self.cur_env), span)
+    }
+
+    pub(super) fn bind_value_layout(
+        &self,
+        value: Val,
+        layout: SourceLayout,
         span: crate::diag::Span,
     ) -> Val {
         fn leaves(layout: &SourceLayout, prefix: String, out: &mut HashMap<String, SourceLayout>) {
@@ -358,9 +399,8 @@ impl Lowering<'_> {
                 }
             }
         }
-        let layout = self.source_layout(ty, &self.cur_env);
         let bind = |expression: Expr, layout: SourceLayout| {
-            let expression = match (&layout.kind, expression) {
+            let mut expression = match (&layout.kind, expression) {
                 (
                     LayoutKind::Scalar {
                         domain: ScalarDomain::Character,
@@ -387,6 +427,30 @@ impl Lowering<'_> {
                 ) => self.coerce_real(expression),
                 (_, expression) => expression,
             };
+            // Evaluate narrow arithmetic at the storage format before binding
+            // its bits; extending an already-wrapped `-3` cannot recover it.
+            // Existing signal reads and typed boundaries need no extra mask.
+            if matches!(
+                layout.kind,
+                LayoutKind::Packed { .. }
+                    | LayoutKind::Scalar {
+                        domain: ScalarDomain::Integer | ScalarDomain::Bits,
+                        ..
+                    }
+            ) {
+                if let Some(width) = layout.packed_width() {
+                    if self
+                        .source_evaluated_width(&expression)
+                        .is_none_or(|evaluated| evaluated < width)
+                    {
+                        expression = Expr::Slice {
+                            base: Box::new(expression),
+                            hi: width - 1,
+                            lo: 0,
+                        };
+                    }
+                }
+            }
             let mut arena = self.source_values.borrow_mut();
             let id = arena.bind_layout(&expression, layout, span);
             arena.reference(id)

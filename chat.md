@@ -11315,3 +11315,64 @@ fully direct source-expression/normalization construction, array-argument AST
 substitution, general runtime call CFGs/recursion and remaining host-service
 forms. Preserve the 441 unrelated historical chat lines outside this commit.
 No push.
+
+### 2026-10-04 — Codex — aggregate argument ingress ownership
+
+Taking ownership of pure hardware free/method call aggregate bindings and
+inlined aggregate access/return lowering. Replace array-argument AST copying
+with scoped concrete shapes and canonical leaf values, preserving written
+index labels, nested arrays/structs, lexical shadowing and checked activity.
+Statement procedures still use their separate write substitution path; do not
+claim general runtime call CFG support. Add native sibling coverage and run
+the full default/bitpack gate before selective commits. No push.
+
+### 2026-10-04 — Codex — aggregate initializer gap
+
+The new native multiword array-call regression exposed aggregate initializer
+paths still restricted to a single word, and nested array seeding being skipped.
+Also taking ownership of initializer/body leaf seeding to reuse arbitrary-width
+literal parsing, retain all words and recurse through declared array shapes.
+Keep non-constant initializer diagnostics; do not replace them with drivers.
+
+The foreign-argument sharing test also found a stale hardware-only exclusion
+treating integer[N] as packed rather than an ordinary integer array, unlike
+the type checker and constrained-integer syntax. Remove that exclusion in
+lower_helpers/source.rs and layout.rs; keep nominal array-family packing.
+
+### 2026-10-04 — Codex — aggregate packed projections
+
+Before gating the aggregate ingress migration, cover packed element access
+after selecting an array/struct argument. Scoped layouts must preserve checked
+bit labels and explicit/partial slices too, not fall back to a copied caller
+AST. Extend the native array-call regression with these projections.
+
+### 2026-10-04 — Codex — aggregate ingress gated
+
+Pure hardware free/method aggregate arguments now bind canonical leaves and
+scoped concrete layouts instead of substituting caller ASTs into parameter
+uses. Returned arrays, generic identities, inlined array aliases, runtime-
+selected structs/subarrays and aggregate literals share that path. Lexical
+shape lookup stops at the owning function, so caller names cannot leak into
+callee parameters. Packed projections preserve checked labels and directed
+explicit/partial slices. Negative index labels use signed values rather than
+large unsigned word constants; numeric literal leaves retain their evaluation
+format without adding redundant masks to already-typed signal reads.
+
+Nested initializer seeding now recurses through arrays, and literal/constant
+multiword leaves retain all words. Removed the stale hardware exclusion for
+integer[N], matching the type checker's ordinary array semantics. This does
+not claim arbitrary-width constant arithmetic is fully evaluated.
+
+All local CI stages pass under the 8 GiB cap: formatting, frontend checks and
+Clippy, default/bitpack Rust suites, all-feature Clippy, and both 205-program
+corpora. Logs: /tmp/siox-aggregate-ingress-ci-2. Direct default/bitpack native
+array-call simulations pass; their validated VCDs are byte-identical, as are
+repeated default runs. The LLVM sharing regression verifies one foreign call
+per entry for repeated static array-parameter reads; it does not claim general
+effectful call CFG semantics.
+
+Completion estimate: Phase 1 approximately 97%, still incomplete. Remaining:
+fully direct source-expression/normalization construction, effectful
+statement-call substitution, general runtime call CFGs/recursion and remaining
+host-service forms. Preserve the 441 unrelated historical chat lines outside
+this commit. No push.

@@ -66,11 +66,14 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   tree-size guard is removed, with binary32 hardware/procedural conformance and
   long source-chain regressions. Block-local stores now retain declared leaf
   layouts and immediate value IDs; inlined call arguments, receivers and return
-  selections share IDs.
+  selections share IDs. Pure free/method aggregate arguments and returned
+  arrays now use scoped concrete shapes and canonical leaves instead of
+  substituting caller ASTs. Nested arrays/structs, selected subarrays, checked
+  packed projections and directed slices retain their source labels.
   Complete the remaining ingress migration: resolution/metavalue construction,
-  expression construction between these boundaries and array-argument AST
-  substitution still assemble private
-  expression fragments around those IDs.
+  expression construction between these boundaries, effectful statement-call
+  substitution and compile-time initializer normalization still assemble
+  private fragments around those IDs.
   Make every source expression a canonical value at construction, preserving
   concrete layouts, contexts, lookup compaction and staged-write semantics.
 

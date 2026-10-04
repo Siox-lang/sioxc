@@ -649,6 +649,12 @@ impl<'a> Lowering<'a> {
         // enclosing method's receiver.
         let ty = self.param_types.borrow_mut().remove("self");
         let width = self.param_widths.borrow_mut().remove("self");
+        let _shapes = self.source_shape_scope(
+            HashMap::new(),
+            f.ret
+                .as_ref()
+                .map(|ty| self.source_layout(ty, &self.cur_env)),
+        );
         let out = self.inline_block(&body.stmts, &fenv);
         if let Some(ty) = ty {
             self.param_types.borrow_mut().insert("self".to_string(), ty);

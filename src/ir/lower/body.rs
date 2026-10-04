@@ -533,14 +533,19 @@ impl<'a> Lowering<'a> {
                     if let (Some(v), Some(&id)) = (&l.value, self.locals.get(&l.name.text)) {
                         let en = self.out.signals[id.0 as usize].enum_type.clone();
                         let is_char = self.out.signals[id.0 as usize].char;
-                        if let Some(bits) = self.const_init_value(v, en.as_deref(), is_char) {
-                            let w = self.out.signals[id.0 as usize].width;
-                            let masked = if w > 0 && w < 64 {
-                                bits & ((1u64 << w) - 1)
-                            } else {
-                                bits
-                            };
-                            self.out.signals[id.0 as usize].init = vec![masked];
+                        if let Some(mut words) = self.const_init_words(v, en.as_deref(), is_char) {
+                            let width = self.out.signals[id.0 as usize].width;
+                            if width > 0 {
+                                words.truncate(width.div_ceil(64) as usize);
+                                if !width.is_multiple_of(64)
+                                    && words.len() == width.div_ceil(64) as usize
+                                {
+                                    if let Some(last) = words.last_mut() {
+                                        *last &= (1u64 << (width % 64)) - 1;
+                                    }
+                                }
+                            }
+                            self.out.signals[id.0 as usize].init = words;
                         } else {
                             self.report_non_constant_init(&l.name.text, l.span);
                         }

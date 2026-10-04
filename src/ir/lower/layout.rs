@@ -287,7 +287,7 @@ impl<'a> Lowering<'a> {
                     .free_fns
                     .type_head_key(base)
                     .is_some_and(|head| self.array_families.contains(&head));
-            if !is_int_type(base) && !base_is_family {
+            if !base_is_family {
                 return SourceLayout {
                     span,
                     kind: LayoutKind::Array {

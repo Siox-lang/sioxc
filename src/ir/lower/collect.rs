@@ -71,6 +71,7 @@ impl<'a> Lowering<'a> {
             param_types: std::cell::RefCell::new(HashMap::new()),
             param_integers: std::cell::RefCell::new(HashSet::new()),
             param_widths: std::cell::RefCell::new(HashMap::new()),
+            source_shapes: std::cell::RefCell::new(Vec::new()),
             consts: HashMap::new(),
             const_values: HashMap::new(),
             const_arrays: HashMap::new(),

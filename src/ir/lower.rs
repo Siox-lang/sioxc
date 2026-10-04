@@ -18,6 +18,7 @@ mod layout;
 mod metavalue;
 mod operators;
 mod resolution;
+mod source_bindings;
 mod source_processes;
 mod source_values;
 mod values;
@@ -350,6 +351,9 @@ struct Lowering<'a> {
     /// `self'length` inside them fell back to 1, so the sign-bit test shifted
     /// by 0 and `abs(-5)` returned 251.
     param_widths: std::cell::RefCell<HashMap<String, u32>>,
+    /// Lexical aggregate shapes beside canonical leaf bindings. These are
+    /// source normalization context, not a second executable representation.
+    source_shapes: std::cell::RefCell<Vec<source_bindings::SourceShapeFrame>>,
     /// Module-level integer constants (`const N: integer = 4`).
     consts: HashMap<String, i64>,
     /// Exact literal values for module constants, including values wider than
