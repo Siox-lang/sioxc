@@ -29,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 use crate::diag::DiagnosticSink;
 use crate::elab::Hierarchy;
 use crate::resolve::{DefId, Resolved};
-use crate::syntax::ast::{self, BinOp as AstBinOp, UnOp as AstUnOp};
+use crate::syntax::ast::{self, BinOp as AstBinOp};
 use crate::syntax::Module;
 
 mod derive;

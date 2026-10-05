@@ -5,58 +5,12 @@
 
 use super::*;
 
-/// Rewrite `Expr::Logic(c)` in place to `Const(position of c in `lut`)` — the
-/// std-supplied variant map of the default logic type. Recurses into children.
-pub(super) fn resolve_logic_expr(e: &mut Expr, lut: &HashMap<String, u64>) {
-    match e {
-        Expr::MetaCmp {
-            operands, inner, ..
-        } => {
-            for operand in operands {
-                resolve_logic_expr(operand, lut);
-            }
-            resolve_logic_expr(inner, lut);
-        }
-        Expr::Logic(c) => {
-            *e = Expr::Const(lut.get(&format!("'{c}'")).copied().unwrap_or(0));
-        }
-        Expr::Unary { rhs, .. } => resolve_logic_expr(rhs, lut),
-        Expr::Binary { lhs, rhs, .. } => {
-            resolve_logic_expr(lhs, lut);
-            resolve_logic_expr(rhs, lut);
-        }
-        Expr::Slice { base, .. } => resolve_logic_expr(base, lut),
-        Expr::TableLookup { index, .. } => resolve_logic_expr(index, lut),
-        Expr::CheckedIndex { index, valid, .. } => {
-            resolve_logic_expr(index, lut);
-            resolve_logic_expr(valid, lut);
-        }
-        Expr::Select { cond, then, els } => {
-            resolve_logic_expr(cond, lut);
-            resolve_logic_expr(then, lut);
-            resolve_logic_expr(els, lut);
-        }
-        Expr::CCall { args, .. } => {
-            for a in args {
-                resolve_logic_expr(a, lut);
-            }
-        }
-        Expr::Canonical { .. }
-        | Expr::Const(_)
-        | Expr::WideConst(_)
-        | Expr::Real(_)
-        | Expr::Current(_)
-        | Expr::Old(_)
-        | Expr::Event(_)
-        | Expr::Unknown => {}
-    }
-}
-
 /// Rewrite `Slice(Current(v), i, i)` — one element of a metavalue vector — into
 /// its 9-value reconstruction: the companion nibble when it is a metavalue
 /// according to the elaborated encoding, else the source-defined low/high
 /// discriminant selected by the value bit. Recurses; does not descend into the
 /// node it creates (the companion has no companion).
+#[cfg(test)]
 pub(super) fn reconstruct_expr(
     e: &mut Expr,
     meta_of: &HashMap<u32, u32>,
@@ -230,6 +184,7 @@ pub(super) fn reconstruct_expr(
 
 /// Preserve the temporal plane of a value read when looking up its metavalue
 /// companion. `old(v)` must inspect `old(v$meta)`, not the current companion.
+#[cfg(test)]
 pub(super) fn companion_read(expr: &Expr, meta_of: &HashMap<u32, u32>) -> Option<(u32, Expr)> {
     match expr {
         Expr::Current(id) => meta_of
@@ -288,6 +243,7 @@ pub(super) fn collect_named_variants(
 // --- per-element logical metavalue builders (0/1-valued Exprs) --------------
 
 /// `a & b` (bitwise; on 0/1 operands this is logical and).
+#[cfg(test)]
 pub(super) fn and_expr(a: Expr, b: Expr) -> Expr {
     Expr::Binary {
         op: BinOp::And,
@@ -296,6 +252,7 @@ pub(super) fn and_expr(a: Expr, b: Expr) -> Expr {
     }
 }
 /// `a | b`.
+#[cfg(test)]
 pub(super) fn or_expr(a: Expr, b: Expr) -> Expr {
     Expr::Binary {
         op: BinOp::Or,
@@ -304,6 +261,7 @@ pub(super) fn or_expr(a: Expr, b: Expr) -> Expr {
     }
 }
 /// Logical `not` of a 0/1 value: `x == 0`.
+#[cfg(test)]
 pub(super) fn not1(x: Expr) -> Expr {
     Expr::Binary {
         op: BinOp::Eq,
@@ -312,6 +270,7 @@ pub(super) fn not1(x: Expr) -> Expr {
     }
 }
 /// Bit `i` of a value expression.
+#[cfg(test)]
 pub(super) fn bit(e: &Expr, i: u32) -> Expr {
     Expr::Slice {
         base: Box::new(e.clone()),
@@ -322,6 +281,7 @@ pub(super) fn bit(e: &Expr, i: u32) -> Expr {
 
 /// A test for membership in a discriminant set, emitted as a comparison
 /// chain rather than a table read.
+#[cfg(test)]
 pub(super) fn logic_disc_in(discriminant: Expr, members: &std::collections::HashSet<u64>) -> Expr {
     // In discriminant order: iterating the set directly followed its per-map
     // hash seed, so the same design compiled to `m == 0 or m == 1` in one build
@@ -413,6 +373,7 @@ pub(super) fn packed_logic_unary_table(table: &HashMap<u64, u64>) -> Vec<u64> {
 /// and optimizing a very large amount of wide-integer IR. This final lowering
 /// pass recognizes the representation-independent expression shape and gives
 /// every backend the compact operation directly.
+#[cfg(test)]
 pub(super) fn compact_lookup_writes(
     drivers: &mut [Driver],
     event_blocks: &mut [EventBlock],
@@ -458,6 +419,7 @@ pub(super) fn compact_lookup_writes(
 
 /// Replace an unrolled table expression with a shared [`LookupTable`],
 /// interning identical tables so one is emitted per distinct table.
+#[cfg(test)]
 pub(super) fn compact_lookup_expr(
     expr: Expr,
     tables: &mut Vec<LookupTable>,
@@ -555,6 +517,7 @@ pub(super) fn compact_lookup_expr(
 }
 
 /// Recognize `(packed >> (index * element_width))[element_width-1..0]`.
+#[cfg(test)]
 pub(super) fn packed_lookup(expr: &Expr) -> Option<(LookupTable, &Expr)> {
     let Expr::Slice { base, hi, lo: 0 } = expr else {
         return None;
@@ -734,6 +697,7 @@ pub(super) fn materialize(expr: Expr, width: u32, temps: &mut MetaTemps) -> Expr
 /// The discriminant of element `index`: its companion nibble when the
 /// element is a metavalue, otherwise the value plane's bit widened to a
 /// discriminant.
+#[cfg(test)]
 pub(super) fn logic_element_disc(
     value: &Expr,
     meta: &Expr,
@@ -768,6 +732,7 @@ pub(super) fn logic_element_disc(
 ///
 /// The exact set comes from `LogicEncoding::to_x01`; no discriminant interval
 /// or symbol spelling is known here.
+#[cfg(test)]
 pub(super) fn meta_bit(m: &Option<Expr>, i: u32, encoding: &LogicEncoding) -> Expr {
     let Some(m) = m else { return Expr::Const(0) };
     let nibble = Expr::Slice {
@@ -782,6 +747,7 @@ pub(super) fn meta_bit(m: &Option<Expr>, i: u32, encoding: &LogicEncoding) -> Ex
 /// nothing per vector, but it must ask the same question per element as the
 /// logical rule -- a bare `companion != 0` also fires on `'L'`/`'H'`, whose
 /// discriminants are non-zero but whose values are perfectly definite.
+#[cfg(test)]
 pub(super) fn any_unknown(m: &Expr, width: u32, encoding: &LogicEncoding) -> Expr {
     let mut acc = Expr::Const(0);
     for i in 0..width {

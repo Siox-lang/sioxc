@@ -509,7 +509,7 @@ impl<'a> Lowering<'a> {
                 _ => None,
             };
             if let Some(value) = value {
-                return index_label(value);
+                return self.source_index_label(value, ast::expr_span(base));
             }
         }
         // `::length` is elaboration-time metadata: an array's element count,
@@ -578,10 +578,11 @@ impl<'a> Lowering<'a> {
                     _ => unreachable!(),
                 };
                 return if v < 0 {
-                    Expr::Unary {
-                        op: UnOp::Neg,
-                        rhs: Box::new(Expr::Const(v.unsigned_abs())),
-                    }
+                    self.source_values.borrow_mut().unary(
+                        ProcessUnaryOp::Neg,
+                        &Expr::Const(v.unsigned_abs()),
+                        ast::expr_span(base),
+                    )
                 } else {
                     Expr::Const(v as u64)
                 };
@@ -601,7 +602,9 @@ impl<'a> Lowering<'a> {
                     return leaves
                         .into_iter()
                         .map(Expr::Event)
-                        .reduce(or_expr)
+                        .reduce(|left, right| {
+                            self.source_binary(BinOp::Or, &left, &right, ast::expr_span(base))
+                        })
                         .unwrap_or(Expr::Const(0));
                 }
             }

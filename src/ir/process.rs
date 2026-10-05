@@ -4,7 +4,9 @@ use std::collections::HashSet;
 
 use crate::resolve::DefId;
 
-use super::{BinOp, Expr, LayoutDirection, LookupTableId, SignalId, SourceLayout, UnOp};
+use super::{BinOp, LayoutDirection, LookupTableId, SignalId, SourceLayout};
+#[cfg(test)]
+use super::{Expr, UnOp};
 /// Index of a [`ProcessCfg`] in [`ProcessIr::processes`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessId(pub u32);
@@ -1096,12 +1098,10 @@ impl ProcessIr {
         Ok(reads)
     }
 
-    /// Append one already elaborated digital expression to the shared value
-    /// arena. Children are emitted first, preserving the arena's dominance
-    /// invariant. Source lowering uses it for representation-normalized
-    /// expressions; it deliberately carries no frontend-only type text and
-    /// does not consume a scheduler decomposition.
-    pub(crate) fn push_digital_expr(
+    /// Import handcrafted fragments for differential/representation tests.
+    /// No compiler build contains this recursive fixture constructor.
+    #[cfg(test)]
+    pub(crate) fn import_test_fragment(
         &mut self,
         expression: &Expr,
         fallback_span: crate::diag::Span,
@@ -1133,21 +1133,21 @@ impl ProcessIr {
                     UnOp::RealToInt => ProcessUnaryOp::RealToInteger,
                     UnOp::IntToReal => ProcessUnaryOp::IntegerToReal,
                 },
-                operand: self.push_digital_expr(rhs, fallback_span),
+                operand: self.import_test_fragment(rhs, fallback_span),
             },
             Expr::Binary { op, lhs, rhs } => ProcessValueKind::Binary {
                 operation: process_binary_from_digital(*op),
-                left: self.push_digital_expr(lhs, fallback_span),
-                right: self.push_digital_expr(rhs, fallback_span),
+                left: self.import_test_fragment(lhs, fallback_span),
+                right: self.import_test_fragment(rhs, fallback_span),
             },
             Expr::Slice { base, hi, lo } => ProcessValueKind::BitSlice {
-                base: self.push_digital_expr(base, fallback_span),
+                base: self.import_test_fragment(base, fallback_span),
                 high: *hi,
                 low: *lo,
             },
             Expr::TableLookup { table, index } => ProcessValueKind::TableLookup {
                 table: *table,
-                index: self.push_digital_expr(index, fallback_span),
+                index: self.import_test_fragment(index, fallback_span),
             },
             Expr::CheckedIndex {
                 index,
@@ -1156,16 +1156,16 @@ impl ProcessIr {
                 right,
                 span,
             } => ProcessValueKind::CheckedIndex {
-                index: self.push_digital_expr(index, *span),
-                valid: self.push_digital_expr(valid, *span),
+                index: self.import_test_fragment(index, *span),
+                valid: self.import_test_fragment(valid, *span),
                 left: *left,
                 right: *right,
                 span: *span,
             },
             Expr::Select { cond, then, els } => ProcessValueKind::Select {
-                condition: self.push_digital_expr(cond, fallback_span),
-                then_value: self.push_digital_expr(then, fallback_span),
-                else_value: self.push_digital_expr(els, fallback_span),
+                condition: self.import_test_fragment(cond, fallback_span),
+                then_value: self.import_test_fragment(then, fallback_span),
+                else_value: self.import_test_fragment(els, fallback_span),
             },
             Expr::MetaCmp {
                 ne,
@@ -1175,9 +1175,9 @@ impl ProcessIr {
                 not_equal: *ne,
                 operands: operands
                     .iter()
-                    .map(|operand| self.push_digital_expr(operand, fallback_span))
+                    .map(|operand| self.import_test_fragment(operand, fallback_span))
                     .collect(),
-                inner: self.push_digital_expr(inner, fallback_span),
+                inner: self.import_test_fragment(inner, fallback_span),
             },
             Expr::CCall {
                 name,
@@ -1190,7 +1190,7 @@ impl ProcessIr {
                 name: name.clone(),
                 arguments: args
                     .iter()
-                    .map(|argument| self.push_digital_expr(argument, fallback_span))
+                    .map(|argument| self.import_test_fragment(argument, fallback_span))
                     .collect(),
                 float_arguments: f64_args.clone(),
                 integer_arguments: integer_args.clone(),

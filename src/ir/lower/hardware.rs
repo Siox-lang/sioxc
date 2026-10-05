@@ -15,7 +15,7 @@ struct InstanceLocation {
     path: String,
 }
 
-/// Finish representation normalization in the source arena before compaction.
+/// Bind finalized write/guard roots before canonical representation passes.
 /// CFG construction below accepts handles only, never imports source fragments.
 pub(super) fn canonicalize_draft(
     hierarchy: &Hierarchy,
@@ -601,7 +601,7 @@ mod tests {
             is_extern: false,
         });
         let mut values = SourceValues::default();
-        let shared = values.append(
+        let shared = values.import_test_fragment(
             &Expr::CCall {
                 name: "labs".into(),
                 args: vec![Expr::Current(SignalId(0))],
@@ -618,6 +618,8 @@ mod tests {
             lhs: Box::new(values.reference(shared)),
             rhs: Box::new(Expr::Const(1)),
         };
+        let root = values.import_test_fragment(&root, assignment_span, None);
+        let root = values.reference(root);
         let mut draft = HardwareDraft::default();
         for target in [SignalId(1), SignalId(2)] {
             draft.drivers.push(Driver {
@@ -686,7 +688,7 @@ mod tests {
         span: crate::diag::Span,
     ) -> (ProcessIr, ProcessValueId) {
         let mut values = SourceValues::default();
-        let value = values.append(expression, span, None);
+        let value = values.import_test_fragment(expression, span, None);
         let mut ir = values.ir;
         for index in 0..ir.values.len() {
             ir.values[index].bit_width =

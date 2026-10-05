@@ -720,7 +720,7 @@ impl<'a> Lowering<'a> {
             // name a constant not yet resolved).
             let values: Option<Vec<Expr>> = elems
                 .iter()
-                .map(|e| lower_const_value(e, &self.const_values, scope, &self.free_fns))
+                .map(|e| self.lower_const_value(e, scope))
                 .collect();
             if let Some(values) = values {
                 self.const_arrays.insert(name.to_string(), values);
@@ -742,9 +742,7 @@ impl<'a> Lowering<'a> {
                 if let Some(narrow) = self.eval_const(&value, scope) {
                     self.consts.insert(key.clone(), narrow);
                 }
-                let Some(lowered) =
-                    lower_const_value(&value, &self.const_values, scope, &self.free_fns)
-                else {
+                let Some(lowered) = self.lower_const_value(&value, scope) else {
                     return false;
                 };
                 self.const_values.insert(key, lowered);
@@ -766,9 +764,7 @@ impl<'a> Lowering<'a> {
                 if let Some(narrow) = self.eval_const(&value, scope) {
                     self.consts.insert(key.clone(), narrow);
                 }
-                let Some(lowered) =
-                    lower_const_value(&value, &self.const_values, scope, &self.free_fns)
-                else {
+                let Some(lowered) = self.lower_const_value(&value, scope) else {
                     return false;
                 };
                 self.const_values.insert(key, lowered);
@@ -815,9 +811,7 @@ impl<'a> Lowering<'a> {
                     return true;
                 }
             }
-        } else if let Some(value) =
-            lower_const_value(&constant.value, &self.const_values, scope, &self.free_fns)
-        {
+        } else if let Some(value) = self.lower_const_value(&constant.value, scope) {
             self.const_values.insert(name.to_string(), value);
             if let Some(narrow) = self.eval_const(&constant.value, scope) {
                 self.consts.insert(name.to_string(), narrow);

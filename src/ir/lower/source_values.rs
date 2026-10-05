@@ -30,7 +30,9 @@ pub(super) struct SourceValues {
 
 impl SourceValues {
     pub(super) fn set_explicit_meta(&mut self, value: ProcessValueId, meta: Expr) {
-        self.explicit_meta.insert(value, meta);
+        let span = self.ir.values[value.0 as usize].span;
+        let meta = self.append(&meta, span, None);
+        self.explicit_meta.insert(value, self.reference(meta));
         self.meta_presence.clear();
     }
     pub(super) fn reference(&self, id: ProcessValueId) -> Expr {
@@ -96,8 +98,50 @@ impl SourceValues {
         span: crate::diag::Span,
         ty: Option<crate::types::Ty>,
     ) -> ProcessValueId {
+        // Compound source values are constructed by arena operations, never
+        // recursively imported here. A captured ID keeps its existing format.
+        let kind = match expression {
+            Expr::Canonical { value, .. } => return *value,
+            Expr::Const(value) => ProcessValueKind::Number(ProcessNumber::Integer(vec![*value])),
+            Expr::WideConst(words) => {
+                ProcessValueKind::Number(ProcessNumber::Integer(words.clone()))
+            }
+            Expr::Real(value) => ProcessValueKind::Number(ProcessNumber::Real(value.to_bits())),
+            Expr::Logic(character) => ProcessValueKind::Char(*character),
+            Expr::Current(signal) | Expr::Old(signal) | Expr::Event(signal) => {
+                ProcessValueKind::Signal {
+                    signals: vec![*signal],
+                    state: match expression {
+                        Expr::Old(_) => ProcessSignalState::Old,
+                        Expr::Event(_) => ProcessSignalState::Event,
+                        _ => ProcessSignalState::Current,
+                    },
+                }
+            }
+            Expr::Unknown => ProcessValueKind::Invalid,
+            _ => panic!("compound source values must be constructed in the canonical arena"),
+        };
+        self.push_node(
+            ProcessValue {
+                span,
+                ty,
+                bit_width: None,
+                kind,
+            },
+            None,
+        )
+    }
+
+    /// Import only handcrafted test/oracle fixtures, never a source expression.
+    #[cfg(test)]
+    pub(super) fn import_test_fragment(
+        &mut self,
+        expression: &Expr,
+        span: crate::diag::Span,
+        ty: Option<crate::types::Ty>,
+    ) -> ProcessValueId {
         let first = self.ir.values.len();
-        let id = self.ir.push_digital_expr(expression, span);
+        let id = self.ir.import_test_fragment(expression, span);
         if id.0 as usize >= first {
             self.ir.values[id.0 as usize].ty = ty;
         }
@@ -192,9 +236,6 @@ impl SourceValues {
                     .copied()
                     .unwrap_or(0)]));
             }
-        }
-        for meta in self.explicit_meta.values_mut() {
-            resolve_logic_expr(meta, lut);
         }
         self.clear_analysis();
     }
@@ -691,10 +732,25 @@ mod tests {
     use super::*;
 
     #[test]
+    #[should_panic(expected = "compound source values must be constructed in the canonical arena")]
+    fn production_binding_rejects_a_private_fragment_even_in_tests() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 0..1);
+        SourceValues::default().append(
+            &Expr::Binary {
+                op: BinOp::Add,
+                lhs: Box::new(Expr::Const(1)),
+                rhs: Box::new(Expr::Const(2)),
+            },
+            span,
+            None,
+        );
+    }
+
+    #[test]
     fn canonical_lookup_compaction_keeps_formats_sharing_and_failed_shapes() {
         let span = crate::diag::Span::new(crate::diag::FileId(0), 4..9);
         let mut arena = SourceValues::default();
-        let call = arena.append(
+        let call = arena.import_test_fragment(
             &Expr::CCall {
                 name: "next_index".into(),
                 args: vec![Expr::Current(SignalId(0))],
@@ -719,9 +775,9 @@ mod tests {
             hi: 3,
             lo: 0,
         };
-        let first = arena.append(&lookup, span, None);
-        let second = arena.append(&lookup, span, None);
-        let narrowed = arena.append(&lookup, span, None);
+        let first = arena.import_test_fragment(&lookup, span, None);
+        let second = arena.import_test_fragment(&lookup, span, None);
+        let narrowed = arena.import_test_fragment(&lookup, span, None);
         let ProcessValueKind::BitSlice { base, .. } = arena.ir.values[narrowed.0 as usize].kind
         else {
             unreachable!()
@@ -731,7 +787,7 @@ mod tests {
             unreachable!()
         };
         arena.ir.values[offset.0 as usize].bit_width = Some(2);
-        let ordinary = arena.append(
+        let ordinary = arena.import_test_fragment(
             &Expr::Slice {
                 base: Box::new(arena.reference(call)),
                 hi: 3,
@@ -801,7 +857,7 @@ mod tests {
     fn source_operator_nodes_reuse_operand_identities_and_spans() {
         let span = crate::diag::Span::new(crate::diag::FileId(0), 4..9);
         let mut arena = SourceValues::default();
-        let input = arena.append(&Expr::Current(SignalId(0)), span, None);
+        let input = arena.import_test_fragment(&Expr::Current(SignalId(0)), span, None);
         let input = arena.reference(input);
         let product = arena.binary(BinOp::SMul, &input, &input, span);
         let result = arena.unary(ProcessUnaryOp::Neg, &product, span);
@@ -843,7 +899,7 @@ mod tests {
     fn logic_literal_normalization_preserves_canonical_nodes_and_formats() {
         let span = crate::diag::Span::new(crate::diag::FileId(0), 4..9);
         let mut arena = SourceValues::default();
-        let literal = arena.append(&Expr::Logic('Q'), span, None);
+        let literal = arena.import_test_fragment(&Expr::Logic('Q'), span, None);
         let layout = SourceLayout {
             span,
             kind: LayoutKind::Scalar {
@@ -869,14 +925,18 @@ mod tests {
         arena.meta_width.insert((root, 5), 5);
         let original = arena.ir.values[root.0 as usize].clone();
         arena.normalize_logic_literals(&HashMap::from([("'Q'".into(), 23)]));
-        assert_eq!(arena.ir.values.len(), 2);
+        assert_eq!(arena.ir.values.len(), 3);
         assert_eq!(arena.ir.values[root.0 as usize], original);
         assert_eq!(arena.ir.value_layouts[root.0 as usize], Some(layout));
         assert_eq!(
             arena.ir.values[literal.0 as usize].kind,
             ProcessValueKind::Number(ProcessNumber::Integer(vec![23]))
         );
-        assert!(matches!(arena.explicit_meta[&root], Expr::Const(23)));
+        let Expr::Canonical { value: meta, .. } = arena.explicit_meta[&root] else {
+            panic!("literal plane must be canonical before normalization");
+        };
+        assert_eq!(arena.ir.values[meta.0 as usize].span, span);
+        assert!(matches!(arena.node(meta), Expr::Const(23)));
         assert!(arena.meta_width.is_empty());
         assert!(arena.ir.validate(0).is_empty());
     }
@@ -894,9 +954,9 @@ mod tests {
             },
         };
         let mut arena = SourceValues::default();
-        arena.append(&Expr::Const(99), span, None);
-        let base = arena.append(&Expr::Current(SignalId(0)), span, None);
-        let index = arena.append(&Expr::Const(2), span, None);
+        arena.import_test_fragment(&Expr::Const(99), span, None);
+        let base = arena.import_test_fragment(&Expr::Current(SignalId(0)), span, None);
+        let index = arena.import_test_fragment(&Expr::Const(2), span, None);
         let selected = arena.push_node(
             ProcessValue {
                 span,
@@ -906,7 +966,7 @@ mod tests {
             },
             Some(layout.clone()),
         );
-        let condition = arena.append(&Expr::Const(1), span, None);
+        let condition = arena.import_test_fragment(&Expr::Const(1), span, None);
         let root = arena.push_node(
             ProcessValue {
                 span,
@@ -972,7 +1032,7 @@ mod tests {
             },
         };
         let mut arena = SourceValues::default();
-        arena.append(&Expr::Const(99), span, None); // deliberately unreachable
+        arena.import_test_fragment(&Expr::Const(99), span, None); // deliberately unreachable
         let local = arena.bind_layout(&Expr::Current(SignalId(0)), layout.clone(), span);
         let scalar = arena.bind_scalar(local, Some(crate::types::Ty::Integer), span);
         assert_eq!(arena.ir.value_layouts.len(), arena.ir.values.len());
@@ -1005,7 +1065,7 @@ mod tests {
     fn table_recognition_preserves_a_typed_stride_boundary() {
         let span = crate::diag::Span::new(crate::diag::FileId(0), 0..1);
         let mut arena = SourceValues::default();
-        let stride = arena.append(
+        let stride = arena.import_test_fragment(
             &Expr::Binary {
                 op: BinOp::Mul,
                 lhs: Box::new(Expr::Current(SignalId(0))),
@@ -1026,8 +1086,8 @@ mod tests {
         };
         let unbound = lookup(stride);
         let bound = lookup(bound);
-        let unbound_id = arena.append(&unbound, span, None);
-        let bound_id = arena.append(&bound, span, None);
+        let unbound_id = arena.import_test_fragment(&unbound, span, None);
+        let bound_id = arena.import_test_fragment(&bound, span, None);
         let bound_node = arena.ir.values[bound_id.0 as usize].clone();
         let mut tables = Vec::new();
         arena.compact_lookups(&mut tables, &mut HashMap::new());
@@ -1043,9 +1103,9 @@ mod tests {
     fn captured_literal_planes_survive_reconstruction_and_compaction() {
         let span = crate::diag::Span::new(crate::diag::FileId(0), 0..1);
         let mut arena = SourceValues::default();
-        arena.append(&Expr::Const(99), span, None);
-        let value = arena.append(&Expr::Const(8), span, None);
-        let metadata = arena.append(&Expr::Const(0x120), span, None);
+        arena.import_test_fragment(&Expr::Const(99), span, None);
+        let value = arena.import_test_fragment(&Expr::Const(8), span, None);
+        let metadata = arena.import_test_fragment(&Expr::Const(0x120), span, None);
         arena.set_explicit_meta(value, arena.reference(metadata));
         assert!(arena.may_have_meta(value, &HashMap::new()));
         let mapped =

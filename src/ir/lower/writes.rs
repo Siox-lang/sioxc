@@ -46,7 +46,7 @@ impl<'a> Lowering<'a> {
                         let condition = self.source_binary(
                             BinOp::Eq,
                             &lowered_index,
-                            &index_label(position),
+                            &self.source_index_label(position, ast::expr_span(index)),
                             span,
                         );
                         result = self.source_select(&condition, &element(position)?, &result, span);
@@ -82,7 +82,7 @@ impl<'a> Lowering<'a> {
                 let position = self.source_binary(
                     BinOp::Sub,
                     &lowered_index,
-                    &index_label(left.min(right)),
+                    &self.source_index_label(left.min(right), ast::expr_span(index)),
                     span,
                 );
                 let position = self.bind_source_scalar(position, span, crate::types::Ty::Integer);
@@ -253,7 +253,7 @@ impl<'a> Lowering<'a> {
             let hit = self.source_binary(
                 BinOp::Eq,
                 &lowered_index,
-                &index_label(position),
+                &self.source_index_label(position, ast::expr_span(index)),
                 ast::expr_span(index),
             );
             for (field, expr) in &fields {
@@ -529,7 +529,7 @@ impl<'a> Lowering<'a> {
                         let matches = self.source_binary(
                             BinOp::Eq,
                             &lowered_index,
-                            &index_label(position),
+                            &self.source_index_label(position, ast::expr_span(index)),
                             ast::expr_span(index),
                         );
                         self.dynamic_write_targets(
@@ -574,7 +574,7 @@ impl<'a> Lowering<'a> {
                 let position = self.source_binary(
                     BinOp::Sub,
                     &lowered_index,
-                    &index_label(left.min(right)),
+                    &self.source_index_label(left.min(right), ast::expr_span(index)),
                     span,
                 );
                 let position = self.bind_source_scalar(position, span, crate::types::Ty::Integer);
@@ -874,8 +874,9 @@ mod tests {
                     let resolved = Resolved::default();
                     let lowering = Lowering::new(&mut sink, &resolved);
                     let operand = |name: &str| {
-                        lowering.bind_source_expression(
-                            Expr::CCall {
+                        let mut arena = lowering.source_values.borrow_mut();
+                        let value = arena.import_test_fragment(
+                            &Expr::CCall {
                                 name: name.into(),
                                 args: vec![],
                                 f64_args: vec![],
@@ -884,7 +885,9 @@ mod tests {
                                 integer_ret: true,
                             },
                             operand_span,
-                        )
+                            None,
+                        );
+                        arena.reference(value)
                     };
                     let base = operand("base");
                     let value = operand("value");

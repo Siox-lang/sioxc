@@ -2,20 +2,6 @@
 
 use super::*;
 
-/// Source index labels keep their signed domain. A negative label's raw u64
-/// bit pattern instead compares as a large positive value against an integer.
-pub(in crate::ir) fn index_label(value: i64) -> Expr {
-    if value < 0 {
-        Expr::Binary {
-            op: BinOp::SSub,
-            lhs: Box::new(Expr::Const(0)),
-            rhs: Box::new(Expr::Const(value.unsigned_abs())),
-        }
-    } else {
-        Expr::Const(value as u64)
-    }
-}
-
 /// Whether a pattern matches everything, including a `_` written inside an
 /// alternation (`A | _`).
 pub(in crate::ir) fn pattern_has_wildcard(p: &ast::Pattern) -> bool {
@@ -49,14 +35,6 @@ pub(in crate::ir) fn expr_is_event(e: &ast::Expr) -> bool {
         ast::Expr::Binary { lhs, rhs, .. } => expr_is_event(lhs) || expr_is_event(rhs),
         ast::Expr::Field { base, .. } | ast::Expr::Index { base, .. } => expr_is_event(base),
         _ => false,
-    }
-}
-
-/// Convert an AST prefix operator into its IR form.
-pub(in crate::ir) fn lower_unop(op: AstUnOp) -> UnOp {
-    match op {
-        AstUnOp::Not => UnOp::Not,
-        AstUnOp::Neg => UnOp::Neg,
     }
 }
 
@@ -136,51 +114,6 @@ pub(in crate::ir) fn words_const(mut words: Vec<u64>) -> Expr {
         [] => Expr::Const(0),
         [word] => Expr::Const(*word),
         _ => Expr::WideConst(words),
-    }
-}
-
-/// Fold a constant expression using the already-folded constants in scope.
-pub(in crate::ir) fn lower_const_value(
-    expression: &ast::Expr,
-    exact: &HashMap<String, Expr>,
-    narrow: &HashMap<String, i64>,
-    fns: &FunctionIndex<'_>,
-) -> Option<Expr> {
-    match expression {
-        ast::Expr::Int { text, .. } if text.contains('.') => {
-            text.replace('_', "").parse().ok().map(Expr::Real)
-        }
-        ast::Expr::Int { text, .. } => integer_const(text),
-        ast::Expr::Path(path) => fns.constant_path_key(path).and_then(|key| {
-            exact
-                .get(&key)
-                .cloned()
-                .or_else(|| narrow.get(&key).map(|value| Expr::Const(*value as u64)))
-        }),
-        ast::Expr::Unary { op, rhs, .. } => Some(Expr::Unary {
-            op: lower_unop(*op),
-            rhs: Box::new(lower_const_value(rhs, exact, narrow, fns)?),
-        }),
-        ast::Expr::Binary { op, lhs, rhs, .. } => Some(Expr::Binary {
-            op: lower_binop(op.clone())?,
-            lhs: Box::new(lower_const_value(lhs, exact, narrow, fns)?),
-            rhs: Box::new(lower_const_value(rhs, exact, narrow, fns)?),
-        }),
-        ast::Expr::IfExpr {
-            cond, then, els, ..
-        } => Some(Expr::Select {
-            cond: Box::new(lower_const_value(cond, exact, narrow, fns)?),
-            then: Box::new(lower_const_value(then, exact, narrow, fns)?),
-            els: Box::new(lower_const_value(els, exact, narrow, fns)?),
-        }),
-        ast::Expr::SuffixLit { text, suffix, .. } => Some(Expr::Binary {
-            op: BinOp::Mul,
-            lhs: Box::new(integer_const(text)?),
-            rhs: Box::new(Expr::Const(
-                ast::suffix_scale(&suffix.text).unwrap_or(1) as u64
-            )),
-        }),
-        _ => None,
     }
 }
 

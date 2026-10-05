@@ -90,9 +90,11 @@ leave that pass. Source contexts retain multi-target combinational writes,
 independently of the backend's per-target scheduler grouping.
 Derived writes retain canonical `%vN` value references and checked sensitivity
 lists instead of expanding those graphs again. Hardware and procedural LLVM
-entries use the same Process value emitter. Hardware function locals already
-bind shared arena values, including std-defined floating-point arithmetic;
-remaining source-expression fragments are the unfinished ingress migration.
+entries use the same Process value emitter. Hardware function locals and compound
+source/constant expressions build shared arena values, including std-defined
+floating-point arithmetic. Finalized write/guard roots enter that arena before
+representation normalization; the recursive production expression importer and
+fragment walks are removed.
 See
 [the current Process IR ingress boundary](architecture.md#current-process-ir-ingress-boundary).
 

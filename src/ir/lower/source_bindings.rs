@@ -240,10 +240,11 @@ impl Lowering<'_> {
             _ => return None,
         };
         Some(if value < 0 {
-            Expr::Unary {
-                op: UnOp::Neg,
-                rhs: Box::new(Expr::Const(value.unsigned_abs())),
-            }
+            self.source_values.borrow_mut().unary(
+                ProcessUnaryOp::Neg,
+                &Expr::Const(value.unsigned_abs()),
+                ast::expr_span(base),
+            )
         } else {
             Expr::Const(value as u64)
         })
@@ -360,9 +361,19 @@ impl Lowering<'_> {
             let labels = loop_range(range.left, range.right);
             let lowered = self.bind_source_expression(self.lower_scalar_env(index, env), span);
             let (&first, rest) = labels.split_first()?;
-            let mut valid = self.source_binary(BinOp::Eq, &lowered, &index_label(first), span);
+            let mut valid = self.source_binary(
+                BinOp::Eq,
+                &lowered,
+                &self.source_index_label(first, span),
+                span,
+            );
             for &label in rest {
-                let equal = self.source_binary(BinOp::Eq, &lowered, &index_label(label), span);
+                let equal = self.source_binary(
+                    BinOp::Eq,
+                    &lowered,
+                    &self.source_index_label(label, span),
+                    span,
+                );
                 valid = self.source_binary(BinOp::Or, &valid, &equal, span);
             }
             let checked = self.source_values.borrow_mut().checked_index(
@@ -375,7 +386,12 @@ impl Lowering<'_> {
             let mut result = Expr::Const(0);
             for label in labels.into_iter().rev() {
                 let physical = u32::try_from(i128::from(label) - i128::from(low)).ok()?;
-                let condition = self.source_binary(BinOp::Eq, &checked, &index_label(label), span);
+                let condition = self.source_binary(
+                    BinOp::Eq,
+                    &checked,
+                    &self.source_index_label(label, span),
+                    span,
+                );
                 let selected = self.source_slice(&value, physical, physical, span);
                 result = self.source_select(&condition, &selected, &result, span);
             }
@@ -524,11 +540,19 @@ impl Lowering<'_> {
                     );
                     let span = ast::expr_span(index);
                     let (&first, rest) = indices.split_first()?;
-                    let mut valid =
-                        self.source_binary(BinOp::Eq, &lowered, &index_label(first), span);
+                    let mut valid = self.source_binary(
+                        BinOp::Eq,
+                        &lowered,
+                        &self.source_index_label(first, span),
+                        span,
+                    );
                     for &position in rest {
-                        let equal =
-                            self.source_binary(BinOp::Eq, &lowered, &index_label(position), span);
+                        let equal = self.source_binary(
+                            BinOp::Eq,
+                            &lowered,
+                            &self.source_index_label(position, span),
+                            span,
+                        );
                         valid = self.source_binary(BinOp::Or, &valid, &equal, span);
                     }
                     let checked = self.source_values.borrow_mut().checked_index(
@@ -547,7 +571,7 @@ impl Lowering<'_> {
                                 self.source_binary(
                                     BinOp::Eq,
                                     &checked,
-                                    &index_label(position),
+                                    &self.source_index_label(position, span),
                                     span,
                                 ),
                                 candidate,

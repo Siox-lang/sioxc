@@ -920,20 +920,5 @@ impl<'a> Lowering<'a> {
         for expression in self.hardware.expressions_mut() {
             arena.remap_expression(expression, &mapped);
         }
-        for d in &mut self.hardware.drivers {
-            if let Some(c) = &mut d.cond {
-                reconstruct_expr(c, &meta_of, &elems, &encodings);
-            }
-            reconstruct_expr(&mut d.expr, &meta_of, &elems, &encodings);
-        }
-        for b in &mut self.hardware.event_blocks {
-            reconstruct_expr(&mut b.condition, &meta_of, &elems, &encodings);
-            for u in &mut b.updates {
-                if let Some(c) = &mut u.cond {
-                    reconstruct_expr(c, &meta_of, &elems, &encodings);
-                }
-                reconstruct_expr(&mut u.expr, &meta_of, &elems, &encodings);
-            }
-        }
     }
 }

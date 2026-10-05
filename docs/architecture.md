@@ -244,13 +244,15 @@ writes. Independent resolved targets receive independent synthetic contexts,
 and constant implementation helpers retain their source owner even when their
 expressions have no signal reads.
 
-After representation normalization, every executable draft write and guard is
-bound in `SourceValues` before reachability compaction. Hardware CFG construction
+After driver-context/metavalue propagation, every executable draft write and
+guard is bound in `SourceValues` before representation normalization and
+reachability compaction. Hardware CFG construction
 then reads canonical handles only; its separate digital-expression importer is
 removed. Compaction therefore includes the finalized roots and retains shared
 dependencies, sensitivity and assignment/context spans. Natural-width annotation
-still runs once over the dependency-ordered arena. This final normalization
-boundary does not replace the remaining private-fragment AST constructors.
+still runs once over the dependency-ordered arena. Reconstruction, literal
+resolution and lookup compaction operate only on that arena; their production
+fragment walks have been removed.
 
 `source_processes.rs` retains those CFGs and their value arena while attaching
 procedural/test state. It places procedural entries before existing hardware
@@ -259,9 +261,10 @@ their values or CFGs. Each CFG carries an explicit `ProcessRegion`, so reactive
 testbench clocks cannot be mistaken for combinational or event hardware.
 `derive.rs` reconstructs compatibility scheduler forms from those hardware
 regions and rejects procedural CFG/value shapes. The normalized-hardware
-importer is deleted. Frontend expression normalization still uses temporary
-fragments around arena references; native execution never traverses them or
-translates them into C.
+importer is deleted. Compound frontend expressions construct arena nodes
+directly. Flat literals/reads bind without recursion, and captured handles
+retain their existing formats. Native execution never traverses frontend syntax
+or translates it into C.
 
 The derived scheduler view stores `Expr::Canonical` roots, not copies of
 those value graphs. Each root carries its `ProcessValueId` and a compact
@@ -285,9 +288,8 @@ without turning locals into staged signals. Inlined arguments, receivers and
 return selections share values even without intermediate source lets.
 Reachability compaction moves canonical nodes and remaps their operand IDs
 directly, preserving widths, layouts, spans and shared dependencies without
-an expression-tree roundtrip. Source if-expressions also construct their
-Select node directly in that arena; other ingress paths still use the
-temporary expression adapter.
+an expression-tree roundtrip. Source if-expressions construct their Select node
+directly in that arena; no recursive production expression ingress remains.
 Common unary/binary builders now construct canonical nodes too, across scalar,
 inlined and aggregate-element paths, including packed logical operations.
 Selected signed/unsigned/float domains and operator spans stay on those nodes.
@@ -302,8 +304,10 @@ constructs comparison guards and companion slices directly. Current/old planes,
 checked offsets, full formats and shared operands survive; unchanged nodes are
 not projected/imported. This removes the general source-arena rewrite adapter.
 Its focused implementation is in `lower/source_values/reconstruct.rs`.
-Private-fragment reconstruction, coercions, other constructors and initializer
-normalization still need migration.
+The earlier fragment reconstruction and lookup algorithms remain only as
+test-only differential oracles. Handcrafted oracle fixtures use an explicitly
+named `import_test_fragment` constructor excluded from compiler builds; the
+production binding function rejects compound private fragments even in tests.
 `lower/source_values/build.rs` constructs source slices, checked indices and
 muxes directly in the arena. Persisted/local packed reads, dynamic aggregate
 selection, ascending/descending slices, captured-place reads, conditional local
@@ -315,8 +319,8 @@ Explicit kernel scalar bindings wrap canonical operands too: wide packed
 consumers must resize the bound result rather than widen its index arithmetic.
 These explicit boundaries are distinct from inferred type hints when capturing
 generic function values; a hint must not override an arena-owned format.
-These are value operations: raw metadata helpers and compile-time initializer
-normalization still have their own fragment ingress pending migration.
+Raw metadata helpers and compile-time constant expressions use the same arena
+builders. Literal companion planes bind there before normalization too.
 `lower/source_bindings.rs` owns scoped concrete argument/local/return shapes
 and aggregate projection over those leaves. Pure free/method array arguments
 no longer substitute a caller AST into every parameter use. Returned arrays,
@@ -401,9 +405,16 @@ bit semantics. Static/dynamic partial-write masks and source-order selections
 also use arena builders, as do branch/match/index guards and captured
 procedure-place projections. Constant index hits remain unconditional for
 coverage and write merging; canonical guard operands retain their own formats.
-The old private guard constructors are removed. Other source expressions and
-compile-time initializer normalization still use private
-fragments; fully arena-native ingress remains tracked in TODO.
+The old private guard constructors are removed. Foreign calls, numeric
+conversions, marked vector comparisons, signed range attributes and constant
+expressions construct canonical nodes too. Calls retain callee/argument source
+anchors and ABI flags; negative labels retain signed arithmetic, including
+`i64::MIN`. Constant roots are shared across their consumers instead of being
+imported once per use. The production `push_digital_expr` importer is deleted.
+Implicit real promotion of an already evaluated integer call/read/conversion
+keeps its original arena ID and inserts an integer-to-real conversion. It must
+not reimport a shallow fragment or reinterpret integer storage as f64 bits.
+Full pipeline exit verification remains tracked in TODO.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The layering is a convention enforced by module discipline; do

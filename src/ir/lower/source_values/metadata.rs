@@ -165,7 +165,7 @@ mod tests {
     fn canonical_logic_tables_keep_shared_operands_and_compact_without_projection() {
         let span = crate::diag::Span::new(crate::diag::FileId(0), 10..20);
         let mut arena = SourceValues::default();
-        let input = arena.append(
+        let input = arena.import_test_fragment(
             &Expr::CCall {
                 name: "read_disc".into(),
                 args: vec![],

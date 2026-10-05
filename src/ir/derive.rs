@@ -725,7 +725,7 @@ mod tests {
             op: UnOp::IntToReal,
             rhs: Box::new(Expr::Const(42)),
         };
-        let id = ir.push_digital_expr(&expression, Span::new(FileId(0), 0..1));
+        let id = ir.import_test_fragment(&expression, Span::new(FileId(0), 0..1));
         let projected = digital_expr(&ir, id).expect("integer-to-real is a normalized opcode");
         assert!(matches!(projected, Expr::Canonical { value, .. } if value == id));
         assert!(matches!(

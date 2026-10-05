@@ -12558,3 +12558,113 @@ direct arena migration before deleting it. General runtime call CFGs,
 non-packed conversions and dynamic host forms remain tracked separately.
 Runtime copy reduction remains explicitly deferred; snapshots and staged writes
 are unchanged.
+
+### 2026-10-05 — Codex — own remaining source constructors/normalization
+
+Previous goal turn made verified progress: 1bacc70 and 7acf26b are committed,
+both full gates/native parity checks passed, and no test jobs remain live.
+Own calls/operators/attributes and their source-value builders, canonical
+normalization ordering in lower.rs/hardware/metavalue, passes.rs fragment
+walk removal where no production callers remain, regressions and docs.
+Move remaining foreign-call/conversion/range/comparison construction into the
+arena; normalize finalized roots there rather than walking private fragments.
+Do not merely relocate or rename the temporary importer: delete its production
+path only when actual callers no longer require compound fragments. Preserve
+char/enum contextual resolution, signed range bounds, kernel/real boundaries,
+checked reads, raw companion intent, lookup tables, spans and staged writes.
+The graph query is truncated and must be followed by direct caller inspection.
+Preserve AGENTS.md, .codex/ and 441 historical chat additions. Copy reduction
+is deferred; no main push or new dependency is authorized/needed.
+
+### 2026-10-05 — Codex — resume canonical constructors and normalization
+
+The latest user request leaves unnecessary-copy reduction deferred. Resume the
+owned, uncommitted source constructor migration toward the Phase 1 exit gate.
+The previous check handle is missing; a fresh check found a stale import after
+moving format attributes onto Lowering. Fix that and inspect normalization
+ordering before changing it. Own the same lowering files, SourceValues,
+hardware root binding, passes.rs and associated tests/docs. Preserve other
+agents' AGENTS.md, .codex/ and historical chat edits. No push or copy removal.
+
+### 2026-10-05 — Codex — canonical ingress verification freeze
+
+Compound constants now construct arena values directly; foreign calls,
+conversions, range attributes and marked comparisons use the existing builders.
+Finalized hardware roots bind before reconstruction/literal resolution/lookup
+compaction. Production private-fragment walks and recursive push_digital_expr
+ingress are removed. Handcrafted test fixtures use a cfg(test)-only importer;
+production append rejects compound fragments even in the unit-test build.
+Four new regressions cover that contract, signed minimum range bounds, foreign
+callee/argument anchors and shared constant roots. Library tests pass (524).
+The first full gate failed frontend Clippy on Expr/UnOp imports now used only
+by the fixture importer; stopped its scope and confirmed exit 143. Move those
+imports behind cfg(test), then all-target/all-feature Clippy passes.
+The revised full gate freezes execution-input hash
+8f43d99cbef312f4c19817472d47b1eb9ec29f5400ed14f5d42563577cf34ef0
+at /tmp/siox-source-ingress-v2-ci-j2-20261005. Do not edit executable inputs
+while this gate runs. Corpus hash remains
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325;
+sibling checkout HEAD ce3c8a5 is clean. Full native parity and exit audit remain
+unproven. Documentation now describes actual canonical construction, and TODO
+tracks the exit audit rather than the completed migration history.
+
+### 2026-10-05 — Codex — real coercion fallback ingress gap
+
+During the broader ingress audit, a valid in-memory/CLI probe
+`y = labs(x) + 0.5` reproduced the production append invariant panic. The
+canonical coerce_real fallback projected a ForeignCall to a private fragment,
+then tried to bind it recursively. The old fallback also reinterpreted an
+unconverted integer read as real bits. Stop the v2 full gate before changing
+inputs; preserve its partial results, but do not claim it passed. Own the
+coercion fallback and a new sibling corpus regression for foreign/read/indexed
+and converted integer promotion, then rerun the whole gate. No copy audit.
+
+### 2026-10-05 — Codex — canonical coercion fixed; revised gate
+
+Canonical real coercion now converts evaluated integer foreign/read/conversion
+and bit-operation values by ID instead of reimporting a shallow fragment or
+reinterpreting their bits. The focused Rust regression passes; the fresh native
+canonical_real_coercion_test passes both timed sets of independent arithmetic
+assertions and emits VCD. The sibling fixture is the only new corpus change.
+Gate v2 was stopped deliberately and its command returned 143; its default
+212-count claims must not be inferred (it used the prior 211-program inputs).
+Gate v3 at /tmp/siox-source-ingress-v3-ci-j2-20261005 freezes execution hash
+fec50b88103a60e18ca8d8fcd47583f49d702453c425a4faa5ac24cfdb8759bc
+and 212-program corpus hash
+02b754484013d34bc080115fe20cc273d939d5c0d7509846e53aa0ee21333ae0.
+The default native comparison job uses a fresh compiler copied only after a
+successful build (SHA-256 64d68e7f47ed7f5b01a142455538622583030710b2188b9a02fabdba16ecc56f).
+It covers 35 unchanged designs against 7acf26b plus the new coercion regression;
+bitpack and decoded FST parity will follow. No executable input edits until the
+gate is terminal. No main push; final Phase 1 audit still unproven.
+
+### 2026-10-05 — Codex — production fragment ingress removed and verified
+
+The v3 full CI command completed with exit 0: formatting, frontend check/Clippy,
+build, default/bitpack Rust suites (525/505 library tests and all integrations,
+including 36 build_binary tests per mode), all-target/all-feature Clippy and
+both 212-program corpora pass. Frozen execution/corpus hashes still match.
+The native comparison jobs both returned 0: 36 cases per mode, including 35
+unchanged before/after byte-identical VCDs, all cross-mode VCDs, 68 observable
+FSTs decoded to the same named events, and four signal-free FST rejections
+(exit 2, no output file). Fresh bitpack compiler SHA-256:
+c2af330ad8974cc8593ba6e3ebf8af5775a300fcb06d2d3c1b2cd26ca9dfcaff.
+The previous compiler builds the new coercion fixture but its executable exits
+1 at the independent foreign-result assertion; the corrected one passes both
+timed epochs. Emitted LLVM also contains signed integer-to-real conversion of
+the original foreign/read/converted/shift values. Sibling regression committed
+as 3eee150; its checkout is clean. No push.
+
+Commit only owned source constructors/constant lowering, normalization ordering,
+strict flat binding, test-only fixture/oracle isolation, five regressions,
+docs/TODO and these appended log entries. Ponytail kept this on existing arena
+builders with no dependency or new runtime operation. Graphify's code graph is
+updated (5224 nodes/13814 edges); vendored extractor warnings persist and its
+truncated query is navigation, not completion evidence. Preserve AGENTS.md,
+.codex/ and 441 historical chat insertions.
+Completion estimate: Phase 1 approximately 99%, not complete. The production
+recursive expression importer is gone; the final requirement-by-requirement
+pipeline/language audit remains to prove the actual end state. General runtime
+call CFGs/recursion, non-packed conversions and dynamic host forms remain
+listed in TODO. Runtime copy reduction remains deferred; staged writes, old
+snapshots, suspension state and companion planes are unchanged.

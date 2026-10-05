@@ -88,11 +88,12 @@ impl<'a> Lowering<'a> {
         // unsigned number, and `1 << (0 - Self'low)` lost its bits.
         let bound = |value: i64| {
             if value < 0 {
-                Expr::Binary {
-                    op: BinOp::SSub,
-                    lhs: Box::new(Expr::Const(0)),
-                    rhs: Box::new(Expr::Const(value.unsigned_abs())),
-                }
+                self.source_binary(
+                    BinOp::SSub,
+                    &Expr::Const(0),
+                    &Expr::Const(value.unsigned_abs()),
+                    ast::expr_span(callee),
+                )
             } else {
                 Expr::Const(value as u64)
             }
@@ -301,15 +302,33 @@ impl<'a> Lowering<'a> {
                 .collect();
             let f64_ret = is_type(&f.ret, "real");
             let integer_ret = is_type(&f.ret, "integer");
-            let args = args.iter().map(|a| self.lower_scalar_env(a, env)).collect();
-            return Some(Val::Scalar(Expr::CCall {
-                name: f.name.text.clone(),
-                args,
-                f64_args,
-                integer_args,
-                f64_ret,
-                integer_ret,
-            }));
+            let arguments = args
+                .iter()
+                .map(|a| {
+                    let value = self.lower_scalar_env(a, env);
+                    self.source_values
+                        .borrow_mut()
+                        .append(&value, ast::expr_span(a), None)
+                })
+                .collect();
+            let mut arena = self.source_values.borrow_mut();
+            let value = arena.push_node(
+                ProcessValue {
+                    span: ast::expr_span(callee),
+                    ty: None,
+                    bit_width: None,
+                    kind: ProcessValueKind::ForeignCall {
+                        name: f.name.text.clone(),
+                        arguments,
+                        float_arguments: f64_args,
+                        integer_arguments: integer_args,
+                        float_result: f64_ret,
+                        integer_result: integer_ret,
+                    },
+                },
+                None,
+            );
+            return Some(Val::Scalar(arena.reference(value)));
         }
         // Constant arguments: run the body statically.
         let consts: Option<Vec<i64>> = args
@@ -428,12 +447,10 @@ impl<'a> Lowering<'a> {
         // Only a scalar result has a declared width to wrap to; a struct's
         // leaves were already masked field by field as the body built them.
         let out = match (out, f.ret.as_ref()) {
-            (Some(Val::Scalar(v)), Some(ret)) => {
-                Some(Val::Scalar(self.bind_source_expression(
-                    self.mask_to_type_width(v, ret),
-                    ast::expr_span(callee),
-                )))
-            }
+            (Some(Val::Scalar(v)), Some(ret)) => Some(Val::Scalar(self.bind_source_expression(
+                self.mask_to_type_width(v, ret, ast::expr_span(callee)),
+                ast::expr_span(callee),
+            ))),
             (v, _) => v,
         };
         for (name, prev) in saved.into_iter().rev() {
@@ -457,7 +474,12 @@ impl<'a> Lowering<'a> {
 
     /// Wrap `v` to the width of declared type `ret`, when that is a bounded
     /// vector. A `real`, a kernel `integer` or an unknown width is left alone.
-    pub(super) fn mask_to_type_width(&self, v: Expr, ret: &ast::Type) -> Expr {
+    pub(super) fn mask_to_type_width(
+        &self,
+        v: Expr,
+        ret: &ast::Type,
+        span: crate::diag::Span,
+    ) -> Expr {
         if type_head_name(ret).is_some_and(|h| matches!(h, "real" | "integer")) {
             return v;
         }
@@ -471,11 +493,7 @@ impl<'a> Lowering<'a> {
         if w == 0 || w >= 64 {
             return v;
         }
-        Expr::Binary {
-            op: BinOp::And,
-            lhs: Box::new(v),
-            rhs: Box::new(Expr::Const((1u64 << w) - 1)),
-        }
+        self.source_binary(BinOp::And, &v, &Expr::Const((1u64 << w) - 1), span)
     }
 
     /// Find a method `name` on type `ty`: an inherent-impl method
@@ -793,11 +811,7 @@ impl<'a> Lowering<'a> {
                         );
                         let v = self.lower_scalar_env(args.first()?, env);
                         return Some(if w > 0 && w < 64 {
-                            Expr::Slice {
-                                base: Box::new(v),
-                                hi: w - 1,
-                                lo: 0,
-                            }
+                            self.source_slice(&v, w - 1, 0, ast::expr_span(callee))
                         } else {
                             v
                         });
@@ -866,25 +880,23 @@ impl<'a> Lowering<'a> {
         if to_real {
             // ...and so is crossing into it: `real(n)` is the number n.
             if !self.is_real_expr(&v) {
-                v = Expr::Unary {
-                    op: UnOp::IntToReal,
-                    rhs: Box::new(v),
-                };
+                v = self.source_values.borrow_mut().unary(
+                    ProcessUnaryOp::IntegerToReal,
+                    &v,
+                    ast::expr_span(callee),
+                );
             }
             return Some(v);
         }
         if self.is_real_expr(&v) {
-            v = Expr::Unary {
-                op: UnOp::RealToInt,
-                rhs: Box::new(v),
-            };
+            v = self.source_values.borrow_mut().unary(
+                ProcessUnaryOp::RealToInteger,
+                &v,
+                ast::expr_span(callee),
+            );
         }
         Some(match target_w {
-            Some(w) if w > 0 && w < 64 => Expr::Slice {
-                base: Box::new(v),
-                hi: w - 1,
-                lo: 0,
-            },
+            Some(w) if w > 0 && w < 64 => self.source_slice(&v, w - 1, 0, ast::expr_span(callee)),
             _ => v,
         })
     }

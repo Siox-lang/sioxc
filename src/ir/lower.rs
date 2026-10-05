@@ -155,6 +155,10 @@ pub fn lower_in(
     l.prepare_test_input_metavalues(modules, hier);
     l.resolve_driver_contexts();
     l.propagate_metavalues();
+    // Finalized write/guard roots join their operands before representation
+    // passes. Reconstruction, literal resolution and lookup recognition all
+    // operate on the same dependency-ordered canonical arena.
+    hardware::canonicalize_draft(hier, &l.out, &mut l.hardware, l.source_values.get_mut());
     l.reconstruct_reads();
     l.lint_combinational_loops();
     l.lint_undriven_outputs();
@@ -164,12 +168,6 @@ pub fn lower_in(
     // `Const`s — no raw chars, no compiler-side value table.
     l.normalize_logic_literals();
     l.compact_source_lookups();
-    compact_lookup_writes(
-        &mut l.hardware.drivers,
-        &mut l.hardware.event_blocks,
-        &mut l.out.lookup_tables,
-    );
-    hardware::canonicalize_draft(hier, &l.out, &mut l.hardware, l.source_values.get_mut());
     l.source_values.get_mut().retain_reachable(&mut l.hardware);
     l.out.process_ir = hardware::lower(
         hier,

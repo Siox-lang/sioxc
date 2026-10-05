@@ -283,7 +283,14 @@ impl<'a> Lowering<'a> {
                 .windows(2)
                 .all(|pair| i128::from(pair[1]) - i128::from(pair[0]) == step);
         if contiguous {
-            let bound = |op, label| self.source_binary(op, &lowered, &index_label(label), span);
+            let bound = |op, label| {
+                self.source_binary(
+                    op,
+                    &lowered,
+                    &self.source_index_label(label, ast::expr_span(index)),
+                    span,
+                )
+            };
             let valid = self.source_binary(
                 BinOp::And,
                 &bound(BinOp::Ge, low),
@@ -296,9 +303,19 @@ impl<'a> Lowering<'a> {
                     .checked_index(&lowered, &valid, left, right, span),
             );
         }
-        let mut valid = self.source_binary(BinOp::Eq, &lowered, &index_label(first), span);
+        let mut valid = self.source_binary(
+            BinOp::Eq,
+            &lowered,
+            &self.source_index_label(first, ast::expr_span(index)),
+            span,
+        );
         for &label in rest {
-            let equal = self.source_binary(BinOp::Eq, &lowered, &index_label(label), span);
+            let equal = self.source_binary(
+                BinOp::Eq,
+                &lowered,
+                &self.source_index_label(label, ast::expr_span(index)),
+                span,
+            );
             valid = self.source_binary(BinOp::Or, &valid, &equal, span);
         }
         Some(
@@ -334,8 +351,12 @@ impl<'a> Lowering<'a> {
         let mut result = Expr::Const(0);
         for (logical, physical) in positions.into_iter().rev() {
             let span = ast::expr_span(index);
-            let condition =
-                self.source_binary(BinOp::Eq, &lowered_index, &index_label(logical), span);
+            let condition = self.source_binary(
+                BinOp::Eq,
+                &lowered_index,
+                &self.source_index_label(logical, ast::expr_span(index)),
+                span,
+            );
             let selected = self.source_slice(&value, physical, physical, span);
             result = self.source_select(&condition, &selected, &result, span);
         }
@@ -395,7 +416,7 @@ impl<'a> Lowering<'a> {
                         let condition = self.source_binary(
                             BinOp::Eq,
                             &lowered_index,
-                            &index_label(position),
+                            &self.source_index_label(position, ast::expr_span(index)),
                             span,
                         );
                         result = self.source_select(&condition, &element(position)?, &result, span);
@@ -655,7 +676,8 @@ impl<'a> Lowering<'a> {
                                         let hit = self.source_binary(
                                             BinOp::Eq,
                                             &lowered_index,
-                                            &index_label(logical),
+                                            &self
+                                                .source_index_label(logical, ast::expr_span(index)),
                                             ast::expr_span(index),
                                         );
                                         let fire = self.source_and(cond.clone(), hit, span);
@@ -705,7 +727,7 @@ impl<'a> Lowering<'a> {
                                 let hit = self.source_binary(
                                     BinOp::Eq,
                                     &lowered_index,
-                                    &index_label(position),
+                                    &self.source_index_label(position, ast::expr_span(index)),
                                     ast::expr_span(index),
                                 );
                                 let fire =
@@ -935,7 +957,7 @@ impl<'a> Lowering<'a> {
                     let matches = self.source_binary(
                         BinOp::Eq,
                         &lowered_index,
-                        &index_label(position),
+                        &self.source_index_label(position, ast::expr_span(index)),
                         ast::expr_span(index),
                     );
                     let found = self.block_dynamic_targets(

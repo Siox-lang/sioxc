@@ -461,6 +461,58 @@ impl<'a> Lowering<'a> {
         );
     }
 
+    /// Constants use the source arena too, including their evaluation spans.
+    /// This is deliberately independent of hardware signal lookup: an unknown
+    /// constant must defer to the next fixed-point round, not read storage.
+    pub(super) fn lower_const_value(
+        &self,
+        expression: &ast::Expr,
+        scope: &HashMap<String, i64>,
+    ) -> Option<Expr> {
+        let span = ast::expr_span(expression);
+        match expression {
+            ast::Expr::Int { text, .. } if text.contains('.') => {
+                text.replace('_', "").parse().ok().map(Expr::Real)
+            }
+            ast::Expr::Int { text, .. } => integer_const(text),
+            ast::Expr::Path(path) => self.free_fns.constant_path_key(path).and_then(|key| {
+                self.const_values
+                    .get(&key)
+                    .cloned()
+                    .or_else(|| scope.get(&key).map(|value| Expr::Const(*value as u64)))
+            }),
+            ast::Expr::Unary { op, rhs, .. } => {
+                let rhs = self.lower_const_value(rhs, scope)?;
+                let operation = match op {
+                    ast::UnOp::Neg => ProcessUnaryOp::Neg,
+                    ast::UnOp::Not => ProcessUnaryOp::Not,
+                };
+                Some(self.source_values.borrow_mut().unary(operation, &rhs, span))
+            }
+            ast::Expr::Binary { op, lhs, rhs, .. } => {
+                let operation = lower_binop(op.clone())?;
+                let lhs = self.lower_const_value(lhs, scope)?;
+                let rhs = self.lower_const_value(rhs, scope)?;
+                Some(self.source_binary(operation, &lhs, &rhs, span))
+            }
+            ast::Expr::IfExpr {
+                cond, then, els, ..
+            } => {
+                let cond = self.lower_const_value(cond, scope)?;
+                let then = self.lower_const_value(then, scope)?;
+                let els = self.lower_const_value(els, scope)?;
+                Some(self.source_select(&cond, &then, &els, span))
+            }
+            ast::Expr::SuffixLit { text, suffix, .. } => Some(self.source_binary(
+                BinOp::Mul,
+                &integer_const(text)?,
+                &Expr::Const(ast::suffix_scale(&suffix.text).unwrap_or(1) as u64),
+                span,
+            )),
+            _ => None,
+        }
+    }
+
     /// Literal/constant initializers retain every low-word-first ABI word.
     pub(super) fn const_init_words(
         &self,
@@ -471,12 +523,7 @@ impl<'a> Lowering<'a> {
         if let Some((base, digits)) = Self::bit_string_parts(expression) {
             return Some(self.decode_bit_string_words(base, digits).0);
         }
-        match lower_const_value(
-            expression,
-            &self.const_values,
-            &self.cur_env,
-            &self.free_fns,
-        ) {
+        match self.lower_const_value(expression, &self.cur_env) {
             Some(Expr::WideConst(words)) => Some(words),
             Some(Expr::Const(value)) => Some(vec![value]),
             _ => self

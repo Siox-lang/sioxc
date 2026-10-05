@@ -1,6 +1,5 @@
 //! Source-owned operator dispatch over already evaluated operands.
 
-use super::expressions::bind_format_attrs;
 use super::*;
 
 pub(super) struct OperatorOperand {
@@ -122,7 +121,7 @@ impl Lowering<'_> {
                 Val::Scalar(Expr::Const(u64::from(operand.width))),
             );
             if let Some((left, right)) = operand.range {
-                bind_format_attrs(&mut env, name, left, right);
+                self.bind_format_attrs(&mut env, name, left, right, function.span);
             }
             hidden.push(name.to_owned());
         };

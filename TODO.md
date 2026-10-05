@@ -55,75 +55,19 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
 Owns signals, canonical process control flow, initializers, layouts, enum/logic
 metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
 
-- 🟡 **Complete canonical source-value lowering.** Hardware CFG construction
-  now precedes public scheduler decomposition and retains source contexts;
-  the scheduler-to-Process importer is deleted. Derived scheduling forms retain
-  canonical value IDs and checked sensitivity lists; their LLVM helpers
-  delegate to the common Process value emitter, so projection does not expand
-  shared DAGs. Inlined function locals now bind arena IDs; representation
-  rewrites retain sharing, types, spans and sensitivity. Typed scalar aliases
-  freeze their evaluation format before later consumers widen them. The old
-  tree-size guard is removed, with binary32 hardware/procedural conformance and
-  long source-chain regressions. Block-local stores now retain declared leaf
-  layouts and immediate value IDs; inlined call arguments, receivers and return
-  selections share IDs. Pure free/method aggregate arguments and returned
-  arrays now use scoped concrete shapes and canonical leaves instead of
-  substituting caller ASTs. Nested arrays/structs, selected subarrays, checked
-  packed projections and directed slices retain their source labels.
-  Whole aggregate writes now share recursive canonical leaf mapping across
-  combinational signals, clocked signals and immediate block locals; nested
-  stores/read selections, directed reindexing, matches and struct spreads keep
-  that path. Pure functions borrow their bodies without return-AST rewriting.
-  Hardware statement procedures now borrow their bodies too: scoped value
-  arguments share canonical IDs, writable arguments capture storage identities,
-  dynamic selections and physical slice maps. Nested calls forward places;
-  block-local writes remain immediate and signal writes remain staged. Literal
-  planes survive binding/rewriting/compaction, and captured foreign results are
-  reused within a straight-line LLVM helper/block without caching mutable state
-  across calls or CFG boundaries. Array operators now consume canonical
-  operands once, recursively pair written positions, and dispatch source-owned
-  element implementations without per-element AST expansion. Returned/selected
-  arrays, negative labels, contextual packed literals, user struct operators
-  and multiword elements use this path. Lookup recognition does not expand a
-  shared foreign call when an ordinary slice is not a lookup table.
-  Reachability compaction now moves canonical nodes and remaps their operand
-  IDs directly, preserving full formats without expression projection/import.
-  Source if-expressions and common unary/binary builders (including aggregate
-  elements and packed logical operations) construct arena nodes directly with
-  selected arithmetic domains and source spans. Logic-literal normalization
-  updates canonical leaves in place from std's discriminants without remapping
-  IDs or losing formats. Canonical lookup compaction now directly recognizes
-  and replaces matching nodes in place, preserving formats, shared indices and
-  typed stride boundaries without projection/import. Metavalue reconstruction
-  now moves/remaps dependencies and constructs guards and companion reads
-  directly, preserving current/old planes, checked offsets and full formats;
-  the general source-arena rewrite adapter is deleted. Other constructors and
-  private-fragment normalization paths still use the temporary ingress adapter.
-  Finalized hardware write/guard roots now enter the source arena before
-  reachability compaction; CFG construction consumes IDs only, without its
-  separate digital-expression importer. The source-normalization ingress
-  remains until the constructors below build canonical values directly.
-  Packed/local/persisted reads, checked indices, captured-place reads,
-  conditional local stores and scalar/aggregate selections now build canonical
-  nodes directly; aggregate `if`/`match` selections share one condition and
-  no longer use the tree-building `select_val` helper. Concatenation shifts/joins,
-  real-context arithmetic/conditional coercions and local width boundaries now
-  use the same arena builders, retaining operand and canonical source anchors.
-  Logical/unary/arithmetic companions, encoding-table lookups, element-wise
-  scalar/vector resolution, neutral planes and encoded packed-write projections
-  now construct canonical values. Physical bit projections carry normalization
-  intent through reconstruction/compaction, so reordered enum discriminants
-  cannot turn raw storage bits into decoded source reads. Removed the old
-  production value-bit, unary-table, repeated-plane and meta-nibble tree helpers.
-  Static/dynamic partial-write masks, source-order value/companion selections,
-  branch/match/index guards and captured procedure-place projections now use
-  the arena builders too. Constant index hits remain unconditional, and guard
-  operands retain their explicit evaluation formats. The old private guard
-  builders are removed. Complete the remaining ingress migration: other source
-  expressions and compile-time initializer
-  normalization still assemble private fragments around those IDs.
-  Make every source expression a canonical value at construction, preserving
-  concrete layouts, contexts, lookup compaction and staged-write semantics.
+- 🟡 **Canonical pipeline exit audit.** Compound hardware source and
+  compile-time constant expressions now construct canonical arena nodes;
+  finalized write/guard roots bind before representation normalization.
+  Production recursive expression ingress and fragment walks are removed.
+  Complete the requirement-by-requirement Phase 1 audit with fresh full
+  default/`bitpack` gates and emitted native results, diagnostics, VCD/FST,
+  time/delta progression and resolved-value evidence. Verify that no frontend
+  path or backend projection restores a second executable representation.
+  Test-only fixture imports and differential oracles must stay excluded from
+  compiler builds. Preserve exact layouts, source contexts, shared identities,
+  checked/raw reads and staged writes. See
+  [`docs/architecture.md`](docs/architecture.md#current-process-ir-ingress-boundary)
+  for implementation details; unsupported execution forms remain listed below.
 
 ## LLVM
 

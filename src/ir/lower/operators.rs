@@ -174,21 +174,6 @@ impl<'a> Lowering<'a> {
             .unwrap_or_default();
         let arena = self.source_values.get_mut();
         arena.normalize_logic_literals(&lut);
-        for d in &mut self.hardware.drivers {
-            if let Some(c) = &mut d.cond {
-                resolve_logic_expr(c, &lut);
-            }
-            resolve_logic_expr(&mut d.expr, &lut);
-        }
-        for b in &mut self.hardware.event_blocks {
-            resolve_logic_expr(&mut b.condition, &lut);
-            for u in &mut b.updates {
-                if let Some(c) = &mut u.cond {
-                    resolve_logic_expr(c, &lut);
-                }
-                resolve_logic_expr(&mut u.expr, &lut);
-            }
-        }
     }
 
     /// Coerce a driven value to the target's representation: integer
@@ -278,7 +263,31 @@ impl<'a> Lowering<'a> {
                 }
                 let node = self.source_node(value);
                 let span = self.source_values.borrow().ir.values[value.0 as usize].span;
-                let real = self.coerce_real(node, span);
+                let real = match node {
+                    Expr::Const(_)
+                    | Expr::Unary { op: UnOp::Neg, .. }
+                    | Expr::Select { .. }
+                    | Expr::Binary {
+                        op:
+                            BinOp::Add
+                            | BinOp::SAdd
+                            | BinOp::Sub
+                            | BinOp::SSub
+                            | BinOp::Mul
+                            | BinOp::SMul
+                            | BinOp::Div
+                            | BinOp::SDiv,
+                        ..
+                    } => self.coerce_real(node, span),
+                    // An integer call/read/conversion/bit operation is already
+                    // evaluated in its own format. Convert that exact value,
+                    // never project/reimport it or reinterpret its bits.
+                    _ => self.source_values.borrow_mut().unary(
+                        ProcessUnaryOp::IntegerToReal,
+                        &e,
+                        span,
+                    ),
+                };
                 let real = match self.bind_source_value(Val::Scalar(real), span, None) {
                     Val::Scalar(real) => real,
                     Val::Fields(_) => unreachable!(),
@@ -290,6 +299,11 @@ impl<'a> Lowering<'a> {
                 real
             }
             Expr::Const(v) => Expr::Real(v as f64),
+            Expr::Current(_) | Expr::Old(_) => {
+                self.source_values
+                    .borrow_mut()
+                    .unary(ProcessUnaryOp::IntegerToReal, &e, span)
+            }
             Expr::Unary { op: UnOp::Neg, rhs } => {
                 let rhs = self.coerce_real(*rhs, span);
                 self.source_binary(BinOp::FSub, &Expr::Real(0.0), &rhs, span)
@@ -313,7 +327,7 @@ impl<'a> Lowering<'a> {
                         let rhs = self.coerce_real(*rhs, span);
                         self.source_binary(f, &lhs, &rhs, span)
                     }
-                    None => Expr::Binary { op, lhs, rhs },
+                    None => self.source_binary(op, &lhs, &rhs, span),
                 }
             }
             e => e,
@@ -365,11 +379,27 @@ impl<'a> Lowering<'a> {
         if !vector(lhs) && !vector(rhs) {
             return built;
         }
-        Expr::MetaCmp {
-            ne: matches!(op, A::Ne),
-            operands: vec![self.lower_expr(lhs), self.lower_expr(rhs)],
-            inner: Box::new(built),
-        }
+        let left = self.lower_expr(lhs);
+        let right = self.lower_expr(rhs);
+        let mut arena = self.source_values.borrow_mut();
+        let left = arena.append(&left, ast::expr_span(lhs), None);
+        let right = arena.append(&right, ast::expr_span(rhs), None);
+        let span = ast::expr_span(lhs).to(ast::expr_span(rhs));
+        let inner = arena.append(&built, span, None);
+        let value = arena.push_node(
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: None,
+                kind: ProcessValueKind::MetaCompare {
+                    not_equal: matches!(op, A::Ne),
+                    operands: vec![left, right],
+                    inner,
+                },
+            },
+            None,
+        );
+        arena.reference(value)
     }
 
     /// Build a binary IR node, selecting the unsigned, signed or float form from

@@ -736,13 +736,30 @@ impl<'a> Lowering<'a> {
         match e {
             ast::Expr::Path(_) => {
                 let path = expr_path(e)?;
-                let bound = |attr: &str| match env.get(&format!("{path}::{attr}")) {
-                    Some(Val::Scalar(Expr::Const(value))) => Some(*value as i64),
-                    Some(Val::Scalar(Expr::Unary { op: UnOp::Neg, rhs })) => match rhs.as_ref() {
-                        Expr::Const(value) => i64::try_from(-i128::from(*value)).ok(),
+                let bound = |attr: &str| {
+                    let Val::Scalar(value) = env.get(&format!("{path}::{attr}"))? else {
+                        return None;
+                    };
+                    let node = match value {
+                        Expr::Canonical { value, .. } => self.source_node(*value),
+                        value => value.clone(),
+                    };
+                    match node {
+                        Expr::Const(value) => Some(value as i64),
+                        Expr::Unary { op: UnOp::Neg, rhs } => match rhs.as_ref() {
+                            Expr::Const(value) => i64::try_from(-i128::from(*value)).ok(),
+                            _ => None,
+                        },
+                        Expr::Binary {
+                            op: BinOp::SSub,
+                            lhs,
+                            rhs,
+                        } if matches!(lhs.as_ref(), Expr::Const(0)) => match rhs.as_ref() {
+                            Expr::Const(value) => i64::try_from(-i128::from(*value)).ok(),
+                            _ => None,
+                        },
                         _ => None,
-                    },
-                    _ => None,
+                    }
                 };
                 if let (Some(left), Some(right)) = (bound("left"), bound("right")) {
                     return Some((left, right));
@@ -770,7 +787,7 @@ impl<'a> Lowering<'a> {
         let Some((left, right)) = self.operand_range(operand, env) else {
             return;
         };
-        bind_format_attrs(fenv, name, left, right);
+        self.bind_format_attrs(fenv, name, left, right, ast::expr_span(operand));
     }
 
     /// The written (left, right) constant bounds of a slice index: a range
@@ -1052,31 +1069,33 @@ impl<'a> Lowering<'a> {
             ty = alias;
         }
     }
-}
-
-/// Bind `name'left`, `'right`, `'high` and `'low` for an index range.
-pub(super) fn bind_format_attrs(
-    fenv: &mut HashMap<String, Val>,
-    name: &str,
-    left: i64,
-    right: i64,
-) {
-    for (attr, value) in [
-        ("left", left),
-        ("right", right),
-        ("high", left.max(right)),
-        ("low", left.min(right)),
-    ] {
-        fenv.insert(
-            format!("{name}::{attr}"),
-            Val::Scalar(if value < 0 {
-                Expr::Unary {
-                    op: UnOp::Neg,
-                    rhs: Box::new(Expr::Const(value.unsigned_abs())),
-                }
-            } else {
-                Expr::Const(value as u64)
-            }),
-        );
+    /// Bind `name'left`, `'right`, `'high` and `'low` for an index range.
+    pub(super) fn bind_format_attrs(
+        &self,
+        fenv: &mut HashMap<String, Val>,
+        name: &str,
+        left: i64,
+        right: i64,
+        span: crate::diag::Span,
+    ) {
+        for (attr, value) in [
+            ("left", left),
+            ("right", right),
+            ("high", left.max(right)),
+            ("low", left.min(right)),
+        ] {
+            fenv.insert(
+                format!("{name}::{attr}"),
+                Val::Scalar(if value < 0 {
+                    self.source_values.borrow_mut().unary(
+                        ProcessUnaryOp::Neg,
+                        &Expr::Const(value.unsigned_abs()),
+                        span,
+                    )
+                } else {
+                    Expr::Const(value as u64)
+                }),
+            );
+        }
     }
 }

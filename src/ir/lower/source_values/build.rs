@@ -100,6 +100,24 @@ impl SourceValues {
 }
 
 impl Lowering<'_> {
+    /// Negative source labels retain signed arithmetic rather than a raw word.
+    pub(in crate::ir::lower) fn source_index_label(
+        &self,
+        value: i64,
+        span: crate::diag::Span,
+    ) -> Expr {
+        if value < 0 {
+            self.source_binary(
+                BinOp::SSub,
+                &Expr::Const(0),
+                &Expr::Const(value.unsigned_abs()),
+                span,
+            )
+        } else {
+            Expr::Const(value as u64)
+        }
+    }
+
     /// Accumulate a source control guard without constructing a private tree.
     pub(in crate::ir::lower) fn source_and(
         &self,
@@ -281,7 +299,7 @@ mod tests {
         let lowering = Lowering::new(&mut sink, &resolved);
         let call = {
             let mut arena = lowering.source_values.borrow_mut();
-            let call = arena.append(
+            let call = arena.import_test_fragment(
                 &Expr::CCall {
                     name: "read_real".into(),
                     args: vec![],
@@ -635,5 +653,45 @@ mod tests {
             assert_eq!(reads.as_ref(), &[SignalId(7)]);
         }
         assert_eq!(values.ir.values.len(), 3);
+    }
+
+    #[test]
+    fn signed_range_attributes_keep_canonical_bounds_including_minimum() {
+        let span = Span::new(FileId(0), 20..29);
+        let mut sink = DiagnosticSink::new();
+        let resolved = Resolved::default();
+        let lowering = Lowering::new(&mut sink, &resolved);
+        let operand = ast::Expr::Path(ast::Path {
+            segments: vec![ast::Ident {
+                text: "value".into(),
+                span,
+            }],
+            span,
+        });
+        for (left, right) in [(-4, -1), (-1, -4), (i64::MIN, -1), (3, -4)] {
+            let mut env = HashMap::new();
+            lowering.bind_format_attrs(&mut env, "value", left, right, span);
+            assert_eq!(lowering.operand_range(&operand, &env), Some((left, right)));
+            for attr in ["left", "right", "high", "low"] {
+                if let Val::Scalar(Expr::Canonical { value, .. }) = env[&format!("value::{attr}")] {
+                    let arena = lowering.source_values.borrow();
+                    assert_eq!(arena.ir.values[value.0 as usize].span, span);
+                    assert!(matches!(
+                        arena.ir.values[value.0 as usize].kind,
+                        ProcessValueKind::Unary {
+                            operation: ProcessUnaryOp::Neg,
+                            ..
+                        }
+                    ));
+                }
+            }
+        }
+        let minimum = lowering.source_index_label(i64::MIN, span);
+        let env = HashMap::from([
+            ("value::left".into(), Val::Scalar(minimum)),
+            ("value::right".into(), Val::Scalar(Expr::Const(0))),
+        ]);
+        assert_eq!(lowering.operand_range(&operand, &env), Some((i64::MIN, 0)));
+        assert!(lowering.source_values.borrow().ir.validate(0).is_empty());
     }
 }

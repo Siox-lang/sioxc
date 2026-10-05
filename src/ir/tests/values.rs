@@ -677,6 +677,126 @@ fn foreign_integer_calls_retain_signed_abi_types() {
 }
 
 #[test]
+fn canonical_foreign_calls_keep_callee_and_argument_anchors() {
+    let source = "module m; extern \"C\" { pub fn labs(v: integer) -> integer; }\n\
+                  entity E { x: integer in, y: integer out }\n\
+                  impl E { y = labs(x); }";
+    let design = lower_src(source);
+    let call = design.process_ir.values.iter().find(|value| {
+        matches!(&value.kind, ProcessValueKind::ForeignCall { name, .. } if name == "labs")
+    }).expect("canonical foreign call");
+    let callee = source.rfind("labs(x)").unwrap() as u32;
+    assert_eq!(
+        call.span,
+        crate::diag::Span::new(FileId(0), callee..callee + 4)
+    );
+    let ProcessValueKind::ForeignCall {
+        arguments,
+        integer_arguments,
+        ..
+    } = &call.kind
+    else {
+        unreachable!()
+    };
+    assert_eq!(integer_arguments, &[true]);
+    let argument = &design.process_ir.values[arguments[0].0 as usize];
+    assert_eq!(
+        argument.span,
+        crate::diag::Span::new(FileId(0), callee + 5..callee + 6)
+    );
+    assert!(matches!(
+        argument.kind,
+        ProcessValueKind::Signal {
+            state: ProcessSignalState::Current,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn real_promotion_keeps_canonical_integer_calls_and_evaluation_boundaries() {
+    let design = lower_src(
+        "module m; extern \"C\" { pub fn labs(v: integer) -> integer; }\n\
+         entity E { x: integer in, r: real in, a: real out, b: real out, c: real out }\n\
+         impl E { a = labs(x) + 0.5; b = integer(r) + 0.5; c = (x >> 1) + 0.5; }",
+    );
+    assert!(design.validate().is_empty());
+    let values = &design.process_ir.values;
+    assert_eq!(
+        values
+            .iter()
+            .filter(|value| matches!(value.kind, ProcessValueKind::ForeignCall { .. }))
+            .count(),
+        1
+    );
+    let promoted: Vec<_> = values
+        .iter()
+        .filter_map(|value| match value.kind {
+            ProcessValueKind::Unary {
+                operation: ProcessUnaryOp::IntegerToReal,
+                operand,
+            } => Some(&values[operand.0 as usize].kind),
+            _ => None,
+        })
+        .collect();
+    assert!(promoted
+        .iter()
+        .any(|kind| matches!(kind, ProcessValueKind::ForeignCall { .. })));
+    assert!(promoted.iter().any(|kind| matches!(
+        kind,
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::RealToInteger,
+            ..
+        }
+    )));
+    assert!(promoted.iter().any(|kind| matches!(
+        kind,
+        ProcessValueKind::Binary {
+            operation: ProcessBinaryOp::ArithmeticShr,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn module_constant_expressions_share_their_canonical_root_and_source_span() {
+    let source = "module m; const N: integer = 2 + 3;\n\
+                  entity E { a: integer out, b: integer out }\n\
+                  impl E { a = N; b = N; }";
+    let design = lower_src(source);
+    let constants: Vec<_> = design
+        .process_ir
+        .values
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| {
+            matches!(
+                value.kind,
+                ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::Add,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(
+        constants.len(),
+        1,
+        "one constant operation, shared across consumers"
+    );
+    let (_, value) = constants[0];
+    let start = source.find("2 + 3").unwrap() as u32;
+    assert_eq!(
+        value.span,
+        crate::diag::Span::new(FileId(0), start..start + 5)
+    );
+    assert!(design
+        .process_ir
+        .validate(design.signals.len() as u32)
+        .is_empty());
+}
+
+#[test]
 /// A hardware block local does not leak out of its block.
 fn a_hardware_block_local_does_not_leak_out_of_its_block() {
     let diagnostics = lower_diags(

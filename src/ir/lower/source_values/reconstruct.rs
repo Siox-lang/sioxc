@@ -330,7 +330,7 @@ mod tests {
         };
         for state in [ProcessSignalState::Current, ProcessSignalState::Old] {
             let mut arena = SourceValues::default();
-            arena.append(&Expr::Const(99), span, None); // Unreachable prefix forces remapping.
+            arena.import_test_fragment(&Expr::Const(99), span, None); // Unreachable prefix forces remapping.
             let value = arena.signal(SignalId(0), state, span);
             let companion = arena.signal(SignalId(1), state, span);
             let raw = arena.raw_slice(&value, 0, 0, span);
@@ -581,7 +581,7 @@ mod tests {
         let mut arena = SourceValues::default();
         let roots = expressions
             .iter()
-            .map(|expression| arena.append(expression, span, None))
+            .map(|expression| arena.import_test_fragment(expression, span, None))
             .collect::<Vec<_>>();
         let mapped = arena.reconstruct_metavalues(&meta_of, &elems, &encodings);
         assert!(
@@ -628,8 +628,8 @@ mod tests {
     fn reconstruction_moves_unprojectable_nodes_and_retains_full_formats() {
         let span = crate::diag::Span::new(crate::diag::FileId(0), 10..20);
         let mut arena = SourceValues::default();
-        let base = arena.append(&Expr::Current(SignalId(0)), span, None);
-        let index = arena.append(&Expr::Const(1), span, None);
+        let base = arena.import_test_fragment(&Expr::Current(SignalId(0)), span, None);
+        let index = arena.import_test_fragment(&Expr::Const(1), span, None);
         let value = ProcessValue {
             span,
             ty: Some(crate::types::Ty::Integer),
@@ -660,7 +660,7 @@ mod tests {
     fn reconstructed_reads_share_checked_calls_and_respect_resize_boundaries() {
         let span = crate::diag::Span::new(crate::diag::FileId(0), 10..20);
         let mut arena = SourceValues::default();
-        let index = arena.append(
+        let index = arena.import_test_fragment(
             &Expr::CheckedIndex {
                 index: Box::new(Expr::CCall {
                     name: "next_index".into(),
@@ -678,7 +678,7 @@ mod tests {
             span,
             None,
         );
-        let shifted = arena.append(
+        let shifted = arena.import_test_fragment(
             &Expr::Binary {
                 op: BinOp::Shr,
                 lhs: Box::new(Expr::Old(SignalId(0))),
@@ -692,10 +692,10 @@ mod tests {
             hi: 0,
             lo: 0,
         };
-        let first = arena.append(&read, span, None);
-        let second = arena.append(&read, span, None);
+        let first = arena.import_test_fragment(&read, span, None);
+        let second = arena.import_test_fragment(&read, span, None);
         let boundary = arena.bind_scalar(shifted, Some(crate::types::Ty::Integer), span);
-        let bounded = arena.append(
+        let bounded = arena.import_test_fragment(
             &Expr::Slice {
                 base: Box::new(arena.reference(boundary)),
                 hi: 0,

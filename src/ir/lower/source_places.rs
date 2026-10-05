@@ -265,7 +265,7 @@ impl Lowering<'_> {
                                 let hit = self.source_binary(
                                     BinOp::Eq,
                                     &checked,
-                                    &index_label(label),
+                                    &self.source_index_label(label, ast::expr_span(index)),
                                     ast::expr_span(index),
                                 );
                                 for (name, mut accesses) in selected.leaves {
@@ -334,7 +334,7 @@ impl Lowering<'_> {
                                     Some(self.source_binary(
                                         BinOp::Eq,
                                         &checked,
-                                        &index_label(label),
+                                        &self.source_index_label(label, ast::expr_span(index)),
                                         ast::expr_span(index),
                                     )),
                                 ));
