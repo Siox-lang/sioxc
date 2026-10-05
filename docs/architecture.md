@@ -385,7 +385,13 @@ intact, rather than rebuilding a foreign call beneath each ordinary slice.
 Library lexical integer/real types outrank same-spelled caller ports; negative
 range attributes retain signed arithmetic rather than unsigned word constants.
 The old tree-inlining size guard is deleted. Binary32 hardware multiply/add/sub
-now pass the same 44 reference pairs as procedural arithmetic. Resolution,
+now pass the same 44 reference pairs as procedural arithmetic. Concatenations,
+real-context arithmetic/conditional coercions and block-local width boundaries
+construct canonical nodes through the shared arena builders rather than build
+new expression trees. Concatenation parts retain their individual source spans;
+real coercion reuses canonical child values and anchors transformed operations
+at their original source locations. Existing numeric evaluation rules remain
+unchanged. Resolution,
 metavalue construction, intermediate expression construction,
 and compile-time initializer normalization still use private fragments; fully arena-native
 ingress remains tracked in TODO.

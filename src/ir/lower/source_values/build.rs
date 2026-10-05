@@ -187,6 +187,115 @@ mod tests {
     }
 
     #[test]
+    fn real_coercion_constructs_shared_arena_nodes_at_source_anchors() {
+        let span = Span::new(FileId(0), 20..29);
+        let call_span = Span::new(FileId(0), 21..24);
+        let mut sink = DiagnosticSink::new();
+        let resolved = Resolved::default();
+        let lowering = Lowering::new(&mut sink, &resolved);
+        let call = {
+            let mut arena = lowering.source_values.borrow_mut();
+            let call = arena.append(
+                &Expr::CCall {
+                    name: "read_real".into(),
+                    args: vec![],
+                    f64_args: vec![],
+                    integer_args: vec![],
+                    f64_ret: true,
+                    integer_ret: false,
+                },
+                call_span,
+                Some(crate::types::Ty::Real),
+            );
+            arena.reference(call)
+        };
+        let integer = lowering.source_binary(BinOp::SAdd, &call, &Expr::Const(3), span);
+        let original = id(&integer);
+        let converted = lowering.coerce_real(integer.clone(), call_span);
+        let second = lowering.coerce_real(integer, call_span);
+        assert_eq!(id(&converted), id(&second), "coercion reuses its result");
+        let arena = lowering.source_values.borrow();
+        let root = &arena.ir.values[id(&converted).0 as usize];
+        assert_eq!(root.span, span, "canonical source anchor wins over caller");
+        let ProcessValueKind::Binary {
+            operation: ProcessBinaryOp::FloatAdd,
+            left,
+            right,
+        } = root.kind
+        else {
+            panic!("real coercion must construct a canonical float operation");
+        };
+        assert_eq!(left, id(&call));
+        assert!(matches!(arena.ir.values[right.0 as usize].kind,
+            ProcessValueKind::Number(ProcessNumber::Real(bits)) if bits == 3.0f64.to_bits()));
+        assert!(matches!(
+            arena.ir.values[original.0 as usize].kind,
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::SignedAdd,
+                ..
+            }
+        ));
+        assert_eq!(arena.ir.values[left.0 as usize].span, call_span);
+        assert_eq!(
+            arena.ir.values[left.0 as usize].ty,
+            Some(crate::types::Ty::Real)
+        );
+        assert_eq!(
+            arena
+                .ir
+                .values
+                .iter()
+                .filter(|node| matches!(node.kind, ProcessValueKind::ForeignCall { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn real_coercion_builds_negation_and_conditional_without_tree_roots() {
+        let span = Span::new(FileId(0), 20..29);
+        let mut sink = DiagnosticSink::new();
+        let resolved = Resolved::default();
+        let lowering = Lowering::new(&mut sink, &resolved);
+        let negative = lowering.coerce_real(
+            Expr::Unary {
+                op: UnOp::Neg,
+                rhs: Box::new(Expr::Const(3)),
+            },
+            span,
+        );
+        let selected = lowering.coerce_real(
+            Expr::Select {
+                cond: Box::new(Expr::Const(1)),
+                then: Box::new(Expr::Const(4)),
+                els: Box::new(Expr::Const(7)),
+            },
+            span,
+        );
+        let arena = lowering.source_values.borrow();
+        assert!(matches!(
+            arena.ir.values[id(&negative).0 as usize].kind,
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::FloatSub,
+                ..
+            }
+        ));
+        let ProcessValueKind::Select {
+            then_value,
+            else_value,
+            ..
+        } = arena.ir.values[id(&selected).0 as usize].kind
+        else {
+            panic!("coerced conditional must have a canonical root");
+        };
+        for (value, expected) in [(then_value, 4.0f64), (else_value, 7.0f64)] {
+            assert_eq!(arena.ir.values[value.0 as usize].span, span);
+            assert!(matches!(arena.ir.values[value.0 as usize].kind,
+                ProcessValueKind::Number(ProcessNumber::Real(bits)) if bits == expected.to_bits()));
+        }
+    }
+
+    #[test]
     fn canonical_scalar_bindings_keep_explicit_kernel_boundaries() {
         let span = Span::new(FileId(0), 20..29);
         let mut sink = DiagnosticSink::new();

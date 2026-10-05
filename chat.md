@@ -12296,3 +12296,88 @@ runtime call CFGs, non-packed conversions and dynamic host forms remain.
 Next: migrate raw/value construction without conflating metadata bit
 projections with source element reconstruction, then remove the remaining
 temporary importer rather than keeping it as a second permanent pipeline.
+
+### 2026-10-05 — Codex — defer unnecessary-copy optimization
+
+Own a documentation-only TODO addition requested by the user: investigate and
+reduce unnecessary generated copies later, without interrupting Phase 1's
+canonical pipeline migration. No lowering, LLVM or runtime changes in this
+entry. Preserve the unrelated AGENTS.md, historical chat additions and .codex/.
+
+Measure generated IR/LLVM/native copies first and distinguish them from
+compiler-internal cloning. Remove redundant materialization only when liveness,
+aliasing and storage lifetime permit it; preserve staged writes, old/snapshot
+values, suspension state and packed companion planes. Copy counts are a user
+observation, not a measured regression yet. The graph query surfaced Process
+assignment snapshots and LLVM stores, but was truncated and included vendored
+compression copies; it is navigation, not evidence of redundant compiler copies.
+Track this as deferred optimization, not an additional Phase 1 exit criterion.
+
+### 2026-10-05 — Codex — own canonical coercion and concatenation construction
+
+Continue Phase 1 after recording the deferred copy work. Own operators.rs real
+coercion construction, expressions.rs concatenation, block_locals.rs and
+source_values.rs width boundaries, their focused regressions, TODO/architecture
+status and this appended log. Reuse the existing binary/select/slice builders;
+do not change the raw metadata reconstruction contract or optimize snapshots.
+The graph query (coerce, real, cast, source, value) was truncated; source reads
+confirm these constructors still assemble private fragments before import.
+Keep canonical child identities, evaluation boundaries and source anchors.
+Preserve unrelated AGENTS.md, 441 historical chat additions and .codex/.
+
+Canonical real arithmetic/negation/conditional coercions now use existing
+builders with explicit anchors. Concatenation parts are appended at their own
+spans; shifts/joins and local width boundaries use canonical constructors.
+The numeric conversion contract remains unchanged. Two new coercion unit tests
+and all 16 hardware source-value integrations pass, including the new concat
+operand-span regression. A test-authoring compile review corrected validate()
+to check its returned diagnostic vector, not expect a Result.
+Freeze execution sources for /tmp/siox-source-coercion-ci-j2-20261005:
+a898bb0d39db9cfa57e33f9c9eda9809f150785f616da626d7346510099ee81a.
+Sibling corpus remains clean at ce3c8a5, hash:
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+Run the pinned two-job, 8 GiB-capped full gate; no execution edits until terminal.
+
+Both Rust suites pass (515/495 library tests and all integrations), as does
+all-target/all-feature Clippy. The full gate is still running its corpora.
+The initial standalone concat binary passes assertions, VCD validation and FST
+decoding, but a scratch cross-format byte comparison fails: decoded FST uses
+different identifiers/header formatting. This is a verification-method failure,
+not evidence of a compiler regression. Compare named signal/time/value streams
+via the existing VCD checker instead; retain same-format baseline/mode byte
+comparisons. Graph update completed with 5184 nodes/13775 edges; vendored libfst
+parse/no-symbol warnings limit navigation only.
+
+### 2026-10-05 — Codex — canonical coercions and concatenations verified
+
+The pinned two-job, 8 GiB-capped full CI command completed with exit 0 at
+/tmp/siox-source-coercion-ci-j2-20261005: formatting, frontend check/Clippy,
+default/bitpack Rust suites (515/495 library tests and all integrations,
+including 36 build_binary cases each), all-target/all-feature Clippy, and both
+211-program corpora pass. Execution and corpus hashes remain frozen as above;
+the sibling checkout is unchanged. Last observed scope peak was 1,128,890,368
+bytes including Cargo. No memory or throughput speedup is claimed.
+
+Twenty-two fresh native cases pass in each mode: concatenation, complex,
+real comparisons/locals/promotion/conversion/signed conversion and real FFI,
+fixed-point/hardware float conformance, packed reads/writes, aggregate metadata,
+old values, encoding/resolution, X/Z comparison, metavalue state, directed/
+partial ranges, procedure places and aggregate operators. All 22 mode VCDs
+are byte-identical; all 14 available previous-default VCD baselines match.
+Twenty cases per mode have observable channels: all 40 FSTs decode, match
+named signal/time/value events from VCD, and have identical default/bitpack
+decoded streams after excluding wall-clock dates. Real event values compare
+as exactly equal f64 numbers, not decimal spelling (2.8999999999999999 versus
+2.9); bit events remain exact. The two signal-free cases per mode emit valid
+empty VCDs and reject FST with exit 2/no file, as the existing contract requires.
+The scratch check initially assumed all cases had channels; correcting that
+assumption and real-number formatting required no compiler/runtime changes.
+
+Commit only the owned constructors, regressions, docs, deferred-copy TODO and
+these appended log entries. Preserve AGENTS.md, .codex/ and the 441 historical
+chat additions. Ponytail influenced this change by reusing the existing arena
+builders, without a new abstraction or dependency. Completion estimate: Phase 1
+approximately 97%, still incomplete. Remaining ingress includes resolution/
+metavalue construction and initializer normalization; raw metadata projections
+must remain distinct from decoded element reads. General runtime call CFGs,
+non-packed conversions and dynamic host forms also remain. Main is not pushed.

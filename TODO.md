@@ -106,7 +106,10 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   Packed/local/persisted reads, checked indices, captured-place reads,
   conditional local stores and scalar/aggregate selections now build canonical
   nodes directly; aggregate `if`/`match` selections share one condition and
-  no longer use the tree-building `select_val` helper. Keep value selections
+  no longer use the tree-building `select_val` helper. Concatenation shifts/joins,
+  real-context arithmetic/conditional coercions and local width boundaries now
+  use the same arena builders, retaining operand and canonical source anchors.
+  Keep value selections
   distinct from raw metadata projections during the remaining migration.
   Complete the remaining ingress migration: resolution/metavalue construction,
   expression construction between these boundaries and compile-time initializer
@@ -149,6 +152,15 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` operations, constants/conversions, ABI rules, formatting,
   and a software fallback before exposing a language feature.
+- 🔴 **Unnecessary-copy reduction (deferred; not a Phase 1 blocker).** Audit
+  generated IR, LLVM and native code for redundant copies/materializations,
+  separately from compiler-internal cloning. Measure copy counts and bytes on
+  representative aggregate/multiword designs before changing anything; prefer
+  shared value IDs, direct destination construction or storage reuse when
+  liveness, aliasing and lifetime rules allow. Keep copies needed for staged
+  signal writes, old/assignment snapshots, state across suspension and packed
+  X/Z companion planes. Verify native results and waveform parity, and report
+  measured compile-memory/runtime effects rather than instruction counts alone.
 - 🔴 **Optimization measurements.** Maintain repeatable object-size,
   compile-memory, compile-time, and simulation-throughput benchmarks for
   default, `bitpack`, and host-SIMD builds. Structural simplifications alone

@@ -561,7 +561,7 @@ impl Lowering<'_> {
                         ..
                     },
                     expression,
-                ) => self.coerce_real(expression),
+                ) => self.coerce_real(expression, span),
                 (_, expression) => expression,
             };
             // Evaluate narrow arithmetic at the storage format before binding
@@ -580,11 +580,7 @@ impl Lowering<'_> {
                         .source_evaluated_width(&expression)
                         .is_none_or(|evaluated| evaluated < width)
                     {
-                        expression = Expr::Slice {
-                            base: Box::new(expression),
-                            hi: width - 1,
-                            lo: 0,
-                        };
+                        expression = self.source_slice(&expression, width - 1, 0, span);
                     }
                 }
             }

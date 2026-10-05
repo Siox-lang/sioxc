@@ -490,13 +490,22 @@ impl<'a> Lowering<'a> {
         ) {
             return self.lower_shaped_source(value, &HashMap::new(), &layout);
         }
-        self.coerce_block_local(ty, self.lower_val_env(value, &HashMap::new()))
+        self.coerce_block_local(
+            ty,
+            self.lower_val_env(value, &HashMap::new()),
+            ast::expr_span(value),
+        )
     }
 
     /// Apply the representation boundary a signal store would provide. A
     /// block local has no storage of its own, so width, enum-character and
     /// real coercions must be made explicit in the substituted expression.
-    pub(super) fn coerce_block_local(&self, ty: &ast::Type, value: Val) -> Val {
+    pub(super) fn coerce_block_local(
+        &self,
+        ty: &ast::Type,
+        value: Val,
+        span: crate::diag::Span,
+    ) -> Val {
         let Val::Scalar(mut expression) = value else {
             return value;
         };
@@ -516,15 +525,11 @@ impl<'a> Lowering<'a> {
             }
         }
         if head == "real" || struct_derives_kernel(&head, "real", &self.structs, &self.free_fns) {
-            return Val::Scalar(self.coerce_real(expression));
+            return Val::Scalar(self.coerce_real(expression, span));
         }
         let width = self.block_local_width(ty);
         if width > 0 {
-            expression = Expr::Slice {
-                base: Box::new(expression),
-                hi: width - 1,
-                lo: 0,
-            };
+            expression = self.source_slice(&expression, width - 1, 0, span);
         }
         Val::Scalar(expression)
     }

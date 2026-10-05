@@ -225,7 +225,7 @@ impl<'a> Lowering<'a> {
             }
         }
         if sig.real {
-            self.coerce_real(expr)
+            self.coerce_real(expr, self.cur_span.unwrap_or(sig.declaration_span))
         } else {
             expr
         }
@@ -261,7 +261,7 @@ impl<'a> Lowering<'a> {
     /// Reinterpret an integer value flowing into a real context (`.re = 10`,
     /// `self.re + 3`, a constant-folded `10 + 0`) as its f64 form: constants
     /// convert, integer arithmetic becomes float arithmetic, selects recurse.
-    pub(super) fn coerce_real(&self, e: Expr) -> Expr {
+    pub(super) fn coerce_real(&self, e: Expr, span: crate::diag::Span) -> Expr {
         if self.is_real_expr(&e) {
             return e;
         }
@@ -277,8 +277,8 @@ impl<'a> Lowering<'a> {
                     return real;
                 }
                 let node = self.source_node(value);
-                let real = self.coerce_real(node);
                 let span = self.source_values.borrow().ir.values[value.0 as usize].span;
+                let real = self.coerce_real(node, span);
                 let real = match self.bind_source_value(Val::Scalar(real), span, None) {
                     Val::Scalar(real) => real,
                     Val::Fields(_) => unreachable!(),
@@ -290,16 +290,15 @@ impl<'a> Lowering<'a> {
                 real
             }
             Expr::Const(v) => Expr::Real(v as f64),
-            Expr::Unary { op: UnOp::Neg, rhs } => Expr::Binary {
-                op: BinOp::FSub,
-                lhs: Box::new(Expr::Real(0.0)),
-                rhs: Box::new(self.coerce_real(*rhs)),
-            },
-            Expr::Select { cond, then, els } => Expr::Select {
-                cond,
-                then: Box::new(self.coerce_real(*then)),
-                els: Box::new(self.coerce_real(*els)),
-            },
+            Expr::Unary { op: UnOp::Neg, rhs } => {
+                let rhs = self.coerce_real(*rhs, span);
+                self.source_binary(BinOp::FSub, &Expr::Real(0.0), &rhs, span)
+            }
+            Expr::Select { cond, then, els } => {
+                let then = self.coerce_real(*then, span);
+                let els = self.coerce_real(*els, span);
+                self.source_select(&cond, &then, &els, span)
+            }
             Expr::Binary { op, lhs, rhs } => {
                 let fop = match op {
                     BinOp::Add | BinOp::SAdd => Some(BinOp::FAdd),
@@ -309,11 +308,11 @@ impl<'a> Lowering<'a> {
                     _ => None,
                 };
                 match fop {
-                    Some(f) => Expr::Binary {
-                        op: f,
-                        lhs: Box::new(self.coerce_real(*lhs)),
-                        rhs: Box::new(self.coerce_real(*rhs)),
-                    },
+                    Some(f) => {
+                        let lhs = self.coerce_real(*lhs, span);
+                        let rhs = self.coerce_real(*rhs, span);
+                        self.source_binary(f, &lhs, &rhs, span)
+                    }
                     None => Expr::Binary { op, lhs, rhs },
                 }
             }
@@ -385,7 +384,7 @@ impl<'a> Lowering<'a> {
         span: crate::diag::Span,
     ) -> Expr {
         if self.is_real_expr(&lhs) || self.is_real_expr(&rhs) {
-            let (lhs, rhs) = (self.coerce_real(lhs), self.coerce_real(rhs));
+            let (lhs, rhs) = (self.coerce_real(lhs, span), self.coerce_real(rhs, span));
             let op = match op {
                 ast::BinOp::Add => BinOp::FAdd,
                 ast::BinOp::Sub => BinOp::FSub,

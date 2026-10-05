@@ -386,17 +386,19 @@ impl<'a> Lowering<'a> {
                 let mut acc = Expr::Const(0);
                 for part in parts {
                     let w = self.ast_width(part);
-                    let e = self.lower_expr(part);
-                    let shifted = Expr::Binary {
-                        op: BinOp::Shl,
-                        lhs: Box::new(acc),
-                        rhs: Box::new(Expr::Const(w as u64)),
+                    let value = self.lower_expr(part);
+                    let value = {
+                        let mut arena = self.source_values.borrow_mut();
+                        let id = arena.append(&value, ast::expr_span(part), None);
+                        arena.reference(id)
                     };
-                    acc = Expr::Binary {
-                        op: BinOp::Or,
-                        lhs: Box::new(shifted),
-                        rhs: Box::new(e),
-                    };
+                    let shifted = self.source_binary(
+                        BinOp::Shl,
+                        &acc,
+                        &Expr::Const(w as u64),
+                        ast::expr_span(e),
+                    );
+                    acc = self.source_binary(BinOp::Or, &shifted, &value, ast::expr_span(e));
                 }
                 acc
             }

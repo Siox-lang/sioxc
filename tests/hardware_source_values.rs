@@ -5,6 +5,53 @@
 use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
 
 #[test]
+fn concatenation_parts_keep_their_source_anchors() {
+    let source = "module concat_anchors; use std::bits::unsigned;\n\
+        entity Dut { a: unsigned[4] in, b: unsigned[4] in, y: unsigned[8] out }\n\
+        impl Dut { y = {a, b}; }\n";
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/concat_anchors.siox", source),
+            Emit::Metadata,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let design = compilation.design.unwrap();
+    let mut parts = std::collections::HashSet::new();
+    for node in &design.process_ir.values {
+        let siox::ir::ProcessValueKind::Signal { signals, .. } = &node.kind else {
+            continue;
+        };
+        if signals.len() != 1 {
+            continue;
+        }
+        let signal = &design.signals[signals[0].0 as usize];
+        let Some(part) = ["a", "b"]
+            .into_iter()
+            .find(|part| signal.path.ends_with(&format!(".{part}")))
+        else {
+            continue;
+        };
+        let text = &source[node.span.start as usize..node.span.end as usize];
+        if text == part {
+            parts.insert(part);
+        }
+    }
+    assert_eq!(
+        parts.len(),
+        2,
+        "both concat operands retain their own spans"
+    );
+    assert!(
+        design.validate().is_empty(),
+        "canonical design must validate"
+    );
+}
+
+#[test]
 fn if_expression_operands_keep_their_own_source_spans() {
     let source = "module if_anchors; use std::bits::unsigned;\n\
         entity Dut { flag: Bit in, y: unsigned[4] out }\n\
