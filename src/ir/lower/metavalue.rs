@@ -397,6 +397,7 @@ impl<'a> Lowering<'a> {
             } => {
                 let lhs_width = self.meta_expr_width(lhs, width);
                 let rhs_width = self.meta_expr_width(rhs, width);
+                let anchor = temps.anchor;
                 let cond = [
                     (self.lower_meta_ir(lhs, lhs_width, temps), lhs_width),
                     (self.lower_meta_ir(rhs, rhs_width, temps), rhs_width),
@@ -409,23 +410,20 @@ impl<'a> Lowering<'a> {
                     // Bind it once and let the unroll read a leaf.
                     meta.map(|meta| {
                         let meta = materialize(meta, operand_width * 4, temps);
-                        any_unknown(&meta, operand_width, encoding)
+                        self.source_values.borrow_mut().unknown_elements(
+                            &meta,
+                            operand_width,
+                            encoding,
+                            temps.anchor,
+                        )
                     })
                 })
-                .reduce(|a, b| Expr::Binary {
-                    op: BinOp::Or,
-                    lhs: Box::new(a),
-                    rhs: Box::new(b),
-                })?;
+                .reduce(|a, b| self.source_binary(BinOp::Or, &a, &b, anchor))?;
                 let mut all_x = vec![0u64; (width as usize).div_ceil(16)];
                 for i in 0..width {
                     all_x[i as usize / 16] |= self.x_disc() << (4 * (i % 16));
                 }
-                Some(Expr::Select {
-                    cond: Box::new(cond),
-                    then: Box::new(words_const(all_x)),
-                    els: Box::new(Expr::Const(0)),
-                })
+                Some(self.source_select(&cond, &words_const(all_x), &Expr::Const(0), temps.anchor))
             }
             Expr::Select { cond, then, els } => {
                 let outer = temps.cond.clone();
@@ -441,11 +439,12 @@ impl<'a> Lowering<'a> {
                 if mt.is_none() && me.is_none() {
                     return None;
                 }
-                Some(Expr::Select {
-                    cond: cond.clone(),
-                    then: Box::new(mt.unwrap_or(Expr::Const(0))),
-                    els: Box::new(me.unwrap_or(Expr::Const(0))),
-                })
+                Some(self.source_select(
+                    cond,
+                    &mt.unwrap_or(Expr::Const(0)),
+                    &me.unwrap_or(Expr::Const(0)),
+                    temps.anchor,
+                ))
             }
             Expr::Binary { op, lhs, rhs } if matches!(op, BinOp::And | BinOp::Or | BinOp::Xor) => {
                 self.logical_meta(*op, lhs, rhs, width, temps)
@@ -458,11 +457,12 @@ impl<'a> Lowering<'a> {
             Expr::Slice { base, hi, lo } => {
                 let base_width = self.meta_expr_width(base, width.max(hi + 1));
                 let m = self.lower_meta_ir(base, base_width, temps)?;
-                Some(Expr::Slice {
-                    base: Box::new(m),
-                    hi: hi * 4 + 3,
-                    lo: lo * 4,
-                })
+                Some(self.source_values.borrow_mut().raw_slice(
+                    &m,
+                    hi * 4 + 3,
+                    lo * 4,
+                    temps.anchor,
+                ))
             }
             // A shift moves elements, so it moves their discriminants with
             // them: the companion holds four bits per element, so it shifts by
@@ -478,15 +478,8 @@ impl<'a> Lowering<'a> {
             } => {
                 let lhs_width = self.meta_expr_width(lhs, width);
                 let m = self.lower_meta_ir(lhs, lhs_width, temps)?;
-                Some(Expr::Binary {
-                    op: *op,
-                    lhs: Box::new(m),
-                    rhs: Box::new(Expr::Binary {
-                        op: BinOp::Mul,
-                        lhs: Box::new(rhs.as_ref().clone()),
-                        rhs: Box::new(Expr::Const(4)),
-                    }),
-                })
+                let offset = self.source_binary(BinOp::Mul, rhs, &Expr::Const(4), temps.anchor);
+                Some(self.source_binary(*op, &m, &offset, temps.anchor))
             }
             // `not` as an IR unary. A vector `not` no longer arrives here --
             // it lowers to `x xor all-ones` and is handled as an `Xor` above --
@@ -505,11 +498,14 @@ impl<'a> Lowering<'a> {
                 let m = materialize(m, rhs_width * 4, temps);
                 let value = materialize(rhs.as_ref().clone(), rhs_width, temps);
                 let mut acc = Expr::Const(0);
+                let arena = &mut *self.source_values.borrow_mut();
                 for i in 0..width {
-                    let input = logic_element_disc(&value, &m, i, encoding);
-                    let result = logic_unary_table_result(input, table);
-                    let meta = not1(logic_disc_in(result.clone(), &encoding.binary));
-                    acc = or_expr(acc, meta_nibble(meta, i, result));
+                    let input = arena.element_disc(&value, &m, i, encoding, temps.anchor);
+                    let result = arena.unary_table(&input, table, temps.anchor);
+                    let binary = arena.disc_in(&result, &encoding.binary, temps.anchor);
+                    let meta = arena.binary(BinOp::Eq, &binary, &Expr::Const(0), temps.anchor);
+                    let nibble = arena.meta_nibble(&meta, i, &result, temps.anchor);
+                    acc = arena.binary(BinOp::Or, &acc, &nibble, temps.anchor);
                 }
                 Some(acc)
             }
@@ -597,14 +593,17 @@ impl<'a> Lowering<'a> {
         let lhs = materialize(lhs.clone(), lhs_width, temps);
         let rhs = materialize(rhs.clone(), rhs_width, temps);
         let mut acc = Expr::Const(0);
+        let arena = &mut *self.source_values.borrow_mut();
         for i in 0..width {
             let left_meta = ma.clone().unwrap_or(Expr::Const(0));
             let right_meta = mb.clone().unwrap_or(Expr::Const(0));
-            let left = logic_element_disc(&lhs, &left_meta, i, encoding);
-            let right = logic_element_disc(&rhs, &right_meta, i, encoding);
-            let result = logic_binary_table_result(left, right, table);
-            let meta = not1(logic_disc_in(result.clone(), &encoding.binary));
-            acc = or_expr(acc, meta_nibble(meta, i, result));
+            let left = arena.element_disc(&lhs, &left_meta, i, encoding, temps.anchor);
+            let right = arena.element_disc(&rhs, &right_meta, i, encoding, temps.anchor);
+            let result = arena.binary_table(&left, &right, table, temps.anchor);
+            let binary = arena.disc_in(&result, &encoding.binary, temps.anchor);
+            let meta = arena.binary(BinOp::Eq, &binary, &Expr::Const(0), temps.anchor);
+            let nibble = arena.meta_nibble(&meta, i, &result, temps.anchor);
+            acc = arena.binary(BinOp::Or, &acc, &nibble, temps.anchor);
         }
         Some(acc)
     }

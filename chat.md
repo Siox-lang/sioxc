@@ -12381,3 +12381,104 @@ approximately 97%, still incomplete. Remaining ingress includes resolution/
 metavalue construction and initializer normalization; raw metadata projections
 must remain distinct from decoded element reads. General runtime call CFGs,
 non-packed conversions and dynamic host forms also remain. Main is not pushed.
+
+### 2026-10-05 — Codex — own canonical metadata/resolution builders
+
+Previous goal turn was verified progress (fdbbc65); no live test jobs remain.
+Own source_values metadata constructors/raw-bit intent, dependency remapping,
+table packing helpers in passes.rs, metavalue/resolution/write call sites,
+their regressions and docs. The scoped graph query was truncated; direct source
+reads establish that these builders still assemble private fragments. Reuse
+the canonical binary/select/slice primitives and source-owned encoding tables.
+Track generated raw single-bit projections through normalization so they are
+not decoded as user logic-element reads; preserve current/old state, full
+formats, checked offsets, guard-sensitive hoists and source spans. Do not
+optimize copies/snapshots. Preserve AGENTS.md, .codex/ and 441 historical chat
+additions; append only owned records and use the existing sibling corpus.
+
+Canonical table/element/membership/packing constructors now cover logical and
+arithmetic companions, scalar/vector resolution and encoded packed writes.
+Removed the production tree-based value-bit, unary-table, repeated-plane and
+meta-nibble helpers; binary-table fragments are retained only as a test oracle.
+One initial frontend compile caught overlapping closure borrows of MetaTemps;
+capture its anchor before the iterator. All 18 source-value unit tests and
+19 focused hardware/metavalue integrations then passed.
+The reordered-encoding regression was explicitly run with raw-bit recognition
+disabled: it failed (physical zero decoded to discriminant 4). Restore the
+recognition guard and rerun. The test exercises current/old reads, compaction
+remapping and the metadata element builder, separately from decoded source
+reads. Nine extra native baseline cases were compiled with the frozen fdbbc65
+compiler, without changing source/corpus inputs, for before/after wave checks.
+
+The restored guard passes all 19 source-value unit tests, including checked
+dynamic shifts and distinct current/old frames. Direct unary/and/or/xor
+companion checks cover 36 two-element frames; fixture authoring initially
+populated the output encoding map instead of Lowering's working map, then its
+evaluator lacked Add. Correct those fixture errors; no production fix was needed.
+All 31 fresh default native cases pass assertions, VCD profiles and before/after
+VCD equality (22 fdbbc65 baselines plus nine freshly compiled fdbbc65 baselines).
+Twenty-seven cases have FST channels and decode with matching named events;
+four signal-free cases preserve empty VCD/exit-2-without-file FST behavior.
+Freeze execution sources for /tmp/siox-source-metadata-ci-j2-20261005:
+f228d9635ec8341dcffbf1e62ebbae6e84f4fffc59581817e54c3f8d978af2ef.
+Sibling ce3c8a5 remains clean, corpus hash:
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+Run pinned Rust/two jobs/8 GiB cap; do not change execution inputs until terminal.
+
+The first full gate exposed an obsolete structural fixture in both Rust modes:
+concurrent_resolved_slices_lower_without_expression_explosion required arena
+node count to equal its deliberately expanded compatibility tree (1225 versus
+7110). Smaller counts are expected once metadata/resolution share operands.
+Stop this gate deliberately after both failures and successful Clippy; command
+exit 143, neither corpus complete. No execution input changed until termination.
+Own that test update: retain the tree-expansion bound and assert every canonical
+node is reachable from CFG writes/guards, without demanding tree duplication.
+Then rerun the complete gate against newly frozen inputs. Native default
+assertions/wave comparisons remain passing; no performance claim follows from
+this representation-count difference.
+
+The updated resolved-slice regression passes: the full canonical DAG is live,
+and its node count stays below the expanded-tree bound. Freeze the revised
+inputs for /tmp/siox-source-metadata-v2-ci-j2-20261005; the only execution change
+since the first freeze is the structural test update. Run the full gate again,
+not only its failed unit case. The sibling corpus remains unchanged.
+
+Revised frozen execution hash:
+dbad379607a625477408815df7b80a9e6e84f7a8cc1023a80776ea48c9cf8c10.
+Corpus hash still c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+
+### 2026-10-05 — Codex — canonical metadata/resolution verified
+
+The revised full CI command completed with exit 0 at
+/tmp/siox-source-metadata-v2-ci-j2-20261005: formatting, frontend check/Clippy,
+default/bitpack Rust suites (518/498 library tests plus all integrations,
+including 36 build_binary cases each), all-target/all-feature Clippy and both
+211-program corpora pass. Execution/corpus hashes match the revised frozen
+inputs. Last observed v2 scope peak was 803,741,696 bytes including Cargo;
+incremental Rust-build state differs from earlier gates, so this is not a
+compiler memory/speed improvement measurement.
+
+Thirty-one fresh native cases pass per mode (the preceding 22-case set plus
+vector resolution, X/Z logical/vector operations/poisoning/wide/copy chains,
+nine-value logic, logic tables and runtime vector indexing). All 31 VCDs match
+before/after baselines and default/bitpack output. Twenty-seven observable
+cases per mode produce FSTs: all 54 decode with matching named signal/time/
+value events, and mode decoded streams match after excluding wall-clock dates.
+Real events compare exactly as f64 values rather than decimal spelling. Four
+signal-free cases per mode preserve empty VCD and FST exit-2/no-file behavior.
+
+Commit only owned builders/raw-bit intent/remapping, metadata/resolution/write
+migrations, packed-table data helpers, regressions, docs and this appended log.
+The structural test now checks DAG reachability and an expanded-tree upper
+bound, not equality that requires duplication. Three new unit regressions cover
+table sharing/compaction, reordered current/old/checked projections and direct
+unary/logical companions. Existing hoists and staged-write semantics remain.
+Ponytail influenced the change by reusing arena constructors and table packing,
+without a new public IR operation, runtime service or dependency. Graph update
+completed at 5204 nodes/13815 edges with the existing vendored parse warnings.
+Preserve AGENTS.md, .codex/ and 441 historical chat additions; main is not pushed.
+Completion estimate: Phase 1 approximately 97%, still incomplete. Remaining
+source ingress includes surrounding write/context/guard construction, other
+expressions and initializer normalization; general runtime call CFGs, non-packed
+conversions and dynamic host forms remain. Remove the temporary importer only
+after those constructors actually become arena-native.

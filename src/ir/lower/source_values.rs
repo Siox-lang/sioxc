@@ -7,6 +7,7 @@ use super::*;
 use std::sync::Arc;
 
 mod build;
+mod metadata;
 mod reconstruct;
 
 #[derive(Default)]
@@ -20,6 +21,9 @@ pub(super) struct SourceValues {
     /// Explicit literal planes survive a captured argument without retaining
     /// its syntax. Computed planes still follow arena dependencies normally.
     pub(super) explicit_meta: HashMap<ProcessValueId, Expr>,
+    /// Physical bit projections used to compute companion planes, not source
+    /// element reads. Keep this intent until read reconstruction has finished.
+    raw_bits: HashSet<ProcessValueId>,
     meta_epoch: usize,
     meta_presence: Vec<bool>,
 }
@@ -380,6 +384,9 @@ impl SourceValues {
             });
             let layout = old.ir.value_layouts.get_mut(index).and_then(Option::take);
             mapped[index] = self.push_node(value, layout);
+            if old.raw_bits.contains(&id) {
+                self.raw_bits.insert(mapped[index]);
+            }
         }
         for expression in draft.expressions_mut() {
             self.remap_expression(expression, &mapped);

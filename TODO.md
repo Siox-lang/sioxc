@@ -109,10 +109,14 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   no longer use the tree-building `select_val` helper. Concatenation shifts/joins,
   real-context arithmetic/conditional coercions and local width boundaries now
   use the same arena builders, retaining operand and canonical source anchors.
-  Keep value selections
-  distinct from raw metadata projections during the remaining migration.
-  Complete the remaining ingress migration: resolution/metavalue construction,
-  expression construction between these boundaries and compile-time initializer
+  Logical/unary/arithmetic companions, encoding-table lookups, element-wise
+  scalar/vector resolution, neutral planes and encoded packed-write projections
+  now construct canonical values. Physical bit projections carry normalization
+  intent through reconstruction/compaction, so reordered enum discriminants
+  cannot turn raw storage bits into decoded source reads. Removed the old
+  production value-bit, unary-table, repeated-plane and meta-nibble tree helpers.
+  Complete the remaining ingress migration: surrounding write/context/guard
+  construction, other source expressions and compile-time initializer
   normalization still assemble private fragments around those IDs.
   Make every source expression a canonical value at construction, preserving
   concrete layouts, contexts, lookup compaction and staged-write semantics.

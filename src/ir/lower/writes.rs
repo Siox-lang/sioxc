@@ -140,7 +140,13 @@ impl<'a> Lowering<'a> {
                         .cloned();
                     let value_bit = encoding
                         .as_ref()
-                        .map(|encoding| logic_value_bit(expr.clone(), encoding))
+                        .map(|encoding| {
+                            self.source_values.borrow_mut().value_bit(
+                                &expr,
+                                encoding,
+                                ast::expr_span(value),
+                            )
+                        })
                         .unwrap_or_else(|| expr.clone());
                     let meta = if self.out.array_element_enums.contains_key(&signal.0) {
                         let companion = SignalId(self.driven_companion(signal));
@@ -154,7 +160,11 @@ impl<'a> Lowering<'a> {
                             self.slice_meta_write_base(signal, companion, sequential, pending);
                         self.flush_meta_temps();
                         let meta_value = encoding.as_ref().map(|encoding| Expr::Select {
-                            cond: Box::new(logic_disc_in(expr.clone(), &encoding.binary)),
+                            cond: Box::new(self.source_values.borrow_mut().disc_in(
+                                &expr,
+                                &encoding.binary,
+                                ast::expr_span(value),
+                            )),
                             then: Box::new(Expr::Const(0)),
                             els: Box::new(expr.clone()),
                         })?;
@@ -426,13 +436,22 @@ impl<'a> Lowering<'a> {
         encoding.binary_ops.get("resolve")?;
         let neutral = encoding.high_impedance_value()?;
         let width = self.out.signals.get(signal.0 as usize)?.width;
-        let value = repeat_element_plane(Expr::Const(encoding.value_bit(neutral)?), width, 1);
+        let span = self.out.signals[signal.0 as usize].declaration_span;
+        let value = self.source_values.borrow_mut().repeat_plane(
+            &Expr::Const(encoding.value_bit(neutral)?),
+            width,
+            1,
+            span,
+        );
         let meta_disc = if encoding.binary.contains(&neutral) {
             0
         } else {
             neutral
         };
-        let meta = repeat_element_plane(Expr::Const(meta_disc), width, 4);
+        let meta =
+            self.source_values
+                .borrow_mut()
+                .repeat_plane(&Expr::Const(meta_disc), width, 4, span);
         Some((value, meta))
     }
 

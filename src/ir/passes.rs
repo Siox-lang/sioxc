@@ -339,31 +339,8 @@ pub(super) fn logic_disc_in(discriminant: Expr, members: &std::collections::Hash
         .unwrap_or(Expr::Const(0))
 }
 
-/// The value-plane bit for a discriminant, from std's encoding.
-pub(super) fn logic_value_bit(discriminant: Expr, encoding: &LogicEncoding) -> Expr {
-    let mut result = Expr::Const(0);
-    let mut entries = encoding.value_bits.iter().collect::<Vec<_>>();
-    entries.sort_by_key(|(disc, _)| **disc);
-    for (&disc, &value) in entries.into_iter().rev() {
-        result = Expr::Select {
-            cond: Box::new(Expr::Binary {
-                op: BinOp::Eq,
-                lhs: Box::new(discriminant.clone()),
-                rhs: Box::new(Expr::Const(disc)),
-            }),
-            then: Box::new(Expr::Const(u64::from(value))),
-            els: Box::new(result),
-        };
-    }
-    result
-}
-
-/// The result of a binary logic table lookup, unrolled from std's table.
-pub(super) fn logic_binary_table_result(
-    left: Expr,
-    right: Expr,
-    table: &HashMap<(u64, u64), u64>,
-) -> Expr {
+/// Pack std's binary table without constructing an expression representation.
+pub(super) fn packed_logic_binary_table(table: &HashMap<(u64, u64), u64>) -> (Vec<u64>, u64) {
     let side = table
         .keys()
         .map(|(left, right)| left.max(right))
@@ -379,6 +356,17 @@ pub(super) fn logic_binary_table_result(
             *word |= (result & 0xF) << (bit % 64);
         }
     }
+    (words, side)
+}
+
+/// Fragment oracle for the source table constructor's regression tests.
+#[cfg(test)]
+pub(super) fn logic_binary_table_result(
+    left: Expr,
+    right: Expr,
+    table: &HashMap<(u64, u64), u64>,
+) -> Expr {
+    let (words, side) = packed_logic_binary_table(table);
     let cell = Expr::Binary {
         op: BinOp::Add,
         lhs: Box::new(Expr::Binary {
@@ -403,8 +391,8 @@ pub(super) fn logic_binary_table_result(
     }
 }
 
-/// The result of a unary logic table lookup, unrolled from std's table.
-pub(super) fn logic_unary_table_result(operand: Expr, table: &HashMap<u64, u64>) -> Expr {
+/// Pack std's unary table without constructing an expression representation.
+pub(super) fn packed_logic_unary_table(table: &HashMap<u64, u64>) -> Vec<u64> {
     let cells = table.keys().copied().max().unwrap_or(0) + 1;
     let mut words = vec![0u64; usize::try_from(cells.saturating_mul(4).div_ceil(64)).unwrap_or(0)];
     for (&disc, &result) in table {
@@ -413,19 +401,7 @@ pub(super) fn logic_unary_table_result(operand: Expr, table: &HashMap<u64, u64>)
             *word |= (result & 0xF) << (bit % 64);
         }
     }
-    Expr::Slice {
-        base: Box::new(Expr::Binary {
-            op: BinOp::Shr,
-            lhs: Box::new(words_const(words)),
-            rhs: Box::new(Expr::Binary {
-                op: BinOp::Mul,
-                lhs: Box::new(operand),
-                rhs: Box::new(Expr::Const(4)),
-            }),
-        }),
-        hi: 3,
-        lo: 0,
-    }
+    words
 }
 
 /// Replace packed-constant dynamic shifts with shared constant lookup tables.
@@ -782,22 +758,6 @@ pub(super) fn logic_element_disc(
     }
 }
 
-/// Replicate one element across `count` positions at `stride` bits each.
-pub(super) fn repeat_element_plane(element: Expr, count: u32, stride: u32) -> Expr {
-    let mut result = Expr::Const(0);
-    for index in 0..count {
-        result = or_expr(
-            result,
-            Expr::Binary {
-                op: BinOp::Shl,
-                lhs: Box::new(element.clone()),
-                rhs: Box::new(Expr::Const((index * stride) as u64)),
-            },
-        );
-    }
-    result
-}
-
 /// Is element `i` of the companion an *unknown*?
 ///
 /// `'L'` and `'H'` are not: `std_logic_1164` defines them as a weak 0 and a
@@ -829,23 +789,6 @@ pub(super) fn any_unknown(m: &Expr, width: u32, encoding: &LogicEncoding) -> Exp
     }
     acc
 }
-/// Place `'X'` (disc `x_disc`, from std's logic enum) in nibble `i` when
-/// `meta_i` (0/1) is set, else 0.
-/// Place `disc` in nibble `i` when `meta_i` holds, and nothing otherwise.
-/// `disc` is an expression rather than a constant because the discriminant a
-/// logical operator produces depends on its operands: `'U'` dominates `'X'`.
-pub(super) fn meta_nibble(meta_i: Expr, i: u32, disc: Expr) -> Expr {
-    Expr::Binary {
-        op: BinOp::Shl,
-        lhs: Box::new(Expr::Binary {
-            op: BinOp::Mul,
-            lhs: Box::new(meta_i),
-            rhs: Box::new(disc),
-        }),
-        rhs: Box::new(Expr::Const(4 * i as u64)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

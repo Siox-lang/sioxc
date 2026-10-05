@@ -1150,9 +1150,9 @@ fn concurrent_resolved_slices_lower_without_expression_explosion() {
         "three resolved slice contexts expanded to {} bytes",
         expressions.len()
     );
-    // CFG construction contributes one place per write and exactly one node
-    // per normalized expression node. It must not expand the source draft a
-    // second time when constructing sensitivities or attaching test metadata.
+    // One place per write plus the expanded tree is an upper bound, not an
+    // equality: canonical metadata/resolution builders share operand IDs.
+    // Sensitivity/test metadata must not expand that DAG a second time.
     let mut expected_nodes = d.drivers.len();
     let mut pending = d
         .drivers
@@ -1190,10 +1190,36 @@ fn concurrent_resolved_slices_lower_without_expression_explosion() {
             | Expr::Unknown => {}
         }
     }
-    assert_eq!(
-        d.process_ir.values.len(),
-        expected_nodes,
+    assert!(
+        d.process_ir.values.len() <= expected_nodes,
         "canonical construction must remain linear in normalized source writes"
+    );
+    let mut pending = Vec::new();
+    for process in &d.process_ir.processes {
+        for block in &process.blocks {
+            for instruction in &block.instructions {
+                let ProcessInstruction::Assign { target, value, .. } = instruction else {
+                    panic!("fixture must contain only hardware writes");
+                };
+                pending.extend([*target, *value]);
+            }
+            if let ProcessTerminator::Branch { condition, .. } = block.terminator {
+                pending.push(condition);
+            }
+        }
+    }
+    let mut reachable = std::collections::HashSet::new();
+    while let Some(value) = pending.pop() {
+        if reachable.insert(value) {
+            pending.extend(crate::ir::process::process_value_dependencies(
+                &d.process_ir.values[value.0 as usize].kind,
+            ));
+        }
+    }
+    assert_eq!(
+        reachable.len(),
+        d.process_ir.values.len(),
+        "canonical construction must not retain orphan expression copies"
     );
 }
 

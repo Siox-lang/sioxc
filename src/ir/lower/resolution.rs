@@ -251,11 +251,9 @@ impl<'a> Lowering<'a> {
                     let d = &self.hardware.drivers[i];
                     acc = match &d.cond {
                         None => d.expr.clone(),
-                        Some(c) => Expr::Select {
-                            cond: Box::new(c.clone()),
-                            then: Box::new(d.expr.clone()),
-                            els: Box::new(acc),
-                        },
+                        Some(c) => {
+                            self.source_select(c, &d.expr, &acc, d.span.unwrap_or(declaration_span))
+                        }
                     };
                 }
                 contributions.push(acc);
@@ -269,7 +267,14 @@ impl<'a> Lowering<'a> {
                 let resolved = self
                     .logic_encoding(&ty)
                     .and_then(|encoding| encoding.binary_ops.get("resolve"))
-                    .map(|table| logic_binary_table_result(folded.clone(), c.clone(), table))
+                    .map(|table| {
+                        self.source_values.borrow_mut().binary_table(
+                            &folded,
+                            &c,
+                            table,
+                            declaration_span,
+                        )
+                    })
                     .or_else(|| self.inline_resolve(&ty, folded.clone(), c));
                 match resolved {
                     Some(r) => folded = r,
@@ -314,12 +319,19 @@ impl<'a> Lowering<'a> {
     ) -> Option<(Expr, Expr)> {
         let encoding = self.logic_encoding(element)?;
         let z = encoding.high_impedance_value()?;
+        let span = self.meta_temps.borrow().anchor;
         let mut contributions = Vec::new();
         for indices in contexts.values() {
             let mut value = Expr::Const(encoding.value_bit(z)?);
             let mut meta = Expr::Const(if encoding.binary.contains(&z) { 0 } else { z });
-            value = repeat_element_plane(value, width, 1);
-            meta = repeat_element_plane(meta, width, 4);
+            value = self
+                .source_values
+                .borrow_mut()
+                .repeat_plane(&value, width, 1, span);
+            meta = self
+                .source_values
+                .borrow_mut()
+                .repeat_plane(&meta, width, 4, span);
             for &index in indices {
                 let driver = &self.hardware.drivers[index];
                 let next_value = driver.expr.clone();
@@ -343,16 +355,9 @@ impl<'a> Lowering<'a> {
                         meta = next_meta;
                     }
                     Some(condition) => {
-                        value = Expr::Select {
-                            cond: Box::new(condition.clone()),
-                            then: Box::new(next_value),
-                            els: Box::new(value),
-                        };
-                        meta = Expr::Select {
-                            cond: Box::new(condition.clone()),
-                            then: Box::new(next_meta),
-                            els: Box::new(meta),
-                        };
+                        let span = driver.span.unwrap_or(span);
+                        value = self.source_select(condition, &next_value, &value, span);
+                        meta = self.source_select(condition, &next_meta, &meta, span);
                     }
                 }
             }
@@ -387,37 +392,38 @@ impl<'a> Lowering<'a> {
         for index in 0..width {
             let mut incoming = contributions.iter();
             let (first_value, first_meta) = incoming.next()?;
-            let mut result = logic_element_disc(first_value, first_meta, index, encoding);
+            let mut result = self.source_values.borrow_mut().element_disc(
+                first_value,
+                first_meta,
+                index,
+                encoding,
+                span,
+            );
             for (incoming_value, incoming_meta) in incoming {
-                let right = logic_element_disc(incoming_value, incoming_meta, index, encoding);
+                let right = self.source_values.borrow_mut().element_disc(
+                    incoming_value,
+                    incoming_meta,
+                    index,
+                    encoding,
+                    span,
+                );
                 result = match table {
-                    Some(table) => logic_binary_table_result(result, right, table),
+                    Some(table) => self
+                        .source_values
+                        .borrow_mut()
+                        .binary_table(&result, &right, table, span),
                     None => self.inline_resolve(element, result, right)?,
                 };
             }
-            let value_bit = logic_value_bit(result.clone(), encoding);
-            value = or_expr(
-                value,
-                Expr::Binary {
-                    op: BinOp::Shl,
-                    lhs: Box::new(value_bit),
-                    rhs: Box::new(Expr::Const(index as u64)),
-                },
-            );
-            let is_meta = not1(logic_disc_in(result.clone(), &encoding.binary));
-            let nibble = Expr::Select {
-                cond: Box::new(is_meta),
-                then: Box::new(result),
-                els: Box::new(Expr::Const(0)),
-            };
-            meta = or_expr(
-                meta,
-                Expr::Binary {
-                    op: BinOp::Shl,
-                    lhs: Box::new(nibble),
-                    rhs: Box::new(Expr::Const((4 * index) as u64)),
-                },
-            );
+            let arena = &mut *self.source_values.borrow_mut();
+            let value_bit = arena.value_bit(&result, encoding, span);
+            let shifted = arena.binary(BinOp::Shl, &value_bit, &Expr::Const(index as u64), span);
+            value = arena.binary(BinOp::Or, &value, &shifted, span);
+            let binary = arena.disc_in(&result, &encoding.binary, span);
+            let is_meta = arena.binary(BinOp::Eq, &binary, &Expr::Const(0), span);
+            let nibble = arena.select(&is_meta, &result, &Expr::Const(0), span);
+            let shifted = arena.binary(BinOp::Shl, &nibble, &Expr::Const((4 * index) as u64), span);
+            meta = arena.binary(BinOp::Or, &meta, &shifted, span);
         }
         Some((value, meta))
     }

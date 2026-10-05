@@ -391,10 +391,15 @@ construct canonical nodes through the shared arena builders rather than build
 new expression trees. Concatenation parts retain their individual source spans;
 real coercion reuses canonical child values and anchors transformed operations
 at their original source locations. Existing numeric evaluation rules remain
-unchanged. Resolution,
-metavalue construction, intermediate expression construction,
-and compile-time initializer normalization still use private fragments; fully arena-native
-ingress remains tracked in TODO.
+unchanged. Logical/unary/arithmetic companions, source encoding-table lookups,
+element-wise resolution and packed-write encoding projections also construct
+canonical values. Physical single-bit projections carry temporary normalization
+intent through arena remapping: reconstructing a source logic-element read must
+not decode a raw value-plane bit used to build a companion. That intent does not
+add a runtime operation or public IR format; final bit slices retain ordinary
+bit semantics. Surrounding write/context/guard construction, other source
+expressions and compile-time initializer normalization still use private
+fragments; fully arena-native ingress remains tracked in TODO.
 
 **Layering rule:** a module may use only the modules above it in this list
 (plus `diag`). The layering is a convention enforced by module discipline; do

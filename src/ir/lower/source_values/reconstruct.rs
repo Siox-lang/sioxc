@@ -14,6 +14,7 @@ impl SourceValues {
         let SourceValues {
             ir: mut old,
             explicit_meta,
+            raw_bits,
             ..
         } = std::mem::take(self);
         let mut mapped = Vec::with_capacity(old.values.len());
@@ -54,6 +55,10 @@ impl SourceValues {
                 continue;
             }
             let original = self.push_node(value, layout);
+            let raw_bit = raw_bits.contains(&ProcessValueId(index as u32));
+            if raw_bit {
+                self.raw_bits.insert(original);
+            }
             let replacement = match self.ir.values[original.0 as usize].kind {
                 ProcessValueKind::Binary {
                     operation:
@@ -79,7 +84,7 @@ impl SourceValues {
                             else_value: original,
                         }
                     }),
-                ProcessValueKind::BitSlice { base, high, low } if high == low => {
+                ProcessValueKind::BitSlice { base, high, low } if high == low && !raw_bit => {
                     // Static and checked-shift reads share the same reconstruction.
                     // A RawResize between slice and shift remains a typed boundary.
                     let (signal, offset) = match self.ir.values[base.0 as usize].kind {
@@ -289,7 +294,9 @@ mod tests {
                 match op {
                     BinOp::And => left & right,
                     BinOp::Or => left | right,
+                    BinOp::Add => left.wrapping_add(right),
                     BinOp::Mul => left.wrapping_mul(right),
+                    BinOp::Shl => left.checked_shl(right as u32).unwrap_or(0),
                     BinOp::Shr => left.checked_shr(right as u32).unwrap_or(0),
                     BinOp::Eq => u64::from(left == right),
                     BinOp::Ne => u64::from(left != right),
@@ -310,6 +317,209 @@ mod tests {
                 evaluate(index, frames)
             }
             _ => panic!("unexpected test expression: {expression:?}"),
+        }
+    }
+
+    #[test]
+    fn raw_storage_bits_survive_compaction_and_reordered_read_reconstruction() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 10..20);
+        let encoding = LogicEncoding {
+            value_bits: [(4, false), (9, true)].into(),
+            binary: [4, 9].into(),
+            ..Default::default()
+        };
+        for state in [ProcessSignalState::Current, ProcessSignalState::Old] {
+            let mut arena = SourceValues::default();
+            arena.append(&Expr::Const(99), span, None); // Unreachable prefix forces remapping.
+            let value = arena.signal(SignalId(0), state, span);
+            let companion = arena.signal(SignalId(1), state, span);
+            let raw = arena.raw_slice(&value, 0, 0, span);
+            let source = arena.slice(&value, 0, 0, span);
+            let element = arena.element_disc(&value, &companion, 0, &encoding, span);
+            let offset =
+                arena.checked_index(&Expr::Current(SignalId(2)), &Expr::Const(1), 0, 1, span);
+            let shifted = arena.binary(BinOp::Shr, &value, &offset, span);
+            let raw_shift = arena.raw_slice(&shifted, 0, 0, span);
+            let source_shift = arena.slice(&shifted, 0, 0, span);
+            let mut draft = HardwareDraft::default();
+            for expr in [raw, source, element, raw_shift, source_shift] {
+                draft.drivers.push(Driver {
+                    target: SignalId(2),
+                    cond: None,
+                    expr,
+                    meta: None,
+                    ctx: 0,
+                    span: Some(span),
+                });
+            }
+            arena.retain_reachable(&mut draft);
+            let mapped = arena.reconstruct_metavalues(
+                &[(0, 1)].into(),
+                &[(1, 2)].into(),
+                &[(1, encoding.clone())].into(),
+            );
+            for driver in &mut draft.drivers {
+                arena.remap_expression(&mut driver.expr, &mapped);
+            }
+            let roots = draft
+                .drivers
+                .iter()
+                .map(|driver| {
+                    let Expr::Canonical { value, .. } = driver.expr else {
+                        unreachable!()
+                    };
+                    assert_eq!(arena.ir.values[value.0 as usize].span, span);
+                    crate::ir::derive::materialize_digital_expression(&arena.ir, value).unwrap()
+                })
+                .collect::<Vec<_>>();
+            for bits in 0..4 {
+                for meta in [4, 9] {
+                    for index in 0..2 {
+                        let frames = [
+                            [bits, meta | (meta << 4), index],
+                            [bits ^ 3, meta | (meta << 4), index],
+                        ];
+                        let bits = match state {
+                            ProcessSignalState::Current => bits,
+                            _ => bits ^ 3,
+                        };
+                        let bit = bits & 1;
+                        assert_eq!(
+                            evaluate(&roots[0], &frames),
+                            bit,
+                            "raw projection stays 0/1"
+                        );
+                        let disc = if bit == 0 { 4 } else { 9 };
+                        assert_eq!(
+                            evaluate(&roots[1], &frames),
+                            disc,
+                            "source read decodes enum"
+                        );
+                        assert_eq!(
+                            evaluate(&roots[2], &frames),
+                            disc,
+                            "metadata reads the physical bit"
+                        );
+                        let bit = (bits >> index) & 1;
+                        assert_eq!(evaluate(&roots[3], &frames), bit, "checked raw shift");
+                        assert_eq!(
+                            evaluate(&roots[4], &frames),
+                            if bit == 0 { 4 } else { 9 },
+                            "checked source shift"
+                        );
+                    }
+                }
+            }
+            assert!(arena.ir.validate(3).is_empty());
+        }
+    }
+
+    #[test]
+    fn canonical_unary_and_logical_companions_match_element_contracts() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 10..20);
+        let encoding = LogicEncoding {
+            value_bits: [(0, false), (1, true), (3, false)].into(),
+            binary: [0, 1].into(),
+            unknown: [3].into(),
+            unary_ops: [("not".into(), [(0, 1), (1, 0), (3, 3)].into())].into(),
+            binary_ops: [("and", BinOp::And), ("or", BinOp::Or), ("xor", BinOp::Xor)]
+                .into_iter()
+                .map(|(name, operation)| {
+                    let mut table = HashMap::new();
+                    for left in [0, 1, 3] {
+                        for right in [0, 1, 3] {
+                            let result = match operation {
+                                BinOp::And if left == 0 || right == 0 => 0,
+                                BinOp::Or if left == 1 || right == 1 => 1,
+                                _ if left == 3 || right == 3 => 3,
+                                BinOp::And => left & right,
+                                BinOp::Or => left | right,
+                                BinOp::Xor => left ^ right,
+                                _ => unreachable!(),
+                            };
+                            table.insert((left, right), result);
+                        }
+                    }
+                    (name.into(), table)
+                })
+                .collect(),
+            ..Default::default()
+        };
+        for operation in [None, Some(BinOp::And), Some(BinOp::Or), Some(BinOp::Xor)] {
+            let mut sink = DiagnosticSink::new();
+            let resolved = Resolved::default();
+            let mut lowering = Lowering::new(&mut sink, &resolved);
+            lowering.add_signal("E", "value", 2, span);
+            lowering.add_signal("E", "meta", 8, span);
+            lowering.out.meta_of.insert(0, 1);
+            lowering
+                .logic_encodings
+                .insert(DEFAULT_LOGIC_TYPE.into(), encoding.clone());
+            let mut temps = MetaTemps::inline_only();
+            let expression = match operation {
+                None => lowering.lower_meta_ir(
+                    &Expr::Unary {
+                        op: UnOp::Not,
+                        rhs: Box::new(Expr::Current(SignalId(0))),
+                    },
+                    2,
+                    &mut temps,
+                ),
+                Some(operation) => lowering.logical_meta(
+                    operation,
+                    &Expr::Current(SignalId(0)),
+                    &Expr::Const(1),
+                    2,
+                    &mut temps,
+                ),
+            }
+            .expect("companion must be built");
+            let Expr::Canonical { value: root, .. } = expression else {
+                panic!("companion constructor must return a canonical root");
+            };
+            let arena = lowering.source_values.get_mut();
+            let mapped = arena.reconstruct_metavalues(
+                &[(0, 1)].into(),
+                &[(1, 2)].into(),
+                &[(1, encoding.clone())].into(),
+            );
+            let actual = crate::ir::derive::materialize_digital_expression(
+                &arena.ir,
+                mapped[root.0 as usize],
+            )
+            .unwrap();
+            for first in [0, 1, 3] {
+                for second in [0, 1, 3] {
+                    let frames = [[
+                        u64::from(first == 1) | (u64::from(second == 1) << 1),
+                        first | (second << 4),
+                        0,
+                    ]; 2];
+                    let mut expected = 0;
+                    for (index, disc) in [first, second].into_iter().enumerate() {
+                        let result = match operation {
+                            None => encoding.unary_ops["not"][&disc],
+                            Some(operation) => {
+                                let name = match operation {
+                                    BinOp::And => "and",
+                                    BinOp::Or => "or",
+                                    _ => "xor",
+                                };
+                                encoding.binary_ops[name][&(disc, u64::from(index == 0))]
+                            }
+                        };
+                        if !encoding.binary.contains(&result) {
+                            expected |= result << (4 * index);
+                        }
+                    }
+                    assert_eq!(
+                        evaluate(&actual, &frames),
+                        expected,
+                        "{operation:?}: {frames:?}"
+                    );
+                }
+            }
+            assert!(arena.ir.validate(2).is_empty());
         }
     }
 
