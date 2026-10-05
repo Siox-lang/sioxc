@@ -189,11 +189,98 @@ impl SourceValues {
         for meta in self.explicit_meta.values_mut() {
             resolve_logic_expr(meta, lut);
         }
+        self.clear_analysis();
+    }
+
+    fn clear_analysis(&mut self) {
         self.real.clear();
         self.non_integer.clear();
         self.meta_width.clear();
         self.coerced_real.clear();
         self.meta_presence.clear();
+    }
+
+    /// Inspect only the fixed lookup shape, never project or expand its index.
+    fn packed_lookup(&self, value: ProcessValueId) -> Option<(LookupTable, ProcessValueId)> {
+        let ProcessValueKind::BitSlice { base, high, low: 0 } =
+            self.ir.values[value.0 as usize].kind
+        else {
+            return None;
+        };
+        let element_width = high.checked_add(1)?;
+        let ProcessValueKind::Binary {
+            operation: ProcessBinaryOp::Shr,
+            left: packed,
+            right: offset,
+        } = self.ir.values[base.0 as usize].kind
+        else {
+            return None;
+        };
+        let ProcessValueKind::Binary {
+            operation: ProcessBinaryOp::Mul,
+            left: index,
+            right: stride,
+        } = self.ir.values[offset.0 as usize].kind
+        else {
+            return None;
+        };
+        // A concrete intermediate representation is an evaluation boundary,
+        // not an identity that table recognition may silently bypass.
+        if [base, packed, offset, stride].iter().any(|id| {
+            self.ir.values[id.0 as usize].bit_width.is_some()
+                || self
+                    .ir
+                    .value_layouts
+                    .get(id.0 as usize)
+                    .is_some_and(Option::is_some)
+        }) {
+            return None;
+        }
+        let ProcessValueKind::Number(ProcessNumber::Integer(stride)) =
+            &self.ir.values[stride.0 as usize].kind
+        else {
+            return None;
+        };
+        if stride.as_slice() != [u64::from(element_width)] {
+            return None;
+        }
+        let ProcessValueKind::Number(ProcessNumber::Integer(words)) =
+            &self.ir.values[packed.0 as usize].kind
+        else {
+            return None;
+        };
+        Some((packed_lookup_table(element_width, words)?, index))
+    }
+
+    pub(super) fn compact_lookups(
+        &mut self,
+        tables: &mut Vec<LookupTable>,
+        intern: &mut HashMap<LookupTable, LookupTableId>,
+    ) {
+        let mut changed = false;
+        for index in 0..self.ir.values.len() {
+            let Some((table, operand)) = self.packed_lookup(ProcessValueId(index as u32)) else {
+                continue;
+            };
+            let table = match intern.get(&table).copied() {
+                Some(id) => id,
+                None => {
+                    let id = LookupTableId(tables.len());
+                    tables.push(table.clone());
+                    intern.insert(table, id);
+                    id
+                }
+            };
+            self.ir.values[index].kind = ProcessValueKind::TableLookup {
+                table,
+                index: operand,
+            };
+            // The other fixed-shape operands are constants: reads are unchanged.
+            changed = true;
+        }
+        if changed {
+            self.clear_analysis();
+        }
     }
 
     /// A typed scalar binding evaluates at its own format before a later
@@ -643,23 +730,120 @@ impl Lowering<'_> {
             .enumerate()
             .map(|(index, table)| (table, LookupTableId(index)))
             .collect();
-        let mapped = arena.rewrite(|arena, expression| {
-            let original = expression.clone();
-            arena.expose_lookup_shape(expression);
-            if packed_lookup(expression).is_none() {
-                *expression = original;
-            }
-            *expression = compact_lookup_expr(expression.clone(), tables, &mut intern);
-        });
-        for expression in self.hardware.expressions_mut() {
-            arena.remap_expression(expression, &mapped);
-        }
+        arena.compact_lookups(tables, &mut intern);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_lookup_compaction_keeps_formats_sharing_and_failed_shapes() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 4..9);
+        let mut arena = SourceValues::default();
+        let call = arena.append(
+            &Expr::CCall {
+                name: "next_index".into(),
+                args: vec![Expr::Current(SignalId(0))],
+                f64_args: vec![false],
+                integer_args: vec![true],
+                f64_ret: false,
+                integer_ret: true,
+            },
+            span,
+            None,
+        );
+        let lookup = Expr::Slice {
+            base: Box::new(Expr::Binary {
+                op: BinOp::Shr,
+                lhs: Box::new(Expr::Const(0x1234)),
+                rhs: Box::new(Expr::Binary {
+                    op: BinOp::Mul,
+                    lhs: Box::new(arena.reference(call)),
+                    rhs: Box::new(Expr::Const(4)),
+                }),
+            }),
+            hi: 3,
+            lo: 0,
+        };
+        let first = arena.append(&lookup, span, None);
+        let second = arena.append(&lookup, span, None);
+        let narrowed = arena.append(&lookup, span, None);
+        let ProcessValueKind::BitSlice { base, .. } = arena.ir.values[narrowed.0 as usize].kind
+        else {
+            unreachable!()
+        };
+        let ProcessValueKind::Binary { right: offset, .. } = arena.ir.values[base.0 as usize].kind
+        else {
+            unreachable!()
+        };
+        arena.ir.values[offset.0 as usize].bit_width = Some(2);
+        let ordinary = arena.append(
+            &Expr::Slice {
+                base: Box::new(arena.reference(call)),
+                hi: 3,
+                lo: 0,
+            },
+            span,
+            None,
+        );
+        let layout = SourceLayout {
+            span,
+            kind: LayoutKind::Scalar {
+                width: 4,
+                domain: ScalarDomain::Integer,
+                nominal: Some("integer".into()),
+                value_range: None,
+            },
+        };
+        arena.ir.values[first.0 as usize].bit_width = Some(4);
+        arena.ir.value_layouts.resize(arena.ir.values.len(), None);
+        arena.ir.value_layouts[first.0 as usize] = Some(layout.clone());
+        let before = arena.ir.values.clone();
+        let mut tables = Vec::new();
+        arena.compact_lookups(&mut tables, &mut HashMap::new());
+        assert_eq!(
+            tables,
+            vec![LookupTable {
+                element_width: 4,
+                values: vec![4, 3, 2, 1]
+            }]
+        );
+        assert_eq!(arena.ir.values.len(), before.len());
+        for id in [first, second] {
+            assert_eq!(
+                arena.ir.values[id.0 as usize].kind,
+                ProcessValueKind::TableLookup {
+                    table: LookupTableId(0),
+                    index: call
+                }
+            );
+            assert_eq!(arena.ir.values[id.0 as usize].span, span);
+            assert_eq!(arena.reads[id.0 as usize].as_ref(), &[SignalId(0)]);
+        }
+        assert_eq!(arena.ir.values[first.0 as usize].bit_width, Some(4));
+        assert_eq!(arena.ir.value_layouts[first.0 as usize], Some(layout));
+        assert_eq!(
+            arena.ir.values[ordinary.0 as usize],
+            before[ordinary.0 as usize]
+        );
+        for (index, value) in before.iter().enumerate() {
+            if index != first.0 as usize && index != second.0 as usize {
+                assert_eq!(&arena.ir.values[index], value);
+            }
+        }
+        assert_eq!(
+            arena
+                .ir
+                .values
+                .iter()
+                .filter(|v| matches!(v.kind, ProcessValueKind::ForeignCall { .. }))
+                .count(),
+            1
+        );
+        assert!(arena.ir.validate(1).is_empty());
+    }
 
     #[test]
     fn source_operator_nodes_reuse_operand_identities_and_spans() {
@@ -888,14 +1072,25 @@ mod tests {
             lo: 0,
         };
         let mut unbound = lookup(stride);
+        let mut bound = lookup(bound);
+        let unbound_id = arena.append(&unbound, span, None);
+        let bound_id = arena.append(&bound, span, None);
         arena.expose_lookup_shape(&mut unbound);
         assert!(packed_lookup(&unbound).is_some());
-        let mut bound = lookup(bound);
         arena.expose_lookup_shape(&mut bound);
         assert!(
             packed_lookup(&bound).is_none(),
             "compaction would bypass the bound stride's evaluation width"
         );
+        let bound_node = arena.ir.values[bound_id.0 as usize].clone();
+        let mut tables = Vec::new();
+        arena.compact_lookups(&mut tables, &mut HashMap::new());
+        assert_eq!(tables.len(), 1);
+        assert!(matches!(
+            arena.ir.values[unbound_id.0 as usize].kind,
+            ProcessValueKind::TableLookup { .. }
+        ));
+        assert_eq!(arena.ir.values[bound_id.0 as usize], bound_node);
     }
 
     #[test]

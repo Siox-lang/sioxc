@@ -285,7 +285,11 @@ inlined and aggregate-element paths, including packed logical operations.
 Selected signed/unsigned/float domains and operator spans stay on those nodes.
 Logic-literal normalization updates canonical leaves in place using std's
 discriminants; unchanged identities and formats no longer pass through the
-expression adapter. Coercions and other construction/normalization paths still
+expression adapter. Lookup compaction likewise recognizes its fixed packed
+pattern directly in canonical nodes, interns decoded tables and replaces only
+matching slices in place. Typed intermediate boundaries and failed matches
+remain intact; widths, layouts, spans and shared indices retain their IDs.
+Coercions and other construction/normalization paths still
 need migration.
 `lower/source_bindings.rs` owns scoped concrete argument/local/return shapes
 and aggregate projection over those leaves. Pure free/method array arguments

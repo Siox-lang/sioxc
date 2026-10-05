@@ -11913,3 +11913,55 @@ lookup rewrites and initializer normalization still use the temporary adapter;
 general runtime calls/recursion, non-packed conversions and dynamic host forms
 also remain. Next: canonical metadata/lookup rewrite construction, preserving
 checked-access activity, source encodings, contexts and formats.
+
+### 2026-10-05 — Codex — canonical lookup compaction ownership
+
+Own source_values.rs packed-table recognition/compaction and focused tests,
+passes.rs shared packed-word decoding, and architecture/TODO status. Replace
+the lookup pass's canonical-node projection/import loop with direct fixed-shape
+recognition and in-place TableLookup nodes. Keep operand IDs, formats, spans,
+typed stride barriers and failed-recognition graphs intact. Reuse one decoder
+for the remaining private-fragment pass rather than duplicate table semantics.
+Preserve unrelated setup/history changes; two-job full gates and fresh native
+simulation checks before committing. Phase 1 remains active; no push assumed.
+
+Canonical lookup compaction now inspects BitSlice/Shr/Mul/constant nodes directly
+and replaces matches in place. Retain all IDs, spans, types, widths, layouts and
+shared foreign-call indices; reject RawResize and explicitly formatted
+intermediates. Unmatched graphs are untouched. Reuse packed_lookup_table for
+both ingress forms, with independent cross-word decoding tests. One new fixture
+initially indexed the optional empty layout vector; initialized it correctly,
+then all 505 library tests and all-target/all-feature Clippy passed.
+Fresh native logic/encoding/resolution tables, array operators, hardware float
+conformance and packed reads pass assertions and VCD profiles. Only metavalue
+reconstruction remains a production SourceValues.rewrite caller. Other ingress
+and runtime gaps remain; adapter deletion is not claimed.
+
+AST-only graph update completed with existing vendored libfst parse warnings.
+Freeze execution sources and sibling corpus for /tmp/siox-canonical-lookup-ci-j2-20261005
+under the same 8 GiB cap, CARGO_BUILD_JOBS=2; no edits until terminal.
+Execution-source hash:
+bc829d724b6357b2ee22bf1d1d97df8b95aa7a898de8f47cb27f9d789e50adce.
+Corpus hash:
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+
+### 2026-10-05 — Codex — canonical lookup compaction verified
+
+The pinned two-job CI scope completed successfully. Retained logs at
+/tmp/siox-canonical-lookup-ci-j2-20261005 cover formatting, frontend checks and
+Clippy, default/bitpack Rust suites (505/485 library tests plus integrations),
+all-target/all-feature Clippy and both 211-program corpora. Frozen execution
+source and corpus hashes match. Last observed scope peak was 1,201,491,968 bytes
+(1.12 GiB), including Cargo; this is not a measured compiler memory improvement.
+Six fresh native logic/encoding/resolution table, array-operator, hardware-float
+and packed-read binaries pass assertions and VCD profiles in both modes; their
+VCDs are byte-identical.
+
+Commit the canonical lookup pass, shared decoder, regressions and docs locally.
+Preserve AGENTS.md, .codex/ and 441 unrelated historical chat additions. The
+requested graphed branch push is confirmed up to date; main is not authorized
+for pushing. Completion estimate: Phase 1 approximately 97%, still incomplete.
+Other constructors/coercions, resolution/metavalue reconstruction, initializer
+normalization, general runtime calls/recursion, non-packed conversions and
+dynamic host forms remain. Next: remove the remaining production arena rewrite
+round-trip used for metavalue reconstruction, retaining formats and shared IDs.

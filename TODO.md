@@ -92,8 +92,10 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   elements and packed logical operations) construct arena nodes directly with
   selected arithmetic domains and source spans. Logic-literal normalization
   updates canonical leaves in place from std's discriminants without remapping
-  IDs or losing formats. Other constructors and normalization paths still use
-  the temporary adapter.
+  IDs or losing formats. Canonical lookup compaction now directly recognizes
+  and replaces matching nodes in place, preserving formats, shared indices and
+  typed stride boundaries without projection/import. Other constructors and
+  normalization paths still use the temporary adapter.
   Complete the remaining ingress migration: resolution/metavalue construction,
   expression construction between these boundaries and compile-time initializer
   normalization still assemble private fragments around those IDs.

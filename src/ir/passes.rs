@@ -611,6 +611,14 @@ pub(super) fn packed_lookup(expr: &Expr) -> Option<(LookupTable, &Expr)> {
         Expr::WideConst(words) => words,
         _ => return None,
     };
+    Some((packed_lookup_table(element_width, words)?, index))
+}
+
+/// Decode the same logical cells for canonical and temporary fragment ingress.
+pub(super) fn packed_lookup_table(element_width: u32, words: &[u64]) -> Option<LookupTable> {
+    if element_width == 0 || element_width > 64 || words.is_empty() {
+        return None;
+    }
     let cells = words
         .len()
         .saturating_mul(64)
@@ -635,13 +643,10 @@ pub(super) fn packed_lookup(expr: &Expr) -> Option<(LookupTable, &Expr)> {
     while values.len() > 1 && values.last() == Some(&0) {
         values.pop();
     }
-    Some((
-        LookupTable {
-            element_width,
-            values,
-        },
-        index,
-    ))
+    Some(LookupTable {
+        element_width,
+        values,
+    })
 }
 
 /// One operand metavalue lowering wants to hoist into its own signal.
@@ -844,6 +849,29 @@ pub(super) fn meta_nibble(meta_i: Expr, i: u32, disc: Expr) -> Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_table_cells_cross_word_boundaries_without_losing_bits() {
+        let words = [0x1234_5678_9abc_def0u64, 0x0fed_cba9_8765_4321];
+        for width in [1u32, 3, 4, 5, 7, 16, 31, 63, 64] {
+            let cells = (words.len() * 64).div_ceil(width as usize);
+            let mut expected = (0..cells)
+                .map(|cell| {
+                    (0..width).fold(0u64, |value, bit| {
+                        let position = cell * width as usize + bit as usize;
+                        let source = words.get(position / 64).copied().unwrap_or(0);
+                        value | (((source >> (position % 64)) & 1) << bit)
+                    })
+                })
+                .collect::<Vec<_>>();
+            while expected.len() > 1 && expected.last() == Some(&0) {
+                expected.pop();
+            }
+            let table = packed_lookup_table(width, &words).unwrap();
+            assert_eq!(table.element_width, width);
+            assert_eq!(table.values, expected, "element width {width}");
+        }
+    }
 
     #[test]
     fn metadata_hoists_capture_their_own_activity() {
