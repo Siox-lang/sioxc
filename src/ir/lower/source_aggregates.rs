@@ -155,10 +155,11 @@ impl Lowering<'_> {
             ) => {
                 let condition = self
                     .bind_source_expression(self.lower_scalar_env(cond, env), ast::expr_span(cond));
-                let value = select_val(
+                let value = self.source_select_value(
                     condition,
                     self.lower_shaped_source(then, env, layout),
                     self.lower_shaped_source(els, env, layout),
+                    ast::expr_span(expression),
                 );
                 self.bind_source_value(value, ast::expr_span(expression), None)
             }
@@ -183,10 +184,11 @@ impl Lowering<'_> {
                         match self.arm_match_cond(&arm.pattern, scrutinee, &scrutinee_value, env) {
                             None => value,
                             Some(_) if exhaustive && position + 1 == arms.len() => value,
-                            Some(condition) => select_val(
+                            Some(condition) => self.source_select_value(
                                 self.bind_source_expression(condition, arm.span),
                                 value,
                                 result.unwrap_or(Val::Scalar(Expr::Unknown)),
+                                arm.span,
                             ),
                         },
                     );

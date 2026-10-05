@@ -12134,3 +12134,165 @@ resolution/metavalue fragments, initializer normalization, runtime call CFGs,
 non-packed conversions and dynamic host forms remain. Next: migrate source
 read/selection constructors directly into the existing arena, keeping raw
 metadata distinct from reconstructed discriminants; retain exact formats.
+
+### 2026-10-05 — Codex — canonical source selection ownership
+
+Own source_values/build.rs, source_bindings.rs, block_locals.rs, expression
+slice lowering and captured-place reads, plus focused tests and architecture/
+TODO status. Build checked indices, packed slices, muxes and captured signal
+reads directly in the existing arena. Keep source-defined encodings, exact
+index spans, bounds, Old/Current states, dependencies and typed boundaries.
+Do not canonicalize raw metadata/initializer fragments indiscriminately before
+reconstruction: a value-element selection is not a metadata bit projection.
+Preserve unrelated AGENTS.md, .codex/ and 441 historical chat additions. Full
+pinned gates and fresh native comparisons before local commit; no main push.
+
+The common aggregate select helper also has callers in calls.rs, control.rs,
+source_aggregates.rs and values.rs. Own those call-site migrations so the
+tree-building helper can actually be removed. Preserve raw metadata builders
+and initializer normalization for their separate ingress migration.
+
+Direct source constructors now cover checked indices, persisted/local packed
+reads, directed slices, captured-place reads, conditional local stores and
+scalar/aggregate if/match selections. Delete select_val after migrating all
+callers; aggregate leaves share one condition. Twelve source-arena tests pass,
+including two new builder checks for unprojectable operands, full formats,
+Current/Old/Event states, shared foreign offsets and checked spans. Forty-three
+focused integration tests pass, including a new access/index anchor check and
+existing packed-write, metadata, inactive-guard and negative/wide-index cases.
+A requested test target named process_ir does not exist and was corrected to
+the actual integration targets; a filter-bearing unit run did not run those
+integrations, so a separate unfiltered run was used for that evidence. Compile
+checks also caught two remaining select_val callers; both are migrated.
+
+Freeze execution sources (including the staged new constructor module) and
+the sibling corpus for /tmp/siox-source-select-ci-j2-20261005: pinned Rust,
+two jobs, 8 GiB memory cap. No source edits until the existing job is terminal.
+Source hash:
+706e38f1094d0abf7887769a1c0ae1a188138e410ad0b39cbaebb095455aa3e5.
+Corpus hash:
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+
+### 2026-10-05 — Codex — source selection gate diagnostic checkpoint
+
+The default corpus is terminal at 210 passed / 1 failed: the existing
+runtime_packed_read_test loses X at logical label -64. Fresh native execution
+reproduces it. The bitpack corpus remains live in the same CI scope; execution
+sources stay frozen until that scope terminates. Read-only IR inspection shows
+the canonical offset subtraction skipped the explicit integer RawResize:
+bind_source_value returns canonical operands unchanged even when its caller
+requests a kernel integer boundary. Wide value/companion shifts then change
+the offset evaluation context. Fix the shared binding helper, not each caller.
+Also ensure aggregate conditions bind raw signal leaves once, not once per
+leaf. These changes remain within the owned source-value migration.
+
+Evidence correction: the separate focused integration run had 42 passing
+tests (2 + 13 + 3 + 4 + 20), not the 43 stated above. Default/bitpack Rust
+suites pass at 511/491 library tests plus integrations, but the failed corpus
+means this migration is not yet verified or ready to commit.
+
+The original CI command is now terminal with exit 1; both corpora report
+210 passed / 1 failed, each identifying only runtime_packed_read_test.
+The execution-source hash still matches the frozen inputs. The systemd
+scope's successful cleanup is not the test result; the command exit and
+retained corpus logs are authoritative. Add reproducing unit/IR regressions
+before changing the shared canonical binding and aggregate-condition paths.
+
+Both new unit regressions failed for the expected reasons before the fix:
+canonical scalar binding returned a Binary rather than a RawResize, and two
+aggregate leaves had different raw signal condition IDs. Corrected a fixture
+operator spelling (FAdd, not the Process operation's FloatAdd) before that
+red run. The shared helper now preserves explicit Integer/Real boundaries for
+canonical operands without mutating their format; aggregate selections append
+their condition once even for Current/Old/Event leaves. Four constructor tests
+and 43 focused integrations (2 + 14 + 3 + 4 + 20) now pass. The added metadata
+regression checks both negative/directed 128-bit read offsets remain typed
+64-bit scalar boundaries before wide shift consumers.
+
+Eleven fresh default-mode native binaries pass assertions and waveform profile
+checks: packed reads, aggregate metadata, old values, encoding/resolution,
+X/Z comparisons, metavalue state, directed/partial slices, procedure places,
+and aggregate operators. VCDs match all seven available pre-change baselines;
+each FST decodes through the upstream libfst fixture. Freeze execution sources
+and the existing sibling corpus for /tmp/siox-source-select-v2-ci-j2-20261005,
+pinned Rust with two jobs and an 8 GiB memory cap. Do not edit execution sources
+until this new gate reaches terminal status.
+Source hash (git ls-files execution paths, sha256sum):
+17941b5dccd7b584373862bb4de640fcb02a1fc88a8b6638b1b5dfe36b35a3b8.
+Corpus hash (sorted absolute sibling .siox paths, sha256sum):
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+
+Review found a diagnostic-anchor regression in the new if-expression caller:
+bind_source_expression deliberately leaves raw scalar leaves unbound, so
+select then imports them using the whole if span rather than each operand's
+span. Stop the v2 scope deliberately (command terminal exit 143), not because
+of a timeout. Formatting, both Rust suites (513/493 library tests plus
+integrations), frontend checks/Clippy and all-target Clippy already passed;
+the default corpus had only started, so neither full corpus is claimed.
+Execution hash remained frozen through termination. Add an operand-span
+regression, preserve the old per-child anchors with the canonical constructor,
+then rerun the complete gate against new frozen inputs.
+
+The new if-operand span regression failed before the fix: the flag's span
+covered the entire if expression. Append operands using their own anchors
+before invoking the shared canonical select constructor. A compile check
+caught overlapping RefMut borrows; materialize the three references before
+the mutable constructor call. All 44 focused integrations now pass, including
+15 hardware source-value cases. Freeze the final source inputs for
+/tmp/siox-source-select-v3-ci-j2-20261005 with the same pinned/two-job gate.
+Source hash:
+96a2e140568bbc56a5a9e3d1a5eff80672a2fc311b4e0ce1f2e2041aa83731a6.
+Corpus hash (sorted absolute sibling .siox paths, sha256sum):
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+No execution-source changes until that scope is terminal.
+
+The v3 corpus exposed two regressions, fixed_test and hardware_float_conformance_test,
+despite green Rust suites. Stop v3 deliberately after recording those failures
+(terminal exit 143); neither corpus is claimed complete. The broad canonical
+binding change also treated inferred generic-function type hints as explicit
+evaluation boundaries. Those hints must not override an arena-owned format.
+Introduce bind_source_scalar for explicit boundaries, reuse it for both packed
+read/write offsets, and retain bind_source_value's inferred-capture contract.
+Extend the unit regression to distinguish those contracts. The initial graph
+memory and diagnostic hypothesis correctly found the lost offset boundary,
+but its proposed broad helper change was too permissive; correct the memory.
+
+The refined explicit-vs-inferred binding unit tests pass. Fresh default native
+fixed_test, hardware_float_conformance_test and packed read/write binaries now
+pass assertions, waveform profiles and upstream FST decoding. These cover the
+actual corpus regressions rather than relying only on structural tests.
+Freeze sources for /tmp/siox-source-select-v4-ci-j2-20261005 (pinned Rust,
+two jobs, 8 GiB cap); do not change execution inputs until terminal status.
+Source hash:
+160901db125e59f066687ef361bfc90505e549daa1db59783a7fe6ce23bce6c3.
+Corpus hash (sorted absolute sibling .siox paths, sha256sum):
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+
+### 2026-10-05 — Codex — canonical source selection verified
+
+The final pinned two-job CI command completed with exit 0 at
+/tmp/siox-source-select-v4-ci-j2-20261005: formatting, frontend checks/Clippy,
+default/bitpack Rust suites (513/493 library tests plus integrations),
+all-target/all-feature Clippy and both 211-program corpora pass. Execution
+and sibling corpus hashes still match the frozen inputs. Last observed scope
+peak was 1,130,807,296 bytes (1.05 GiB), including Cargo; no compiler memory
+or throughput improvement is claimed from this structural migration.
+
+Fourteen fresh native cases pass in each mode: the fixed-point and hardware
+float conformance regressions, packed reads/writes, aggregate metadata, old
+values, encoding/resolution, X/Z comparison, metavalue state, directed/partial
+ranges, procedure places and aggregate operators. Mode VCDs are byte-identical;
+default VCDs match all seven available pre-change baselines. All 28 FSTs decode
+with the upstream libfst fixture; normalized hierarchy/time/value streams match
+after removing only wall-clock date headers, with pipeline failures checked.
+
+Commit only the owned constructors, call-site migrations, explicit scalar
+binding distinction, regressions, docs and this appended log. Preserve
+AGENTS.md, .codex/ and 441 unrelated historical chat additions. Main remains
+local. Completion estimate: Phase 1 approximately 97%, still incomplete:
+resolution/metavalue construction, remaining source constructors/coercions
+and initializer normalization retain private ingress fragments; general
+runtime call CFGs, non-packed conversions and dynamic host forms remain.
+Next: migrate raw/value construction without conflating metadata bit
+projections with source element reconstruction, then remove the remaining
+temporary importer rather than keeping it as a second permanent pipeline.

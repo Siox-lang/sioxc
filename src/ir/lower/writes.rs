@@ -42,15 +42,14 @@ impl<'a> Lowering<'a> {
                     };
                     let mut result = element(last)?;
                     for &position in earlier.iter().rev() {
-                        result = Expr::Select {
-                            cond: Box::new(Expr::Binary {
-                                op: BinOp::Eq,
-                                lhs: Box::new(lowered_index.clone()),
-                                rhs: Box::new(index_label(position)),
-                            }),
-                            then: Box::new(element(position)?),
-                            els: Box::new(result),
-                        };
+                        let span = ast::expr_span(index);
+                        let condition = self.source_binary(
+                            BinOp::Eq,
+                            &lowered_index,
+                            &index_label(position),
+                            span,
+                        );
+                        result = self.source_select(&condition, &element(position)?, &result, span);
                     }
                     return Some(result);
                 }
@@ -68,37 +67,28 @@ impl<'a> Lowering<'a> {
                     let physical = positions
                         .iter()
                         .find_map(|&(label, position)| (label == logical).then_some(position))?;
-                    return Some(Expr::Slice {
-                        base: Box::new(Expr::Current(signal)),
-                        hi: physical,
-                        lo: physical,
-                    });
+                    return Some(self.source_slice(
+                        &Expr::Current(signal),
+                        physical,
+                        physical,
+                        ast::expr_span(index),
+                    ));
                 }
                 let labels: Vec<i64> = positions.iter().map(|(label, _)| *label).collect();
                 let (left, right) = self.persisted_range(path)?;
                 let lowered_index =
                     self.checked_runtime_index_with_bounds(index, &labels, left, right)?;
-                let position = Expr::Binary {
-                    op: BinOp::Sub,
-                    lhs: Box::new(lowered_index),
-                    rhs: Box::new(index_label(left.min(right))),
-                };
-                let Val::Scalar(position) = self.bind_source_value(
-                    Val::Scalar(position),
-                    ast::expr_span(index),
-                    Some(crate::types::Ty::Integer),
-                ) else {
-                    unreachable!()
-                };
-                Some(Expr::Slice {
-                    base: Box::new(Expr::Binary {
-                        op: BinOp::Shr,
-                        lhs: Box::new(Expr::Current(signal)),
-                        rhs: Box::new(position),
-                    }),
-                    hi: 0,
-                    lo: 0,
-                })
+                let span = ast::expr_span(index);
+                let position = self.source_binary(
+                    BinOp::Sub,
+                    &lowered_index,
+                    &index_label(left.min(right)),
+                    span,
+                );
+                let position = self.bind_source_scalar(position, span, crate::types::Ty::Integer);
+                let shifted =
+                    self.source_binary(BinOp::Shr, &Expr::Current(signal), &position, span);
+                Some(self.source_slice(&shifted, 0, 0, span))
             }
         }
     }
@@ -537,18 +527,14 @@ impl<'a> Lowering<'a> {
                 // position once rather than generating a full-frame write for
                 // every possible bit. Freeze label arithmetic as a kernel
                 // integer before wide value/companion consumers widen it.
-                let position = Expr::Binary {
-                    op: BinOp::Sub,
-                    lhs: Box::new(lowered_index),
-                    rhs: Box::new(index_label(left.min(right))),
-                };
-                let Val::Scalar(position) = self.bind_source_value(
-                    Val::Scalar(position),
-                    ast::expr_span(index),
-                    Some(crate::types::Ty::Integer),
-                ) else {
-                    unreachable!()
-                };
+                let span = ast::expr_span(index);
+                let position = self.source_binary(
+                    BinOp::Sub,
+                    &lowered_index,
+                    &index_label(left.min(right)),
+                    span,
+                );
+                let position = self.bind_source_scalar(position, span, crate::types::Ty::Integer);
                 out.push(DynamicWriteTarget::PackedBit {
                     signal,
                     position,

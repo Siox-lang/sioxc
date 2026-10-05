@@ -98,9 +98,13 @@ impl Lowering<'_> {
         Some(covered)
     }
 
-    fn storage_value(&self, storage: &Storage) -> Option<Expr> {
+    fn storage_value(&self, storage: &Storage, span: crate::diag::Span) -> Option<Expr> {
         match storage {
-            Storage::Signal(signal) => Some(Expr::Current(*signal)),
+            Storage::Signal(signal) => Some(self.source_values.borrow_mut().signal(
+                *signal,
+                ProcessSignalState::Current,
+                span,
+            )),
             Storage::Local { scope, name, field } => {
                 let binding = self.block_scopes.borrow().get(*scope)?.get(name)?.clone();
                 match binding.value {
@@ -122,43 +126,33 @@ impl Lowering<'_> {
             .map(|(name, accesses)| {
                 let mut result = Expr::Const(0);
                 for access in accesses.iter().rev() {
-                    let mut value = self.storage_value(&access.storage).unwrap_or(Expr::Unknown);
+                    let mut value = self
+                        .storage_value(&access.storage, span)
+                        .unwrap_or(Expr::Unknown);
                     if let Some(bits) = &access.bits {
                         if let (Some(&low), Some(&high)) = (bits.first(), bits.last()) {
                             if bits.iter().enumerate().all(|(position, &bit)| {
                                 u64::from(bit) == u64::from(low) + position as u64
                             }) {
-                                value = Expr::Slice {
-                                    base: Box::new(value),
-                                    hi: high,
-                                    lo: low,
-                                };
+                                value = self.source_slice(&value, high, low, span);
                             } else {
                                 let mut packed = Expr::Const(0);
                                 for (position, &bit) in bits.iter().enumerate() {
-                                    let part = Expr::Slice {
-                                        base: Box::new(value.clone()),
-                                        hi: bit,
-                                        lo: bit,
-                                    };
-                                    let part = Expr::Binary {
-                                        op: BinOp::Shl,
-                                        lhs: Box::new(part),
-                                        rhs: Box::new(Expr::Const(position as u64)),
-                                    };
-                                    packed =
-                                        self.bind_source_expression(or_expr(packed, part), span);
+                                    let part = self.source_slice(&value, bit, bit, span);
+                                    let part = self.source_binary(
+                                        BinOp::Shl,
+                                        &part,
+                                        &Expr::Const(position as u64),
+                                        span,
+                                    );
+                                    packed = self.source_binary(BinOp::Or, &packed, &part, span);
                                 }
                                 value = packed;
                             }
                         }
                     }
                     result = match &access.guard {
-                        Some(guard) => Expr::Select {
-                            cond: Box::new(guard.clone()),
-                            then: Box::new(value),
-                            els: Box::new(result),
-                        },
+                        Some(guard) => self.source_select(guard, &value, &result, span),
                         None => value,
                     };
                 }
@@ -495,7 +489,9 @@ impl Lowering<'_> {
                         else {
                             continue;
                         };
-                        let old = self.storage_value(&access.storage).unwrap_or(Expr::Unknown);
+                        let old = self
+                            .storage_value(&access.storage, ast::expr_span(target))
+                            .unwrap_or(Expr::Unknown);
                         let mut replacement = value.clone();
                         if let Some(bits) = &access.bits {
                             let width = self
@@ -519,11 +515,12 @@ impl Lowering<'_> {
                             replacement = base;
                         }
                         replacement = match fire {
-                            Some(fire) => Expr::Select {
-                                cond: Box::new(fire),
-                                then: Box::new(replacement),
-                                els: Box::new(old),
-                            },
+                            Some(fire) => self.source_select(
+                                &fire,
+                                &replacement,
+                                &old,
+                                ast::expr_span(target),
+                            ),
                             None => replacement,
                         };
                         let value = match binding.value {

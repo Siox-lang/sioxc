@@ -1135,7 +1135,11 @@ impl<'a> Lowering<'a> {
                     },
                     None => self.inline_block(rest, env)?,
                 };
-                Some(self.bind_source_value(select_val(cond, then, els), iff.span, None))
+                Some(self.bind_source_value(
+                    self.source_select_value(cond, then, els, iff.span),
+                    iff.span,
+                    None,
+                ))
             }
             // A `match` whose arms return is the same shape as an `if`
             // chain, and only the `if` form was handled — the two share
@@ -1166,7 +1170,9 @@ impl<'a> Lowering<'a> {
                             // Nothing follows: an exhaustive match ends here, so
                             // this arm is the fallback.
                             (Some(_), None) => value,
-                            (Some(cond), Some(otherwise)) => select_val(cond, value, otherwise),
+                            (Some(cond), Some(otherwise)) => {
+                                self.source_select_value(cond, value, otherwise, arm.span)
+                            }
                         },
                         arm.span,
                         None,

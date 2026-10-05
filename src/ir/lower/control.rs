@@ -315,11 +315,7 @@ impl<'a> Lowering<'a> {
                             );
                             continue;
                         };
-                        let expr = Expr::Slice {
-                            base: Box::new(v.clone()),
-                            hi: off - 1,
-                            lo: off - w,
-                        };
+                        let expr = self.source_slice(&v, off - 1, off - w, ast::expr_span(part));
                         self.hardware.drivers.push(Driver {
                             span: self.cur_span,
                             target: t,
@@ -488,11 +484,7 @@ impl<'a> Lowering<'a> {
                 Some(_) if exhaustive && last => result = Some(val),
                 Some(cond) => {
                     let els = result.take().unwrap_or(Expr::Unknown);
-                    result = Some(Expr::Select {
-                        cond: Box::new(cond),
-                        then: Box::new(val),
-                        els: Box::new(els),
-                    });
+                    result = Some(self.source_select(&cond, &val, &els, arm.span));
                 }
             }
         }
@@ -500,7 +492,7 @@ impl<'a> Lowering<'a> {
     }
 
     /// [`Self::lower_match_expr`] at [`Val`] level: the same first-match
-    /// chain and the same exhaustiveness rule, folded with `select_val` so
+    /// chain and the same exhaustiveness rule, selecting canonical leaves so
     /// struct-valued arms combine field by field.
     pub(super) fn lower_match_val(
         &self,
@@ -522,7 +514,7 @@ impl<'a> Lowering<'a> {
                 Some(_) if exhaustive && last => result = Some(val),
                 Some(cond) => {
                     let els = result.take().unwrap_or(Val::Scalar(Expr::Unknown));
-                    result = Some(select_val(cond, val, els));
+                    result = Some(self.source_select_value(cond, val, els, arm.span));
                 }
             }
         }
@@ -782,11 +774,8 @@ impl<'a> Lowering<'a> {
                                 );
                                 continue;
                             };
-                            let expr = Expr::Slice {
-                                base: Box::new(v.clone()),
-                                hi: off - 1,
-                                lo: off - w,
-                            };
+                            let expr =
+                                self.source_slice(&v, off - 1, off - w, ast::expr_span(part));
                             out.push(NextUpdate {
                                 span: self.cur_span,
                                 target: t,

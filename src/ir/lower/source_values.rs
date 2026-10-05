@@ -6,6 +6,7 @@
 use super::*;
 use std::sync::Arc;
 
+mod build;
 mod reconstruct;
 
 #[derive(Default)]
@@ -612,6 +613,21 @@ impl Lowering<'_> {
         }
     }
 
+    /// An explicit scalar evaluation boundary, unlike an inferred type hint
+    /// while capturing a function value. Canonical operands keep their format;
+    /// later wide consumers resize the bound result, not its arithmetic.
+    pub(super) fn bind_source_scalar(
+        &self,
+        expression: Expr,
+        span: crate::diag::Span,
+        ty: crate::types::Ty,
+    ) -> Expr {
+        let mut arena = self.source_values.borrow_mut();
+        let operand = arena.append(&expression, span, Some(ty.clone()));
+        let id = arena.bind_scalar(operand, Some(ty), span);
+        arena.reference(id)
+    }
+
     pub(super) fn bind_source_value(
         &self,
         value: Val,
@@ -620,6 +636,8 @@ impl Lowering<'_> {
     ) -> Val {
         let mut arena = self.source_values.borrow_mut();
         let mut bind = |expression: Expr, ty: Option<crate::types::Ty>| match expression {
+            // The arena's format is authoritative. Inferred hints from generic
+            // function syntax must not override an already canonical value.
             Expr::Canonical { .. }
             | Expr::Const(_)
             | Expr::WideConst(_)

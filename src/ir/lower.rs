@@ -548,34 +548,3 @@ impl UnelaboratedInstanceUse {
             .map_or(self.slot.as_str(), |(root, _)| root)
     }
 }
-
-/// `cond ? then : els` over values; struct values select per field.
-fn select_val(cond: Expr, then: Val, els: Val) -> Val {
-    match (then, els) {
-        (Val::Scalar(t), Val::Scalar(e)) => Val::Scalar(Expr::Select {
-            cond: Box::new(cond),
-            then: Box::new(t),
-            els: Box::new(e),
-        }),
-        (Val::Fields(ts), Val::Fields(es)) => Val::Fields(
-            ts.into_iter()
-                .map(|(name, t)| {
-                    let e = es
-                        .iter()
-                        .find(|(n, _)| *n == name)
-                        .map(|(_, e)| e.clone())
-                        .unwrap_or(Expr::Unknown);
-                    (
-                        name,
-                        Expr::Select {
-                            cond: Box::new(cond.clone()),
-                            then: Box::new(t),
-                            els: Box::new(e),
-                        },
-                    )
-                })
-                .collect(),
-        ),
-        _ => Val::Scalar(Expr::Unknown),
-    }
-}

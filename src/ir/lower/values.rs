@@ -87,10 +87,11 @@ impl<'a> Lowering<'a> {
                 cond, then, els, ..
             } => {
                 let c = self.lower_scalar_env(cond, env);
-                select_val(
+                self.source_select_value(
                     c,
                     self.lower_val_env(then, env),
                     self.lower_val_env(els, env),
+                    ast::expr_span(e),
                 )
             }
             // A match *expression* whose arms are struct values, folded per

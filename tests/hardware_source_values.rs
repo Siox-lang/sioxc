@@ -5,6 +5,140 @@
 use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
 
 #[test]
+fn if_expression_operands_keep_their_own_source_spans() {
+    let source = "module if_anchors; use std::bits::unsigned;\n\
+        entity Dut { flag: Bit in, y: unsigned[4] out }\n\
+        impl Dut { y = if flag { 3 } else { 7 }; }\n";
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/if_anchors.siox", source),
+            Emit::Metadata,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let design = compilation.design.unwrap();
+    let mut checked = false;
+    for node in &design.process_ir.values {
+        let siox::ir::ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } = node.kind
+        else {
+            continue;
+        };
+        let then_node = &design.process_ir.values[then_value.0 as usize];
+        let else_node = &design.process_ir.values[else_value.0 as usize];
+        if !matches!(&then_node.kind, siox::ir::ProcessValueKind::Number(siox::ir::ProcessNumber::Integer(words)) if words == &[3])
+            || !matches!(&else_node.kind, siox::ir::ProcessValueKind::Number(siox::ir::ProcessNumber::Integer(words)) if words == &[7])
+        {
+            continue;
+        }
+        for (id, expected) in [(condition, "flag"), (then_value, "3"), (else_value, "7")] {
+            let span = design.process_ir.values[id.0 as usize].span;
+            assert_eq!(&source[span.start as usize..span.end as usize], expected);
+        }
+        checked = true;
+    }
+    assert!(checked, "the source conditional must be exercised");
+}
+
+#[test]
+fn negative_packed_read_offsets_keep_integer_evaluation_boundaries() {
+    let source = "module negative_read_boundaries; use std::bits::unsigned;\n\
+        entity Dut { a: unsigned[63..-64] in, index: integer in,\n\
+          ascending: Logic out, descending: Logic out }\n\
+        impl Dut { let reverse: unsigned[-64..63]; reverse = a;\n\
+          ascending = reverse[index]; descending = a[index]; }\n";
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/negative_read_boundaries.siox", source),
+            Emit::Metadata,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let design = compilation.design.unwrap();
+    let mut shifts = 0;
+    for node in &design.process_ir.values {
+        if let siox::ir::ProcessValueKind::Binary {
+            operation: siox::ir::ProcessBinaryOp::Shr,
+            right,
+            ..
+        } = node.kind
+        {
+            if node.bit_width != Some(128) {
+                continue;
+            }
+            let offset = &design.process_ir.values[right.0 as usize];
+            assert!(
+                matches!(offset.kind, siox::ir::ProcessValueKind::RawResize { .. }),
+                "wide shift must not widen index arithmetic: {offset:?}"
+            );
+            assert_eq!(offset.ty, Some(siox::types::Ty::Integer));
+            assert_eq!(offset.bit_width, Some(64));
+            shifts += 1;
+        }
+    }
+    assert_eq!(shifts, 2, "both directed reads must exercise the boundary");
+}
+
+#[test]
+fn source_selection_nodes_retain_access_and_index_spans() {
+    let source = "module selection_anchors; use std::bits::unsigned;\n\
+        entity Dut { a: unsigned[16] in, index: integer in,\n\
+          y: unsigned[4] out, element: Logic out }\n\
+        impl Dut { y = a[11..8]; element = a[index]; }\n";
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/selection_anchors.siox", source),
+            Emit::Metadata,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let design = compilation.design.unwrap();
+    let mut static_slice = false;
+    let mut checked_index = false;
+    for node in &design.process_ir.values {
+        match node.kind {
+            siox::ir::ProcessValueKind::BitSlice {
+                high: 11, low: 8, ..
+            } => {
+                let text = &source[node.span.start as usize..node.span.end as usize];
+                assert!(
+                    matches!(text, "a[11..8]" | "11..8"),
+                    "coarse selection anchor: {text:?}"
+                );
+                static_slice = true;
+            }
+            siox::ir::ProcessValueKind::CheckedIndex {
+                span,
+                left: 0,
+                right: 15,
+                ..
+            } => {
+                assert_eq!(node.span, span);
+                assert_eq!(&source[span.start as usize..span.end as usize], "index");
+                checked_index = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        static_slice && checked_index,
+        "both selection paths must be exercised"
+    );
+}
+
+#[test]
 fn packed_runtime_writes_have_one_update_per_storage_plane() {
     let source = "module compact_writes; use std::bits::unsigned;\n\
         entity Dut { clk: Bit in, index: integer in, data: Logic in, q: Logic out }\n\

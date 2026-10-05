@@ -283,34 +283,29 @@ impl<'a> Lowering<'a> {
                 .windows(2)
                 .all(|pair| i128::from(pair[1]) - i128::from(pair[0]) == step);
         if contiguous {
-            let bound = |op, label| Expr::Binary {
-                op,
-                lhs: Box::new(lowered.clone()),
-                rhs: Box::new(index_label(label)),
-            };
-            let valid = and_expr(bound(BinOp::Ge, low), bound(BinOp::Le, high));
-            return Some(Expr::CheckedIndex {
-                index: Box::new(lowered),
-                valid: Box::new(self.bind_source_expression(valid, span)),
-                left,
-                right,
-                span,
-            });
-        }
-        let mut valid = self.bind_source_expression(eq(lowered.clone(), index_label(first)), span);
-        for &label in rest {
-            valid = self.bind_source_expression(
-                or_expr(valid, eq(lowered.clone(), index_label(label))),
+            let bound = |op, label| self.source_binary(op, &lowered, &index_label(label), span);
+            let valid = self.source_binary(
+                BinOp::And,
+                &bound(BinOp::Ge, low),
+                &bound(BinOp::Le, high),
                 span,
             );
+            return Some(
+                self.source_values
+                    .borrow_mut()
+                    .checked_index(&lowered, &valid, left, right, span),
+            );
         }
-        Some(Expr::CheckedIndex {
-            index: Box::new(lowered),
-            valid: Box::new(valid),
-            left,
-            right,
-            span: ast::expr_span(index),
-        })
+        let mut valid = self.source_binary(BinOp::Eq, &lowered, &index_label(first), span);
+        for &label in rest {
+            let equal = self.source_binary(BinOp::Eq, &lowered, &index_label(label), span);
+            valid = self.source_binary(BinOp::Or, &valid, &equal, span);
+        }
+        Some(
+            self.source_values
+                .borrow_mut()
+                .checked_index(&lowered, &valid, left, right, span),
+        )
     }
 
     /// Read one element out of a packed block local.
@@ -331,26 +326,18 @@ impl<'a> Lowering<'a> {
             let physical = positions
                 .iter()
                 .find_map(|&(label, position)| (label == logical).then_some(position))?;
-            return Some(Expr::Slice {
-                base: Box::new(value),
-                hi: physical,
-                lo: physical,
-            });
+            return Some(self.source_slice(&value, physical, physical, ast::expr_span(index)));
         }
         let labels: Vec<i64> = positions.iter().map(|(label, _)| *label).collect();
         let (left, right) = self.declared_range(ty, &self.cur_env)?;
         let lowered_index = self.checked_runtime_index_with_bounds(index, &labels, left, right)?;
         let mut result = Expr::Const(0);
         for (logical, physical) in positions.into_iter().rev() {
-            result = Expr::Select {
-                cond: Box::new(eq(lowered_index.clone(), index_label(logical))),
-                then: Box::new(Expr::Slice {
-                    base: Box::new(value.clone()),
-                    hi: physical,
-                    lo: physical,
-                }),
-                els: Box::new(result),
-            };
+            let span = ast::expr_span(index);
+            let condition =
+                self.source_binary(BinOp::Eq, &lowered_index, &index_label(logical), span);
+            let selected = self.source_slice(&value, physical, physical, span);
+            result = self.source_select(&condition, &selected, &result, span);
         }
         Some(result)
     }
@@ -404,11 +391,14 @@ impl<'a> Lowering<'a> {
                     };
                     let mut result = element(last)?;
                     for &position in earlier.iter().rev() {
-                        result = Expr::Select {
-                            cond: Box::new(eq(lowered_index.clone(), index_label(position))),
-                            then: Box::new(element(position)?),
-                            els: Box::new(result),
-                        };
+                        let span = ast::expr_span(index);
+                        let condition = self.source_binary(
+                            BinOp::Eq,
+                            &lowered_index,
+                            &index_label(position),
+                            span,
+                        );
+                        result = self.source_select(&condition, &element(position)?, &result, span);
                     }
                     return Some(result);
                 }
@@ -613,11 +603,12 @@ impl<'a> Lowering<'a> {
                                 self.block_local_width(&previous.ty),
                             );
                             let next = match cond {
-                                Some(condition) => Expr::Select {
-                                    cond: Box::new(condition.clone()),
-                                    then: Box::new(next),
-                                    els: Box::new(old),
-                                },
+                                Some(condition) => self.source_select(
+                                    condition,
+                                    &next,
+                                    &old,
+                                    ast::expr_span(target),
+                                ),
                                 None => next,
                             };
                             self.store_block_local(
@@ -658,17 +649,19 @@ impl<'a> Lowering<'a> {
                                             cond.clone(),
                                             eq(lowered_index.clone(), index_label(logical)),
                                         );
-                                        next = Expr::Select {
-                                            cond: Box::new(fire),
-                                            then: Box::new(self.merge_slice(
-                                                old.clone(),
-                                                physical,
-                                                physical,
-                                                replacement.clone(),
-                                                width,
-                                            )),
-                                            els: Box::new(next),
-                                        };
+                                        let replacement = self.merge_slice(
+                                            old.clone(),
+                                            physical,
+                                            physical,
+                                            replacement.clone(),
+                                            width,
+                                        );
+                                        next = self.source_select(
+                                            &fire,
+                                            &replacement,
+                                            &next,
+                                            ast::expr_span(target),
+                                        );
                                     }
                                     self.store_block_local(
                                         scope_index,
@@ -726,11 +719,12 @@ impl<'a> Lowering<'a> {
                                         _ => None,
                                     };
                                     if let Some(replacement) = replacement {
-                                        *old = Expr::Select {
-                                            cond: Box::new(fire.clone()),
-                                            then: Box::new(replacement),
-                                            els: Box::new(old.clone()),
-                                        };
+                                        *old = self.source_select(
+                                            &fire,
+                                            &replacement,
+                                            old,
+                                            ast::expr_span(target),
+                                        );
                                     }
                                 }
                             }
@@ -789,18 +783,19 @@ impl<'a> Lowering<'a> {
                 })
                 .unwrap_or_else(|| self.lower_expr(value));
             *old = match cond {
-                Some(condition) => Expr::Select {
-                    cond: Box::new(condition.clone()),
-                    then: Box::new(new),
-                    els: Box::new(old.clone()),
-                },
+                Some(condition) => self.source_select(condition, &new, old, ast::expr_span(target)),
                 None => new,
             };
             Val::Fields(fields)
         };
         let next = if suffix.is_empty() {
             match cond {
-                Some(condition) => select_val(condition.clone(), next, previous.value),
+                Some(condition) => self.source_select_value(
+                    condition.clone(),
+                    next,
+                    previous.value,
+                    ast::expr_span(target),
+                ),
                 None => next,
             }
         } else {
@@ -869,11 +864,7 @@ impl<'a> Lowering<'a> {
                     _ => None,
                 };
                 if let Some(new) = new {
-                    *old = Expr::Select {
-                        cond: Box::new(fire.clone()),
-                        then: Box::new(new),
-                        els: Box::new(old.clone()),
-                    };
+                    *old = self.source_select(&fire, &new, old, ast::expr_span(target));
                 }
             }
         }

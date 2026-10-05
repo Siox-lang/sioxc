@@ -304,6 +304,19 @@ not projected/imported. This removes the general source-arena rewrite adapter.
 Its focused implementation is in `lower/source_values/reconstruct.rs`.
 Private-fragment reconstruction, coercions, other constructors and initializer
 normalization still need migration.
+`lower/source_values/build.rs` constructs source slices, checked indices and
+muxes directly in the arena. Persisted/local packed reads, dynamic aggregate
+selection, ascending/descending slices, captured-place reads, conditional local
+stores and scalar/aggregate `if`/`match` results use those constructors. Aggregate
+selection binds its condition once and pairs leaves by name; the former
+tree-building `select_val` helper is deleted. Operand formats and dependency
+identities remain authoritative, and selections retain access/index spans.
+Explicit kernel scalar bindings wrap canonical operands too: wide packed
+consumers must resize the bound result rather than widen its index arithmetic.
+These explicit boundaries are distinct from inferred type hints when capturing
+generic function values; a hint must not override an arena-owned format.
+These are value operations: raw metadata helpers and compile-time initializer
+normalization still have their own fragment ingress pending migration.
 `lower/source_bindings.rs` owns scoped concrete argument/local/return shapes
 and aggregate projection over those leaves. Pure free/method array arguments
 no longer substitute a caller AST into every parameter use. Returned arrays,

@@ -337,35 +337,20 @@ impl Lowering<'_> {
         ) {
             let (left, right) = self.source_packed_slice_bounds(layout, index)?;
             if left >= right {
-                Expr::Slice {
-                    base: Box::new(value),
-                    hi: left,
-                    lo: right,
-                }
+                self.source_slice(&value, left, right, span)
             } else {
                 // Written ascending slices reverse significance, just like
                 // the existing signal and block-local access paths.
                 let mut result = Expr::Const(0);
                 for physical in left..=right {
-                    let bit = self.bind_source_expression(
-                        Expr::Slice {
-                            base: Box::new(value.clone()),
-                            hi: physical,
-                            lo: physical,
-                        },
+                    let bit = self.source_slice(&value, physical, physical, span);
+                    let shifted = self.source_binary(
+                        BinOp::Shl,
+                        &bit,
+                        &Expr::Const(u64::from(right - physical)),
                         span,
                     );
-                    result = self.bind_source_expression(
-                        or_expr(
-                            result,
-                            Expr::Binary {
-                                op: BinOp::Shl,
-                                lhs: Box::new(bit),
-                                rhs: Box::new(Expr::Const(u64::from(right - physical))),
-                            },
-                        ),
-                        span,
-                    );
+                    result = self.source_binary(BinOp::Or, &result, &shifted, span);
                 }
                 result
             }
@@ -374,38 +359,25 @@ impl Lowering<'_> {
             let low = range.left.min(range.right);
             let labels = loop_range(range.left, range.right);
             let lowered = self.bind_source_expression(self.lower_scalar_env(index, env), span);
-            let mut valid = Expr::Const(0);
-            for &label in &labels {
-                valid = self.bind_source_expression(
-                    or_expr(valid, eq(lowered.clone(), index_label(label))),
-                    span,
-                );
+            let (&first, rest) = labels.split_first()?;
+            let mut valid = self.source_binary(BinOp::Eq, &lowered, &index_label(first), span);
+            for &label in rest {
+                let equal = self.source_binary(BinOp::Eq, &lowered, &index_label(label), span);
+                valid = self.source_binary(BinOp::Or, &valid, &equal, span);
             }
-            let checked = self.bind_source_expression(
-                Expr::CheckedIndex {
-                    index: Box::new(lowered),
-                    valid: Box::new(valid),
-                    left: range.left,
-                    right: range.right,
-                    span,
-                },
+            let checked = self.source_values.borrow_mut().checked_index(
+                &lowered,
+                &valid,
+                range.left,
+                range.right,
                 span,
             );
             let mut result = Expr::Const(0);
             for label in labels.into_iter().rev() {
                 let physical = u32::try_from(i128::from(label) - i128::from(low)).ok()?;
-                result = self.bind_source_expression(
-                    Expr::Select {
-                        cond: Box::new(eq(checked.clone(), index_label(label))),
-                        then: Box::new(Expr::Slice {
-                            base: Box::new(value.clone()),
-                            hi: physical,
-                            lo: physical,
-                        }),
-                        els: Box::new(result),
-                    },
-                    span,
-                );
+                let condition = self.source_binary(BinOp::Eq, &checked, &index_label(label), span);
+                let selected = self.source_slice(&value, physical, physical, span);
+                result = self.source_select(&condition, &selected, &result, span);
             }
             result
         };
@@ -550,32 +522,37 @@ impl Lowering<'_> {
                         self.lower_scalar_env(index, env),
                         ast::expr_span(index),
                     );
-                    let mut valid = Expr::Const(0);
-                    for &position in &indices {
-                        valid = self.bind_source_expression(
-                            or_expr(valid, eq(lowered.clone(), index_label(position))),
-                            ast::expr_span(index),
-                        );
+                    let span = ast::expr_span(index);
+                    let (&first, rest) = indices.split_first()?;
+                    let mut valid =
+                        self.source_binary(BinOp::Eq, &lowered, &index_label(first), span);
+                    for &position in rest {
+                        let equal =
+                            self.source_binary(BinOp::Eq, &lowered, &index_label(position), span);
+                        valid = self.source_binary(BinOp::Or, &valid, &equal, span);
                     }
-                    let checked = self.bind_source_expression(
-                        Expr::CheckedIndex {
-                            index: Box::new(lowered),
-                            valid: Box::new(valid),
-                            left: range.left,
-                            right: range.right,
-                            span: ast::expr_span(index),
-                        },
-                        ast::expr_span(index),
+                    let checked = self.source_values.borrow_mut().checked_index(
+                        &lowered,
+                        &valid,
+                        range.left,
+                        range.right,
+                        span,
                     );
                     let mut selected = None;
                     for position in indices.into_iter().rev() {
                         let candidate = project(&value, &format!("[{position}]"))?;
                         let otherwise = selected.unwrap_or_else(|| zero(&candidate));
                         selected = Some(self.bind_source_value(
-                            select_val(
-                                eq(checked.clone(), index_label(position)),
+                            self.source_select_value(
+                                self.source_binary(
+                                    BinOp::Eq,
+                                    &checked,
+                                    &index_label(position),
+                                    span,
+                                ),
                                 candidate,
                                 otherwise,
+                                ast::expr_span(expression),
                             ),
                             ast::expr_span(expression),
                             None,

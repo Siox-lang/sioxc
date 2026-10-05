@@ -41,24 +41,14 @@ impl<'a> Lowering<'a> {
                 let condition = self.lower_expr(cond);
                 let then_value = self.lower_expr(then);
                 let else_value = self.lower_expr(els);
-                let arena = &mut *self.source_values.borrow_mut();
+                let mut arena = self.source_values.borrow_mut();
                 let condition = arena.append(&condition, ast::expr_span(cond), None);
                 let then_value = arena.append(&then_value, ast::expr_span(then), None);
                 let else_value = arena.append(&else_value, ast::expr_span(els), None);
-                let id = arena.push_node(
-                    ProcessValue {
-                        span: ast::expr_span(e),
-                        ty: None,
-                        bit_width: None,
-                        kind: ProcessValueKind::Select {
-                            condition,
-                            then_value,
-                            else_value,
-                        },
-                    },
-                    None,
-                );
-                arena.reference(id)
+                let condition = arena.reference(condition);
+                let then_value = arena.reference(then_value);
+                let else_value = arena.reference(else_value);
+                arena.select(&condition, &then_value, &else_value, ast::expr_span(e))
             }
             // A match-expression is a first-match `Select` chain over the arms.
             ast::Expr::Match {
@@ -188,15 +178,10 @@ impl<'a> Lowering<'a> {
                     .unwrap_or_else(|| self.lower_expr(index));
                 let mut acc = Expr::Const(0);
                 for (i, value) in values.iter().enumerate().rev() {
-                    acc = Expr::Select {
-                        cond: Box::new(Expr::Binary {
-                            op: BinOp::Eq,
-                            lhs: Box::new(idx.clone()),
-                            rhs: Box::new(Expr::Const(i as u64)),
-                        }),
-                        then: Box::new(value.clone()),
-                        els: Box::new(acc),
-                    };
+                    let span = ast::expr_span(e);
+                    let condition =
+                        self.source_binary(BinOp::Eq, &idx, &Expr::Const(i as u64), span);
+                    acc = self.source_select(&condition, value, &acc, span);
                 }
                 acc
             }
@@ -209,33 +194,23 @@ impl<'a> Lowering<'a> {
             {
                 let (a, b) = self.storage_slice_bounds(base, index).unwrap();
                 let lowered = self.lower_expr(base);
+                let span = ast::expr_span(e);
                 if a >= b {
-                    Expr::Slice {
-                        base: Box::new(lowered),
-                        hi: a,
-                        lo: b,
-                    }
+                    self.source_slice(&lowered, a, b, span)
                 } else {
                     // Ascending: reassemble bits a..=b with significance
                     // reversed: source bit (a+k) lands at result bit (w-1-k).
                     let w = b - a + 1;
                     let mut acc = Expr::Const(0);
                     for k in 0..w {
-                        let bit = Expr::Slice {
-                            base: Box::new(lowered.clone()),
-                            hi: a + k,
-                            lo: a + k,
-                        };
-                        let shifted = Expr::Binary {
-                            op: BinOp::Shl,
-                            lhs: Box::new(bit),
-                            rhs: Box::new(Expr::Const((w - 1 - k) as u64)),
-                        };
-                        acc = Expr::Binary {
-                            op: BinOp::Add,
-                            lhs: Box::new(acc),
-                            rhs: Box::new(shifted),
-                        };
+                        let bit = self.source_slice(&lowered, a + k, a + k, span);
+                        let shifted = self.source_binary(
+                            BinOp::Shl,
+                            &bit,
+                            &Expr::Const((w - 1 - k) as u64),
+                            span,
+                        );
+                        acc = self.source_binary(BinOp::Add, &acc, &shifted, span);
                     }
                     acc
                 }

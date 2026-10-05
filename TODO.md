@@ -103,6 +103,11 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   reachability compaction; CFG construction consumes IDs only, without its
   separate digital-expression importer. The source-normalization ingress
   remains until the constructors below build canonical values directly.
+  Packed/local/persisted reads, checked indices, captured-place reads,
+  conditional local stores and scalar/aggregate selections now build canonical
+  nodes directly; aggregate `if`/`match` selections share one condition and
+  no longer use the tree-building `select_val` helper. Keep value selections
+  distinct from raw metadata projections during the remaining migration.
   Complete the remaining ingress migration: resolution/metavalue construction,
   expression construction between these boundaries and compile-time initializer
   normalization still assemble private fragments around those IDs.
