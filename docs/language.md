@@ -3146,11 +3146,22 @@ report automatically — no syntax.
 condition reports to stderr and counts toward the test's warning total, but
 the test still passes. It is the recoverable tier of error handling.
 
+In a simulation process, a function without a return value may contain locals,
+branches, matches, loops, nested calls and `await`. Its body shares the caller's
+canonical Process control flow: `return;` leaves that call and resumes the
+caller, not the enclosing process. Each inline call site has its own locals.
+Writable receivers and place arguments refer to the caller's storage; dynamic
+selectors are captured before the callee runs, so changing a selector does not
+retarget an already-bound argument. Computed arguments are evaluated once in
+source order and retained across suspension. Signal writes still commit through
+the scheduler; local writes remain immediate. Runtime recursion and general
+value-returning call control flow are not yet supported and must fail closed.
+
 #### No exceptions
 
 siox has no `throw`/`catch`. Hardware has no exceptions — no call stack, no
-unwinding — and functions are pure inlined expressions with nothing to
-unwind, so exception control flow has no meaning here. Errors instead take
+unwinding — and calls inline into canonical values or process control flow with
+nothing to unwind, so exception control flow has no meaning here. Errors instead take
 one of three forms: **hardware error conditions are ordinary signals**
 (`out error: Bit`, ready/valid); **fatal simulation errors** (`assert!`,
 range violations, missing files) fail the test, like a panic; and

@@ -59,6 +59,8 @@ struct LoweringContext<'a> {
     self_formats: Vec<ProcessValueId>,
     inline_self_values: Vec<Option<ProcessValueId>>,
     inline_return_types: Vec<Option<crate::types::Ty>>,
+    /// Procedure returns resume the enclosing caller, not the whole process.
+    inline_return_blocks: Vec<ProcessBlockId>,
     inline_functions: std::collections::HashSet<crate::diag::Span>,
 }
 
@@ -1114,6 +1116,7 @@ pub fn lower(
                 self_formats: Vec::new(),
                 inline_self_values: Vec::new(),
                 inline_return_types: Vec::new(),
+                inline_return_blocks: Vec::new(),
                 inline_functions: std::collections::HashSet::new(),
             };
             for (definition, initializer) in initializers {
@@ -1174,6 +1177,7 @@ pub fn lower(
                             self_formats: Vec::new(),
                             inline_self_values: Vec::new(),
                             inline_return_types: Vec::new(),
+                            inline_return_blocks: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
                         };
                         lower_process(
@@ -1223,6 +1227,7 @@ pub fn lower(
                             self_formats: Vec::new(),
                             inline_self_values: Vec::new(),
                             inline_return_types: Vec::new(),
+                            inline_return_blocks: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
                         };
                         lower_process(
@@ -1288,6 +1293,7 @@ pub fn lower(
                     self_formats: Vec::new(),
                     inline_self_values: Vec::new(),
                     inline_return_types: Vec::new(),
+                    inline_return_blocks: Vec::new(),
                     inline_functions: std::collections::HashSet::new(),
                 };
                 lower_legacy_process(
@@ -2090,6 +2096,10 @@ fn lower_statement(
             ..
         } => lower_for(var, range, body, *span, context, process, block),
         Stmt::Return { value, span } => {
+            if let Some(resume) = context.inline_return_blocks.last() {
+                process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(*resume);
+                return None;
+            }
             process.blocks[block.0 as usize].terminator = ProcessTerminator::Return {
                 value: value
                     .as_ref()
@@ -2366,9 +2376,9 @@ fn lower_call(
 /// Phase 1 procedures are intentionally handled at the same typed lowering
 /// boundary as value-returning functions: receiver and formal parameters are
 /// aliases for caller places, so assignments become ordinary canonical
-/// Process writes. For now this accepts straight-line assignment bodies. More
-/// general call CFGs remain fail-closed instead of introducing an interpreter
-/// or a second runtime call convention.
+/// Process writes. The existing statement lowerer handles the body, including
+/// branches, loops, suspension and early returns to the caller. Recursive calls
+/// remain fail-closed instead of introducing a second runtime call convention.
 fn inline_process_procedure_call(
     callee: &ast::Expr,
     arguments: &[ast::Expr],
@@ -2377,7 +2387,6 @@ fn inline_process_procedure_call(
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
     let first_value = context.process_ir.values.len();
-    let original_process = process.clone();
     let (function, receiver) = match callee {
         ast::Expr::Field { base, field, .. } => {
             let receiver = value_ref(base, process, context);
@@ -2400,10 +2409,6 @@ fn inline_process_procedure_call(
     let body = function.body.as_ref()?;
     if function.ret.is_some()
         || function.params.iter().any(|parameter| parameter.is_self) != receiver.is_some()
-        || !body
-            .stmts
-            .iter()
-            .all(|statement| matches!(statement, Stmt::Assign { .. }))
     {
         truncate_process_values(context, first_value);
         return None;
@@ -2418,7 +2423,7 @@ fn inline_process_procedure_call(
         return None;
     }
 
-    let mut bindings = std::collections::HashMap::new();
+    let mut bindings = Vec::new();
     for (parameter, argument) in parameters.into_iter().zip(arguments) {
         let Some(name) = parameter.name.as_ref() else {
             truncate_process_values(context, first_value);
@@ -2433,30 +2438,185 @@ fn inline_process_procedure_call(
             .as_ref()
             .and_then(|ty| process_declared_type(ty, context));
         let argument = value_ref_with_type(argument, process, context, parameter_type.as_ref());
-        bindings.insert(definition, argument);
+        bindings.push((definition, argument));
     }
     if !context.inline_functions.insert(function.span) {
         truncate_process_values(context, first_value);
         return None;
     }
 
-    context.value_bindings.push(bindings);
+    let first_block = process.blocks.len();
+    let first_local = process.locals.len();
+    let original_block = process.blocks[block.0 as usize].clone();
+    // Evaluate non-place arguments and place selectors once, before callee
+    // writes or suspension. Places themselves remain aliases, so later reads
+    // observe immediate local writes but not uncommitted signal writes.
+    let receiver = receiver.map(|value| capture_process_argument(value, context, process, block));
+    for (_, value) in &mut bindings {
+        *value = capture_process_argument(*value, context, process, block);
+    }
+    let resume = process.push_block();
+    context.value_bindings.push(bindings.into_iter().collect());
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(None);
+    context.inline_return_blocks.push(resume);
     let tail = lower_statements(&body.stmts, context, process, block);
+    context.inline_return_blocks.pop();
     context.inline_return_types.pop();
     context.inline_self_values.pop();
     context.value_bindings.pop();
     context.inline_functions.remove(&function.span);
 
-    match tail {
-        Some(tail) => Some(tail),
-        None => {
-            *process = original_process;
-            truncate_process_values(context, first_value);
-            None
-        }
+    // A recursive/unknown statement call anywhere in this inline must fail
+    // before its entry captures or earlier callee effects can run. Restore
+    // only the caller block and newly appended frames, not the whole process.
+    let unsupported = |instruction: &ProcessInstruction| {
+        matches!(
+            instruction,
+            ProcessInstruction::Runtime {
+                operation: ProcessRuntimeOp::Call(_),
+                ..
+            }
+        )
+    };
+    if process.blocks[block.0 as usize].instructions[original_block.instructions.len()..]
+        .iter()
+        .any(unsupported)
+        || process.blocks[first_block..]
+            .iter()
+            .any(|block| block.instructions.iter().any(unsupported))
+    {
+        process.blocks.truncate(first_block);
+        process.locals.truncate(first_local);
+        process.blocks[block.0 as usize] = original_block;
+        truncate_process_values(context, first_value);
+        return None;
     }
+    if let Some(tail) = tail {
+        process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(resume);
+    }
+    Some(resume)
+}
+
+/// Keep a call's evaluation boundary in ordinary Process locals. Dynamic
+/// selectors must survive CFG/cache boundaries without retargeting a place;
+/// computed arguments must not repeat foreign calls or mutable reads.
+fn capture_process_argument(
+    value: ProcessValueId,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> ProcessValueId {
+    let node = context.process_ir.values[value.0 as usize].clone();
+    let kind = match node.kind {
+        ProcessValueKind::Local { .. }
+        | ProcessValueKind::Storage(_)
+        | ProcessValueKind::Signal {
+            state: ProcessSignalState::Current,
+            ..
+        }
+        | ProcessValueKind::Number(_)
+        | ProcessValueKind::BitString { .. }
+        | ProcessValueKind::Char(_)
+        | ProcessValueKind::String(_)
+        | ProcessValueKind::Default => return value,
+        ProcessValueKind::Field { base, field }
+            if process_place_assignment(base, context.process_ir).is_some() =>
+        {
+            ProcessValueKind::Field {
+                base: capture_process_argument(base, context, process, block),
+                field,
+            }
+        }
+        ProcessValueKind::Index { base, index }
+            if process_place_assignment(base, context.process_ir).is_some() =>
+        {
+            ProcessValueKind::Index {
+                base: capture_process_argument(base, context, process, block),
+                index: capture_process_operand(index, context, process, block),
+            }
+        }
+        ProcessValueKind::PackedSlice { base, left, right }
+            if process_place_assignment(base, context.process_ir).is_some() =>
+        {
+            ProcessValueKind::PackedSlice {
+                base: capture_process_argument(base, context, process, block),
+                left,
+                right,
+            }
+        }
+        ProcessValueKind::Concat(parts)
+            if process_place_assignment(value, context.process_ir).is_some() =>
+        {
+            ProcessValueKind::Concat(
+                parts
+                    .into_iter()
+                    .map(|part| capture_process_argument(part, context, process, block))
+                    .collect(),
+            )
+        }
+        _ => return capture_process_operand(value, context, process, block),
+    };
+    let layout = context.process_ir.value_layouts[value.0 as usize].clone();
+    let id = push_value(node.span, node.ty, node.bit_width, kind, context);
+    if layout.is_some() {
+        context.process_ir.value_layouts[id.0 as usize] = layout;
+    }
+    id
+}
+
+fn capture_process_operand(
+    value: ProcessValueId,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> ProcessValueId {
+    let node = context.process_ir.values[value.0 as usize].clone();
+    if matches!(
+        node.kind,
+        ProcessValueKind::Number(_)
+            | ProcessValueKind::BitString { .. }
+            | ProcessValueKind::Char(_)
+            | ProcessValueKind::String(_)
+            | ProcessValueKind::Default
+    ) {
+        return value;
+    }
+    let local = ProcessLocalId(process.locals.len() as u32);
+    let layout = process_value_source_layout(value, context.process_ir)
+        .cloned()
+        .or_else(|| {
+            node.ty
+                .as_ref()
+                .and_then(|ty| process_layout_for_type(ty, node.span, context))
+        });
+    process.locals.push(ProcessLocal {
+        id: local,
+        name: format!("<call:{}>", local.0),
+        source: None,
+        span: node.span,
+        ty: node.ty.clone(),
+        layout: layout.clone(),
+    });
+    process.blocks[block.0 as usize]
+        .instructions
+        .push(ProcessInstruction::Declare {
+            local,
+            initializer: Some(value),
+            span: node.span,
+        });
+    let id = push_value(
+        node.span,
+        node.ty,
+        node.bit_width,
+        ProcessValueKind::Local {
+            process: process.id,
+            local,
+        },
+        context,
+    );
+    context.process_ir.value_layouts[id.0 as usize] = layout;
+    id
 }
 
 fn lower_process_format(
@@ -6330,6 +6490,7 @@ fn process_local(
     process
         .locals
         .iter()
+        .rev()
         .find(|local| local.source == Some(definition))
         .map(|local| local.id)
 }
@@ -6650,6 +6811,7 @@ mod tests {
             self_formats: vec![],
             inline_self_values: vec![],
             inline_return_types: vec![],
+            inline_return_blocks: vec![],
             inline_functions: Default::default(),
         };
 

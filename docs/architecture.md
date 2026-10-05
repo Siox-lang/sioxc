@@ -375,8 +375,16 @@ calls use the same binding path, including custom index assignment.
 Literal discriminant planes accompany value IDs through normalization and
 reachability compaction. A captured foreign call result is retained within one
 straight-line LLVM helper/block even when a call invalidates mutable state
-loads. These caches do not cross CFG blocks; general effectful call CFGs and
-guarded evaluation remain separate unfinished work.
+loads. These caches do not cross CFG blocks. Procedural receiver/free calls in
+`lower/source_processes.rs` use the existing statement lowerer for branches,
+matches, loops and suspension, with a caller continuation for early returns.
+Computed arguments and dynamic place selectors are captured in ordinary Process
+locals before the callee runs, in source order; subsequent reads/writes through
+place aliases retain their immediate or staged semantics. Repeated inline sites
+select their own local declarations. Recursive/unknown statement calls roll back
+the entire inline before entry captures or callee effects can become observable.
+General value-returning call CFGs, recursion and guarded hardware evaluation
+remain separate unfinished work.
 Procedural signal reads retain their declaration-owned layout before projection,
 so entity-qualified packed ports use the same labelled slices as local aliases.
 Normalization rewrites each dependency once and compacts reachable values

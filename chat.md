@@ -12668,3 +12668,68 @@ pipeline/language audit remains to prove the actual end state. General runtime
 call CFGs/recursion, non-packed conversions and dynamic host forms remain
 listed in TODO. Runtime copy reduction remains deferred; staged writes, old
 snapshots, suspension state and companion planes are unchanged.
+
+### 2026-10-05 — Codex — procedure CFG execution gap
+
+Continue Phase 1 after revalidating the previous audit: a void receiver method
+containing an if compiles but its executable fails with incomplete Process IR
+for process 0 block 0. Own source_processes.rs, focused Rust/native tests, a
+sibling corpus regression and related docs/TODO. Reuse canonical statement
+lowering for procedure control flow, with caller return joins and per-call
+local/selector identity. Preserve unsupported-call transactional checks and
+other agents' AGENTS.md, .codex/ and historical chat insertions. No push and no
+deferred copy optimization. Phase 1 remains incomplete pending the broad audit.
+
+### 2026-10-05 — Codex — procedure CFG verification freeze
+
+Void receiver/free calls now use ordinary canonical statement lowering, caller
+return joins, fresh per-inline locals and source-ordered captures for computed
+arguments/dynamic place selectors. Unknown/recursive statement calls roll back
+the inline before its entry effects. Existing LLVM block transactional checks
+are unchanged. The original if-method probe now passes. All four method tests
+and all-target/all-feature Clippy pass; the new sibling procedure fixture passes
+native assertions and emits the expected 5 ns pulse VCD. An initial regression
+check incorrectly searched for R (also present in "IR") and expected stderr;
+correct it to an unambiguous @ marker and the actual stdout diagnostic.
+Graphify AST update succeeds (5236 nodes/13842 edges); known vendored extraction
+warnings persist and its docs have not been semantically rebuilt.
+Freeze execution hash
+71950e0ff003dd31c842c4183600f4e4bd626fd54793469e2dff37ce4155ea77
+and 213-program corpus hash
+2a277220715c661bbaaa0ec8993b1bb3e0aa17f4c0d43fd2b207522042febb8e
+for the full gate at /tmp/siox-procedure-cfg-ci-j2-20261005. Fresh default
+compiler SHA-256 ead3cec3b2cb53e8e0426160396460345cbbed0fb9b368eb8d46f26e4b25bf0e.
+No executable-input edits while the gate runs. Full default/bitpack corpus and
+native waveform/diagnostic parity are not yet proven. No push or copy removal.
+
+### 2026-10-05 — Codex — procedure CFG calls verified
+
+The full pinned CI command returned 0; its scope is inactive. Formatting,
+frontend check/Clippy, default/bitpack Rust suites (525/505 library tests and all
+integrations, including four method tests per mode), all-target/all-feature
+Clippy and both 213-program corpora pass. Frozen execution/corpus hashes still
+match. The two native jobs returned 0: 37 cases per mode, 36 unchanged before/
+after byte-identical VCDs and stdout/diagnostics, all cross-mode VCDs, 70
+observable FSTs decoded to identical named events and four empty-FST rejections
+(exit 2, no output file). The new fixture's pulse and observed output transition
+at exactly 5,000,000 fs; its foreign arguments print AB once in source order.
+Fresh bitpack compiler SHA-256:
+736d0791a37868e441d59951ca7ba50d1f7214ec48ae71895754d2ae1e9e5c1c.
+The prior compiler builds that fixture but its native binary exits 1 at the
+incomplete Process IR diagnostic; the corrected binaries pass. Additional
+read-only probes pass return-from-loop and nested stop, plus computed 128-bit
+X/Z arguments across suspension in both modes. Those probes are supplementary
+evidence, not permanent corpus fixtures. The last observed full-gate memory
+peak was 1,226,330,112 bytes; no performance improvement is claimed.
+Sibling fixture committed as 4ca86fc; its checkout is clean. No push.
+
+Commit only owned procedure CFG/capture/local identity changes, two native/API
+regressions, docs/TODO and these appended log entries. Ponytail reused the
+existing canonical statement lowerer, Process locals and runtime ABI; no new
+runtime convention, interpreter, generated design C or dependency. Preserve
+other agents' AGENTS.md, .codex/ and 441 historical chat insertions.
+Completion estimate: Phase 1 approximately 99%, not complete. The audit now
+confirms nine specified language example-suite artifacts are missing; TODO
+lists them explicitly. General value-returning call CFGs/recursion, non-packed
+conversions and dynamic host forms still need work. Keep the full exit audit
+active, and leave unnecessary-copy reduction deferred.

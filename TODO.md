@@ -68,6 +68,11 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   checked/raw reads and staged writes. See
   [`docs/architecture.md`](docs/architecture.md#current-process-ir-ingress-boundary)
   for implementation details; unsupported execution forms remain listed below.
+  The named example suite in `docs/language.md` also needs its nine missing
+  artifacts in `siox-tests`: `basic_mux.siox`, `register.siox`, `fsm.siox`,
+  `enum_event_monitor.siox`, `packet_struct_event.siox`, `stream_bus.siox`,
+  `producer_consumer.siox`, `external_entity_stub.siox`, and `attribute_usage.siox`.
+  Nearby regression coverage does not prove those specified artifacts exist.
 
 ## LLVM
 
@@ -76,10 +81,13 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
 
 - 🟡 **Complete direct Process IR lowering.** Exact-width scalar and recursive
   packed values, branches, loops, matches, clocks, suspension, delayed writes,
-  formatting, assertions, scalar foreign calls, straight-line receiver/free
-  procedures, dynamic UTF-8 strings/file probes, and source-defined operator
-  impls execute directly today. Remaining executable forms are runtime
-  recursion/general call CFGs and non-packed conversions. Unsupported forms
+  formatting, assertions, scalar foreign calls, receiver/free procedures with
+  branches, matches, loops, early returns and suspension, dynamic UTF-8
+  strings/file probes, and source-defined operator impls execute directly today.
+  Procedure arguments capture computed values and dynamic place selectors once
+  in source order; caller-place aliases and per-inline locals remain distinct.
+  Remaining executable forms are runtime recursion/general value-returning
+  call CFGs and non-packed conversions. Unsupported forms
   must continue to fail transactionally before calls or staged writes become
   observable.
   Recursive procedural arrays/structs now retain packed X/Z planes through
