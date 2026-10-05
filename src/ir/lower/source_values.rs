@@ -211,7 +211,7 @@ impl SourceValues {
     /// The table recognizer inspects only three nodes: a slice, a shift and
     /// its stride multiplication. Exposing that fixed shape does not expand
     /// the variable index's shared value graph.
-    fn expose_lookup_shape(&self, expression: &mut Expr) {
+    pub(super) fn expose_lookup_shape(&self, expression: &mut Expr) {
         let Expr::Slice { base, .. } = expression else {
             return;
         };

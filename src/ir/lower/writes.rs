@@ -78,19 +78,27 @@ impl<'a> Lowering<'a> {
                 let (left, right) = self.persisted_range(path)?;
                 let lowered_index =
                     self.checked_runtime_index_with_bounds(index, &labels, left, right)?;
-                let mut result = Expr::Const(0);
-                for (logical, physical) in positions.into_iter().rev() {
-                    result = Expr::Select {
-                        cond: Box::new(eq(lowered_index.clone(), index_label(logical))),
-                        then: Box::new(Expr::Slice {
-                            base: Box::new(Expr::Current(signal)),
-                            hi: physical,
-                            lo: physical,
-                        }),
-                        els: Box::new(result),
-                    };
-                }
-                Some(result)
+                let position = Expr::Binary {
+                    op: BinOp::Sub,
+                    lhs: Box::new(lowered_index),
+                    rhs: Box::new(index_label(left.min(right))),
+                };
+                let Val::Scalar(position) = self.bind_source_value(
+                    Val::Scalar(position),
+                    ast::expr_span(index),
+                    Some(crate::types::Ty::Integer),
+                ) else {
+                    unreachable!()
+                };
+                Some(Expr::Slice {
+                    base: Box::new(Expr::Binary {
+                        op: BinOp::Shr,
+                        lhs: Box::new(Expr::Current(signal)),
+                        rhs: Box::new(position),
+                    }),
+                    hi: 0,
+                    lo: 0,
+                })
             }
         }
     }

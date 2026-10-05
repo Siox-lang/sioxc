@@ -163,6 +163,30 @@ fn a_native_packed_read_is_not_an_implicit_zero() {
 }
 
 #[test]
+fn a_hardware_packed_read_checks_wide_and_negative_indices_before_narrowing() {
+    for (name, ty, initial, offending) in [
+        ("packed_negative", "integer", "-1", "-1"),
+        ("packed_wide", "unsigned[128]", "18446744073709551624", "8"),
+    ] {
+        let src = format!(
+            "module m;\nuse std::bits::unsigned;\nuse std::logic::Logic;\n\
+             entity Lookup {{ index: {ty} in, q: Logic out }}\n\
+             impl Lookup {{ let word: unsigned[15..8] = 0; q = word[index]; }}\n\
+             #[test] entity T {{}}\n\
+             impl T {{ let index: {ty} = {initial}; let q: Logic;\n\
+               let lookup: Lookup = {{ .index = index, .q = q }}; await 1ns; }}\n"
+        );
+        let out = run(name, &src);
+        assert!(
+            out.contains(&format!(
+                "index {offending} is outside declared range 15..8"
+            )) && out.contains(&format!("{name}.siox:5:55")),
+            "full-width predicate must fail at the read, got:\n{out}"
+        );
+    }
+}
+
+#[test]
 fn an_untaken_guard_suppresses_a_dynamic_index_check() {
     let src = "module m;\n\
                use std::bits::unsigned;\n\

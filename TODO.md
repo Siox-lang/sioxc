@@ -133,9 +133,12 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   are not evidence of a speedup. Indexed packed writes now use one update per
   value/companion plane rather than enumerating bits; retain structural and
   native range/X/Z regressions plus measured LLVM instruction/memory evidence
-  when extending canonical value sharing. Continue auditing packed read
-  selectors and captured procedure-place candidate expansion; the compact
-  direct-write path does not remove those separate sources of growth.
+  when extending canonical value sharing. Persisted packed reads now use a
+  checked shift/extract with shared companion selection, and nonnegative
+  contiguous index checks use two bounds comparisons. Continue auditing
+  block-local packed read selectors, negative/sparse bounds predicates and
+  captured procedure-place candidate expansion; those remain separate sources
+  of growth.
 
 ## Output
 

@@ -680,6 +680,15 @@ An unconditional checked packed write supplies a whole contribution on every
 valid path; an invalid index aborts rather than forming a latch path. Explicit
 conditional writes still participate in inferred-latch diagnostics.
 
+Persisted packed reads use the same numeric label mapping but extract one bit
+with a checked shift rather than building a selector for every possible label.
+Scalar reconstruction selects the matching companion nibble at four times the
+offset; source-owned binary and weak/metavalue discriminants remain intact.
+Contiguous nonnegative index domains use two unsigned bounds comparisons,
+which also reject negative integer indices. Negative and sparse domains retain
+their equality predicates; storage-free block-local read selectors and
+captured-place candidate expansion remain optimization follow-ups.
+
 Canonical Process code generation computes immutable value-support,
 checked-index, and metavalue-free facts once per object, in arena dependency
 order. Reset helpers, support preflight, and every process/block emitter share

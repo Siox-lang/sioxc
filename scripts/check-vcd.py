@@ -60,7 +60,15 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
 
 
 def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile == "runtime_packed_write_test":
+    if profile == "runtime_packed_read_test":
+        expected = [
+            (0, "0"), (1_000_000, "x"), (2_000_000, "1"),
+            (3_000_000, "z"), (4_000_000, "0"), (5_000_000, "z"),
+            (5_000_000, "1"), (6_000_000, "0"),
+        ]
+        for signal in ("ascending", "descending"):
+            assert changes["RuntimePackedReadTest.dut." + signal] == expected
+    elif profile == "runtime_packed_write_test":
         root = "RuntimePackedWriteTest.dut."
         def frame(low: str, middle: str, high: str) -> str:
             return high + "0" * 62 + middle + "0" * 63 + low

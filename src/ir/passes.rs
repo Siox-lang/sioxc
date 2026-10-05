@@ -141,6 +141,33 @@ pub(super) fn reconstruct_expr(
             }
         }
     }
+    // A runtime packed read extracts one bit after a checked shift. Select
+    // the corresponding companion nibble with the same offset, not a mux arm
+    // per label. Keep the shift's checked operand shared and preserve Old.
+    if let Expr::Slice { base, hi: 0, lo: 0 } = e {
+        if let Expr::Binary {
+            op: BinOp::Shr,
+            lhs,
+            rhs,
+        } = base.as_ref()
+        {
+            if let Some((companion, read)) = companion_read(lhs, meta_of) {
+                if let Some(encoding) = encodings.get(&companion) {
+                    let meta = Expr::Binary {
+                        op: BinOp::Shr,
+                        lhs: Box::new(read),
+                        rhs: Box::new(Expr::Binary {
+                            op: BinOp::Mul,
+                            lhs: rhs.clone(),
+                            rhs: Box::new(Expr::Const(4)),
+                        }),
+                    };
+                    *e = logic_element_disc(base, &meta, 0, encoding);
+                    return;
+                }
+            }
+        }
+    }
     if let Expr::Slice { base, hi, lo } = e {
         if hi == lo {
             if let Expr::Current(vid) | Expr::Old(vid) = base.as_ref() {

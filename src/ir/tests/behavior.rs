@@ -434,6 +434,64 @@ fn runtime_packed_bit_read_write_updates_value_and_metavalue_planes() {
     assert!(design.validate().is_empty(), "{:#?}", design.validate());
 }
 
+#[test]
+fn contiguous_packed_reads_do_not_expand_per_label() {
+    let read = |width: usize| {
+        let initial = format!("X{}", "0".repeat(width - 1));
+        let design = lower_src(&format!(
+            "module compact; entity E {{ index: integer in, q: Logic out }}
+             impl E {{ let word: unsigned[{width}] = \"{initial}\"; q = word[index]; }}"
+        ));
+        assert!(design.validate().is_empty(), "{:#?}", design.validate());
+        let values = &design.process_ir.values;
+        let checked = values
+            .iter()
+            .find_map(|value| match value.kind {
+                ProcessValueKind::CheckedIndex { valid, .. } => Some(valid),
+                _ => None,
+            })
+            .expect("checked source access");
+        assert!(matches!(
+            values[checked.0 as usize].kind,
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::And,
+                ..
+            }
+        ));
+        assert!(values.iter().any(|value| matches!(
+            value.kind,
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Shr,
+                ..
+            }
+        )));
+        let signal = design
+            .signals
+            .iter()
+            .position(|signal| signal.path == "E.word")
+            .unwrap() as u32;
+        let companion = design.meta_of[&signal];
+        let mut reads = Vec::new();
+        read_set(
+            &design
+                .drivers
+                .iter()
+                .find(|driver| design.signals[driver.target.0 as usize].path == "E.q")
+                .unwrap()
+                .expr,
+            &mut reads,
+        );
+        assert!(reads.contains(&SignalId(signal)));
+        assert!(reads.contains(&SignalId(companion)));
+        values.len()
+    };
+    assert_eq!(
+        read(128),
+        read(512),
+        "read/check node count is independent of the packed width"
+    );
+}
+
 /// What reaches the site table, and in what order.
 ///
 /// Every consumer uses this numbering, so reordering or duplicating entries

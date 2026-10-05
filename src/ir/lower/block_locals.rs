@@ -252,10 +252,9 @@ impl<'a> Lowering<'a> {
     }
 
     /// Lower a non-constant index while retaining the declared index domain
-    /// for simulation. Domains are represented as equality predicates rather
-    /// than signed min/max comparisons: an `unsigned` index and a negative
-    /// integer label then keep their own source semantics, and ascending and
-    /// descending declarations use the same backend contract.
+    /// for simulation. Nonnegative contiguous domains use unsigned bounds:
+    /// negative integer indices also fail the upper bound. Other domains keep
+    /// equality predicates to preserve their source representation semantics.
     pub(super) fn checked_runtime_index(&self, index: &ast::Expr, labels: &[i64]) -> Option<Expr> {
         let &left = labels.first()?;
         let right = labels.last().copied().unwrap_or(left);
@@ -274,6 +273,30 @@ impl<'a> Lowering<'a> {
         let (&first, rest) = labels.split_first()?;
         let span = ast::expr_span(index);
         let lowered = self.bind_source_expression(self.lower_expr(index), span);
+        let low = left.min(right);
+        let high = left.max(right);
+        let step = if first <= *labels.last()? { 1 } else { -1 };
+        let contiguous = low >= 0
+            && first.min(*labels.last()?) == low
+            && first.max(*labels.last()?) == high
+            && labels
+                .windows(2)
+                .all(|pair| i128::from(pair[1]) - i128::from(pair[0]) == step);
+        if contiguous {
+            let bound = |op, label| Expr::Binary {
+                op,
+                lhs: Box::new(lowered.clone()),
+                rhs: Box::new(index_label(label)),
+            };
+            let valid = and_expr(bound(BinOp::Ge, low), bound(BinOp::Le, high));
+            return Some(Expr::CheckedIndex {
+                index: Box::new(lowered),
+                valid: Box::new(self.bind_source_expression(valid, span)),
+                left,
+                right,
+                span,
+            });
+        }
         let mut valid = self.bind_source_expression(eq(lowered.clone(), index_label(first)), span);
         for &label in rest {
             valid = self.bind_source_expression(

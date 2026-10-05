@@ -11723,3 +11723,67 @@ Remove the completed Output TODO; no writer ABI changes or dependencies.
 Completion estimate: Phase 1 approximately 97%; direct canonical ingress,
 initializer normalization, general runtime calls and non-packed conversions
 remain. Preserve setup changes and unrelated chat history; no push.
+
+### 2026-10-05 — Codex — compact packed reads ownership
+
+User priority is memory optimization before remaining Phase 1 ingress work.
+Own ir/lower/writes.rs, block_locals.rs bounds helper, source_values.rs shallow
+shape exposure, metavalue.rs reconstruction, ir/passes.rs and focused IR/native
+regressions. Replace persisted packed read selector arms with checked shift
+and extraction; reconstruct both value and companion using the same selected
+position. Compact contiguous nonnegative bounds predicates, retaining equality
+fallbacks for negative/sparse domains. Preserve std-owned discriminants,
+inactive bounds checks and wider index values. Measure the original vector
+fixture before/after, then run native and full capped gates. No push.
+
+Extend ownership to scripts/check-vcd.py and the new sibling
+runtime_packed_read_test.siox, plus architecture/TODO status. The corpus probe
+checks negative labels in both directions, weak-H/X/Z discriminants, value/
+companion word crossings, clean replacement and invalid reads under inactive
+guards. The Rust failure-location regression checks a negative integer and a
+128-bit index whose low word is valid: bounds are checked before offset
+narrowing. Block-local selectors and negative/sparse equality predicates are
+explicit follow-ups, not claimed removed by this batch.
+
+Matched bitpack LLVM emission for runtime_vector_index_test falls from
+143,881 to 7,879 instruction lines (94.5% reduction), 1.897 to 0.163 seconds,
+and 72.2 to 10.0 MiB scope peak. The initially reported after measurement was
+default-mode; reran bitpack explicitly to make this comparison like-for-like.
+The fresh default native vector VCD byte-matches the prior bitpack trace;
+the new negative-label bitpack executable passes its assertions. All 500 Rust
+library tests and 20 native failure-location regressions pass. Corrected two
+fixture-only issues (missing seeded companion and access-column expectation)
+before these checks. Full corpus gate still required before committing.
+
+All-target/all-feature pinned Clippy passes. AST-only graph update completed;
+vendored libfst parse warnings remain graph navigation limitations. Freeze
+compiler and sibling corpus for /tmp/siox-packed-read-ci-20261005 under the
+existing 8 GiB cap. No code edits until the gate reaches a terminal state.
+Frozen execution-source hash: ee54a1586d961916c082c33a5a00bd637dff0a1bfff34b416f4a1b964d59e7fe.
+Frozen corpus hash: cfc7946ea8717a7773465f79ac9488cd55d07ad4a52b94804c69b98c269736dc.
+
+### 2026-10-05 — Codex — compact packed reads verified
+
+The full pinned CI gate returned 0 under the unchanged 8 GiB cap: formatting,
+frontend checks/Clippy, default and bitpack Rust suites, all-target/all-feature
+Clippy, and both 211-program corpora pass without failures. Logs retained at
+/tmp/siox-packed-read-ci-20261005. Execution-source and corpus hashes match
+the frozen inputs; observed whole-gate peak was 1.91 GiB, including Cargo.
+Fresh default/bitpack native runs for runtime_vector_index_test and the new
+runtime_packed_read_test pass exact VCD and decoded FST profiles. The traces
+match across modes, including same-time delta changes; repeated vector default
+and negative-label bitpack VCD runs match too.
+
+Commit compact persisted packed reads, contiguous nonnegative bounds checks,
+shared std-derived scalar/companion reconstruction, structural and native
+failure regressions, waveform profile and docs as one compiler batch. Commit
+the new standalone source in the sibling repository. Preserve AGENTS.md,
+.codex/, generated graph files and 441 unrelated historical chat additions.
+No push. This measures instruction/working-set reduction, not proof of a
+general allocator leak or a whole-compiler throughput improvement.
+
+Completion estimate: Phase 1 approximately 97%, still incomplete. Remaining:
+direct canonical expression/resolution/metavalue ingress, initializer
+normalization, general runtime calls/recursion, non-packed conversions and
+dynamic host forms. Optimization follow-ups: block-local packed read selectors,
+negative/sparse predicates, captured-place expansion and repeatable benchmarks.
