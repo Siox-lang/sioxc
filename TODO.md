@@ -115,8 +115,12 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   intent through reconstruction/compaction, so reordered enum discriminants
   cannot turn raw storage bits into decoded source reads. Removed the old
   production value-bit, unary-table, repeated-plane and meta-nibble tree helpers.
-  Complete the remaining ingress migration: surrounding write/context/guard
-  construction, other source expressions and compile-time initializer
+  Static/dynamic partial-write masks, source-order value/companion selections,
+  branch/match/index guards and captured procedure-place projections now use
+  the arena builders too. Constant index hits remain unconditional, and guard
+  operands retain their explicit evaluation formats. The old private guard
+  builders are removed. Complete the remaining ingress migration: other source
+  expressions and compile-time initializer
   normalization still assemble private fragments around those IDs.
   Make every source expression a canonical value at construction, preserving
   concrete layouts, contexts, lookup compaction and staged-write semantics.

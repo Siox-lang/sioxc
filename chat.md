@@ -12482,3 +12482,79 @@ source ingress includes surrounding write/context/guard construction, other
 expressions and initializer normalization; general runtime call CFGs, non-packed
 conversions and dynamic host forms remain. Remove the temporary importer only
 after those constructors actually become arena-native.
+
+### 2026-10-05 — Codex — own canonical write/context guards
+
+Revalidated and committed metadata/resolution as 1bacc70: execution/corpus
+hashes still match the complete passing gate and the sibling checkout is clean.
+Previous goal turn made verified progress; the user's copy note is already a
+deferred TODO, not an invitation to optimize snapshots. Own writes.rs,
+control.rs, source_values/build.rs and their guard call sites in block_locals,
+source_places and metavalue, plus regressions/docs. Move partial-write masks,
+source-order selections and match/index/branch guards into the existing arena
+builders. Preserve unconditional constant-hit handling, selected arithmetic
+domains, current/old state, checked failures, contexts, spans and staged writes.
+The graph query is truncated; inspect the actual helper contracts and callers.
+Preserve AGENTS.md, .codex/ and the remaining 441 historical chat additions;
+no push and no runtime copy-reduction work.
+
+Frontend check passes; the four old lower_helpers guard builders are now dead
+because all their production callers use the arena. Own their removal too;
+private passes.rs helpers still serve remaining fragment normalization and are not
+removed. Avoid retaining a RefCell metadata projection borrow across a merge
+call: compute the projection before invoking the builder.
+
+Canonical guard-format/unconditional-hit and static/dynamic mask regressions
+pass. The mask test covers 1/64/65/128-bit frames, cross-word regions and shared
+foreign operands. Production check passes after deleting dead guard helpers.
+Default and bitpack compiler artifacts were freshly built and copied to
+/tmp/siox-source-writes-{default,bitpack}-sioxc before starting parallel gates.
+Freeze execution inputs for /tmp/siox-source-writes-ci-j2-20261005:
+c196fc2d3adb0a862704cb967091f4a646f80b88667c27924eed99249cd2f3af.
+Sibling checkout remains clean; corpus hash still
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+Run the pinned full CI gate under the 8 GiB scope, and 25 native cases per mode
+using frozen compiler artifacts. Do not change execution inputs until terminal.
+
+The first gate passed default/bitpack Rust suites (520/500 library tests and all
+integrations), frontend checks and build, but all-target Clippy rejected test
+module placement before production items in writes.rs. Stop the gate
+deliberately: command exit 143; neither corpus completion is claimed. Move
+only that test module to EOF and rerun the complete gate on newly frozen inputs.
+Both fresh native commands already exited 0: 25 assertions/profiles per mode,
+all 25 before/after and cross-mode VCD comparisons, 48 decoded FST/VCD event
+comparisons and two signal-free FST rejections. No simulation regression was
+observed; native executables contain the same production code after relocation.
+
+Revised gate /tmp/siox-source-writes-v2-ci-j2-20261005 freezes execution hash
+dea51967b0df56453ea10aa9658cce889ae7ee3f17df3c68b4522b54ace75213.
+Only writes.rs test placement changed since the first freeze. Corpus inputs
+remain unchanged. Run the whole gate again, not only the rejected Clippy step.
+
+### 2026-10-05 — Codex — canonical write/context guards verified
+
+The revised full CI command completed with exit 0 at
+/tmp/siox-source-writes-v2-ci-j2-20261005. Formatting, frontend check/Clippy,
+build, default/bitpack Rust suites (520/500 library tests plus all integrations,
+including 36 build_binary cases each), all-target/all-feature Clippy and both
+211-program corpora pass. Execution/corpus hashes still match the revised
+freeze; sibling checkout is unchanged. Last observed scope peak was
+1,126,735,872 bytes including Cargo; this is not a compiler speed/memory claim.
+The 25 fresh native cases per mode passed assertions and VCD profiles, all
+before/after and cross-mode VCDs match, 48 observable FSTs decode to the same
+named events, and two signal-free cases preserve exit-2/no-file FST behavior.
+
+Commit only owned canonical write masks, source-order value/companion merges,
+branch/match/index guards, captured-place projections, two unit regressions,
+the four removed private guard helpers, docs and these appended log entries.
+Ponytail influenced this migration by reusing existing binary/select/unary
+builders without a dependency or new public IR/runtime operation. The code
+graph is updated (5207 nodes/13803 edges); vendored extractor warnings remain.
+Preserve AGENTS.md, .codex/ and 441 historical chat additions; no main push.
+Completion estimate: Phase 1 approximately 97%, still incomplete. SourceValues
+append still calls the temporary ProcessIr.push_digital_expr ingress; remaining
+expression/attribute and fragment/initializer normalization constructors need
+direct arena migration before deleting it. General runtime call CFGs,
+non-packed conversions and dynamic host forms remain tracked separately.
+Runtime copy reduction remains explicitly deferred; snapshots and staged writes
+are unchanged.

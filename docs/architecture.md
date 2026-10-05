@@ -397,8 +397,12 @@ canonical values. Physical single-bit projections carry temporary normalization
 intent through arena remapping: reconstructing a source logic-element read must
 not decode a raw value-plane bit used to build a companion. That intent does not
 add a runtime operation or public IR format; final bit slices retain ordinary
-bit semantics. Surrounding write/context/guard construction, other source
-expressions and compile-time initializer normalization still use private
+bit semantics. Static/dynamic partial-write masks and source-order selections
+also use arena builders, as do branch/match/index guards and captured
+procedure-place projections. Constant index hits remain unconditional for
+coverage and write merging; canonical guard operands retain their own formats.
+The old private guard constructors are removed. Other source expressions and
+compile-time initializer normalization still use private
 fragments; fully arena-native ingress remains tracked in TODO.
 
 **Layering rule:** a module may use only the modules above it in this list

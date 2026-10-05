@@ -246,7 +246,7 @@ impl<'a> Lowering<'a> {
                     let v = self.lower_expr(value);
                     let width = self.out.signals[sig.0 as usize].width;
                     let base = self.slice_write_base(sig, false, &[]);
-                    let merged = self.merge_slice(base, hi, lo, v.clone(), width);
+                    let merged = self.merge_slice(base, hi, lo, v.clone(), width, *span);
                     let meta = if self.out.array_element_enums.contains_key(&sig.0) {
                         let companion = SignalId(self.driven_companion(sig));
                         let meta_width = self.out.signals[companion.0 as usize].width;
@@ -268,6 +268,7 @@ impl<'a> Lowering<'a> {
                             lo * 4,
                             meta_value,
                             meta_width,
+                            *span,
                         ))
                     } else {
                         None
@@ -343,7 +344,7 @@ impl<'a> Lowering<'a> {
                     // An `else` on an event block is unusual; lower it under the
                     // negated event for completeness.
                     if let Some(eb) = iff.else_.as_deref() {
-                        let neg = Some(not(self.lower_expr(&iff.cond)));
+                        let neg = Some(self.source_not(&condition, ast::expr_span(&iff.cond)));
                         self.lower_event_else(eb, neg, &mut updates);
                     }
                     self.hardware.event_blocks.push(EventBlock {
@@ -382,10 +383,12 @@ impl<'a> Lowering<'a> {
                     // Combinational conditional: assignments become conditional
                     // drivers; the `else` adds the negated condition.
                     let c = self.lower_expr(&iff.cond);
-                    let then_cond = Some(and(cond.clone(), c.clone()));
+                    let span = ast::expr_span(&iff.cond);
+                    let then_cond = Some(self.source_and(cond.clone(), c.clone(), span));
                     self.lower_combinational_block(&iff.then, then_cond);
                     if let Some(eb) = iff.else_.as_deref() {
-                        let else_cond = Some(and(cond, not(c)));
+                        let else_cond =
+                            Some(self.source_and(cond, self.source_not(&c, span), span));
                         self.lower_combinational_else(eb, else_cond);
                     }
                 }
@@ -422,12 +425,16 @@ impl<'a> Lowering<'a> {
                         }
                     }
                     let fire = match &mc {
-                        Some(c) => Some(and(remaining.clone(), c.clone())),
+                        Some(c) => Some(self.source_and(remaining.clone(), c.clone(), arm.span)),
                         None => remaining.clone(),
                     };
                     self.lower_combinational_block(&arm.body, fire);
                     remaining = match mc {
-                        Some(c) => Some(and(remaining, not(c))),
+                        Some(c) => Some(self.source_and(
+                            remaining,
+                            self.source_not(&c, arm.span),
+                            arm.span,
+                        )),
                         None => Some(Expr::Const(0)),
                     };
                 }
@@ -533,33 +540,23 @@ impl<'a> Lowering<'a> {
         match pattern {
             ast::Pattern::Path(p) if p.segments.len() >= 2 => {
                 let disc = self.enum_variant_path(p).unwrap_or(0);
-                Some(eq(scrut.clone(), Expr::Const(disc)))
+                Some(self.source_binary(BinOp::Eq, scrut, &Expr::Const(disc), p.span))
             }
-            ast::Pattern::BitPattern { text, .. } => {
+            ast::Pattern::BitPattern { text, span } => {
                 let (mask, value) = crate::syntax::bit_pattern_mask(text)?;
-                Some(eq(
-                    Expr::Binary {
-                        op: BinOp::And,
-                        lhs: Box::new(scrut.clone()),
-                        rhs: Box::new(words_const(mask)),
-                    },
-                    words_const(value),
-                ))
+                let masked = self.source_binary(BinOp::And, scrut, &words_const(mask), *span);
+                Some(self.source_binary(BinOp::Eq, &masked, &words_const(value), *span))
             }
             // `A | B`: matches if any alternative matches (their conditions
             // OR-ed; a wildcard alternative makes the whole arm unconditional).
-            ast::Pattern::Or { alts, .. } => {
+            ast::Pattern::Or { alts, span } => {
                 let mut acc: Option<Expr> = None;
                 for a in alts {
                     match self.arm_match_cond(a, scrutinee, scrut, env) {
                         None => return None,
                         Some(c) => {
                             acc = Some(match acc {
-                                Some(prev) => Expr::Binary {
-                                    op: BinOp::Or,
-                                    lhs: Box::new(prev),
-                                    rhs: Box::new(c),
-                                },
+                                Some(prev) => self.source_binary(BinOp::Or, &prev, &c, *span),
                                 None => c,
                             })
                         }
@@ -605,7 +602,7 @@ impl<'a> Lowering<'a> {
                 } else {
                     let ge = compare(ast::BinOp::Ge, low);
                     let le = compare(ast::BinOp::Le, high);
-                    Some(and(Some(ge), le))
+                    Some(self.source_and(Some(ge), le, *span))
                 }
             }
             // A character literal names a variant of a char-valued enum
@@ -613,7 +610,9 @@ impl<'a> Lowering<'a> {
             // resolved against the scrutinee's type downstream — exactly what
             // `l == '0'` in expression position already lowers to, so the two
             // spellings cannot disagree.
-            ast::Pattern::CharLit { ch, .. } => Some(eq(scrut.clone(), Expr::Logic(*ch))),
+            ast::Pattern::CharLit { ch, span } => {
+                Some(self.source_binary(BinOp::Eq, scrut, &Expr::Logic(*ch), *span))
+            }
             // A wildcard matches anything.
             _ => None,
         }
@@ -725,7 +724,7 @@ impl<'a> Lowering<'a> {
                         let v = self.lower_expr(value);
                         let width = self.out.signals[sig.0 as usize].width;
                         let base = self.slice_write_base(sig, true, out);
-                        let expr = self.merge_slice(base, hi, lo, v.clone(), width);
+                        let expr = self.merge_slice(base, hi, lo, v.clone(), width, *span);
                         let meta = if self.out.array_element_enums.contains_key(&sig.0) {
                             let companion = SignalId(self.driven_companion(sig));
                             let meta_width = self.out.signals[companion.0 as usize].width;
@@ -744,6 +743,7 @@ impl<'a> Lowering<'a> {
                                 lo * 4,
                                 meta_value,
                                 meta_width,
+                                *span,
                             ))
                         } else {
                             None
@@ -794,9 +794,15 @@ impl<'a> Lowering<'a> {
                 }
                 ast::Stmt::If(iff) => {
                     let c = self.lower_expr(&iff.cond);
-                    self.lower_event_block(&iff.then, Some(and(cond.clone(), c.clone())), out);
+                    let span = ast::expr_span(&iff.cond);
+                    self.lower_event_block(
+                        &iff.then,
+                        Some(self.source_and(cond.clone(), c.clone(), span)),
+                        out,
+                    );
                     if let Some(eb) = iff.else_.as_deref() {
-                        let neg = Some(and(cond.clone(), not(c)));
+                        let neg =
+                            Some(self.source_and(cond.clone(), self.source_not(&c, span), span));
                         self.lower_event_else(eb, neg, out);
                     }
                 }
@@ -811,12 +817,18 @@ impl<'a> Lowering<'a> {
                             &HashMap::new(),
                         );
                         let fire = match &mc {
-                            Some(c) => Some(and(remaining.clone(), c.clone())),
+                            Some(c) => {
+                                Some(self.source_and(remaining.clone(), c.clone(), arm.span))
+                            }
                             None => remaining.clone(),
                         };
                         self.lower_event_block(&arm.body, fire, out);
                         remaining = match mc {
-                            Some(c) => Some(and(remaining, not(c))),
+                            Some(c) => Some(self.source_and(
+                                remaining,
+                                self.source_not(&c, arm.span),
+                                arm.span,
+                            )),
                             None => Some(Expr::Const(0)),
                         };
                     }
@@ -904,9 +916,18 @@ impl<'a> Lowering<'a> {
             ast::ElseBranch::Block(b) => self.lower_event_block(b, cond, out),
             ast::ElseBranch::If(inner) => {
                 let c = self.lower_expr(&inner.cond);
-                self.lower_event_block(&inner.then, Some(and(cond.clone(), c.clone())), out);
+                let span = ast::expr_span(&inner.cond);
+                self.lower_event_block(
+                    &inner.then,
+                    Some(self.source_and(cond.clone(), c.clone(), span)),
+                    out,
+                );
                 if let Some(eb) = inner.else_.as_deref() {
-                    self.lower_event_else(eb, Some(and(cond, not(c))), out);
+                    self.lower_event_else(
+                        eb,
+                        Some(self.source_and(cond, self.source_not(&c, span), span)),
+                        out,
+                    );
                 }
             }
         }

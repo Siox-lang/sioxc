@@ -100,6 +100,51 @@ impl SourceValues {
 }
 
 impl Lowering<'_> {
+    /// Accumulate a source control guard without constructing a private tree.
+    pub(in crate::ir::lower) fn source_and(
+        &self,
+        previous: Option<Expr>,
+        condition: Expr,
+        span: crate::diag::Span,
+    ) -> Expr {
+        match previous {
+            Some(previous) => self.source_binary(BinOp::And, &previous, &condition, span),
+            None => self.bind_source_expression(condition, span),
+        }
+    }
+
+    /// Constant index hits must stay unconditional for coverage/source order.
+    pub(in crate::ir::lower) fn source_write_guard(
+        &self,
+        previous: &Option<Expr>,
+        hit: Expr,
+        span: crate::diag::Span,
+    ) -> Option<Expr> {
+        let constant_hit = match &hit {
+            Expr::Const(1) => true,
+            Expr::Canonical { value, .. } => matches!(
+                &self.source_values.borrow().ir.values[value.0 as usize].kind,
+                ProcessValueKind::Number(ProcessNumber::Integer(words)) if words.as_slice() == [1]
+            ),
+            _ => false,
+        };
+        if constant_hit {
+            previous.clone()
+        } else {
+            Some(self.source_and(previous.clone(), hit, span))
+        }
+    }
+
+    pub(in crate::ir::lower) fn source_not(
+        &self,
+        condition: &Expr,
+        span: crate::diag::Span,
+    ) -> Expr {
+        self.source_values
+            .borrow_mut()
+            .unary(ProcessUnaryOp::Not, condition, span)
+    }
+
     /// Select aggregate leaves by name, sharing the condition's single value.
     pub(in crate::ir::lower) fn source_select_value(
         &self,
@@ -184,6 +229,47 @@ mod tests {
             panic!("selection constructor must return a canonical root");
         };
         *value
+    }
+
+    #[test]
+    fn source_guards_keep_unconditional_hits_and_shared_condition_formats() {
+        let span = Span::new(FileId(0), 20..29);
+        let condition_span = Span::new(FileId(0), 11..18);
+        let mut sink = DiagnosticSink::new();
+        let resolved = Resolved::default();
+        let lowering = Lowering::new(&mut sink, &resolved);
+        let condition = lowering.bind_source_scalar(
+            Expr::Current(SignalId(0)),
+            condition_span,
+            crate::types::Ty::Integer,
+        );
+        let before = lowering.source_values.borrow().ir.values[id(&condition).0 as usize].clone();
+        let canonical_one = lowering.bind_source_expression(Expr::Const(1), span);
+        for hit in [Expr::Const(1), canonical_one] {
+            assert!(lowering
+                .source_write_guard(&None, hit.clone(), span)
+                .is_none());
+            assert_eq!(
+                id(&lowering
+                    .source_write_guard(&Some(condition.clone()), hit, span)
+                    .unwrap()),
+                id(&condition),
+            );
+        }
+        let negative = lowering.source_not(&condition, span);
+        let guard = lowering
+            .source_write_guard(&Some(condition.clone()), negative.clone(), span)
+            .unwrap();
+        let arena = lowering.source_values.borrow();
+        let root = &arena.ir.values[id(&guard).0 as usize];
+        assert_eq!(root.span, span);
+        assert!(matches!(root.kind, ProcessValueKind::Binary {
+            operation: ProcessBinaryOp::And, left, right,
+        } if left == id(&condition) && right == id(&negative)));
+        assert!(matches!(arena.ir.values[id(&negative).0 as usize].kind,
+            ProcessValueKind::Unary { operation: ProcessUnaryOp::Not, operand } if operand == id(&condition)));
+        assert_eq!(arena.ir.values[id(&condition).0 as usize], before);
+        assert!(arena.ir.validate(1).is_empty());
     }
 
     #[test]

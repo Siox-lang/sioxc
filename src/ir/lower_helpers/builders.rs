@@ -16,14 +16,6 @@ pub(in crate::ir) fn index_label(value: i64) -> Expr {
     }
 }
 
-/// Logical negation of a 0/1 expression.
-pub(in crate::ir) fn not(e: Expr) -> Expr {
-    Expr::Unary {
-        op: UnOp::Not,
-        rhs: Box::new(e),
-    }
-}
-
 /// Whether a pattern matches everything, including a `_` written inside an
 /// alternation (`A | _`).
 pub(in crate::ir) fn pattern_has_wildcard(p: &ast::Pattern) -> bool {
@@ -31,41 +23,6 @@ pub(in crate::ir) fn pattern_has_wildcard(p: &ast::Pattern) -> bool {
         ast::Pattern::Wildcard => true,
         ast::Pattern::Or { alts, .. } => alts.iter().any(pattern_has_wildcard),
         _ => false,
-    }
-}
-
-/// Equality between two expressions, yielding 0 or 1.
-pub(in crate::ir) fn eq(lhs: Expr, rhs: Expr) -> Expr {
-    Expr::Binary {
-        op: BinOp::Eq,
-        lhs: Box::new(lhs),
-        rhs: Box::new(rhs),
-    }
-}
-
-/// The guard for one expanded write: the enclosing condition narrowed by the
-/// index-match `hit`.
-///
-/// A constant index matches unconditionally, and saying so matters beyond tidy
-/// IR. `Some(Const(1))` is still a *conditional* driver, so `word[1] = '1'` at
-/// an entity's root drew an inferred-latch warning (W-P002) and never became
-/// the unconditional driver that a following partial write merges over.
-pub(in crate::ir) fn write_guard(cond: &Option<Expr>, hit: Expr) -> Option<Expr> {
-    if matches!(hit, Expr::Const(1)) {
-        return cond.clone();
-    }
-    Some(and(cond.clone(), hit))
-}
-
-/// `and` of an optional accumulated condition with a new one.
-pub(in crate::ir) fn and(acc: Option<Expr>, c: Expr) -> Expr {
-    match acc {
-        Some(a) => Expr::Binary {
-            op: BinOp::And,
-            lhs: Box::new(a),
-            rhs: Box::new(c),
-        },
-        None => c,
     }
 }
 

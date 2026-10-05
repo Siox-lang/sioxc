@@ -262,14 +262,17 @@ impl Lowering<'_> {
                             for label in labels {
                                 let mut selected = place.clone();
                                 selected.project_field(&format!("[{label}]"), layout.clone())?;
-                                let hit = self.bind_source_expression(
-                                    eq(checked.clone(), index_label(label)),
+                                let hit = self.source_binary(
+                                    BinOp::Eq,
+                                    &checked,
+                                    &index_label(label),
                                     ast::expr_span(index),
                                 );
                                 for (name, mut accesses) in selected.leaves {
                                     for access in &mut accesses {
-                                        access.guard = Some(self.bind_source_expression(
-                                            and(access.guard.clone(), hit.clone()),
+                                        access.guard = Some(self.source_and(
+                                            access.guard.clone(),
+                                            hit.clone(),
                                             ast::expr_span(index),
                                         ));
                                     }
@@ -328,8 +331,10 @@ impl Lowering<'_> {
                             for label in labels {
                                 projections.push((
                                     vec![u32::try_from(label - range.left.min(range.right)).ok()?],
-                                    Some(self.bind_source_expression(
-                                        eq(checked.clone(), index_label(label)),
+                                    Some(self.source_binary(
+                                        BinOp::Eq,
+                                        &checked,
+                                        &index_label(label),
                                         ast::expr_span(index),
                                     )),
                                 ));
@@ -350,7 +355,11 @@ impl Lowering<'_> {
                                             .collect::<Option<Vec<_>>>()?,
                                     );
                                     access.guard = match guard {
-                                        Some(guard) => Some(and(access.guard, guard.clone())),
+                                        Some(guard) => Some(self.source_and(
+                                            access.guard,
+                                            guard.clone(),
+                                            ast::expr_span(index),
+                                        )),
                                         None => access.guard,
                                     };
                                     projected.push(access);
@@ -409,7 +418,9 @@ impl Lowering<'_> {
             };
             for access in accesses {
                 let fire = match &access.guard {
-                    Some(guard) => Some(and(cond.clone(), guard.clone())),
+                    Some(guard) => {
+                        Some(self.source_and(cond.clone(), guard.clone(), ast::expr_span(target)))
+                    }
                     None => cond.clone(),
                 };
                 match &access.storage {
@@ -426,12 +437,14 @@ impl Lowering<'_> {
                                     base,
                                     bit,
                                     bit,
-                                    Expr::Slice {
-                                        base: Box::new(replacement.clone()),
-                                        hi: source as u32,
-                                        lo: source as u32,
-                                    },
+                                    self.source_slice(
+                                        &replacement,
+                                        source as u32,
+                                        source as u32,
+                                        ast::expr_span(target),
+                                    ),
                                     width,
+                                    ast::expr_span(target),
                                 );
                                 base = self.bind_source_expression(base, ast::expr_span(target));
                             }
@@ -452,16 +465,19 @@ impl Lowering<'_> {
                                     *signal, companion, sequential, &previous,
                                 );
                                 for (source, &bit) in bits.iter().enumerate() {
+                                    let projection = self.source_values.borrow_mut().raw_slice(
+                                        &replacement_meta,
+                                        source as u32 * 4 + 3,
+                                        source as u32 * 4,
+                                        ast::expr_span(target),
+                                    );
                                     base = self.merge_slice(
                                         base,
                                         bit * 4 + 3,
                                         bit * 4,
-                                        Expr::Slice {
-                                            base: Box::new(replacement_meta.clone()),
-                                            hi: source as u32 * 4 + 3,
-                                            lo: source as u32 * 4,
-                                        },
+                                        projection,
                                         meta_width,
+                                        ast::expr_span(target),
                                     );
                                     base =
                                         self.bind_source_expression(base, ast::expr_span(target));
@@ -503,12 +519,14 @@ impl Lowering<'_> {
                                     base,
                                     bit,
                                     bit,
-                                    Expr::Slice {
-                                        base: Box::new(replacement.clone()),
-                                        hi: source as u32,
-                                        lo: source as u32,
-                                    },
+                                    self.source_slice(
+                                        &replacement,
+                                        source as u32,
+                                        source as u32,
+                                        ast::expr_span(target),
+                                    ),
                                     width,
+                                    ast::expr_span(target),
                                 );
                                 base = self.bind_source_expression(base, ast::expr_span(target));
                             }

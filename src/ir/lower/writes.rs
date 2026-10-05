@@ -115,13 +115,14 @@ impl<'a> Lowering<'a> {
         let mut targets = Vec::new();
         self.dynamic_write_targets(&root, &steps, None, &mut targets)?;
         let expr = self.lower_expr(value);
+        let target_span = ast::expr_span(target);
         let mut updates = Vec::new();
         for target in targets {
             match target {
                 DynamicWriteTarget::Whole { signal, hit } => updates.push(NextUpdate {
                     span: self.cur_span,
                     target: signal,
-                    cond: write_guard(cond, hit),
+                    cond: self.source_write_guard(cond, hit, target_span),
                     expr: self.coerce_to_target(signal, expr.clone()),
                     meta: None,
                 }),
@@ -159,26 +160,24 @@ impl<'a> Lowering<'a> {
                         let meta_base =
                             self.slice_meta_write_base(signal, companion, sequential, pending);
                         self.flush_meta_temps();
-                        let meta_value = encoding.as_ref().map(|encoding| Expr::Select {
-                            cond: Box::new(self.source_values.borrow_mut().disc_in(
+                        let span = ast::expr_span(value);
+                        let meta_value = encoding.as_ref().map(|encoding| {
+                            let binary = self.source_values.borrow_mut().disc_in(
                                 &expr,
                                 &encoding.binary,
-                                ast::expr_span(value),
-                            )),
-                            then: Box::new(Expr::Const(0)),
-                            els: Box::new(expr.clone()),
+                                span,
+                            );
+                            self.source_select(&binary, &Expr::Const(0), &expr, span)
                         })?;
-                        let meta_position = Expr::Binary {
-                            op: BinOp::Mul,
-                            lhs: Box::new(position.clone()),
-                            rhs: Box::new(Expr::Const(4)),
-                        };
+                        let meta_position =
+                            self.source_binary(BinOp::Mul, &position, &Expr::Const(4), span);
                         Some(self.merge_dynamic_slice(
                             meta_base,
                             meta_position,
                             4,
                             meta_value,
                             meta_width,
+                            target_span,
                         ))
                     } else {
                         None
@@ -186,8 +185,15 @@ impl<'a> Lowering<'a> {
                     updates.push(NextUpdate {
                         span: self.cur_span,
                         target: signal,
-                        cond: write_guard(cond, hit.clone()),
-                        expr: self.merge_dynamic_slice(base, position, 1, value_bit, width),
+                        cond: self.source_write_guard(cond, hit.clone(), target_span),
+                        expr: self.merge_dynamic_slice(
+                            base,
+                            position,
+                            1,
+                            value_bit,
+                            width,
+                            target_span,
+                        ),
                         meta,
                     });
                 }
@@ -244,7 +250,12 @@ impl<'a> Lowering<'a> {
         let lowered_index = self.checked_runtime_index(index, &indices)?;
         let mut updates = Vec::new();
         for position in indices {
-            let hit = eq(lowered_index.clone(), index_label(position));
+            let hit = self.source_binary(
+                BinOp::Eq,
+                &lowered_index,
+                &index_label(position),
+                ast::expr_span(index),
+            );
             for (field, expr) in &fields {
                 let separator = if field.starts_with('[') { "" } else { "." };
                 let Some(&signal) = self
@@ -256,7 +267,7 @@ impl<'a> Lowering<'a> {
                 updates.push(NextUpdate {
                     span: self.cur_span,
                     target: signal,
-                    cond: Some(and(cond.clone(), hit.clone())),
+                    cond: Some(self.source_and(cond.clone(), hit.clone(), ast::expr_span(target))),
                     expr: self.coerce_to_target(signal, expr.clone()),
                     meta: None,
                 });
@@ -276,6 +287,9 @@ impl<'a> Lowering<'a> {
         sequential: bool,
         pending: &[NextUpdate],
     ) -> Expr {
+        let span = self
+            .cur_span
+            .unwrap_or(self.out.signals[signal.0 as usize].declaration_span);
         let write_meta = |expr: &Expr, explicit: &Option<Expr>| {
             explicit
                 .clone()
@@ -297,28 +311,30 @@ impl<'a> Lowering<'a> {
                         .filter(|update| update.target == signal)
                         .map(move |update| {
                             let guard = match &update.cond {
-                                Some(cond) => and_expr(block.condition.clone(), cond.clone()),
+                                Some(cond) => self.source_binary(
+                                    BinOp::And,
+                                    &block.condition,
+                                    cond,
+                                    update.span.unwrap_or(span),
+                                ),
                                 None => block.condition.clone(),
                             };
                             (guard, write_meta(&update.expr, &update.meta))
                         })
                 })
                 .fold(Expr::Current(companion), |acc, (guard, expr)| {
-                    Expr::Select {
-                        cond: Box::new(guard),
-                        then: Box::new(expr),
-                        els: Box::new(acc),
-                    }
+                    self.source_select(&guard, &expr, &acc, span)
                 });
             return pending
                 .iter()
                 .filter(|update| update.target == signal)
                 .fold(seed, |acc, update| match &update.cond {
-                    Some(cond) => Expr::Select {
-                        cond: Box::new(cond.clone()),
-                        then: Box::new(write_meta(&update.expr, &update.meta)),
-                        els: Box::new(acc),
-                    },
+                    Some(cond) => self.source_select(
+                        cond,
+                        &write_meta(&update.expr, &update.meta),
+                        &acc,
+                        update.span.unwrap_or(span),
+                    ),
                     None => write_meta(&update.expr, &update.meta),
                 });
         }
@@ -331,11 +347,12 @@ impl<'a> Lowering<'a> {
             .iter()
             .filter(|driver| driver.target == signal && driver.ctx == self.cur_ctx)
             .fold(seed, |acc, driver| match &driver.cond {
-                Some(cond) => Expr::Select {
-                    cond: Box::new(cond.clone()),
-                    then: Box::new(write_meta(&driver.expr, &driver.meta)),
-                    els: Box::new(acc),
-                },
+                Some(cond) => self.source_select(
+                    cond,
+                    &write_meta(&driver.expr, &driver.meta),
+                    &acc,
+                    driver.span.unwrap_or(span),
+                ),
                 None => write_meta(&driver.expr, &driver.meta),
             })
     }
@@ -358,6 +375,9 @@ impl<'a> Lowering<'a> {
         sequential: bool,
         pending: &[NextUpdate],
     ) -> Expr {
+        let span = self
+            .cur_span
+            .unwrap_or(self.out.signals[signal.0 as usize].declaration_span);
         if sequential {
             // A clocked block reads the pre-commit value, so an unwritten
             // signal keeps `Current`. Earlier *blocks* of the same driver
@@ -378,16 +398,19 @@ impl<'a> Lowering<'a> {
                         .filter(|update| update.target == signal)
                         .map(move |update| {
                             let guard = match &update.cond {
-                                Some(cond) => and_expr(block.condition.clone(), cond.clone()),
+                                Some(cond) => self.source_binary(
+                                    BinOp::And,
+                                    &block.condition,
+                                    cond,
+                                    update.span.unwrap_or(span),
+                                ),
                                 None => block.condition.clone(),
                             };
                             (guard, update.expr.clone())
                         })
                 })
-                .fold(Expr::Current(signal), |acc, (guard, expr)| Expr::Select {
-                    cond: Box::new(guard),
-                    then: Box::new(expr),
-                    els: Box::new(acc),
+                .fold(Expr::Current(signal), |acc, (guard, expr)| {
+                    self.source_select(&guard, &expr, &acc, span)
                 });
             // Then this block's own updates: each expression is a complete
             // next value, so a later one supersedes exactly when it fires.
@@ -395,11 +418,9 @@ impl<'a> Lowering<'a> {
                 .iter()
                 .filter(|update| update.target == signal)
                 .fold(seed, |acc, update| match &update.cond {
-                    Some(cond) => Expr::Select {
-                        cond: Box::new(cond.clone()),
-                        then: Box::new(update.expr.clone()),
-                        els: Box::new(acc),
-                    },
+                    Some(cond) => {
+                        self.source_select(cond, &update.expr, &acc, update.span.unwrap_or(span))
+                    }
                     None => update.expr.clone(),
                 });
         }
@@ -417,11 +438,9 @@ impl<'a> Lowering<'a> {
             .iter()
             .filter(|driver| driver.target == signal && driver.ctx == self.cur_ctx)
             .fold(seed, |acc, driver| match &driver.cond {
-                Some(cond) => Expr::Select {
-                    cond: Box::new(cond.clone()),
-                    then: Box::new(driver.expr.clone()),
-                    els: Box::new(acc),
-                },
+                Some(cond) => {
+                    self.source_select(cond, &driver.expr, &acc, driver.span.unwrap_or(span))
+                }
                 None => driver.expr.clone(),
             })
     }
@@ -507,11 +526,16 @@ impl<'a> Lowering<'a> {
                 if let Some(indices) = self.local_array.get(path) {
                     let lowered_index = self.checked_runtime_index(index, indices)?;
                     for &position in indices {
-                        let matches = eq(lowered_index.clone(), index_label(position));
+                        let matches = self.source_binary(
+                            BinOp::Eq,
+                            &lowered_index,
+                            &index_label(position),
+                            ast::expr_span(index),
+                        );
                         self.dynamic_write_targets(
                             &format!("{path}[{position}]"),
                             rest,
-                            Some(and(hit.clone(), matches)),
+                            Some(self.source_and(hit.clone(), matches, ast::expr_span(index))),
                             out,
                         )?;
                     }
@@ -585,6 +609,7 @@ impl<'a> Lowering<'a> {
         lo: u32,
         value: Expr,
         width: u32,
+        span: crate::diag::Span,
     ) -> Expr {
         let slice_w = hi - lo + 1;
         let ones = |bits: u32| {
@@ -603,26 +628,10 @@ impl<'a> Lowering<'a> {
                 *word &= !(1u64 << (bit % 64));
             }
         }
-        let kept = Expr::Binary {
-            op: BinOp::And,
-            lhs: Box::new(base),
-            rhs: Box::new(words_const(keep)),
-        };
-        let masked = Expr::Binary {
-            op: BinOp::And,
-            lhs: Box::new(value),
-            rhs: Box::new(words_const(ones(slice_w))),
-        };
-        let shifted = Expr::Binary {
-            op: BinOp::Shl,
-            lhs: Box::new(masked),
-            rhs: Box::new(Expr::Const(lo as u64)),
-        };
-        Expr::Binary {
-            op: BinOp::Or,
-            lhs: Box::new(kept),
-            rhs: Box::new(shifted),
-        }
+        let kept = self.source_binary(BinOp::And, &base, &words_const(keep), span);
+        let masked = self.source_binary(BinOp::And, &value, &words_const(ones(slice_w)), span);
+        let shifted = self.source_binary(BinOp::Shl, &masked, &Expr::Const(lo as u64), span);
+        self.source_binary(BinOp::Or, &kept, &shifted, span)
     }
 
     /// Insert one runtime-selected region without enumerating packed bits.
@@ -635,6 +644,7 @@ impl<'a> Lowering<'a> {
         region_width: u32,
         value: Expr,
         width: u32,
+        span: crate::diag::Span,
     ) -> Expr {
         let ones = |bits: u32| {
             let mut words = vec![u64::MAX; bits.div_ceil(64) as usize];
@@ -643,34 +653,13 @@ impl<'a> Lowering<'a> {
             }
             words_const(words)
         };
-        let mask = Expr::Binary {
-            op: BinOp::Shl,
-            lhs: Box::new(ones(region_width)),
-            rhs: Box::new(position.clone()),
-        };
-        let kept = Expr::Binary {
-            op: BinOp::And,
-            lhs: Box::new(base),
-            rhs: Box::new(Expr::Binary {
-                op: BinOp::Xor,
-                lhs: Box::new(ones(width)),
-                rhs: Box::new(mask),
-            }),
-        };
-        let inserted = Expr::Binary {
-            op: BinOp::Shl,
-            lhs: Box::new(Expr::Binary {
-                op: BinOp::And,
-                lhs: Box::new(value),
-                rhs: Box::new(ones(region_width)),
-            }),
-            rhs: Box::new(position),
-        };
-        Expr::Binary {
-            op: BinOp::Or,
-            lhs: Box::new(kept),
-            rhs: Box::new(inserted),
-        }
+        let position = self.bind_source_expression(position, span);
+        let mask = self.source_binary(BinOp::Shl, &ones(region_width), &position, span);
+        let keep = self.source_binary(BinOp::Xor, &ones(width), &mask, span);
+        let kept = self.source_binary(BinOp::And, &base, &keep, span);
+        let masked = self.source_binary(BinOp::And, &value, &ones(region_width), span);
+        let inserted = self.source_binary(BinOp::Shl, &masked, &position, span);
+        self.source_binary(BinOp::Or, &kept, &inserted, span)
     }
 
     /// Expand a whole-struct assignment (`bus = Bus { .. }`, `mem[0] = E { .. }`)
@@ -857,5 +846,141 @@ impl<'a> Lowering<'a> {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_partial_writes_preserve_masks_and_share_dynamic_positions() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 20..29);
+        let operand_span = crate::diag::Span::new(crate::diag::FileId(0), 11..18);
+        let ones = |bits: u32| {
+            if bits == 128 {
+                u128::MAX
+            } else {
+                (1u128 << bits) - 1
+            }
+        };
+        for width in [1, 64, 65, 128] {
+            for region_width in [1, 4, 64, 65, 128]
+                .into_iter()
+                .filter(|region| *region <= width)
+            {
+                for position in [0, width - region_width] {
+                    let mut sink = DiagnosticSink::new();
+                    let resolved = Resolved::default();
+                    let lowering = Lowering::new(&mut sink, &resolved);
+                    let operand = |name: &str| {
+                        lowering.bind_source_expression(
+                            Expr::CCall {
+                                name: name.into(),
+                                args: vec![],
+                                f64_args: vec![],
+                                integer_args: vec![],
+                                f64_ret: false,
+                                integer_ret: true,
+                            },
+                            operand_span,
+                        )
+                    };
+                    let base = operand("base");
+                    let value = operand("value");
+                    let offset = operand("position");
+                    let static_write = lowering.merge_slice(
+                        base.clone(),
+                        position + region_width - 1,
+                        position,
+                        value.clone(),
+                        width,
+                        span,
+                    );
+                    let dynamic_write = lowering.merge_dynamic_slice(
+                        base,
+                        offset,
+                        region_width,
+                        value,
+                        width,
+                        span,
+                    );
+                    let arena = lowering.source_values.borrow();
+                    assert!(arena.ir.validate(0).is_empty());
+                    assert_eq!(
+                        arena
+                            .ir
+                            .values
+                            .iter()
+                            .filter(|node| matches!(
+                                node.kind,
+                                ProcessValueKind::ForeignCall { .. }
+                            ))
+                            .count(),
+                        3
+                    );
+                    for base in [
+                        0,
+                        ones(width),
+                        0x1234_5678_9abc_def0_9876_5432_1abc_def0 & ones(width),
+                    ] {
+                        for value in [0, u128::MAX, 0xaaaa_5555_aaaa_5555] {
+                            // Evaluate the canonical DAG once in dependency order, including
+                            // both words. This checks masks spanning the ABI-word boundary.
+                            let mut values = Vec::<u128>::new();
+                            for node in &arena.ir.values {
+                                let result = match &node.kind {
+                                    ProcessValueKind::Number(ProcessNumber::Integer(words)) => {
+                                        words.iter().enumerate().fold(0, |result, (index, word)| {
+                                            result | (u128::from(*word) << (64 * index))
+                                        })
+                                    }
+                                    ProcessValueKind::ForeignCall { name, .. } => {
+                                        match name.as_str() {
+                                            "base" => base,
+                                            "value" => value,
+                                            "position" => u128::from(position),
+                                            _ => unreachable!(),
+                                        }
+                                    }
+                                    ProcessValueKind::Binary {
+                                        operation,
+                                        left,
+                                        right,
+                                    } => {
+                                        let (left, right) =
+                                            (values[left.0 as usize], values[right.0 as usize]);
+                                        match operation {
+                                            ProcessBinaryOp::And => left & right,
+                                            ProcessBinaryOp::Or => left | right,
+                                            ProcessBinaryOp::Xor => left ^ right,
+                                            ProcessBinaryOp::Shl => {
+                                                left.checked_shl(right as u32).unwrap_or(0)
+                                            }
+                                            _ => panic!("unexpected merge operation"),
+                                        }
+                                    }
+                                    _ => panic!("unexpected merge node"),
+                                };
+                                values.push(result);
+                            }
+                            let region = ones(region_width);
+                            let expected = (base & (ones(width) ^ (region << position)))
+                                | ((value & region) << position);
+                            for expression in [&static_write, &dynamic_write] {
+                                let Expr::Canonical { value: root, .. } = expression else {
+                                    panic!("merge must be canonical")
+                                };
+                                assert_eq!(arena.ir.values[root.0 as usize].span, span);
+                                assert_eq!(
+                                    values[root.0 as usize], expected,
+                                    "width={width} region={region_width} position={position}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

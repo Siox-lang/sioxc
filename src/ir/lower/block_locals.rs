@@ -606,6 +606,7 @@ impl<'a> Lowering<'a> {
                                 left.min(right),
                                 self.lower_expr(value),
                                 self.block_local_width(&previous.ty),
+                                ast::expr_span(target),
                             );
                             let next = match cond {
                                 Some(condition) => self.source_select(
@@ -650,16 +651,21 @@ impl<'a> Lowering<'a> {
                                     let width = self.block_local_width(&previous.ty);
                                     let mut next = old.clone();
                                     for (logical, physical) in positions.into_iter().rev() {
-                                        let fire = and(
-                                            cond.clone(),
-                                            eq(lowered_index.clone(), index_label(logical)),
+                                        let span = ast::expr_span(target);
+                                        let hit = self.source_binary(
+                                            BinOp::Eq,
+                                            &lowered_index,
+                                            &index_label(logical),
+                                            ast::expr_span(index),
                                         );
+                                        let fire = self.source_and(cond.clone(), hit, span);
                                         let replacement = self.merge_slice(
                                             old.clone(),
                                             physical,
                                             physical,
                                             replacement.clone(),
                                             width,
+                                            span,
                                         );
                                         next = self.source_select(
                                             &fire,
@@ -696,12 +702,14 @@ impl<'a> Lowering<'a> {
                             };
                             for position in indices {
                                 let prefix = format!("[{position}]");
-                                let hit = Expr::Binary {
-                                    op: BinOp::Eq,
-                                    lhs: Box::new(lowered_index.clone()),
-                                    rhs: Box::new(index_label(position)),
-                                };
-                                let fire = and(cond.clone(), hit);
+                                let hit = self.source_binary(
+                                    BinOp::Eq,
+                                    &lowered_index,
+                                    &index_label(position),
+                                    ast::expr_span(index),
+                                );
+                                let fire =
+                                    self.source_and(cond.clone(), hit, ast::expr_span(target));
                                 for (field, old) in &mut fields {
                                     let suffix = if *field == prefix {
                                         Some("")
@@ -842,7 +850,7 @@ impl<'a> Lowering<'a> {
         };
         let replacement = self.lower_block_value(value, &target_ty);
         for (prefix, hit) in targets {
-            let fire = and(cond.clone(), hit);
+            let fire = self.source_and(cond.clone(), hit, ast::expr_span(target));
             for (field, old) in &mut fields {
                 let suffix = if *field == prefix {
                     Some("")
@@ -924,12 +932,17 @@ impl<'a> Lowering<'a> {
                 let lowered_index = self.checked_runtime_index(index, &indices)?;
                 let mut target_ty = None;
                 for position in indices {
-                    let matches = eq(lowered_index.clone(), index_label(position));
+                    let matches = self.source_binary(
+                        BinOp::Eq,
+                        &lowered_index,
+                        &index_label(position),
+                        ast::expr_span(index),
+                    );
                     let found = self.block_dynamic_targets(
                         element_ty,
                         &format!("{prefix}[{position}]"),
                         rest,
-                        Some(and(hit.clone(), matches)),
+                        Some(self.source_and(hit.clone(), matches, ast::expr_span(index))),
                         out,
                     )?;
                     target_ty.get_or_insert(found);

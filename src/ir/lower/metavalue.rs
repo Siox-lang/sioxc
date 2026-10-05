@@ -428,10 +428,12 @@ impl<'a> Lowering<'a> {
             Expr::Select { cond, then, els } => {
                 let outer = temps.cond.clone();
                 let outer_guard = temps.guard;
-                let then_guard = write_guard(&outer, cond.as_ref().clone());
+                let then_guard =
+                    self.source_write_guard(&outer, cond.as_ref().clone(), temps.anchor);
                 self.set_meta_guard(temps, then_guard);
                 let mt = self.lower_meta_ir(then, width, temps);
-                let else_guard = write_guard(&outer, not1(cond.as_ref().clone()));
+                let negative = self.source_binary(BinOp::Eq, cond, &Expr::Const(0), temps.anchor);
+                let else_guard = self.source_write_guard(&outer, negative, temps.anchor);
                 self.set_meta_guard(temps, else_guard);
                 let me = self.lower_meta_ir(els, width, temps);
                 temps.cond = outer;
@@ -808,9 +810,11 @@ impl<'a> Lowering<'a> {
                 temps.ctx = block_ctx;
                 temps.anchor = self.out.signals[update.target.0 as usize].declaration_span;
                 let guard = match &update.cond {
-                    Some(condition) => {
-                        write_guard(&Some(block_condition.clone()), condition.clone())
-                    }
+                    Some(condition) => self.source_write_guard(
+                        &Some(block_condition.clone()),
+                        condition.clone(),
+                        update.span.unwrap_or(temps.anchor),
+                    ),
                     None => Some(block_condition.clone()),
                 };
                 self.set_meta_guard(&mut temps, guard);
