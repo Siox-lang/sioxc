@@ -141,9 +141,6 @@ struct CastKey {
 
 #[derive(Default)]
 struct CombValueCache<'ctx> {
-    /// Source call identities are captured once within this helper. Foreign
-    /// calls invalidate state caches, not already evaluated argument values.
-    evaluated_calls: HashMap<(siox::ir::ProcessValueId, Option<IntValue<'ctx>>), IntValue<'ctx>>,
     loads: HashMap<(u8, SignalId), IntValue<'ctx>>,
     slices: HashMap<StateSliceKey, IntValue<'ctx>>,
     comparisons: HashMap<ComparisonKey, IntValue<'ctx>>,
@@ -269,6 +266,7 @@ pub(crate) fn build_module_with_sources<'ctx>(
              values up to {LLVM_MAX_INT_BITS} bits"
         ));
     }
+    super::process::validate_metadata_widths(design)?;
     if let Some((id, table)) = design
         .lookup_tables
         .iter()
@@ -338,6 +336,11 @@ struct Codegen<'ctx, 'd> {
     /// contain control flow where blindly reusing an SSA value would either
     /// cross a non-dominating block or observe stale simulation state.
     comb_values: RefCell<Option<CombValueCache<'ctx>>>,
+    /// Canonical values within one straight-line state epoch: either a
+    /// combinational helper or the event-update staging region. Writes/calls
+    /// invalidate state-dependent entries; control-flow boundaries drop all
+    /// entries, including captured calls.
+    canonical_values: RefCell<Option<super::process::HardwareValueCache<'ctx>>>,
     canonical: super::process::HardwareValueFacts,
     /// The signal-state layout: one field per signal, each an integer sized to
     /// the signal's width (`i8`/`i16`/`i32`/`i64`), packed. A `Bit` or `Logic`
@@ -469,6 +472,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 .map(|(i, site)| (site, i as u32 + 1))
                 .collect(),
             comb_values: RefCell::new(None),
+            canonical_values: RefCell::new(None),
             canonical: super::process::HardwareValueFacts::new(design),
             #[cfg(not(feature = "bitpack"))]
             state_ty,
@@ -682,6 +686,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     /// Drop the cached load for a signal, because it has just been written.
     fn invalidate_load(&self, arr: &str, id: SignalId) {
+        if let Some(cache) = self.canonical_values.borrow_mut().as_mut() {
+            cache.clear();
+        }
         let array = Self::state_array_key(arr);
         if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
             cache.loads.remove(&(array, id));
@@ -693,6 +700,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     /// Drop every cached value after a foreign call that may mutate state.
     fn clear_comb_cache(&self) {
+        if let Some(cache) = self.canonical_values.borrow_mut().as_mut() {
+            cache.clear();
+        }
         if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
             cache.loads.clear();
             cache.slices.clear();
@@ -2005,6 +2015,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         // 3+4. event blocks: stage guards/values from the pre-commit state (so
         // simultaneous updates don't see each other), then commit.
         let mut staged: Vec<(SignalId, IntValue<'ctx>, IntValue<'ctx>)> = Vec::new();
+        let previous = self
+            .canonical_values
+            .replace(Some(super::process::HardwareValueCache::default()));
+        debug_assert!(previous.is_none());
         for eb in &self.design.event_blocks {
             self.record_index_checks(&eb.condition, None);
             let fired = self.as_i1(&eb.condition);
@@ -2034,6 +2048,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 staged.push((u.target, guard, val));
             }
         }
+        self.canonical_values.replace(None);
         let committed = !staged.is_empty();
         for (target, guard, val) in staged {
             let prev = self.load("cur", target);
@@ -2118,11 +2133,16 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 self.builder.position_at_end(entry);
                 let previous = self.comb_values.replace(Some(CombValueCache::default()));
                 debug_assert!(previous.is_none());
+                let previous = self
+                    .canonical_values
+                    .replace(Some(super::process::HardwareValueCache::default()));
+                debug_assert!(previous.is_none());
                 for process in processes {
                     self.emit_comb(process);
                 }
                 let emitted = self.comb_values.replace(None);
                 debug_assert!(emitted.is_some());
+                self.canonical_values.replace(None);
                 self.builder.build_return(None).unwrap();
                 helper
             })
@@ -2530,11 +2550,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         if self.canonical.has_effects(value) {
             self.clear_comb_cache();
         }
-        let mut evaluated_calls = self
-            .comb_values
+        let mut values = self
+            .canonical_values
             .borrow_mut()
             .as_mut()
-            .map(|cache| std::mem::take(&mut cache.evaluated_calls))
+            .map(std::mem::take)
             .unwrap_or_default();
         let emitted = self
             .canonical
@@ -2548,14 +2568,15 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 signed,
                 active,
                 &self.index_sites,
-                &mut evaluated_calls,
+                &mut values,
             )
             .expect("canonical hardware value passed direct-emitter preflight");
         if self.canonical.has_effects(value) {
             self.clear_comb_cache();
+            values.clear();
         }
-        if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
-            cache.evaluated_calls = evaluated_calls;
+        if let Some(cache) = self.canonical_values.borrow_mut().as_mut() {
+            *cache = values;
         }
         emitted
     }
@@ -3204,6 +3225,129 @@ mod tests {
             init: vec![0],
             enum_type: None,
         }
+    }
+
+    #[test]
+    fn canonical_staged_updates_share_values_before_state_commit() {
+        use siox::ir::{
+            ProcessBinaryOp, ProcessSignalState, ProcessValue, ProcessValueId, ProcessValueKind,
+        };
+        let span = siox::diag::Span::new(siox::diag::FileId(0), 0..0);
+        let mut design = Design {
+            signals: vec![
+                sig("E.a", 32),
+                sig("E.b", 32),
+                sig("E.q", 32),
+                sig("E.r", 32),
+            ],
+            ..Design::default()
+        };
+        for signal in [SignalId(0), SignalId(1)] {
+            design.process_ir.values.push(ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(32),
+                kind: ProcessValueKind::Signal {
+                    signals: vec![signal],
+                    state: ProcessSignalState::Current,
+                },
+            });
+        }
+        design.process_ir.values.push(ProcessValue {
+            span,
+            ty: None,
+            bit_width: Some(32),
+            kind: ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Add,
+                left: ProcessValueId(0),
+                right: ProcessValueId(1),
+            },
+        });
+        let expr = Expr::Canonical {
+            value: ProcessValueId(2),
+            reads: vec![SignalId(0), SignalId(1)].into(),
+        };
+        design.event_blocks.push(EventBlock {
+            ctx: 0,
+            condition: Expr::Const(1),
+            updates: [SignalId(2), SignalId(3)]
+                .into_iter()
+                .map(|target| NextUpdate {
+                    target,
+                    cond: None,
+                    expr: expr.clone(),
+                    meta: None,
+                    span: None,
+                })
+                .collect(),
+        });
+        let llvm = emit_module_ir(&design).unwrap();
+        let settle = llvm
+            .split("define void @sx_settle()")
+            .nth(1)
+            .unwrap()
+            .split("\n}")
+            .next()
+            .unwrap();
+        assert_eq!(
+            settle.matches(" = add i32").count(),
+            1,
+            "shared value duplicated:\n{settle}"
+        );
+    }
+
+    #[test]
+    fn canonical_combinational_values_are_invalidated_after_state_writes() {
+        use siox::ir::{ProcessSignalState, ProcessValue, ProcessValueId, ProcessValueKind};
+        let span = siox::diag::Span::new(siox::diag::FileId(0), 0..0);
+        let mut design = Design {
+            signals: vec![sig("E.a", 32), sig("E.q", 32)],
+            ..Design::default()
+        };
+        design.process_ir.values.push(ProcessValue {
+            span,
+            ty: None,
+            bit_width: Some(32),
+            kind: ProcessValueKind::Signal {
+                signals: vec![SignalId(0)],
+                state: ProcessSignalState::Current,
+            },
+        });
+        let expr = Expr::Canonical {
+            value: ProcessValueId(0),
+            reads: vec![SignalId(0)].into(),
+        };
+        // A shared read in a condition must be reloaded after the driver
+        // writes that signal, even in the same straight-line helper.
+        design.drivers.push(Driver {
+            ctx: 0,
+            target: SignalId(0),
+            cond: Some(expr.clone()),
+            expr: Expr::Const(7),
+            meta: None,
+            span: None,
+        });
+        design.drivers.push(Driver {
+            ctx: 0,
+            target: SignalId(1),
+            cond: None,
+            expr,
+            meta: None,
+            span: None,
+        });
+        let llvm = emit_module_ir(&design).unwrap();
+        let helper = llvm
+            .split("define internal void @sx_comb_0()")
+            .nth(1)
+            .unwrap()
+            .split("\n}")
+            .next()
+            .unwrap();
+        let store = helper.find("store i32").expect("first driver write");
+        assert!(
+            helper[store..].contains("load i32"),
+            "stale canonical read reused:\n{helper}"
+        );
     }
 
     #[test]

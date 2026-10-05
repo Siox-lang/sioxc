@@ -11536,3 +11536,156 @@ direct source expression/resolution/metavalue construction, compile-time
 initializer normalization, procedural packed storage planes, general runtime
 call CFGs/recursion, non-packed conversions and remaining host-service forms.
 Preserve the 441 unrelated historical chat lines outside this commit. No push.
+
+### 2026-10-04 — Codex — recursive Process metadata ownership
+
+Extend the existing scalar packed metadata frames to recursive procedural
+arrays/structs, their projections/copies, and persistent port connections.
+Own llvm/process/{bindings,logic,places,support,blocks,entry,state}.rs plus a
+focused aggregate metadata module, and source lowering's test-input companion
+discovery before hardware normalization. Use std-owned encodings, preserve
+immediate local versus staged signal behavior and metadata history, and add
+native sibling regressions. Run full gates before committing; preserve the
+unrelated historical chat edits and do not push.
+
+Include array-loop snapshots, loop-local companion assignment and reset in
+this batch: iteration must retain the original planes across suspension just
+as it already retains the original value frame.
+
+Also validate recursive frame metadata widths at the LLVM module boundary
+before declaring state; companion frames must report the backend's actual
+integer-type limit rather than panic during LLVM type construction.
+
+The full gate exposed two previously dormant paths after runtime input planes
+became discoverable: scalar packed-element resizing and unguarded metadata
+hoists evaluating disabled indices. Extend ownership to ir/passes.rs for hoist
+guards/memo keys. Replace discovery's discarded full expression construction
+with an exact, memoized presence query before rerunning both corpus modes.
+
+Carry activity into metadata hoists created by partial writes too, covering
+lower/{control,writes,source_places}.rs; event updates inherit their block's
+event condition rather than becoming unconditional combinational checks.
+
+A separate emitted-native audit found that binary-initialized test inputs
+lost later X/Z values through multi-driver resolution. Reserve input planes
+before resolving driver contexts, not only before metadata propagation, and
+add a resolved/conditionally indexed input regression. The guarded full gate
+was stopped only after that native failure; its scope is terminal/inactive.
+
+Also preserve declaration-owned ranges at every dimension of procedural local
+arrays. The existing helper restored only an outer packed range, silently
+discarding negative/directed labels on ordinary arrays and nested packed leaves.
+
+The fresh full gate passed all Rust/Clippy checks and native aggregate/wide
+procedure regressions, but systemd reports an OOM kill in the runtime-vector-
+index compile (scope run-p872455-i2305702740.scope, terminal 143, Result=oom-kill).
+Profile samples were inside LLVM EarlyCSE/instruction simplification. Extend
+ownership to Process value caches/metadata emission as needed to reduce repeated
+wide companion construction; retain runtime planes rather than narrowing the
+supported simulation semantics or increasing the gate's memory cap.
+
+### 2026-10-04 — Codex — indexed-write and LLVM sharing optimization
+
+User requested optimizing the diagnosed instruction explosion first. Own
+lower/writes.rs, DynamicWriteTarget in lower.rs, and LLVM hardware value cache
+lifetimes in emit.rs/process/{hardware,value_types}.rs. Replace packed runtime
+bit target enumeration with one checked physical position and masked update;
+preserve declared ranges, source-order staged merges and std-owned Logic
+encodings. Reuse canonical LLVM values only within a safe straight-line state
+epoch, with activity-sensitive checks and invalidation at writes/calls/CFG
+boundaries. Add structural/native regressions and record before/after memory
+measurements under isolated caps. Preserve the pending recursive metadata batch
+and the unrelated historical chat changes. No push.
+
+### 2026-10-05 — Codex — resume compact indexed writes
+
+The interrupted native probe found an incorrect ascending packed-label mapping
+in the compact update: packed storage uses label minus the declared low bound,
+independent of written direction. Fix that mapping, add directed/negative and
+multi-write coverage, and finish the cache lifetime regressions. Prior probes
+are terminal; no full gate is live. Preserve AGENTS.md/.codex setup changes
+owned outside this compiler batch. The graph index is currently absent;
+source verification remains authoritative and an AST-only update follows.
+
+Compact writes and epoch-scoped canonical caches now pass focused Rust tests,
+Clippy and direct default native waveform checks. The original 128-bit indexed
+test compiles in 8.7 seconds with a 142.3 MiB scope peak (previous compiler OOM);
+unoptimized emission is 259,018 instruction lines, 1.46 seconds and ~140 MiB
+RSS peak. A matching 32-bit variant fell from 1,371,713 to 66,607 instruction
+lines and ~501 to ~63 MiB. New sibling runtime_packed_write_test covers both
+directions, negative labels, guards, staged overrides and clean/X/Z planes.
+Reserve the code/corpus for the full default/bitpack CI gate now; do not edit
+compiler files while that gate is live. External AGENTS.md/.codex setup and
+graphify generated artifacts remain outside this pending compiler commit.
+
+The full gate found one representation-specific assertion in
+ir/tests/behavior.rs expecting eight per-label updates. The scope was stopped
+after this confirmed failure (terminal 143/inactive). Extend ownership to that
+test: expect one masked update per plane and retain index/companion read checks.
+This is a representation migration, not a reduced simulation assertion.
+
+The next full gate stopped on tests/packed_partial_write.rs, whose negative
+control treated an invalid runtime index as a latch path. Checked invalid
+indices abort simulation, while a compact unconditional write always supplies
+its whole resolved contribution on valid paths. Update that expectation and
+retain a genuinely conditional runtime-write latch control; separately rerun
+native source-location bounds failures. Scope is terminal 143/inactive.
+
+The verified full gate passed all 210 default programs and all Rust/Clippy
+checks, then OOM-killed the bitpack hardware_procedure_places_test compile
+(siox-compact-writes-ci-verified-20261005.scope, terminal 143, Result=oom-kill).
+A capped 32-bit emission probe contains 652,279 instruction lines; 315,258 are
+in one Process entry. The 128-bit unoptimized probe exceeds its isolated 2 GiB
+cap. Extend ownership to layout hashing and Process metadata caches: reuse
+recursive planes only with identical full layouts, activity and state epochs.
+No full gate is live; keep the existing memory ceiling and native semantics.
+
+The metadata memo alone does not reduce the large fixture. Opcode profiling
+finds 52,896 read calls in its largest 32-bit Process entry: distinct canonical
+nodes repeatedly load the same signal/word. Extend the existing state-epoch
+cache with signal reads keyed by signal identity, Current/Old/Event and exact
+result width; preserve independent checked-index activity and clear on writes.
+
+Physical-read sharing brings the matched 32-bit procedure probe from 652,279
+to 296,784 instruction lines and ~299 to ~154 MiB emission peak. The original
+128-bit bitpack executable now compiles in 33.6 seconds at 356.9 MiB scope peak
+and passes its native assertions. Its unoptimized emission is 1,099,186 lines,
+12.6 seconds and ~494 MiB; the previous isolated emission exceeded 2 GiB.
+Direct bitpack indexed-write and recursive aggregate executables pass exact
+profiles and byte-match the existing default traces. Cache tests distinguish
+state versions, result widths, full layouts, checked activity and invalidation.
+Record the independently found scalar Logic waveform classification bug in
+TODO.md rather than mixing a waveform semantic change into this optimization.
+Reserve the compiler/corpus for another full capped CI gate; no code edits
+until that gate terminates.
+
+### 2026-10-05 — Codex — recursive planes and memory optimization verified
+
+Full pinned CI gate succeeds under the unchanged 8 GiB cap: formatting,
+frontend checks/Clippy, default/bitpack Rust suites, all-target/all-feature
+Clippy and both corpora (210 passed, zero failed each). Retained logs:
+/tmp/siox-state-sharing-ci-20261005. Scope result is success, terminal 0;
+execution-source and sibling-corpus hashes match the gate's starting state.
+Direct fresh default/bitpack native runs pass for hardware_procedure_places,
+runtime_vector_index, runtime_packed_write and process_aggregate_metadata.
+Their traces are byte-identical across modes; repeated default vector/write/
+aggregate runs match too. Exact focused profiles cover recursive planes,
+directed staged writes and procedure captures. The separately tracked scalar
+waveform classification issue remains; corpus success is not proof for that
+uncovered signal representation.
+
+Commit recursive Process planes, guarded discovery/hoists, compact direct
+packed writes, state-epoch canonical/physical-read/metadata sharing and their
+regressions as one verified compiler batch; commit the two sibling programs
+separately. Preserve AGENTS.md, .codex/, generated graph files and the 441
+unrelated historical chat additions. No push. AST-only graph update completed;
+vendored C extractor warnings remain navigation limitations, not compiler
+diagnostics.
+
+Completion estimate: Phase 1 approximately 97%, still incomplete. Remaining:
+direct expression/resolution/metavalue ingress, initializer normalization,
+general runtime call CFGs/recursion, non-packed conversions, dynamic host
+service forms and scalar waveform classification. Performance follow-ups:
+packed read selectors, captured-place expansion and repeatable whole-compiler
+compile/object-size/runtime benchmarks. The measured OOM cases are improved,
+not a claim that every future design has a fixed memory bound.

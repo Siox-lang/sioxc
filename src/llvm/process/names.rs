@@ -42,6 +42,13 @@ pub(super) fn loop_iterable_name(process: ProcessId, block: siox::ir::ProcessBlo
     format!("sx.process.loop.iterable.{}.{}", process.0, block.0)
 }
 
+pub(super) fn loop_iterable_meta_name(
+    process: ProcessId,
+    block: siox::ir::ProcessBlockId,
+) -> String {
+    format!("sx.process.loop.iterable.meta.{}.{}", process.0, block.0)
+}
+
 pub(super) fn range_loop_bounds(
     design: &Design,
     iterable: ProcessValueId,

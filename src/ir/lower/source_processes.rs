@@ -280,8 +280,31 @@ fn process_declared_type(
     ty: &ast::Type,
     context: &LoweringContext<'_>,
 ) -> Option<crate::types::Ty> {
+    process_declared_type_inner(ty, context, &mut std::collections::HashSet::new())
+}
+
+fn process_declared_type_inner(
+    ty: &ast::Type,
+    context: &LoweringContext<'_>,
+    aliases: &mut std::collections::HashSet<crate::resolve::DefId>,
+) -> Option<crate::types::Ty> {
     match ty {
         ast::Type::Path(path) => {
+            if let Some((definition, aliased)) =
+                context.resolved.resolved(path.span).and_then(|definition| {
+                    context
+                        .type_aliases
+                        .get(&definition)
+                        .map(|ty| (definition, *ty))
+                })
+            {
+                if !aliases.insert(definition) {
+                    return None;
+                }
+                let result = process_declared_type_inner(aliased, context, aliases);
+                aliases.remove(&definition);
+                return result;
+            }
             let name = context
                 .resolved
                 .resolved(path.span)
@@ -319,7 +342,7 @@ fn process_declared_type(
         }
         .or_else(|| declared_process_type(ty, context.resolved)),
         ast::Type::Indexed { base, index, .. } => {
-            let base = process_declared_type(base, context)?;
+            let base = process_declared_type_inner(base, context, aliases)?;
             let length = match index.as_deref() {
                 None => 0,
                 Some(ast::Expr::Range { lo, hi, .. }) => {
@@ -362,8 +385,8 @@ fn process_declared_type(
                 }),
             }
         }
-        ast::Type::Generic { base, .. } => process_declared_type(base, context),
-        ast::Type::View { target, .. } => process_declared_type(target, context),
+        ast::Type::Generic { base, .. } => process_declared_type_inner(base, context, aliases),
+        ast::Type::View { target, .. } => process_declared_type_inner(target, context, aliases),
     }
 }
 
@@ -640,6 +663,10 @@ fn process_layout_for_type(
         },
         crate::types::Ty::Named(definition) => {
             let info = context.resolved.def(*definition)?;
+            if let Some(aliased) = context.type_aliases.get(definition) {
+                let concrete = process_declared_type(aliased, context)?;
+                return process_layout_for_type(&concrete, span, context);
+            }
             if info.kind == crate::resolve::DefKind::Enum {
                 let qualified = context.resolved.qualified_name(*definition);
                 let key = qualified
@@ -1357,7 +1384,7 @@ fn register_test_storages(
 
 /// Collect every direct DUT port leaf connected to one testbench storage
 /// object. Fan-out deliberately retains several bindings with one projection.
-fn testbench_bindings(
+pub(super) fn testbench_bindings(
     storage: &str,
     modules: &[Module],
     resolved: &Resolved,
@@ -1988,6 +2015,9 @@ fn lower_statement(
             let target_type = context.typed.expr_type(ast::expr_span(target)).cloned();
             let source_target = target;
             let target = value_ref(source_target, process, context);
+            let target_type = target_type
+                .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                .or_else(|| process_value_type(target, context));
             let semantics =
                 process_place_assignment(target, context.process_ir).unwrap_or(source_semantics);
             let settle = after.is_none()
@@ -3169,6 +3199,13 @@ fn lower_for(
     });
 
     let iterable = value_ref(iterable, process, context);
+    if let Some(SourceLayout {
+        kind: LayoutKind::Array { element, .. },
+        ..
+    }) = process_value_source_layout(iterable, context.process_ir)
+    {
+        process.locals[local.0 as usize].layout = Some((**element).clone());
+    }
     // Keep the loop control on a dedicated header. Reusing `block` here makes
     // the body back-edge replay every instruction that appeared before the
     // loop in that source block.
@@ -3197,37 +3234,71 @@ fn process_local_layout(
     context: &LoweringContext<'_>,
 ) -> Option<crate::ir::SourceLayout> {
     let mut layout = process_layout_for_type(ty?, declaration.span, context)?;
-    // Through an alias chain to the type it denotes.
-    let mut declared = declaration.ty.as_ref();
-    for _ in 0..16 {
-        let Some(ast::Type::Path(path)) = declared else {
-            break;
-        };
-        let Some(aliased) = context
-            .resolved
-            .resolved(path.span)
-            .and_then(|id| context.type_aliases.get(&id).copied())
-        else {
-            break;
-        };
-        declared = Some(aliased);
-    }
-    let Some(ast::Type::Indexed {
-        index: Some(index), ..
-    }) = declared
-    else {
-        return Some(layout);
-    };
-    let ast::Expr::Range { lo, hi, .. } = index.as_ref() else {
-        return Some(layout);
-    };
-    let left = crate::ir::eval_const_fns(lo, context.constant_integers, context.functions, 0)?;
-    let right = crate::ir::eval_const_fns(hi, context.constant_integers, context.functions, 0)?;
-    if let LayoutKind::Packed { width, range, .. } = &mut layout.kind {
-        *width = u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?;
-        *range = Some(crate::ir::LayoutRange { left, right });
+    if let Some(declared) = &declaration.ty {
+        apply_process_declared_ranges(
+            &mut layout,
+            declared,
+            context,
+            &mut std::collections::HashSet::new(),
+        )?;
     }
     Some(layout)
+}
+
+/// Checked types retain array lengths, not their written labels. Restore the
+/// declaration's ranges recursively before local reads and metadata offsets
+/// consume that representation. Alias cycles fail closed without a depth cap.
+fn apply_process_declared_ranges(
+    layout: &mut SourceLayout,
+    declared: &ast::Type,
+    context: &LoweringContext<'_>,
+    aliases: &mut std::collections::HashSet<crate::resolve::DefId>,
+) -> Option<()> {
+    match declared {
+        ast::Type::Path(path) => {
+            if let Some((definition, aliased)) =
+                context.resolved.resolved(path.span).and_then(|definition| {
+                    context
+                        .type_aliases
+                        .get(&definition)
+                        .map(|ty| (definition, *ty))
+                })
+            {
+                if !aliases.insert(definition) {
+                    return None;
+                }
+                apply_process_declared_ranges(layout, aliased, context, aliases)?;
+                aliases.remove(&definition);
+            }
+        }
+        ast::Type::Indexed { base, index, .. } => {
+            if let Some(ast::Expr::Range { lo, hi, .. }) = index.as_deref() {
+                let left =
+                    crate::ir::eval_const_fns(lo, context.constant_integers, context.functions, 0)?;
+                let right =
+                    crate::ir::eval_const_fns(hi, context.constant_integers, context.functions, 0)?;
+                let declared_range = crate::ir::LayoutRange { left, right };
+                match &mut layout.kind {
+                    LayoutKind::Packed { width, range, .. } => {
+                        *width = u32::try_from(declared_range.len()?).ok()?;
+                        *range = Some(declared_range);
+                    }
+                    LayoutKind::Array { range, .. } => *range = Some(declared_range),
+                    _ => {}
+                }
+            }
+            if let LayoutKind::Array { element, .. } = &mut layout.kind {
+                apply_process_declared_ranges(element, base, context, aliases)?;
+            }
+        }
+        ast::Type::Generic { base, .. } => {
+            apply_process_declared_ranges(layout, base, context, aliases)?;
+        }
+        ast::Type::View { target, .. } => {
+            apply_process_declared_ranges(layout, target, context, aliases)?;
+        }
+    }
+    Some(())
 }
 
 fn push_local(
@@ -5592,13 +5663,11 @@ fn value_ref_with_type_inner(
                 let ty = ty
                     .filter(|ty| !matches!(ty, crate::types::Ty::Error))
                     .or(recovered);
-                let width = if packed {
-                    ty.as_ref()
-                        .and_then(crate::types::Ty::bit_width)
-                        .or(Some(1))
-                } else {
-                    source_value_width(&kind, ty.as_ref(), process, context)
-                };
+                // The selected element is a source enum, not a raw bit.
+                // Named enum widths come from the elaborated declaration;
+                // Ty::bit_width alone cannot represent a Logic discriminant.
+                let width = source_value_width(&kind, ty.as_ref(), process, context)
+                    .or_else(|| packed.then_some(1));
                 return push_value(span, ty, width, kind, context);
             }
         }
@@ -5887,7 +5956,21 @@ fn value_ref_with_type_inner(
 
     ty = ty.or_else(|| process_kind_type(&kind, context));
     let width = source_value_width(&kind, ty.as_ref(), process, context);
-    push_value(span, ty, width, kind, context)
+    // The CFG under construction is not yet in process_ir.processes. Bind
+    // local reads to its declaration now so nested fields/indices retain the
+    // concrete layout during source lowering, not only after CFG publication.
+    let local_layout = match &kind {
+        ProcessValueKind::Local { local, .. } => process
+            .locals
+            .get(local.0 as usize)
+            .and_then(|local| local.layout.clone()),
+        _ => None,
+    };
+    let id = push_value(span, ty, width, kind, context);
+    if local_layout.is_some() {
+        context.process_ir.value_layouts[id.0 as usize] = local_layout;
+    }
+    id
 }
 
 /// Insert one already-lowered value node.
@@ -7334,6 +7417,7 @@ mod tests {
         let sources = [
             "module tests; \
              struct Pair { pub a: integer, pub b: integer } \
+             type Row = integer[7..4][-2..-1]; type Alias = Row; \
              fn first(values: integer[2]) -> integer { return values[0]; } \
              fn first_pair(value: Pair) -> integer { return value.a; } \
              #[test] entity Smoke {} \
@@ -7343,6 +7427,7 @@ mod tests {
                let result: integer = 0; \
                run: process { \
                  let local: integer[2] = [1, 2]; \
+                 let labelled: Alias[5..4] = [[[1, 2, 3, 4], [5, 6, 7, 8]], [[9, 10, 11, 12], [13, 14, 15, 16]]]; \
                  result = first(local); \
                  result = first(VALUES); \
                  result = first_pair({ .a = 3, .b = 4 }); \
@@ -7382,6 +7467,22 @@ mod tests {
             design.process_ir.value_layouts.len(),
             design.process_ir.values.len()
         );
+        let local = design
+            .process_ir
+            .processes
+            .iter()
+            .flat_map(|process| &process.locals)
+            .find(|local| local.name == "labelled")
+            .unwrap();
+        let mut layout = local.layout.as_ref().unwrap();
+        for expected in [(5, 4), (-2, -1), (7, 4)] {
+            let LayoutKind::Array { range, element } = &layout.kind else {
+                panic!("expected a declaration-owned array dimension");
+            };
+            let range = range.unwrap();
+            assert_eq!((range.left, range.right), expected);
+            layout = element;
+        }
         let has_layout = |predicate: fn(&ProcessValueKind) -> bool,
                           layout: fn(&LayoutKind) -> bool| {
             design

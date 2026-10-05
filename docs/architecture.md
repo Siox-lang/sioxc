@@ -64,7 +64,9 @@ The LLVM lowering of Process IR, `src/llvm/process/`, is split the same way:
 - `names.rs`, `slices.rs`, `bindings.rs`, and `state.rs` cover the emitted
   state: global names and widths, layout slices, storage bindings and
   defaults, and state declaration, reads, stores, and range checks;
-- `logic.rs` owns Logic discriminants and metavalue companion planes;
+- `logic.rs` owns source-defined logic discriminants and packed companion
+  planes; `aggregate_logic.rs` assembles recursive frame planes and their
+  projections with matching fail-closed support checks;
 - `value_types.rs`, `binary.rs`, and `values.rs` lower Process values:
   signedness and layout queries, binary operators and dynamic indexing, and
   value lowering itself;
@@ -288,8 +290,26 @@ the return-body rewrite and returned-call AST substitution helpers are deleted.
 Nested array initializers recurse through their layouts, and literal/constant
 multiword leaves retain all ABI words instead of only their low word. Scalar,
 array and struct constant storage leaves share initialization of value words
-and literal X/Z companions; procedural local packed aggregate planes still
-need explicit Process storage support.
+and literal X/Z companions. Procedural arrays/structs retain those companions
+in exact-width frame planes: each value bit has a four-bit metadata position,
+and non-packed fields are zero padding because scalar enum values already
+store their full discriminants. Whole copies, field/element projections,
+conditional/match values, struct spreads and immediate projected writes share
+the value layout's offsets scaled by four. Clean replacements clear only their
+selected region. Persistent old-value snapshots and suspended array-loop
+snapshots retain both planes. Connected test inputs reserve companions before
+hardware resolution/normalization, even with binary initial values, so hardware
+drivers can consume later runtime X/Z values. The LLVM boundary rejects a companion
+frame exceeding its actual integer-type limit before declaring state.
+Hardware companion discovery queries canonical values for metadata presence
+without constructing and discarding expanded expressions. Materialized
+metadata operands inherit their write, event and select-branch activity;
+memoization includes that guard identity so an inactive temporary cannot be
+reused by another active write. Checked projections therefore stay inside the
+same activity boundary as their corresponding value operations.
+Process-local declarations restore their written ranges recursively through
+ordinary array dimensions, packed leaves and transparent aliases; checked
+types supply lengths, while those layouts retain labels and direction.
 `lower/source_array_ops.rs` lowers array operands once and pairs canonical
 elements recursively in written position order. Negative labels, different
 directions, returned arrays and runtime-selected subarrays need no synthetic
@@ -632,10 +652,33 @@ direct slices, comparisons, integer operations, selects, and casts instead of
 emitting duplicates for a later generic pass to rediscover. A signal write
 invalidates cached values derived directly from that signal; an external C call
 clears observable state loads because foreign code may invoke the public state
-accessors. The cache is disabled in control-flow-bearing functions, keeping the
-dominance rule explicit. Bounds-diagnostic lowering also scans for
+accessors. Canonical Process roots also share emitted values within a helper
+and within the straight-line event-update staging region of `sx_settle`.
+Every state write conservatively invalidates those canonical values, while
+foreign calls retain captured call results but invalidate state-dependent
+expressions. A basic-block boundary drops the entire cache. Checked values
+retain the active predicate in their cache keys, so disabled accesses cannot
+borrow a diagnostic emitted for a different execution path. Physical signal
+reads share assembled ABI words across distinct canonical leaves, keyed by
+signal identity, Current/Old/Event version and exact result width. Recursive
+metadata planes additionally retain the full source layout in their cache key;
+equal bit counts do not imply equal element encodings or projection contracts.
+Both caches obey the same state-write, foreign-call and block boundaries.
+Bounds-diagnostic
+lowering also scans for
 `CheckedIndex` before constructing path predicates, so an expression without a
 dynamic access creates no diagnostic-only LLVM values.
+
+A runtime-selected packed-bit write lowers to one masked read-modify-write per
+packed signal, not one full-frame update per possible bit. The checked source
+label maps to `index - low` regardless of declared direction, and is evaluated
+at kernel-integer width before wider consumers resize it. Its companion update
+inserts one source-encoded discriminant nibble at four times that position.
+Both planes merge preceding staged partial writes in source order; bounds,
+inactive guards, multiword masks, and clean replacements keep their semantics.
+An unconditional checked packed write supplies a whole contribution on every
+valid path; an invalid index aborts rather than forming a latch path. Explicit
+conditional writes still participate in inferred-latch diagnostics.
 
 Canonical Process code generation computes immutable value-support,
 checked-index, and metavalue-free facts once per object, in arena dependency

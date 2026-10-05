@@ -47,8 +47,8 @@ pub(super) fn block_is_supported(
                                         initializer,
                                         layout,
                                         values,
-                                    ) && (packed_logic_layout(design, layout).is_none()
-                                        || process_packed_meta_supported(
+                                    ) && (!layout_has_packed_metadata(design, layout)
+                                        || process_value_meta_supported(
                                             design,
                                             initializer,
                                             layout,
@@ -194,6 +194,8 @@ pub(super) fn block_is_supported(
                     && layout_width(layout)
                         .is_some_and(|width| width <= super::super::emit::LLVM_MAX_INT_BITS)
                     && process_value_supported_in_layout(design, *iterable, layout, values)
+                    && (!layout_has_packed_metadata(design, layout)
+                        || process_value_meta_supported(design, *iterable, layout, values))
             });
             let dynamic_string = dynamic_string_value(design, *iterable)
                 && local_width(design, process.id, *local) == Some(32)

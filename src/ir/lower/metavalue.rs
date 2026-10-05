@@ -277,6 +277,72 @@ impl<'a> Lowering<'a> {
         cid
     }
 
+    /// Test storage can acquire non-binary packed elements at runtime, even
+    /// when its reset initializer is clean. Register connected input planes
+    /// before normalizing hardware so dependent drivers carry those planes.
+    pub(super) fn prepare_test_input_metavalues(
+        &mut self,
+        modules: &[Module],
+        hierarchy: &Hierarchy,
+    ) {
+        let mut inputs = std::collections::BTreeSet::new();
+        for &root in &hierarchy.roots {
+            let entity = hierarchy.instance(root).entity_id;
+            let Some(declaration) = self.entities.get(&entity) else {
+                continue;
+            };
+            if !is_test_entity(declaration, self.resolved) {
+                continue;
+            }
+            let root_path = hierarchy.root_path(root);
+            let Some(implementations) = self.impls.get(&entity) else {
+                continue;
+            };
+            for implementation in implementations {
+                for item in &implementation.items {
+                    let ast::ImplItem::Let(storage) = item else {
+                        continue;
+                    };
+                    if !self
+                        .out
+                        .source_layouts
+                        .contains_key(&format!("{root_path}.{}", storage.name.text))
+                    {
+                        continue;
+                    }
+                    for binding in super::source_processes::testbench_bindings(
+                        &storage.name.text,
+                        modules,
+                        self.resolved,
+                        hierarchy,
+                        root,
+                        &root_path,
+                        &self.out,
+                    ) {
+                        if matches!(
+                            binding.direction,
+                            LayoutDirection::In | LayoutDirection::InOut
+                        ) && self
+                            .out
+                            .array_element_enums
+                            .get(&binding.signal.0)
+                            .is_some_and(|element| {
+                                self.logic_encodings
+                                    .get(element)
+                                    .is_some_and(|encoding| !encoding.unknown.is_empty())
+                            })
+                        {
+                            inputs.insert(binding.signal.0);
+                        }
+                    }
+                }
+            }
+        }
+        for input in inputs {
+            self.driven_companion(SignalId(input));
+        }
+    }
+
     /// The metavalue disc-array a driver expression produces, or `None` if it is
     /// provably clean. `width` is the expression's result element count (for
     /// the poison pattern); recursive operands derive their own widths from the
@@ -303,7 +369,7 @@ impl<'a> Lowering<'a> {
                 {
                     return None;
                 }
-                let key = (*value, width, temps.ctx);
+                let key = (*value, width, temps.ctx, temps.guard);
                 if let Some(result) = temps.source_meta.get(&key) {
                     return result.clone();
                 }
@@ -362,10 +428,16 @@ impl<'a> Lowering<'a> {
                 })
             }
             Expr::Select { cond, then, els } => {
-                let (mt, me) = (
-                    self.lower_meta_ir(then, width, temps),
-                    self.lower_meta_ir(els, width, temps),
-                );
+                let outer = temps.cond.clone();
+                let outer_guard = temps.guard;
+                let then_guard = write_guard(&outer, cond.as_ref().clone());
+                self.set_meta_guard(temps, then_guard);
+                let mt = self.lower_meta_ir(then, width, temps);
+                let else_guard = write_guard(&outer, not1(cond.as_ref().clone()));
+                self.set_meta_guard(temps, else_guard);
+                let me = self.lower_meta_ir(els, width, temps);
+                temps.cond = outer;
+                temps.guard = outer_guard;
                 if mt.is_none() && me.is_none() {
                     return None;
                 }
@@ -537,6 +609,87 @@ impl<'a> Lowering<'a> {
         Some(acc)
     }
 
+    /// Record activity as an arena identity so hoists and companion memo keys
+    /// use the same guard. A value under another guard must not reuse an
+    /// inactive temporary from an earlier write.
+    pub(super) fn set_meta_guard(&self, temps: &mut MetaTemps, condition: Option<Expr>) {
+        match condition {
+            Some(condition) => {
+                let arena = &mut *self.source_values.borrow_mut();
+                let guard = arena.append(&condition, temps.anchor, None);
+                temps.cond = Some(arena.reference(guard));
+                temps.guard = Some(guard);
+            }
+            None => {
+                temps.cond = None;
+                temps.guard = None;
+            }
+        }
+    }
+
+    /// Discovery needs existence, not an unrolled companion expression. Keep
+    /// this query aligned with lower_meta_ir and memoize canonical DAG nodes
+    /// for one discovery epoch without appending discarded source values.
+    fn source_meta_exists(
+        &self,
+        expression: &Expr,
+        memo: &mut HashMap<ProcessValueId, bool>,
+    ) -> bool {
+        match expression {
+            Expr::Canonical { value, .. } => {
+                if self
+                    .source_values
+                    .borrow()
+                    .explicit_meta
+                    .contains_key(value)
+                {
+                    return true;
+                }
+                if let Some(present) = memo.get(value) {
+                    return *present;
+                }
+                if !self
+                    .source_values
+                    .borrow_mut()
+                    .may_have_meta(*value, &self.out.meta_of)
+                {
+                    memo.insert(*value, false);
+                    return false;
+                }
+                let present = self.source_meta_exists(&self.source_node(*value), memo);
+                memo.insert(*value, present);
+                present
+            }
+            Expr::Current(signal) | Expr::Old(signal) => self.out.meta_of.contains_key(&signal.0),
+            Expr::Select { then, els, .. } => {
+                self.source_meta_exists(then, memo) || self.source_meta_exists(els, memo)
+            }
+            Expr::Slice { base, .. }
+            | Expr::Unary {
+                op: UnOp::Not,
+                rhs: base,
+            } => self.source_meta_exists(base, memo),
+            Expr::Binary {
+                op:
+                    BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::And
+                    | BinOp::Or
+                    | BinOp::Xor,
+                lhs,
+                rhs,
+            } => self.source_meta_exists(lhs, memo) || self.source_meta_exists(rhs, memo),
+            Expr::Binary {
+                op: BinOp::Shl | BinOp::Shr,
+                lhs,
+                ..
+            } => self.source_meta_exists(lhs, memo),
+            _ => false,
+        }
+    }
+
     /// Propagate metavalues through operators: drive each vector target's
     /// companion from [`Self::lower_meta_ir`] of its value. Runs after drivers are
     /// lowered.
@@ -547,6 +700,7 @@ impl<'a> Lowering<'a> {
         // companion drivers are added during discovery: that keeps companion
         // expressions terminal and makes the bound explicit.
         loop {
+            let mut presence = HashMap::new();
             let companion_ids: std::collections::HashSet<u32> =
                 self.out.meta_of.values().copied().collect();
             let mut discovered = Vec::new();
@@ -556,16 +710,7 @@ impl<'a> Lowering<'a> {
                     continue;
                 }
                 let n = self.out.signals[d.target.0 as usize].width;
-                // Discovery only asks whether a companion expression exists, so
-                // anything it materializes is thrown away with this sink.
-                let mut probe = MetaTemps::new(
-                    self.out.signals.len() as u32,
-                    d.ctx,
-                    self.out.signals[d.target.0 as usize].declaration_span,
-                );
-                if n != 0
-                    && (d.meta.is_some() || self.lower_meta_ir(&d.expr, n, &mut probe).is_some())
-                {
+                if n != 0 && (d.meta.is_some() || self.source_meta_exists(&d.expr, &mut presence)) {
                     discovered.push(d.target);
                 }
             }
@@ -577,14 +722,9 @@ impl<'a> Lowering<'a> {
                         continue;
                     }
                     let n = self.out.signals[update.target.0 as usize].width;
-                    let mut probe = MetaTemps::new(
-                        self.out.signals.len() as u32,
-                        block.ctx,
-                        self.out.signals[update.target.0 as usize].declaration_span,
-                    );
                     if n != 0
                         && (update.meta.is_some()
-                            || self.lower_meta_ir(&update.expr, n, &mut probe).is_some())
+                            || self.source_meta_exists(&update.expr, &mut presence))
                     {
                         discovered.push(update.target);
                     }
@@ -628,6 +768,7 @@ impl<'a> Lowering<'a> {
             let companion = self.out.meta_of.get(&driver.target.0).copied();
             temps.ctx = driver.ctx;
             temps.anchor = self.out.signals[driver.target.0 as usize].declaration_span;
+            self.set_meta_guard(&mut temps, driver.cond.clone());
             let meta = companion.map(|_| {
                 let width = self.out.signals[driver.target.0 as usize].width;
                 driver
@@ -655,6 +796,7 @@ impl<'a> Lowering<'a> {
 
         for block_index in 0..self.hardware.event_blocks.len() {
             let block_ctx = self.hardware.event_blocks[block_index].ctx;
+            let block_condition = self.hardware.event_blocks[block_index].condition.clone();
             let mut updates =
                 Vec::with_capacity(self.hardware.event_blocks[block_index].updates.len() * 2);
             for mut update in std::mem::take(&mut self.hardware.event_blocks[block_index].updates) {
@@ -666,6 +808,13 @@ impl<'a> Lowering<'a> {
                 let companion = self.out.meta_of.get(&update.target.0).copied();
                 temps.ctx = block_ctx;
                 temps.anchor = self.out.signals[update.target.0 as usize].declaration_span;
+                let guard = match &update.cond {
+                    Some(condition) => {
+                        write_guard(&Some(block_condition.clone()), condition.clone())
+                    }
+                    None => Some(block_condition.clone()),
+                };
+                self.set_meta_guard(&mut temps, guard);
                 let meta = companion.map(|_| {
                     let width = self.out.signals[update.target.0 as usize].width;
                     update
@@ -716,7 +865,7 @@ impl<'a> Lowering<'a> {
             self.out.metavalue_temps.insert(temp.id);
             self.hardware.drivers.push(Driver {
                 target: SignalId(temp.id),
-                cond: None,
+                cond: temp.cond,
                 expr: temp.expr,
                 meta: None,
                 ctx: temp.ctx,
@@ -727,8 +876,10 @@ impl<'a> Lowering<'a> {
 
     /// Arm [`Lowering::meta_temps`] so the `&self` helpers hoist instead of
     /// inlining. Ids continue from the current signal count.
-    pub(super) fn arm_meta_temps(&self, ctx: u32, anchor: crate::diag::Span) {
-        *self.meta_temps.borrow_mut() = MetaTemps::new(self.out.signals.len() as u32, ctx, anchor);
+    pub(super) fn arm_meta_temps(&self, ctx: u32, anchor: crate::diag::Span, guard: Option<Expr>) {
+        let mut temps = MetaTemps::new(self.out.signals.len() as u32, ctx, anchor);
+        self.set_meta_guard(&mut temps, guard);
+        *self.meta_temps.borrow_mut() = temps;
     }
 
     /// Materialize whatever the armed sink collected and leave it non-hoisting

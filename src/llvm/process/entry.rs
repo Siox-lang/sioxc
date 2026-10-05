@@ -125,7 +125,7 @@ pub(super) fn process_entry<'ctx>(
                     let metadata = metadata.layout.as_ref().and_then(|layout| {
                         let meta_width = local_meta_width(design, process.id, *local)?;
                         let value = match initializer {
-                            Some(initializer) => process_packed_meta_in_layout(
+                            Some(initializer) => process_value_meta_in_layout(
                                 context,
                                 module,
                                 &builder,

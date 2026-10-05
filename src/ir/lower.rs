@@ -152,6 +152,7 @@ pub fn lower_in(
     l.report_unelaborated_instance_uses();
     l.report_unsupported_exprs();
     l.lint_possible_latches();
+    l.prepare_test_input_metavalues(modules, hier);
     l.resolve_driver_contexts();
     l.propagate_metavalues();
     l.reconstruct_reads();
@@ -501,13 +502,13 @@ enum DynamicWriteTarget {
         /// Condition selecting this leaf.
         hit: Expr,
     },
-    /// One bit inside a packed vector is the leaf.
+    /// One checked bit position inside a packed storage leaf.
     PackedBit {
         /// Packed signal the bit lives in.
         signal: SignalId,
-        /// Bit position within that signal.
-        position: u32,
-        /// Condition selecting this bit.
+        /// Constant or runtime physical bit position within that signal.
+        position: Expr,
+        /// Condition selecting this packed leaf through enclosing arrays.
         hit: Expr,
     },
 }

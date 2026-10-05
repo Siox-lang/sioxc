@@ -350,17 +350,7 @@ pub(super) fn process_packed_meta_supported(
     let Some(value) = design.process_ir.values.get(id.0 as usize) else {
         return false;
     };
-    if width == 1
-        && process_value_layout(design, id).is_some_and(|layout| {
-            matches!(
-                &layout.kind,
-                LayoutKind::Scalar {
-                    domain: siox::ir::ScalarDomain::Enum(name),
-                    ..
-                } if design.logic_encodings.contains_key(name)
-            )
-        })
-    {
+    if width == 1 && process_scalar_logic_encoding(design, id).is_some() {
         return supported.get(id.0 as usize).copied().unwrap_or(false);
     }
     if supported
@@ -370,6 +360,9 @@ pub(super) fn process_packed_meta_supported(
         .unwrap_or(false)
     {
         return true;
+    }
+    if aggregate_metadata_projection(design, id) {
+        return process_aggregate_projection_meta_supported(design, id, layout, supported);
     }
     match &value.kind {
         ProcessValueKind::Number(_)
@@ -558,17 +551,10 @@ pub(super) fn process_value_supported_for_target(
     let Some(root_layout) = place_root_layout(design, root) else {
         return true;
     };
-    if packed_logic_layout(design, root_layout).is_none() {
+    if !layout_has_packed_metadata(design, root_layout) {
         return true;
     }
-    if matches!(
-        design
-            .process_ir
-            .values
-            .get(target.0 as usize)
-            .map(|value| &value.kind),
-        Some(ProcessValueKind::Index { .. })
-    ) {
+    if packed_bit_place_layout(design, target).is_some() {
         return design
             .process_ir
             .values
@@ -577,7 +563,7 @@ pub(super) fn process_value_supported_for_target(
             .is_some_and(|width| width != 0 && width <= 4);
     }
     process_value_layout(design, target)
-        .is_some_and(|layout| process_packed_meta_supported(design, assigned, layout, supported))
+        .is_some_and(|layout| process_value_meta_supported(design, assigned, layout, supported))
 }
 
 pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
@@ -722,8 +708,8 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                                                 initializer,
                                                 layout,
                                                 &supported,
-                                            ) && (packed_logic_layout(design, layout).is_none()
-                                                || process_packed_meta_supported(
+                                            ) && (!layout_has_packed_metadata(design, layout)
+                                                || process_value_meta_supported(
                                                     design,
                                                     initializer,
                                                     layout,

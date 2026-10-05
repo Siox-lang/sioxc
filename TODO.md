@@ -7,7 +7,7 @@ layer that owns each change:
 
 This file tracks active work, not implementation history. Completed migration
 details and measurements belong in [`chat.md`](chat.md) and the documents under
-[`docs/`](docs/). Phase 1 pipeline status last audited 2026-10-04 against the
+[`docs/`](docs/). Phase 1 pipeline status last audited 2026-10-05 against the
 compiler, standard library, `siox-tests`, and the local CI gate.
 
 Legend: 🔴 not started · 🟡 partial / constrained.
@@ -105,12 +105,15 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   recursion/general call CFGs and non-packed conversions. Unsupported forms
   must continue to fail transactionally before calls or staged writes become
   observable.
-  Preserve packed literal metadata in procedural local aggregates and their
-  connections. Hardware scalar/array/struct constant leaves now retain both
-  value words and X/Z companions, but a testbench-local array initialized with
-  packed strings can still publish value-only bits through its connections.
-  Model the companion plane in Process storage and aggregate copies; do not
-  confuse passing hardware initialization with support for procedural locals.
+  Recursive procedural arrays/structs now retain packed X/Z planes through
+  initialization, copies, projections, writes, old snapshots, loop snapshots
+  and DUT connections. Source-owned encodings and exact-width companion frames
+  share the same recursive layout offsets as value frames; native regression
+  coverage includes 128-bit fields, inactive checked branches, recursive
+  negative/directed local ranges, alias chains and clean replacements. Input
+  companions are reserved before hardware resolution/normalization, including
+  when the testbench's initial value is binary; guarded metadata hoists preserve
+  write/event activity through multi-driver resolution.
 - 🟡 **Move all host services behind the fixed ABI.** Deterministic
   `seed`/`rand`/`randint`/`uniform`, runtime UTF-8 `read<string>`, string
   indexing/length/equality, fixed strings, little-endian `read<integer>` and
@@ -127,12 +130,25 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
 - 🔴 **Optimization measurements.** Maintain repeatable object-size,
   compile-memory, compile-time, and simulation-throughput benchmarks for
   default, `bitpack`, and host-SIMD builds. Structural simplifications alone
-  are not evidence of a speedup.
+  are not evidence of a speedup. Indexed packed writes now use one update per
+  value/companion plane rather than enumerating bits; retain structural and
+  native range/X/Z regressions plus measured LLVM instruction/memory evidence
+  when extending canonical value sharing. Continue auditing packed read
+  selectors and captured procedure-place candidate expansion; the compact
+  direct-write path does not remove those separate sources of growth.
 
 ## Output
 
 Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
+
+- 🔴 **Scalar Logic waveform classification.** A scalar Logic signal with an
+  incidental companion currently gets classified as a packed vector before its
+  scalar encoding is considered. In `runtime_vector_index_test`, `dut.q` is
+  declared as a one-bit VCD wire but emits four X characters despite correct
+  native discriminant assertions. Prioritize the scalar source-owned encoding
+  in waveform metadata, ignore its unused companion, and add exact scalar
+  VCD/FST coverage; generic corpus waveform checks do not cover this case.
 
 - 🔴 **Native source debug metadata.** Emit direct DWARF locations and a stable
   signal/process inspection surface from LLVM Process entries. Until that is

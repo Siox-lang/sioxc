@@ -178,6 +178,19 @@ pub(super) fn emit_state_helpers<'ctx>(
                     ty.const_zero(),
                 )
                 .expect("declared process array-loop state");
+                if let Some(width) = layout_meta_width(design, layout) {
+                    let ty = context
+                        .custom_width_int_type(std::num::NonZeroU32::new(width).unwrap())
+                        .expect("validated array loop metadata width");
+                    store_state(
+                        module,
+                        &builder,
+                        &loop_iterable_meta_name(process.id, block.id),
+                        width,
+                        ty.const_zero(),
+                    )
+                    .expect("declared process array-loop metadata");
+                }
             } else if dynamic_string {
                 store_state(
                     module,
@@ -322,7 +335,7 @@ pub(super) fn emit_state_helpers<'ctx>(
                 .initializer
                 .zip(storage.layout.as_ref())
                 .and_then(|(initializer, layout)| {
-                    process_packed_meta_in_layout(
+                    process_value_meta_in_layout(
                         context,
                         module,
                         &builder,

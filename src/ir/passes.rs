@@ -625,6 +625,8 @@ pub(super) struct MetaTemp {
     pub(super) width: u32,
     /// The operand expression being hoisted.
     pub(super) expr: Expr,
+    /// Activity inherited from the value write or enclosing select branch.
+    pub(super) cond: Option<Expr>,
     /// Driver context the hoist belongs to.
     pub(super) ctx: u32,
     /// Declaration anchor of the write being lowered.
@@ -650,9 +652,14 @@ pub(super) struct MetaTemps {
     pub(super) anchor: crate::diag::Span,
     /// Hoists made so far, in id order.
     pub(super) made: Vec<MetaTemp>,
+    /// Current activity, captured by every materialized operand.
+    pub(super) cond: Option<Expr>,
+    /// Canonical identity of that activity for safe companion memoization.
+    pub(super) guard: Option<ProcessValueId>,
     /// Companion values are memoized per source node, width and context.
     /// A shared arithmetic body must not be recursively re-expanded here.
-    pub(super) source_meta: HashMap<(ProcessValueId, u32, u32), Option<Expr>>,
+    pub(super) source_meta:
+        HashMap<(ProcessValueId, u32, u32, Option<ProcessValueId>), Option<Expr>>,
 }
 
 impl MetaTemps {
@@ -665,6 +672,8 @@ impl MetaTemps {
             ctx,
             anchor,
             made: Vec::new(),
+            cond: None,
+            guard: None,
             source_meta: HashMap::new(),
         }
     }
@@ -680,6 +689,8 @@ impl MetaTemps {
             ctx: 0,
             anchor: crate::diag::Span::new(crate::diag::FileId(0), 0..0),
             made: Vec::new(),
+            cond: None,
+            guard: None,
             source_meta: HashMap::new(),
         }
     }
@@ -705,6 +716,7 @@ pub(super) fn materialize(expr: Expr, width: u32, temps: &mut MetaTemps) -> Expr
         id,
         width,
         expr,
+        cond: temps.cond.clone(),
         ctx: temps.ctx,
         anchor: temps.anchor,
     });
@@ -799,5 +811,55 @@ pub(super) fn meta_nibble(meta_i: Expr, i: u32, disc: Expr) -> Expr {
             rhs: Box::new(disc),
         }),
         rhs: Box::new(Expr::Const(4 * i as u64)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_hoists_capture_their_own_activity() {
+        let anchor = crate::diag::Span::new(crate::diag::FileId(0), 10..20);
+        let mut temps = MetaTemps::new(30, 7, anchor);
+        let expression = || Expr::Binary {
+            op: BinOp::And,
+            lhs: Box::new(Expr::Current(SignalId(1))),
+            rhs: Box::new(Expr::Current(SignalId(2))),
+        };
+        temps.cond = Some(Expr::Current(SignalId(3)));
+        assert!(matches!(
+            materialize(expression(), 8, &mut temps),
+            Expr::Current(SignalId(30))
+        ));
+        temps.cond = Some(Expr::Current(SignalId(4)));
+        materialize(expression(), 8, &mut temps);
+        temps.cond = None;
+        materialize(expression(), 8, &mut temps);
+        assert_eq!(temps.made.len(), 3);
+        assert!(matches!(
+            temps.made[0].cond,
+            Some(Expr::Current(SignalId(3)))
+        ));
+        assert!(matches!(
+            temps.made[1].cond,
+            Some(Expr::Current(SignalId(4)))
+        ));
+        assert!(temps.made[2].cond.is_none());
+        assert_eq!(temps.made[0].ctx, 7);
+        assert_eq!(temps.made[0].anchor, anchor);
+        assert_eq!(temps.made[0].width, 8);
+    }
+
+    #[test]
+    fn companion_memoization_distinguishes_activity_domains() {
+        let mut temps = MetaTemps::new(0, 0, crate::diag::Span::new(crate::diag::FileId(0), 0..0));
+        let value = ProcessValueId(9);
+        let first = (value, 8, 0, Some(ProcessValueId(10)));
+        let second = (value, 8, 0, Some(ProcessValueId(11)));
+        temps.source_meta.insert(first, Some(Expr::Const(42)));
+        assert!(temps.source_meta.contains_key(&first));
+        assert!(!temps.source_meta.contains_key(&second));
+        assert!(!temps.source_meta.contains_key(&(value, 8, 0, None)));
     }
 }

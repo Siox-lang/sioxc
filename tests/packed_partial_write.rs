@@ -1,8 +1,7 @@
 //! A constant bit index is not a conditional write.
 //!
-//! Packed bit writes route through the runtime-index expansion, which builds
-//! one guarded update per candidate position. A *constant* index has a single
-//! candidate and a `hit` of `Const(1)`, but that was still handed to the update
+//! Packed bit writes build a checked masked update for their storage leaf.
+//! A *constant* index has a `hit` of `Const(1)`, but that was once handed to the update
 //! as `cond: Some(Const(1))` — a conditional driver as far as everything
 //! downstream is concerned. Two consequences, one cosmetic and one not:
 //!
@@ -73,9 +72,10 @@ fn a_conditional_bit_write_still_warns() {
 }
 
 #[test]
-fn a_runtime_bit_write_still_warns() {
-    // A runtime index leaves the signal undriven whenever the index is out of
-    // range, so it is a latch too.
+fn an_unconditional_checked_runtime_bit_write_is_not_an_inferred_latch() {
+    // An invalid checked index aborts simulation; it is not a language path
+    // that holds the previous value. Valid indices always supply a complete
+    // masked contribution. Native failure-location tests cover active misses.
     let out = diagnostics(
         "runbit",
         "    let idx: unsigned[8] = 1;\n\
@@ -84,7 +84,22 @@ fn a_runtime_bit_write_still_warns() {
          \x20   y = word;",
     );
     assert!(
+        !out.contains("W-P002"),
+        "a checked unconditional runtime write has no hold path, got:\n{out}"
+    );
+}
+
+#[test]
+fn a_conditional_runtime_bit_write_still_warns() {
+    let out = diagnostics(
+        "condrunbit",
+        "    let idx: unsigned[8] = 1;\n\
+         \x20   let word: unsigned[8] = 0;\n\
+         \x20   if c == '1' { word[idx] = '1'; }\n\
+         \x20   y = word;",
+    );
+    assert!(
         out.contains("W-P002"),
-        "a runtime bit write can leave the signal undriven, got:\n{out}"
+        "a disabled runtime write is a genuine hold path, got:\n{out}"
     );
 }

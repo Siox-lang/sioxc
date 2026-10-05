@@ -51,7 +51,40 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
 
 
 def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile == "aggregate_operator_values_test":
+    if profile == "runtime_packed_write_test":
+        root = "RuntimePackedWriteTest.dut."
+        def frame(low: str, middle: str, high: str) -> str:
+            return high + "0" * 62 + middle + "0" * 63 + low
+        expected = [
+            (0, "0" * 128),
+            (2_000_000, frame("x", "1", "0")),
+            (4_000_000, frame("x", "1", "z")),
+            (6_000_000, frame("x", "0", "z")),
+            (8_000_000, frame("1", "1", "z")),
+        ]
+        for signal in ("ascending", "descending", "a", "d"):
+            assert changes[root + signal] == expected
+    elif profile == "process_aggregate_metadata_test":
+        root = "ProcessAggregateMetadataTest.dut."
+        wide = "1" + "0" * 63 + "z" + "0" * 62 + "x"
+        for port in ("data.", "echoed."):
+            assert changes[root + port + "bits[-1]"] == [(0, "1xz0"), (5_000_000, "z100")]
+            assert changes[root + port + "bits[0]"] == [
+                (0, "0zx1"), (3_000_000, "zx01"), (4_000_000, "1111")
+            ]
+            assert values(changes, root + port + "wide") == [wide]
+            assert values(changes, root + port + "count") == [f"{n:064b}" for n in (7, 12, 23)]
+            assert values(changes, root + port + "mark") == ["z", "x"]
+        assert changes[root + "flipped[3]"] == [(0, "0xx1"), (5_000_000, "x011")]
+        assert changes[root + "flipped[2]"] == [
+            (0, "1xx0"), (3_000_000, "xx10"), (4_000_000, "0000")
+        ]
+        resolved = "ProcessAggregateMetadataTest.resolved."
+        assert changes[resolved + "data[0]"] == [(0, "0000"), (6_000_000, "1xz0")]
+        assert changes[resolved + "result"] == [
+            (0, "zzzz"), (6_000_000, "0xx1"), (7_000_000, "zzzz")
+        ]
+    elif profile == "aggregate_operator_values_test":
         root = "AggregateOperatorValuesTest.dut."
         assert values(changes, root + "meta[-1]") == ["1xz0"]
         assert values(changes, root + "meta[0]") == ["0zx1"]

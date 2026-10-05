@@ -76,6 +76,24 @@ pub(super) fn scalar_logic_encoding<'a>(
     Some((*width, design.logic_encodings.get(name)?))
 }
 
+/// Packed indexing reconstructs a scalar discriminant even when its result
+/// has no separately registered scalar layout.
+pub(super) fn process_scalar_logic_encoding(
+    design: &Design,
+    id: ProcessValueId,
+) -> Option<&siox::ir::LogicEncoding> {
+    if let Some((_, encoding)) =
+        process_value_layout(design, id).and_then(|layout| scalar_logic_encoding(design, layout))
+    {
+        return Some(encoding);
+    }
+    let ProcessValueKind::Index { base, .. } = &design.process_ir.values.get(id.0 as usize)?.kind
+    else {
+        return None;
+    };
+    packed_logic_layout(design, process_value_layout(design, *base)?).map(|(_, encoding)| encoding)
+}
+
 pub(super) fn storage_binding_is_compatible(
     design: &Design,
     storage: ProcessStorageId,
@@ -171,6 +189,9 @@ pub(super) fn packed_operand_layout(
     operand: ProcessValueId,
 ) -> Option<SourceLayout> {
     let value = design.process_ir.values.get(operand.0 as usize)?;
+    if process_scalar_logic_encoding(design, operand).is_some() {
+        return packed_resize_operand_layout(target, 1, value.span);
+    }
     process_value_layout(design, operand)
         .filter(|layout| packed_logic_layout(design, layout).is_some_and(|(width, _)| width != 0))
         .cloned()
@@ -194,6 +215,24 @@ pub(super) fn packed_arithmetic_operand_layout(
         .or_else(|| Some(target.clone()))
 }
 
+/// Metadata regions use the same offsets as value regions, scaled by four.
+/// Non-packed fields are padding: scalar enums already store discriminants in
+/// the value frame. Allocate a plane only when a recursive packed leaf needs it.
+pub(super) fn layout_has_packed_metadata(design: &Design, layout: &SourceLayout) -> bool {
+    match &layout.kind {
+        LayoutKind::Packed { .. } => packed_logic_layout(design, layout).is_some(),
+        LayoutKind::Array { element, .. } => layout_has_packed_metadata(design, element),
+        LayoutKind::Struct { fields, .. } => fields
+            .iter()
+            .any(|field| layout_has_packed_metadata(design, &field.layout)),
+        LayoutKind::Scalar { .. } | LayoutKind::Opaque { .. } => false,
+    }
+}
+
+pub(super) fn layout_meta_width(design: &Design, layout: &SourceLayout) -> Option<u32> {
+    layout_has_packed_metadata(design, layout).then(|| layout_width(layout)?.checked_mul(4))?
+}
+
 pub(super) fn storage_meta_width(design: &Design, storage: ProcessStorageId) -> Option<u32> {
     let storage = design.process_ir.storages.get(storage.0 as usize)?;
     let layout = storage.layout.as_ref().or_else(|| {
@@ -202,7 +241,7 @@ pub(super) fn storage_meta_width(design: &Design, storage: ProcessStorageId) -> 
             .as_ref()
             .and_then(|ty| layout_for_type(design, ty))
     })?;
-    packed_logic_layout(design, layout)?.0.checked_mul(4)
+    layout_meta_width(design, layout)
 }
 
 pub(super) fn local_meta_width(
@@ -220,7 +259,7 @@ pub(super) fn local_meta_width(
         .layout
         .as_ref()
         .or_else(|| local.ty.as_ref().and_then(|ty| layout_for_type(design, ty)))?;
-    packed_logic_layout(design, layout)?.0.checked_mul(4)
+    layout_meta_width(design, layout)
 }
 
 pub(super) fn layout_default(design: &Design, layout: Option<&siox::ir::SourceLayout>) -> u64 {

@@ -22,6 +22,7 @@ use siox::ir::{
     ProcessTerminator, ProcessUnaryOp, ProcessValueId, ProcessValueKind, SignalId, SourceLayout,
 };
 
+mod aggregate_logic;
 mod binary;
 mod bindings;
 mod blocks;
@@ -42,12 +43,13 @@ mod value_types;
 mod values;
 mod writes;
 
+use aggregate_logic::*;
 use binary::*;
 use bindings::*;
 use blocks::*;
 use entry::*;
 use flags::*;
-pub(super) use hardware::HardwareValueFacts;
+pub(super) use hardware::{HardwareValueCache, HardwareValueFacts};
 use instructions::*;
 use logic::*;
 use loops::*;
@@ -56,6 +58,7 @@ use names::*;
 use places::*;
 use slices::*;
 pub(super) use state::declare_state;
+pub(super) use state::validate_metadata_widths;
 use state::*;
 use support::*;
 use tables::*;

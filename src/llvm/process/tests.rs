@@ -79,6 +79,286 @@ fn span() -> Span {
     Span::new(FileId(0), 0..0)
 }
 
+fn recursive_metadata_fixture(width: u32) -> (Design, SourceLayout) {
+    // This fixture tests layout mechanics, not a compiler-owned truth table.
+    let design = Design {
+        logic_encodings: HashMap::from([(
+            "FixtureElement".into(),
+            siox::ir::LogicEncoding::default(),
+        )]),
+        ..Design::default()
+    };
+    let layout = SourceLayout {
+        span: span(),
+        kind: LayoutKind::Struct {
+            name: "FixtureRecord".into(),
+            view: None,
+            fields: vec![
+                siox::ir::LayoutField {
+                    name: "count".into(),
+                    direction: None,
+                    layout: SourceLayout {
+                        span: span(),
+                        kind: LayoutKind::Scalar {
+                            width: 64,
+                            domain: siox::ir::ScalarDomain::Integer,
+                            nominal: None,
+                            value_range: None,
+                        },
+                    },
+                },
+                siox::ir::LayoutField {
+                    name: "payload".into(),
+                    direction: None,
+                    layout: SourceLayout {
+                        span: span(),
+                        kind: LayoutKind::Array {
+                            range: Some(LayoutRange { left: -1, right: 0 }),
+                            element: Box::new(SourceLayout {
+                                span: span(),
+                                kind: LayoutKind::Packed {
+                                    width,
+                                    family: "FixtureWord".into(),
+                                    range: Some(LayoutRange {
+                                        left: i64::from(width) - 1,
+                                        right: 0,
+                                    }),
+                                    element_enum: Some("FixtureElement".into()),
+                                },
+                            }),
+                        },
+                    },
+                },
+            ],
+        },
+    };
+    (design, layout)
+}
+
+#[test]
+fn recursive_metadata_regions_use_value_offsets_and_exact_widths() {
+    let (design, layout) = recursive_metadata_fixture(128);
+    assert_eq!(layout_width(&layout), Some(320));
+    assert_eq!(layout_meta_width(&design, &layout), Some(1280));
+    let selected = projection_slice(&layout, ".payload[0]").unwrap();
+    assert_eq!((selected.offset, selected.width), (192, 128));
+    assert_eq!(layout_meta_width(&design, selected.layout), Some(512));
+    let scalar = field_slice(&layout, "count").unwrap();
+    assert_eq!(layout_meta_width(&design, scalar.layout), None);
+}
+
+#[test]
+fn state_epoch_caches_preserve_signal_versions_widths_and_metadata_layouts() {
+    let (mut design, _) = recursive_metadata_fixture(128);
+    let signal = |name: &str, width| Signal {
+        path: name.into(),
+        declaration_span: span(),
+        width,
+        real: false,
+        integer: false,
+        char: false,
+        range: None,
+        init: vec![0; width.div_ceil(64) as usize],
+        enum_type: None,
+    };
+    design.signals = vec![signal("value", 128), signal("metadata", 512)];
+    design.meta_of.insert(0, 1);
+    design.process_ir.values.push(ProcessValue {
+        span: span(),
+        ty: None,
+        bit_width: Some(128),
+        kind: ProcessValueKind::Signal {
+            signals: vec![SignalId(0)],
+            state: ProcessSignalState::Current,
+        },
+    });
+    let context = Context::create();
+    let module = context.create_module("cache");
+    let builder = context.create_builder();
+    for name in [
+        "sx_read_word",
+        "sx.process.read.old",
+        "sx.process.read.event",
+    ] {
+        module.add_function(
+            name,
+            context.i64_type().fn_type(
+                &[context.i32_type().into(), context.i32_type().into()],
+                false,
+            ),
+            None,
+        );
+    }
+    let function = module.add_function("probe", context.void_type().fn_type(&[], false), None);
+    builder.position_at_end(context.append_basic_block(function, "entry"));
+    let mut cache = ProcessValueCache::new(&[true], &[false]);
+    let read = |state, width, cache: &mut _| {
+        cached_signal_value(
+            &context,
+            &module,
+            &builder,
+            &design,
+            &[SignalId(0)],
+            state,
+            width,
+            cache,
+        )
+        .unwrap()
+    };
+    let current = read(ProcessSignalState::Current, 128, &mut cache);
+    assert_eq!(current, read(ProcessSignalState::Current, 128, &mut cache));
+    assert_ne!(current, read(ProcessSignalState::Old, 128, &mut cache));
+    assert_ne!(current, read(ProcessSignalState::Current, 64, &mut cache));
+    read(ProcessSignalState::Event, 1, &mut cache);
+    assert_eq!(cache.signals.len(), 4);
+    let mut layout = SourceLayout {
+        span: span(),
+        kind: LayoutKind::Packed {
+            width: 128,
+            family: "FixtureWord".into(),
+            range: Some(LayoutRange {
+                left: 127,
+                right: 0,
+            }),
+            element_enum: Some("FixtureElement".into()),
+        },
+    };
+    let sites = HashMap::new();
+    let active = Some(context.bool_type().const_int(1, false));
+    let first = process_packed_meta_in_layout(
+        &context,
+        &module,
+        &builder,
+        &design,
+        ProcessValueId(0),
+        &layout,
+        active,
+        &sites,
+        &mut cache,
+    )
+    .unwrap();
+    assert_eq!(
+        first,
+        process_packed_meta_in_layout(
+            &context,
+            &module,
+            &builder,
+            &design,
+            ProcessValueId(0),
+            &layout,
+            active,
+            &sites,
+            &mut cache
+        )
+        .unwrap()
+    );
+    assert_eq!(cache.metadata.len(), 1);
+    if let LayoutKind::Packed { range, .. } = &mut layout.kind {
+        *range = Some(LayoutRange {
+            left: 0,
+            right: 127,
+        });
+    }
+    process_packed_meta_in_layout(
+        &context,
+        &module,
+        &builder,
+        &design,
+        ProcessValueId(0),
+        &layout,
+        active,
+        &sites,
+        &mut cache,
+    )
+    .unwrap();
+    process_packed_meta_in_layout(
+        &context,
+        &module,
+        &builder,
+        &design,
+        ProcessValueId(0),
+        &layout,
+        Some(context.bool_type().const_zero()),
+        &sites,
+        &mut cache,
+    )
+    .unwrap();
+    assert_eq!(
+        cache.metadata.len(),
+        3,
+        "layout and checked activity distinguish planes"
+    );
+    cache.clear();
+    assert!(cache.metadata.is_empty() && cache.signals.is_empty());
+    assert_ne!(current, read(ProcessSignalState::Current, 128, &mut cache));
+    builder.build_return(None).unwrap();
+    module.verify().unwrap();
+    assert_eq!(
+        module
+            .print_to_string()
+            .to_string()
+            .lines()
+            .filter(|line| line.contains("call i64 @sx_read_word"))
+            .count(),
+        13,
+        "two current words + one narrow word + eight companion words + two after invalidation"
+    );
+}
+
+#[test]
+fn recursive_metadata_preflight_rejects_an_unsupported_leaf() {
+    let (mut design, layout) = recursive_metadata_fixture(128);
+    let array = field_slice(&layout, "payload").unwrap().layout.clone();
+    design.process_ir.values = vec![
+        ProcessValue {
+            span: span(),
+            ty: None,
+            bit_width: Some(128),
+            kind: ProcessValueKind::Invalid,
+        },
+        ProcessValue {
+            span: span(),
+            ty: None,
+            bit_width: Some(256),
+            kind: ProcessValueKind::Array(vec![ProcessValueId(0), ProcessValueId(0)]),
+        },
+    ];
+    design.process_ir.value_layouts = vec![None, Some(array.clone())];
+    let supported = supported_process_values(&design);
+    assert!(!process_value_meta_supported(
+        &design,
+        ProcessValueId(1),
+        &array,
+        &supported
+    ));
+    assert!(!process_value_supported_in_layout(
+        &design,
+        ProcessValueId(1),
+        &array,
+        &supported
+    ));
+}
+
+#[test]
+fn oversized_recursive_metadata_frames_fail_before_llvm_type_construction() {
+    let (mut design, layout) = recursive_metadata_fixture(crate::llvm::emit::LLVM_MAX_INT_BITS / 8);
+    // The value fits LLVM's integer limit; its recursive companion does not.
+    let width = layout_width(&layout).unwrap();
+    assert!(width < crate::llvm::emit::LLVM_MAX_INT_BITS);
+    design.process_ir.values = vec![ProcessValue {
+        span: span(),
+        ty: None,
+        bit_width: Some(width),
+        kind: ProcessValueKind::Default,
+    }];
+    design.process_ir.value_layouts = vec![Some(layout)];
+    let error = validate_metadata_widths(&design).unwrap_err();
+    assert!(
+        error.contains("process value 0") && error.contains("metadata frame"),
+        "{error}"
+    );
+}
+
 #[test]
 fn metavalue_facts_handle_a_deeply_shared_dag_without_recursion() {
     let mut values = vec![ProcessValue {

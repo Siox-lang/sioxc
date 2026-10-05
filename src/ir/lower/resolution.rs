@@ -218,7 +218,7 @@ impl<'a> Lowering<'a> {
                 // Folding unrolls per element, so an operand it repeats is
                 // hoisted rather than deep-copied `width` times. Nothing
                 // between the arm and the flush creates a signal.
-                self.arm_meta_temps(resolved_ctx, declaration_span);
+                self.arm_meta_temps(resolved_ctx, declaration_span, None);
                 let folded = self.resolve_vector_contexts(ctxs, width, &element);
                 self.flush_meta_temps();
                 if let Some((value, meta)) = folded {
@@ -328,7 +328,13 @@ impl<'a> Lowering<'a> {
                     .clone()
                     .or_else(|| {
                         let mut temps = self.meta_temps.borrow_mut();
-                        self.lower_meta_ir(&driver.expr, width, &mut temps)
+                        let outer = temps.cond.clone();
+                        let outer_guard = temps.guard;
+                        self.set_meta_guard(&mut temps, driver.cond.clone());
+                        let metadata = self.lower_meta_ir(&driver.expr, width, &mut temps);
+                        temps.cond = outer;
+                        temps.guard = outer_guard;
+                        metadata
                     })
                     .unwrap_or(Expr::Const(0));
                 match &driver.cond {

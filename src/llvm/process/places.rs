@@ -440,7 +440,11 @@ pub(super) fn dynamic_place(design: &Design, id: ProcessValueId) -> Option<Dynam
                     });
                     place.width = stride;
                 }
-                (value.bit_width == Some(place.width)).then_some(place)
+                let width_matches = match &base_layout.kind {
+                    LayoutKind::Packed { .. } => value.bit_width.is_some(),
+                    _ => value.bit_width == Some(place.width),
+                };
+                width_matches.then_some(place)
             }
             _ => None,
         }
@@ -568,6 +572,26 @@ pub(super) fn assignment_value<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
+    if let Some(layout) = packed_bit_place_layout(design, target) {
+        if width != 1 {
+            return None;
+        }
+        let (_, encoding) = packed_logic_layout(design, layout)?;
+        let scalar_width = design.process_ir.values.get(value.0 as usize)?.bit_width?;
+        let scalar = process_value_at(
+            context,
+            module,
+            builder,
+            design,
+            value,
+            scalar_width,
+            false,
+            None,
+            index_sites,
+            cache,
+        )?;
+        return logic_value_bit(context, builder, encoding, scalar);
+    }
     if let Some(layout) = process_value_layout(design, target)
         .filter(|layout| process_value_width_in_layout(design, target, layout) == Some(width))
     {
@@ -628,6 +652,22 @@ pub(super) fn place_root_layout(design: &Design, root: StaticPlaceRoot) -> Optio
     }
 }
 
+/// A bit place belongs to the packed base of its final index, not necessarily
+/// to the root frame (which may be an array or struct containing that base).
+pub(super) fn packed_bit_place_layout(
+    design: &Design,
+    target: ProcessValueId,
+) -> Option<&SourceLayout> {
+    let ProcessValueKind::Index { base, .. } =
+        &design.process_ir.values.get(target.0 as usize)?.kind
+    else {
+        return None;
+    };
+    let layout = process_value_layout(design, *base)?;
+    packed_logic_layout(design, layout)?;
+    Some(layout)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn assignment_metadata<'ctx>(
     context: &'ctx Context,
@@ -647,11 +687,11 @@ pub(super) fn assignment_metadata<'ctx>(
     let Some(root_layout) = place_root_layout(design, root) else {
         return Some(None);
     };
-    let Some((_, encoding)) = packed_logic_layout(design, root_layout) else {
+    if !layout_has_packed_metadata(design, root_layout) {
         return Some(None);
-    };
-    let target_kind = &design.process_ir.values.get(target.0 as usize)?.kind;
-    if matches!(target_kind, ProcessValueKind::Index { .. }) {
+    }
+    if let Some(layout) = packed_bit_place_layout(design, target) {
+        let (_, encoding) = packed_logic_layout(design, layout)?;
         if width != 1 {
             return None;
         }
@@ -675,10 +715,10 @@ pub(super) fn assignment_metadata<'ctx>(
         return compact_discriminant(context, builder, encoding, assigned).map(Some);
     }
     let layout = process_value_layout(design, target)?;
-    if packed_logic_layout(design, layout)?.0 != width {
+    if layout_width(layout)? != width {
         return None;
     }
-    process_packed_meta_in_layout(
+    process_value_meta_in_layout(
         context,
         module,
         builder,

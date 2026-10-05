@@ -168,24 +168,44 @@ pub(super) fn process_packed_meta_in_layout<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
+    let key = (id, cache.key(id, active, None).1, layout.clone());
+    if let Some(value) = cache.metadata.get(&key).copied() {
+        return Some(value);
+    }
+    let value = process_packed_meta_uncached(
+        context,
+        module,
+        builder,
+        design,
+        id,
+        layout,
+        active,
+        index_sites,
+        cache,
+    )?;
+    cache.metadata.insert(key, value);
+    Some(value)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_packed_meta_uncached<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    id: ProcessValueId,
+    layout: &SourceLayout,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
     let (width, encoding) = packed_logic_layout(design, layout)?;
     let meta_width = width.checked_mul(4)?;
     let ty = context
         .custom_width_int_type(std::num::NonZeroU32::new(meta_width)?)
         .ok()?;
     let value = design.process_ir.values.get(id.0 as usize)?;
-    let scalar_logic = (width == 1)
-        .then(|| process_value_layout(design, id))
-        .flatten()
-        .is_some_and(|layout| {
-            matches!(
-                &layout.kind,
-                LayoutKind::Scalar {
-                    domain: siox::ir::ScalarDomain::Enum(name),
-                    ..
-                } if design.logic_encodings.contains_key(name)
-            )
-        });
+    let scalar_logic = width == 1 && process_scalar_logic_encoding(design, id).is_some();
     if scalar_logic {
         let value = process_value_at(
             context,
@@ -203,6 +223,19 @@ pub(super) fn process_packed_meta_in_layout<'ctx>(
     }
     if cache.meta_free.get(id.0 as usize).copied().unwrap_or(false) {
         return Some(ty.const_zero());
+    }
+    if aggregate_metadata_projection(design, id) {
+        return process_aggregate_projection_meta(
+            context,
+            module,
+            builder,
+            design,
+            id,
+            layout,
+            active,
+            index_sites,
+            cache,
+        );
     }
     match &value.kind {
         ProcessValueKind::Number(_)
@@ -261,7 +294,7 @@ pub(super) fn process_packed_meta_in_layout<'ctx>(
                 let signal_width = design.signal_width(*signal)?;
                 if let Some(companion) = design.meta_of.get(&signal.0).copied() {
                     let companion_width = signal_width.checked_mul(4)?;
-                    let companion = signal_value(
+                    let companion = cached_signal_value(
                         context,
                         module,
                         builder,
@@ -269,6 +302,7 @@ pub(super) fn process_packed_meta_in_layout<'ctx>(
                         &[SignalId(companion)],
                         *state,
                         companion_width,
+                        cache,
                     )?;
                     result = insert_region(
                         builder,
@@ -831,6 +865,38 @@ pub(super) fn packed_discriminant<'ctx>(
         .build_select(binary, clean, metadata, "pv.logic.discriminant")
         .ok()
         .map(|value| value.into_int_value())
+}
+
+/// The primary packed plane uses the source encoding's value bit, not the low
+/// bit of the scalar enum discriminant. X/Z and weak states need not have the
+/// same parity as their encoded value bit.
+pub(super) fn logic_value_bit<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    encoding: &siox::ir::LogicEncoding,
+    value: IntValue<'ctx>,
+) -> Option<IntValue<'ctx>> {
+    let mut high = encoding
+        .value_bits
+        .iter()
+        .filter_map(|(&discriminant, &bit)| bit.then_some(discriminant))
+        .collect::<Vec<_>>();
+    high.sort_unstable();
+    let mut result = context.bool_type().const_zero();
+    for discriminant in high {
+        let member = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                value,
+                value.get_type().const_int(discriminant, false),
+                "pv.logic.value.member",
+            )
+            .ok()?;
+        result = builder
+            .build_or(result, member, "pv.logic.value.bit")
+            .ok()?;
+    }
+    Some(result)
 }
 
 pub(super) fn compact_discriminant<'ctx>(

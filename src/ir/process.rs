@@ -568,7 +568,7 @@ pub struct ProcessValue {
 }
 
 /// Which version of signal storage a process expression reads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProcessSignalState {
     /// The current settled value.
     Current,

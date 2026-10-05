@@ -134,29 +134,41 @@ impl<'a> Lowering<'a> {
                 } => {
                     let width = self.out.signals[signal.0 as usize].width;
                     let base = self.slice_write_base(signal, sequential, pending);
+                    let encoding = self
+                        .out
+                        .array_element_enums
+                        .get(&signal.0)
+                        .and_then(|element| self.logic_encoding(element))
+                        .cloned();
+                    let value_bit = encoding
+                        .as_ref()
+                        .map(|encoding| logic_value_bit(expr.clone(), encoding))
+                        .unwrap_or_else(|| expr.clone());
                     let meta = if self.out.array_element_enums.contains_key(&signal.0) {
                         let companion = SignalId(self.driven_companion(signal));
                         let meta_width = self.out.signals[companion.0 as usize].width;
                         self.arm_meta_temps(
                             self.cur_ctx,
                             self.out.signals[signal.0 as usize].declaration_span,
+                            cond.clone(),
                         );
                         let meta_base =
                             self.slice_meta_write_base(signal, companion, sequential, pending);
                         self.flush_meta_temps();
-                        let meta_value = Expr::Select {
-                            cond: Box::new(Expr::Binary {
-                                op: BinOp::Ge,
-                                lhs: Box::new(expr.clone()),
-                                rhs: Box::new(Expr::Const(2)),
-                            }),
-                            then: Box::new(expr.clone()),
-                            els: Box::new(Expr::Const(0)),
+                        let meta_value = encoding.as_ref().map(|encoding| Expr::Select {
+                            cond: Box::new(logic_disc_in(expr.clone(), &encoding.binary)),
+                            then: Box::new(Expr::Const(0)),
+                            els: Box::new(expr.clone()),
+                        })?;
+                        let meta_position = Expr::Binary {
+                            op: BinOp::Mul,
+                            lhs: Box::new(position.clone()),
+                            rhs: Box::new(Expr::Const(4)),
                         };
-                        Some(self.merge_slice(
+                        Some(self.merge_dynamic_slice(
                             meta_base,
-                            position * 4 + 3,
-                            position * 4,
+                            meta_position,
+                            4,
                             meta_value,
                             meta_width,
                         ))
@@ -167,7 +179,7 @@ impl<'a> Lowering<'a> {
                         span: self.cur_span,
                         target: signal,
                         cond: write_guard(cond, hit.clone()),
-                        expr: self.merge_slice(base, position, position, expr.clone(), width),
+                        expr: self.merge_dynamic_slice(base, position, 1, value_bit, width),
                         meta,
                     });
                 }
@@ -504,7 +516,7 @@ impl<'a> Lowering<'a> {
                         .find_map(|(label, position)| (label == logical).then_some(position))?;
                     out.push(DynamicWriteTarget::PackedBit {
                         signal,
-                        position,
+                        position: Expr::Const(u64::from(position)),
                         hit: hit.unwrap_or(Expr::Const(1)),
                     });
                     return Some(());
@@ -513,13 +525,27 @@ impl<'a> Lowering<'a> {
                 let (left, right) = self.persisted_range(path)?;
                 let lowered_index =
                     self.checked_runtime_index_with_bounds(index, &labels, left, right)?;
-                for (logical, position) in positions {
-                    out.push(DynamicWriteTarget::PackedBit {
-                        signal,
-                        position,
-                        hit: and(hit.clone(), eq(lowered_index.clone(), index_label(logical))),
-                    });
-                }
+                // A packed signal is one storage leaf. Compute its physical
+                // position once rather than generating a full-frame write for
+                // every possible bit. Freeze label arithmetic as a kernel
+                // integer before wide value/companion consumers widen it.
+                let position = Expr::Binary {
+                    op: BinOp::Sub,
+                    lhs: Box::new(lowered_index),
+                    rhs: Box::new(index_label(left.min(right))),
+                };
+                let Val::Scalar(position) = self.bind_source_value(
+                    Val::Scalar(position),
+                    ast::expr_span(index),
+                    Some(crate::types::Ty::Integer),
+                ) else {
+                    unreachable!()
+                };
+                out.push(DynamicWriteTarget::PackedBit {
+                    signal,
+                    position,
+                    hit: hit.unwrap_or(Expr::Const(1)),
+                });
                 Some(())
             }
         }
@@ -583,6 +609,54 @@ impl<'a> Lowering<'a> {
             op: BinOp::Or,
             lhs: Box::new(kept),
             rhs: Box::new(shifted),
+        }
+    }
+
+    /// Insert one runtime-selected region without enumerating packed bits.
+    /// Masks are exact-width, including companion frames wider than one ABI
+    /// word. The checked position retains the source access's bounds failure.
+    fn merge_dynamic_slice(
+        &self,
+        base: Expr,
+        position: Expr,
+        region_width: u32,
+        value: Expr,
+        width: u32,
+    ) -> Expr {
+        let ones = |bits: u32| {
+            let mut words = vec![u64::MAX; bits.div_ceil(64) as usize];
+            if !bits.is_multiple_of(64) {
+                *words.last_mut().expect("nonempty mask") = (1u64 << (bits % 64)) - 1;
+            }
+            words_const(words)
+        };
+        let mask = Expr::Binary {
+            op: BinOp::Shl,
+            lhs: Box::new(ones(region_width)),
+            rhs: Box::new(position.clone()),
+        };
+        let kept = Expr::Binary {
+            op: BinOp::And,
+            lhs: Box::new(base),
+            rhs: Box::new(Expr::Binary {
+                op: BinOp::Xor,
+                lhs: Box::new(ones(width)),
+                rhs: Box::new(mask),
+            }),
+        };
+        let inserted = Expr::Binary {
+            op: BinOp::Shl,
+            lhs: Box::new(Expr::Binary {
+                op: BinOp::And,
+                lhs: Box::new(value),
+                rhs: Box::new(ones(region_width)),
+            }),
+            rhs: Box::new(position),
+        };
+        Expr::Binary {
+            op: BinOp::Or,
+            lhs: Box::new(kept),
+            rhs: Box::new(inserted),
         }
     }
 

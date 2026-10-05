@@ -168,6 +168,30 @@ pub(super) fn emit_array_loop<'ctx>(
         cache,
     )?;
     store_state(module, builder, &iterable_name, width, snapshot)?;
+    let meta_width = layout_meta_width(design, layout);
+    let metadata = if let Some(meta_width) = meta_width {
+        let metadata = process_value_meta_in_layout(
+            context,
+            module,
+            builder,
+            design,
+            iterable,
+            layout,
+            None,
+            index_sites,
+            cache,
+        )?;
+        store_state(
+            module,
+            builder,
+            &loop_iterable_meta_name(process, block),
+            meta_width,
+            metadata,
+        )?;
+        Some(metadata)
+    } else {
+        None
+    };
     store_state(
         module,
         builder,
@@ -199,6 +223,17 @@ pub(super) fn emit_array_loop<'ctx>(
         element_width,
         first,
     )?;
+    if let Some(metadata) = metadata {
+        let width = local_meta_width(design, process, local)?;
+        let first = extract_region(builder, metadata, 0, width)?;
+        store_state(
+            module,
+            builder,
+            &local_meta_name(process, local),
+            width,
+            first,
+        )?;
+    }
     builder.build_unconditional_branch(body).ok()?;
 
     builder.position_at_end(advance);
@@ -252,6 +287,34 @@ pub(super) fn emit_array_loop<'ctx>(
         element_width,
         element,
     )?;
+    if let Some(meta_width) = meta_width {
+        let snapshot = state_value(
+            context,
+            module,
+            builder,
+            &loop_iterable_meta_name(process, block),
+            meta_width,
+        )?;
+        let metadata_offset = fit(builder, cursor, meta_width)?;
+        let local_width = local_meta_width(design, process, local)?;
+        let offset = builder
+            .build_int_mul(
+                metadata_offset,
+                metadata_offset
+                    .get_type()
+                    .const_int(u64::from(local_width), false),
+                "process.array.metadata.offset",
+            )
+            .ok()?;
+        let selected = extract_dynamic_region(builder, snapshot, offset, local_width)?;
+        store_state(
+            module,
+            builder,
+            &local_meta_name(process, local),
+            local_width,
+            selected,
+        )?;
+    }
     builder.build_unconditional_branch(body).ok()?;
     Some(())
 }

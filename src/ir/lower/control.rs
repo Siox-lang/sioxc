@@ -256,6 +256,7 @@ impl<'a> Lowering<'a> {
                         self.arm_meta_temps(
                             self.cur_ctx,
                             self.out.signals[sig.0 as usize].declaration_span,
+                            cond.clone(),
                         );
                         let meta_base = self.slice_meta_write_base(sig, companion, false, &[]);
                         let slice_width = hi.saturating_sub(lo) + 1;
@@ -738,6 +739,7 @@ impl<'a> Lowering<'a> {
                             self.arm_meta_temps(
                                 self.cur_ctx,
                                 self.out.signals[sig.0 as usize].declaration_span,
+                                cond.clone(),
                             );
                             let meta_base = self.slice_meta_write_base(sig, companion, true, out);
                             let slice_width = hi.saturating_sub(lo) + 1;

@@ -3,6 +3,39 @@
 
 use super::*;
 
+/// Reject oversized companion frames before constructing any LLVM type.
+/// The limit belongs to LLVM, not the language or the simulation word ABI.
+pub(in crate::llvm) fn validate_metadata_widths(design: &Design) -> Result<(), String> {
+    let check = |name: String, width: Option<u32>| {
+        if let Some(width) = width.filter(|width| *width > super::super::emit::LLVM_MAX_INT_BITS) {
+            return Err(format!("{name} needs a {width}-bit metadata frame, but this LLVM backend supports integer values up to {} bits", super::super::emit::LLVM_MAX_INT_BITS));
+        }
+        Ok(())
+    };
+    for storage in &design.process_ir.storages {
+        check(
+            format!("process storage `{}`", storage.name),
+            storage_meta_width(design, storage.id),
+        )?;
+    }
+    for process in &design.process_ir.processes {
+        for local in &process.locals {
+            check(
+                format!("process {} local `{}`", process.id.0, local.name),
+                local_meta_width(design, process.id, local.id),
+            )?;
+        }
+    }
+    for (index, _) in design.process_ir.values.iter().enumerate() {
+        check(
+            format!("process value {index}"),
+            process_value_layout(design, ProcessValueId(index as u32))
+                .and_then(|layout| layout_meta_width(design, layout)),
+        )?;
+    }
+    Ok(())
+}
+
 /// Declare exact-width process frames before the design ABI is emitted. The
 /// design reset/commit functions call the two internal helpers whose bodies
 /// are filled after all Process IR metadata is available.
@@ -55,6 +88,9 @@ pub(in crate::llvm) fn declare_state<'ctx>(
             if let Some((layout, _, _)) = array_loop_shape(design, *iterable) {
                 if let Some(width) = layout_width(layout) {
                     add_state(&loop_iterable_name(process.id, block.id), width);
+                }
+                if let Some(width) = layout_meta_width(design, layout) {
+                    add_state(&loop_iterable_meta_name(process.id, block.id), width);
                 }
             } else if dynamic_string {
                 add_state(&loop_iterable_name(process.id, block.id), 64);
@@ -206,6 +242,21 @@ pub(super) fn insert_region<'ctx>(
             .ok()?
     };
     builder.build_or(cleared, part, "pv.aggregate.insert").ok()
+}
+
+/// Variable-offset counterpart of [`extract_region`]. The caller derives a
+/// bounded offset from the selected layout before extracting a region.
+pub(super) fn extract_dynamic_region<'ctx>(
+    builder: &Builder<'ctx>,
+    base: IntValue<'ctx>,
+    offset: IntValue<'ctx>,
+    width: u32,
+) -> Option<IntValue<'ctx>> {
+    let offset = fit(builder, offset, base.get_type().get_bit_width())?;
+    let shifted = builder
+        .build_right_shift(base, offset, false, "pv.dynamic.extract")
+        .ok()?;
+    fit(builder, shifted, width)
 }
 
 /// Variable-offset counterpart of [`insert_region`]. `offset` is already
@@ -370,6 +421,32 @@ pub(super) fn signal_value<'ctx>(
         };
         value = builder.build_or(value, placed, "pv.join").ok()?;
     }
+    Some(value)
+}
+
+/// Read a signal once per state epoch, even when different canonical leaves
+/// name it. Reads contain no source checks; those stay at their expression
+/// sites and retain branch activity in the surrounding value cache.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn cached_signal_value<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    signals: &[SignalId],
+    state: ProcessSignalState,
+    width: u32,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let [signal] = signals else {
+        return None;
+    };
+    let key = (*signal, state, width);
+    if let Some(value) = cache.signals.get(&key).copied() {
+        return Some(value);
+    }
+    let value = signal_value(context, module, builder, design, signals, state, width)?;
+    cache.signals.insert(key, value);
     Some(value)
 }
 

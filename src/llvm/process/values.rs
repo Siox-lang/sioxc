@@ -96,7 +96,9 @@ pub(super) fn process_value_in_layout<'ctx>(
                 })?
             };
             if stored_width == width {
-                aggregate_signal_value(context, module, builder, design, signals, *state, width)?
+                aggregate_signal_value(
+                    context, module, builder, design, signals, *state, width, cache,
+                )?
             } else if signals.len() == 1
                 && matches!(
                     layout.kind,
@@ -548,7 +550,7 @@ pub(super) fn process_value<'ctx>(
                 })?
             };
             let stored = if signals.len() == 1 {
-                signal_value(
+                cached_signal_value(
                     context,
                     module,
                     builder,
@@ -556,6 +558,7 @@ pub(super) fn process_value<'ctx>(
                     signals,
                     *state,
                     stored_width,
+                    cache,
                 )?
             } else {
                 aggregate_signal_value(
@@ -566,6 +569,7 @@ pub(super) fn process_value<'ctx>(
                     signals,
                     *state,
                     stored_width,
+                    cache,
                 )?
             };
             if process_value_is_signed(design, id) {

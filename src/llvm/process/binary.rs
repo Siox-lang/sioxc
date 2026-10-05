@@ -432,6 +432,7 @@ pub(super) fn process_value_packed_width(design: &Design, id: ProcessValueId) ->
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn aggregate_signal_value<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
@@ -440,11 +441,21 @@ pub(super) fn aggregate_signal_value<'ctx>(
     signals: &[SignalId],
     state: ProcessSignalState,
     width: u32,
+    cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
     if matches!(state, ProcessSignalState::Event) {
         let mut event = context.bool_type().const_zero();
         for signal in signals {
-            let leaf = signal_value(context, module, builder, design, &[*signal], state, 1)?;
+            let leaf = cached_signal_value(
+                context,
+                module,
+                builder,
+                design,
+                &[*signal],
+                state,
+                1,
+                cache,
+            )?;
             event = builder.build_or(event, leaf, "pv.aggregate.event").ok()?;
         }
         return Some(event);
@@ -456,7 +467,7 @@ pub(super) fn aggregate_signal_value<'ctx>(
     let mut offset = 0u32;
     for signal in signals {
         let leaf_width = design.signal_width(*signal)?;
-        let leaf = signal_value(
+        let leaf = cached_signal_value(
             context,
             module,
             builder,
@@ -464,6 +475,7 @@ pub(super) fn aggregate_signal_value<'ctx>(
             &[*signal],
             state,
             leaf_width,
+            cache,
         )?;
         packed = insert_region(builder, packed, leaf, offset, leaf_width)?;
         offset = offset.checked_add(leaf_width)?;

@@ -3,7 +3,7 @@
 /// An inclusive source range in written order. `left > right` is descending;
 /// layout never sorts the endpoints because direction is observable through
 /// the language's range attributes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LayoutRange {
     /// The written left bound, which may exceed `right` for a descending
     /// range such as `31..0`.
@@ -36,7 +36,7 @@ impl LayoutRange {
 /// The representation semantics of one scalar storage leaf. Nominal identity
 /// remains on `LayoutKind::Scalar`; this enum describes how engines interpret
 /// its bits.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ScalarDomain {
     /// A plain bit vector with no arithmetic interpretation of its own.
     Bits,
@@ -51,7 +51,7 @@ pub enum ScalarDomain {
 }
 
 /// A port direction carried by an applied view.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LayoutDirection {
     /// Driven by the instantiator.
     In,
@@ -62,7 +62,7 @@ pub enum LayoutDirection {
 }
 
 /// One field within a [`LayoutKind::Struct`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LayoutField {
     /// The field's name as written in the source type.
     pub name: String,
@@ -77,7 +77,7 @@ pub struct LayoutField {
 /// value. `span` anchors diagnostics; `kind` retains the distinction between a
 /// packed vector (one signal) and an ordinary repeated array (one layout per
 /// element), which a bit count alone cannot recover.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SourceLayout {
     /// The declaration this layout was derived from.
     pub span: crate::diag::Span,
@@ -87,7 +87,7 @@ pub struct SourceLayout {
 
 /// The shape of a source value, retained after flattening so consumers can
 /// rebuild what the user declared.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LayoutKind {
     /// A single storage leaf.
     Scalar {

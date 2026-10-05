@@ -2,6 +2,28 @@
 
 use super::*;
 
+/// Owned cache entries shared by roots in one straight-line state epoch.
+/// Checked/metadata facts remain object-owned; no SSA value survives a state
+/// write or a basic-block boundary. Captured foreign results survive state
+/// invalidation, just as they do inside the procedural emitter.
+#[derive(Default)]
+pub(in crate::llvm) struct HardwareValueCache<'ctx> {
+    evaluated_calls: HashMap<(ProcessValueId, Option<IntValue<'ctx>>), IntValue<'ctx>>,
+    emitted: HashMap<(ProcessValueId, Option<IntValue<'ctx>>, Option<u32>), IntValue<'ctx>>,
+    contextual: HashMap<(ProcessValueId, Option<IntValue<'ctx>>, u32, bool), IntValue<'ctx>>,
+    metadata: HashMap<(ProcessValueId, Option<IntValue<'ctx>>, SourceLayout), IntValue<'ctx>>,
+    signals: HashMap<(SignalId, ProcessSignalState, u32), IntValue<'ctx>>,
+}
+
+impl HardwareValueCache<'_> {
+    pub(in crate::llvm) fn clear(&mut self) {
+        self.emitted.clear();
+        self.contextual.clear();
+        self.metadata.clear();
+        self.signals.clear();
+    }
+}
+
 /// Per-object facts, not a second hardware expression representation.
 pub(in crate::llvm) struct HardwareValueFacts {
     pub(super) supported: ProcessValueSupport,
@@ -48,10 +70,14 @@ impl HardwareValueFacts {
         signed: bool,
         active: Option<IntValue<'ctx>>,
         index_sites: &HashMap<IndexSite, u32>,
-        evaluated_calls: &mut HashMap<(ProcessValueId, Option<IntValue<'ctx>>), IntValue<'ctx>>,
+        values: &mut HardwareValueCache<'ctx>,
     ) -> Option<IntValue<'ctx>> {
         let mut cache = ProcessValueCache::new(&self.checked, &self.supported.meta_free);
-        cache.evaluated_calls = std::mem::take(evaluated_calls);
+        cache.evaluated_calls = std::mem::take(&mut values.evaluated_calls);
+        cache.emitted = std::mem::take(&mut values.emitted);
+        cache.contextual = std::mem::take(&mut values.contextual);
+        cache.metadata = std::mem::take(&mut values.metadata);
+        cache.signals = std::mem::take(&mut values.signals);
         let result = process_value_at(
             context,
             module,
@@ -64,7 +90,11 @@ impl HardwareValueFacts {
             index_sites,
             &mut cache,
         );
-        *evaluated_calls = cache.evaluated_calls;
+        values.evaluated_calls = cache.evaluated_calls;
+        values.emitted = cache.emitted;
+        values.contextual = cache.contextual;
+        values.metadata = cache.metadata;
+        values.signals = cache.signals;
         result
     }
 }

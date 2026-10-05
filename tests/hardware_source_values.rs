@@ -4,6 +4,41 @@
 
 use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
 
+#[test]
+fn packed_runtime_writes_have_one_update_per_storage_plane() {
+    let source = "module compact_writes; use std::bits::unsigned;\n\
+        entity Dut { clk: Bit in, index: integer in, data: Logic in, q: Logic out }\n\
+        impl Dut { let word: unsigned[128] = 0;\n\
+          if clk.rising() { word[index] = data; } q = word[index]; }\n";
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/compact_writes.siox", source),
+            Emit::Metadata,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let design = compilation.design.unwrap();
+    let updates: Vec<_> = design
+        .event_blocks
+        .iter()
+        .flat_map(|block| &block.updates)
+        .collect();
+    assert_eq!(
+        updates.len(),
+        2,
+        "one value update and one companion update"
+    );
+    let mut widths: Vec<_> = updates
+        .iter()
+        .map(|update| design.signals[update.target.0 as usize].width)
+        .collect();
+    widths.sort_unstable();
+    assert_eq!(widths, [128, 512]);
+}
+
 #[cfg(feature = "llvm")]
 #[test]
 fn array_operators_share_returned_foreign_values_instead_of_expanding_caller_syntax() {
@@ -38,6 +73,79 @@ fn array_operators_share_returned_foreign_values_instead_of_expanding_caller_syn
         maximum = maximum.max(calls);
     }
     assert_eq!(maximum, 1, "returned foreign operand was not exercised");
+}
+
+#[test]
+fn clean_connected_test_arrays_reserve_runtime_planes_before_hardware_lowering() {
+    let source = "module connected_planes;\nuse std::bits::unsigned;\n\
+        entity Dut { a: unsigned[4][2] in, b: Bit in, y: unsigned[4][2] out }\n\
+        impl Dut { y = not a; }\n\
+        impl Dut { y = [\"ZZZZ\", \"ZZZZ\"]; }\n\
+        #[test] entity Test {}\n\
+        impl Test { let a: unsigned[4][2] = [0, 0]; let b: Bit = '0';\n\
+          let dut: Dut = { .a = a, .b = b }; }\n";
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/connected_planes.siox", source),
+            Emit::Metadata,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let design = compilation.design.unwrap();
+    for suffix in ["dut.a[0]", "dut.a[1]", "dut.y[0]", "dut.y[1]"] {
+        let id = design
+            .signals
+            .iter()
+            .position(|signal| signal.path.ends_with(suffix))
+            .unwrap();
+        let companion = *design
+            .meta_of
+            .get(&(id as u32))
+            .unwrap_or_else(|| panic!("missing runtime plane for {suffix}"));
+        assert_eq!(design.signal_width(siox::ir::SignalId(companion)), Some(16));
+        if suffix.contains(".y[") {
+            let input = design
+                .signals
+                .iter()
+                .position(|signal| signal.path.ends_with(&suffix.replace(".y[", ".a[")))
+                .unwrap();
+            let input_plane = design.meta_of[&(input as u32)];
+            let mut pending = vec![siox::ir::SignalId(companion)];
+            let mut seen = std::collections::HashSet::new();
+            while let Some(signal) = pending.pop() {
+                if !seen.insert(signal) {
+                    continue;
+                }
+                for driver in design
+                    .drivers
+                    .iter()
+                    .filter(|driver| driver.target == signal)
+                {
+                    let siox::ir::Expr::Canonical { reads, .. } = &driver.expr else {
+                        panic!("derived driver must retain canonical reads");
+                    };
+                    pending.extend(reads.iter().copied());
+                }
+            }
+            assert!(
+                seen.contains(&siox::ir::SignalId(input_plane)),
+                "resolved {suffix} froze the binary reset value before reserving its input plane"
+            );
+        }
+    }
+    let bit = design
+        .signals
+        .iter()
+        .position(|signal| signal.path.ends_with("dut.b"))
+        .unwrap();
+    assert!(
+        !design.meta_of.contains_key(&(bit as u32)),
+        "scalar enum discriminants do not need companion planes"
+    );
+    assert!(design.validate().is_empty(), "{:?}", design.validate());
 }
 
 #[test]

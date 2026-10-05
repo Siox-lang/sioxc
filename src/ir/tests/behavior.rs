@@ -402,8 +402,8 @@ fn runtime_packed_bit_read_write_updates_value_and_metavalue_planes() {
             .iter()
             .filter(|update| update.target.0 == word)
             .count(),
-        8,
-        "one mutually exclusive value update per declared label"
+        1,
+        "one checked masked value update for the packed storage leaf"
     );
     assert_eq!(
         event
@@ -411,8 +411,8 @@ fn runtime_packed_bit_read_write_updates_value_and_metavalue_planes() {
             .iter()
             .filter(|update| update.target.0 == meta)
             .count(),
-        8,
-        "the metavalue nibble follows every value update"
+        1,
+        "one checked masked companion update for the selected nibble"
     );
     let q = design
         .signals

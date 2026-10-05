@@ -444,7 +444,11 @@ impl Lowering<'_> {
                             if self.out.array_element_enums.contains_key(&signal.0) {
                                 let companion = SignalId(self.driven_companion(*signal));
                                 let meta_width = self.out.signals[companion.0 as usize].width;
-                                self.arm_meta_temps(self.cur_ctx, ast::expr_span(source));
+                                self.arm_meta_temps(
+                                    self.cur_ctx,
+                                    ast::expr_span(source),
+                                    fire.clone(),
+                                );
                                 let replacement_meta = self.partial_write_meta(
                                     source,
                                     &replacement,

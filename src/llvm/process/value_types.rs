@@ -16,7 +16,15 @@ pub(super) struct ProcessValueCache<'ctx, 'checks> {
     /// Contextually widened arithmetic is not a layout conversion. Keep its
     /// width/signedness cache separate, so one shared node is evaluated once
     /// per consumer format without colliding with packed-layout entries.
-    contextual: HashMap<(ProcessValueId, Option<IntValue<'ctx>>, u32, bool), IntValue<'ctx>>,
+    pub(super) contextual:
+        HashMap<(ProcessValueId, Option<IntValue<'ctx>>, u32, bool), IntValue<'ctx>>,
+    /// Metadata depends on the complete consumer layout (including its
+    /// source-owned element encoding), not just the number of value bits.
+    pub(super) metadata:
+        HashMap<(ProcessValueId, Option<IntValue<'ctx>>, SourceLayout), IntValue<'ctx>>,
+    /// Distinct arena leaves can refer to the same physical state. Reuse its
+    /// assembled ABI words until an immediate write or foreign call occurs.
+    pub(super) signals: HashMap<(SignalId, ProcessSignalState, u32), IntValue<'ctx>>,
     pub(super) checked: &'checks [bool],
     pub(super) meta_free: &'checks [bool],
 }
@@ -27,6 +35,8 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
             evaluated_calls: HashMap::new(),
             emitted: HashMap::new(),
             contextual: HashMap::new(),
+            metadata: HashMap::new(),
+            signals: HashMap::new(),
             checked,
             meta_free,
         }
@@ -52,6 +62,8 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
     pub(super) fn clear(&mut self) {
         self.emitted.clear();
         self.contextual.clear();
+        self.metadata.clear();
+        self.signals.clear();
     }
 }
 
