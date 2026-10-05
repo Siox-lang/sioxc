@@ -170,12 +170,22 @@ pub(super) fn emit_wave_metadata<'ctx>(
             .expect("visible waveform signal belongs to a scope");
         signal_scopes.push(*scope);
         signal_names.push(name.clone());
-        let companion = design.meta_of.get(&(id as u32)).copied();
+        // Scalar logic retains its full discriminant in the value frame.
+        // An incidental IR companion cannot change its waveform shape or
+        // cause extra change events; only packed values consume that plane.
+        let scalar_symbols = wave_logic_symbols(design, signal);
+        let companion = design
+            .meta_of
+            .get(&(id as u32))
+            .copied()
+            .filter(|_| scalar_symbols.is_none());
         companions.push(companion.unwrap_or(u32::MAX));
         symbol_offsets.push(symbol_values.len() as u32);
 
         let (kind, symbols) = if signal.real {
             (1, Vec::new())
+        } else if let Some(symbols) = scalar_symbols {
+            (3, symbols)
         } else if companion.is_some() {
             let symbols = design
                 .array_element_enums
@@ -183,8 +193,6 @@ pub(super) fn emit_wave_metadata<'ctx>(
                 .and_then(|name| wave_logic_symbols_for_type(design, name))
                 .unwrap_or_default();
             (4, symbols)
-        } else if let Some(symbols) = wave_logic_symbols(design, signal) {
-            (3, symbols)
         } else if let Some(symbols) = signal
             .enum_type
             .as_ref()

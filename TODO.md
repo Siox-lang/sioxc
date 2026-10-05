@@ -142,14 +142,6 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
 Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
-- 🔴 **Scalar Logic waveform classification.** A scalar Logic signal with an
-  incidental companion currently gets classified as a packed vector before its
-  scalar encoding is considered. In `runtime_vector_index_test`, `dut.q` is
-  declared as a one-bit VCD wire but emits four X characters despite correct
-  native discriminant assertions. Prioritize the scalar source-owned encoding
-  in waveform metadata, ignore its unused companion, and add exact scalar
-  VCD/FST coverage; generic corpus waveform checks do not cover this case.
-
 - 🔴 **Native source debug metadata.** Emit direct DWARF locations and a stable
   signal/process inspection surface from LLVM Process entries. Until that is
   implemented, `sioxc --test -g` fails explicitly; it must never resurrect a

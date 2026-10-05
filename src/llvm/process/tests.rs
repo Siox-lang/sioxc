@@ -667,6 +667,63 @@ fn emits_runtime_discovery_metadata() {
     assert!(llvm.contains("define internal i8 @sx.process.1(i32"));
 }
 
+/// Scalar discriminants and packed companion planes have distinct ABIs.
+#[test]
+fn scalar_wave_metadata_ignores_incidental_companions() {
+    let signal = |name: &str, width, enum_type| Signal {
+        path: format!("Wave.{name}"),
+        declaration_span: span(),
+        width,
+        enum_type,
+        real: false,
+        integer: false,
+        char: false,
+        range: None,
+        init: vec![0],
+    };
+    // A synthetic encoding checks that this classifier uses source metadata,
+    // not std type names or assumptions about particular discriminants.
+    let design = Design {
+        signals: vec![
+            signal("scalar", 4, Some("Element".into())),
+            signal("scalar_meta", 16, None),
+            signal("packed", 4, None),
+            signal("packed_meta", 16, None),
+        ],
+        meta_of: HashMap::from([(0, 1), (2, 3)]),
+        array_element_enums: HashMap::from([(2, "Element".into())]),
+        enum_syms: HashMap::from([(
+            "Element".into(),
+            HashMap::from([(7, "Unknown".into()), (11, "High".into())]),
+        )]),
+        logic_encodings: HashMap::from([(
+            "Element".into(),
+            siox::ir::LogicEncoding {
+                unknown: std::collections::HashSet::from([7]),
+                value_bits: HashMap::from([(11, true)]),
+                ..siox::ir::LogicEncoding::default()
+            },
+        )]),
+        ..Design::default()
+    };
+    let context = Context::create();
+    let module = context.create_module("wave_metadata");
+    super::metadata::emit_wave_metadata(&context, &module, &design);
+    let llvm = module.print_to_string().to_string();
+    assert!(
+        llvm.contains("@sx_wave_signal_kinds = constant [2 x i8] c\"\\03\\04\""),
+        "{llvm}"
+    );
+    assert!(
+        llvm.contains("@sx_wave_signal_companions = constant [2 x i32] [i32 -1, i32 3]"),
+        "{llvm}"
+    );
+    assert!(llvm.contains("$var wire 1 v0 scalar $end"));
+    assert!(llvm.contains("$var wire 4 v2 packed $end"));
+    assert!(!llvm.contains("$var wire 16"));
+    module.verify().unwrap();
+}
+
 /// Empty logical descriptor tables still have legal storage for the C ABI,
 /// while their exported counts remain zero.
 #[test]

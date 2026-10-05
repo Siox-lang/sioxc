@@ -11689,3 +11689,37 @@ service forms and scalar waveform classification. Performance follow-ups:
 packed read selectors, captured-place expansion and repeatable whole-compiler
 compile/object-size/runtime benchmarks. The measured OOM cases are improved,
 not a claim that every future design has a fixed memory bound.
+
+### 2026-10-05 — Codex — scalar waveform metadata ownership
+
+Continue Phase 1 after the verified memory batch. Own llvm/process/metadata.rs,
+its focused metadata regression, tests/build_binary.rs waveform coverage and
+scripts/check-vcd.py's runtime-vector profile. Scalar Logic stores its complete
+discriminant in the value frame; an incidental companion must not turn it into
+a packed waveform or add unrelated change events. Fix the common immutable
+descriptor path consumed by both VCD and FST, retain std-owned encodings, and
+reuse the existing native/libfst test harness. Preserve historical chat and
+setup changes; run full capped gates before committing. No push.
+
+The descriptor regression failed before the fix (scalar incorrectly kind 4,
+companion attached), then passes with scalar kind 3 and no companion. Native
+VCD/FST coverage reuses the existing waveform fixture and libfst decoder,
+selecting X/Z/1/0 through a runtime packed index with exact scalar widths and
+timestamps. The compiler change is limited to the shared metadata classifier;
+no writer/runtime changes or dependencies. The generic VCD check rejects the
+old original-vector trace's four-bit scalar value, and its new profile checks
+both narrow/wide q transitions, including same-time delta updates.
+Reserve source/corpus for the full capped gate; no compiler edits while live.
+
+### 2026-10-05 — Codex — scalar waveform verification complete
+
+The pinned full CI gate returned 0: Rust tests, formatting, Clippy and both
+210-program corpora passed. Logs: /tmp/siox-scalar-wave-ci-20261005.
+Compiler and corpus hashes match the frozen inputs. Direct default/bitpack
+runtime_vector_index executables pass assertions and exact VCD/FST profiles;
+their VCD and normalized decoded FST traces match, and repeated default VCD
+matches. The checker rejects the saved pre-fix four-bit scalar trace.
+Remove the completed Output TODO; no writer ABI changes or dependencies.
+Completion estimate: Phase 1 approximately 97%; direct canonical ingress,
+initializer normalization, general runtime calls and non-packed conversions
+remain. Preserve setup changes and unrelated chat history; no push.

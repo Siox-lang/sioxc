@@ -763,7 +763,11 @@ arbitrary-width representation. LLVM preserves each Process value's own width
 and exports every required ABI word. Native test executables write requested
 VCD and compressed FST changes directly while scheduling; waveform values do
 not round-trip through the compiler. Both writers observe the same settle
-points.
+points. Scalar logic renders as one waveform bit using its source-defined
+discriminant table, regardless of the enum's internal storage width. Only
+packed vectors consume a companion plane; incidental scalar companions remain
+hidden and do not participate in waveform change detection. The corpus checker
+rejects binary changes wider than their VCD wire declaration.
 Structural inheritance walks terminate by detecting actual cycles, so a valid
 deep type hierarchy is not rejected at an arbitrary depth.
 

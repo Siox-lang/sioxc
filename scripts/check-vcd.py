@@ -15,6 +15,7 @@ def read_vcd(path: Path) -> tuple[dict[str, list[tuple[int, str]]], list[int]]:
 
     scopes: list[str] = []
     identifiers: dict[str, str] = {}
+    wire_widths: dict[str, int] = {}
     changes: dict[str, list[tuple[int, str]]] = {}
     timestamps: list[int] = []
     now = 0
@@ -26,6 +27,8 @@ def read_vcd(path: Path) -> tuple[dict[str, list[tuple[int, str]]], list[int]]:
         elif line.startswith("$var "):
             fields = line.split()
             identifiers[fields[3]] = ".".join([*scopes, fields[4]])
+            if fields[1] == "wire":
+                wire_widths[fields[3]] = int(fields[2])
         elif line.startswith("#"):
             now = int(line[1:])
             timestamps.append(now)
@@ -35,6 +38,12 @@ def read_vcd(path: Path) -> tuple[dict[str, list[tuple[int, str]]], list[int]]:
                 changes.setdefault(identifiers[identifier], []).append((now, line[0].lower()))
         elif line and line[0] in "bBrRsS":
             value, identifier = line[1:].split(maxsplit=1)
+            if line[0] in "bB" and identifier in wire_widths:
+                if len(value) > wire_widths[identifier]:
+                    raise AssertionError(
+                        f"{identifiers[identifier]}: {len(value)} waveform bits "
+                        f"exceed the declared width {wire_widths[identifier]}"
+                    )
             if identifier in identifiers:
                 changes.setdefault(identifiers[identifier], []).append((now, value.lower()))
 
@@ -64,6 +73,15 @@ def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> No
         ]
         for signal in ("ascending", "descending", "a", "d"):
             assert changes[root + signal] == expected
+    elif profile == "runtime_vector_index_test":
+        root = "RuntimeVectorIndexTest."
+        assert changes[root + "dut.q"] == [
+            (0, "0"), (0, "1"), (2_000_000, "0"), (2_000_000, "x")
+        ]
+        assert changes[root + "wide.q"] == [
+            (0, "0"), (4_000_000, "1"), (6_000_000, "0"),
+            (6_000_000, "x"), (8_000_000, "1")
+        ]
     elif profile == "process_aggregate_metadata_test":
         root = "ProcessAggregateMetadataTest.dut."
         wide = "1" + "0" * 63 + "z" + "0" * 62 + "x"

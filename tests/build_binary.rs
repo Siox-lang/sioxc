@@ -2009,6 +2009,8 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
          enum State { Idle, Run }
          entity Values {
              scalar: Logic out,
+             index: integer in,
+             selected: Logic out,
              bus: unsigned[4] out,
              state: State out,
              wide: unsigned[192] out,
@@ -2017,6 +2019,7 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
          impl Values {
              scalar = 'Z';
              bus = \"1X0Z\";
+             selected = bus[index];
              state = State::Run;
              wide = 6277101735386680763835789423207666416102355444464034512895;
              real_value = 2.5;
@@ -2024,18 +2027,30 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
          #[test] entity WaveTest {}
          impl WaveTest {
              let scalar: Logic;
+             let index: integer = 2;
              let bus: unsigned[4];
              let state: State;
              let wide: unsigned[192];
              let real_value: real;
              let dut: Values = {
                  .scalar = scalar,
+                 .index = index,
                  .bus = bus,
                  .state = state,
                  .wide = wide,
                  .real_value = real_value,
              };
-             assert!(scalar == 'Z', \"scalar setup\");
+             process {
+                 assert!(scalar == 'Z', \"scalar setup\");
+                 await 1ns;
+                 assert!(dut.selected == 'X', \"selected scalar X\");
+                 index = 0; await 1ns;
+                 assert!(dut.selected == 'Z', \"selected scalar Z\");
+                 index = 3; await 1ns;
+                 assert!(dut.selected == '1', \"selected scalar high\");
+                 index = 1; await 1ns;
+                 assert!(dut.selected == '0', \"selected scalar low\");
+             }
          }",
     )
     .unwrap();
@@ -2121,6 +2136,42 @@ fn native_vcd_preserves_logic_metavalues_and_enum_symbols() {
         "FST lost a real value:\n{fst_trace}"
     );
     assert_eq!(waveform_times(&fst_trace), waveform_times(&trace));
+    // Find this specific scalar rather than accepting an unrelated x/z in
+    // the trace. libfst uses different identifiers from our VCD writer.
+    for trace in [&trace, &fst_trace] {
+        let declarations = trace
+            .lines()
+            .filter_map(|line| {
+                let fields = line.split_whitespace().collect::<Vec<_>>();
+                (fields.first() == Some(&"$var") && fields.get(4) == Some(&"selected"))
+                    .then_some(fields)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(declarations.len(), 1, "{trace}");
+        let fields = &declarations[0];
+        assert_eq!(fields[2], "1", "selected Logic is one waveform bit");
+        let mut time = 0u64;
+        let mut changes = Vec::new();
+        for line in trace.lines() {
+            if let Some(timestamp) = line.strip_prefix('#') {
+                time = timestamp.parse().unwrap();
+            } else if let Some(value) = line.strip_suffix(fields[3]) {
+                if value.len() == 1 && "01xz".contains(value) {
+                    changes.push((time, value));
+                }
+            }
+        }
+        assert_eq!(
+            changes,
+            [
+                (0, "x"),
+                (1_000_000, "z"),
+                (2_000_000, "1"),
+                (3_000_000, "0")
+            ],
+            "{trace}"
+        );
+    }
     let _ = std::fs::remove_file(source);
     for path in [first, second, first_vcd, first_fst, second_vcd, second_fst] {
         let _ = std::fs::remove_file(path);
