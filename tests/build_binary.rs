@@ -553,6 +553,133 @@ fn direct_timed_resume_observes_reactive_quiescence() {
 }
 
 #[test]
+fn native_waveforms_handle_empty_selection_and_zero_elapsed_time() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+
+    let directory =
+        std::env::temp_dir().join(format!("siox_empty_wave_contract_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    for (name, source) in [
+        (
+            "empty",
+            r#"module empty_wave;
+            #[test] entity Empty {}
+            impl Empty { assert!(true, "no observable state"); }"#,
+        ),
+        (
+            "zero_time",
+            r#"module zero_time_wave;
+            entity Probe { value: Bit out }
+            impl Probe { value = '1'; }
+            #[test] entity ZeroTime {}
+            impl ZeroTime {
+                let value: Bit;
+                let probe: Probe = { .value = value };
+                assert!(value == '1', "reactive settling at time zero");
+            }"#,
+        ),
+    ] {
+        let source_path = directory.join(format!("{name}.siox"));
+        let binary = directory.join(name);
+        std::fs::write(&source_path, source).unwrap();
+        let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+            .args([
+                "--std",
+                concat!(env!("CARGO_MANIFEST_DIR"), "/std"),
+                "--test",
+            ])
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(
+            build.status.success(),
+            "{name} build failed: {}{}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        );
+
+        // Neither format may truncate a prior result when nothing will run.
+        let vcd = directory.join(format!("{name}.vcd"));
+        let fst = directory.join(format!("{name}.fst"));
+        std::fs::write(&vcd, b"preserve VCD").unwrap();
+        std::fs::write(&fst, b"preserve FST").unwrap();
+        let filtered = Command::new(&binary)
+            .args(["missing::test", "-o"])
+            .arg(&vcd)
+            .arg("-o")
+            .arg(&fst)
+            .output()
+            .unwrap();
+        assert!(filtered.status.success(), "{filtered:?}");
+        assert!(String::from_utf8_lossy(&filtered.stdout).contains("running 0 tests"));
+        assert_eq!(std::fs::read(&vcd).unwrap(), b"preserve VCD");
+        assert_eq!(std::fs::read(&fst).unwrap(), b"preserve FST");
+        std::fs::remove_file(&vcd).unwrap();
+        std::fs::remove_file(&fst).unwrap();
+        let filtered = Command::new(&binary)
+            .args(["-o"])
+            .arg(&vcd)
+            .arg("missing::test")
+            .arg("-o")
+            .arg(&fst)
+            .output()
+            .unwrap();
+        assert!(filtered.status.success(), "{filtered:?}");
+        assert!(!vcd.exists() && !fst.exists());
+
+        if name == "empty" {
+            let run = Command::new(&binary).arg("-o").arg(&vcd).output().unwrap();
+            assert!(run.status.success(), "{run:?}");
+            let trace = std::fs::read_to_string(&vcd).unwrap();
+            assert!(trace.contains("$enddefinitions $end"));
+            assert!(!trace.contains("$var"));
+
+            // Rejection precedes file creation/truncation and test execution.
+            for existing in [false, true] {
+                if existing {
+                    std::fs::write(&fst, b"preserve FST").unwrap();
+                }
+                let run = Command::new(&binary).arg("-o").arg(&fst).output().unwrap();
+                assert_eq!(run.status.code(), Some(2), "{run:?}");
+                let error = String::from_utf8_lossy(&run.stderr);
+                assert!(error.contains("no observable signals"), "{error}");
+                assert!(error.contains("use VCD"), "{error}");
+                assert!(!String::from_utf8_lossy(&run.stdout).contains("running 1 test"));
+                if existing {
+                    assert_eq!(std::fs::read(&fst).unwrap(), b"preserve FST");
+                } else {
+                    assert!(!fst.exists());
+                }
+            }
+        } else {
+            let run = Command::new(&binary)
+                .arg("-o")
+                .arg(&vcd)
+                .arg("-o")
+                .arg(&fst)
+                .output()
+                .unwrap();
+            assert!(run.status.success(), "{run:?}");
+            let vcd = std::fs::read_to_string(&vcd).unwrap();
+            let decoded = decode_fst(&fst);
+            assert!(decoded.contains("$var wire 1"), "{decoded}");
+            assert!(
+                decoded.lines().any(|line| line.starts_with('1')),
+                "{decoded}"
+            );
+            assert_eq!(waveform_times(&vcd), vec![0]);
+            assert_eq!(waveform_times(&decoded), vec![0]);
+        }
+    }
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn native_waveforms_are_reproducible_across_builds() {
     if Command::new("clang").arg("--version").output().is_err() {
         eprintln!("skipping: clang not found");

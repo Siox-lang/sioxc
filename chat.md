@@ -12024,3 +12024,57 @@ incomplete. Private-fragment resolution/metavalue and expression construction,
 initializer normalization, general runtime calls/recursion, non-packed
 conversions, dynamic host forms and the newly verified empty-FST case remain.
 Next: complete those canonical construction boundaries and close output gaps.
+
+### 2026-10-05 — Codex — empty waveform output ownership
+
+Own runtime/wave.c FST-open validation, runtime/main.c zero-selection handling,
+focused native integration regressions and waveform docs/TODO status. Upstream
+fstReaderOpen requires nonzero maxhandle and a value-change section; an empty
+FST cannot be readable without synthetic variables or modifying its format.
+Reject explicit FST requests for zero observable signals before touching that
+path, and skip opening waveform paths when no tests match. Retain successful
+empty VCD output and zero-duration FST runs with actual declarations. Cover
+sentinel-file preservation, filtering, zero elapsed time and decoder acceptance.
+Preserve unrelated AGENTS.md, .codex/ and 441 historical chat additions.
+Full pinned two-job gates and fresh native output checks before local commit.
+
+FST open now rejects a zero-channel design before allocation/file creation,
+with an actionable VCD/no-output alternative. The harness counts selected
+tests before opening outputs, preserving existing paths and avoiding new
+artifacts when a filter matches none. Focused native integration passed in
+both modes: empty VCD remains allowed; absent/existing FST paths are preserved
+on rejection; a real signal produces decoder-readable FST at time zero. Added
+absent-path filtering and decoded-value assertions before the final gate.
+
+Freeze compiler/runtime/test execution sources and the sibling corpus for
+/tmp/siox-empty-wave-ci-j2-20261005 (pinned toolchain, two jobs, 8 GiB cap).
+No source edits until terminal. Source hash now includes tests:
+44f3fbb3d9a801425987c2cbacc349b3b8673674cf1e667521cfd83255fa3b6c.
+Corpus hash:
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+
+### 2026-10-05 — Codex — empty waveform output verified
+
+The existing pinned two-job CI job completed successfully at
+/tmp/siox-empty-wave-ci-j2-20261005: formatting, frontend checks/Clippy,
+default/bitpack Rust suites (508/488 library tests and 36 native integration
+tests per mode), all-target/all-feature Clippy and both 211-program corpora
+pass. Frozen compiler/runtime/test and sibling corpus hashes match. Observed
+scope peak was 1,013,497,856 bytes (0.94 GiB), including Cargo; no compiler
+allocation or throughput improvement is claimed.
+
+Three freshly compiled native packed-read, aggregate-metadata and old-value
+fixtures pass in both modes, with byte-identical VCDs and decoded FST streams
+after excluding wall-clock date headers. Constant-only logic-table binaries
+retain successful VCD, explicitly reject FST with exit 2 without creating it,
+and leave both output paths absent when no tests match. Integration coverage
+also proves existing sentinel paths survive filtering/rejection and a real
+signal yields decoder-readable FST at time zero. An initial fresh compile
+attempt lacked LD_LIBRARY_PATH and exited 127; rerunning with the established
+LLVM environment passed.
+
+Commit only the waveform contract, regression, docs and this owned log block.
+Preserve AGENTS.md, .codex/ and 441 unrelated historical chat additions.
+Main remains local. Completion estimate: Phase 1 approximately 97%; the output
+gap is closed, but remaining canonical source ingress, runtime call CFGs,
+non-packed conversions and dynamic host forms still prevent completion.

@@ -196,6 +196,12 @@ When several tests run, their traces are placed consecutively on one monotonic
 timeline. siox does not ship a viewer; the resulting file is opened in an
 external waveform application.
 
+If no tests match the filter, waveform paths are left untouched. A selected
+constant-only test with no observable signals may emit an empty VCD; FST is
+rejected before creating or truncating its path because libfst readers require
+at least one variable. No synthetic signals are added to work around this
+format constraint. Zero elapsed time is not an error when signals are present.
+
 **How siox values appear:**
 
 - **Buses** (`unsigned[8]`, `signed[16]`) are binary vectors.

@@ -183,6 +183,11 @@ int sx_wave_open_fst(const char *path) {
         fprintf(stderr, "more than one FST output was requested\n");
         return 0;
     }
+    if (!sx_wave_signal_count) {
+        fprintf(stderr, "cannot write FST output %s: no observable signals; "
+                        "use VCD or run without waveform output\n", path);
+        return 0;
+    }
     if (!sx_wave_prepare()) return 0;
 
     size_t count = sx_wave_signal_count;

@@ -158,13 +158,6 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
 Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
-- 🔴 **Zero-signal FST output.** Constant-only tests such as
-  `logic_table_test` have no waveform declarations. Their native executable
-  currently succeeds while writing an FST the upstream reader cannot open;
-  the pre-migration binary reproduces this too. Define and enforce a clear
-  empty-waveform contract instead of silently reporting an unreadable artifact
-  as successful. Cover zero signals and zero elapsed time separately in both
-  modes; retain decoded hierarchy/time/value parity for ordinary traces.
 - 🔴 **Native source debug metadata.** Emit direct DWARF locations and a stable
   signal/process inspection surface from LLVM Process entries. Until that is
   implemented, `sioxc --test -g` fails explicitly; it must never resurrect a

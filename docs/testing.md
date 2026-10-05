@@ -138,6 +138,11 @@ test result: ok. 1 passed; 0 failed
   together with different paths; using the same path is rejected. They share
   the same 1 fs scheduler samples and place multiple tests consecutively on one
   monotonic timeline.
+  A filter matching no tests leaves waveform paths untouched. A selected test
+  with no observable signals can still write an empty VCD, but requesting FST
+  fails before creating/truncating that FST path: libfst requires at least one
+  variable. Tests with signals may produce valid FST at time zero without an
+  `await`.
 - **A directory:** corpus orchestration belongs to the build/test tooling, not
   the compiler. `scripts/test-corpus.sh` compiles and runs each `.siox` file.
 - **Native binary:** `sioxc --test <file> -o <bin>` builds a standalone test

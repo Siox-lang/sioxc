@@ -69,15 +69,16 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    if (vcd_path && !sx_wave_open_vcd(vcd_path)) return 2;
-    if (fst_path && !sx_wave_open_fst(fst_path)) {
+    uint32_t selected = 0;
+    for (uint32_t test = 0; test < sx_test_count; ++test)
+        if (!filter || strstr(sx_test_names[test], filter)) selected++;
+
+    if (selected && vcd_path && !sx_wave_open_vcd(vcd_path)) return 2;
+    if (selected && fst_path && !sx_wave_open_fst(fst_path)) {
         sx_wave_close();
         return 2;
     }
 
-    uint32_t selected = 0;
-    for (uint32_t test = 0; test < sx_test_count; ++test)
-        if (!filter || strstr(sx_test_names[test], filter)) selected++;
     printf("\nrunning %u test%s\n", (unsigned)selected, selected == 1 ? "" : "s");
 
     uint32_t failed = 0;
