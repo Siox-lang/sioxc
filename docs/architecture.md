@@ -289,8 +289,13 @@ expression adapter. Lookup compaction likewise recognizes its fixed packed
 pattern directly in canonical nodes, interns decoded tables and replaces only
 matching slices in place. Typed intermediate boundaries and failed matches
 remain intact; widths, layouts, spans and shared indices retain their IDs.
-Coercions and other construction/normalization paths still
-need migration.
+Metavalue reconstruction moves and remaps canonical dependencies once and
+constructs comparison guards and companion slices directly. Current/old planes,
+checked offsets, full formats and shared operands survive; unchanged nodes are
+not projected/imported. This removes the general source-arena rewrite adapter.
+Its focused implementation is in `lower/source_values/reconstruct.rs`.
+Private-fragment reconstruction, coercions, other constructors and initializer
+normalization still need migration.
 `lower/source_bindings.rs` owns scoped concrete argument/local/return shapes
 and aggregate projection over those leaves. Pure free/method array arguments
 no longer substitute a caller AST into every parameter use. Returned arrays,

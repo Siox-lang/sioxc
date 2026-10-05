@@ -6,6 +6,8 @@
 use super::*;
 use std::sync::Arc;
 
+mod reconstruct;
+
 #[derive(Default)]
 pub(super) struct SourceValues {
     pub(super) ir: ProcessIr,
@@ -334,77 +336,6 @@ impl SourceValues {
         self.ir.value_layouts.resize(self.ir.values.len(), None);
         self.ir.value_layouts[id.0 as usize] = Some(layout);
         id
-    }
-
-    fn retain_format(&mut self, id: ProcessValueId, old: &Self, index: usize) {
-        self.ir.values[id.0 as usize].bit_width = old.ir.values[index].bit_width;
-        if let Some(Some(layout)) = old.ir.value_layouts.get(index) {
-            self.ir.value_layouts.resize(self.ir.values.len(), None);
-            self.ir.value_layouts[id.0 as usize] = Some(layout.clone());
-        }
-    }
-
-    /// Rewrite each dependency once. New operands precede their users and
-    /// old roots are remapped afterwards, so rewrites may change graph shape
-    /// without introducing forward references or expanding shared values.
-    pub(super) fn rewrite(
-        &mut self,
-        mut rewrite: impl FnMut(&Self, &mut Expr),
-    ) -> Vec<ProcessValueId> {
-        let old = std::mem::take(self);
-        let mut mapped = Vec::with_capacity(old.ir.values.len());
-        for (index, value) in old.ir.values.iter().enumerate() {
-            if let ProcessValueKind::RawResize { operand } = value.kind {
-                let id = self.bind_scalar(mapped[operand.0 as usize], value.ty.clone(), value.span);
-                self.retain_format(id, &old, index);
-                mapped.push(id);
-                continue;
-            }
-            let mut expression = super::super::derive::digital_node(
-                &old.ir,
-                ProcessValueId(index as u32),
-                |child| self.child(mapped[child.0 as usize]),
-            )
-            .expect("source representation rewrite uses digital nodes");
-            rewrite(self, &mut expression);
-            mapped.push(self.append(&expression, value.span, value.ty.clone()));
-        }
-        for (value, meta) in old.explicit_meta {
-            let mut meta = meta;
-            self.remap_expression(&mut meta, &mapped);
-            self.set_explicit_meta(mapped[value.0 as usize], meta);
-        }
-        mapped
-    }
-
-    /// The table recognizer inspects only three nodes: a slice, a shift and
-    /// its stride multiplication. Exposing that fixed shape does not expand
-    /// the variable index's shared value graph.
-    pub(super) fn expose_lookup_shape(&self, expression: &mut Expr) {
-        let Expr::Slice { base, .. } = expression else {
-            return;
-        };
-        if let Expr::Canonical { value, .. } = base.as_ref() {
-            let node = self.node(*value);
-            if !matches!(node, Expr::Binary { op: BinOp::Shr, .. }) {
-                return;
-            }
-            **base = node;
-        }
-        let Expr::Binary {
-            op: BinOp::Shr,
-            rhs,
-            ..
-        } = base.as_mut()
-        else {
-            return;
-        };
-        if let Expr::Canonical { value, .. } = rhs.as_ref() {
-            let node = self.node(*value);
-            if matches!(node, Expr::Binary { op: BinOp::Mul, .. }) {
-                **rhs = node;
-            }
-        }
     }
 
     pub(super) fn remap_expression(&self, expression: &mut Expr, mapped: &[ProcessValueId]) {
@@ -1008,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn concrete_local_formats_survive_rewrites_and_reachability_compaction() {
+    fn concrete_local_formats_survive_reconstruction_and_reachability_compaction() {
         let span = crate::diag::Span::new(crate::diag::FileId(0), 0..1);
         let layout = SourceLayout {
             span,
@@ -1024,7 +955,8 @@ mod tests {
         let local = arena.bind_layout(&Expr::Current(SignalId(0)), layout.clone(), span);
         let scalar = arena.bind_scalar(local, Some(crate::types::Ty::Integer), span);
         assert_eq!(arena.ir.value_layouts.len(), arena.ir.values.len());
-        let mapped = arena.rewrite(|_, _| {});
+        let mapped =
+            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new());
         let mut draft = HardwareDraft::default();
         draft.drivers.push(Driver {
             target: SignalId(1),
@@ -1071,17 +1003,10 @@ mod tests {
             hi: 3,
             lo: 0,
         };
-        let mut unbound = lookup(stride);
-        let mut bound = lookup(bound);
+        let unbound = lookup(stride);
+        let bound = lookup(bound);
         let unbound_id = arena.append(&unbound, span, None);
         let bound_id = arena.append(&bound, span, None);
-        arena.expose_lookup_shape(&mut unbound);
-        assert!(packed_lookup(&unbound).is_some());
-        arena.expose_lookup_shape(&mut bound);
-        assert!(
-            packed_lookup(&bound).is_none(),
-            "compaction would bypass the bound stride's evaluation width"
-        );
         let bound_node = arena.ir.values[bound_id.0 as usize].clone();
         let mut tables = Vec::new();
         arena.compact_lookups(&mut tables, &mut HashMap::new());
@@ -1094,7 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn captured_literal_planes_survive_rewrite_and_compaction() {
+    fn captured_literal_planes_survive_reconstruction_and_compaction() {
         let span = crate::diag::Span::new(crate::diag::FileId(0), 0..1);
         let mut arena = SourceValues::default();
         arena.append(&Expr::Const(99), span, None);
@@ -1102,7 +1027,8 @@ mod tests {
         let metadata = arena.append(&Expr::Const(0x120), span, None);
         arena.set_explicit_meta(value, arena.reference(metadata));
         assert!(arena.may_have_meta(value, &HashMap::new()));
-        let mapped = arena.rewrite(|_, _| {});
+        let mapped =
+            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new());
         let value = mapped[value.0 as usize];
         assert!(arena.may_have_meta(value, &HashMap::new()));
         let mut draft = HardwareDraft::default();

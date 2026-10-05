@@ -94,8 +94,11 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   updates canonical leaves in place from std's discriminants without remapping
   IDs or losing formats. Canonical lookup compaction now directly recognizes
   and replaces matching nodes in place, preserving formats, shared indices and
-  typed stride boundaries without projection/import. Other constructors and
-  normalization paths still use the temporary adapter.
+  typed stride boundaries without projection/import. Metavalue reconstruction
+  now moves/remaps dependencies and constructs guards and companion reads
+  directly, preserving current/old planes, checked offsets and full formats;
+  the general source-arena rewrite adapter is deleted. Other constructors and
+  private-fragment normalization paths still use the temporary ingress adapter.
   Complete the remaining ingress migration: resolution/metavalue construction,
   expression construction between these boundaries and compile-time initializer
   normalization still assemble private fragments around those IDs.
@@ -155,6 +158,13 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
 Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
+- 🔴 **Zero-signal FST output.** Constant-only tests such as
+  `logic_table_test` have no waveform declarations. Their native executable
+  currently succeeds while writing an FST the upstream reader cannot open;
+  the pre-migration binary reproduces this too. Define and enforce a clear
+  empty-waveform contract instead of silently reporting an unreadable artifact
+  as successful. Cover zero signals and zero elapsed time separately in both
+  modes; retain decoded hierarchy/time/value parity for ordinary traces.
 - 🔴 **Native source debug metadata.** Emit direct DWARF locations and a stable
   signal/process inspection surface from LLVM Process entries. Until that is
   implemented, `sioxc --test -g` fails explicitly; it must never resurrect a

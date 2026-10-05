@@ -913,10 +913,7 @@ impl<'a> Lowering<'a> {
             })
             .collect();
         let arena = self.source_values.get_mut();
-        let mapped = arena.rewrite(|arena, expression| {
-            arena.expose_lookup_shape(expression);
-            reconstruct_expr(expression, &meta_of, &elems, &encodings);
-        });
+        let mapped = arena.reconstruct_metavalues(&meta_of, &elems, &encodings);
         for expression in self.hardware.expressions_mut() {
             arena.remap_expression(expression, &mapped);
         }

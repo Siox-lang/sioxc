@@ -11965,3 +11965,62 @@ Other constructors/coercions, resolution/metavalue reconstruction, initializer
 normalization, general runtime calls/recursion, non-packed conversions and
 dynamic host forms remain. Next: remove the remaining production arena rewrite
 round-trip used for metavalue reconstruction, retaining formats and shared IDs.
+
+### 2026-10-05 — Codex — canonical metavalue reconstruction ownership
+
+Own SourceValues reconstruction and its new focused child module, the
+metavalue.rs caller, focused source-arena tests and architecture/TODO status.
+Replace the remaining production rewrite projection/import loop with a
+dependency-ordered canonical-node move/remap. Construct comparison guards and
+static/dynamic companion reads directly, preserve Current/Old observations,
+checked offset identities, source-defined encoding, spans and full formats.
+Delete the obsolete general rewrite helper after migrating its unit checks;
+retain private-fragment reconstruction until that ingress is migrated too.
+Preserve AGENTS.md, .codex/ and unrelated chat history; full pinned two-job
+gates plus fresh native simulation parity before committing. Main stays local.
+
+Canonical reconstruction now moves unchanged nodes and remaps dependencies
+without digital projection/import. Build comparison guards and static/dynamic
+companion reads directly; share checked and foreign-call offsets, keep old
+observations, source-owned sets and complete formats. Obsolete rewrite and
+lookup-shape exposure helpers are removed. The focused implementation lives in
+lower/source_values/reconstruct.rs. Ten source-arena tests pass, including
+4,032 evaluations against private-fragment semantics with reordered encoding,
+non-projectable Index movement and checked-call/format/boundary regressions.
+Full completion is not claimed: other private-fragment ingress remains.
+
+Freeze execution sources and sibling corpus for the pinned two-job full gate
+at /tmp/siox-canonical-meta-ci-j2-20261005 under an 8 GiB cap. No source edits
+until terminal. The source hash includes the newly staged reconstruction file:
+b3eb6828e4ba8a8ee25c8b709b602a70ae781f685a8b690d532f03ba392ab95f.
+Corpus hash:
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+
+### 2026-10-05 — Codex — canonical metavalue reconstruction verified
+
+The pinned two-job CI scope completed successfully at
+/tmp/siox-canonical-meta-ci-j2-20261005: formatting, frontend checks/Clippy,
+default/bitpack Rust suites (508/488 library tests plus integrations),
+all-target/all-feature Clippy and both 211-program corpora pass. Frozen
+execution-source and sibling corpus hashes match. Observed scope peak was
+1,211,183,104 bytes (1.13 GiB), including Cargo; no measured compiler allocation
+or throughput claim is made.
+
+Eight fresh native packed-read, logic/encoding/resolution table, recursive
+metadata, X/Z comparison, old-attribute and metavalue-state binaries pass in
+both modes with byte-identical VCDs. Four traces also match the pre-change
+baseline. Seven nonempty FST traces decode through the existing libfst fixture
+and match hierarchy/time/value content across modes after excluding wall-clock
+date headers. Raw FST byte comparison initially differed only in that header.
+The eighth, constant-only logic-table test has no waveform declarations; its
+FST cannot be opened by libfst. The pre-change native binary reproduces that
+failure, so record a separate zero-signal FST Output follow-up in TODO.md rather
+than claim it was introduced or fixed by this arena migration.
+
+Commit canonical companion reconstruction, adapter deletion, regressions and
+accurate docs locally. Preserve AGENTS.md, .codex/ and 441 unrelated chat
+additions. No main push. Completion estimate: Phase 1 approximately 97%, still
+incomplete. Private-fragment resolution/metavalue and expression construction,
+initializer normalization, general runtime calls/recursion, non-packed
+conversions, dynamic host forms and the newly verified empty-FST case remain.
+Next: complete those canonical construction boundaries and close output gaps.
