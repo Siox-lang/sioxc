@@ -1960,6 +1960,89 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
     }
 }
 
+/// Remap arena operands without projecting a canonical node to expressions.
+/// Leaves keep their declaration/storage identities; only value ids move.
+pub(crate) fn remap_process_value_dependencies(
+    value: &mut ProcessValueKind,
+    mut map: impl FnMut(ProcessValueId) -> ProcessValueId,
+) {
+    let mut remap = |value: &mut ProcessValueId| *value = map(*value);
+    match value {
+        ProcessValueKind::Field { base, .. }
+        | ProcessValueKind::Attribute { base, .. }
+        | ProcessValueKind::BitSlice { base, .. }
+        | ProcessValueKind::PackedSlice { base, .. }
+        | ProcessValueKind::TableLookup { index: base, .. }
+        | ProcessValueKind::Unary { operand: base, .. }
+        | ProcessValueKind::RawResize { operand: base } => remap(base),
+        ProcessValueKind::Index { base, index } => {
+            remap(base);
+            remap(index);
+        }
+        ProcessValueKind::CheckedIndex { index, valid, .. } => {
+            remap(index);
+            remap(valid);
+        }
+        ProcessValueKind::Range { left, right } => left.iter_mut().chain(right).for_each(remap),
+        ProcessValueKind::Binary { left, right, .. } => {
+            remap(left);
+            remap(right);
+        }
+        ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } => {
+            remap(condition);
+            remap(then_value);
+            remap(else_value);
+        }
+        ProcessValueKind::MetaCompare {
+            operands, inner, ..
+        } => {
+            operands.iter_mut().for_each(&mut remap);
+            remap(inner);
+        }
+        ProcessValueKind::Match { scrutinee, arms } => {
+            remap(scrutinee);
+            for arm in arms {
+                remap(&mut arm.value);
+            }
+        }
+        ProcessValueKind::Call {
+            callee, arguments, ..
+        } => {
+            remap(callee);
+            arguments.iter_mut().for_each(remap);
+        }
+        ProcessValueKind::ForeignCall { arguments, .. }
+        | ProcessValueKind::HostCall { arguments, .. } => arguments.iter_mut().for_each(remap),
+        ProcessValueKind::Construct { fields, spread, .. } => {
+            fields
+                .iter_mut()
+                .filter_map(|field| field.value.as_mut())
+                .for_each(&mut remap);
+            spread.iter_mut().for_each(remap);
+        }
+        ProcessValueKind::Concat(values) | ProcessValueKind::Array(values) => {
+            values.iter_mut().for_each(remap)
+        }
+        ProcessValueKind::Number(_)
+        | ProcessValueKind::Suffixed { .. }
+        | ProcessValueKind::BitString { .. }
+        | ProcessValueKind::Char(_)
+        | ProcessValueKind::String(_)
+        | ProcessValueKind::Local { .. }
+        | ProcessValueKind::Storage(_)
+        | ProcessValueKind::StorageState { .. }
+        | ProcessValueKind::Signal { .. }
+        | ProcessValueKind::Definition(_)
+        | ProcessValueKind::Intrinsic(_)
+        | ProcessValueKind::Default
+        | ProcessValueKind::Invalid => {}
+    }
+}
+
 /// Root storage class of an assignable process value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ProcessPlaceClass {

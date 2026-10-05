@@ -275,6 +275,11 @@ recursive leaf layouts. Narrow signed ranges, packed families, real values,
 enum literals and Unicode characters therefore retain their representation
 without turning locals into staged signals. Inlined arguments, receivers and
 return selections share values even without intermediate source lets.
+Reachability compaction moves canonical nodes and remaps their operand IDs
+directly, preserving widths, layouts, spans and shared dependencies without
+an expression-tree roundtrip. Source if-expressions also construct their
+Select node directly in that arena; other ingress paths still use the
+temporary expression adapter.
 `lower/source_bindings.rs` owns scoped concrete argument/local/return shapes
 and aggregate projection over those leaves. Pure free/method array arguments
 no longer substitute a caller AST into every parameter use. Returned arrays,

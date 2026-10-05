@@ -11787,3 +11787,71 @@ direct canonical expression/resolution/metavalue ingress, initializer
 normalization, general runtime calls/recursion, non-packed conversions and
 dynamic host forms. Optimization follow-ups: block-local packed read selectors,
 negative/sparse predicates, captured-place expansion and repeatable benchmarks.
+
+### 2026-10-05 — Codex — direct source arena construction ownership
+
+Continue the Phase 1 ingress migration after the verified memory fixes. Own
+ir/process.rs dependency remapping, lower/source_values.rs node construction/
+reachability compaction, lower/expressions.rs scalar conditional construction,
+focused regressions and architecture/TODO status. Reachability compaction must
+copy/remap canonical nodes directly instead of projecting them to Expr and
+re-importing them; preserve full widths, layouts, spans and dependency sharing.
+Start source conditional construction with arena-owned operands and Select
+nodes, using the existing binding boundary for legacy callers. The remaining
+adapter is not considered deleted until all ingress/normalization paths move.
+Preserve setup/history edits and sibling work; full gates before commits, no push.
+
+Direct compaction now moves canonical nodes and layouts, remapping arena
+operands without Expr projection/import or cloned node payloads. An Index
+regression (not representable by the old digital projection) verifies widths,
+layouts, spans, reads and shared branches survive; all 501 library tests and
+all-target/all-feature Clippy passed before the final move-only refinement.
+Fresh native mux, signed hardware-shape, float-conformance and packed-read
+executables pass their assertions and VCD checks. Architecture/TODO distinguish
+this boundary migration from the remaining append/rewrite/normalization paths.
+AST-only graph update completed with existing vendored libfst parse warnings.
+
+Freeze execution sources and sibling corpus for the full pinned gate at
+/tmp/siox-direct-arena-ci-20261005 under an 8 GiB memory cap; no code edits until
+terminal. Execution-source hash (git ls-files execution paths, sha256sum):
+2a6e112b2bfef4250a56d2feb3851b9897d89ea9d172b95b4c9f5648ff40c2a0.
+Corpus hash (sorted sibling .siox paths, sha256sum):
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+
+### 2026-10-05 — Codex — graph artifact branch ownership
+
+User requested graphify artifacts be ignored on main and allowed on a separate
+graphed branch, then explicitly authorized pushing that branch. Own the
+.gitignore addition and a graph-only snapshot commit on graphed. Track the
+portable graph JSON/report/HTML only, excluding caches, backups and local
+interpreter/settings files. Preserve the shared main worktree without switching
+branches; publish only graphed after the running compiler gate is terminal.
+
+The first direct-arena gate was deliberately stopped (terminal 143) after
+default Rust tests passed but bitpack linking showed no visible progress for
+over 15 minutes amid host-wide I/O stalls. Its scope peaked at 1,784,983,552
+bytes and reported zero OOM events/kills; this is not a compiler-test failure
+or evidence of a leak. Frozen source/corpus hashes still match. Rerun the same
+gate with CARGO_BUILD_JOBS=2 and the same 8 GiB cap, retaining separate logs at
+/tmp/siox-direct-arena-ci-j2-20261005. No compiler or corpus edits between runs.
+
+### 2026-10-05 — Codex — canonical compaction and graph branch verified
+
+The two-job pinned full CI gate returned 0: formatting, frontend check/Clippy,
+default and bitpack Rust suites, all-target/all-feature Clippy and both
+211-program corpora pass. Frozen execution-source and corpus hashes match.
+Observed scope peak was 960,872,448 bytes (916 MiB); comparison with the stopped
+run reflects Cargo scheduling, not a measured compiler-code saving. Retain
+logs at /tmp/siox-direct-arena-ci-j2-20261005. Fresh default and bitpack mux and
+packed-read native executables pass assertions/profiles and byte-match VCDs;
+default signed hardware-shape and hardware float-conformance binaries pass too.
+
+Commit direct canonical compaction, Select construction, regression, docs and
+the requested graph ignore rule on local main. Preserve AGENTS.md, .codex/ and
+441 unrelated historical chat additions. Generate a portable graph snapshot
+against that commit and publish only the graphed branch; do not push main.
+
+Completion estimate: Phase 1 approximately 97%, still incomplete. Remaining:
+direct canonical expression/resolution/metavalue ingress, initializer
+normalization, general runtime calls/recursion, non-packed conversions and
+dynamic host forms. The temporary append/rewrite adapter is not yet deleted.

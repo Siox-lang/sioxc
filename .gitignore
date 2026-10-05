@@ -7,6 +7,9 @@ Cargo.lock.orig
 *.vcd
 *.fst
 
+# Generated knowledge graph (snapshots are tracked only on the graphed branch)
+/graphify-out/
+
 # Editor / OS noise
 .DS_Store
 *.swp

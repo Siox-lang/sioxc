@@ -37,11 +37,29 @@ impl<'a> Lowering<'a> {
             // `if c { a } else { b }` is a mux: lower to a select.
             ast::Expr::IfExpr {
                 cond, then, els, ..
-            } => Expr::Select {
-                cond: Box::new(self.lower_expr(cond)),
-                then: Box::new(self.lower_expr(then)),
-                els: Box::new(self.lower_expr(els)),
-            },
+            } => {
+                let condition = self.lower_expr(cond);
+                let then_value = self.lower_expr(then);
+                let else_value = self.lower_expr(els);
+                let arena = &mut *self.source_values.borrow_mut();
+                let condition = arena.append(&condition, ast::expr_span(cond), None);
+                let then_value = arena.append(&then_value, ast::expr_span(then), None);
+                let else_value = arena.append(&else_value, ast::expr_span(els), None);
+                let id = arena.push_node(
+                    ProcessValue {
+                        span: ast::expr_span(e),
+                        ty: None,
+                        bit_width: None,
+                        kind: ProcessValueKind::Select {
+                            condition,
+                            then_value,
+                            else_value,
+                        },
+                    },
+                    None,
+                );
+                arena.reference(id)
+            }
             // A match-expression is a first-match `Select` chain over the arms.
             ast::Expr::Match {
                 scrutinee, arms, ..

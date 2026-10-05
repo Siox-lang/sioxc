@@ -86,6 +86,10 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   arrays, negative labels, contextual packed literals, user struct operators
   and multiword elements use this path. Lookup recognition does not expand a
   shared foreign call when an ordinary slice is not a lookup table.
+  Reachability compaction now moves canonical nodes and remaps their operand
+  IDs directly, preserving full formats without expression projection/import.
+  Source if-expressions construct arena Select nodes directly; other expression
+  constructors and normalization paths still use the temporary adapter.
   Complete the remaining ingress migration: resolution/metavalue construction,
   expression construction between these boundaries and compile-time initializer
   normalization still assemble private fragments around those IDs.

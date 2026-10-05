@@ -94,6 +94,25 @@ impl SourceValues {
         if id.0 as usize >= first {
             self.ir.values[id.0 as usize].ty = ty;
         }
+        self.record_reads(first);
+        id
+    }
+
+    /// Append an already constructed canonical node with its exact format.
+    pub(super) fn push_node(
+        &mut self,
+        value: ProcessValue,
+        layout: Option<SourceLayout>,
+    ) -> ProcessValueId {
+        let id = ProcessValueId(self.ir.values.len() as u32);
+        self.ir.values.push(value);
+        self.ir.value_layouts.resize(self.ir.values.len(), None);
+        self.ir.value_layouts[id.0 as usize] = layout;
+        self.record_reads(id.0 as usize);
+        id
+    }
+
+    fn record_reads(&mut self, first: usize) {
         for index in first..self.ir.values.len() {
             let node = &self.ir.values[index];
             let mut seen = HashSet::new();
@@ -111,7 +130,6 @@ impl SourceValues {
             }
             self.reads.push(reads.into());
         }
-        id
     }
 
     /// A typed scalar binding evaluates at its own format before a later
@@ -266,24 +284,19 @@ impl SourceValues {
                 ));
             }
         }
-        let old = std::mem::take(self);
+        let mut old = std::mem::take(self);
         let mut mapped = vec![ProcessValueId(0); old.ir.values.len()];
-        for (index, value) in old.ir.values.iter().enumerate() {
+        for (index, mut value) in old.ir.values.into_iter().enumerate() {
             let id = ProcessValueId(index as u32);
             if !live.contains(&id) {
                 continue;
             }
-            if let ProcessValueKind::RawResize { operand } = value.kind {
-                mapped[index] =
-                    self.bind_scalar(mapped[operand.0 as usize], value.ty.clone(), value.span);
-                self.retain_format(mapped[index], &old, index);
-                continue;
-            }
-            let expression = super::super::derive::digital_node(&old.ir, id, |child| {
-                Ok(self.reference(mapped[child.0 as usize]))
-            })
-            .expect("live source values have dominating dependencies");
-            mapped[index] = self.append(&expression, value.span, value.ty.clone());
+            super::super::process::remap_process_value_dependencies(&mut value.kind, |child| {
+                assert!(child.0 < id.0, "source operands precede their users");
+                mapped[child.0 as usize]
+            });
+            let layout = old.ir.value_layouts.get_mut(index).and_then(Option::take);
+            mapped[index] = self.push_node(value, layout);
         }
         for expression in draft.expressions_mut() {
             self.remap_expression(expression, &mapped);
@@ -583,6 +596,84 @@ impl Lowering<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_projection_compacts_without_expression_roundtrips() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 4..9);
+        let layout = SourceLayout {
+            span,
+            kind: LayoutKind::Scalar {
+                width: 4,
+                domain: ScalarDomain::Enum("Logic".into()),
+                nominal: Some("Logic".into()),
+                value_range: None,
+            },
+        };
+        let mut arena = SourceValues::default();
+        arena.append(&Expr::Const(99), span, None);
+        let base = arena.append(&Expr::Current(SignalId(0)), span, None);
+        let index = arena.append(&Expr::Const(2), span, None);
+        let selected = arena.push_node(
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(4),
+                kind: ProcessValueKind::Index { base, index },
+            },
+            Some(layout.clone()),
+        );
+        let condition = arena.append(&Expr::Const(1), span, None);
+        let root = arena.push_node(
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(4),
+                kind: ProcessValueKind::Select {
+                    condition,
+                    then_value: selected,
+                    else_value: selected,
+                },
+            },
+            Some(layout.clone()),
+        );
+        let mut draft = HardwareDraft::default();
+        draft.drivers.push(Driver {
+            target: SignalId(0),
+            cond: None,
+            expr: arena.reference(root),
+            meta: None,
+            ctx: 0,
+            span: Some(span),
+        });
+        arena.retain_reachable(&mut draft);
+        assert_eq!(arena.ir.values.len(), 5);
+        assert!(matches!(
+            arena.ir.values[2].kind,
+            ProcessValueKind::Index {
+                base: ProcessValueId(0),
+                index: ProcessValueId(1)
+            }
+        ));
+        assert!(matches!(
+            arena.ir.values[4].kind,
+            ProcessValueKind::Select {
+                condition: ProcessValueId(3),
+                then_value: ProcessValueId(2),
+                else_value: ProcessValueId(2)
+            }
+        ));
+        for node in [2, 4] {
+            assert_eq!(arena.ir.values[node].span, span);
+            assert_eq!(arena.ir.values[node].bit_width, Some(4));
+            assert_eq!(arena.ir.value_layouts[node], Some(layout.clone()));
+            assert_eq!(arena.reads[node].as_ref(), &[SignalId(0)]);
+        }
+        assert!(
+            arena.ir.validate(1).is_empty(),
+            "{:?}",
+            arena.ir.validate(1)
+        );
+    }
 
     #[test]
     fn concrete_local_formats_survive_rewrites_and_reachability_compaction() {
