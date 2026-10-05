@@ -605,6 +605,7 @@ impl<'a> Lowering<'a> {
                         self.lower_scalar_env(&rhs, env),
                         self.binary_uses_kernel_integer(scrutinee, &rhs),
                         self.declares_kernel_integer(scrutinee),
+                        *span,
                     )
                 };
                 if low == high {

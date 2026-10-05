@@ -2152,7 +2152,7 @@ fn process_place_classes(ir: &ProcessIr, value: ProcessValueId) -> Option<Vec<Pr
 /// Preserve the fully selected arithmetic domain of a normalized digital
 /// operation. Unlike source operators, these variants require no type lookup
 /// or std dispatch in a backend.
-fn process_binary_from_digital(operation: BinOp) -> ProcessBinaryOp {
+pub(crate) fn process_binary_from_digital(operation: BinOp) -> ProcessBinaryOp {
     match operation {
         BinOp::Add => ProcessBinaryOp::Add,
         BinOp::Sub => ProcessBinaryOp::Sub,

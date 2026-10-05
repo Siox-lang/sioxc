@@ -132,6 +132,70 @@ impl SourceValues {
         }
     }
 
+    pub(super) fn binary(
+        &mut self,
+        operation: BinOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        span: crate::diag::Span,
+    ) -> Expr {
+        let left = self.append(lhs, span, None);
+        let right = self.append(rhs, span, None);
+        let id = self.push_node(
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: None,
+                kind: ProcessValueKind::Binary {
+                    operation: super::super::process::process_binary_from_digital(operation),
+                    left,
+                    right,
+                },
+            },
+            None,
+        );
+        self.reference(id)
+    }
+
+    pub(super) fn unary(
+        &mut self,
+        operation: ProcessUnaryOp,
+        rhs: &Expr,
+        span: crate::diag::Span,
+    ) -> Expr {
+        let operand = self.append(rhs, span, None);
+        let id = self.push_node(
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: None,
+                kind: ProcessValueKind::Unary { operation, operand },
+            },
+            None,
+        );
+        self.reference(id)
+    }
+
+    /// Resolving leaf values changes neither identities nor signal dependencies.
+    pub(super) fn normalize_logic_literals(&mut self, lut: &HashMap<String, u64>) {
+        for node in &mut self.ir.values {
+            if let ProcessValueKind::Char(character) = node.kind {
+                node.kind = ProcessValueKind::Number(ProcessNumber::Integer(vec![lut
+                    .get(&format!("'{character}'"))
+                    .copied()
+                    .unwrap_or(0)]));
+            }
+        }
+        for meta in self.explicit_meta.values_mut() {
+            resolve_logic_expr(meta, lut);
+        }
+        self.real.clear();
+        self.non_integer.clear();
+        self.meta_width.clear();
+        self.coerced_real.clear();
+        self.meta_presence.clear();
+    }
+
     /// A typed scalar binding evaluates at its own format before a later
     /// consumer widens it. Otherwise each signed parent adds another bit and
     /// reevaluates the entire alias chain at that changing contextual width.
@@ -596,6 +660,90 @@ impl Lowering<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_operator_nodes_reuse_operand_identities_and_spans() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 4..9);
+        let mut arena = SourceValues::default();
+        let input = arena.append(&Expr::Current(SignalId(0)), span, None);
+        let input = arena.reference(input);
+        let product = arena.binary(BinOp::SMul, &input, &input, span);
+        let result = arena.unary(ProcessUnaryOp::Neg, &product, span);
+        assert!(matches!(
+            result,
+            Expr::Canonical {
+                value: ProcessValueId(2),
+                ..
+            }
+        ));
+        assert_eq!(arena.ir.values.len(), 3);
+        assert!(matches!(
+            arena.ir.values[1].kind,
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::SignedMul,
+                left: ProcessValueId(0),
+                right: ProcessValueId(0),
+            }
+        ));
+        assert!(matches!(
+            arena.ir.values[2].kind,
+            ProcessValueKind::Unary {
+                operation: ProcessUnaryOp::Neg,
+                operand: ProcessValueId(1),
+            }
+        ));
+        for index in [1, 2] {
+            assert_eq!(arena.ir.values[index].span, span);
+            assert_eq!(
+                arena.ir.values[index].bit_width, None,
+                "consumer supplies the width"
+            );
+            assert_eq!(arena.reads[index].as_ref(), &[SignalId(0)]);
+        }
+        assert!(arena.ir.validate(1).is_empty());
+    }
+
+    #[test]
+    fn logic_literal_normalization_preserves_canonical_nodes_and_formats() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 4..9);
+        let mut arena = SourceValues::default();
+        let literal = arena.append(&Expr::Logic('Q'), span, None);
+        let layout = SourceLayout {
+            span,
+            kind: LayoutKind::Scalar {
+                width: 5,
+                domain: ScalarDomain::Enum("TestLogic".into()),
+                nominal: Some("TestLogic".into()),
+                value_range: None,
+            },
+        };
+        let root = arena.push_node(
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(5),
+                kind: ProcessValueKind::Index {
+                    base: literal,
+                    index: literal,
+                },
+            },
+            Some(layout.clone()),
+        );
+        arena.set_explicit_meta(root, Expr::Logic('Q'));
+        arena.meta_width.insert((root, 5), 5);
+        let original = arena.ir.values[root.0 as usize].clone();
+        arena.normalize_logic_literals(&HashMap::from([("'Q'".into(), 23)]));
+        assert_eq!(arena.ir.values.len(), 2);
+        assert_eq!(arena.ir.values[root.0 as usize], original);
+        assert_eq!(arena.ir.value_layouts[root.0 as usize], Some(layout));
+        assert_eq!(
+            arena.ir.values[literal.0 as usize].kind,
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![23]))
+        );
+        assert!(matches!(arena.explicit_meta[&root], Expr::Const(23)));
+        assert!(arena.meta_width.is_empty());
+        assert!(arena.ir.validate(0).is_empty());
+    }
 
     #[test]
     fn canonical_projection_compacts_without_expression_roundtrips() {

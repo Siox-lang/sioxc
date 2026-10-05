@@ -42,11 +42,13 @@ impl<'a> Lowering<'a> {
             // companion poison the whole vector, so `not "0000X100"` came back
             // all `'X'` where `std_logic_1164` inverts per element and leaves
             // `1111X011`.
-            Expr::Binary {
-                op: BinOp::Xor,
-                lhs: Box::new(lower(rhs)),
-                rhs: Box::new(Expr::Const(mask)),
-            }
+            let value = lower(rhs);
+            self.source_values.borrow_mut().binary(
+                BinOp::Xor,
+                &value,
+                &Expr::Const(mask),
+                ast::expr_span(rhs),
+            )
         })
     }
 
@@ -285,6 +287,7 @@ impl<'a> Lowering<'a> {
                     r,
                     self.binary_uses_kernel_integer(lhs, rhs),
                     self.declares_kernel_integer(lhs) || self.declares_kernel_integer(rhs),
+                    ast::expr_span(e),
                 ))
             }
             ast::Expr::Unary { op, rhs, .. } => {
@@ -311,7 +314,11 @@ impl<'a> Lowering<'a> {
                         return Val::Scalar(v);
                     }
                 }
-                Val::Scalar(self.make_unary(*op, self.lower_scalar_env(rhs, env)))
+                Val::Scalar(self.make_unary(
+                    *op,
+                    self.lower_scalar_env(rhs, env),
+                    ast::expr_span(e),
+                ))
             }
             ast::Expr::SuffixLit { .. } => self.inline_suffix(e).unwrap_or_else(|| {
                 Val::Scalar(self.lower_expr(e)) // fixed fs/Hz table fallback

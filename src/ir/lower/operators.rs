@@ -173,10 +173,7 @@ impl<'a> Lowering<'a> {
             .cloned()
             .unwrap_or_default();
         let arena = self.source_values.get_mut();
-        let mapped = arena.rewrite(|_, expression| resolve_logic_expr(expression, &lut));
-        for expression in self.hardware.expressions_mut() {
-            arena.remap_expression(expression, &mapped);
-        }
+        arena.normalize_logic_literals(&lut);
         for d in &mut self.hardware.drivers {
             if let Some(c) = &mut d.cond {
                 resolve_logic_expr(c, &lut);
@@ -328,18 +325,20 @@ impl<'a> Lowering<'a> {
     /// real. `UnOp::Neg` negates a *word*, and a real carries f64 bits, so
     /// `-2.5` produced the two's-complement of the bit pattern — a different
     /// number entirely, and one that compared unequal to `0.0 - 2.5`.
-    pub(super) fn make_unary(&self, op: ast::UnOp, rhs: Expr) -> Expr {
+    pub(super) fn make_unary(&self, op: ast::UnOp, rhs: Expr, span: crate::diag::Span) -> Expr {
         if matches!(op, ast::UnOp::Neg) && self.is_real_expr(&rhs) {
-            return Expr::Binary {
-                op: BinOp::FSub,
-                lhs: Box::new(Expr::Real(0.0)),
-                rhs: Box::new(rhs),
-            };
+            return self.source_values.borrow_mut().binary(
+                BinOp::FSub,
+                &Expr::Real(0.0),
+                &rhs,
+                span,
+            );
         }
-        Expr::Unary {
-            op: lower_unop(op),
-            rhs: Box::new(rhs),
-        }
+        let operation = match op {
+            ast::UnOp::Neg => ProcessUnaryOp::Neg,
+            ast::UnOp::Not => ProcessUnaryOp::Not,
+        };
+        self.source_values.borrow_mut().unary(operation, &rhs, span)
     }
 
     /// Build a binary node, switching `+ - * /` to float arithmetic (and
@@ -383,6 +382,7 @@ impl<'a> Lowering<'a> {
         rhs: Expr,
         integer: bool,
         declared: bool,
+        span: crate::diag::Span,
     ) -> Expr {
         if self.is_real_expr(&lhs) || self.is_real_expr(&rhs) {
             let (lhs, rhs) = (self.coerce_real(lhs), self.coerce_real(rhs));
@@ -404,11 +404,7 @@ impl<'a> Lowering<'a> {
                     None => return Expr::Unknown,
                 },
             };
-            return Expr::Binary {
-                op,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            };
+            return self.source_values.borrow_mut().binary(op, &lhs, &rhs, span);
         }
         // Generic/library impl bodies can leave their parameter expressions
         // typed as the kernel default even after substitution. The concrete
@@ -438,11 +434,7 @@ impl<'a> Lowering<'a> {
                 } else {
                     op
                 };
-                Expr::Binary {
-                    op,
-                    lhs: Box::new(lhs),
-                    rhs: Box::new(rhs),
-                }
+                self.source_values.borrow_mut().binary(op, &lhs, &rhs, span)
             }
             None => Expr::Unknown,
         }

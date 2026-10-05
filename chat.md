@@ -11855,3 +11855,61 @@ Completion estimate: Phase 1 approximately 97%, still incomplete. Remaining:
 direct canonical expression/resolution/metavalue ingress, initializer
 normalization, general runtime calls/recursion, non-packed conversions and
 dynamic host forms. The temporary append/rewrite adapter is not yet deleted.
+
+### 2026-10-05 — Codex — canonical operator ingress ownership
+
+Continue Phase 1 after the verified compaction batch. Own common unary/binary
+builders in lower/operators.rs and callers in expressions.rs, values.rs,
+control.rs, source_array_ops.rs and source_operators.rs; source_values.rs direct
+constructors and in-place logic-literal normalization; process.rs arithmetic
+domain conversion visibility; focused regressions and architecture/TODO status.
+Construct selected signed/unsigned/float operations directly in the canonical
+arena, preserving contextual widths and source spans. Normalize remaining
+logic placeholders from std-owned discriminants without projecting/re-importing
+unchanged nodes. Preserve AGENTS.md, .codex/ and unrelated chat history. Use two
+Cargo build jobs after observed I/O contention; full gates before local commits.
+No new push authorization for main or another graph snapshot is assumed.
+
+Common source operators now append canonical unary/binary nodes directly,
+including float negation, signed kernel arithmetic, packed logical operators
+and aggregate-element fallbacks. Operator spans travel with those nodes;
+contextual widths are not prematurely frozen. Logic-literal normalization
+mutates only canonical leaves from std's discriminant map, retaining identities
+and full formats instead of rebuilding every node through Expr. Clear dependent
+analysis caches and normalize captured metadata placeholders too. New unit
+regressions cover direct operand sharing/spans and normalization of an arena
+containing a non-projectable Index, without implying hardware Index migration.
+
+All 501 existing library tests, six source-arena tests (including two new ones)
+and all-target/all-feature Clippy pass. Fresh native integer-parameter,
+signed-branch, fixed-point, array-operator, hardware float-conformance and
+logic-table programs pass assertions and VCD checks. AST-only graph update
+completed; existing vendored libfst parse warnings remain navigation limits.
+
+Freeze execution sources and sibling corpus for the full pinned two-job gate
+at /tmp/siox-canonical-op-ci-j2-20261005 under the same 8 GiB cap. No code edits
+until terminal. Execution-source hash:
+bfc476d7f0bdb55bce1e8ac4271ddb5325d0f5fe089b8a16b1e6f443767dfc94.
+Corpus hash:
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+
+### 2026-10-05 — Codex — canonical operator ingress verified
+
+Full pinned two-job CI returned 0 at /tmp/siox-canonical-op-ci-j2-20261005:
+formatting, frontend checks/Clippy, default/bitpack Rust suites (503/483 library
+tests plus integrations), all-target/all-feature Clippy and both 211-program
+corpora pass. Frozen compiler/corpus hashes match. Observed gate peak was
+1,382,682,624 bytes (1.29 GiB), including Cargo; no claim of a measured compiler
+speedup or allocator leak fix is made. Six fresh native integer-parameter,
+signed-branch, fixed-point, array-operator, hardware float-conformance and
+logic-table binaries pass in both modes and produce byte-identical VCDs.
+
+Commit common canonical source operator construction and in-place std-derived
+logic literal normalization, focused regressions and docs locally. Preserve
+AGENTS.md, .codex/ and 441 unrelated historical chat additions. No push.
+Completion estimate: Phase 1 approximately 97%, still incomplete. Remaining:
+other expression constructors/coercions, resolution/metavalue reconstruction,
+lookup rewrites and initializer normalization still use the temporary adapter;
+general runtime calls/recursion, non-packed conversions and dynamic host forms
+also remain. Next: canonical metadata/lookup rewrite construction, preserving
+checked-access activity, source encodings, contexts and formats.

@@ -351,7 +351,7 @@ impl<'a> Lowering<'a> {
                         return v;
                     }
                 }
-                self.make_unary(*op, self.lower_expr(rhs))
+                self.make_unary(*op, self.lower_expr(rhs), ast::expr_span(e))
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
                 // An operator on an enum/struct-typed operand inlines its
@@ -395,6 +395,7 @@ impl<'a> Lowering<'a> {
                     r,
                     self.binary_uses_kernel_integer(lhs, rhs),
                     self.declares_kernel_integer(lhs) || self.declares_kernel_integer(rhs),
+                    ast::expr_span(e),
                 );
                 self.mark_vector_compare(op, lhs, rhs, built)
             }
@@ -710,7 +711,12 @@ impl<'a> Lowering<'a> {
         }) {
             return None;
         }
-        self.native_bound_vector_logical(op, &operand(lhs), &operand(rhs))
+        self.native_bound_vector_logical(
+            op,
+            &operand(lhs),
+            &operand(rhs),
+            ast::expr_span(lhs).to(ast::expr_span(rhs)),
+        )
     }
 
     /// Inline an operator impl's body at the call site, since hardware has no

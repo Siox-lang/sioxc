@@ -123,7 +123,7 @@ impl Lowering<'_> {
                 let (rhs, layout) = rhs?;
                 let rhs = operand(rhs, &layout);
                 let spelling = crate::syntax::pretty::bin_op(op);
-                if let Some(value) = self.native_bound_vector_logical(spelling, &lhs, &rhs) {
+                if let Some(value) = self.native_bound_vector_logical(spelling, &lhs, &rhs, span) {
                     Val::Scalar(value)
                 } else if let Some(function) = lhs.family.as_deref().and_then(|family| {
                     self.source_binary_operator(spelling, family, rhs.family.as_deref(), span)
@@ -135,7 +135,7 @@ impl Lowering<'_> {
                     let (Val::Scalar(lhs), Val::Scalar(rhs)) = (lhs.value, rhs.value) else {
                         return None;
                     };
-                    Val::Scalar(self.make_binary(op.clone(), lhs, rhs, integer, integer))
+                    Val::Scalar(self.make_binary(op.clone(), lhs, rhs, integer, integer, span))
                 }
             }
             ArrayOperator::Unary(op) => {
@@ -160,13 +160,14 @@ impl Lowering<'_> {
                         for bit in 0..lhs.width {
                             ones[bit as usize / 64] |= 1u64 << (bit % 64);
                         }
-                        Expr::Binary {
-                            op: BinOp::Xor,
-                            lhs: Box::new(value),
-                            rhs: Box::new(words_const(ones)),
-                        }
+                        self.source_values.borrow_mut().binary(
+                            BinOp::Xor,
+                            &value,
+                            &words_const(ones),
+                            span,
+                        )
                     } else {
-                        self.make_unary(op, value)
+                        self.make_unary(op, value, span)
                     };
                     Val::Scalar(value)
                 }

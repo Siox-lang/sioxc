@@ -166,6 +166,7 @@ impl Lowering<'_> {
         op: &str,
         lhs: &OperatorOperand,
         rhs: &OperatorOperand,
+        span: crate::diag::Span,
     ) -> Option<Expr> {
         if !matches!(op, "xor" | "nand" | "nor" | "xnor")
             || ![lhs, rhs].iter().all(|operand| {
@@ -185,11 +186,10 @@ impl Lowering<'_> {
             "nand" => BinOp::And,
             _ => BinOp::Or,
         };
-        let inner = Expr::Binary {
-            op: operation,
-            lhs: Box::new(a.clone()),
-            rhs: Box::new(b.clone()),
-        };
+        let inner = self
+            .source_values
+            .borrow_mut()
+            .binary(operation, a, b, span);
         if op == "xor" {
             return Some(inner);
         }
@@ -197,10 +197,10 @@ impl Lowering<'_> {
         for bit in 0..lhs.width {
             ones[bit as usize / 64] |= 1u64 << (bit % 64);
         }
-        Some(Expr::Binary {
-            op: BinOp::Xor,
-            lhs: Box::new(inner),
-            rhs: Box::new(words_const(ones)),
-        })
+        Some(
+            self.source_values
+                .borrow_mut()
+                .binary(BinOp::Xor, &inner, &words_const(ones), span),
+        )
     }
 }

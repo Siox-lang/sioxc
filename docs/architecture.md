@@ -280,6 +280,13 @@ directly, preserving widths, layouts, spans and shared dependencies without
 an expression-tree roundtrip. Source if-expressions also construct their
 Select node directly in that arena; other ingress paths still use the
 temporary expression adapter.
+Common unary/binary builders now construct canonical nodes too, across scalar,
+inlined and aggregate-element paths, including packed logical operations.
+Selected signed/unsigned/float domains and operator spans stay on those nodes.
+Logic-literal normalization updates canonical leaves in place using std's
+discriminants; unchanged identities and formats no longer pass through the
+expression adapter. Coercions and other construction/normalization paths still
+need migration.
 `lower/source_bindings.rs` owns scoped concrete argument/local/return shapes
 and aggregate projection over those leaves. Pure free/method array arguments
 no longer substitute a caller AST into every parameter use. Returned arrays,
