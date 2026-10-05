@@ -244,6 +244,14 @@ writes. Independent resolved targets receive independent synthetic contexts,
 and constant implementation helpers retain their source owner even when their
 expressions have no signal reads.
 
+After representation normalization, every executable draft write and guard is
+bound in `SourceValues` before reachability compaction. Hardware CFG construction
+then reads canonical handles only; its separate digital-expression importer is
+removed. Compaction therefore includes the finalized roots and retains shared
+dependencies, sensitivity and assignment/context spans. Natural-width annotation
+still runs once over the dependency-ordered arena. This final normalization
+boundary does not replace the remaining private-fragment AST constructors.
+
 `source_processes.rs` retains those CFGs and their value arena while attaching
 procedural/test state. It places procedural entries before existing hardware
 entries, updating hardware process IDs and test membership without re-lowering

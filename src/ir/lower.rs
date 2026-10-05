@@ -169,6 +169,7 @@ pub fn lower_in(
         &mut l.hardware.event_blocks,
         &mut l.out.lookup_tables,
     );
+    hardware::canonicalize_draft(hier, &l.out, &mut l.hardware, l.source_values.get_mut());
     l.source_values.get_mut().retain_reachable(&mut l.hardware);
     l.out.process_ir = hardware::lower(
         hier,

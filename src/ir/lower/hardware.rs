@@ -4,6 +4,7 @@
 //! The private normalization draft is consumed once; only canonical Process IR
 //! and its derived backend views leave the lowering pass.
 
+use super::source_values::SourceValues;
 use super::*;
 
 /// One elaborated instance together with the root and path that own its
@@ -12,6 +13,87 @@ struct InstanceLocation {
     id: crate::elab::InstanceId,
     root: crate::elab::InstanceId,
     path: String,
+}
+
+/// Finish representation normalization in the source arena before compaction.
+/// CFG construction below accepts handles only, never imports source fragments.
+pub(super) fn canonicalize_draft(
+    hierarchy: &Hierarchy,
+    design: &Design,
+    draft: &mut HardwareDraft,
+    values: &mut SourceValues,
+) {
+    fn bind(values: &mut SourceValues, expression: &mut Expr, span: crate::diag::Span) {
+        let value = values.append(expression, span, None);
+        *expression = values.reference(value);
+    }
+    let locations = hierarchy_locations(hierarchy);
+    let spans: HashMap<_, _> = source_contexts(draft)
+        .into_iter()
+        .map(|writes| (writes[0].ctx, context_span(&writes, design, &locations)))
+        .collect();
+    for write in &mut draft.drivers {
+        let span = write.span.unwrap_or(spans[&write.ctx]);
+        if let Some(condition) = &mut write.cond {
+            bind(values, condition, span);
+        }
+        bind(values, &mut write.expr, span);
+    }
+    for event in &mut draft.event_blocks {
+        let mut reads = Vec::new();
+        read_set(&event.condition, &mut reads);
+        let Some(primary) = event
+            .updates
+            .first()
+            .map(|write| write.target)
+            .or_else(|| reads.first().copied())
+        else {
+            continue;
+        };
+        let span = event
+            .updates
+            .iter()
+            .find_map(|write| write.span)
+            .unwrap_or(design.signals[primary.0 as usize].declaration_span);
+        bind(values, &mut event.condition, span);
+        for write in &mut event.updates {
+            let span = write.span.unwrap_or(span);
+            if let Some(condition) = &mut write.cond {
+                bind(values, condition, span);
+            }
+            bind(values, &mut write.expr, span);
+        }
+    }
+}
+
+/// First-seen source contexts, retaining source-order writes inside each.
+fn source_contexts(draft: &HardwareDraft) -> Vec<Vec<&Driver>> {
+    let mut contexts = Vec::<Vec<&Driver>>::new();
+    let mut by_context = HashMap::new();
+    for driver in &draft.drivers {
+        let index = *by_context.entry(driver.ctx).or_insert_with(|| {
+            contexts.push(Vec::new());
+            contexts.len() - 1
+        });
+        contexts[index].push(driver);
+    }
+    contexts
+}
+
+fn context_span(
+    writes: &[&Driver],
+    design: &Design,
+    locations: &[InstanceLocation],
+) -> crate::diag::Span {
+    let primary = writes
+        .iter()
+        .map(|write| write.target)
+        .find(|target| signal_location(*target, design, locations).is_some())
+        .unwrap_or(writes[0].target);
+    writes
+        .iter()
+        .find_map(|write| write.span)
+        .unwrap_or(design.signals[primary.0 as usize].declaration_span)
 }
 
 /// Finish source hardware into canonical CFGs. A source context retains all
@@ -30,17 +112,7 @@ pub(super) fn lower(
             normalized_value_width(&ir, ProcessValueId(index as u32), design);
     }
 
-    // First-seen source context order, with source-order writes inside it.
-    let mut contexts = Vec::<Vec<&Driver>>::new();
-    let mut by_context = HashMap::new();
-    for driver in &draft.drivers {
-        let index = *by_context.entry(driver.ctx).or_insert_with(|| {
-            contexts.push(Vec::new());
-            contexts.len() - 1
-        });
-        contexts[index].push(driver);
-    }
-    for writes in contexts {
+    for writes in source_contexts(draft) {
         // Hoisted implementation signals can precede the source target. Use
         // any owned target in this context before falling back to read-owner
         // inference; otherwise a constant helper could hide the whole CFG.
@@ -49,10 +121,7 @@ pub(super) fn lower(
             .map(|write| write.target)
             .find(|target| signal_location(*target, design, &locations).is_some())
             .unwrap_or(writes[0].target);
-        let span = writes
-            .iter()
-            .find_map(|write| write.span)
-            .unwrap_or(design.signals[primary.0 as usize].declaration_span);
+        let span = context_span(&writes, design, &locations);
         let mut reads = Vec::new();
         let mut labels = Vec::new();
         for write in &writes {
@@ -145,7 +214,7 @@ pub(super) fn lower(
         };
         let body = process.push_block();
         let exit = process.push_block();
-        let condition = push_normalized_value(&mut ir, &event.condition, span, design);
+        let condition = canonical_value(&event.condition);
         process.region = ProcessRegion::Event {
             condition,
             body,
@@ -259,7 +328,7 @@ fn append_digital_assignment(
     let (assignment, next) = if let Some(condition) = condition {
         let assignment = process.push_block();
         let next = process.push_block();
-        let condition = push_normalized_value(process_ir, condition, span, design);
+        let condition = canonical_value(condition);
         process.blocks[tail.0 as usize].terminator = ProcessTerminator::Branch {
             condition,
             then_block: assignment,
@@ -282,7 +351,7 @@ fn append_digital_assignment(
     if !process_ir.value_layouts.is_empty() {
         process_ir.value_layouts.push(None);
     }
-    let value = push_normalized_value(process_ir, expression, span, design);
+    let value = canonical_value(expression);
     process.blocks[assignment.0 as usize]
         .instructions
         .push(ProcessInstruction::Assign {
@@ -300,21 +369,11 @@ fn append_digital_assignment(
     }
 }
 
-/// Append one already-normalized digital expression and annotate every new
-/// arena node with its natural packed width.
-fn push_normalized_value(
-    process_ir: &mut ProcessIr,
-    expression: &Expr,
-    span: crate::diag::Span,
-    design: &Design,
-) -> ProcessValueId {
-    let first = process_ir.values.len();
-    let value = process_ir.push_digital_expr(expression, span);
-    for index in first..process_ir.values.len() {
-        let width = normalized_value_width(process_ir, ProcessValueId(index as u32), design);
-        process_ir.values[index].bit_width = width;
-    }
-    value
+fn canonical_value(expression: &Expr) -> ProcessValueId {
+    let Expr::Canonical { value, .. } = expression else {
+        panic!("source hardware roots must be finalized before CFG construction");
+    };
+    *value
 }
 
 /// Natural width of one dependency-ordered normalized value.
@@ -510,6 +569,133 @@ mod tests {
     use crate::diag::FileId;
 
     #[test]
+    fn cfg_construction_reuses_finalized_roots_without_importing_values() {
+        let declaration = crate::diag::Span::new(FileId(0), 0..4);
+        let assignment_span = crate::diag::Span::new(FileId(0), 10..20);
+        let signal = |name: &str| Signal {
+            path: format!("Bench.{name}"),
+            declaration_span: declaration,
+            width: 8,
+            real: false,
+            integer: false,
+            char: false,
+            range: None,
+            init: vec![0],
+            enum_type: None,
+        };
+        let design = Design {
+            signals: vec![signal("input"), signal("left"), signal("right")],
+            ..Design::default()
+        };
+        let mut hierarchy = Hierarchy::default();
+        hierarchy.roots.push(crate::elab::InstanceId(0));
+        hierarchy.instances.push(crate::elab::Instance {
+            name: "Bench".into(),
+            entity: "Bench".into(),
+            entity_id: DefId(0),
+            attrs: vec![],
+            params: vec![],
+            connections: vec![],
+            instance_arrays: vec![],
+            children: vec![],
+            is_extern: false,
+        });
+        let mut values = SourceValues::default();
+        let shared = values.append(
+            &Expr::CCall {
+                name: "labs".into(),
+                args: vec![Expr::Current(SignalId(0))],
+                f64_args: vec![false],
+                integer_args: vec![true],
+                f64_ret: false,
+                integer_ret: true,
+            },
+            assignment_span,
+            None,
+        );
+        let root = Expr::Binary {
+            op: BinOp::Add,
+            lhs: Box::new(values.reference(shared)),
+            rhs: Box::new(Expr::Const(1)),
+        };
+        let mut draft = HardwareDraft::default();
+        for target in [SignalId(1), SignalId(2)] {
+            draft.drivers.push(Driver {
+                target,
+                cond: Some(Expr::Current(SignalId(0))),
+                expr: root.clone(),
+                meta: None,
+                ctx: 7,
+                span: Some(assignment_span),
+            });
+        }
+        draft.event_blocks.push(EventBlock {
+            condition: Expr::Event(SignalId(0)),
+            ctx: 8,
+            updates: vec![NextUpdate {
+                target: SignalId(1),
+                cond: Some(Expr::Const(1)),
+                expr: Expr::Old(SignalId(0)),
+                meta: None,
+                span: None,
+            }],
+        });
+        canonicalize_draft(&hierarchy, &design, &mut draft, &mut values);
+        values.retain_reachable(&mut draft);
+        let left = canonical_value(&draft.drivers[0].expr);
+        let right = canonical_value(&draft.drivers[1].expr);
+        for id in [left, right] {
+            assert_eq!(values.ir.values[id.0 as usize].span, assignment_span);
+            assert!(matches!(values.ir.values[id.0 as usize].kind,
+                ProcessValueKind::Binary { left, .. } if left == shared));
+        }
+        let event = canonical_value(&draft.event_blocks[0].condition);
+        assert_eq!(values.ir.values[event.0 as usize].span, declaration);
+        let count = values.ir.values.len();
+        let mut sink = DiagnosticSink::new();
+        let ir = lower(&hierarchy, &design, &draft, values.ir, &mut sink);
+        assert!(!sink.has_errors());
+        assert_eq!(ir.processes.len(), 2);
+        assert_eq!(
+            ir.values.len(),
+            count + 3,
+            "only assignment targets are new"
+        );
+        assert!(ir.values[count..]
+            .iter()
+            .all(|value| matches!(value.kind, ProcessValueKind::Signal { .. })));
+        assert_eq!(
+            ir.values
+                .iter()
+                .filter(|value| matches!(value.kind, ProcessValueKind::ForeignCall { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(ir.values[left.0 as usize].span, assignment_span);
+        assert_eq!(ir.values[right.0 as usize].span, assignment_span);
+        assert!(matches!(ir.processes[0].activation,
+            ProcessActivation::Reactive { ref sensitivity }
+                if sensitivity == &[ProcessSensitivity::Signal(SignalId(0))]));
+        assert!(matches!(ir.processes[1].region,
+            ProcessRegion::Event { condition, .. } if condition == event));
+        assert!(ir.validate(3).is_empty(), "{:?}", ir.validate(3));
+    }
+
+    fn normalized_test_value(
+        expression: &Expr,
+        span: crate::diag::Span,
+    ) -> (ProcessIr, ProcessValueId) {
+        let mut values = SourceValues::default();
+        let value = values.append(expression, span, None);
+        let mut ir = values.ir;
+        for index in 0..ir.values.len() {
+            ir.values[index].bit_width =
+                normalized_value_width(&ir, ProcessValueId(index as u32), &Design::default());
+        }
+        (ir, value)
+    }
+
+    #[test]
     fn event_process_values_are_one_bit() {
         let span = crate::diag::Span::new(FileId(0), 0..0);
         let process_ir = ProcessIr {
@@ -533,7 +719,6 @@ mod tests {
     #[test]
     fn normalized_shift_width_folds_integer_expression() {
         let span = crate::diag::Span::new(FileId(0), 0..0);
-        let mut process_ir = ProcessIr::default();
         let expression = Expr::Binary {
             op: BinOp::Shl,
             lhs: Box::new(Expr::Const(1)),
@@ -544,7 +729,7 @@ mod tests {
             }),
         };
 
-        let shifted = push_normalized_value(&mut process_ir, &expression, span, &Design::default());
+        let (process_ir, shifted) = normalized_test_value(&expression, span);
 
         assert_eq!(process_ir.values[shifted.0 as usize].bit_width, Some(8));
     }
@@ -552,7 +737,6 @@ mod tests {
     #[test]
     fn a_fraction_shift_keeps_the_full_raw_product() {
         let span = crate::diag::Span::new(FileId(0), 0..1);
-        let mut process_ir = ProcessIr::default();
         let expression = Expr::Binary {
             op: BinOp::Shr,
             lhs: Box::new(Expr::Binary {
@@ -562,7 +746,7 @@ mod tests {
             }),
             rhs: Box::new(Expr::Const(4)),
         };
-        let shifted = push_normalized_value(&mut process_ir, &expression, span, &Design::default());
+        let (process_ir, shifted) = normalized_test_value(&expression, span);
         // 40 needs six bits, 24 five. Their full product must survive until
         // the consumer shifts it: (40 * 24) >> 4 == 60, not 12 or 4.
         assert_eq!(process_ir.values[shifted.0 as usize].bit_width, Some(11));

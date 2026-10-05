@@ -99,6 +99,10 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   directly, preserving current/old planes, checked offsets and full formats;
   the general source-arena rewrite adapter is deleted. Other constructors and
   private-fragment normalization paths still use the temporary ingress adapter.
+  Finalized hardware write/guard roots now enter the source arena before
+  reachability compaction; CFG construction consumes IDs only, without its
+  separate digital-expression importer. The source-normalization ingress
+  remains until the constructors below build canonical values directly.
   Complete the remaining ingress migration: resolution/metavalue construction,
   expression construction between these boundaries and compile-time initializer
   normalization still assemble private fragments around those IDs.

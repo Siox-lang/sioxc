@@ -12078,3 +12078,59 @@ Preserve AGENTS.md, .codex/ and 441 unrelated historical chat additions.
 Main remains local. Completion estimate: Phase 1 approximately 97%; the output
 gap is closed, but remaining canonical source ingress, runtime call CFGs,
 non-packed conversions and dynamic host forms still prevent completion.
+
+### 2026-10-05 — Codex — canonical hardware CFG input ownership
+
+Own lower.rs and lower/hardware.rs plus focused regressions and architecture/
+TODO status. Finalize normalized write/guard roots in SourceValues before
+reachability compaction; make hardware CFG construction consume those IDs
+without a second digital-expression importer. Preserve source context spans,
+sensitivity, sharing and the existing natural-width policy. This is a final
+normalization boundary, not a claim that all AST constructors are arena-native.
+Do not move raw metadata construction before metavalue reconstruction. Preserve
+unrelated AGENTS.md, .codex/ and historical chat additions. Full pinned gates
+and fresh native traces are required before committing; main stays local.
+
+Executable write/guard roots now bind before compaction and hardware CFGs only
+consume canonical IDs. Reuse context ordering/spans rather than introducing a
+second representation. The six focused hardware tests pass, including a new
+guard/event/shared-foreign-value case proving CFG construction appends only
+assignment targets and preserves sensitivity and spans. Natural-width policy
+is unchanged. Two initial compile checks caught a missing local import and
+foreign-call fixture ABI flags; both were corrected before tests passed.
+
+All 12 hardware source-value integration tests pass, including typed aliases,
+long DAGs, aggregate planes, local stores and shared procedure/operator calls.
+Freeze compiler/runtime/test sources and the sibling corpus for the pinned
+two-job full gate at /tmp/siox-hardware-roots-ci-j2-20261005 (8 GiB cap).
+Source hash:
+815fb5093c90c2e9afa5fc67f0405d6d90c4d2cc336032f45c9bfc8cfca5a604.
+Corpus hash:
+c86ecb7fbc2587b9b6c2d97d857d27990b931a3cfa7b13f54d8e116a0dca2325.
+No execution-source edits until the existing job reaches terminal status.
+
+### 2026-10-05 — Codex — canonical hardware CFG input verified
+
+The pinned two-job CI scope completed successfully at
+/tmp/siox-hardware-roots-ci-j2-20261005: formatting, frontend checks/Clippy,
+default/bitpack Rust suites (509/489 library tests plus integrations),
+all-target/all-feature Clippy and both 211-program corpora pass. Frozen
+execution-source and sibling corpus hashes match. Observed scope peak was
+1,328,902,144 bytes (1.24 GiB), including Cargo; no measured compiler memory
+or throughput improvement is claimed.
+
+Seven fresh native packed-read, aggregate-metadata, old-value, encoding-table,
+resolution-table, X/Z-comparison and metavalue-state binaries pass in both
+modes. Default VCDs match the pre-change baseline and mode VCDs are byte-
+identical. All fourteen FSTs decode through the existing upstream-reader
+fixture; normalized hierarchy/time/value streams match after excluding only
+wall-clock date headers, with pipe failures checked explicitly.
+
+Commit normalized-root finalization, the CFG importer deletion, focused
+regression and accurate docs locally. Preserve AGENTS.md, .codex/ and 441
+unrelated historical chat additions. Main is not pushed. Completion estimate:
+Phase 1 approximately 97%, still incomplete: source constructors/coercions,
+resolution/metavalue fragments, initializer normalization, runtime call CFGs,
+non-packed conversions and dynamic host forms remain. Next: migrate source
+read/selection constructors directly into the existing arena, keeping raw
+metadata distinct from reconstructed discriminants; retain exact formats.
