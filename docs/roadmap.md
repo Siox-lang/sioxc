@@ -33,7 +33,9 @@ Implemented foundation:
   fixture reads, diagnostics, generated VCD/FST output, LSP support, and CI
   corpus.
 
-The first valid Phase-1 baseline is implemented. Further work is organized by
+Phase 1 is complete; the
+[exit audit](phase1-audit.md) records source/requirement evidence, both passing
+225-program corpora, native VCD/FST parity and CLI acceptance. Further work is organized by
 AST/IR/LLVM/Output/API/std in [`TODO.md`](../TODO.md). Major product growth
 includes a stable scheduler API, cocotb integration, multi-file project
 tooling, and broader reusable std models; those are not blockers for the

@@ -13372,3 +13372,115 @@ End execution freeze and commit only owned API/activity/capture regressions and
 documents plus this tail; exclude 441 historical chat additions, AGENTS.md and
 .codex changes. Keep goal active for the final acceptance/document audit;
 no new push. LLVM version/dependency choice remains optional and pending.
+
+### 2026-10-06 — Codex — final acceptance and documentation audit
+
+Verified API/activity/capture batch committed locally as ea80699; no push.
+Previous goal turn is progress (verified code, full gates and owned commit).
+Own historical language/std sketch cleanup and the acceptance ledger. Probe
+independently suspending foreground processes before removing the obsolete
+single-foreground restriction. New executable example belongs in the existing
+sibling corpus, not an in-tree fixture. If it passes, add exact timing/output
+waveform evidence and include it in fresh final default/bitpack verification.
+Preserve unrelated 441 historical chat additions, AGENTS.md and .codex work.
+
+The new concurrent native probe fails at E-P028 before lowering: testbench.rs
+still enforces the old one-foreground migration restriction. The fixed Process
+runtime already allocates independent ready/suspended/resume state for every
+selected CFG. Own testbench discovery and its old rejection unit test; remove
+this obsolete frontend cap rather than adding another scheduler. Retain E-P028
+as a retired diagnostic code, never reuse it. Verify independently timed
+foreground processes and shared DUT bindings in both storage modes, then update
+testing/language docs and the Phase 1 evidence ledger. Gate r1 is terminal.
+
+Focused session 14051 is terminal exit 0: revised discovery tests pass and the
+two timed foreground processes execute natively with their shared DUT bindings.
+The new exact VCD profile verifies b at 1 ns and a at 2 ns, and both observers
+match. Remove only the stale frontend cap; fixed runtime code is unchanged.
+Update historical std/type/helper sketches and testing docs to current source.
+Next fresh gate must include all 225 corpus programs, 48 native cases per mode,
+the unchanged 47 historical comparisons and current named CLI acceptance.
+Do not mark Phase 1 complete while any of those results or the audit is pending.
+
+Start effects r2 full gate after rebuilding the immutable default compiler.
+This gate includes both 225-program corpora and 48 exact native/profile/FST
+cases per mode (the original 47 plus concurrent_process_test). The only
+existing waveform baseline exception remains the documented packet reset
+sample. Freeze Cargo/compiler/runtime/core/std/tests/scripts/language inputs
+and all sibling .siox files until the scope is terminal. No new scheduler,
+thread runtime, generated C or language syntax was added. The newly removed
+frontend cap must survive broad verification before its commit.
+
+### 2026-10-06 — Codex — isolated LLVM 23 compatibility probe
+
+Keep the active effects-r2 verification inputs unchanged. Investigate the LLVM
+upgrade in /home/max/.cache/siox-llvm23-probe with a separate manifest and
+target directory, referencing the current compiler sources read-only. Pinned
+Inkwell c8234a0ee4171e946f94f6b3b5da0ea8d6ef5f3b with llvm23-1-prefer-dynamic
+passes cargo check --all-targets --all-features on local LLVM/Clang 23.1.1.
+Released Inkwell 0.10.0 still supports only LLVM 22; latest published LLVM is
+23.1.2. Main Cargo/lock/CI remain unchanged while the user chooses whether to
+use the unreleased Git binding. Native emission/link verification is pending;
+a successful cargo check alone is not upgrade completion evidence.
+
+Isolated native build is terminal exit 0. Its binary links libLLVM.so.23.1;
+SHA-256 876813cb3c9e23b77c1edc3712cae743930fdb9ea3243a525a8dfcaa8ba95238.
+Direct emitted FIFO, wide X/Z, and independently suspending process tests all
+pass, with byte-identical stdout and VCD to effects-r2 LLVM 22 default results.
+This proves initial LLVM 23 compatibility, not full migration verification.
+The project remains on LLVM 22 pending the dependency-source choice; no
+compiler/dependency/CI changes or commit were made for this probe.
+
+### 2026-10-06 — Codex — Phase 1 sign-off evidence and final documentation
+
+Previous turn made progress: isolated LLVM 23 compatibility was demonstrated;
+the optional Git dependency decision is still pending, not a Phase 1 blocker.
+Effects-r2 handle 46869 is now terminal exit 0 and its scope is inactive/dead.
+Both Rust suites/lints, both 225-program corpora, and all 48 native/profile/FST
+cases per mode pass. Frozen execution hash remains
+44bdadc0fa82f6a1cc0b10809200991a531070f34c463676e4b07d516b72c3e6;
+sibling source hash d17a7c34dbdd72dfe24a7b33f446976013f92cf88497a2402ab891102c1b3de4.
+Bitpack artifact hash 68cb78debcb8430ba9a32d5103138e27cb9992bc551fb73edac215aa2058307b.
+Direct CLI acceptance on both immutable compilers also verifies source/AST/IR/
+tree output, counter metadata, qualified CounterTest execution, all four
+counter ports and the count=10 waveform at 105 ns, W=16 external stub hierarchy,
+and compiler/native failure exit 1 with codes/source snippets/carets.
+
+End the r2 freeze. Own the final TODO/audit/architecture status reconciliation
+and remaining stale language prose (tick selector and already-implemented
+runtime range checks). These edits must not reduce the Phase 1 specification.
+The full five-invariant, eleven-deliverable, twelve-artifact and historical
+stage/CLI audit remains the sign-off boundary. Re-run the final gate after
+documentation changes, then commit only owned changes and the new corpus
+regression; exclude the 441 historical chat additions, AGENTS.md and .codex.
+No new push authorization. Keep the goal active until verified sign-off.
+
+Final effects-r3 gate 16773 is terminal exit 0; its scope is inactive/dead.
+Both full Rust/lint suites, both 225-program corpora, all 48 direct native
+cases per mode, independent waveform profiles, historical comparisons,
+storage-mode parity and decoded FST checks pass. Final execution hash matches
+the start: 9815c88573c11a279c511c175ff6cfb568f5e4613f547941b0fa4bbb1a727572.
+Compiler hashes match r2, so its direct named CLI/filter/failure/counter/stub
+acceptance probes verify these same final executables. All five pipeline
+invariants, eleven language deliverables, twelve named artifacts and twelve
+historical stage acceptance sets now have inspected source/test/artifact
+evidence in docs/phase1-audit.md. No required Phase 1 work remains; later
+extensions retain their TODO entries and unsupported-execution contract.
+
+Companion corpus regression committed locally as siox-tests d6fca6c. Own final
+compiler commit: remove only the retired frontend concurrency cap, keep E-P028
+reserved, add its exact profile and reconcile language/testing/architecture,
+roadmap/TODO/audit status. Preserve the original Phase 1 exit requirements.
+Stage only this owned chat tail, not the 441 unrelated historical additions.
+No LLVM Cargo/lock/CI changes and no push. After reviewing the owned commit
+and final source/artifact identities, mark the active Phase 1 goal complete.
+
+Final commit review: compiler c36054c contains only the twelve owned paths;
+the unrelated AGENTS/.codex work and exactly 441 historical chat additions
+remain unstaged. Corpus d6fca6c contains only the new 26-line regression.
+Actual tracked libfst hash reproduces as e422b98891be317559212f119d6c7adedfb13c6ea1bb59b12c08da598e7da720
+using git ls-files --recurse-submodules (the src-only subset has a different
+identity, not different contents). Clarify the audit's counter.siox as generic
+metadata input, not an object with an unbound width, and record that hash recipe
+in the local final commit. Execution input/compiler/corpus identities remain
+unchanged and all final gates are terminal. No push or LLVM dependency change.

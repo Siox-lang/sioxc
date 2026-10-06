@@ -1,7 +1,7 @@
 # siox Phase 1 — Digital Language Specification
 
 This document defines Phase 1 of siox: the digital HDL layer — a usable digital
-language with a parser, type checker, elaborator, event-driven simulator, test
+language with a parser, type checker, elaborator, event-driven simulator,
 native test output, and waveform output. Analogue domains and schematic/design syntax are
 left for later phases ([roadmap.md](roadmap.md)). It is the authority for exact
 syntax and semantics; for how the pipeline is built see
@@ -220,7 +220,10 @@ attr
     compiler directive (`#[test]`)
 
 ::
-    language/system attributes and associated items
+    module/type paths, enum variants, and associated items
+
+'
+    language/system and metadata attributes
 
 .
     member/field access
@@ -1029,9 +1032,11 @@ annotation, a port, an assignment target, a comparison counterpart — overrides
 | `"abc"`   | `string` (`Char[3]`) | — |
 | `true`    | `Bool`    | — |
 
-So `let i = '0';` is a `Char`, but `let i: Logic = '0';` is a `Logic` and
-`let b: Bit = '1';` a `Bit`; `let n = 42;` is an `integer`, but
-`let n: unsigned[8] = 42;` is a `unsigned[8]`. The context reaches through an
+An uncontextualized `'0'` expression has type `Char`, but
+`let i: Logic = '0';` is a `Logic` and `let b: Bit = '1';` a `Bit`.
+An uncontextualized `42` expression has type `integer`, but
+`let n: unsigned[8] = 42;` is an `unsigned[8]`. Every `let` still requires
+its type annotation. The context reaches through an
 if-expression too: `b = if c { '1' } else { '0' };` with `b: Bit` types the
 branches as `Bit`. Char literals are ambiguous by nature because
 `Bit`/`Logic` are enums whose variants are *written* as char
@@ -1499,9 +1504,10 @@ argument.
 
 **Constant conversion arguments must fit the target**: `unsigned[4](300)` and
 `signed[4](-9)` are compile-time errors (`-8..7` is signed[4]'s domain), the same
-rule as ranged-numeric initialisers. Dynamic values get simulation-time
-range checks when the simulation-reporting machinery lands (with `assert`
-severity/`print!`).
+rule as ranged-numeric initialisers. Dynamic writes to ranged-numeric values
+are checked by the native simulation runtime; a violation fails the test and
+reports the assignment's source location. Raw vector resizing still uses the
+zero-extension/truncation rule above.
 
 **Named types convert through the `From` trait** (std::ops): `T(x)` on a
 struct/enum dispatches to `impl From<Source> for T`, selected by the
@@ -3294,12 +3300,14 @@ impl CounterTest {
 }
 ```
 
-Native tests may use one foreground stimulus process plus self-toggle clock
-processes. Clock processes start at simulation time zero regardless of where
-they are declared relative to the stimulus process. General scheduling of
-several independently suspending foreground test processes is reserved for the
-full process scheduler; the compiler must not silently serialize that
-unsupported case.
+Native tests may use several independently suspending foreground processes
+plus self-toggle clock processes. All selected processes become ready after
+ordered initialization and hardware bootstrap. Each has its own continuation,
+and an `await` suspends only that process. Clocks become ready regardless of
+where they are declared relative to stimulus. The fixed scheduler cooperatively
+dispatches ready entries in stable process-ID order on one host thread; it
+never runs one foreground process to completion before starting the others.
+Parallel host-thread execution remains a Phase 2 runtime optimization.
 
 Exact test-time syntax can be simplified for MVP.
 
@@ -3477,14 +3485,14 @@ length fixed at elaboration from the initializer (pending
 unconstrained-array machinery). UTF-8 is a std encoding table applied at
 source/IO boundaries, never the in-memory shape.
 
-*Shim note:* until operator overloading (3.13 traits) can carry their
-semantics, the compiler still recognizes the std::logic/std::bits names
-intrinsically; the declarations below are canonical and the shim is deleted
-when operators move to std.
+The source declarations and operator/encoding implementations in `core/` and
+`std/` are authoritative. The compiler identifies hook types/traits, while
+enum values, truth tables and resolution behavior come from their source.
 
 ### `std::logic`
 
-Canonical declarations:
+The current scalar declarations are (discriminants omitted here; see
+`std/logic.siox` for the source-owned packed encoding):
 
 ```siox
 pub enum Bit {
@@ -3492,18 +3500,13 @@ pub enum Bit {
     '1'
 }
 
-pub enum Logic {
-    '0',
-    '1',
-    'Z',
-    'X'
-}
-
-pub enum Bool {
-    false,
-    true
-}
+pub enum ULogic { 'U', 'X', '0', '1', 'Z', 'W', 'L', 'H', '-' }
+pub enum Logic(ULogic);
 ```
+
+`Bit` and `ULogic` are unresolved. `Logic` retains the nine-state domain and
+adds source-defined resolution. `Bool { false, true }` is declared separately
+in `core::primitive` and re-exported through the preludes.
 
 There is no dedicated clock type: any `Logic`/`Bit` signal is a clock when edge
 detection is applied to it (`clk.rising()`, per 3.10).
@@ -3529,25 +3532,28 @@ assignment (`let x: unsigned[8] = 42;`), plus operations:
 
 ### `std::attrs`
 
-Should contain:
+The metadata declarations include:
 
 ```siox
-pub attr test: Bool for entity;
-pub attr keep: Bool for let, port;
-pub attr library: string for entity;
-pub attr name: string for entity;
+pub attr keep: Bool for let, port = false;
+pub attr library: string for entity = "";
+pub attr name: string for entity = "";
 ```
+
+`#[test]` is a directive, not an ordinary metadata attribute. A user-declared
+`attr test` does not register a test entity.
 
 ### `std::sim`
 
-Should contain test/simulation helpers built on the `await`/`after`
-primitives — e.g. `tick(clk)` as library source once functions are callable
-from testbenches:
+Provides physical simulation quantities and their source-defined suffixes:
 
 ```siox
-tick
-run
+pub struct time(integer);       // femtoseconds
+pub struct frequency(real);     // hertz
 ```
+
+`await` and `after` use the fixed scheduler. `tick`/`run` are not current
+library entry points; the compiler builds executables rather than running them.
 
 ### Endgoal
 

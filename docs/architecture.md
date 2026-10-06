@@ -300,6 +300,22 @@ writes retain their selected effects while omitting destination range checks
 on values which never reach the signal. The fixed runtime's Process entries
 retain their existing per-CFG capture behavior.
 
+Several selected foreground processes can suspend independently alongside
+background clocks. Each owns a resume block and local frame; the fixed runtime
+dispatches ready entries in stable process-ID order on one host thread. The old
+frontend one-foreground limit has been removed. `concurrent_process_test.siox`
+in the sibling corpus verifies that the second-declared process resumes at
+1 ns while the first is suspended until 2 ns, with exact DUT waveform checks in
+both storage modes. This is cooperative concurrency, not worker-thread support.
+
+Phase 1 acceptance evidence is recorded in the
+[exit audit](phase1-audit.md), including the five pipeline invariants, eleven
+language deliverables, twelve named examples and historical stage/CLI criteria.
+Native recursion, non-packed conversions, general runtime-sized arrays/computed
+file paths and direct DWARF remain separate extensions rather than fallback
+execution paths. The multithreading proposal extends these same CFGs and LLVM
+entries; it does not introduce a new compiler track.
+
 `lower/source_values.rs` owns canonical bindings while hardware source is
 normalized. Inlined function locals retain value IDs instead of copied trees;
 straight-line let chains iterate with one scoped environment. Block-local

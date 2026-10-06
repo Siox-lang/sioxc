@@ -33,10 +33,11 @@ impl CounterTest {
 Testbench processes are concurrent, while statements inside one process run in
 order. `await` advances simulation time (see
 [simulation.md](simulation.md)), and a process-local `let` is a mutable local
-with ordinary sequential assignment. The fixed native scheduler currently
-accepts one foreground stimulus process plus canonical background
-clock processes; it rejects additional foreground processes instead of
-serializing them. Test processes already receive stable process/block/local and
+with ordinary sequential assignment. The fixed native scheduler runs several
+independently suspending foreground processes and background clocks. Each
+process yields at `await` or a settling boundary; its own continuation resumes
+when ready. These processes cooperate on one host thread, not OS threads.
+Test processes receive stable process/block/local and
 value IDs plus validated branch, match, loop, suspension, and termination CFGs
 inside `Design::process_ir`; hardware processes and test stimulus execute from
 those CFGs through the same LLVM/runtime path. There is no second test-only

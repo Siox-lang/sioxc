@@ -7,8 +7,10 @@ layer that owns each change:
 
 This file tracks active work, not implementation history. Completed migration
 details and measurements belong in [`chat.md`](chat.md) and the documents under
-[`docs/`](docs/). Phase 1 pipeline status last audited 2026-10-05 against the
-compiler, standard library, `siox-tests`, and the local CI gate.
+[`docs/`](docs/). Phase 1 completion audited 2026-10-06 against the compiler,
+standard library, both 225-program corpora, native VCD/FST results and the full
+local CI gate. See the [acceptance evidence](docs/phase1-audit.md). The tasks
+below are remaining extensions and later-phase work, not completed history.
 
 Legend: 🔴 not started · 🟡 partial / constrained.
 
@@ -64,81 +66,28 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
 Owns signals, canonical process control flow, initializers, layouts, enum/logic
 metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
 
-- 🟡 **Canonical pipeline exit audit.** Compound hardware source and
-  compile-time constant expressions now construct canonical arena nodes;
-  finalized write/guard roots bind before representation normalization.
-  Production recursive expression ingress and fragment walks are removed.
-  Complete the requirement-by-requirement Phase 1 audit with fresh full
-  default/`bitpack` gates and emitted native results, diagnostics, VCD/FST,
-  time/delta progression and resolved-value evidence. Verify that no frontend
-  path or backend projection restores a second executable representation.
-  Test-only fixture imports and differential oracles must stay excluded from
-  compiler builds. Preserve exact layouts, source contexts, shared identities,
-  checked/raw reads and staged writes. See
-  [the exit audit](docs/phase1-audit.md) for explicit requirement evidence and
-  the focused fixes for public legacy-expression ingress, inactive hardware
-  calls and object-side shared/overwritten effects awaiting fresh full gates, and
-  [`docs/architecture.md`](docs/architecture.md#current-process-ir-ingress-boundary)
-  for implementation details; unsupported execution forms remain listed below.
-  The named example suite in `docs/language.md` has a spec-derived artifact
-  presence gate as well as native assertions and waveform profiles. Its
-  foreign entity stub is metadata-only, not evidence of foreign HDL execution.
+The Phase 1 canonical-pipeline migration and exit audit are complete. Preserve
+the [ingress invariants](docs/architecture.md#current-process-ir-ingress-boundary)
+when extending the IR; executable extensions and optimization measurements are
+listed under LLVM and Output below.
 
 ## LLVM
 
 Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
-- 🟡 **Complete direct Process IR lowering.** Exact-width scalar and recursive
-  packed values, branches, loops, matches, clocks, suspension, delayed writes,
-  formatting, assertions, scalar foreign calls, receiver/free functions with
-  branches, matches, loops, early returns and suspension, dynamic UTF-8
-  strings/file probes, and source-defined operator impls execute directly today.
-  Calls with and without returned values share canonical statement CFGs and
-  caller continuations. Returned lexical structs, directed arrays and generic
-  values retain their recursive layouts and companion planes across suspension.
-  Call arguments capture computed values and dynamic place selectors once
-  in source order; caller-place aliases and per-inline locals remain distinct.
-  Conditional expression calls, including file reads and foreign C effects,
-  execute only in the selected branch. Loop-bound
-  calls execute in the preheader, not on the iteration back-edge; repeated
-  parameter reads retain written order around mutating calls.
-  Reset-time impl declarations use ordinary source-ordered initialization CFGs
-  before hardware bootstrap/stimulus, including loops, returned aggregates,
-  suspension, condition waits and runtime file reads. The same scheduler owns
-  their continuations; retained initializer expressions are metadata, not
-  re-executed at reset. Remaining executable forms are runtime recursion and
-  non-packed conversions. Indexed/field delayed targets
-  retain an event-owned physical offset and driver/scalar waveform identity;
-  the narrow value and X/Z companion planes survive rejection and expiry
-  without re-reading selectors or capturing the whole root. Native regression
-  coverage includes mutating/suspending delay calls, directed struct arrays,
-  128-bit fields and overlapping whole/scalar writes. Complete fresh broad
-  default/bitpack gates before treating this implementation as verified.
-  Calls in `after` expressions now resolve/typecheck in their original scope;
-  direct scalar delay calls preserve RHS snapshots across callee suspension.
-  Unsupported forms
-  must continue to fail transactionally before calls or staged writes become
-  observable.
-  Recursive procedural arrays/structs now retain packed X/Z planes through
-  initialization, copies, projections, writes, old snapshots, loop snapshots
-  and DUT connections. Source-owned encodings and exact-width companion frames
-  share the same recursive layout offsets as value frames; native regression
-  coverage includes 128-bit fields, inactive checked branches, recursive
-  negative/directed local ranges, alias chains and clean replacements. Input
-  companions are reserved before hardware resolution/normalization, including
-  when the testbench's initial value is binary; guarded metadata hoists preserve
-  write/event activity through multi-driver resolution.
-- 🟡 **Move all host services behind the fixed ABI.** Deterministic
-  `seed`/`rand`/`randint`/`uniform`, runtime UTF-8 `read<string>`, string
-  indexing/length/equality, fixed strings, little-endian `read<integer>` and
-  packed scalar/array binary reads (including multiword elements), and `exists`
-  use explicit Process IR operations and fixed runtime state. Add general
-  runtime-owned dynamic arrays and runtime-computed file-path arguments. LLVM
-  emits value semantics; the runtime owns allocation, persistent state, and
-  host contact. `tests/runtime_file_io.rs` verifies that runtime fixtures can
-  be created after compilation, capacity/UTF-8/index failures are actionable,
-  and hardware ROM initialization remains compile-time.
+- 🔴 **Runtime recursion and non-packed conversions.** Extend the currently
+  supported inline-call and packed-value contract only with explicit frame,
+  ownership, conversion and suspension semantics. Recursive runtime calls are
+  rejected today; unsupported forms must fail before argument/callee effects
+  or staged writes become observable. Keep the existing native transactional
+  failure regressions when adding these capabilities.
+- 🔴 **Host-service extensions.** Add general runtime-owned dynamic arrays
+  and runtime-computed file-path arguments. Keep allocation, persistent state
+  and host contact behind the fixed runtime ABI; LLVM emits value semantics,
+  not another host-service implementation. Current RNG, UTF-8/string, fixed
+  binary-read and file-probe services are implemented and verified; their
+  behavior is documented in [interoperability.md](docs/interoperability.md).
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` operations, constants/conversions, ABI rules, formatting,
   and a software fallback before exposing a language feature.

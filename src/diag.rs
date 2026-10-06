@@ -442,8 +442,8 @@ pub mod codes {
     /// describe concurrent entity behavior; functions already provide a
     /// sequential scope for ordinary types and trait implementations.
     pub const PROCESS_PLACEMENT: &str = "E-P027";
-    /// A native test declares more independently scheduled foreground
-    /// processes than the Phase-1 test scheduler can execute concurrently.
+    /// Retired: the migration scheduler's one-foreground-process restriction.
+    /// Keep the code reserved; the fixed Process runtime schedules every CFG.
     pub const TEST_PROCESS_SCHEDULING: &str = "E-P028";
     /// An attribute binding or read names no declaration it can apply to
     /// (`attr keep for nothing = true;`, `ghost'keep`), or an objectless

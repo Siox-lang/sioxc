@@ -56,9 +56,11 @@ masks and optional packed companion planes.
 
 Reset-time initialization uses source-ordered CFGs and the same scheduler for
 resumes before hardware bootstrap and foreground stimulus. The ABI 15 startup
-boundary is verified by full default/bitpack corpus and native waveform gates;
-the broader Phase 1 exit audit still has independent API/effect gaps. Preserve
-this ordered startup boundary when introducing workers.
+boundary and the subsequent API/effect fixes are verified by full
+default/bitpack corpus and native waveform gates. The completed Phase 1
+requirement audit is [recorded separately](../phase1-audit.md); this proposal
+does not claim worker threads are implemented.
+Preserve this ordered startup boundary when introducing workers.
 
 ## One compiler pipeline
 

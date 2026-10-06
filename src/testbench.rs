@@ -6,11 +6,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
+use crate::diag::{DiagnosticSink, Span};
 use crate::elab::{Hierarchy, InstanceId};
 use crate::resolve::{DefId, Resolved};
 use crate::syntax::ast::Item;
-use crate::syntax::ast::{self, Expr, ImplItem, Stmt, Type, UnOp};
+use crate::syntax::ast::{Expr, ImplItem, Stmt, Type, UnOp};
 use crate::syntax::Module;
 use crate::types::Typed;
 
@@ -68,7 +68,6 @@ pub fn elaborate(
     sink: &mut DiagnosticSink,
 ) -> (Hierarchy, TestPlan) {
     let discovered = discover(modules, resolved);
-    validate_process_scheduling(modules, resolved, &discovered, sink);
     let selected: HashSet<DefId> = discovered.iter().map(|test| test.entity).collect();
     let hierarchy = crate::elab::elaborate_entities(modules, resolved, typed, sink, &selected);
 
@@ -90,61 +89,6 @@ pub fn elaborate(
         .collect();
 
     (hierarchy, TestPlan { tests })
-}
-
-/// The fixed runtime supports any number of canonical self-toggle clock
-/// processes and one foreground stimulus process. General concurrent
-/// foreground scheduling is not implemented yet, so reject it instead of
-/// serializing source processes.
-fn validate_process_scheduling(
-    modules: &[Module],
-    resolved: &Resolved,
-    tests: &[DiscoveredTest],
-    sink: &mut DiagnosticSink,
-) {
-    for test in tests {
-        let items = implementation_items(modules, resolved, test.entity);
-        let mut foreground: Vec<(Span, String)> = Vec::new();
-        let mut legacy_site = None;
-
-        for item in items {
-            match item {
-                ImplItem::Process(process) if !is_clock_process(&process.body.stmts) => {
-                    let label = process
-                        .label
-                        .as_ref()
-                        .map(|label| format!("process `{}`", label.text))
-                        .unwrap_or_else(|| "anonymous process".to_string());
-                    foreground.push((process.span, label));
-                }
-                ImplItem::Stmt(statement) if !is_clock_statement(statement) => {
-                    legacy_site.get_or_insert(ast::stmt_span(statement));
-                }
-                _ => {}
-            }
-        }
-        if let Some(span) = legacy_site {
-            foreground.push((span, "legacy impl-scope stimulus".to_string()));
-        }
-
-        let Some((first_span, first_label)) = foreground.first().cloned() else {
-            continue;
-        };
-        for (span, label) in foreground.into_iter().skip(1) {
-            sink.emit(
-                Diagnostic::error(format!(
-                    "native test `{}` has more than one foreground process",
-                    test.qualified_name
-                ))
-                .with_code(codes::TEST_PROCESS_SCHEDULING)
-                .at(span)
-                .label(first_span, format!("first foreground {first_label} is here"))
-                .help(format!(
-                    "merge {label} into the first stimulus process; self-toggle clock processes may remain separate"
-                )),
-            );
-        }
-    }
 }
 
 /// Whether a process is nothing but a clock generator: a single
@@ -284,18 +228,17 @@ mod tests {
     }
 
     #[test]
-    /// The Phase-1 test scheduler runs one foreground process, but time-zero
-    /// clock processes are additional and must stay allowed.
-    fn native_tests_reject_multiple_foreground_processes_but_allow_clocks() {
+    /// Concurrent foreground entries belong to the same selected test root;
+    /// discovery must not impose a process-count limit on the fixed scheduler.
+    fn native_tests_accept_multiple_foreground_processes_and_clocks() {
         let diagnostics = |source: &str| {
             let (modules, mut sink) = modules(source);
             let resolved = crate::resolve::resolve(&modules, &mut sink);
-            let tests = discover(&modules, &resolved);
-            validate_process_scheduling(&modules, &resolved, &tests, &mut sink);
-            sink.diagnostics()
-                .iter()
-                .filter(|diagnostic| diagnostic.code == Some(codes::TEST_PROCESS_SCHEDULING))
-                .count()
+            // These discovery fixtures intentionally omit operator/macro
+            // implementations; native semantic coverage lives in the corpus.
+            let (_, plan) = elaborate(&modules, &resolved, &Typed::default(), &mut sink);
+            assert_eq!(plan.len(), 1);
+            sink.error_count()
         };
 
         assert_eq!(
@@ -303,7 +246,7 @@ mod tests {
                 "module tests;\n#[test] entity T {}\n\
                  impl T { first: process {} second: process {} }\n"
             ),
-            1,
+            0,
             "the native scheduler must not serialize concurrent stimulus"
         );
         assert_eq!(
@@ -323,8 +266,8 @@ mod tests {
                 "module tests;\n#[test] entity T {}\n\
                  impl T { stimulus: process {} print!(\"legacy\"); }\n"
             ),
-            1,
-            "legacy impl-scope stimulus is one foreground sequence too"
+            0,
+            "legacy impl-scope stimulus is an independent sequence too"
         );
     }
 }

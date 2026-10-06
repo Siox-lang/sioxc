@@ -60,7 +60,12 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
 
 
 def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile == "basic_mux":
+    if profile == "concurrent_process_test":
+        for signal, when in [("a", 2_000_000), ("b", 1_000_000)]:
+            expected = [(0, "0"), (when, "1")]
+            assert changes[f"ConcurrentProcessTest.dut.{signal}"] == expected
+            assert changes[f"ConcurrentProcessTest.dut.seen_{signal}"] == expected
+    elif profile == "basic_mux":
         assert changes["BasicMuxTest.dut.y"] == [
             (time, f"{value:08b}") for time, value in
             [(0, 60), (1_000_000, 165), (2_000_000, 126), (4_000_000, 18)]
