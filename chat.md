@@ -13060,3 +13060,29 @@ value-CFG/dynamic-delay batch—not the entire Phase 1 objective. Corpus fixture
 commit is c78de8c. Preserve unrelated AGENTS.md/.codex/ and older chat edits.
 No push. Next work is the reproduced reset-time CFG initializer gap using
 the same canonical Process pipeline; no execution freeze remains active.
+
+### 2026-10-06 — Codex — multiprocess proposal alignment
+
+User requested a pull and a revision of the multiprocessing proposal, not
+runtime implementation. Fetched origin/main at 5558113 and pulled with
+--no-rebase --no-commit: local main has 29 unpublished commits, and the remote
+only adds docs/proposals/multiprocess.md. Merge is conflict-free but intentionally
+uncommitted; preserve all existing compiler/initializer, AGENTS.md, .codex/,
+TODO and historical chat changes. Own only this proposal revision and this
+coordination append. Align with canonical Process CFGs, LLVM entries and the
+fixed runtime ABI; specify safe effect isolation and conservative dependency
+classification before worker execution. No runtime/code changes, commit or
+push in this documentation task. Unnecessary-copy optimization stays deferred.
+
+The user subsequently authorized committing/pushing after the revision. The
+proposal now reuses canonical CFG/LLVM entries, explains mutable object globals
+and immediate-storage/host/error hazards, requires conservative eligibility and
+ordered effects before workers, and keeps runtime configuration compiler-only
+separation intact. Local links (10), fenced blocks and proposal whitespace pass.
+This is documentation-only: the committed compiler baseline remains 8bf4897,
+whose recorded full r4 gates passed Rust/default/bitpack and both 223-program
+corpora, plus 46 direct native comparisons per mode. Those results do not verify
+the unfinished initializer worktree. Stage only this proposal and this entry;
+leave initialization ownership, historical chat and all compiler changes local.
+Phase 1 remains approximately 99%, with initialization verification and the exit
+audit open; the Phase 2 parallel runtime is not implemented.
