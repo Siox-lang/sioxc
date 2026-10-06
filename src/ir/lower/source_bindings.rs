@@ -138,6 +138,9 @@ impl Lowering<'_> {
             return Some(layout);
         }
         match expression {
+            ast::Expr::SysAttr { base, attr, .. } if attr.text == "old" => {
+                self.source_operand_layout(base, env)
+            }
             ast::Expr::Call { callee, args, .. } => {
                 if let Some(argument) = self.generic_return_argument(callee, args) {
                     return self.source_operand_layout(argument, env);

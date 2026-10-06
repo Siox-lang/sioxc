@@ -57,6 +57,9 @@ jobs:
           repository: Siox-lang/siox-tests
           path: siox-tests
 
+      - name: Check specified Phase 1 example artifacts
+        run: python3 scripts/check-phase1-examples.py "$GITHUB_WORKSPACE/siox-tests"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.90.0
         with:

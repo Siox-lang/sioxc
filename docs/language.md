@@ -3580,6 +3580,16 @@ Required examples:
 11. `counter_test.siox`
 12. `fsm_test.siox`
 
+These artifacts live in the sibling `siox-tests` repository. CI checks their
+presence against this list before running the full corpus, so nearby tests
+cannot silently substitute for a missing named example. Runnable examples
+compile to native test executables with assertions and waveform checks.
+`packet_struct_event.siox` includes whole nested struct/array `'old` snapshots,
+directed array relabeling, current dynamic selectors and 128-bit X/Z data.
+`external_entity_stub.siox` is deliberately a metadata/tree-only foreign black
+box; it demonstrates parameterized ports and library/name annotations, not
+foreign HDL execution. External library loading remains Phase 3.
+
 ---
 
 ## 6. Phase 1 final deliverable

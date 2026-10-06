@@ -308,6 +308,11 @@ The earlier fragment reconstruction and lookup algorithms remain only as
 test-only differential oracles. Handcrafted oracle fixtures use an explicitly
 named `import_test_fragment` constructor excluded from compiler builds; the
 production binding function rejects compound private fragments even in tests.
+Whole aggregate `'old` reads use the same captured-place projection as current
+reads, selecting old storage leaves while retaining current dynamic-index
+guards. The source layout survives array relabeling; nested/multiword X/Z
+snapshots use ordinary canonical signal-state nodes and companion planes,
+not a second historical-value representation.
 `lower/source_values/build.rs` constructs source slices, checked indices and
 muxes directly in the arena. Persisted/local packed reads, dynamic aggregate
 selection, ascending/descending slices, captured-place reads, conditional local

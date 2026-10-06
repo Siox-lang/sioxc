@@ -68,11 +68,9 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   checked/raw reads and staged writes. See
   [`docs/architecture.md`](docs/architecture.md#current-process-ir-ingress-boundary)
   for implementation details; unsupported execution forms remain listed below.
-  The named example suite in `docs/language.md` also needs its nine missing
-  artifacts in `siox-tests`: `basic_mux.siox`, `register.siox`, `fsm.siox`,
-  `enum_event_monitor.siox`, `packet_struct_event.siox`, `stream_bus.siox`,
-  `producer_consumer.siox`, `external_entity_stub.siox`, and `attribute_usage.siox`.
-  Nearby regression coverage does not prove those specified artifacts exist.
+  The named example suite in `docs/language.md` has a spec-derived artifact
+  presence gate as well as native assertions and waveform profiles. Its
+  foreign entity stub is metadata-only, not evidence of foreign HDL execution.
 
 ## LLVM
 

@@ -12733,3 +12733,93 @@ confirms nine specified language example-suite artifacts are missing; TODO
 lists them explicitly. General value-returning call CFGs/recursion, non-packed
 conversions and dynamic host forms still need work. Keep the full exit audit
 active, and leave unnecessary-copy reduction deferred.
+
+### 2026-10-05 — Codex — named Phase 1 example suite
+
+Previous goal turn made progress: 4574e85 and sibling 4ca86fc close the verified
+procedural CFG gap with full gates and native parity. Revalidate the remaining
+deliverables: only counter.siox, counter_test.siox and fsm_test.siox from the
+specified twelve-file suite exist. Own the nine missing sibling examples,
+corpus README corrections, a spec-derived presence gate, waveform profiles and
+related docs/TODO. Use existing mux/register/FSM/view/event/attribute idioms;
+the external entity example remains an explicit elaborated black-box stub,
+not a claim that foreign HDL simulation exists. Preserve other agents' dirty
+AGENTS.md, .codex/ and historical chat insertions. No push, dependencies or
+deferred copy optimization. Phase 1's full semantic/pipeline audit stays active.
+
+### 2026-10-05 — Codex — aggregate old assignment gap
+
+The new packet_struct_event example fails IR lowering on the valid whole-struct
+assignment `before = packet'old`; the diagnostic reports `before` as an invalid
+place. Scalar/enum old examples pass. Extend ownership to the shared aggregate
+source/place lowering path and focused regression tests. Trace and fix the
+shared cause; do not weaken the example into independent field copies. No full
+gate is live, so no verification freeze is being changed.
+
+### 2026-10-05 — Codex — resume aggregate history and named examples
+
+The intervening copy-deferral reply was no progress toward Phase 1: its TODO
+already existed. Revalidate main 4574e85 and the nine uncommitted sibling
+examples; the aggregate history lowering gap remains the next safe action.
+Continue ownership of source_places.rs, values.rs, source_bindings.rs and a
+focused canonical regression, followed by the named-suite gate and native
+examples. Preserve unrelated AGENTS.md, .codex/ and historical chat edits.
+No copy optimization or push; Phase 1 completion remains unproven.
+
+### 2026-10-05 — Codex — aggregate history and suite verification freeze
+
+Whole array/struct old reads now use captured-place canonical state reads;
+current selector guards and source layouts survive relabeling. Seventeen
+hardware_source_values tests pass, including the new historical leaf/current
+selector regression. All eight new runnable example files pass native
+assertions and semantic VCD profiles; packet_struct_event also tests directed
+array snapshots and 128-bit X/Z data. The stream example initially reused
+Source/Sink for both a view and an entity; rename its entities Producer/Consumer
+to respect the existing namespace, without a compiler change. The foreign
+stub's tree shows a parameterized extern child with three connections; library
+and name annotations still warn that backend consumption is future work.
+The spec-derived presence gate accepts twelve files and rejects an empty
+corpus with exit 2. CI/local gates now invoke it. Graphify code update succeeds
+(5252 nodes/13866 edges); known vendored parser warnings persist and docs were
+not semantically rebuilt. Ponytail reuses existing place/arena builders.
+Freeze execution hash a947b01925a4c7e9f0e565bf2984240c565a626c0761c3b0d471ea7d185d2263
+and 222-program corpus hash b6555355d0884f9074ca7f3990abe36ad548a0e6c341328495648b48277b3aaf
+for full gates and default/bitpack native waveform verification. Fresh default
+compiler SHA-256 1dcf14fc40e1e87496dc183c34efa8502355d6afa6a21c7d6288af9769b45b63.
+No executable-input edits while those handles are live. Full verification and
+Phase 1 completion remain unproven; no push or deferred copy optimization.
+
+### 2026-10-06 — Codex — aggregate history and specified suite verified
+
+The full pinned gate returned 0 and its scope is inactive: formatting,
+frontend check/Clippy, default/bitpack Rust suites (525/505 library tests plus
+all integrations, including 17 hardware_source_values tests in each mode),
+all-target/all-feature Clippy, the twelve-artifact check and both 222-program
+corpora pass. Frozen execution/corpus hashes remain unchanged. The dedicated
+native jobs both returned 0: 45 cases per mode, 74 unchanged baseline VCDs and
+stdout/diagnostics byte-identical, all 45 cross-mode VCDs and outputs identical,
+86 observable FSTs decoded to matching named events and four empty-FST
+rejections with exit 2 and no file. The new profiles independently check exact
+transition times, handshake stalls, enum names, old snapshots, array relabeling
+and multiword X/Z data. The old 4574e85 compiler rejects the packet example at
+all three whole-history assignments; the corrected emitted binaries pass.
+Fresh bitpack compiler SHA-256:
+559c1c7651edd177eb4c0cf676ddc0dc92fddf097775f9f4cc58108d9d43aeab.
+The source-derived artifact gate also rejects an empty corpus with exit 2.
+
+Commit only owned lowering/regression, CI/presence/profile, docs/TODO changes
+and these appended log entries; sibling commit contains nine specified
+examples plus README command corrections. Preserve unrelated AGENTS.md,
+.codex/ and 441 historical chat insertions. No push. When a future push is
+requested, publish the corpus commit first: main CI now requires those names.
+Ponytail kept historical reads on existing captured places and canonical
+signal-state builders, with no dependency or alternate runtime representation.
+Graphify was used for scoped navigation and its AST graph updated; the docs
+graph remains unrefreshed, so it is not completion evidence.
+Completion estimate: Phase 1 approximately 99%, not complete. The previously
+missing named artifacts are now verified. General value-returning call CFGs,
+runtime recursion, non-packed conversions and dynamic host forms remain open;
+the full language/pipeline exit audit is still required. Unnecessary-copy
+reduction remains deferred, not a Phase 1 blocker.
+
+Sibling suite committed as 78f7051; its worktree is clean. No push.

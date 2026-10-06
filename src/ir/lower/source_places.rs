@@ -98,14 +98,21 @@ impl Lowering<'_> {
         Some(covered)
     }
 
-    fn storage_value(&self, storage: &Storage, span: crate::diag::Span) -> Option<Expr> {
+    fn storage_value(
+        &self,
+        storage: &Storage,
+        state: ProcessSignalState,
+        span: crate::diag::Span,
+    ) -> Option<Expr> {
         match storage {
-            Storage::Signal(signal) => Some(self.source_values.borrow_mut().signal(
-                *signal,
-                ProcessSignalState::Current,
-                span,
-            )),
+            Storage::Signal(signal) => {
+                Some(self.source_values.borrow_mut().signal(*signal, state, span))
+            }
             Storage::Local { scope, name, field } => {
+                // Lexical values have no committed signal-history frame.
+                if state != ProcessSignalState::Current {
+                    return None;
+                }
                 let binding = self.block_scopes.borrow().get(*scope)?.get(name)?.clone();
                 match binding.value {
                     Val::Scalar(value) if field.is_empty() => Some(value),
@@ -120,6 +127,17 @@ impl Lowering<'_> {
     }
 
     pub(super) fn read_place(&self, place: &Place, span: crate::diag::Span) -> Val {
+        self.read_place_state(place, ProcessSignalState::Current, span)
+    }
+
+    /// Read the selected storage epoch, not the selector's epoch. Dynamic
+    /// index guards and captured places keep their ordinary current meaning.
+    pub(super) fn read_place_state(
+        &self,
+        place: &Place,
+        state: ProcessSignalState,
+        span: crate::diag::Span,
+    ) -> Val {
         let fields = place
             .leaves
             .iter()
@@ -127,7 +145,7 @@ impl Lowering<'_> {
                 let mut result = Expr::Const(0);
                 for access in accesses.iter().rev() {
                     let mut value = self
-                        .storage_value(&access.storage, span)
+                        .storage_value(&access.storage, state, span)
                         .unwrap_or(Expr::Unknown);
                     if let Some(bits) = &access.bits {
                         if let (Some(&low), Some(&high)) = (bits.first(), bits.last()) {
@@ -506,7 +524,11 @@ impl Lowering<'_> {
                             continue;
                         };
                         let old = self
-                            .storage_value(&access.storage, ast::expr_span(target))
+                            .storage_value(
+                                &access.storage,
+                                ProcessSignalState::Current,
+                                ast::expr_span(target),
+                            )
                             .unwrap_or(Expr::Unknown);
                         let mut replacement = value.clone();
                         if let Some(bits) = &access.bits {

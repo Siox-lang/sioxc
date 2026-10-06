@@ -46,6 +46,7 @@ step() {
     return 1
 }
 step "fmt"                       "${cargo[@]}" fmt --all --check
+step "Phase 1 example artifacts" python3 "$(dirname "$0")/check-phase1-examples.py" "$corpus"
 step "check (frontend only)"     "${cargo[@]}" check --locked --no-default-features --lib
 step "clippy (frontend only)"    "${cargo[@]}" clippy --locked --no-default-features --lib -- -D warnings
 # The corpus steps run the *binary on disk*. If the build failed, that binary

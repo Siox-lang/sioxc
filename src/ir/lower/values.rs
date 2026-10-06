@@ -73,6 +73,20 @@ impl<'a> Lowering<'a> {
             // `self::length` inside an operator-impl body: the bound operand's
             // width (inline_op stashes it under the "param::attr" key).
             ast::Expr::SysAttr { base, attr, .. } => {
+                if attr.text == "old" {
+                    if let Some(place) = self.source_place(base) {
+                        if matches!(
+                            place.layout.kind,
+                            LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+                        ) {
+                            return self.read_place_state(
+                                &place,
+                                ProcessSignalState::Old,
+                                ast::expr_span(e),
+                            );
+                        }
+                    }
+                }
                 if let Some(value) = self.source_env_attribute(base, &attr.text, env) {
                     return Val::Scalar(value);
                 }

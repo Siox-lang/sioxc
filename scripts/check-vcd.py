@@ -60,7 +60,74 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
 
 
 def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile == "runtime_packed_read_test":
+    if profile == "basic_mux":
+        assert changes["BasicMuxTest.dut.y"] == [
+            (time, f"{value:08b}") for time, value in
+            [(0, 60), (1_000_000, 165), (2_000_000, 126), (4_000_000, 18)]
+        ]
+    elif profile == "register":
+        assert changes["RegisterExampleTest.dut.q"] == [
+            (time, f"{value:08b}") for time, value in
+            [(0, 0), (1_000_000, 42), (3_000_000, 7), (5_000_000, 0)]
+        ]
+    elif profile == "fsm":
+        assert changes["FsmExampleTest.dut.state"] == [
+            (0, "idle"), (2_000_000, "active"), (4_000_000, "done"), (6_000_000, "idle")
+        ]
+        assert changes["FsmExampleTest.dut.done"] == [(0, "0"), (4_000_000, "1"), (6_000_000, "0")]
+    elif profile == "enum_event_monitor":
+        assert changes["EnumEventMonitorTest.dut.changes"] == [
+            (0, "00000000"), (1_000_000, "00000001"), (3_000_000, "00000010")
+        ]
+        assert changes["EnumEventMonitorTest.dut.previous"] == [(0, "idle"), (3_000_000, "burst")]
+    elif profile == "packet_struct_event":
+        zero = "0" * 128
+        wide = "1" + "0" * 63 + "z" + "0" * 62 + "x"
+        root = "PacketArrayHistoryTest.dut."
+        # The harness resets design storage between the two named tests, one
+        # femtosecond after the first finishes at 3 ns.
+        reset = 3_000_001
+        assert changes[root + "history[-1].payload.data"] == [
+            (0, zero), (2_000_000, wide), (3_000_000, f"{21:0128b}"), (reset, zero)
+        ]
+        assert changes[root + "selected.payload.data"] == [
+            (0, zero), (3_000_000, f"{21:0128b}"), (reset, zero)
+        ]
+        root = "PacketStructEventTest.dut."
+        assert changes[root + "changes"] == [
+            (time, f"{value:08b}") for time, value in
+            [(0, 0), (reset, 0), (reset + 1_000_000, 1),
+             (reset + 2_000_000, 2), (reset + 4_000_000, 3)]
+        ]
+        assert changes[root + "previous.payload.data"] == [
+            (0, zero), (reset, zero), (reset + 2_000_000, f"{21:0128b}")
+        ]
+    elif profile == "stream_bus":
+        root = "StreamBusExampleTest.dut."
+        assert changes[root + "received"] == [(0, "00000000"), (1_000_000, "10100101")]
+        assert changes[root + "seen"] == [(0, "0"), (1_000_000, "1"), (3_000_000, "0")]
+        assert changes[root + "ready"] == [(0, "0"), (1_000_000, "1"), (2_000_000, "0")]
+    elif profile == "producer_consumer":
+        root = "ProducerConsumerTest.dut."
+        times = [0, 4_000_000, 6_000_000, 8_000_000, 14_000_000, 16_000_000]
+        for signal, width, numbers in [
+            ("count", 8, [0, 1, 2, 3, 4, 5]),
+            ("sum", 16, [0, 10, 21, 33, 46, 60]),
+            ("last", 8, [0, 10, 11, 12, 13, 14]),
+            ("offered", 8, [10, 11, 12, 13, 14, 15]),
+        ]:
+            assert changes[root + signal] == [
+                (time, f"{number:0{width}b}") for time, number in zip(times, numbers)
+            ], signal
+        assert changes[root + "stream.ready"] == [
+            (0, "0"), (4_000_000, "1"), (10_000_000, "0"), (14_000_000, "1")
+        ]
+    elif profile == "attribute_usage":
+        root = "AttributeUsageTest.dut."
+        assert changes[root + "q"] == [(0, "00011001"), (1_000_000, "00011010")]
+        for signal, number in [("overridden", 7), ("inherited", 16), ("defaulted", 4)]:
+            assert changes[root + signal] == [(0, f"{number:064b}")]
+    elif profile == "runtime_packed_read_test":
         expected = [
             (0, "0"), (1_000_000, "x"), (2_000_000, "1"),
             (3_000_000, "z"), (4_000_000, "0"), (5_000_000, "z"),

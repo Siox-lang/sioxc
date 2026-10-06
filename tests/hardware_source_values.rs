@@ -5,6 +5,71 @@
 use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
 
 #[test]
+fn aggregate_history_reads_old_leaves_with_current_selectors() {
+    let source = r#"module aggregate_history;
+use std::bits::unsigned;
+pub struct Packet { pub mark: Logic, pub data: unsigned[128] }
+entity Dut {
+    packets: Packet[3..2] in, index: integer in, tick: Bit in,
+    previous: Packet out, history: Packet[-1..0] out
+}
+impl Dut {
+    let saved: Packet;
+    let all: Packet[-1..0];
+    process {
+        if tick'event {
+            saved = packets[index]'old;
+            all = packets'old;
+        }
+    }
+    previous = saved;
+    history = all;
+}
+"#;
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/aggregate_history.siox", source),
+            Emit::Metadata,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let design = compilation.design.unwrap();
+    assert!(
+        design.validate().is_empty(),
+        "canonical history must validate"
+    );
+    let mut old_leaves = std::collections::HashSet::new();
+    let mut current_index = false;
+    for node in &design.process_ir.values {
+        let siox::ir::ProcessValueKind::Signal { signals, state } = &node.kind else {
+            continue;
+        };
+        for signal in signals {
+            let path = &design.signals[signal.0 as usize].path;
+            if *state == siox::ir::ProcessSignalState::Old && path.contains(".packets[") {
+                old_leaves.insert(path.clone());
+            }
+            if path.ends_with(".index") {
+                assert_eq!(*state, siox::ir::ProcessSignalState::Current);
+                current_index = true;
+            }
+        }
+    }
+    assert_eq!(
+        old_leaves.len(),
+        4,
+        "both fields of both packets retain old state"
+    );
+    assert!(
+        current_index,
+        "dynamic selection must read the current index"
+    );
+}
+
+#[test]
 fn concatenation_parts_keep_their_source_anchors() {
     let source = "module concat_anchors; use std::bits::unsigned;\n\
         entity Dut { a: unsigned[4] in, b: unsigned[4] in, y: unsigned[8] out }\n\
