@@ -79,13 +79,28 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
 
 - 🟡 **Complete direct Process IR lowering.** Exact-width scalar and recursive
   packed values, branches, loops, matches, clocks, suspension, delayed writes,
-  formatting, assertions, scalar foreign calls, receiver/free procedures with
+  formatting, assertions, scalar foreign calls, receiver/free functions with
   branches, matches, loops, early returns and suspension, dynamic UTF-8
   strings/file probes, and source-defined operator impls execute directly today.
-  Procedure arguments capture computed values and dynamic place selectors once
+  Calls with and without returned values share canonical statement CFGs and
+  caller continuations. Returned lexical structs, directed arrays and generic
+  values retain their recursive layouts and companion planes across suspension.
+  Call arguments capture computed values and dynamic place selectors once
   in source order; caller-place aliases and per-inline locals remain distinct.
-  Remaining executable forms are runtime recursion/general value-returning
-  call CFGs and non-packed conversions. Unsupported forms
+  Conditional expression calls execute only in the selected branch. Loop-bound
+  calls execute in the preheader, not on the iteration back-edge; repeated
+  parameter reads retain written order around mutating calls.
+  Remaining executable forms are runtime recursion, CFG-capable reset-time
+  impl initializers and non-packed conversions. Indexed/field delayed targets
+  retain an event-owned physical offset and driver/scalar waveform identity;
+  the narrow value and X/Z companion planes survive rejection and expiry
+  without re-reading selectors or capturing the whole root. Native regression
+  coverage includes mutating/suspending delay calls, directed struct arrays,
+  128-bit fields and overlapping whole/scalar writes. Complete fresh broad
+  default/bitpack gates before treating this implementation as verified.
+  Calls in `after` expressions now resolve/typecheck in their original scope;
+  direct scalar delay calls preserve RHS snapshots across callee suspension.
+  Unsupported forms
   must continue to fail transactionally before calls or staged writes become
   observable.
   Recursive procedural arrays/structs now retain packed X/Z planes through

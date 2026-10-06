@@ -185,9 +185,15 @@ exports immutable test, process,
 activation, sensitivity, waveform, and source-location tables plus callable
 process entries. One fixed scheduler consumes them, owns ready batches and
 delta commits, and edits delayed writes as driver/scalar-subelement projected
-waveforms with VHDL default-inertial rejection. LLVM supplies stable waveform
-identity and masked apply sites, so overlapping whole/slice targets compose
-without teaching the runtime concrete design layouts. The object links with a
+waveforms with VHDL default-inertial rejection. LLVM supplies driver/root
+families and immutable scalar-lane descriptors. Each queued write owns its
+physical target offset plus narrow value and packed X/Z payloads; static and
+dynamic projections therefore share one waveform identity without retaining
+live selectors. Inertial comparison/rejection includes companion values, and
+masked apply sites preserve unselected value/companion lanes. Overlapping
+whole/slice targets compose without teaching the runtime concrete design
+layouts. Native Process ABI version 14 carries the selected offset through
+enqueue and expiry. The object links with a
 fixed descriptor-driven CLI and the pinned libfst waveform runtime. These
 design-independent C sources are compiled once
 with `sioxc` and embedded as host objects; a source fallback is retained when
@@ -386,10 +392,22 @@ matches, loops and suspension, with a caller continuation for early returns.
 Computed arguments and dynamic place selectors are captured in ordinary Process
 locals before the callee runs, in source order; subsequent reads/writes through
 place aliases retain their immediate or staged semantics. Repeated inline sites
-select their own local declarations. Recursive/unknown statement calls roll back
+select their own local declarations. Recursive/unknown calls roll back
 the entire inline before entry captures or callee effects can become observable.
-General value-returning call CFGs, recursion and guarded hardware evaluation
-remain separate unfinished work.
+`lower/source_processes/cfg_calls.rs` expands remaining value calls inside the
+canonical CFG, reusing the ordinary statement lowerer, captured places and
+result locals. `return value;` assigns the result frame and jumps to the caller
+continuation. Conditional value nodes become branches with a result join;
+their inactive calls are never executed. Call-containing loop iterables expand
+in the preheader, outside the iteration back-edge. Operand/format remapping
+preserves written positions even when several reads share one parameter ID;
+read snapshots must never replace its mutable place identity.
+Concrete declaration layouts are retained on `Design::type_layouts` by resolved
+type identity using the existing source-layout builder. Lexical-only structs
+therefore have the same representation as types occurring in ports or storage;
+generic returns reuse caller layouts rather than invent another layout builder.
+CFG-capable reset-time initializers, runtime recursion and guarded hardware
+evaluation remain separate unfinished work.
 Procedural signal reads retain their declaration-owned layout before projection,
 so entity-qualified packed ports use the same labelled slices as local aliases.
 Normalization rewrites each dependency once and compacts reachable values

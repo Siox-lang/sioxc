@@ -331,6 +331,7 @@ mod tests {
             array_element_enums: Default::default(),
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
+            type_layouts: Default::default(),
         };
 
         let dir = std::env::temp_dir().join(format!("siox_aot_{}", std::process::id()));
@@ -1731,6 +1732,7 @@ signed main(void) {
             array_element_enums: Default::default(),
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
+            type_layouts: Default::default(),
         };
 
         let dir = std::env::temp_dir().join(format!("siox_aot_wide_{}", std::process::id()));

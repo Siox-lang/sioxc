@@ -107,6 +107,35 @@ pub fn lower_in(
                 .insert(family.clone(), element);
         }
     }
+    // Retain concrete declaration shapes even when no instance flattens that
+    // type into signals. Procedural locals and returned values consume this
+    // metadata instead of deriving a second representation from struct ASTs.
+    for declaration in modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .filter_map(|item| match item {
+            ast::Item::Struct(declaration) if declaration.params.params.is_empty() => {
+                Some(declaration)
+            }
+            _ => None,
+        })
+    {
+        let Some(definition) = resolved.declared(declaration.name.span) else {
+            continue;
+        };
+        let key = l.free_fns.struct_decl_key(&declaration.name);
+        let ty = ast::Type::Path(ast::Path {
+            segments: vec![ast::Ident {
+                text: key,
+                span: declaration.name.span,
+            }],
+            span: declaration.name.span,
+        });
+        let layout = l.source_layout(&ty, &HashMap::new());
+        if layout.packed_width().is_some() {
+            l.out.type_layouts.insert(definition, layout);
+        }
+    }
     // The entity types that appear in the elaborated hierarchy, in first-seen
     // order, deduplicated. Each entity's parameters are taken from its first
     // instance, so `unsigned[W]` lowers with the instance's concrete `W`.

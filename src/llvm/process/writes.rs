@@ -205,7 +205,7 @@ pub(super) fn write_static_place<'ctx>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn write_static_place_masked<'ctx>(
+pub(super) fn write_scheduled_place_masked<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
@@ -213,6 +213,8 @@ pub(super) fn write_static_place_masked<'ctx>(
     place: StaticPlace,
     value: IntValue<'ctx>,
     mask: IntValue<'ctx>,
+    metadata: Option<(IntValue<'ctx>, IntValue<'ctx>)>,
+    offset: IntValue<'ctx>,
     span: siox::diag::Span,
     range_sites: &HashMap<siox::diag::Span, u32>,
 ) -> Option<()> {
@@ -225,20 +227,11 @@ pub(super) fn write_static_place_masked<'ctx>(
     let root_type = context
         .custom_width_int_type(std::num::NonZeroU32::new(place.root_width)?)
         .ok()?;
-    let root_value = insert_region(
-        builder,
-        root_type.const_zero(),
-        value,
-        place.offset,
-        place.width,
-    )?;
-    let root_mask = insert_region(
-        builder,
-        root_type.const_zero(),
-        mask,
-        place.offset,
-        place.width,
-    )?;
+    let offset = fit(builder, offset, place.root_width)?;
+    let root_value =
+        insert_dynamic_region(builder, root_type.const_zero(), value, offset, place.width)?;
+    let root_mask =
+        insert_dynamic_region(builder, root_type.const_zero(), mask, offset, place.width)?;
 
     match place.root {
         StaticPlaceRoot::Signal(signal) => {
@@ -264,6 +257,61 @@ pub(super) fn write_static_place_masked<'ctx>(
             Some(())
         }
         StaticPlaceRoot::Storage(storage) => {
+            let metadata = if let Some((mut meta_value, mut meta_mask)) = metadata {
+                let meta_width = storage_meta_width(design, storage)?;
+                if place.reverse {
+                    meta_value = reverse_meta_elements(builder, meta_value)?;
+                    meta_mask = reverse_meta_elements(builder, meta_mask)?;
+                }
+                let meta_offset = fit(builder, offset, meta_width)?;
+                let meta_offset = builder
+                    .build_int_mul(
+                        meta_offset,
+                        meta_offset.get_type().const_int(4, false),
+                        "process.schedule.meta.offset",
+                    )
+                    .ok()?;
+                let current = state_value(
+                    context,
+                    module,
+                    builder,
+                    &storage_meta_name(storage),
+                    meta_width,
+                )?;
+                let root_value = insert_dynamic_region(
+                    builder,
+                    current.get_type().const_zero(),
+                    meta_value,
+                    meta_offset,
+                    place.width.checked_mul(4)?,
+                )?;
+                let root_mask = insert_dynamic_region(
+                    builder,
+                    current.get_type().const_zero(),
+                    meta_mask,
+                    meta_offset,
+                    place.width.checked_mul(4)?,
+                )?;
+                let kept = builder
+                    .build_and(
+                        current,
+                        builder
+                            .build_not(root_mask, "process.schedule.meta.keep")
+                            .ok()?,
+                        "process.schedule.meta.kept",
+                    )
+                    .ok()?;
+                let replacement = builder
+                    .build_and(root_value, root_mask, "process.schedule.meta.replacement")
+                    .ok()?;
+                Some(
+                    builder
+                        .build_or(kept, replacement, "process.schedule.meta.merged")
+                        .ok()?,
+                )
+            } else {
+                None
+            };
             let current = state_value(
                 context,
                 module,
@@ -297,7 +345,7 @@ pub(super) fn write_static_place_masked<'ctx>(
                     reverse: false,
                 },
                 merged,
-                None,
+                metadata,
                 span,
                 range_sites,
             )
@@ -698,6 +746,20 @@ pub(super) fn emit_schedule_call<'ctx>(
     if place != site.place || place.width != site.width || site.lanes.is_empty() {
         return None;
     }
+    let offset = if let Some(dynamic) = dynamic_place(design, target) {
+        let offset = dynamic_place_offset(
+            context,
+            module,
+            builder,
+            design,
+            &dynamic,
+            index_sites,
+            cache,
+        )?;
+        fit(builder, offset, 32)?
+    } else {
+        context.i32_type().const_int(u64::from(place.offset), false)
+    };
     let captured = assignment_value(
         context,
         module,
@@ -709,6 +771,21 @@ pub(super) fn emit_schedule_call<'ctx>(
         index_sites,
         cache,
     )?;
+    let metadata = assignment_metadata(
+        context,
+        module,
+        builder,
+        design,
+        place.root,
+        target,
+        value,
+        place.width,
+        index_sites,
+        cache,
+    )?;
+    if metadata.is_some() != site.metadata_width.is_some() {
+        return None;
+    }
     let delay = process_value_at(
         context,
         module,
@@ -725,11 +802,18 @@ pub(super) fn emit_schedule_call<'ctx>(
     let i32 = context.i32_type();
     let i64 = context.i64_type();
     let pointer = context.ptr_type(AddressSpace::default());
-    let word_count = super::super::words_for(place.width);
+    let value_words = super::super::words_for(place.width);
+    let metadata_words = site.metadata_width.map_or(0, super::super::words_for);
+    let word_count = value_words.checked_add(metadata_words)?;
     let array = i64.array_type(word_count);
     let words = builder.build_alloca(array, "process.schedule.words").ok()?;
     for word in 0..word_count {
-        let offset = word.checked_mul(super::super::ABI_WORD_BITS)?;
+        let (captured, word_in_plane) = if word < value_words {
+            (captured, word)
+        } else {
+            (metadata?, word.checked_sub(value_words)?)
+        };
+        let offset = word_in_plane.checked_mul(super::super::ABI_WORD_BITS)?;
         let part = if offset == 0 {
             captured
         } else {
@@ -767,10 +851,6 @@ pub(super) fn emit_schedule_call<'ctx>(
         global.set_initializer(&i32.const_array(&values));
         Some(global.as_pointer_value())
     };
-    let waveforms = descriptor(
-        "waveforms",
-        site.lanes.iter().map(|lane| lane.waveform).collect(),
-    )?;
     let offsets = descriptor(
         "offsets",
         site.lanes.iter().map(|lane| lane.offset).collect(),
@@ -789,7 +869,10 @@ pub(super) fn emit_schedule_call<'ctx>(
                         i64.into(),
                         pointer.into(),
                         i32.into(),
-                        pointer.into(),
+                        i32.into(),
+                        i32.into(),
+                        i32.into(),
+                        context.i8_type().into(),
                         pointer.into(),
                         pointer.into(),
                         i32.into(),
@@ -807,7 +890,14 @@ pub(super) fn emit_schedule_call<'ctx>(
                 delay.into(),
                 words.into(),
                 i32.const_int(u64::from(word_count), false).into(),
-                waveforms.into(),
+                i32.const_int(u64::from(site.lanes[0].waveform), false)
+                    .into(),
+                offset.into(),
+                i32.const_int(u64::from(place.width), false).into(),
+                context
+                    .i8_type()
+                    .const_int(u64::from(place.reverse), false)
+                    .into(),
                 offsets.into(),
                 widths.into(),
                 i32.const_int(u64::from(lane_count), false).into(),

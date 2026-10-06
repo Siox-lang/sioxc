@@ -630,7 +630,7 @@ fn emits_runtime_discovery_metadata() {
         ..Design::default()
     };
     let llvm = crate::llvm::emit_module_ir(&design).unwrap();
-    assert!(llvm.contains("@sx_process_abi_version = constant i32 13"));
+    assert!(llvm.contains("@sx_process_abi_version = constant i32 14"));
     assert!(llvm.contains("define i8 @sx_process_commit()"));
     assert!(llvm.contains("define i8 @sx_process_changed(i32"));
     assert!(llvm.contains("define i8 @sx_process_storage_changed(i32"));

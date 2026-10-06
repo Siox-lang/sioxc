@@ -6,6 +6,241 @@ use std::process::Command;
 
 #[cfg(feature = "llvm")]
 #[test]
+fn value_calls_return_lexical_aggregates_through_cfgs() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let source = r#"module value_cfg;
+        use std::bits::unsigned;
+        struct Packet { pub n: integer, pub data: unsigned[128], pub mark: Logic }
+        impl Packet { pub fn advance(self, steps: integer) -> Packet {
+            for i in 0..steps { self.n = self.n + i; }
+            await 1ns; return self;
+        } }
+        fn relabel(rows: Packet[3..2]) -> Packet[-1..0] {
+            let copied: Packet[-1..0] = rows;
+            for i in -1..0 { copied[i].n = copied[i].n + 1; }
+            return copied;
+        }
+        fn hold<T>(value: T, steps: integer) -> T {
+            for i in 0..steps { await 1ns; }
+            return value;
+        }
+        fn bump(target: integer) -> integer { target = 9; return 2; }
+        fn observe(value: integer) -> integer { await 1ns; return value + bump(value); }
+        fn observe_after(value: integer) -> integer { await 1ns; return value + (bump(value) + value); }
+        fn trio(value: integer) -> integer[3] { await 1ns; return [value, bump(value), value]; }
+        fn formatted(value: integer) -> integer {
+            print!("snapshot={} return={} after={}", value, bump(value), value);
+            await 1ns; return value;
+        }
+        fn end(count: integer) -> integer { count = count + 1; await 1ns; return 2; }
+        #[test] entity Test {}
+        impl Test { process {
+            let count: integer = 0;
+            let sum: integer = 0;
+            for i in 0..end(count) { sum = sum + i; }
+            assert!(count == 1 and sum == 3, "loop bound call executes only at loop entry");
+            let original: integer = 4;
+            let observed: integer = observe(original);
+            assert!(observed == 6 and original == 9, "snapshot must not redirect parameter alias");
+            original = 4;
+            let after: integer = observe_after(original);
+            assert!(after == 15 and original == 9, "later read sees call's write");
+            original = 4;
+            let three: integer[3] = trio(original);
+            assert!(three[0] == 4 and three[1] == 2 and three[2] == 9, "array operands retain written order");
+            original = 4;
+            let printed: integer = formatted(original);
+            assert!(printed == 9 and original == 9, "formatted call writes its caller alias");
+            let rows: Packet[3..2] = [{.n=4,.data=18446744073709551616,.mark='Z'},
+                                     {.n=20,.data=7,.mark='X'}];
+            let advanced: Packet = rows[3].advance(2);
+            assert!(advanced.n == 7 and advanced.data == 18446744073709551616 and advanced.mark == 'Z', "aggregate return");
+            let copied: Packet[-1..0] = relabel(rows);
+            assert!(copied[-1].n == 8 and copied[0].n == 21 and copied[0].mark == 'X', "array return");
+            let held: Packet = hold(advanced, 2);
+            assert!(held.n == 7 and held.data == 18446744073709551616 and held.mark == 'Z', "generic return");
+        } }"#;
+    let binary = std::env::temp_dir().join(format!("siox_value_cfg_{}", std::process::id()));
+    let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+        CompileRequest::new(
+            SourceInput::memory("/virtual/value_cfg.siox", source),
+            Emit::TestExecutable,
+        )
+        .with_output(&binary),
+    );
+    assert!(
+        compilation.succeeded(),
+        "{}\n{:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    let design = compilation.design.unwrap();
+    assert!(design.validate().is_empty(), "{:?}", design.validate());
+    let output = Command::new(&binary).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("snapshot=4 return=2 after=9"));
+    let _ = std::fs::remove_file(binary);
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn delayed_value_calls_capture_targets_and_values() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let source = r#"module delay_cfg;
+        fn duration(selector: integer) -> time { selector = 1; return 1ns; }
+        fn duration_and_change(value: Bit, selector: integer) -> time {
+            value = '0'; selector = 0; await 1ns; return 1ns;
+        }
+        entity Probe { pulses: Bit[2] in, seen: Bit[2] out }
+        impl Probe { seen = pulses; }
+        #[test] entity Test {}
+        impl Test {
+            let pulses: Bit[2] = ['0', '0'];
+            let dut: Probe = {.pulses=pulses};
+            process {
+                let selector: integer = 0;
+                pulses[selector] = '1' after duration(selector);
+                await 2ns;
+                assert!(selector == 1 and pulses[0] == '1' and pulses[1] == '0', "delay retargeted the first write");
+                let value: Bit = '1';
+                pulses[selector] = value after duration_and_change(value, selector);
+                await 2ns;
+                assert!(value == '0' and selector == 0 and pulses[1] == '1', "delay lost the second target/value snapshot");
+            }
+        }"#;
+    let binary = std::env::temp_dir().join(format!("siox_delay_cfg_{}", std::process::id()));
+    let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+        CompileRequest::new(
+            SourceInput::memory("/virtual/delay_cfg.siox", source),
+            Emit::TestExecutable,
+        )
+        .with_output(&binary),
+    );
+    assert!(
+        compilation.succeeded(),
+        "{}\n{:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    let output = Command::new(&binary).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_file(binary);
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn delayed_dynamic_composites_keep_scalar_masks_and_packed_metadata() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let source = r#"module delayed_composites;
+        use std::bits::unsigned;
+        struct Packet { pub data: unsigned[128], pub tag: Logic }
+        #[test] entity Test {}
+        impl Test {
+            let rows: Packet[3..2] = [{.data=0,.tag='Z'}, {.data=0,.tag='X'}];
+            let bus: unsigned[128] = 0;
+            process {
+                let index: integer = 3;
+                let bit: integer = 63;
+                rows[3].data[63] = 'Z';
+                rows[index].data = 0 after 5ns;
+                index = 2;
+                rows[3].data[63] = 'X' after 10ns;
+                rows[index].data[64] = 'Z' after 5ns;
+                // Both X and Z have the same primary value bit. Their
+                // companion values must participate in pulse rejection.
+                bus[bit] = 'X' after 5ns;
+                bus[63] = 'Z' after 10ns;
+                bus[64] = 'Z' after 5ns;
+                bit = 64;
+                bus[0] = 'Z';
+                await 6ns;
+                assert!(bus[63] == '0' and bus[64] == 'Z' and bus[0] == 'Z', "captured bit target, metadata rejection and untouched lanes");
+                assert!(rows[3].data[63] == 'Z' and rows[2].data[64] == 'Z', "whole/dynamic scalar overlap uses one physical waveform");
+                assert!(rows[3].tag == 'Z' and rows[2].tag == 'X', "unwritten struct fields stay intact");
+                await 5ns;
+                assert!(bus[63] == 'Z' and bus[64] == 'Z' and bus[0] == 'Z', "metadata survives scheduled expiry");
+                assert!(rows[3].data[63] == 'X' and rows[2].data[64] == 'Z', "multiword value and companion masks preserve independent elements");
+            }
+        }"#;
+    let binary = std::env::temp_dir().join(format!("siox_delay_composites_{}", std::process::id()));
+    let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+        CompileRequest::new(
+            SourceInput::memory("/virtual/delayed_composites.siox", source),
+            Emit::TestExecutable,
+        )
+        .with_output(&binary),
+    );
+    assert!(
+        compilation.succeeded(),
+        "{}\n{:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    let output = Command::new(&binary).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_file(binary);
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn recursive_value_call_fails_before_argument_or_callee_effects() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let source = r#"module recursive_value;
+        extern "C" { fn putchar(value: integer) -> integer; }
+        fn recurse(target: integer, key: integer) -> integer {
+            let printed: integer = putchar(36);
+            target = key;
+            if key > 0 { return recurse(target, key); }
+            return 0;
+        }
+        #[test] entity Test {}
+        impl Test { process {
+            let target: integer = 0;
+            let result: integer = recurse(target, putchar(64));
+        } }
+    "#;
+    let binary = std::env::temp_dir().join(format!("siox_recursive_value_{}", std::process::id()));
+    let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+        CompileRequest::new(
+            SourceInput::memory("/virtual/recursive_value.siox", source),
+            Emit::TestExecutable,
+        )
+        .with_output(&binary),
+    );
+    assert!(
+        compilation.succeeded(),
+        "{}\n{:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    let output = Command::new(&binary).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        !stdout.contains('@') && !stdout.contains('$'),
+        "call effects escaped the failed inline: {stdout}"
+    );
+    assert!(stdout.contains("direct Process IR lowering is incomplete"));
+    let _ = std::fs::remove_file(binary);
+}
+
+#[cfg(feature = "llvm")]
+#[test]
 fn procedural_calls_share_cfg_and_preserve_call_evaluation() {
     use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
     let source = r#"module procedural_cfg;

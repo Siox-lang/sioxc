@@ -68,13 +68,14 @@ pub(super) struct ScheduleSite {
     pub(super) instruction: usize,
     pub(super) place: StaticPlace,
     pub(super) width: u32,
+    pub(super) metadata_width: Option<u32>,
     pub(super) lanes: Vec<ScheduleLane>,
     pub(super) span: siox::diag::Span,
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct ScheduleLane {
-    /// Driver-and-physical-scalar identity used to edit the projected waveform.
+    /// Driver/root family. The event-owned offset identifies its scalar lane.
     pub(super) waveform: u32,
     /// Lane offset in the captured target value's logical orientation.
     pub(super) offset: u32,
@@ -96,8 +97,6 @@ enum ScheduleDriver {
 struct ScheduleWaveform {
     driver: ScheduleDriver,
     root: StaticPlaceRoot,
-    offset: u32,
-    width: u32,
 }
 
 fn scalar_lane_widths(layout: &SourceLayout, widths: &mut Vec<u32>) -> Option<()> {
@@ -154,7 +153,17 @@ fn scheduled_lane_widths(design: &Design, target: ProcessValueId, width: u32) ->
 /// endpoints stay fail-closed until the event ABI retains the wider
 /// mathematical source value used by their diagnostic.
 pub(super) fn delayed_place(design: &Design, target: ProcessValueId) -> Option<StaticPlace> {
-    let place = static_place(design, target)?;
+    // Dynamic selectors are evaluated once at enqueue time. This descriptor
+    // owns the root/width; its actual offset is carried by the event, not here.
+    let place = static_place(design, target).or_else(|| {
+        dynamic_place(design, target).map(|place| StaticPlace {
+            root: place.root,
+            root_width: place.root_width,
+            offset: 0,
+            width: place.width,
+            reverse: false,
+        })
+    })?;
     match place.root {
         StaticPlaceRoot::Local(_, _) => None,
         StaticPlaceRoot::Signal(signal) => design
@@ -201,26 +210,18 @@ pub(super) fn schedule_sites(design: &Design) -> Vec<ScheduleSite> {
                     ScheduleDriver::Process(process.id),
                     ScheduleDriver::Compatibility,
                 );
+                let key = ScheduleWaveform {
+                    driver,
+                    root: place.root,
+                };
+                let Some(next) = u32::try_from(waveforms.len()).ok() else {
+                    continue;
+                };
+                let waveform = *waveforms.entry(key).or_insert(next);
                 let mut offset = 0u32;
                 let lanes = scheduled_lane_widths(design, *target, place.width)
                     .into_iter()
                     .map(|width| {
-                        let physical_offset = if place.reverse {
-                            place
-                                .width
-                                .checked_sub(offset.checked_add(width)?)?
-                                .checked_add(place.offset)?
-                        } else {
-                            place.offset.checked_add(offset)?
-                        };
-                        let key = ScheduleWaveform {
-                            driver,
-                            root: place.root,
-                            offset: physical_offset,
-                            width,
-                        };
-                        let next = u32::try_from(waveforms.len()).ok()?;
-                        let waveform = *waveforms.entry(key).or_insert(next);
                         let lane = ScheduleLane {
                             waveform,
                             offset,
@@ -240,6 +241,11 @@ pub(super) fn schedule_sites(design: &Design) -> Vec<ScheduleSite> {
                     instruction,
                     place,
                     width: place.width,
+                    metadata_width: match place.root {
+                        StaticPlaceRoot::Storage(storage) => storage_meta_width(design, storage)
+                            .and_then(|_| place.width.checked_mul(4)),
+                        _ => None,
+                    },
                     lanes,
                     span: *span,
                 });

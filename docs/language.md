@@ -3091,8 +3091,10 @@ Phase 1; hardware impls reject it. (The old `clock()` sugar was removed —
 the after-form is the one generator.)
 
 The Process runtime recognizes the self-toggle as a free-running clock and
-queues one-shot static writes with their exact-width value captured at schedule
-time. One-shot writes use VHDL default-inertial waveform semantics: the pulse
+queues one-shot writes with their exact-width value, packed X/Z companion
+plane and physical target offset captured at schedule time. Static and
+dynamically indexed/field targets use the same queue; later selector changes
+cannot retarget a pending write. One-shot writes use VHDL default-inertial waveform semantics: the pulse
 rejection limit equals the delay, projected transactions are keyed by source
 driver and physical scalar subelement, and a later assignment preserves only
 the earlier equal-valued suffix within that rejection window. Composite and
@@ -3146,7 +3148,7 @@ report automatically — no syntax.
 condition reports to stderr and counts toward the test's warning total, but
 the test still passes. It is the recoverable tier of error handling.
 
-In a simulation process, a function without a return value may contain locals,
+In a simulation process, a function with or without a return value may contain locals,
 branches, matches, loops, nested calls and `await`. Its body shares the caller's
 canonical Process control flow: `return;` leaves that call and resumes the
 caller, not the enclosing process. Each inline call site has its own locals.
@@ -3154,8 +3156,28 @@ Writable receivers and place arguments refer to the caller's storage; dynamic
 selectors are captured before the callee runs, so changing a selector does not
 retarget an already-bound argument. Computed arguments are evaluated once in
 source order and retained across suspension. Signal writes still commit through
-the scheduler; local writes remain immediate. Runtime recursion and general
-value-returning call control flow are not yet supported and must fail closed.
+the scheduler; local writes remain immediate. A value return writes an ordinary
+caller-owned result local before resuming the caller. Scalar, recursive struct,
+directed-array and inferred generic returns retain their representation and
+X/Z data across suspension, including types used only in lexical locals.
+Conditional expression calls execute only in the selected `if`/`match` arm;
+loop-iterable calls execute once at loop entry, not on each back-edge. Reading
+a parameter before a mutating call snapshots that value without redirecting
+the parameter's writable alias; subsequent reads observe immediate writes.
+
+Runtime recursion is not yet supported and must fail closed before argument
+or callee effects escape a failed inline. Reset-time impl declarations still
+use value-shaped initializers: a function requiring general control flow is
+not yet supported there. This limitation does not apply to declarations inside
+an explicit process or after the first statement of an implicit test process.
+Functions in `after` expressions use the same lexical name/type checking and
+call lowering. Delayed writes capture their target selectors and RHS before a
+delay function mutates caller state or suspends. Pending events own the chosen
+physical offset and only the selected value/companion payload, not a snapshot
+of the entire aggregate. Inertial comparison and cancellation include packed
+X/Z metadata, and expiry preserves untouched fields and scalar lanes. Delayed
+lexical-local writes and mathematically ranged endpoints remain unsupported;
+their lifetime and wider-value diagnostic contracts are not yet implemented.
 
 #### No exceptions
 

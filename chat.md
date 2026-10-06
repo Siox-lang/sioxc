@@ -12823,3 +12823,240 @@ the full language/pipeline exit audit is still required. Unnecessary-copy
 reduction remains deferred, not a Phase 1 blocker.
 
 Sibling suite committed as 78f7051; its worktree is clean. No push.
+
+### 2026-10-06 — Codex — value-returning CFG execution gap
+
+Previous goal turn made verified progress in 57c2809 and sibling 78f7051.
+Revalidate current clean execution inputs and unchanged unrelated AGENTS.md,
+.codex/ and 441 historical chat edits. A native branch-return function passes;
+a runtime-loop function with early return builds but exits 1 at incomplete
+Process IR for process 0 block 0. Own source_processes.rs and a focused helper
+under source_processes/, Rust/native and sibling regressions, docs/TODO/logs.
+Reuse ordinary statement CFGs, result locals and caller return joins rather
+than add an interpreter or second execution representation. Preserve argument
+evaluation order, conditional evaluation, layouts and transactional failures.
+No live gate, push, dependency or deferred copy optimization. Phase 1 remains
+active and completion unproven.
+
+The broad returned-packet fixture also exposes a layout gap: a plain struct
+used only by lexical process locals has no persisted type layout unless the
+type also occurs in persistent/DUT storage. Extend ownership to Design's
+declaration-layout metadata and lower.rs construction. Reuse source_layout
+once, keyed by resolved type identity; do not add a procedural struct-layout
+algorithm or change the fixture to require an otherwise unnecessary port.
+
+### 2026-10-06 — Codex — resume lexical aggregate CFG gap
+
+The copy-deferral turn made no Phase 1 progress. Pending test session 29975
+returned 101: lexical Packet construction, local arrays and returned frames
+have missing packed widths. Resume the existing ownership above; inspect the
+resolved declaration layout ingress before broadening execution coverage.
+Preserve unrelated work. No push, dependency, or deferred copy optimization.
+
+The nominal declaration-span lookup fixes lexical Packet layouts; the focused
+emitted native aggregate test passes. Further native assertions exposed and
+fixed snapshot-to-place alias replacement, ID-keyed collapse of repeated
+array operands around a mutating call, positional format remapping, and
+repeated loop-bound calls on iteration back-edges. The call expander preserves
+mutable places separately from snapshots, remaps written operand positions,
+and expands loop-iterable calls in the preheader. Generic return inference
+shares the existing value-inline helper; no parser feature was broadened.
+All six testbench_methods regressions pass, including transactional recursive
+value-call rejection before either argument or callee foreign effects. The
+larger sibling fixture passes and exposes a 7 ns DUT transition; fresh broad
+gates and both-mode waveform parity remain to run. Reset-time impl initializers
+still need CFG-capable initialization, separate from process-body calls.
+
+### 2026-10-06 — Codex — value CFG verification freeze
+
+Fresh native process_value_cfg_test passes (AB once, correct positional
+formatting, generic/aggregate returns, caller alias snapshots and loop-bound
+evaluation); its semantic VCD profile verifies both DUT transitions at 7 ns.
+Freeze execution inputs:
+9f9c58f845a093a30823f1f9513f0349fc8c7efa73273f11104d9845f85dbd02
+and the 223-program corpus:
+0cc8e7d3ee41d2f519291d30ebee77571970477a20a2a614c62363d741232693.
+Fresh default compiler SHA-256:
+b9bdb30a54604e5d563ee251126f4c4032b83f6a3a40f6646b0b5f336c19551d.
+Run the pinned full CI gate under an 8 GiB scope and direct default/bitpack
+native VCD/FST comparisons using frozen compiler artifacts. Do not edit
+executable inputs while the gate is live. Full verification and Phase 1
+completion remain unproven; no push or deferred copy optimization.
+
+The first full gate failed library-test compilation: hand-built Design
+fixtures omit the new type_layouts field (default/bitpack expose different
+sets). Default native session 69347 completed all 46 cases with 45 unchanged
+baseline VCDs/stdout byte-identical. Stop the failed owned CI scope to fix the
+fixtures; session 84200 returned 143 and scope is inactive, not an observation
+timeout. Extend ownership only to fixture initialization in ir/tests/behavior,
+llvm/aot and llvm/emit. All executable-input edits occur after the freeze ends;
+fresh hashes and a complete rerun are required. No completion/push claim.
+
+The fixture-only Design initializations now compile in the default library
+test target; frontend Clippy passes. Refreeze updated execution inputs:
+3aa0f324dcf42865f8de32f223cd4cce8e1ad5a3c9cdc57bf99e98bd197b2f1f.
+The corpus hash remains 0cc8e7d3ee41d2f519291d30ebee77571970477a20a2a614c62363d741232693.
+Start a new complete gate, not a selective rerun. Freeze all executable inputs
+until the owned handles terminate; refresh both native artifacts after builds.
+
+The second gate passed default/bitpack Rust suites and all-target/all-feature
+Clippy before corpus completion. An additional immutable-artifact native probe
+found a source gap in `after duration(selector)`: resolve_stmt and check_stmt
+skip the after expression, leaving canonical callee/argument Intrinsic names.
+Stop the owned gate for this confirmed gap; session 35828 returned 143 and
+scope is inactive. Extend ownership to those shared assignment walkers and
+focused delay-call regressions. Resolve/typecheck the delay in its existing
+scope, and preserve target selectors before either RHS or delay CFG calls.
+No executable-input edits preceded termination. Require another complete gate.
+
+### 2026-10-06 — Codex — dynamic delayed target handoff
+
+Current source walkers resolve and typecheck `after` correctly. A fresh
+immutable-artifact native scalar-duration probe passes, including a callee
+that mutates the RHS and suspends: pulse/seen change at 1, 2 and 4 ns. API
+inspection confirms duration callees are Definition IDs, selector arguments
+are Local IDs, return frames carry the source-owned time layout, and target
+selectors/RHS snapshots survive delay-call CFG expansion. The earlier inspect
+helper linked stale target/debug/libsiox.rlib; rebuild --lib before repeating
+external Rust diagnostics, because --bin/integration builds update deps but
+not necessarily that convenience rlib. Native compiler artifacts are separate.
+
+The dynamic-target regression remains genuinely failing. LLVM delayed_place
+in places.rs only accepts static_place; schedule_sites and scheduled_apply
+assume static physical targets. Do not weaken the fixture to a static target
+or turn its assertions into expected failure. Next safe work is an event-owned
+captured physical target offset with stable driver/scalar waveform identity,
+using the existing dynamic_place_offset and masked write machinery. Retain
+narrow value/companion payloads and inertial overlap rules; do not snapshot a
+whole root just to schedule one selected element, enumerate source ASTs, or
+introduce another execution representation. Also keep ranged endpoints and
+lexical-local delayed lifetimes fail-closed until their contracts are supported.
+
+Latest testbench_methods run: six pass, the new delayed-value capture test
+fails; the expanded sibling fixture likewise fails when scheduling its dynamic
+flag target. Its expected VCD transitions at 16/19 ns remain in the checker.
+Both owned full CI scopes are inactive (explicit stops for identified failures,
+not timeouts). No full gate covers the latest source-walker changes, no bitpack
+native parity is claimed for them, and no commit or push is permitted yet.
+Keep the existing uncommitted feature/regressions and unrelated AGENTS.md,
+.codex/ and 441 historical chat insertions separate. Phase 1 remains active;
+copy reduction stays deferred. Fresh complete gates/native parity and the full
+requirement-by-requirement exit audit still need to pass.
+
+### 2026-10-06 — Codex — captured delayed places and metadata
+
+Resume Phase 1 with ownership of llvm/process places, writes, entry, ABI
+metadata tests and runtime/process.c/.h. Both previous CI scopes are terminal;
+there is no executable-input freeze now. Retain the existing failing dynamic
+delay regressions. Extend the same event ABI with a captured physical offset
+and a driver/root family identity so static and dynamic scalar projections
+share inertial cancellation. Capture only the selected value and its packed
+companion plane, preserving both through lane rejection and expiry. Reuse
+checked dynamic offsets and masked writes; no AST execution or whole-root
+event snapshots. Unrelated edits remain excluded; copies stay deferred.
+
+The unchanged dynamic-delay regression now passes. Added native coverage for
+directed Packet arrays, 128-bit fields, dynamic/static whole/scalar overlap,
+selector mutation, untouched fields and X/Z-sensitive inertial cancellation.
+All eight testbench_methods tests pass; all-target/all-feature pinned Clippy
+and strict C syntax/warning checks pass. This is scoped evidence only. ABI 14
+captures physical offsets and narrow primary/companion words; runtime lane
+rejection clears both masks and compares companion values as well as bits.
+Masked expiry merges only surviving lanes with current root state. No per-
+design C, new execution representation, AST interpretation, dependencies or
+copy optimization. Fresh complete default/bitpack gates/native waveform
+comparisons remain required before commit; Phase 1 completion is unproven.
+
+### 2026-10-06 — Codex — ABI 14 full verification freeze
+
+Run the full pinned CI gate in owned scope siox-value-cfg-ci-r3-20261006
+(session 99383, MemoryMax 8 GiB). Freeze executable inputs at
+e95b43dcd7df408abd9e376f31975dc54cfecf68575a4e063fd3c63fb3871d4f
+and the current sibling corpus at
+3177aa5ada660a126c44f3c8d899f188a8479f4ccfc8884f2777e424efe87622.
+Do not edit executable inputs while these checks are live. Fresh immutable
+compiler artifacts must precede each native comparison; prior ABI 13 compiler
+copies do not verify these changes. No full green gate or push claimed.
+
+Default native session 70789 passed the 45 established cases (baseline
+VCD/stdout and observable FST parity), then failed the new fixture's timing
+oracle despite all source assertions passing. Source-derived timing confirms
+the oracle, not the compiler, was wrong: publish finishes at 8 ns, hold's
+inclusive 0..2 waits three times (11 ns), observe/observe_after/trio/formatted
+add four ns (15 ns), and end(count) adds one ns (16 ns). Thus flags[0] expires
+at 17 ns; the next assignment begins at 18 ns, suspends to 19 ns and expires
+at 20 ns. Correct only this new oracle's 16/19 expectation to 17/20; leave
+the failing source fixture and assertions unchanged. Explicitly stopped CI
+scope r3 for this confirmed verifier defect (99383 exit 143); no source or
+oracle edits preceded termination, and the native handle is terminal. The
+default Rust suite passed; the bitpack suite and corpus are not yet verified
+for this freeze. Require a complete fresh gate and both native modes.
+
+Refreeze execution inputs after the independently derived oracle correction:
+df78a4f8afacf09e77c8693f027da4ad38526ab037268674f114fa852c5cb5c3.
+Corpus hash remains 3177aa5ada660a126c44f3c8d899f188a8479f4ccfc8884f2777e424efe87622.
+Full gate r4 is session 7976; default native rerun is 39559 with immutable
+compiler SHA 99aaa565293baf2238bc9d174f1abe99c05b3621706e965e5da8cf5adf8a11aa.
+Keep execution inputs frozen until these handles terminate; broad completion
+is unproven and no push is authorized.
+
+Both immutable native comparison handles have finished successfully: 39559
+(default) and 85731 (bitpack), 46 cases each, with 45 established baseline
+VCD/stdout comparisons, 44 observable FST roundtrips per mode and two explicit
+empty-FST rejections per mode. New value-CFG flags/echoed transitions match the
+independently derived 17/20 ns profile. Default/bitpack VCDs and stdout are
+byte-identical. Bitpack compiler SHA:
+8186d8feac78e21e111b945b50fe924c402e290a300428bd03d0725237ad02de.
+The full CI handle 7976 remains live; its completion is still required. The
+graph AST update finished (5288 nodes/13989 edges), with pre-existing vendored
+libfst parser warnings; this is navigation evidence, not an execution gate.
+Reset-time declarations still lower against an empty fake Process with no
+blocks; their CFG-capable initialization remains the next implementation gap.
+
+Additional immutable-artifact native probes confirm dynamic selector 128 on
+unsigned[128] reports the 0..127 bounds failure at the original index span,
+before scheduled expiry. A loop-based free function used in an impl-state
+initializer still fails with unsupported Process block 0; the same function
+inside an ordinary process is covered by this batch's passing tests. Keep
+reset initialization as a real Phase 1 gap; do not mark the goal complete on
+the narrower process-body/delayed-write evidence.
+
+### 2026-10-06 — Codex — live gate handoff
+
+Scope siox-value-cfg-ci-r4-20261006/session 7976 is confirmed active. It passed
+fmt, artifact presence, frontend checks, default/bitpack Rust, all-feature
+Clippy and all 223 default corpus programs; bitpack corpus is still running
+(latest hardware_local_values_test, no failure observed, not a completion
+claim). Native handles 39559/85731 are terminal and green. Keep the execution
+freeze df78a4f8... and sibling freeze 3177aa5a... until 7976 terminates; poll
+the same handle, never restart on an observation timeout. 24 owned main files
+are staged, plus sibling process_value_cfg_test.siox. chat.md is NOT staged;
+only the final append starting at the value-returning CFG entry belongs to
+this batch. Preserve the 441 older historical chat additions, AGENTS.md and
+.codex/. Before commit verify both corpus results and hashes, then stage only
+the final chat append (HEAD chat has 12825 lines; the final diff hunk begins
+at -12823,3, while worktree's own entry begins at 13268). Every commit needs
+the Phase 1 completion estimate/evidence; no push authorized.
+
+The next code change must reuse lower_ordered_storage_initializer and the
+ordinary CFG call lowerer for reset-time declarations, preserving source
+order and hardware bootstrap-before-stimulus semantics. Review flags.rs reset
+initialization and runtime bootstrap before choosing the execution boundary;
+do not simply start initialization concurrently with ordinary foreground
+processes or retain the fake ProcessId(u32::MAX) as executable state. The
+native /tmp/siox-reset-cfg-gap reproduces this failure. Broader Phase 1 exit
+audit and documented remaining forms remain open; copies stay deferred.
+
+### 2026-10-06 — Codex — value CFG and delayed-place verification complete
+
+Full gate r4/session 7976 terminated successfully (exit 0); scope is inactive.
+Formatting/artifact presence, frontend checks, default/bitpack Rust tests,
+all-target/all-feature Clippy and both 223-program corpora pass. Execution and
+corpus hashes still match df78a4f8.../3177aa5a... at commit time. Together with
+the 46 native cases per mode, 45 unchanged baseline VCD/stdout comparisons
+per mode, 44 observable FST roundtrips per mode, two explicit empty-FST
+rejections per mode and byte-identical cross-mode results, this verifies the
+value-CFG/dynamic-delay batch—not the entire Phase 1 objective. Corpus fixture
+commit is c78de8c. Preserve unrelated AGENTS.md/.codex/ and older chat edits.
+No push. Next work is the reproduced reset-time CFG initializer gap using
+the same canonical Process pipeline; no execution freeze remains active.

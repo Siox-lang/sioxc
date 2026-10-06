@@ -1737,9 +1737,17 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(v);
                 }
             }
-            Stmt::Assign { target, value, .. } => {
+            Stmt::Assign {
+                target,
+                value,
+                after,
+                ..
+            } => {
                 self.resolve_expr(target);
                 self.resolve_expr(value);
+                if let Some(delay) = after {
+                    self.resolve_expr(delay);
+                }
             }
             Stmt::If(i) => self.resolve_if(i),
             Stmt::Match(m) => {

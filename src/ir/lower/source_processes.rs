@@ -23,6 +23,8 @@ use crate::syntax::Module;
 use crate::testbench::TestPlan;
 use crate::types::Typed;
 
+mod cfg_calls;
+
 #[derive(Clone)]
 struct ConstantSuffix {
     target: String,
@@ -60,8 +62,10 @@ struct LoweringContext<'a> {
     inline_self_values: Vec<Option<ProcessValueId>>,
     inline_return_types: Vec<Option<crate::types::Ty>>,
     /// Procedure returns resume the enclosing caller, not the whole process.
-    inline_return_blocks: Vec<ProcessBlockId>,
+    inline_return_blocks: Vec<(ProcessBlockId, Option<ProcessValueId>)>,
     inline_functions: std::collections::HashSet<crate::diag::Span>,
+    /// Memoized call reachability in the append-only procedural value arena.
+    cfg_call_cache: Vec<bool>,
 }
 
 /// Non-generic type aliases indexed by resolver identity.
@@ -695,6 +699,9 @@ fn process_layout_for_type(
                     value_range: None,
                 }
             } else if info.kind == crate::resolve::DefKind::Struct {
+                if let Some(layout) = context.design.type_layouts.get(definition) {
+                    return Some(layout.clone());
+                }
                 let mut candidates = context
                     .process_ir
                     .storages
@@ -1118,6 +1125,7 @@ pub fn lower(
                 inline_return_types: Vec::new(),
                 inline_return_blocks: Vec::new(),
                 inline_functions: std::collections::HashSet::new(),
+                cfg_call_cache: Vec::new(),
             };
             for (definition, initializer) in initializers {
                 let Some(storage) = context
@@ -1179,6 +1187,7 @@ pub fn lower(
                             inline_return_types: Vec::new(),
                             inline_return_blocks: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
+                            cfg_call_cache: Vec::new(),
                         };
                         lower_process(
                             id,
@@ -1229,6 +1238,7 @@ pub fn lower(
                             inline_return_types: Vec::new(),
                             inline_return_blocks: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
+                            cfg_call_cache: Vec::new(),
                         };
                         lower_process(
                             id,
@@ -1295,6 +1305,7 @@ pub fn lower(
                     inline_return_types: Vec::new(),
                     inline_return_blocks: Vec::new(),
                     inline_functions: std::collections::HashSet::new(),
+                    cfg_call_cache: Vec::new(),
                 };
                 lower_legacy_process(
                     id,
@@ -1599,6 +1610,7 @@ fn lower_process(
         blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
     };
     lower_statements(statements, context, &mut process, ProcessBlockId(0));
+    cfg_calls::lower_value_calls(&mut process, context);
     process
 }
 
@@ -1641,6 +1653,7 @@ fn lower_legacy_process(
             _ => Some(block),
         };
     }
+    cfg_calls::lower_value_calls(&mut process, context);
     process
 }
 
@@ -2096,8 +2109,21 @@ fn lower_statement(
             ..
         } => lower_for(var, range, body, *span, context, process, block),
         Stmt::Return { value, span } => {
-            if let Some(resume) = context.inline_return_blocks.last() {
-                process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(*resume);
+            if let Some((resume, target)) = context.inline_return_blocks.last().copied() {
+                if let (Some(target), Some(value)) = (target, value) {
+                    let ty = context.inline_return_types.last().cloned().flatten();
+                    let value = value_ref_with_type(value, process, context, ty.as_ref());
+                    process.blocks[block.0 as usize].instructions.push(
+                        ProcessInstruction::Assign {
+                            semantics: ProcessAssignment::ImmediateLocal,
+                            driver_context: None,
+                            target,
+                            value,
+                            span: *span,
+                        },
+                    );
+                }
+                process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(resume);
                 return None;
             }
             process.blocks[block.0 as usize].terminator = ProcessTerminator::Return {
@@ -2459,7 +2485,7 @@ fn inline_process_procedure_call(
     context.value_bindings.push(bindings.into_iter().collect());
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(None);
-    context.inline_return_blocks.push(resume);
+    context.inline_return_blocks.push((resume, None));
     let tail = lower_statements(&body.stmts, context, process, block);
     context.inline_return_blocks.pop();
     context.inline_return_types.pop();
@@ -3359,6 +3385,7 @@ fn lower_for(
     });
 
     let iterable = value_ref(iterable, process, context);
+    let (block, iterable) = cfg_calls::lower_loop_iterable(iterable, block, process, context);
     if let Some(SourceLayout {
         kind: LayoutKind::Array { element, .. },
         ..
@@ -4577,28 +4604,7 @@ fn inline_process_function(
     // of that type: `fn rem<T>(a: T, m: T) -> T` called on integers returns
     // an integer. Without it a nested generic call's result had no type, and
     // `rem(a, m) < 0` inside `mod` compared unsigned.
-    let generic_name = |ty: &ast::Type| match ty {
-        ast::Type::Path(path) if path.segments.len() == 1 => {
-            let name = &path.segments[0].text;
-            (function.generics.params.iter())
-                .any(|param| &param.name.text == name)
-                .then(|| name.clone())
-        }
-        _ => None,
-    };
-    let generic_argument = function
-        .ret
-        .as_ref()
-        .and_then(generic_name)
-        .and_then(|name| {
-            parameters
-                .iter()
-                .zip(arguments)
-                .find(|(parameter, _)| {
-                    parameter.ty.as_ref().and_then(generic_name).as_deref() == Some(name.as_str())
-                })
-                .map(|(_, argument)| *argument)
-        });
+    let generic_argument = generic_return_argument(function, arguments);
     let generic_return =
         generic_argument.and_then(|argument| process_value_type(argument, context));
 
@@ -4635,6 +4641,38 @@ fn inline_process_function(
         (Some(result), Some(argument)) => Some(inherit_receiver_layout(result, argument, context)),
         (result, _) => result,
     }
+}
+
+/// The caller operand that determines a generic function's return type and
+/// layout. Value expressions and CFG inlines share the same inference rule.
+fn generic_return_argument(
+    function: &ast::FnDecl,
+    arguments: &[ProcessValueId],
+) -> Option<ProcessValueId> {
+    let generic_name = |ty: &ast::Type| match ty {
+        ast::Type::Path(path) if path.segments.len() == 1 => {
+            let name = &path.segments[0].text;
+            (function.generics.params.iter())
+                .any(|param| &param.name.text == name)
+                .then(|| name.clone())
+        }
+        _ => None,
+    };
+    function
+        .ret
+        .as_ref()
+        .and_then(generic_name)
+        .and_then(|name| {
+            function
+                .params
+                .iter()
+                .filter(|parameter| !parameter.is_self)
+                .zip(arguments)
+                .find(|(parameter, _)| {
+                    parameter.ty.as_ref().and_then(generic_name).as_deref() == Some(name.as_str())
+                })
+                .map(|(_, argument)| *argument)
+        })
 }
 
 /// Materialize one source-array operand as element projections in its written
@@ -6135,6 +6173,7 @@ fn value_ref_with_type_inner(
 
 /// Insert one already-lowered value node.
 fn truncate_process_values(context: &mut LoweringContext<'_>, length: usize) {
+    context.cfg_call_cache.truncate(length);
     context.process_ir.values.truncate(length);
     context.process_ir.value_layouts.truncate(length);
 }
@@ -6813,6 +6852,7 @@ mod tests {
             inline_return_types: vec![],
             inline_return_blocks: vec![],
             inline_functions: Default::default(),
+            cfg_call_cache: vec![],
         };
 
         let result = inherit_receiver_layout(ProcessValueId(1), ProcessValueId(0), &mut context);

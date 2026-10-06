@@ -118,6 +118,8 @@ pub(super) fn block_is_supported(
                 ..
             } => {
                 delayed_place(design, *target).is_some()
+                    && dynamic_place(design, *target)
+                        .is_none_or(|place| place.indices.iter().all(|index| value(index.value)))
                     && assignment_supported(*target, *assigned)
                     && value(*delay)
                     && design

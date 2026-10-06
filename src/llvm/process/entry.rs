@@ -692,7 +692,13 @@ pub(super) fn emit_scheduled_apply<'ctx>(
     let function = module.add_function(
         "sx_process_apply_scheduled",
         i8.fn_type(
-            &[i32.into(), pointer.into(), pointer.into(), i32.into()],
+            &[
+                i32.into(),
+                i32.into(),
+                pointer.into(),
+                pointer.into(),
+                i32.into(),
+            ],
             false,
         ),
         None,
@@ -715,16 +721,20 @@ pub(super) fn emit_scheduled_apply<'ctx>(
         .expect("scheduled callback has a site id")
         .into_int_value();
     let words = function
-        .get_nth_param(1)
+        .get_nth_param(2)
         .expect("scheduled callback has value words")
         .into_pointer_value();
     let masks = function
-        .get_nth_param(2)
+        .get_nth_param(3)
         .expect("scheduled callback has mask words")
         .into_pointer_value();
     let count = function
-        .get_nth_param(3)
+        .get_nth_param(4)
         .expect("scheduled callback has a word count")
+        .into_int_value();
+    let offset = function
+        .get_nth_param(1)
+        .expect("scheduled callback offset")
         .into_int_value();
     let cases = sites
         .iter()
@@ -740,14 +750,27 @@ pub(super) fn emit_scheduled_apply<'ctx>(
 
     for ((site, block), apply) in sites.iter().zip(&blocks).zip(&applies) {
         builder.position_at_end(*block);
-        let expected = i32.const_int(u64::from(super::super::words_for(site.width)), false);
-        let valid = builder
+        let value_words = super::super::words_for(site.width);
+        let total_words = value_words + site.metadata_width.map_or(0, super::super::words_for);
+        let expected = i32.const_int(u64::from(total_words), false);
+        let valid_count = builder
             .build_int_compare(
                 IntPredicate::EQ,
                 count,
                 expected,
                 "process.scheduled.word_count",
             )
+            .unwrap();
+        let valid_offset = builder
+            .build_int_compare(
+                IntPredicate::ULE,
+                offset,
+                i32.const_int(u64::from(site.place.root_width - site.width), false),
+                "process.scheduled.offset",
+            )
+            .unwrap();
+        let valid = builder
+            .build_and(valid_count, valid_offset, "process.scheduled.valid")
             .unwrap();
         builder
             .build_conditional_branch(valid, *apply, invalid)
@@ -759,7 +782,36 @@ pub(super) fn emit_scheduled_apply<'ctx>(
                 context, &builder, masks, site.width,
             ))
             .and_then(|(value, mask)| {
-                write_static_place_masked(
+                let metadata = if let Some(width) = site.metadata_width {
+                    let offset = i32.const_int(u64::from(value_words), false);
+                    let meta_words = unsafe {
+                        builder
+                            .build_in_bounds_gep(
+                                context.i64_type(),
+                                words,
+                                &[offset],
+                                "process.scheduled.meta.words",
+                            )
+                            .ok()?
+                    };
+                    let meta_masks = unsafe {
+                        builder
+                            .build_in_bounds_gep(
+                                context.i64_type(),
+                                masks,
+                                &[offset],
+                                "process.scheduled.meta.masks",
+                            )
+                            .ok()?
+                    };
+                    Some((
+                        scheduled_value_from_words(context, &builder, meta_words, width)?,
+                        scheduled_value_from_words(context, &builder, meta_masks, width)?,
+                    ))
+                } else {
+                    None
+                };
+                write_scheduled_place_masked(
                     context,
                     module,
                     &builder,
@@ -767,6 +819,8 @@ pub(super) fn emit_scheduled_apply<'ctx>(
                     site.place,
                     value,
                     mask,
+                    metadata,
+                    offset,
                     site.span,
                     range_sites,
                 )

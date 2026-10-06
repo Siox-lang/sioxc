@@ -896,6 +896,7 @@ fn validate_accepts_good_and_flags_bad_ir() {
         array_element_enums: Default::default(),
         array_element_of_family: Default::default(),
         source_layouts: Default::default(),
+        type_layouts: Default::default(),
     };
     let issues = bad.validate();
     assert!(

@@ -127,6 +127,16 @@ def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> No
         assert changes[root + "q"] == [(0, "00011001"), (1_000_000, "00011010")]
         for signal, number in [("overridden", 7), ("inherited", 16), ("defaulted", 4)]:
             assert changes[root + signal] == [(0, f"{number:064b}")]
+    elif profile == "process_value_cfg_test":
+        for signal in ("pulse", "seen"):
+            assert changes["ValueCfgTest.dut." + signal] == [(0, "0"), (7_000_000, "1")]
+        for signal in ("flags", "echoed"):
+            # Publish finishes at 8 ns; hold's inclusive 0..2 adds 3 ns.
+            # Four 1-ns calls and the loop-bound call reach 16 ns, then
+            # the first delay expires at 17 ns. The next assignment starts
+            # at 18 ns, suspends for 1 ns, and expires 1 ns later at 20 ns.
+            for index, time in [(0, 17_000_000), (1, 20_000_000)]:
+                assert changes[f"ValueCfgTest.dut.{signal}[{index}]"] == [(0, "0"), (time, "1")]
     elif profile == "runtime_packed_read_test":
         expected = [
             (0, "0"), (1_000_000, "x"), (2_000_000, "1"),

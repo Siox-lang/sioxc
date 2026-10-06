@@ -13,7 +13,7 @@ enum {
     SX_PROCESS_FINISHED = 3,
     SX_PROCESS_SETTLING = 4,
     SX_PROCESS_UNSUPPORTED = 255,
-    SX_PROCESS_ABI = 13,
+    SX_PROCESS_ABI = 14,
     SX_EVENT_WRITE = 0,
     SX_EVENT_RESUME = 1,
     SX_SUSPENSION_NONE = 0,
@@ -63,7 +63,8 @@ extern int64_t sx_index_value(void);
 extern uint32_t sx_range_error(void);
 extern int64_t sx_range_value(void);
 extern uint32_t sx_range_site(void);
-extern uint8_t sx_process_apply_scheduled(uint32_t site, const uint64_t *words,
+extern uint8_t sx_process_apply_scheduled(uint32_t site, uint32_t offset,
+                                          const uint64_t *words,
                                           const uint64_t *masks,
                                           uint32_t word_count);
 
@@ -76,11 +77,15 @@ typedef struct sx_event {
     uint32_t resume_block;
     uint32_t word_count;
     uint32_t lane_count;
-    const uint32_t *waveforms;
+    uint32_t waveform;
+    uint32_t offset;
+    uint32_t width;
+    uint8_t reverse;
     const uint32_t *lane_offsets;
     const uint32_t *lane_widths;
     uint8_t kind;
-    /* Values followed by `word_count` lane-valid mask words. */
+    /* Primary words, optional companion words, then word_count mask words.
+     * The selected offset is owned by this event, never a live selector. */
     uint64_t words[];
 } sx_event;
 
@@ -709,7 +714,10 @@ static sx_event *sx_allocate_event(uint64_t delay, uint32_t word_count) {
     event->resume_block = 0;
     event->word_count = word_count;
     event->lane_count = 0;
-    event->waveforms = 0;
+    event->waveform = 0;
+    event->offset = 0;
+    event->width = 0;
+    event->reverse = 0;
     event->lane_offsets = 0;
     event->lane_widths = 0;
     event->kind = SX_EVENT_WRITE;
@@ -739,6 +747,13 @@ static void sx_clear_lane(sx_event *event, uint32_t lane) {
     for (uint32_t bit = 0; bit < width; ++bit)
         masks[(offset + bit) / 64] &=
             ~(UINT64_C(1) << ((offset + bit) % 64));
+    uint32_t primary_words = event->width / 64 + (event->width % 64 != 0);
+    if (event->word_count > primary_words) {
+        uint32_t begin = primary_words * 64 + offset * 4;
+        for (uint32_t bit = 0; bit < width * 4; ++bit)
+            masks[(begin + bit) / 64] &=
+                ~(UINT64_C(1) << ((begin + bit) % 64));
+    }
 }
 
 static int sx_lane_active(const sx_event *event, uint32_t lane) {
@@ -750,10 +765,21 @@ static int sx_lane_active(const sx_event *event, uint32_t lane) {
     return 1;
 }
 
-static int sx_find_lane(const sx_event *event, uint32_t waveform,
+static uint32_t sx_lane_physical_offset(const sx_event *event, uint32_t lane) {
+    uint32_t relative = event->lane_offsets[lane];
+    if (event->reverse)
+        relative = event->width - relative - event->lane_widths[lane];
+    return event->offset + relative;
+}
+
+static int sx_find_lane(const sx_event *event, const sx_event *incoming,
+                        uint32_t incoming_lane,
                         uint32_t *lane) {
+    if (event->waveform != incoming->waveform) return 0;
+    uint32_t offset = sx_lane_physical_offset(incoming, incoming_lane);
     for (uint32_t index = 0; index < event->lane_count; ++index) {
-        if (event->waveforms[index] == waveform &&
+        if (sx_lane_physical_offset(event, index) == offset &&
+            event->lane_widths[index] == incoming->lane_widths[incoming_lane] &&
             sx_lane_active(event, index)) {
             *lane = index;
             return 1;
@@ -763,14 +789,26 @@ static int sx_find_lane(const sx_event *event, uint32_t waveform,
 }
 
 static int sx_lane_value_equals(const sx_event *event, uint32_t old_lane,
-                                const uint64_t *words, uint32_t offset,
-                                uint32_t width) {
+                                const sx_event *incoming, uint32_t lane) {
+    uint32_t offset = incoming->lane_offsets[lane];
+    uint32_t width = incoming->lane_widths[lane];
     if (event->lane_widths[old_lane] != width) return 0;
     uint32_t old_offset = event->lane_offsets[old_lane];
     for (uint32_t bit = 0; bit < width; ++bit)
         if (sx_bit(event->words, old_offset + bit) !=
-            sx_bit(words, offset + bit))
+            sx_bit(incoming->words, offset + bit))
             return 0;
+    uint32_t old_primary = event->width / 64 + (event->width % 64 != 0);
+    uint32_t new_primary = incoming->width / 64 + (incoming->width % 64 != 0);
+    int old_meta = event->word_count > old_primary;
+    int new_meta = incoming->word_count > new_primary;
+    if (old_meta != new_meta) return 0;
+    if (old_meta) {
+        for (uint32_t bit = 0; bit < width * 4; ++bit)
+            if (sx_bit(event->words, old_primary * 64 + old_offset * 4 + bit) !=
+                sx_bit(incoming->words, new_primary * 64 + offset * 4 + bit))
+                return 0;
+    }
     return 1;
 }
 
@@ -789,17 +827,13 @@ static int sx_event_has_value(const sx_event *event) {
  * mask so independently rejected lanes can still expire together. */
 static void sx_reject_inertial_transactions(sx_event *incoming) {
     for (uint32_t lane = 0; lane < incoming->lane_count; ++lane) {
-        uint32_t waveform = incoming->waveforms[lane];
-        uint32_t offset = incoming->lane_offsets[lane];
-        uint32_t width = incoming->lane_widths[lane];
         sx_event *last_different = 0;
         for (sx_event *event = sx_events;
              event && event->due < incoming->due; event = event->next) {
             uint32_t old_lane;
             if (event->kind == SX_EVENT_WRITE &&
-                sx_find_lane(event, waveform, &old_lane) &&
-                !sx_lane_value_equals(event, old_lane, incoming->words,
-                                      offset, width))
+                sx_find_lane(event, incoming, lane, &old_lane) &&
+                !sx_lane_value_equals(event, old_lane, incoming, lane))
                 last_different = event;
         }
 
@@ -807,7 +841,7 @@ static void sx_reject_inertial_transactions(sx_event *incoming) {
         for (sx_event *event = sx_events; event; event = event->next) {
             uint32_t old_lane;
             int same_waveform = event->kind == SX_EVENT_WRITE &&
-                                sx_find_lane(event, waveform, &old_lane);
+                                sx_find_lane(event, incoming, lane, &old_lane);
             if (same_waveform &&
                 (event->due >= incoming->due || reject_prefix))
                 sx_clear_lane(event, old_lane);
@@ -828,7 +862,8 @@ static void sx_reject_inertial_transactions(sx_event *incoming) {
 }
 
 void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
-                         uint32_t word_count, const uint32_t *waveforms,
+                         uint32_t word_count, uint32_t waveform,
+                         uint32_t offset, uint32_t width, uint8_t reverse,
                          const uint32_t *lane_offsets,
                          const uint32_t *lane_widths, uint32_t lane_count) {
     if (sx_error) return;
@@ -836,8 +871,13 @@ void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
         sx_fail("delayed write scheduled outside a running test");
         return;
     }
-    if (!words || !word_count || !waveforms || !lane_offsets ||
-        !lane_widths || !lane_count) {
+    uint64_t primary_words = ((uint64_t)width + 63) / 64;
+    uint64_t meta_words = ((uint64_t)width * 4 + 63) / 64;
+    if (!words || !width || !word_count || !lane_offsets ||
+        !lane_widths || !lane_count || reverse > 1 ||
+        (word_count != primary_words && word_count != primary_words + meta_words) ||
+        (uint64_t)word_count * 64 > UINT32_MAX ||
+        (uint64_t)offset + width > UINT32_MAX) {
         sx_fail("invalid delayed Process IR value");
         return;
     }
@@ -846,16 +886,18 @@ void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
     event->target = site;
     event->process = sx_current_process;
     event->lane_count = lane_count;
-    event->waveforms = waveforms;
+    event->waveform = waveform;
+    event->offset = offset;
+    event->width = width;
+    event->reverse = reverse;
     event->lane_offsets = lane_offsets;
     event->lane_widths = lane_widths;
     for (uint32_t word = 0; word < word_count; ++word)
         event->words[word] = words[word];
     memset(sx_event_masks(event), 0, (size_t)word_count * sizeof(uint64_t));
-    uint64_t capacity = (uint64_t)word_count * 64;
     for (uint32_t lane = 0; lane < lane_count; ++lane) {
         uint64_t end = (uint64_t)lane_offsets[lane] + lane_widths[lane];
-        if (!lane_widths[lane] || end > capacity) {
+        if (!lane_widths[lane] || end > width) {
             free(event);
             sx_fail("invalid delayed Process IR lane");
             return;
@@ -868,6 +910,11 @@ void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
                 return;
             }
             sx_set_bit(sx_event_masks(event), at);
+            if (word_count > primary_words) {
+                uint32_t meta_at = (uint32_t)primary_words * 64 + at * 4;
+                for (uint32_t bit = 0; bit < 4; ++bit)
+                    sx_set_bit(sx_event_masks(event), meta_at + bit);
+            }
         }
     }
     sx_reject_inertial_transactions(event);
@@ -1036,7 +1083,7 @@ static int sx_apply_due_events(uint8_t *ready, uint8_t *suspended,
             return sx_fail("invalid Process IR event kind");
         }
         uint8_t applied = sx_process_apply_scheduled(
-            event->target, event->words, sx_event_masks(event),
+            event->target, event->offset, event->words, sx_event_masks(event),
             event->word_count);
         free(event);
         if (applied == SX_PROCESS_UNSUPPORTED)

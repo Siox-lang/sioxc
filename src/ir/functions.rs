@@ -334,6 +334,11 @@ impl<'a> FunctionIndex<'a> {
         self.associated.get(&format!("{owner}::{name}")).copied()
     }
 
+    /// Retrieve a free function using a canonical callee's resolved identity.
+    pub(crate) fn get_definition(&self, definition: DefId) -> Option<&'a ast::FnDecl> {
+        self.free.get(&definition).copied()
+    }
+
     /// Stable owner key for an already-resolved nominal type. This is the
     /// typed-expression counterpart of [`Self::type_head_key`].
     pub fn nominal_type_key(&self, id: DefId) -> Option<String> {
@@ -472,7 +477,13 @@ impl<'a> FunctionIndex<'a> {
 
     /// Resolver-selected identity of a path that names a struct.
     pub fn struct_path_key(&self, path: &ast::Path) -> Option<String> {
-        let id = self.resolved.resolved(path.span)?;
+        // Internal declaration-layout paths carry the declaration span, not a
+        // separate source use. Both identify the same nominal struct; never
+        // resolve a missing identity from its leaf spelling.
+        let id = self
+            .resolved
+            .resolved(path.span)
+            .or_else(|| self.resolved.declared(path.span))?;
         (self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Struct))
             .then(|| self.struct_id_key(id))
             .flatten()

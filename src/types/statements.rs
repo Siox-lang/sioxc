@@ -387,7 +387,12 @@ impl<'a> Checker<'a> {
                     self.check_expr(v, sym);
                 }
             }
-            Stmt::Assign { target, value, .. } => {
+            Stmt::Assign {
+                target,
+                value,
+                after,
+                ..
+            } => {
                 self.check_write_target(target, dirs);
                 self.check_assign_range(target, value, ranged);
                 let custom_index = self.check_index_assign(target, value, sym);
@@ -408,6 +413,9 @@ impl<'a> Checker<'a> {
                     }
                 }
                 self.check_expr(value, sym);
+                if let Some(delay) = after {
+                    self.check_expr(delay, sym);
+                }
             }
             Stmt::If(i) => self.check_if(i, dirs, sym, ranged, expected_return),
             Stmt::Match(m) => {

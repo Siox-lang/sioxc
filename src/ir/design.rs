@@ -92,6 +92,10 @@ pub struct Design {
     /// generic substitutions, array ranges, or packed-vector shape from the
     /// frontend AST.
     pub source_layouts: HashMap<String, SourceLayout>,
+    /// Concrete, non-parametric declaration layouts keyed by resolved type
+    /// identity. Lexical-only process values need the same representation as
+    /// types that happen to occur in ports or persistent instance storage.
+    pub type_layouts: HashMap<crate::resolve::DefId, SourceLayout>,
 }
 
 /// Elaborated semantics for one multi-valued logic enum.
