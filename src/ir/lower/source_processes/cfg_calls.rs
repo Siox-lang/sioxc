@@ -52,7 +52,10 @@ fn has_call(value: ProcessValueId, context: &mut LoweringContext<'_>) -> bool {
         let node = &context.process_ir.values[context.cfg_call_cache.len()];
         let contains = matches!(
             node.kind,
-            ProcessValueKind::Call { .. } | ProcessValueKind::Invalid
+            ProcessValueKind::Call { .. }
+                | ProcessValueKind::HostCall { .. }
+                | ProcessValueKind::ForeignCall { .. }
+                | ProcessValueKind::Invalid
         ) || crate::ir::process_value_dependencies(&node.kind)
             .iter()
             .any(|dependency| context.cfg_call_cache[dependency.0 as usize]);
@@ -339,7 +342,17 @@ fn normalize_value(
             let result = push_value(node.span, node.ty, node.bit_width, kind, context);
             context.process_ir.value_layouts[result.0 as usize] =
                 context.process_ir.value_layouts[value.0 as usize].clone();
-            result
+            // Host/foreign effects belong at this source evaluation boundary,
+            // including inside a selected conditional arm. Capture them once
+            // in a CFG instruction instead of leaving an eager LLVM select.
+            if matches!(
+                context.process_ir.values[result.0 as usize].kind,
+                ProcessValueKind::HostCall { .. } | ProcessValueKind::ForeignCall { .. }
+            ) {
+                capture_process_operand(result, context, process, *block)
+            } else {
+                result
+            }
         }
     };
     memo.insert(value, result);

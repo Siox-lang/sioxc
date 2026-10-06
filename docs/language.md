@@ -3160,16 +3160,27 @@ the scheduler; local writes remain immediate. A value return writes an ordinary
 caller-owned result local before resuming the caller. Scalar, recursive struct,
 directed-array and inferred generic returns retain their representation and
 X/Z data across suspension, including types used only in lexical locals.
-Conditional expression calls execute only in the selected `if`/`match` arm;
+Conditional expression calls, including runtime file reads and foreign C calls,
+execute only in the selected `if`/`match` arm;
 loop-iterable calls execute once at loop entry, not on each back-edge. Reading
 a parameter before a mutating call snapshots that value without redirecting
 the parameter's writable alias; subsequent reads observe immediate writes.
 
 Runtime recursion is not yet supported and must fail closed before argument
-or callee effects escape a failed inline. Reset-time impl declarations still
-use value-shaped initializers: a function requiring general control flow is
-not yet supported there. This limitation does not apply to declarations inside
-an explicit process or after the first statement of an implicit test process.
+or callee effects escape a failed inline. Reset-time impl declarations execute
+as source-ordered initialization CFGs before reactive hardware bootstrap and
+ordinary stimulus. Calls may use loops, early returns and suspension here too;
+the same scheduler resumes them. Initialization that suspends advances time
+before ordinary processes start. A condition requiring hardware that has not
+started cannot bootstrap itself; without a future initializer event this fails
+explicitly. The combined native object resets/initializes every test root in
+object order for each test run, including filtered runs, but never runs an
+unselected root's ordinary stimulus or clock. Declarations after the first
+statement of a legacy implicit process retain that process's source ordering.
+Packed return metadata and initialized DUT input bindings publish before
+hardware observes them; intermediate reset defaults are not waveform samples.
+Literal empty-string initializers retain their zero-element semantics without
+a packed assignment; runtime reads still execute even if their input is empty.
 Functions in `after` expressions use the same lexical name/type checking and
 call lowering. Delayed writes capture their target selectors and RHS before a
 delay function mutates caller state or suspends. Pending events own the chosen
@@ -3189,7 +3200,9 @@ one of three forms: **hardware error conditions are ordinary signals**
 range violations, missing files) fail the test, like a panic; and
 **recoverable conditions** use explicit status values/signals or `warn!`.
 `exists("fixture.bin")` probes a literal source-relative path without failing;
-`read<T>` failures are fatal. A `Result`-style
+`read<T>` failures are fatal: runtime reads identify the read expression's
+source location and stop its entry before subsequent initializer or process
+effects. A `Result`-style
 value would ride on future payload-carrying enums — never a keyword.
 
 File-returning primitives are typed initializers. In hardware/top declarations,

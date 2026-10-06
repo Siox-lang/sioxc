@@ -108,6 +108,71 @@ pub(super) fn private_string<'ctx>(
     global.as_pointer_value()
 }
 
+/// Record the source read before leaving an entry on a host failure. The
+/// legacy reset helper has no entry failure block; its caller checks the error.
+pub(super) fn emit_host_read_check<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    span: siox::diag::Span,
+) -> Option<()> {
+    let i32 = context.i32_type();
+    let note = module
+        .get_function("sx_runtime_note_location")
+        .unwrap_or_else(|| {
+            module.add_function(
+                "sx_runtime_note_location",
+                context
+                    .void_type()
+                    .fn_type(&[i32.into(), i32.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    builder
+        .build_call(
+            note,
+            &[
+                i32.const_int(u64::from(span.file.0), false).into(),
+                i32.const_int(u64::from(span.start), false).into(),
+            ],
+            "",
+        )
+        .ok()?;
+    let function = builder.get_insert_block()?.get_parent()?;
+    let Some(failed) = function
+        .get_basic_blocks()
+        .into_iter()
+        .find(|block| block.get_name().to_bytes() == b"runtime.failed")
+    else {
+        return Some(());
+    };
+    let error = module.get_function("sx_runtime_error").unwrap_or_else(|| {
+        module.add_function(
+            "sx_runtime_error",
+            context
+                .ptr_type(AddressSpace::default())
+                .fn_type(&[], false),
+            Some(Linkage::External),
+        )
+    });
+    let inkwell::values::ValueKind::Basic(error) = builder
+        .build_call(error, &[], "pv.read.error")
+        .ok()?
+        .try_as_basic_value()
+    else {
+        return None;
+    };
+    let failed_read = builder
+        .build_is_not_null(error.into_pointer_value(), "pv.read.failed")
+        .ok()?;
+    let continuation = context.append_basic_block(function, "read.ready");
+    builder
+        .build_conditional_branch(failed_read, failed, continuation)
+        .ok()?;
+    builder.position_at_end(continuation);
+    Some(())
+}
+
 /// Read one exact-width value through a fixed word-buffer runtime ABI. LLVM
 /// assembles those words into the actual integer type, so neither raw binary
 /// nor fixed UTF-8 construction needs a per-design C type or width.
@@ -121,6 +186,7 @@ pub(super) fn emit_buffered_read_value<'ctx>(
     width: u32,
     runtime_name: &str,
     capacity: u32,
+    span: siox::diag::Span,
 ) -> Option<IntValue<'ctx>> {
     let text = process_string(design, path)?;
     let path = private_string(
@@ -167,6 +233,7 @@ pub(super) fn emit_buffered_read_value<'ctx>(
             "pv.buffered.read",
         )
         .ok()?;
+    emit_host_read_check(context, module, builder, span)?;
 
     let ty = context
         .custom_width_int_type(std::num::NonZeroU32::new(width)?)

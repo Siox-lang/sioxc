@@ -70,6 +70,38 @@ fn a_failing_assertion_names_its_line() {
 }
 
 #[test]
+fn failed_cfg_initializer_reads_name_the_read_expression() {
+    for (name, ty, constructor) in [
+        ("initializer_utf8", "string", "string"),
+        ("initializer_fixed_utf8", "string[4]", "string"),
+        ("initializer_binary", "unsigned[16]", "unsigned[16]"),
+    ] {
+        let declaration = format!(
+            "    let payload: {ty} = read<{constructor}>(\"missing_{}_{}.bin\");",
+            name,
+            std::process::id()
+        );
+        let column = declaration.find("read<").unwrap() + 1;
+        let src = format!(
+            "module m;\nuse std::primitive::string;\n#[test] entity T {{}}\nimpl T {{\n{declaration}\n    let later: integer = unexpected();\n}}\nfn unexpected() -> integer {{ return putchar(81); }}\nextern \"C\" {{ fn putchar(value: integer) -> integer; }}\n"
+        );
+        let out = run(name, &src);
+        assert!(
+            out.contains("cannot open file"),
+            "missing read should fail: {out}"
+        );
+        assert!(
+            !out.contains('Q'),
+            "a failed read must stop before another initializer has effects: {out}"
+        );
+        assert!(
+            out.contains(&format!("{name}.siox:5:{column}")),
+            "the executable must identify the failing read, not lose its span: {out}"
+        );
+    }
+}
+
+#[test]
 fn a_hardware_index_violation_names_the_access_and_declared_direction() {
     let src = "module m;\n\
                use std::bits::unsigned;\n\
@@ -519,10 +551,10 @@ fn a_conditional_assignment_before_a_default_is_still_checked() {
 }
 
 #[test]
-fn a_failing_file_read_names_the_declaration() {
-    // A `read<T>` that cannot open its file names the `let` that asked for it,
-    // the way an assertion names its own statement. The declaration is on
-    // line 5 at column 5.
+fn a_failing_file_read_names_the_read_expression() {
+    // CFG execution preserves the read expression's own span, rather than
+    // attaching its enclosing declaration as the legacy reset helper did.
+    // The read is on line 5 at column 24.
     let src = "module m;\n\
                use std::bits::unsigned;\n\
                #[test] entity T {}\n\
@@ -536,8 +568,8 @@ fn a_failing_file_read_names_the_declaration() {
         "the failure should still say what went wrong, got:\n{out}"
     );
     assert!(
-        out.contains("--> ") && out.contains("ioline.siox:5:5"),
-        "a failing read should name its declaration, got:\n{out}"
+        out.contains("--> ") && out.contains("ioline.siox:5:24"),
+        "a failing read should name its expression, got:\n{out}"
     );
 }
 

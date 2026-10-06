@@ -29,6 +29,7 @@ synthesis layer yet (those are Phase 2 and 3 — see
 | [Vendor-neutral RTL interchange](proposals/rtl-interface.md) | **Phase 3.** Proposed synthesis-facing RTL IR that SystemVerilog, VHDL and other backends serialize, instead of compiling to another HDL. |
 | [Parallel Process runtime](proposals/multiprocess.md) | Proposed bounded worker pool over existing CFG/LLVM entries, with effect isolation, deterministic merge and serial fallback. |
 | [../TODO.md](../TODO.md) | The **outstanding-work list** — post-baseline capability growth by compiler area. |
+| [Phase 1 exit audit](phase1-audit.md) | Requirement-by-requirement evidence, open canonical API/effect gaps and the identity of the current verification run. |
 
 If you are new: skim this page, then read [language.md](language.md) for the
 language and [architecture.md](architecture.md) for the compiler.

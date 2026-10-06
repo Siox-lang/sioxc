@@ -488,15 +488,33 @@ fn process_type_from_layout(
     }
 }
 
-/// Apply a checked array length to an otherwise unconstrained declaration
-/// layout. The type checker infers `let s: string = "hello"` as `Char[5]`;
-/// retaining `Char[]` here would discard that fixed native storage shape after
-/// semantic analysis had already established it.
+/// Apply a checked representation to an incomplete declaration layout.
+/// Qualified scalar aliases may be opaque at elaboration, while an inferred
+/// string length is absent from its unconstrained declaration. Preserve any
+/// complete source layout, including constrained widths and written ranges.
 fn process_layout_with_type(
     layout: &crate::ir::SourceLayout,
     ty: Option<&crate::types::Ty>,
 ) -> crate::ir::SourceLayout {
     let mut concrete = layout.clone();
+    if matches!(concrete.kind, LayoutKind::Opaque { width: None, .. }) {
+        let domain = match ty {
+            Some(crate::types::Ty::Integer) => Some(crate::ir::ScalarDomain::Integer),
+            Some(crate::types::Ty::Real) => Some(crate::ir::ScalarDomain::Real),
+            Some(crate::types::Ty::Char) => Some(crate::ir::ScalarDomain::Character),
+            _ => None,
+        };
+        if let Some(domain) = domain {
+            concrete.kind = LayoutKind::Scalar {
+                width: ty
+                    .and_then(crate::types::Ty::bit_width)
+                    .expect("scalar width"),
+                domain,
+                nominal: None,
+                value_range: None,
+            };
+        }
+    }
     if let (LayoutKind::Array { range, element }, Some(crate::types::Ty::Array { elem, len, .. })) =
         (&mut concrete.kind, ty)
     {
@@ -1078,31 +1096,37 @@ pub fn lower(
             }
         }
 
-        // Initializers execute before any process starts. They use the same
-        // value lowering with an empty lexical scope: persistent storage and
-        // declarations resolve normally, while process locals cannot appear.
-        let initializer_process = ProcessCfg {
-            id: ProcessId(u32::MAX),
+        // Initializers are ordinary canonical CFGs with an earlier activation
+        // boundary. Their locals, returned calls and suspension are real state,
+        // never an expression evaluated against a fake process id.
+        let mut initializer_process = ProcessCfg {
+            id: ProcessId(process_ir.processes.len() as u32),
             root: test.root,
             owner: test.root,
             label: Some(format!("{root_path}::<initializers>")),
             span: test.span,
-            activation: ProcessActivation::TimeZero,
+            activation: ProcessActivation::Initialization,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
             locals: Vec::new(),
-            blocks: Vec::new(),
+            blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
         };
         let initializers = items
             .iter()
             .filter_map(|item| match item {
-                ImplItem::Let(declaration) => Some((
-                    resolved.declared(declaration.name.span)?,
-                    declaration.value.as_ref()?,
-                )),
+                ImplItem::Let(declaration) if declaration.value.is_some() => Some(declaration),
                 _ => None,
             })
-            .filter(|(definition, _)| !ordered_initializers.contains(definition))
+            .filter(|declaration| {
+                resolved
+                    .declared(declaration.name.span)
+                    .is_some_and(|definition| {
+                        !ordered_initializers.contains(&definition)
+                            && process_ir.storages.iter().any(|storage| {
+                                storage.owner == test.root && storage.source == Some(definition)
+                            })
+                    })
+            })
             .collect::<Vec<_>>();
         {
             let mut context = LoweringContext {
@@ -1127,27 +1151,23 @@ pub fn lower(
                 inline_functions: std::collections::HashSet::new(),
                 cfg_call_cache: Vec::new(),
             };
-            for (definition, initializer) in initializers {
-                let Some(storage) = context
-                    .process_ir
-                    .storages
-                    .iter()
-                    .find(|storage| {
-                        storage.owner == test.root && storage.source == Some(definition)
-                    })
-                    .map(|storage| storage.id)
-                else {
-                    continue;
-                };
-                let target = context.process_ir.storages[storage.0 as usize].ty.clone();
-                let value = value_ref_with_type(
-                    initializer,
-                    &initializer_process,
+            let mut block = ProcessBlockId(0);
+            for declaration in initializers {
+                block = lower_ordered_storage_initializer(
+                    declaration,
                     &mut context,
-                    target.as_ref(),
-                );
-                context.process_ir.storages[storage.0 as usize].initializer = Some(value);
+                    &mut initializer_process,
+                    block,
+                )
+                .expect("registered initializer storage");
             }
+            cfg_calls::lower_value_calls(&mut initializer_process, &mut context);
+        }
+        if !initializer_process.blocks[0].instructions.is_empty()
+            || initializer_process.blocks.len() > 1
+        {
+            test_processes.push(initializer_process.id);
+            process_ir.processes.push(initializer_process);
         }
 
         for item in &items {
@@ -1958,6 +1978,23 @@ fn lower_ordered_storage_initializer(
         context,
     );
     let value = value_ref_with_type(initializer, process, context, ty.as_ref());
+    if matches!(process.activation, ProcessActivation::Initialization) {
+        context.process_ir.storages[storage.0 as usize].initializer = Some(value);
+    }
+    // A literal empty string has no elements to write. Retain its source/type
+    // metadata for formatting and equality without turning it into a packed
+    // assignment or an invalid zero runtime-string handle. Runtime reads have
+    // a real handle and must still execute, even when the loaded file is empty.
+    if matches!(
+        ty.as_ref(),
+        Some(crate::types::Ty::Array { elem, len: 0, family: None })
+            if matches!(elem.as_ref(), crate::types::Ty::Char)
+    ) && matches!(
+        &context.process_ir.values[value.0 as usize].kind,
+        ProcessValueKind::String(text) if text.is_empty()
+    ) {
+        return Some(block);
+    }
     process.blocks[block.0 as usize]
         .instructions
         .push(ProcessInstruction::Assign {
@@ -1967,7 +2004,7 @@ fn lower_ordered_storage_initializer(
             value,
             span: declaration.span,
         });
-    if !drives_design {
+    if !drives_design || matches!(process.activation, ProcessActivation::Initialization) {
         return Some(block);
     }
     let resume = process.push_block();
@@ -5991,8 +6028,8 @@ fn value_ref_with_type_inner(
             cond, then, els, ..
         } => ProcessValueKind::Select {
             condition: value_ref(cond, process, context),
-            then_value: value_ref(then, process, context),
-            else_value: value_ref(els, process, context),
+            then_value: value_ref_with_type(then, process, context, ty.as_ref()),
+            else_value: value_ref_with_type(els, process, context, ty.as_ref()),
         },
         ast::Expr::Match {
             scrutinee, arms, ..
@@ -6003,7 +6040,7 @@ fn value_ref_with_type_inner(
                 .iter()
                 .map(|arm| {
                     let value = match arm.value_expr() {
-                        Some(value) => value_ref(value, process, context),
+                        Some(value) => value_ref_with_type(value, process, context, ty.as_ref()),
                         None => missing_value(arm.span, context),
                     };
                     ProcessValueMatchArm {
@@ -6797,6 +6834,50 @@ mod tests {
     use crate::diag::{DiagnosticSink, FileId};
 
     #[test]
+    fn checked_scalar_aliases_fill_only_incomplete_layouts() {
+        let span = crate::diag::Span::new(FileId(0), 0..1);
+        let opaque = SourceLayout {
+            span,
+            kind: LayoutKind::Opaque {
+                name: "m::Scalar".into(),
+                width: None,
+            },
+        };
+        for (ty, domain) in [
+            (crate::types::Ty::Integer, crate::ir::ScalarDomain::Integer),
+            (crate::types::Ty::Real, crate::ir::ScalarDomain::Real),
+            (crate::types::Ty::Char, crate::ir::ScalarDomain::Character),
+        ] {
+            assert_eq!(
+                process_layout_with_type(&opaque, Some(&ty)),
+                SourceLayout {
+                    span,
+                    kind: LayoutKind::Scalar {
+                        width: ty.bit_width().unwrap(),
+                        domain,
+                        nominal: None,
+                        value_range: None,
+                    },
+                }
+            );
+        }
+        let constrained = SourceLayout {
+            span,
+            kind: LayoutKind::Scalar {
+                width: 4,
+                domain: crate::ir::ScalarDomain::Integer,
+                nominal: None,
+                value_range: Some((0, 10)),
+            },
+        };
+        assert_eq!(
+            process_layout_with_type(&constrained, Some(&crate::types::Ty::Integer)),
+            constrained
+        );
+        assert_eq!(process_layout_with_type(&opaque, None), opaque);
+    }
+
+    #[test]
     fn receiver_format_normalizes_the_result_without_retyping_its_intermediate() {
         let span = crate::diag::Span::new(FileId(0), 0..1);
         let ty = crate::types::Ty::Array {
@@ -7016,13 +7097,13 @@ mod tests {
             .expect("wide integer addition");
         assert_eq!(wide_add.bit_width, Some(65));
         assert_eq!(design.process_ir.tests.len(), 1);
-        assert_eq!(design.process_ir.processes.len(), 3);
+        assert_eq!(design.process_ir.processes.len(), 4);
         assert!(!design.process_ir.values.is_empty());
         let descriptor = &design.process_ir.tests[0];
         assert_eq!(descriptor.qualified_name, "tests::Smoke");
         assert_eq!(
             descriptor.processes,
-            [ProcessId(0), ProcessId(1), ProcessId(2)]
+            [ProcessId(0), ProcessId(1), ProcessId(2), ProcessId(3)]
         );
         let flag_storage = design
             .process_ir
@@ -7031,7 +7112,13 @@ mod tests {
             .find(|storage| storage.name == "flag")
             .expect("flag storage")
             .id;
-        let clock = &design.process_ir.processes[0];
+        let initialization = &design.process_ir.processes[0];
+        assert_eq!(initialization.activation, ProcessActivation::Initialization);
+        assert!(initialization
+            .blocks
+            .iter()
+            .any(|block| !block.instructions.is_empty()));
+        let clock = &design.process_ir.processes[1];
         assert_eq!(clock.label.as_deref(), Some("Smoke::clock"));
         assert_eq!(clock.region, ProcessRegion::Procedural);
         assert_eq!(
@@ -7055,7 +7142,7 @@ mod tests {
                         )
                 ))
             ));
-        let process = &design.process_ir.processes[1];
+        let process = &design.process_ir.processes[2];
         assert_eq!(process.label.as_deref(), Some("Smoke::stimulus"));
         assert_eq!(process.region, ProcessRegion::Procedural);
         assert_eq!(process.locals.len(), 3);
@@ -7087,7 +7174,7 @@ mod tests {
             )),
             "a foreground drive into the DUT must yield until reactive settling"
         );
-        let hardware = &design.process_ir.processes[2];
+        let hardware = &design.process_ir.processes[3];
         let input = design
             .signals
             .iter()
@@ -7155,7 +7242,7 @@ mod tests {
             .instructions
             .iter()
             .any(|instruction| matches!(instruction, ProcessInstruction::Schedule { .. }))));
-        assert!(design.process_ir.processes[0]
+        assert!(clock
             .blocks
             .iter()
             .flat_map(|block| &block.instructions)
@@ -7244,7 +7331,7 @@ mod tests {
         let dump = design.process_ir.to_ir_string();
         assert!(dump.contains("value %v0"));
         assert!(dump.contains(&format!(
-            "test @tests::Smoke root {} processes [%p0, %p1, %p2]",
+            "test @tests::Smoke root {} processes [%p0, %p1, %p2, %p3]",
             descriptor.root.0
         )));
         // The storage arena is part of the product, so `--emit ir` style dumps
@@ -7254,8 +7341,8 @@ mod tests {
             "the dump should name the entity-level `i` storage:\n{dump}"
         );
         assert!(dump.contains(&format!(
-            "process %p1 root {} owner {} [Smoke::stimulus]",
-            descriptor.root.0, descriptor.root.0
+            "process %p{} root {} owner {} [Smoke::stimulus]",
+            process.id.0, descriptor.root.0, descriptor.root.0
         )));
         assert!(design.process_ir.values.iter().any(|value| matches!(
             value.kind,

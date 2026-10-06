@@ -13061,6 +13061,21 @@ commit is c78de8c. Preserve unrelated AGENTS.md/.codex/ and older chat edits.
 No push. Next work is the reproduced reset-time CFG initializer gap using
 the same canonical Process pipeline; no execution freeze remains active.
 
+### 2026-10-06 — Codex — canonical initialization CFGs
+
+Take ownership of ir/process activation, source_processes reset declarations,
+LLVM activation metadata/ABI, fixed runtime initialization sequencing and
+focused native tests/docs. Replace the non-executable fake initializer Process
+with real canonical CFGs using lower_ordered_storage_initializer and the
+existing value-call expander. Run initializer entries in declaration/root
+order before hardware bootstrap and foreground startup; reuse the existing
+scheduler for resumes and time, never a second execution engine. Preserve
+default reset frames, packed companions, initialized input bindings, per-test
+reset/filter behavior and waveforms without exposing intermediate defaults.
+Existing historical chat additions, AGENTS.md/.codex/ remain untouched. Both
+previous full/native gates are terminal; no freeze is active. No push; copies
+stay deferred. Full Phase 1 completion remains unproven.
+
 ### 2026-10-06 — Codex — multiprocess proposal alignment
 
 User requested a pull and a revision of the multiprocessing proposal, not
@@ -13107,3 +13122,171 @@ The committed executable baseline still has the recorded green default/bitpack
 Rust, 223-program corpora and native waveform gates; none of this verifies the
 unstaged initializer implementation. Stage only cleanup hunks in TODO and
 architecture plus this final entry, excluding their pending initializer changes.
+
+### 2026-10-06 — Codex — resume Phase 1 initializer verification
+
+Previous turn is progress: proposal alignment and completed-proposal cleanup
+were committed/pushed independently of the unfinished initializer work. Resume
+the existing canonical initialization CFG ownership, not a new implementation.
+Inspect the actual dirty lowerer/ABI/runtime/tests and sibling fixture before
+verification. No active cargo/CI gate is visible in the process list; start a
+bounded-memory focused gate, then freeze execution inputs for fresh full
+default/bitpack CI and immutable native comparisons. Preserve AGENTS.md/.codex/
+and 441 historical chat additions. Copies remain deferred; no Phase 1 completion
+claim until a requirement-by-requirement audit proves it. No new push planned.
+
+Focused lib runs expose stale test IDs/dump text after insertion of the real
+initializer process; update those assertions against the actual clock/stimulus
+identities. A new emitted-native read-failure probe proves a semantic gap:
+missing initializer input reports no source location, and a following initializer
+calls putchar(81), leaking Q before FAILED. Own the shared LLVM host-read
+emission/source metadata and failure-location regression as part of this batch.
+Reuse the existing runtime note-location hook and entry failure edge, not another
+runner. Focused repro handles are terminal; no broad execution freeze yet.
+
+Focused r4/session 76240 is terminal and green: 525 lib tests, 21 native
+failure-location tests, two runtime-file tests and 10 process/call tests. Read
+failures now preserve expression spans and take the existing entry failure edge
+before later foreign effects; the prior declaration-span oracle intentionally
+changes to the more precise read column. Strict C syntax/warnings also pass.
+Freeze tracked execution inputs (including core, libfst submodule files and the
+language artifact specification):
+68fa096bbf166339b651009875d3afff224ce6243714f18fcd6a044263be2c42.
+Sibling source hash: 281e66ee22807d77dc837a09ba105ce87f83c2230a60dca93d3b6b1de787d1ee.
+Immutable default compiler SHA:
+079e1ee26c3409bcf4979603d54eab68210827f89e53f4c943d7ad3d55f1506b.
+Run full CI and 47 default native cases inside one 8 GiB/no-swap scope;
+after CI's terminal bitpack corpus, copy that fresh compiler and run the same
+47 bitpack native cases. Compare all 46 existing VCD/stdout baselines and
+observable FST parity; the new initializer fixture has its own 2/3 ns oracle.
+Do not alter execution inputs while the gate handle is live.
+
+### 2026-10-06 — Codex — initializer broad-gate progress handoff
+
+Completed proposal cleanup is already published as aba067a; preserve its
+separation from unfinished compiler work. Full initializer gate session 33576
+(siox-initializer-full-20261006.scope) remains active: default and bitpack Rust
+tests both expose two build_binary regressions, while default corpus reports
+222 passed / 2 failed (format_test and string_local_test). Default native
+comparisons stop at packet_struct_event: its sole observed baseline difference
+is the first connected index sample, now the declared 3 rather than stale 0.
+The bitpack corpus is still running; do not restart or mutate frozen execution
+inputs before this same handle is terminal. No initializer commit or fresh
+verification success claim.
+
+Read-only diagnosis: empty string literals intentionally have no packed width,
+but new initializer Assign validation requires one. Preserve their existing
+zero-element formatting/equality semantics instead of inventing a value word.
+Module-qualified primitive aliases retain opaque declaration layouts; their
+new CFG assignments need the concrete checked scalar representation at the
+source/IR boundary. Confirm the exact failing instruction after the gate ends,
+fix these shared paths, then add an explicit startup index oracle and document
+any narrowly justified baseline correction. Keep immutable ABI14 baselines
+and the current ABI15 frozen compiler; rerun focused and broad gates on a fresh
+freeze before committing. Phase 1 exit audit and initializer verification
+remain open. This is progress, not completion of the active Phase 1 goal.
+
+### 2026-10-06 — Codex — resume initializer regressions
+
+Previous goal turn made progress through broad-gate failure evidence and
+read-only diagnosis. Re-poll the existing full gate session 33576; its bitpack
+corpus is still live. Own source_processes.rs scalar-alias layout correction,
+zero-element initializer handling, associated regressions and the packet
+startup waveform oracle after that handle terminates. A standalone Rust API
+inspection linked against the existing library confirms Integer/Real storage
+types paired with Opaque width-None layouts; their actual initializer roots
+are already lowered scalar constants, not unexpanded calls. No new dependency,
+runner or generated-C path. Preserve the original ABI14 baseline artifacts,
+other agents' historical chat/AGENTS/.codex changes, and the execution freeze
+until the live gate becomes terminal. Phase 1 remains unproven.
+
+Gate 33576 is now terminal (exit 1); execution hashes match the frozen inputs.
+Focused r5/session 31232 is terminal and green after the scalar alias and
+literal-empty initialization fixes (526 lib / 36 build_binary / 21 failure
+location / 2 file I/O / 10 process tests). The packet difference is specifically
+the reset sample at 3,000,001 fs of an unselected root, not its first sample at
+time zero; all-root initialization keeps that declared index at 3. The new
+oracle requires the full four-sample trace and permits no other baseline delta.
+Before the next full freeze, own cfg_calls.rs effectful host/foreign expression
+normalization and runtime_file_io regression: an inspection probe of a nested
+conditional binary read loses its contextual type and cannot lower. Do not run
+the prior output executable after a failed compilation. Reuse canonical CFG
+branches and existing captured locals for selected-only effects, not LLVM
+select/eager host calls or a second execution representation.
+
+Focused r6/session 89432 is terminal and green: 526 lib tests, 36 native build
+tests, 21 failure-location tests, three file I/O tests and 10 process tests.
+Conditional reads now inherit their destination type and host/foreign effects
+are captured by the existing CFG normalization; the new native test checks
+selected-only if/match reads and C calls both before startup and in a process.
+Empty initializer metadata/formatting is covered without inventing a packed
+literal value. Rust formatting, strict runtime C syntax/warnings and whitespace
+checks pass. Freeze tracked execution inputs:
+192685c81af94a5ec03e8a4cd72ff12689ddb2517900b3ee271258b40c96ba91.
+Sibling source hash remains:
+281e66ee22807d77dc837a09ba105ce87f83c2230a60dca93d3b6b1de787d1ee.
+Immutable default compiler SHA:
+76bb8787e4019e1bcc81620508c8f020093b17d4a16cf40c47a2882cfb19c0b6.
+Full r6 gate uses a fresh log namespace and 47 native cases per mode. Preserve
+the previous failed run and original ABI14 baselines; the comparison permits
+exactly one packet index reset sample correction (0 to declared 3 at 3,000,001
+fs), verifies the full independent index trace, and compares every other byte
+and waveform change. No execution edits while this new gate is live; Phase 1
+completion remains subject to broad verification and the requirement audit.
+
+### 2026-10-06 — Codex — Phase 1 exit audit ownership
+
+The proposal-cleanup turn verified published documentation state; no new
+compiler changes were made. Full initializer gate 46824 is confirmed live in
+siox-initializer-full-r6-20261006.scope, with frozen execution hashes unchanged.
+Default/bitpack Rust and lint stages pass; all 47 default native cases pass;
+both full corpus stages and bitpack native comparisons must finish before
+committing or changing execution inputs. Own docs/phase1-audit.md while waiting.
+The standalone legacy API probe is terminal: replacing a source-derived
+canonical scheduler root with Expr::Const(7), without changing the Process
+arena/CFG, passes Design::validate and public emit_object. This contradicts
+the single-authoritative-executable-representation exit invariant. After the
+live gate ends, own derived-view validation and production LLVM ingress;
+keep legacy fixture execution test-only, not another production adapter.
+Also investigate guarded hardware foreign effects with a native probe; source
+inspection alone is not proof of incorrect execution. Preserve all other
+agents' historical chat, AGENTS.md and .codex changes.
+
+The hardware-effect native probe is now terminal and confirms the gap: a DUT
+with `value = if enabled { putchar(81) } else { 7 }`, connected to a permanently
+false enable, returns the correct 7 and passes its assertion but prints Q.
+No compiler/gate input was changed to run the memory-source API probe. Add a
+native regression and guard effects through the shared Process value emitter
+after the existing full gate becomes terminal; selected branch values alone
+are insufficient. docs/phase1-audit.md records all five pipeline invariants,
+eleven language deliverables and twelve named artifacts without claiming exit.
+
+Exit-audit turn is progress: two independent terminal API/native repros change
+the next implementation action, and the new linked audit preserves the full
+objective. Gate 46824 is still live, now with full CI terminal green (526 lib
+tests, default/bitpack Rust and clippy, both corpora 224 passed / 0 failed) and
+47 default native cases green. The same scope is running 47 fresh bitpack
+native cases; copied compiler SHA:
+c6db422d272248ad4453b4fa2f6edaf00125fde5222a7e32c7e09be350401392.
+Do not restart or alter frozen execution inputs until this handle terminates.
+After terminal success, commit only owned initializer/audit work and sibling
+fixture, carefully excluding 441 historical chat additions and unrelated
+AGENTS.md/.codex changes. No new push authorization for that compiler batch.
+Next code batch: require derived roots/targets/guards to match canonical CFGs
+at the production API boundary; confine legacy LLVM fixture execution to
+test-only builds. Then extend shared value activity/caching facts to host and
+foreign effects, emit guarded calls on LLVM branches with dominating join
+values, and add native inactive/selected hardware if/match/event regressions.
+Invalidate branch-local/state caches without replaying captured calls. Verify
+inactive event guards too, not only RHS values. All those execution changes
+must wait for the current gate; Phase 1 remains active, not complete.
+
+Gate 46824 has now terminated with exit 0; its scope is inactive. Both full
+corpuses report 224 passed / 0 failed and both direct-native logs contain 47
+passed cases, including observable VCD/FST parity and default/bitpack output
+comparison. Tracked execution and sibling source hashes remain frozen values.
+This ends the execution freeze. Commit the verified initializer/host-read/alias
+and empty-string batch plus the honest exit audit; update multiprocess's startup
+description to this verified ABI 15 baseline. This is not Phase 1 completion:
+legacy API authority and inactive hardware foreign effects remain reproduced
+blockers for the next execution batch. No new push.

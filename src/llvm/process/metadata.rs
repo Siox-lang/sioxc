@@ -286,7 +286,10 @@ pub(super) fn emit_source_locations<'ctx>(
             if matches!(
                 value.kind,
                 ProcessValueKind::HostCall {
-                    operation: ProcessHostValueOp::StringIndex,
+                    operation: ProcessHostValueOp::StringIndex
+                        | ProcessHostValueOp::ReadUtf8
+                        | ProcessHostValueOp::ReadUtf8Fixed
+                        | ProcessHostValueOp::ReadBinary,
                     ..
                 }
             ) {
@@ -439,7 +442,7 @@ pub(super) fn emit_source_locations<'ctx>(
 /// All lists use offset + flattened-value tables, avoiding generated symbols
 /// whose shape changes per test. Process sensitivity kinds are encoded as
 /// `0 = signal` and `1 = persistent storage`; process activation is `0 = once
-/// at time zero`, `1 = reactive`. The counts make the sentinel elements of
+/// at time zero`, `1 = reactive`, `2 = reset initialization`. The counts make the sentinel elements of
 /// logically empty arrays unobservable.
 pub(in crate::llvm) fn emit_metadata<'ctx>(
     context: &'ctx Context,
@@ -515,6 +518,7 @@ pub(in crate::llvm) fn emit_metadata<'ctx>(
         .processes
         .iter()
         .map(|process| match process.activation {
+            ProcessActivation::Initialization => 2,
             ProcessActivation::TimeZero => 0,
             ProcessActivation::Reactive { .. } => 1,
         })

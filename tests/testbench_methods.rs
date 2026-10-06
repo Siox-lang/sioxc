@@ -6,6 +6,141 @@ use std::process::Command;
 
 #[cfg(feature = "llvm")]
 #[test]
+fn initializer_cfgs_reset_all_roots_once_under_test_filters() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let source = r#"module reset_filter;
+        extern "C" { fn putchar(value: integer) -> integer; }
+        fn initialize(tag: integer) -> integer {
+            let printed: integer = putchar(tag);
+            let sum: integer = 0;
+            for i in 0..3 { sum = sum + i; }
+            return sum;
+        }
+        #[test] entity First {}
+        impl First {
+            let value: integer = initialize(65);
+            process { assert!(value == 6, "fresh first root"); value = 99; }
+        }
+        #[test] entity Second {}
+        impl Second {
+            let value: integer = initialize(66);
+            process { assert!(value == 6, "fresh second root"); value = 100; }
+        }"#;
+    let binary = std::env::temp_dir().join(format!("siox_reset_filter_{}", std::process::id()));
+    let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+        CompileRequest::new(
+            SourceInput::memory("/virtual/reset_filter.siox", source),
+            Emit::TestExecutable,
+        )
+        .with_output(&binary),
+    );
+    assert!(
+        compilation.succeeded(),
+        "{}\n{:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    for (filter, count) in [(None, 2), (Some("reset_filter::Second"), 1)] {
+        let mut command = Command::new(&binary);
+        if let Some(filter) = filter {
+            command.arg(filter);
+        }
+        let output = command.output().unwrap();
+        let text = String::from_utf8_lossy(&output.stdout).to_string()
+            + &String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{text}");
+        assert_eq!(
+            text.matches("AB").count(),
+            count,
+            "each reset executes both roots once in order: {text}"
+        );
+    }
+    let _ = std::fs::remove_file(binary);
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn reset_initializers_use_ordered_cfgs_before_hardware_and_stimulus() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let source = r#"module reset_cfg;
+        use std::bits::unsigned;
+        struct Packet { pub n: integer, pub data: unsigned[128], pub mark: Logic }
+        fn accumulate(seed: integer) -> integer {
+            let total: integer = seed;
+            for i in 0..3 { total = total + i; }
+            return total;
+        }
+        fn make(seed: integer) -> Packet {
+            let packet: Packet = {.n=accumulate(seed),.data=0,.mark='Z'};
+            packet.data[63] = 'Z'; packet.data[0] = 'X';
+            await 1ns; return packet;
+        }
+        fn publish(target: Bit) -> integer {
+            target = '1' after 1ns; await target == '1'; return 9;
+        }
+        entity Probe { packet: Packet in, n: integer out, data: unsigned[128] out }
+        impl Probe { n = packet.n; data = packet.data; }
+        #[test] entity Test {}
+        impl Test {
+            let empty: string = "";
+            let ready: Bit = '0';
+            let base: integer = accumulate(0);
+            let derived: integer = base + 2;
+            let packet: Packet = make(derived);
+            let confirmed: integer = publish(ready);
+            let dut: Probe = {.packet=packet};
+            process {
+                assert!(empty == "", "zero-element initializer");
+                print!("empty <{}>", empty);
+                assert!(base == 6 and derived == 8 and confirmed == 9 and ready == '1', "source order");
+                assert!(packet.n == 14 and dut.n == 14 and packet.mark == 'Z', "startup barrier");
+                assert!(dut.data[63] == 'Z' and dut.data[0] == 'X', "returned multiword metadata");
+            }
+        }"#;
+    let binary = std::env::temp_dir().join(format!("siox_reset_cfg_{}", std::process::id()));
+    let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+        CompileRequest::new(
+            SourceInput::memory("/virtual/reset_cfg.siox", source),
+            Emit::TestExecutable,
+        )
+        .with_output(&binary),
+    );
+    assert!(
+        compilation.succeeded(),
+        "{}\n{:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    let design = compilation.design.unwrap();
+    assert!(design.validate().is_empty(), "{:?}", design.validate());
+    assert!(design.process_ir.processes.iter().any(|process| matches!(
+        process.activation,
+        siox::ir::ProcessActivation::Initialization
+    )));
+    let empty = design
+        .process_ir
+        .storages
+        .iter()
+        .find(|storage| storage.name == "empty")
+        .unwrap();
+    let initializer = empty.initializer.unwrap();
+    assert_eq!(
+        design.process_ir.values[initializer.0 as usize].bit_width,
+        None
+    );
+    let output = Command::new(&binary).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("empty <>"));
+    let _ = std::fs::remove_file(binary);
+}
+
+#[cfg(feature = "llvm")]
+#[test]
 fn value_calls_return_lexical_aggregates_through_cfgs() {
     use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
     let source = r#"module value_cfg;

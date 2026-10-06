@@ -13,7 +13,7 @@ enum {
     SX_PROCESS_FINISHED = 3,
     SX_PROCESS_SETTLING = 4,
     SX_PROCESS_UNSUPPORTED = 255,
-    SX_PROCESS_ABI = 14,
+    SX_PROCESS_ABI = 15,
     SX_EVENT_WRITE = 0,
     SX_EVENT_RESUME = 1,
     SX_SUSPENSION_NONE = 0,
@@ -1100,6 +1100,8 @@ int sx_runtime_run_test(uint32_t test) {
             *settling = 0, *timed_ready = 0, *selected = 0;
     uint32_t *resume_blocks = 0;
     uint32_t begin, end;
+    uint32_t initialization_cursor = 0, initializer = UINT32_MAX;
+    int initializing = 1;
     int foreground_started = 0;
     int result = 0;
     sx_clear_events();
@@ -1157,19 +1159,6 @@ int sx_runtime_run_test(uint32_t test) {
         selected[process] = 1;
         resume_blocks[process] = sx_process_initial_blocks[process];
     }
-    /* Reset initializes every hardware instance in the combined design object,
-       even when its owning test is filtered out. Run those nested hardware
-       processes during bootstrap, but never another test root's foreground or
-       clock process. */
-    for (uint32_t process = 0; process < sx_process_count; ++process) {
-        int nested_hardware = sx_process_owners[process] != sx_process_roots[process];
-        if (sx_process_activations[process] == 1 &&
-            (selected[process] || nested_hardware)) {
-            resume_blocks[process] = sx_process_initial_blocks[process];
-            ready[process] = 1;
-        }
-    }
-
     for (;;) {
         int ran = 0;
         int finish = 0;
@@ -1224,7 +1213,7 @@ int sx_runtime_run_test(uint32_t test) {
                 goto done;
             }
             if (status == SX_PROCESS_COMPLETED) {
-                if (sx_process_activations[process] == 0) stopped[process] = 1;
+                if (sx_process_activations[process] != 1) stopped[process] = 1;
             } else if (status == SX_PROCESS_STOPPED) {
                 stopped[process] = 1;
             } else if (status == SX_PROCESS_FINISHED) {
@@ -1280,10 +1269,26 @@ int sx_runtime_run_test(uint32_t test) {
              * Release foreground observers here so a self-sensitive clock
              * cannot keep them in the settling set forever. */
             if (!changed) {
-                sx_wave_sample(sx_now);
-                (void)sx_release_settling(begin, end, stopped, settling, next);
+                if (!initializing) {
+                    sx_wave_sample(sx_now);
+                    (void)sx_release_settling(begin, end, stopped, settling, next);
+                }
             }
-            if (changed) {
+            /* Initialization uses the same continuation queue, but hardware
+             * cannot observe a partially initialized root. A settle edge is
+             * satisfied by publication alone at this earlier boundary. */
+            if (initializing && initializer != UINT32_MAX &&
+                !stopped[initializer]) {
+                if (settling[initializer]) {
+                    settling[initializer] = 0;
+                    next[initializer] = 1;
+                }
+                if (changed && suspended[initializer] == SX_SUSPENSION_CONDITION) {
+                    suspended[initializer] = SX_SUSPENSION_NONE;
+                    next[initializer] = 1;
+                }
+            }
+            if (changed && !initializing) {
                 for (uint32_t process = 0; process < sx_process_count; ++process) {
                     int nested_bootstrap = !foreground_started &&
                                            sx_process_owners[process] !=
@@ -1318,13 +1323,41 @@ int sx_runtime_run_test(uint32_t test) {
         /* A waveform observes settled change points, never an intermediate
            delta. Changed-value suppression in the fixed writer makes repeated
            quiescent visits free of duplicate records. */
-        sx_wave_sample(sx_now);
+        if (!initializing) sx_wave_sample(sx_now);
+
+        if (initializing && (initializer == UINT32_MAX || stopped[initializer])) {
+            // Reset has always initialized all roots in the combined object.
+            // Serialize their CFGs in object/declaration order, even under a
+            // test filter; ordinary stimulus and clocks remain unselected.
+            initializer = UINT32_MAX;
+            while (initialization_cursor < sx_process_count) {
+                uint32_t process = initialization_cursor++;
+                if (sx_process_activations[process] != 2) continue;
+                initializer = process;
+                resume_blocks[process] = sx_process_initial_blocks[process];
+                ready[process] = 1;
+                break;
+            }
+            if (initializer != UINT32_MAX) continue;
+            initializing = 0;
+            // Bootstrap nested hardware for every reset root as before, but
+            // only now, after all source initializer CFGs have completed.
+            for (uint32_t process = 0; process < sx_process_count; ++process) {
+                int nested_hardware = sx_process_owners[process] != sx_process_roots[process];
+                if (sx_process_activations[process] == 1 &&
+                    (selected[process] || nested_hardware)) {
+                    resume_blocks[process] = sx_process_initial_blocks[process];
+                    ready[process] = 1;
+                }
+            }
+            continue;
+        }
 
         /* Reactive hardware starts once at time zero and reaches a fixed point
            before foreground/test processes observe it. Events registered by
            clocks during that bootstrap stay queued; test stimulus begins at
            the same simulation time before the wheel may advance. */
-        if (!foreground_started) {
+        if (!foreground_started && !initializing) {
             foreground_started = 1;
             for (uint32_t item = begin; item < end; ++item) {
                 uint32_t process = sx_test_process_ids[item];
@@ -1339,7 +1372,7 @@ int sx_runtime_run_test(uint32_t test) {
          * awakened has reached quiescence at this simulation time. Keeping
          * this separate from a zero-delay event prevents the observer and DUT
          * from running in the same pre-commit batch. */
-        int released_settling =
+        int released_settling = !initializing &&
             sx_release_settling(begin, end, stopped, settling, ready);
         if (released_settling) continue;
 
@@ -1347,7 +1380,7 @@ int sx_runtime_run_test(uint32_t test) {
          * its own queued transactions have drained. Free-running reactive
          * clocks may still have events forever, but they are implementation
          * support rather than a reason to keep the finished test alive. */
-        int foreground_live = 0;
+        int foreground_live = initializing;
         for (uint32_t item = begin; item < end; ++item) {
             uint32_t process = sx_test_process_ids[item];
             if (sx_process_activations[process] == 0 && !stopped[process]) {
@@ -1358,7 +1391,7 @@ int sx_runtime_run_test(uint32_t test) {
         int foreground_transaction = 0;
         for (sx_event *event = sx_events; event; event = event->next) {
             if (event->kind == SX_EVENT_WRITE && event->process < sx_process_count &&
-                sx_process_activations[event->process] == 0) {
+                sx_process_activations[event->process] != 1) {
                 foreground_transaction = 1;
                 break;
             }
@@ -1366,6 +1399,12 @@ int sx_runtime_run_test(uint32_t test) {
         if (!foreground_live && !foreground_transaction) break;
 
         if (!sx_events) {
+            if (initializing) {
+                result = sx_fail_process_block(
+                    "initializer has no future event for process", initializer,
+                    resume_blocks[initializer]);
+                goto done;
+            }
             for (uint32_t item = begin; item < end; ++item) {
                 uint32_t process = sx_test_process_ids[item];
                 if (suspended[process] == SX_SUSPENSION_CONDITION) {
@@ -1388,7 +1427,12 @@ int sx_runtime_run_test(uint32_t test) {
             result = 1;
             goto done;
         }
-        if (changed) {
+        if (changed && initializing && initializer != UINT32_MAX &&
+            suspended[initializer] == SX_SUSPENSION_CONDITION) {
+            suspended[initializer] = SX_SUSPENSION_NONE;
+            ready[initializer] = 1;
+        }
+        if (changed && !initializing) {
             for (uint32_t item = begin; item < end; ++item) {
                 uint32_t process = sx_test_process_ids[item];
                 if (stopped[process] || settling[process])

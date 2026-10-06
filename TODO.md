@@ -75,6 +75,9 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   Test-only fixture imports and differential oracles must stay excluded from
   compiler builds. Preserve exact layouts, source contexts, shared identities,
   checked/raw reads and staged writes. See
+  [the exit audit](docs/phase1-audit.md) for explicit requirement evidence and
+  the reproduced public legacy-expression ingress and inactive hardware-call
+  blockers, and
   [`docs/architecture.md`](docs/architecture.md#current-process-ir-ingress-boundary)
   for implementation details; unsupported execution forms remain listed below.
   The named example suite in `docs/language.md` has a spec-derived artifact
@@ -96,11 +99,16 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   values retain their recursive layouts and companion planes across suspension.
   Call arguments capture computed values and dynamic place selectors once
   in source order; caller-place aliases and per-inline locals remain distinct.
-  Conditional expression calls execute only in the selected branch. Loop-bound
+  Conditional expression calls, including file reads and foreign C effects,
+  execute only in the selected branch. Loop-bound
   calls execute in the preheader, not on the iteration back-edge; repeated
   parameter reads retain written order around mutating calls.
-  Remaining executable forms are runtime recursion, CFG-capable reset-time
-  impl initializers and non-packed conversions. Indexed/field delayed targets
+  Reset-time impl declarations use ordinary source-ordered initialization CFGs
+  before hardware bootstrap/stimulus, including loops, returned aggregates,
+  suspension, condition waits and runtime file reads. The same scheduler owns
+  their continuations; retained initializer expressions are metadata, not
+  re-executed at reset. Remaining executable forms are runtime recursion and
+  non-packed conversions. Indexed/field delayed targets
   retain an event-owned physical offset and driver/scalar waveform identity;
   the narrow value and X/Z companion planes survive rejection and expiry
   without re-reading selectors or capturing the whole root. Native regression

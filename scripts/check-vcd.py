@@ -87,6 +87,10 @@ def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> No
         # The harness resets design storage between the two named tests, one
         # femtosecond after the first finishes at 3 ns.
         reset = 3_000_001
+        assert changes[root + "index"] == [
+            (time, f"{value:064b}") for time, value in
+            [(0, 3), (2_000_000, 2), (3_000_000, 3), (reset, 3)]
+        ]
         assert changes[root + "history[-1].payload.data"] == [
             (0, zero), (2_000_000, wide), (3_000_000, f"{21:0128b}"), (reset, zero)
         ]
@@ -127,6 +131,17 @@ def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> No
         assert changes[root + "q"] == [(0, "00011001"), (1_000_000, "00011010")]
         for signal, number in [("overridden", 7), ("inherited", 16), ("defaulted", 4)]:
             assert changes[root + signal] == [(0, f"{number:064b}")]
+    elif profile == "initializer_cfg_test":
+        root = "InitializerCfgTest.dut."
+        initial = "1" + "0" * 63 + "z" + "0" * 62 + "x"
+        changed = "1" + "0" * 63 + "1" + "0" * 62 + "x"
+        # make waits 1 ns, publish's delayed write/condition waits another
+        # 1 ns. No hardware/stimulus or intermediate-default samples precede
+        # completion at 2 ns; the ordinary process then writes at 3 ns.
+        for prefix in (root, root + "packet."):
+            assert changes[prefix + "n"] == [(2_000_000, f"{14:064b}")]
+            assert changes[prefix + "mark"] == [(2_000_000, "z")]
+            assert changes[prefix + "data"] == [(2_000_000, initial), (3_000_000, changed)]
     elif profile == "process_value_cfg_test":
         for signal in ("pulse", "seen"):
             assert changes["ValueCfgTest.dut." + signal] == [(0, "0"), (7_000_000, "1")]

@@ -233,6 +233,18 @@ pub(super) fn layout_meta_width(design: &Design, layout: &SourceLayout) -> Optio
     layout_has_packed_metadata(design, layout).then(|| layout_width(layout)?.checked_mul(4))?
 }
 
+/// Initialization CFGs own all explicit initializer writes for their root.
+/// The retained storage initializer is metadata, not a second execution path.
+pub(super) fn storage_initialized_by_cfg(design: &Design, storage: ProcessStorageId) -> bool {
+    let Some(storage) = design.process_ir.storages.get(storage.0 as usize) else {
+        return false;
+    };
+    design.process_ir.processes.iter().any(|process| {
+        process.owner == storage.owner
+            && matches!(process.activation, ProcessActivation::Initialization)
+    })
+}
+
 pub(super) fn storage_meta_width(design: &Design, storage: ProcessStorageId) -> Option<u32> {
     let storage = design.process_ir.storages.get(storage.0 as usize)?;
     let layout = storage.layout.as_ref().or_else(|| {

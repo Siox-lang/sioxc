@@ -225,6 +225,7 @@ pub(super) fn emit_state_helpers<'ctx>(
             .expect("validated storage width");
         let initialized = storage
             .initializer
+            .filter(|_| !storage_initialized_by_cfg(design, storage.id))
             .filter(|initializer| {
                 storage.layout.as_ref().map_or_else(
                     || {
@@ -333,6 +334,7 @@ pub(super) fn emit_state_helpers<'ctx>(
         let mut metadata = meta_width.map(|meta_width| {
             storage
                 .initializer
+                .filter(|_| !storage_initialized_by_cfg(design, storage.id))
                 .zip(storage.layout.as_ref())
                 .and_then(|(initializer, layout)| {
                     process_value_meta_in_layout(

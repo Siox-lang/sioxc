@@ -958,13 +958,19 @@ pub(super) fn process_value<'ctx>(
                         vec![string_argument(*path)?],
                     )
                 }
-                ProcessHostValueOp::ReadUtf8Fixed => {
+                ProcessHostValueOp::ReadUtf8Fixed | ProcessHostValueOp::ReadBinary => {
                     let [path] = arguments.as_slice() else {
                         return None;
                     };
-                    if !width.is_multiple_of(32) {
-                        return None;
-                    }
+                    let (runtime_name, capacity) =
+                        if *operation == ProcessHostValueOp::ReadUtf8Fixed {
+                            if !width.is_multiple_of(32) {
+                                return None;
+                            }
+                            ("sx_runtime_read_utf8_fixed", width / 32)
+                        } else {
+                            ("sx_runtime_read_binary", width.div_ceil(8))
+                        };
                     return emit_buffered_read_value(
                         context,
                         module,
@@ -972,23 +978,9 @@ pub(super) fn process_value<'ctx>(
                         design,
                         *path,
                         width,
-                        "sx_runtime_read_utf8_fixed",
-                        width / 32,
-                    );
-                }
-                ProcessHostValueOp::ReadBinary => {
-                    let [path] = arguments.as_slice() else {
-                        return None;
-                    };
-                    return emit_buffered_read_value(
-                        context,
-                        module,
-                        builder,
-                        design,
-                        *path,
-                        width,
-                        "sx_runtime_read_binary",
-                        width.div_ceil(8),
+                        runtime_name,
+                        capacity,
+                        value.span,
                     );
                 }
                 ProcessHostValueOp::FileExists => {
@@ -1062,6 +1054,9 @@ pub(super) fn process_value<'ctx>(
                 inkwell::values::ValueKind::Basic(value) => value.into_int_value(),
                 _ => return None,
             };
+            if *operation == ProcessHostValueOp::ReadUtf8 {
+                emit_host_read_check(context, module, builder, value.span)?;
+            }
             fit(builder, returned, width)?
         }
         ProcessValueKind::Unary { operation, operand } => match operation {

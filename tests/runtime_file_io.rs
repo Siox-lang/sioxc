@@ -6,6 +6,62 @@ fn text(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).to_string() + &String::from_utf8_lossy(&output.stderr)
 }
 
+#[cfg(feature = "llvm")]
+#[test]
+fn conditional_initializers_execute_only_selected_host_and_foreign_calls() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let dir = std::env::temp_dir().join(format!("siox_host_branch_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let binary = dir.join("host-branch");
+    let bytes = dir.join("selected.bin");
+    let missing = dir.join("missing.bin");
+    let _ = std::fs::remove_file(&bytes);
+    let _ = std::fs::remove_file(&missing);
+    let source = r#"
+        module host_branch;
+        extern "C" { fn putchar(value: integer) -> integer; }
+        #[test] entity T {}
+        impl T {
+            let skipped: integer = if true { 7 } else { read<integer>("missing.bin") };
+            let selected: integer = if false { read<integer>("missing.bin") } else { read<integer>("selected.bin") };
+            let matched: integer = match 2 { 1 => read<integer>("missing.bin"), _ => read<integer>("selected.bin") };
+            let tag: integer = if false { putchar(81) } else { putchar(65) };
+            process {
+                assert!(skipped == 7 and selected == 42 and matched == 42 and tag == 65, "selected effects");
+                let local: integer = if true { read<integer>("selected.bin") } else { read<integer>("missing.bin") };
+                assert!(local == 42, "process-local selected read");
+            }
+        }
+    "#;
+    let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+        CompileRequest::new(
+            SourceInput::memory(dir.join("host_branch.siox"), source),
+            Emit::TestExecutable,
+        )
+        .with_output(&binary),
+    );
+    assert!(
+        compilation.succeeded(),
+        "{}\n{:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    std::fs::write(&bytes, [42]).unwrap();
+    let run = Command::new(&binary).output().unwrap();
+    let report = text(&run);
+    assert!(run.status.success(), "{report}");
+    assert!(
+        !report.contains('Q'),
+        "untaken foreign call escaped: {report}"
+    );
+    assert_eq!(
+        report.matches("Atest").count(),
+        1,
+        "selected foreign call executes once: {report}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn native_tests_own_and_read_the_current_runtime_files() {
     let dir = std::env::temp_dir().join(format!("siox_runtime_io_{}", std::process::id()));

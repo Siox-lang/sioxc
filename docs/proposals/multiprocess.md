@@ -54,10 +54,11 @@ the design object; the runtime remains design-independent. Delayed transactions
 retain event-owned payloads, captured target offsets, driver/waveform identity,
 masks and optional packed companion planes.
 
-Reset-time initialization CFGs are being implemented in the shared worktree.
-Their initialization activation and associated ABI change are not yet a broadly
-verified baseline. Accommodate that ordered startup boundary without treating
-the in-flight work as completed.
+Reset-time initialization uses source-ordered CFGs and the same scheduler for
+resumes before hardware bootstrap and foreground stimulus. The ABI 15 startup
+boundary is verified by full default/bitpack corpus and native waveform gates;
+the broader Phase 1 exit audit still has independent API/effect gaps. Preserve
+this ordered startup boundary when introducing workers.
 
 ## One compiler pipeline
 
@@ -109,7 +110,7 @@ stimulus: process {
 Preserve these coordinator-owned boundaries:
 
 - Reset frames and publish initial port bindings before observers run.
-- Initialization CFGs, once verified, run in root/declaration order before
+- Initialization CFGs run in root/declaration order before
   reactive bootstrap and ordinary foreground stimulus. They use the same
   scheduler across suspension and may advance time; stimulus need not start at
   timestamp zero. Preserve existing filtered-test reset behavior.

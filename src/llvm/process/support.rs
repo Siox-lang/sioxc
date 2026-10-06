@@ -696,29 +696,30 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                         .storages
                         .get(storage.0 as usize)
                         .is_some_and(|storage| {
-                            storage.initializer.is_none_or(|initializer| {
-                                storage.layout.as_ref().map_or_else(
-                                    || has(&supported, initializer),
-                                    |layout| {
-                                        if layout_width(layout).is_none() {
-                                            has(&supported, initializer)
-                                        } else {
-                                            process_value_supported_in_layout(
-                                                design,
-                                                initializer,
-                                                layout,
-                                                &supported,
-                                            ) && (!layout_has_packed_metadata(design, layout)
-                                                || process_value_meta_supported(
+                            storage_initialized_by_cfg(design, storage.id)
+                                || storage.initializer.is_none_or(|initializer| {
+                                    storage.layout.as_ref().map_or_else(
+                                        || has(&supported, initializer),
+                                        |layout| {
+                                            if layout_width(layout).is_none() {
+                                                has(&supported, initializer)
+                                            } else {
+                                                process_value_supported_in_layout(
                                                     design,
                                                     initializer,
                                                     layout,
                                                     &supported,
-                                                ))
-                                        }
-                                    },
-                                )
-                            })
+                                                ) && (!layout_has_packed_metadata(design, layout)
+                                                    || process_value_meta_supported(
+                                                        design,
+                                                        initializer,
+                                                        layout,
+                                                        &supported,
+                                                    ))
+                                            }
+                                        },
+                                    )
+                                })
                         })
             }
             ProcessValueKind::StorageState { storage, state } => match state {

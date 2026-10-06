@@ -192,8 +192,9 @@ dynamic projections therefore share one waveform identity without retaining
 live selectors. Inertial comparison/rejection includes companion values, and
 masked apply sites preserve unselected value/companion lanes. Overlapping
 whole/slice targets compose without teaching the runtime concrete design
-layouts. Native Process ABI version 14 carries the selected offset through
-enqueue and expiry. The object links with a
+layouts. Native Process ABI version 15 retains the selected offset through
+enqueue/expiry and adds initialization activation before normal bootstrap.
+The object links with a
 fixed descriptor-driven CLI and the pinned libfst waveform runtime. These
 design-independent C sources are compiled once
 with `sioxc` and embedded as host objects; a source fallback is retained when
@@ -406,8 +407,18 @@ Concrete declaration layouts are retained on `Design::type_layouts` by resolved
 type identity using the existing source-layout builder. Lexical-only structs
 therefore have the same representation as types occurring in ports or storage;
 generic returns reuse caller layouts rather than invent another layout builder.
-CFG-capable reset-time initializers, runtime recursion and guarded hardware
-evaluation remain separate unfinished work.
+Reset-time impl declarations lower through lower_ordered_storage_initializer
+and the same value-call CFG expander. Host/foreign values are captured at their
+CFG evaluation boundary; conditional file reads and foreign calls execute only
+in the selected arm. Checked scalar aliases complete opaque declaration layouts
+before executable assignments, while literal empty strings retain metadata
+without a packed write. Initialization activation runs once per
+root in object/declaration order before hardware bootstrap and stimulus, using
+the ordinary ready/continuation/event queues even across suspension. Reset
+installs default frames; retained initializer roots supply source/type metadata
+but are not re-executed in LLVM's reset helper. The fixed runtime publishes
+initializer bindings without exposing intermediate defaults as wave samples.
+Runtime recursion and guarded hardware evaluation remain unfinished work.
 Procedural signal reads retain their declaration-owned layout before projection,
 so entity-qualified packed ports use the same labelled slices as local aliases.
 Normalization rewrites each dependency once and compacts reachable values

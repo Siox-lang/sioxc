@@ -73,7 +73,8 @@ pub struct ProcessStorage {
     pub ty: Option<crate::types::Ty>,
     /// Concrete recursive storage shape retained by digital lowering.
     pub layout: Option<SourceLayout>,
-    /// Initial value evaluated before processes start.
+    /// Initial value. When its owner has an Initialization CFG this retains
+    /// source/type metadata; the CFG performs the actual source-ordered write.
     pub initializer: Option<ProcessValueId>,
     /// DUT signal leaves connected to this storage object.
     pub bindings: Vec<ProcessStorageBinding>,
@@ -162,6 +163,9 @@ impl ProcessCfg {
 /// When a process runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProcessActivation {
+    /// Runs once during reset initialization, before reactive bootstrap and
+    /// ordinary time-zero entries. Resumes use the same scheduler as processes.
+    Initialization,
     /// Starts once at time zero and subsequently only through explicit resume
     /// edges such as [`ProcessTerminator::Suspend`].
     TimeZero,
