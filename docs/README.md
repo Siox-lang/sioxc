@@ -23,12 +23,11 @@ synthesis layer yet (those are Phase 2 and 3 — see
 | [proposals/](proposals/) | Designs that are **not** implemented yet. Once something lands, its record moves into the document it belongs to and the proposal goes away, so this folder only ever lists outstanding work. |
 | [Entity methods](proposals/entity-methods.md) | `pub fn` members on entities whose calls elaborate into ports. Tier 1 (associated functions) is implemented; receiver methods remain proposed. |
 | [Standard-library build-out](proposals/std-buildout.md) | The compiler/std boundary and the open std work tracked in TODO. |
-| [Macros](proposals/macros.md) | Implemented (language §3.30), including the built-in macros as `core` declarations. Remaining: expansion identity for notes, language-server views. |
 | [`#[derive]`](proposals/derive.md) | Proposed generated `Eq`/`Ord`/`Resolve` implementations as a directive; `#[cfg]` stays rejected. |
-| [`core` and `std`](proposals/core-std.md) | Slice 1 implemented: built-in `core` with the hooks, directives and built-in macros, found by lang items. Leaf-name lookups and new `std` content remain. |
 | [Pipelined functions](proposals/pipelines.md) | Proposed `#[latched]` functions after Spade, with no new keywords: `#[latch]` marks each stage (a block or one statement), depth is checked in the body and at every call site, stages can be named and referenced, and `#[latch(enable = c)]` stalls. |
-| [Compiler foundations](proposals/compiler-foundations.md) | Proposed rustc-style internals: UI tests for diagnostics, `--explain` and JSON output, one constant evaluator, a resolved tree with no name lookups after `resolve`, and std-declared lang items. |
+| [Compiler foundations](proposals/compiler-foundations.md) | Remaining internals work: UI diagnostic tests, `--explain`/structured output, one constant evaluator, declaration-ID registries and residual name-based hook cleanup. Core/lang-item registration is implemented. |
 | [Vendor-neutral RTL interchange](proposals/rtl-interface.md) | **Phase 3.** Proposed synthesis-facing RTL IR that SystemVerilog, VHDL and other backends serialize, instead of compiling to another HDL. |
+| [Parallel Process runtime](proposals/multiprocess.md) | Proposed bounded worker pool over existing CFG/LLVM entries, with effect isolation, deterministic merge and serial fallback. |
 | [../TODO.md](../TODO.md) | The **outstanding-work list** — post-baseline capability growth by compiler area. |
 
 If you are new: skim this page, then read [language.md](language.md) for the

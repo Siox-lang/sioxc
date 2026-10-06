@@ -1154,7 +1154,7 @@ fn absolute_use_path(path: Vec<String>, here: &[String]) -> Option<Vec<String>> 
     }
 }
 
-/// `core`'s modules, compiled into the compiler (proposals/core-std.md): a
+/// `core`'s modules, compiled into the compiler (docs/std.md): a
 /// compiler can never load a `core` it does not match, and a frontend needs
 /// no files on disk for it.
 const CORE: &[(&str, &str)] = &[

@@ -42,6 +42,15 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
   Compile-time `read<T>` ROM construction remains a valid elaboration input.
 - 🔴 **Comment-preserving formatting.** Attach comment trivia to stable syntax
   anchors before the LSP offers formatting edits on commented source.
+- 🔴 **Macro expansion identity.** Keep expansion/call-site identity beyond
+  token spans so diagnostics in a macro body identify the invocation that
+  produced them, including nested expansions. Macro syntax, hygiene,
+  repetition, built-ins and runtime call-site reporting are already implemented.
+- 🟡 **Compiler foundations followups.** Add UI diagnostic snapshots,
+  explanations/structured suggestions, a shared constant evaluator and
+  declaration-ID registries. Hook lang-item registration and core loading are
+  implemented; residual leaf-name lookups still need removal. See
+  [the remaining proposal](docs/proposals/compiler-foundations.md).
 - 🔴 **Incremental/query interface.** Add demand-driven caching only when the
   LSP or future project tool needs incremental multi-file recomputation; keep
   the current explicit phase products as the public boundary.
@@ -196,6 +205,9 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 Owns stable boundaries used by editors, project tools, simulators, debuggers,
 and foreign integrations.
 
+- 🔴 **Editor macro expansion views.** Expose generated declarations and their
+  originating invocation through the compiler API so the separate LSP can
+  distinguish expansion output from handwritten source.
 - 🔴 **Multi-file user crates.** Define module discovery and crate boundaries
   in the future project tool, then expose its loaded source set through the
   compiler API. `sioxc` continues to compile an explicit entry/input.
@@ -218,10 +230,13 @@ and foreign integrations.
 Owns user-visible types, traits, operators, attributes, simulation helpers,
 math/text/file services, and small technology-independent helpers. Code: `std/`.
 
-- 🟡 **Library build-out.** std is the mandatory, vendor-independent base:
-  fixed-point families and vectors/matrices next, each with executable
-  conformance tests. Memories, FIFOs and stream adapters are IP for vendor
-  packages and libraries, not std.
+- 🟡 **Library build-out.** Synchronizers, fixed-point families and initial
+  floating-point operators exist. Remaining: fixed-point division/configurable
+  resize, floating-point division/square root/subnormals/rounding modes and
+  fixed-point conversions; optionally generic vectors/matrices. Each needs
+  executable conformance tests. See
+  [the remaining proposal](docs/proposals/std-buildout.md). Memories, FIFOs and
+  stream adapters are IP for vendor packages and libraries, not std.
 - 🟡 **API reference.** Keep [`docs/std.md`](docs/std.md) synchronized with each
   exported declaration and clearly label compiler/runtime intrinsics.
 - 🔴 **Foreign HDL packages (Phase 3).** Map external library names and entity

@@ -13086,3 +13086,24 @@ the unfinished initializer worktree. Stage only this proposal and this entry;
 leave initialization ownership, historical chat and all compiler changes local.
 Phase 1 remains approximately 99%, with initialization verification and the exit
 audit open; the Phase 2 parallel runtime is not implemented.
+
+### 2026-10-06 — Codex — purge completed proposal material
+
+User requested proposal cleanup after the authorized push. Main 0e54e27 and
+companion corpus c78de8c are pushed. Own documentation cleanup in proposals,
+README/std/architecture references, scoped TODO followups and the macros.rs
+documentation reference only; no executable/compiler implementation changes.
+Remove the landed macro/core migration documents, retain expansion identity/LSP
+followups in TODO and residual name lookups in compiler-foundations, and trim
+implemented std build-out history to the genuinely missing capabilities. Keep
+receiver methods, derive, pipelines, RTL and multithreading proposals. Preserve
+initializer edits, historical chat, AGENTS.md/.codex/ and all other dirty work.
+
+Cleanup verification: 17 frontend macro tests pass, formatting passes, and
+11 documentation files have 52 valid local links and balanced fences. Live
+docs/source contain no references to the removed proposal filenames; historical
+chat is intentionally untouched. Source edits are documentation comments only.
+The committed executable baseline still has the recorded green default/bitpack
+Rust, 223-program corpora and native waveform gates; none of this verifies the
+unstaged initializer implementation. Stage only cleanup hunks in TODO and
+architecture plus this final entry, excluding their pending initializer changes.

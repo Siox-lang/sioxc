@@ -717,7 +717,8 @@ The binding pass `syntax::attributes::attach` then runs just before resolution: 
 target as an applied attribute (the form later stages read) and folds each
 `x'name` read of a declared attribute into its bound or default value.
 The compiler's own declarations live in `core`, compiled into `sioxc` and
-loaded with `core::prelude` into every compilation (proposals/core-std.md).
+loaded with `core::prelude` into every compilation; [std.md](std.md) documents
+the exported surface.
 Each tells the compiler its role with a lang item, `attr lang for Add =
 "add";`, which only `core` and `std` may bind; the resolver keeps a
 table from role to declaration (`Resolved::lang`, `Resolved::lang_of`),

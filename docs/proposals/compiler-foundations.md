@@ -1,9 +1,9 @@
 # Compiler foundations borrowed from rustc
 
-Status: **proposal**. Nothing here is implemented. Five independent changes
-that bring sioxc's internals closer to rustc where rustc has already solved a
-problem sioxc keeps meeting. Each part lands on its own and leaves the
-compiler working; the order below is the recommended one.
+Status: **partially implemented; remaining work only**. Core loading, lang-item
+registration and library-declared built-in macros have landed. UI snapshots,
+structured diagnostics, shared constant evaluation, declaration-ID registries
+and residual name-based hook cleanup remain. Each part lands independently.
 
 siox is deliberately aligned with Rust at the language level. This proposal
 applies the same habit to the compiler: when sioxc has a structural problem,
@@ -155,42 +155,30 @@ point resolves a name again. Typeck writes its results to side tables keyed by
 name; equal leaf names in different modules are covered by a test per
 registry.
 
-## 5. Lang items: std marks what the compiler hooks
+## 5. Remove residual name-based hook lookups
 
-**Problem.** The compiler depends on std declarations it finds by path and
-name. `COMPILER_TRAITS` lists `Add`, `Prefix`, `Suffix`, …, and
-`is_compiler_trait` checks that the definition sits in `std::ops` (or
-`std::logic` for `LogicEncoding`). `#[test]` is recognised by checking for a
-`test` declared in `std::attrs`. Builtin fallbacks are seeded by the same
-names. The built-in macros are worse: `assert!`, `print!` and `warn!` are
-matched by string in `types/calls.rs` and again in
-`ir/lower/source_processes.rs`, and declared nowhere.
+The lang-item mechanism is implemented: `Resolved::lang` maps roles to `DefId`,
+`core` is embedded by the compiler, and `core`/`std` declare hook roles through
+`attr lang`. Built-in macros live in `core::macros` over `builtin #`.
+The current library surface is in [std.md](../std.md); macro semantics are in
+[language.md](../language.md), §3.30. These are no longer proposals.
 
-**rustc.** `#[lang = "add"]` on `core::ops::Add` tells the compiler "this is
-the addition hook"; the compiler looks up lang items, never paths. Built-in
-macros are declared in `core` with `#[rustc_builtin_macro]`, so `assert!` is
-an ordinary importable item whose expansion the compiler supplies.
+**Remaining problem.** Type classification still has leaf-name dispatch such
+as `types/keys.rs::ty_from_head`, and frontend-only fixtures retain fallback
+identities. Do not confuse a registered hook table with complete removal of
+name matching.
 
-**Proposal.**
+**Proposal.** Audit classification and hook consumers, replacing library-type
+spelling checks with resolved identities, lang roles or source-owned layout/
+encoding metadata as appropriate. Keep the grammar's kernel types distinct
+from ordinary library declarations. Remove fixture fallbacks only when their
+callers load core or explicitly supply equivalent identities.
 
-- A std-only metadata attribute, `attr lang: string for trait, enum, struct,
-  attr = "";`, bound in std: `attr lang for Add = "add";`,
-  `attr lang for test = "test";`. Resolution builds a `lang → DefId` table,
-  and the compiler asks for `lang("operator")` instead of matching
-  `std::ops::Add`. A user module cannot bind `lang` (it is reserved to
-  std), and two items claiming one lang name is an error.
-- Builtin fallbacks for std-less compilations seed the same table, so there is
-  one lookup either way.
-- The built-in macros follow once [macros.md](macros.md) lands:
-  `pub macro assert(...) { builtin # assert(...) }` in std, which that
-  proposal already sketches. Until then they stay as they are.
+`#[test]` and lint directives are compiler built-ins, not importable declarations;
+do not recreate `std::attrs::test` or make test discovery depend on metadata.
 
-This needs module-level bindings to name traits, enums and attributes, not
-only entities. That is a small extension of the binding pass.
-
-**Acceptance.** No compiler code names a std path or a std declaration's
-spelling; renaming `std::ops::Add` in std and its `lang` binding together
-compiles and passes.
+**Acceptance.** Renaming a library hook and retaining its lang role preserves
+behavior; unrelated same-leaf-name user types cannot acquire its compiler role.
 
 ## Order
 
@@ -202,8 +190,8 @@ compiles and passes.
    corpus once (1) exists.
 4. **The resolved tree.** The largest part, done registry by registry; it
    shares files with Codex's IR work, so it should follow the IR inversion.
-5. **Lang items.** Small once (4) has removed path matching, and it is the
-   natural home for the macro builtins later.
+5. **Residual hook cleanup.** Use the existing lang table and resolved identities;
+   do not reimplement core loading or macro declarations.
 
 ## Open questions
 
@@ -213,6 +201,3 @@ compiles and passes.
   not program behaviour.
 - Does `--fix` belong in `sioxc`, or in the future project tool, the way
   `cargo fix` wraps `rustc`?
-- Is `lang` a metadata attribute, or a directive? It changes what the compiler
-  does, which argues for a directive (`#[lang = "operator"]`). But
-  `#[...]` takes no `=` values and std-only directives are new.

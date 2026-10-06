@@ -9,7 +9,7 @@ parses `<dir>/logic.siox`, and imports bind to real `pub` declarations (a
 bad import is a hard error, `E-P011`).
 
 Beneath it sits **`core`**: the part of the compiler reachable through the
-language (proposals/core-std.md), laid out like rustc's `core`. Its sources
+language, laid out like rustc's `core`. Its sources
 are in the repository's `core/` directory, compiled into `sioxc`, so
 `core::…` never reads `--std`. It holds what the compiler gives meaning to:
 `Bool`, `string` and `integer`'s methods (`core::primitive`), the hook traits

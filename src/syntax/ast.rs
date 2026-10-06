@@ -75,7 +75,7 @@ pub struct MacroArgs {
     pub parsed: bool,
 }
 
-/// `pub macro twice($x: expr) { $x + $x }` (proposals/macros.md).
+/// `pub macro twice($x: expr) { $x + $x }` (docs/language.md §3.30).
 #[derive(Clone, Debug)]
 pub struct MacroDecl {
     /// Whether it is exported.

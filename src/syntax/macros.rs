@@ -1,4 +1,4 @@
-//! Macro expansion (proposals/macros.md, language §3.30).
+//! Macro expansion (docs/language.md §3.30).
 //!
 //! A pass over every parsed module, before imports are desugared and names
 //! resolved. It finds each `name!(…)` that names a user `macro` — declared in
@@ -21,7 +21,7 @@
 //! - Names in the arguments are the caller's and are left alone.
 //!
 //! `assert!`, `warn!`, `print!` and `error!` are ordinary macros declared in
-//! `core::assert` over the primitive `builtin # name(…)`, which the parser
+//! `core::macros` over the primitive `builtin # name(…)`, which the parser
 //! reads as the bang call the compiler lowers. A primitive has no argument
 //! tokens; only `core`'s macro bodies may write one, and it takes the
 //! outermost invocation's span so a failure names the call site.

@@ -1,163 +1,55 @@
-# Standard-library build-out
+# Remaining standard-library build-out
 
-Status: **active proposal**. Existing exports are documented in
-[`std.md`](../std.md); open work is tracked under `std` in
-[`TODO.md`](../../TODO.md).
-
-## What std is
-
-std is the mandatory, vendor-independent base every design can rely on:
-data types (logic values, numeric vectors, fixed point, complex numbers,
-vectors and matrices), the conversions between them, time, text, the base
-metadata, and small helpers that exist in every technology (the `std::sync`
-synchronizers). It is not a component library: memories, FIFOs, stream
-adapters, bus protocols and verification frameworks are IP, and belong to
-vendor packages or third-party libraries, where each can follow its target.
+Status: active proposal; implemented exports live in [std.md](../std.md).
+Outstanding items are tracked under [std in TODO.md](../../TODO.md#std).
 
 ## Boundary
 
-The compiler owns mechanisms and representation:
+Std is the mandatory, vendor-independent library of source-defined types,
+operators, conversions, math, text, time and small technology-independent
+helpers. Compiler mechanisms and primitive hooks live in the compiler/core;
+the current split is documented in [std.md](../std.md), not proposed here.
 
-- parsing, types, traits, operator dispatch, attributes, elaboration;
-- digital IR, event semantics, native ABI, and runtime intrinsics.
+Synchronizers, base metadata, fixed-point formats and initial floating-point
+operators are implemented. Floating-point operators execute through the same
+canonical Process pipeline in hardware and test processes; the old hardware
+tree-inlining limitation is gone. Their syntax and behavior belong in the
+reference, not in a completed migration plan.
 
-The standard library owns domain meaning:
+## Remaining numeric capabilities
 
-- visible scalar/vector types and traits;
-- operator and resolution implementations;
-- conversions, math, text, time, assertions, and reusable hardware models.
+1. **Fixed point.** Add division and a resize operation with explicit
+   saturate/wrap and round/truncate choices. Define intermediate precision,
+   signed division, division-by-zero behavior and result-format rules before
+   implementation. Keep `ufixed<W, F>`/`sfixed<W, F>` semantics source-owned.
+2. **Floating point.** Add division, square root, subnormal support, additional
+   rounding modes and conversions to/from fixed point. Specify exceptional
+   values and rounding per operation; do not silently change existing
+   flush-to-zero behavior. Preserve source-defined operators, shared layouts
+   and the common hardware/procedural pipeline.
+3. **Linear algebra (optional).** Generic `Vector<T, N>` and
+   `Matrix<T, R, C>` over types with the required operator traits. Start with
+   demonstrated uses for element-wise operations, dot/matrix products and
+   transpose. These are ordinary array-backed library types, not a revived
+   compiler vector trait or a second array representation.
 
-```mermaid
-flowchart TD
-    K["compiler kernel<br/>mechanisms + IR intrinsics"]
-    P["std::prelude"]
-    OPS["std::ops"]
-    LOGIC["std::logic"]
-    BITS["std::bits"]
-    CORE["std::math + std::text"]
-    SIM["std::sim + std::assert + std::fs"]
-    MODEL["future reusable models<br/>sync · memory · fifo · stream · fixed"]
+The target query remains separate work: simulation accepts reachable host
+services, while future elaboration must reject runtime-only operations.
+Do not advertise synthesis support merely because a helper is source-defined.
 
-    K --> P
-    P --> OPS
-    P --> LOGIC
-    LOGIC --> BITS
-    OPS --> BITS
-    P --> CORE
-    CORE --> SIM
-    BITS --> MODEL
-    SIM --> MODEL
-```
+## Acceptance
 
-Core type/operator modules must remain pure and suitable for later synthesis.
-Simulation services may call runtime intrinsics. Reusable models may depend on
-both but should state whether they are intended for hardware or testbenches.
+Each added public declaration needs reference documentation and a runnable
+program in the sibling `siox-tests` repository. Exercise hardware and procedural
+use through the same native backend, including rounding, overflow, exceptional
+inputs, format boundaries and default/`bitpack` parity. Add compiler tests only
+where the library exposes a language mechanism; do not hardcode type spellings
+or numeric truth tables in the compiler.
 
-## Existing modules
+## Exclusions
 
-`core` (compiled into `sioxc`, proposals/core-std.md) holds what the compiler
-gives meaning to: `Bool`, the hook traits, `Range`, `Ordering`, `string`, the
-directives, `Severity` and the built-in macros. std re-exports each.
-
-- `std::prelude` — auto-loaded surface: `Bit`, `Logic`, `unsigned`, `signed`,
-  `time`, `frequency`, and the `core` names again.
-- `std::ops` — `Bit`'s operators and condition; re-exports the `core::ops` hooks.
-- `std::logic` — `Bit`, nine-value `Logic`/`ULogic`, clock helpers, truth
-  tables, and resolution.
-- `std::bits` — `unsigned`/`signed`, numeric operators, comparisons,
-  conversions, and resizing.
-- `std::attrs` — tool metadata; re-exports the `core::attrs` directives.
-- `std::sim` — time/frequency units and simulation helpers.
-- `std::assert` — re-exports `Severity`.
-- `std::math` — real/complex math surfaces backed by native functions.
-- `std::text` — encoding tables over `Char`.
-- `std::fs` — fixture reads and existence checks.
-
-## Build order
-
-1. **Synchronizers and reset helpers** — `std::sync`, implemented:
-
-   | entity | ports | behaviour |
-   | --- | --- | --- |
-   | `Sync2` | `clk`, `d` in; `q` out | two-flop synchronizer for a level crossing into `clk`'s domain |
-   | `ResetSync` | `clk`, `rst_in` in; `rst_out` out | active-high reset: asserts at once (asynchronously), releases two `clk` edges after `rst_in` falls |
-   | `EdgeDetect` | `clk`, `d` in; `rise`, `fall` out | one-cycle pulses when `d` (already in `clk`'s domain) changes |
-   | `PulseSync` | `src_clk`, `pulse_in`, `dst_clk` in; `pulse_out` out | carries single-cycle pulses between domains: a toggle in the source, `Sync2`, and an edge detector in the destination |
-
-   All are `Bit`-typed, as internal signals and clocks are. The flops of a
-   synchronizer are bound `keep`, so a synthesis flow leaves them alone.
-   Multi-bit values do not cross with `Sync2`; they need a handshake or a
-   Gray-coded FIFO, which belong to libraries.
-
-   `std::attrs` holds only base metadata (`keep`, `top`, `clock`, `library`,
-   `name`); vendor settings belong in vendor packages.
-2. **Fixed point** — `std::fixed`, implemented, after VHDL-2008's
-   `fixed_pkg`: the parameters are the format (`ufixed<8, 4>` is 4.4), shaping
-   the word's VHDL-style index range, and the types work like
-   `unsigned`/`signed`.
-
-   ```siox
-   use std::fixed::{ufixed, sfixed};
-   let gain: ufixed<8, 4> = ufixed<8, 4>(2.5);   // 4 integer, 4 fraction bits
-   let error: sfixed<16, 8>;                      // two's complement, 8.8
-   let r: real = gain.to_real();                      // 2.5
-   ```
-
-   - `x'high + 1` integer bits and `-x'low` fraction bits.
-   - `+`, `-`, `*` between operands of one format give that format, wrapping
-     on overflow as `unsigned` does; a product drops its extra fraction bits
-     rounding toward minus infinity (VHDL's truncate). `Eq`/`Ord` give the
-     six comparisons (signed for `sfixed`).
-   - The constructor `ufixed<W, F>(x)` (and `sfixed`) takes a `real`
-     or `integer` to the format, rounding to nearest and saturating, VHDL's
-     defaults; `x.to_real()` goes back.
-   - Later: division, and a `resize` choosing saturate/wrap and round/truncate.
-3. **Floating point** — `std::float`, slice 1 implemented for simulation
-   (hardware use waits for hardware to lower through Process IR, see
-   std.md), after VHDL-2008's
-   `float_pkg` and on the same idea as fixed point (`float<32, 23>`):
-
-   ```siox
-   use std::float::float;
-   let x: float<32, 23> = float<32, 23>(1.5);   // IEEE-754 binary32
-   let h: float<16, 10>;                         // binary16
-   let y: float<32, 23>;
-   y = x * x + x;
-   let r: real = y.to_real();
-   ```
-
-   - Layout as IEEE-754 and VHDL: the sign at the top index, then `x'high`
-     exponent bits, then `-x'low` fraction bits; bias `2^(E-1) - 1`.
-   - Slice 1: `+`, `-`, `*`, the six comparisons, the constructor
-     `float<W, M>(x)` from `real`/`integer`, `x.to_real()`, `-x`, and
-     `is_nan`, `is_infinite`, `is_zero`. Results round to nearest, ties to even.
-     Zero, infinity and NaN follow IEEE-754 (`inf - inf` and `0 * inf` are
-     NaN).
-   - Subnormals are flushed to zero, on input and output: the usual FPGA
-     choice, and VHDL's `float_pkg` with `denormalize => false`. A NaN is unordered:
-     every comparison with one is false except `!=`.
-   - Everything is written in siox over the packed word, with no compiler
-     support beyond what fixed point needed, so it synthesizes. It is distinct
-     from `real`, the simulator's f64.
-   - Later: division, square root, subnormals, other rounding modes, and
-     conversions to and from fixed point.
-4. **Linear algebra** (optional) — `Vector<T, N>` and `Matrix<T, R, C>` over
-   any `T` with the needed operators.
-
-Every new public declaration needs:
-
-- source-level documentation in `std.md`;
-- focused compiler/unit coverage where it exercises a language mechanism;
-- at least one runnable program in `siox-tests`;
-- no compiler special case based only on the library type’s spelling.
-
-## Deliberate exclusions
-
-- Vendor primitives and generated IP belong to project/vendor packages.
-- Memories, FIFOs, stream adapters and bus protocols are IP, not std: their
-  best shape depends on the target, so they belong to vendor packages or
-  third-party libraries.
-- Verification components (scoreboards, monitors) belong to libraries too.
-- VHDL/Verilog package loading belongs to the future project/API layer.
-- A UVM-sized verification framework waits for cocotb integration rather than
-  growing inside the compiler repository.
+Memories, FIFOs, streams, bus protocols, scoreboards and vendor primitives belong
+to IP/project libraries, not std. Vendor-specific metadata belongs to vendor
+packages. Foreign HDL package loading and synthesis-facing output remain Phase 3
+project/backend work. A verification framework should not grow inside the
+compiler as a substitute for the isolated cocotb integration.
