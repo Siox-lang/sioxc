@@ -13484,3 +13484,41 @@ identity, not different contents). Clarify the audit's counter.siox as generic
 metadata input, not an object with an unbound width, and record that hash recipe
 in the local final commit. Execution input/compiler/corpus identities remain
 unchanged and all final gates are terminal. No push or LLVM dependency change.
+
+### 2026-10-06 — Codex — contain verification-job OOMs before further LSP work
+
+User requests fixing repeated agent deaths first. Systemd records terminal
+scope OOM kills at 20:22 and 20:34; no evidence yet identifies a specific
+compiler/Codex leak. Own scripts/guarded-run.sh, its isolation regression and
+the testing resource policy in HOUSERULES.md. Launch heavy verification as
+separate user services with a cgroup memory limit, bounded Cargo/test threads,
+no core dumps and a shared nonblocking lock. Retain per-job logs and service
+exit status across terminal interruptions. Verify controlled low-limit OOM,
+ordinary failures and job serialization before running another real test.
+No system-wide limits, Codex configuration, compiler code or syntax changes.
+Preserve existing LSP/docs work and unrelated AGENTS/chat/.codex changes.
+
+Crash-containment verification: the launcher regression passes literal argument
+handling, disk TMPDIR, disabled session bus, exit-status retention, shared-job
+serialization and a deliberate 64 MiB OOM without incrementing the terminal
+scope's OOM counters. Use the native systemd task limit rather than an invented
+128-thread cap: real Electron needs more than 200 threads. No extra dependencies.
+
+Found substantial shared-host pressure outside the job's own limit: /tmp is
+tmpfs and held 6.7 GiB. Preserve 40 large compiler/audit binaries by moving them
+to ~/.cache/siox-jobs/artifacts and leaving symlinks at their original paths.
+All before/after SHA-256 hashes match; 2,855,798,776 bytes moved off tmpfs, which
+now holds about 4.0 GiB. No corpus/source files or other temporary directories
+were deleted. Guarded jobs now use disk-backed ~/.cache/siox-jobs/tmp.
+
+Final compiler gate siox-job-3000-1791313218252247777-3575517.service completed
+with SubState=exited, Result=success, ExecMainStatus=0: full cargo test --locked
+and the existing sibling corpus, 225 passed / 0 failed. MemoryPeak=515399680.
+The compiler-backed LSP's 10 Rust tests also passed in the isolated service.
+VS Code retry siox-job-3000-1791313574154014099-3602022.service stayed entirely
+in its protected cgroup, peaked at 949223424 bytes and exited 1 on a missing
+diagnostics timeout, not OOM; do not count editor integration as green yet.
+The terminal scope still has zero OOM events. Commit only these guard scripts,
+the HOUSERULES resource policy and this owned chat entry; no push. No confirmed
+compiler or Codex allocation leak, and detailed host kernel evidence remains
+unavailable without privileged access. Continue the separate LSP task afterward.
