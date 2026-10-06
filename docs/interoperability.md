@@ -70,16 +70,27 @@ Point your editor at that command for the `siox` language; `--std <dir>` locates
 the standard library (default `./std`). It provides:
 
 - Live lexer / parser / name-resolution / type-check diagnostics.
-- Definition and type-definition navigation, references, highlights, safe rename.
-- Hover, contextual completion, signature help, parameter hints.
-- Semantic tokens, document/workspace symbols, folding and selection ranges.
-- Quick fixes (suggested names, removable unused imports) and std import links.
+- Definition navigation through compiler-resolved declaration identities,
+  including std declarations; type-definition navigation for named values.
+- Hover with resolved names and checked expression types.
+- References and highlights within the selected compilation's loaded sources.
+- Document symbols and basic top-level/import/keyword completion.
 - Canonical whole-document formatting for comment-free source.
 
 **Limitations:** formatting returns no edit when comments are present (the
 canonical printer does not yet retain comment trivia, so it declines rather than
-delete them); cross-file user-module analysis follows the compiler's current
-single-entry-file limitation (std modules load transitively).
+delete them). Analysis recompiles each changed entry synchronously; dependencies
+load from disk, not other unsaved buffers. There is no workspace/package index,
+incremental compiler cache, scope-aware member completion, rename, signature help,
+semantic tokens, inlay hints or quick fixes yet. Navigation is limited to the
+bindings and expression types the compiler actually exposes; unresolved members
+return no location rather than guessing by spelling. Only local `file://`
+documents and UTF-16 positions are supported.
+
+The LSP repository tests the real server with framed JSON-RPC sessions; editor
+plugins and distribution are separate follow-ups. See its README for build and
+test commands. Both `std/` and its sibling `core/` must match the compiler
+revision in the LSP's `Cargo.lock`. LLVM is not needed to build or run the server.
 
 ### Compiler embedding API
 

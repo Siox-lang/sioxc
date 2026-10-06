@@ -13485,6 +13485,18 @@ metadata input, not an object with an unbound width, and record that hash recipe
 in the local final commit. Execution input/compiler/corpus identities remain
 unchanged and all final gates are terminal. No push or LLVM dependency change.
 
+### 2026-10-06 — Codex — first compiler-backed LSP in its own repository
+
+The compiler and corpus Phase 1 commits were pushed at the user's request.
+The active LSP goal owns /home/max/siox-lsp: replace its invocation-only stub
+with stdio JSON-RPC, unsaved incremental buffers and compiler-backed editor
+features using the published compiler Git dependency without LLVM. Rust stdio
+tests and a real Neovim client pass. Own README/editor interoperability prose
+here to remove unsupported claims (rename, signature help, semantic tokens,
+workspace indexing and quick fixes). VS Code client verification is in flight.
+No compiler code/syntax or corpus source change. Preserve the 441 unrelated
+chat additions, AGENTS.md and .codex; do not sweep them into this work.
+
 ### 2026-10-06 — Codex — contain verification-job OOMs before further LSP work
 
 User requests fixing repeated agent deaths first. Systemd records terminal
@@ -13522,3 +13534,22 @@ The terminal scope still has zero OOM events. Commit only these guard scripts,
 the HOUSERULES resource policy and this owned chat entry; no push. No confirmed
 compiler or Codex allocation leak, and detailed host kernel evidence remains
 unavailable without privileged access. Continue the separate LSP task afterward.
+
+### 2026-10-06 — Codex — first working server-only LSP complete
+
+The user's latest instruction removes VS Code/Neovim work from scope. Separate
+repository /home/max/siox-lsp is clean at local commit 1bd659f: real stdio LSP,
+compiler-backed analysis, unsaved buffers and the advertised language features.
+Final guarded service 3652265 fetched core/std at compiler lock revision
+53173bc679d639cfdfe31ffdb07eea4f9c3c9fcf and passed Rust 1.90 build, 14 unit/real
+binary protocol tests, Clippy -D warnings and formatting. No LLVM dependency;
+no second parser or language pipeline. Editor prototypes are not committed.
+Unsupported semantic queries and synchronous-analysis limits remain explicit
+in the LSP README/TODO; do not advertise rename, signature help or quick fixes.
+
+Own compiler README and docs/interoperability corrections only. Fresh compiler
+gate siox-job-3000-1791315097756155865-3634889.service is terminal success/exit 0:
+full cargo test --locked and 225 corpus programs passed, MemoryPeak=534097920.
+Commit these docs and only the two owned LSP chat entries; preserve 441 unrelated
+historical additions, AGENTS.md and .codex. No compiler/source/corpus changes
+and no push. The first working-server objective is fully verified locally.
