@@ -205,8 +205,8 @@ impl<'ctx> MetadataEmitter<'_, 'ctx, '_> {
                     self.cache,
                 )?;
                 let condition = as_condition(self.builder, condition)?;
-                let checked = self.cache.contains_check(*then_value)
-                    || self.cache.contains_check(*else_value);
+                let checked = self.cache.requires_activity(*then_value)
+                    || self.cache.requires_activity(*else_value);
                 let (then_active, else_active) = if checked {
                     let then_active = self.arm_active(condition, active)?;
                     let inverse = self
@@ -252,7 +252,7 @@ impl<'ctx> MetadataEmitter<'_, 'ctx, '_> {
                 )?;
                 let mut result = None;
                 for (arm, eligible) in arms.iter().zip(eligible).rev() {
-                    let arm_active = if self.cache.contains_check(arm.value) {
+                    let arm_active = if self.cache.requires_activity(arm.value) {
                         Some(self.arm_active(eligible, active)?)
                     } else {
                         None

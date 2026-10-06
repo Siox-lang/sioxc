@@ -85,7 +85,7 @@ pub(super) fn emit_state_helpers<'ctx>(
     module: &Module<'ctx>,
     design: &Design,
     supported_values: &ProcessValueSupport,
-    checked_values: &[bool],
+    activity_values: &[bool],
 ) {
     let builder = context.create_builder();
     let byte = context.i8_type();
@@ -203,7 +203,7 @@ pub(super) fn emit_state_helpers<'ctx>(
             }
         }
     }
-    let mut cache = ProcessValueCache::new(checked_values, &supported_values.meta_free);
+    let mut cache = ProcessValueCache::new(activity_values, &supported_values.meta_free);
     for storage in &design.process_ir.storages {
         builder
             .build_store(

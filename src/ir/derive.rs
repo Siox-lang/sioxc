@@ -13,14 +13,21 @@ use super::*;
 /// Replace the compatibility scheduler graph with a projection of canonical
 /// Process IR hardware regions.
 pub(crate) fn derive_scheduler_forms(design: &mut Design) -> Result<(), String> {
+    let (drivers, event_blocks) = scheduler_forms(&design.process_ir)?;
+    design.drivers = drivers;
+    design.event_blocks = event_blocks;
+    Ok(())
+}
+
+fn scheduler_forms(ir: &ProcessIr) -> Result<(Vec<Driver>, Vec<EventBlock>), String> {
     let mut drivers = Vec::new();
     let mut event_blocks = Vec::new();
 
-    for process in &design.process_ir.processes {
+    for process in &ir.processes {
         match process.region {
             ProcessRegion::Procedural => {}
             ProcessRegion::Combinational => {
-                for assignment in region_assignments(&design.process_ir, process, process.entry)? {
+                for assignment in region_assignments(ir, process, process.entry)? {
                     drivers.push(Driver {
                         target: assignment.target,
                         cond: assignment.guard,
@@ -77,8 +84,8 @@ pub(crate) fn derive_scheduler_forms(design: &mut Design) -> Result<(), String> 
                         process.id
                     ));
                 }
-                let condition = digital_expr(&design.process_ir, condition)?;
-                let updates = region_assignments(&design.process_ir, process, body)?
+                let condition = digital_expr(ir, condition)?;
+                let updates = region_assignments(ir, process, body)?
                     .into_iter()
                     .map(|assignment| {
                         if assignment.driver_context != driver_context {
@@ -105,8 +112,59 @@ pub(crate) fn derive_scheduler_forms(design: &mut Design) -> Result<(), String> 
         }
     }
 
-    design.drivers = drivers;
-    design.event_blocks = event_blocks;
+    Ok((drivers, event_blocks))
+}
+
+/// Public designs cannot author a second executable scheduler representation.
+/// Reuse the same projection used by source lowering; never import trees back
+/// into the arena to repair an inconsistent API input. Legacy backend fixtures
+/// are deliberately permitted only in unit-test builds.
+#[cfg(not(test))]
+pub(super) fn validate_scheduler_forms(design: &Design) -> Result<(), String> {
+    fn root_matches(left: &Expr, right: &Expr) -> bool {
+        matches!((left, right),
+            (Expr::Canonical { value: a, reads: ar }, Expr::Canonical { value: b, reads: br })
+                if a == b && ar == br)
+    }
+    fn guard_matches(left: Option<&Expr>, right: Option<&Expr>) -> bool {
+        match (left, right) {
+            (None, None) => true,
+            (Some(a), Some(b)) => root_matches(a, b),
+            _ => false,
+        }
+    }
+    let (drivers, blocks) = scheduler_forms(&design.process_ir)?;
+    if drivers.len() != design.drivers.len() || blocks.len() != design.event_blocks.len() {
+        return Err("scheduler view count disagrees with canonical Process CFGs".into());
+    }
+    for (index, (expected, actual)) in drivers.iter().zip(&design.drivers).enumerate() {
+        if expected.target != actual.target
+            || expected.ctx != actual.ctx
+            || expected.span != actual.span
+            || !guard_matches(expected.cond.as_ref(), actual.cond.as_ref())
+            || !root_matches(&expected.expr, &actual.expr)
+        {
+            return Err(format!(
+                "scheduler driver {index} disagrees with canonical Process CFGs"
+            ));
+        }
+    }
+    for (index, (expected, actual)) in blocks.iter().zip(&design.event_blocks).enumerate() {
+        if expected.ctx != actual.ctx
+            || !root_matches(&expected.condition, &actual.condition)
+            || expected.updates.len() != actual.updates.len()
+            || expected.updates.iter().zip(&actual.updates).any(|(a, b)| {
+                a.target != b.target
+                    || a.span != b.span
+                    || !guard_matches(a.cond.as_ref(), b.cond.as_ref())
+                    || !root_matches(&a.expr, &b.expr)
+            })
+        {
+            return Err(format!(
+                "scheduler event block {index} disagrees with canonical Process CFGs"
+            ));
+        }
+    }
     Ok(())
 }
 

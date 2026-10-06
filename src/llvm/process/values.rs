@@ -373,7 +373,7 @@ pub(super) fn process_value_in_layout<'ctx>(
             )?;
             let condition = as_condition(builder, condition)?;
             let checked_arms =
-                cache.contains_check(*then_value) || cache.contains_check(*else_value);
+                cache.requires_activity(*then_value) || cache.requires_activity(*else_value);
             let (then_active, else_active) = if checked_arms {
                 let then_active = match active {
                     Some(outer) => builder
@@ -442,7 +442,7 @@ pub(super) fn process_value_in_layout<'ctx>(
             )?;
             let mut result = None;
             for (arm, eligible) in arms.iter().zip(eligible).rev() {
-                let arm_active = if cache.contains_check(arm.value) {
+                let arm_active = if cache.requires_activity(arm.value) {
                     Some(match active {
                         Some(outer) => builder
                             .build_and(outer, eligible, "pv.aggregate.match.arm.active")
@@ -517,6 +517,76 @@ pub(super) fn process_value<'ctx>(
     let ty = context
         .custom_width_int_type(std::num::NonZeroU32::new(width)?)
         .ok()?;
+    if let Some(active) = active.filter(|_| {
+        matches!(
+            value.kind,
+            ProcessValueKind::ForeignCall { .. } | ProcessValueKind::HostCall { .. }
+        )
+    }) {
+        if let Some(value) = cache.evaluated_calls.get(&(id, Some(active))).copied() {
+            return Some(value);
+        }
+        let previous = builder.get_insert_block()?;
+        let function = previous.get_parent()?;
+        let execute = context.append_basic_block(function, "pv.effect.execute");
+        let join = context.append_basic_block(function, "pv.effect.join");
+        builder
+            .build_conditional_branch(active, execute, join)
+            .ok()?;
+        // Keep only call values that dominated the branch. All other caches
+        // are state-dependent, and values built in the taken arm cannot be
+        // reused after the join unless they are represented by a phi.
+        let dominating_calls = cache
+            .evaluated_calls
+            .keys()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        cache.clear();
+        builder.position_at_end(execute);
+        let returned = process_value(
+            context,
+            module,
+            builder,
+            design,
+            id,
+            None,
+            index_sites,
+            cache,
+        )?;
+        let exit = builder.get_insert_block()?;
+        builder.build_unconditional_branch(join).ok()?;
+        builder.position_at_end(join);
+        cache.clear();
+        cache
+            .evaluated_calls
+            .retain(|key, _| dominating_calls.contains(key));
+        let result = builder.build_phi(ty, "pv.effect.result").ok()?;
+        result.add_incoming(&[(&ty.const_zero(), previous), (&returned, exit)]);
+        let result = result.as_basic_value().into_int_value();
+        cache.evaluated_calls.insert((id, Some(active)), result);
+        cache.emitted.insert(cache_key, result);
+        return Some(result);
+    }
+    if cache.hardware_calls
+        && cache.evaluating_hardware_call != Some(id)
+        && matches!(
+            value.kind,
+            ProcessValueKind::ForeignCall { .. } | ProcessValueKind::HostCall { .. }
+        )
+    {
+        if let Some(result) = cache.evaluated_calls.get(&(id, None)).copied() {
+            return Some(result);
+        }
+        return super::hardware::hardware_call_value(
+            context,
+            module,
+            builder,
+            design,
+            id,
+            index_sites,
+            cache,
+        );
+    }
     let emitted = match &value.kind {
         ProcessValueKind::Number(ProcessNumber::Integer(words))
         | ProcessValueKind::BitString { words, .. } => ty.const_int_arbitrary_precision(words),
@@ -1266,7 +1336,7 @@ pub(super) fn process_value<'ctx>(
             )?;
             let mut result = None;
             for (arm, eligible) in arms.iter().zip(eligible).rev() {
-                let arm_active = if cache.contains_check(arm.value) {
+                let arm_active = if cache.requires_activity(arm.value) {
                     Some(match active {
                         Some(outer) => builder
                             .build_and(outer, eligible, "pv.match.arm.active")

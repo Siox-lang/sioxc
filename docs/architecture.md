@@ -285,6 +285,21 @@ checked subgraphs still distinguish activity predicates, and foreign calls
 invalidate state-dependent caches. This prevents backend projection from
 undoing source sharing.
 
+Production validation checks that scheduler roots, targets, guards, source
+contexts and spans exactly match the projection of canonical hardware CFGs.
+It rejects independent legacy trees, substituted arena roots and removed
+writes before object creation; the legacy expression emitter is test-only.
+Checked accesses and host/foreign effects propagate activity through if/match
+and short-circuit values. Calls execute on selected LLVM branches with values
+that dominate the join, not eagerly under an LLVM select. Bounded compatibility
+helpers exchange captured calls through internal exact-width object state;
+readiness resets for each combinational pass and event-staging phase. This
+preserves one evaluation per canonical call even across helper boundaries,
+without exposing new ABI tables or enlarging helpers. Overwritten signal
+writes retain their selected effects while omitting destination range checks
+on values which never reach the signal. The fixed runtime's Process entries
+retain their existing per-CFG capture behavior.
+
 `lower/source_values.rs` owns canonical bindings while hardware source is
 normalized. Inlined function locals retain value IDs instead of copied trees;
 straight-line let chains iterate with one scoped environment. Block-local

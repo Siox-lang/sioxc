@@ -271,7 +271,7 @@ pub(super) fn process_binary<'ctx>(
     )?;
     let right_active = if left_width == 1
         && right_width == 1
-        && cache.contains_check(right)
+        && cache.requires_activity(right)
         && matches!(operation, ProcessBinaryOp::And | ProcessBinaryOp::Or)
     {
         let left_condition = as_condition(builder, left)?;

@@ -10,9 +10,13 @@ use inkwell::module::{Linkage, Module};
 use inkwell::passes::PassBuilderOptions;
 use inkwell::targets::TargetMachine;
 use inkwell::values::{AsValueRef, FunctionValue, IntValue, PointerValue};
-use inkwell::{FloatPredicate, IntPredicate};
+#[cfg(test)]
+use inkwell::FloatPredicate;
+use inkwell::IntPredicate;
 
-use siox::ir::{BinOp, Design, Expr, IndexSite, ProcessKind, SignalId, UnOp};
+#[cfg(test)]
+use siox::ir::{BinOp, UnOp};
+use siox::ir::{Design, Expr, IndexSite, ProcessKind, SignalId};
 
 /// LLVM's `IntegerType::MAX_INT_BITS` (from `llvm/IR/DerivedTypes.h`).
 /// This is a backend capability, not a siox language/container limit.
@@ -24,6 +28,7 @@ pub(crate) const LLVM_MAX_INT_BITS: u32 = 1 << 23;
 const COMB_PROCESSES_PER_HELPER: usize = 4;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg(test)]
 enum CachedIntOp {
     Add,
     Sub,
@@ -36,10 +41,12 @@ enum CachedIntOp {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum CachedCast {
     ZeroExtend,
+    #[cfg(test)]
     SignExtend,
     Truncate,
 }
 
+#[cfg(test)]
 impl CachedIntOp {
     /// Whether the operation's operands may be swapped, so a cached result can
     /// be reused for either argument order.
@@ -48,6 +55,7 @@ impl CachedIntOp {
     }
 }
 
+#[cfg(test)]
 fn has_checked_index(expr: &Expr) -> bool {
     match expr {
         Expr::CheckedIndex { .. } => true,
@@ -75,6 +83,7 @@ fn has_checked_index(expr: &Expr) -> bool {
 
 /// Canonical scheduler roots cannot be nested inside legacy expression trees:
 /// the common emitter must receive the write's activity predicate directly.
+#[cfg(test)]
 fn contains_canonical(expr: &Expr) -> bool {
     let mut pending = vec![expr];
     while let Some(expr) = pending.pop() {
@@ -104,6 +113,7 @@ fn contains_canonical(expr: &Expr) -> bool {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg(test)]
 struct StateSliceKey {
     array: u8,
     signal: SignalId,
@@ -119,6 +129,7 @@ struct ComparisonKey {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg(test)]
 struct OperationKey {
     opcode: CachedIntOp,
     lhs: usize,
@@ -126,6 +137,7 @@ struct OperationKey {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg(test)]
 struct SelectKey {
     condition: usize,
     then_value: usize,
@@ -142,9 +154,12 @@ struct CastKey {
 #[derive(Default)]
 struct CombValueCache<'ctx> {
     loads: HashMap<(u8, SignalId), IntValue<'ctx>>,
+    #[cfg(test)]
     slices: HashMap<StateSliceKey, IntValue<'ctx>>,
     comparisons: HashMap<ComparisonKey, IntValue<'ctx>>,
+    #[cfg(test)]
     operations: HashMap<OperationKey, IntValue<'ctx>>,
+    #[cfg(test)]
     selects: HashMap<SelectKey, IntValue<'ctx>>,
     casts: HashMap<CastKey, IntValue<'ctx>>,
 }
@@ -298,8 +313,15 @@ pub(crate) fn build_module_with_sources<'ctx>(
             if !cg.canonical.supports(*value) {
                 return Err(format!("cannot lower canonical hardware value {value:?}"));
             }
-        } else if contains_canonical(expression) {
-            return Err("canonical hardware references must be standalone scheduler roots".into());
+        } else {
+            #[cfg(test)]
+            if contains_canonical(expression) {
+                return Err(
+                    "canonical hardware references must be standalone scheduler roots".into(),
+                );
+            }
+            #[cfg(not(test))]
+            return Err("scheduler expressions must be canonical Process roots".into());
         }
     }
     super::process::declare_state(ctx, &cg.module, design);
@@ -554,6 +576,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.lookup_globals();
         self.state_globals();
         self.process_staging_globals();
+        self.canonical
+            .declare_calls(self.ctx, &self.module, self.design);
         self.accessors();
         self.process_staging();
         let comb_helpers = self.comb_helpers();
@@ -693,6 +717,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let array = Self::state_array_key(arr);
         if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
             cache.loads.remove(&(array, id));
+            #[cfg(test)]
             cache
                 .slices
                 .retain(|key, _| key.array != array || key.signal != id);
@@ -706,15 +731,19 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         }
         if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
             cache.loads.clear();
+            #[cfg(test)]
             cache.slices.clear();
             cache.comparisons.clear();
+            #[cfg(test)]
             cache.operations.clear();
+            #[cfg(test)]
             cache.selects.clear();
             cache.casts.clear();
         }
     }
 
     /// A previously computed state slice, if one is still valid.
+    #[cfg(test)]
     fn cached_slice(&self, key: StateSliceKey) -> Option<IntValue<'ctx>> {
         self.comb_values
             .borrow()
@@ -723,6 +752,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     }
 
     /// Record a computed state slice for reuse.
+    #[cfg(test)]
     fn remember_slice(&self, key: StateSliceKey, value: IntValue<'ctx>) {
         if let Some(cache) = self.comb_values.borrow_mut().as_mut() {
             cache.slices.insert(key, value);
@@ -762,6 +792,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     /// Emit a pure integer operation, reusing an identical earlier one.
     /// Commutative operands are normalized so either order hits the same entry.
+    #[cfg(test)]
     fn int_binary(
         &self,
         opcode: CachedIntOp,
@@ -802,6 +833,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     }
 
     /// Emit a select, reusing an identical earlier one.
+    #[cfg(test)]
     fn int_select(
         &self,
         condition: IntValue<'ctx>,
@@ -856,6 +888,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         }
         let cast = match opcode {
             CachedCast::ZeroExtend => self.builder.build_int_z_extend(value, ty, name),
+            #[cfg(test)]
             CachedCast::SignExtend => self.builder.build_int_s_extend(value, ty, name),
             CachedCast::Truncate => self.builder.build_int_truncate(value, ty, name),
         }
@@ -907,6 +940,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// Signed counterpart of [`Self::fit`]: widening preserves the source sign
     /// bit, while equal-width and narrowing crossings are representation
     /// identical.
+    #[cfg(test)]
     fn fit_signed(&self, v: IntValue<'ctx>, ty: inkwell::types::IntType<'ctx>) -> IntValue<'ctx> {
         let (from, to) = (v.get_type().get_bit_width(), ty.get_bit_width());
         match from.cmp(&to) {
@@ -2016,6 +2050,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         // 3+4. event blocks: stage guards/values from the pre-commit state (so
         // simultaneous updates don't see each other), then commit.
         let mut staged: Vec<(SignalId, IntValue<'ctx>, IntValue<'ctx>)> = Vec::new();
+        self.canonical
+            .reset_calls(self.ctx, &self.module, &self.builder);
         let previous = self
             .canonical_values
             .replace(Some(super::process::HardwareValueCache::default()));
@@ -2035,16 +2071,19 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 let overwritten = eb.updates[i + 1..]
                     .iter()
                     .any(|later| later.target == u.target && later.cond.is_none());
-                if overwritten {
-                    continue;
-                }
                 let guard = match &u.cond {
                     Some(c) => {
                         self.record_index_checks(c, Some(fired));
-                        self.builder.build_and(fired, self.as_i1(c), "g").unwrap()
+                        self.builder
+                            .build_and(fired, self.as_i1_active(c, Some(fired)), "g")
+                            .unwrap()
                     }
                     None => fired,
                 };
+                if overwritten {
+                    self.emit_discarded_effects(&u.expr, Some(guard));
+                    continue;
+                }
                 let val = self.emit_target_value(u.target, &u.expr, Some(guard), self.site(u.span));
                 staged.push((u.target, guard, val));
             }
@@ -2104,6 +2143,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// Call one combinational settle pass. The process bodies live in helpers
     /// rather than being duplicated at both call sites in `sx_settle`.
     fn emit_comb_pass(&self, helpers: &[FunctionValue<'ctx>]) {
+        self.canonical
+            .reset_calls(self.ctx, &self.module, &self.builder);
         for &helper in helpers {
             self.builder.build_call(helper, &[], "").unwrap();
         }
@@ -2180,23 +2221,37 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             }
             return self.fit(emitted, self.value_ty(width));
         }
-        let Some(_) = signal.range else {
+        #[cfg(test)]
+        let Some(_) = signal.range
+        else {
             return if signal.integer {
                 self.emit_signed_operand_at(expr, width)
             } else {
                 self.emit_at(expr, width)
             };
         };
-        let check_width = self.expr_width(expr).max(width).max(64);
-        let value = self.emit_signed_operand_at(expr, check_width);
-        self.record_range_value(target, value, active, site);
-        self.fit(value, self.value_ty(width))
+        #[cfg(test)]
+        {
+            let check_width = self.expr_width(expr).max(width).max(64);
+            let value = self.emit_signed_operand_at(expr, check_width);
+            self.record_range_value(target, value, active, site);
+            self.fit(value, self.value_ty(width))
+        }
+        #[cfg(not(test))]
+        unreachable!("noncanonical scheduler value passed validation")
     }
 
     /// Latch checked-index failures along the expression's actual control-flow
     /// path. LLVM `select` evaluates both value operands eagerly in IR, so the
     /// active predicate is narrowed for each arm instead of treating every
     /// syntactically present access as executed.
+    #[cfg(not(test))]
+    fn record_index_checks(&self, expr: &Expr, _active: Option<IntValue<'ctx>>) {
+        debug_assert!(matches!(expr, Expr::Canonical { .. }));
+        // Canonical checked accesses are emitted by the common Process path.
+    }
+
+    #[cfg(test)]
     fn record_index_checks(&self, expr: &Expr, active: Option<IntValue<'ctx>>) {
         // Std-defined conversions and logic operators contain deeply nested
         // `select`s but normally no dynamic index. Walking those expressions
@@ -2514,12 +2569,16 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .iter()
             .rposition(|&di| self.design.drivers[di].cond.is_none())
             .unwrap_or(0);
-        for &di in &drivers[live..] {
+        for (index, &di) in drivers.iter().enumerate() {
             let d = &self.design.drivers[di];
             let cond = d.cond.as_ref().map(|condition| {
                 self.record_index_checks(condition, None);
                 self.as_i1(condition)
             });
+            if index < live {
+                self.emit_discarded_effects(&d.expr, cond);
+                continue;
+            }
             let e = self.emit_target_value(*target, &d.expr, cond, self.site(d.span));
             val = match cond {
                 Some(cond) => self
@@ -2537,6 +2596,16 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     }
 
     // --- expressions ------------------------------------------------------
+
+    /// Dead signal writes do not require destination range checks, but their
+    /// selected host/foreign effects remain observable in source order.
+    fn emit_discarded_effects(&self, expr: &Expr, active: Option<IntValue<'ctx>>) {
+        if let Expr::Canonical { value, .. } = expr {
+            if self.canonical.has_effects(*value) {
+                self.emit_canonical(*value, self.expr_width(expr), false, active);
+            }
+        }
+    }
 
     /// Evaluate a derived arena reference through the same value lowering used
     /// by Process CFG entries. The active predicate belongs to the source
@@ -2593,6 +2662,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     }
 
     /// Truncate or extend to a logical value width.
+    #[cfg(test)]
     fn mask(&self, v: IntValue<'ctx>, width: u32) -> IntValue<'ctx> {
         self.fit(v, self.value_ty(width))
     }
@@ -2601,6 +2671,20 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// width and acquire a wider contextual width from their enclosing
     /// operation or assignment.
     fn expr_width(&self, e: &Expr) -> u32 {
+        if let Expr::Canonical { value, .. } = e {
+            return self.design.process_ir.values[value.0 as usize]
+                .bit_width
+                .expect("validated canonical hardware width");
+        }
+        #[cfg(test)]
+        return self.fixture_expr_width(e);
+        #[cfg(not(test))]
+        unreachable!("noncanonical scheduler value passed validation")
+    }
+
+    /// Legacy differential fixtures are excluded from the compiler build.
+    #[cfg(test)]
+    fn fixture_expr_width(&self, e: &Expr) -> u32 {
         match e {
             Expr::Canonical { value, .. } => self.design.process_ir.values[value.0 as usize]
                 .bit_width
@@ -2662,7 +2746,19 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     /// Evaluate a condition to an `i1` (nonzero).
     fn as_i1(&self, e: &Expr) -> IntValue<'ctx> {
-        let v = self.emit(e);
+        self.as_i1_active(e, None)
+    }
+
+    fn as_i1_active(&self, e: &Expr, active: Option<IntValue<'ctx>>) -> IntValue<'ctx> {
+        let v = match e {
+            Expr::Canonical { value, .. } => {
+                self.emit_canonical(*value, self.expr_width(e), false, active)
+            }
+            #[cfg(test)]
+            _ => self.emit(e),
+            #[cfg(not(test))]
+            _ => unreachable!("noncanonical scheduler value passed validation"),
+        };
         if v.get_type().get_bit_width() == 1 {
             return v;
         }
@@ -2677,12 +2773,25 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     }
 
     /// Emit an expression at its own natural width.
+    #[cfg(test)]
     fn emit(&self, e: &Expr) -> IntValue<'ctx> {
         self.emit_at(e, self.expr_width(e))
     }
 
     /// Emit an expression at `width`, extending or truncating as needed.
+    #[cfg(test)]
     fn emit_at(&self, e: &Expr, width: u32) -> IntValue<'ctx> {
+        if let Expr::Canonical { value, .. } = e {
+            return self.emit_canonical(*value, width, false, None);
+        }
+        #[cfg(test)]
+        return self.fixture_emit_at(e, width);
+        #[cfg(not(test))]
+        unreachable!("noncanonical scheduler value passed validation")
+    }
+
+    #[cfg(test)]
+    fn fixture_emit_at(&self, e: &Expr, width: u32) -> IntValue<'ctx> {
         match e {
             Expr::Canonical { value, .. } => self.emit_canonical(*value, width, false, None),
             Expr::MetaCmp { inner, .. } => self.emit_at(inner, width),
@@ -2928,6 +3037,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     /// integers must be sign-extended; literals and compound expressions are
     /// emitted directly in the contextual width so positive constants do not
     /// accidentally acquire a sign from their minimum unsigned bit width.
+    #[cfg(test)]
     fn emit_signed_operand_at(&self, e: &Expr, width: u32) -> IntValue<'ctx> {
         match e {
             Expr::Canonical { value, .. } => self.emit_canonical(*value, width, true, None),
@@ -2961,6 +3071,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     /// Emit a binary operation, selecting the unsigned, signed or float
     /// instruction from the IR operator.
+    #[cfg(test)]
     fn emit_binary(&self, op: BinOp, lhs: &Expr, rhs: &Expr, result_width: u32) -> IntValue<'ctx> {
         // Float ops reinterpret the i64 words as f64.
         if matches!(op, BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv) {

@@ -1343,6 +1343,11 @@ The condition follows the same `Boolean` rule as statement `if` (spec 3.16).
 
 Diagnostics and resolution:
 
+- An overwritten signal write may be eliminated, but selected host/foreign
+  effects in its guard or right-hand value still execute in source order.
+  Its discarded value does not trigger a destination range check: the signal
+  never held it. Shared call results retain their canonical identity rather
+  than executing again for each projected struct/array leaf.
 - W-P014 reports two unconditional assignments to the same target only within
   a hardware driver context, where source-order override makes the earlier
   assignment unobservable. It does not apply to `#[test]` stimulus: native

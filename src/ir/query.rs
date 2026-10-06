@@ -52,6 +52,13 @@ fn check_expr(
     issues: &mut Vec<String>,
     ctx: &str,
 ) {
+    #[cfg(not(test))]
+    if !matches!(e, Expr::Canonical { .. }) {
+        issues.push(format!(
+            "{ctx}: scheduler expressions must be canonical Process roots"
+        ));
+        return;
+    }
     match e {
         Expr::Canonical { value, reads } => match arena.signal_reads(*value) {
             Ok(expected) if expected.as_slice() == reads.as_ref() => {}
@@ -552,6 +559,12 @@ impl Design {
                         table.0
                     ));
                 }
+            }
+        }
+        #[cfg(not(test))]
+        if issues.is_empty() {
+            if let Err(error) = super::derive::validate_scheduler_forms(self) {
+                issues.push(error);
             }
         }
         issues

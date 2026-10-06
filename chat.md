@@ -13290,3 +13290,85 @@ and empty-string batch plus the honest exit audit; update multiprocess's startup
 description to this verified ABI 15 baseline. This is not Phase 1 completion:
 legacy API authority and inactive hardware foreign effects remain reproduced
 blockers for the next execution batch. No new push.
+
+### 2026-10-06 — Codex — canonical API authority and guarded effects
+
+Verified initializer batch committed locally as 10dcb5e, companion fixture
+55ed05e; both are unpushed. Own ir/derive.rs, ir/query.rs and llvm/emit.rs to
+validate derived scheduler roots against canonical CFGs and exclude legacy
+fixture expression emission from production. Add API regressions which mutate
+only derived roots, targets/guards or remove writes and verify validation and
+object emission fail before creating an artifact. Reuse scheduler derivation,
+not a production tree-to-arena adapter. Next, own Process value activity facts,
+conditional effect lowering and native regressions. Existing gate is terminal
+and frozen hashes verified, so execution edits are now safe. Preserve the 441
+historical chat additions, AGENTS.md/.codex work and the immutable r6 evidence.
+
+### 2026-10-06 — Codex — LLVM upgrade compatibility check
+
+User requests latest LLVM if feasible. Official latest published release is
+LLVM 23.1.2; local system LLVM/Clang is 23.1.1. Upstream Inkwell master advertises
+llvm23-1, but inspecting the actual released 0.10.0 crate proves it still stops
+at LLVM 22. Corrected the initial mistaken compatibility statement and asked
+whether to pin upstream Git or keep released dependencies. No Cargo, lock or CI
+version edits have occurred. Keep LLVM 22.1.8 validation environment until that
+dependency-source choice is answered; continue the in-scope Phase 1 fixes.
+
+### 2026-10-06 — Codex — hardware effect ordering audit
+
+LLVM upgrade research is terminal; dependency choice remains pending, not a
+Phase 1 blocker. Focused canonical API/activity run 44332 terminated with exit
+0: 526 library, 18 hardware/API and 4 runtime-file/native tests passed. Those
+edits remain uncommitted and require a fresh full gate. Continue owning shared
+LLVM hardware lowering and native regressions: probe overwritten assignments
+and captured foreign results across bounded combinational helper boundaries.
+Preserve dead-write destination range semantics and bounded helper memory
+behavior; verify observable effects before choosing a fix. Current execution
+inputs are not frozen and no full gate is live. Preserve unrelated work.
+
+Native test-executable probes preserve overwritten effects and shared struct
+results through canonical Process entries. The public object sx_settle ABI
+is a distinct consumer: source -> object -> handwritten ABI probe reproduces
+four executions of one shared call over two combinational phases (expected
+two), crossing the existing four-target helper bound. Add object-owned
+per-phase captures for canonical hardware call identities; no ABI change or
+unbounded helper. Retain selected effects from overwritten derived writes,
+without destination range checks for discarded values. Focused 35482 ended
+with exit 0 (526 lib / 3 object / 18 hardware / 4 host tests). Strengthen the
+object probe with inactive-call and source-order checks before the broad gate.
+Also own phase1-audit.md, architecture.md and the corresponding language rule
+to distinguish historical initializer evidence from new focused/full evidence.
+
+Final focused session 53791 terminated with exit 0: all 3 object tests,
+18 hardware/API and 4 host/native tests pass, including inactive object calls
+and F/G ordering. AST-only graphify update completed (third-party C extraction
+warnings, no compiler failure). Start full effects r1 gate with frozen execution
+hash 7cb1ef31f100e5f3b39c8d656b7baf1956131d8cd4777748e31775c9c9eeaae3,
+sibling Siox hash 281e66ee22807d77dc837a09ba105ce87f83c2230a60dca93d3b6b1de787d1ee,
+and immutable default compiler 46b210fa84b36826f1d308cec9a69bf6e5e604fc15638afbc03f106c4dd73adc.
+Do not edit execution inputs while this gate runs. It covers full Rust/clippy,
+both 224-program corpora and 47 direct-native/profile/FST cases per mode with
+unchanged historical baseline exceptions. Do not commit until terminal success
+and unchanged hashes; Phase 1 still requires the complete requirement audit.
+
+Full gate handle 95354 is confirmed live in siox-effects-full-r1-20261006.scope.
+Both Rust suites and all lint stages are terminal green; all 47 default direct
+native/profile/FST cases pass. Corpus stages are in progress and bitpack native
+must follow. Frozen execution hash is unchanged. During the read-only audit,
+the historical Stage 11 language sketch still calls four-state Logic canonical
+and retains an obsolete operator-shim note/std attribute suggestions; current
+std has nine-state ULogic and Logic(ULogic). Reconcile that historical sketch
+after the freeze ends, not while language.md is a hashed gate input. Continue
+auditing historical stage acceptance criteria/CLI commands as well as the five
+pipeline invariants, eleven final deliverables and twelve named artifacts;
+do not infer completion merely from green tests or narrow the objective.
+
+Effects gate 95354 is terminal with exit 0; scope inactive/dead. Both full
+Rust/lint suites, both 224-program corpora and 47 direct-native/profile/FST cases
+per mode pass. Execution input hash is unchanged. Immutable bitpack compiler:
+fee6572bf6fcf8578e2f9cff30cbe729d0d9c9dd2b4e108256ab28f3a11f3ee8.
+Actual libfst source hash: e422b98891be317559212f119d6c7adedfb13c6ea1bb59b12c08da598e7da720.
+End execution freeze and commit only owned API/activity/capture regressions and
+documents plus this tail; exclude 441 historical chat additions, AGENTS.md and
+.codex changes. Keep goal active for the final acceptance/document audit;
+no new push. LLVM version/dependency choice remains optional and pending.

@@ -4,9 +4,9 @@
 use super::*;
 
 /// Per-function value cache. Pure subgraphs use one entry regardless of the
-/// enclosing branch predicate; a subgraph containing `CheckedIndex` includes
-/// that predicate in its key so a shared arena node can latch independently
-/// on different source control-flow paths without cloning the whole cache.
+/// enclosing branch predicate; checked accesses and host/foreign effects
+/// include that predicate so a shared arena node cannot execute or latch on
+/// an unselected source path.
 pub(super) struct ProcessValueCache<'ctx, 'checks> {
     /// Captured call results are values, not mutable state loads. Clearing
     /// state-dependent expressions must not execute a captured call again.
@@ -25,25 +25,34 @@ pub(super) struct ProcessValueCache<'ctx, 'checks> {
     /// Distinct arena leaves can refer to the same physical state. Reuse its
     /// assembled ABI words until an immediate write or foreign call occurs.
     pub(super) signals: HashMap<(SignalId, ProcessSignalState, u32), IntValue<'ctx>>,
-    pub(super) checked: &'checks [bool],
+    pub(super) activity_sensitive: &'checks [bool],
     pub(super) meta_free: &'checks [bool],
+    /// Compatibility helpers exchange captured effects through object state,
+    /// not SSA values belonging to a different LLVM function.
+    pub(super) hardware_calls: bool,
+    pub(super) evaluating_hardware_call: Option<ProcessValueId>,
 }
 
 impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
-    pub(super) fn new(checked: &'checks [bool], meta_free: &'checks [bool]) -> Self {
+    pub(super) fn new(activity_sensitive: &'checks [bool], meta_free: &'checks [bool]) -> Self {
         Self {
             evaluated_calls: HashMap::new(),
             emitted: HashMap::new(),
             contextual: HashMap::new(),
             metadata: HashMap::new(),
             signals: HashMap::new(),
-            checked,
+            activity_sensitive,
             meta_free,
+            hardware_calls: false,
+            evaluating_hardware_call: None,
         }
     }
 
-    pub(super) fn contains_check(&self, value: ProcessValueId) -> bool {
-        self.checked.get(value.0 as usize).copied().unwrap_or(false)
+    pub(super) fn requires_activity(&self, value: ProcessValueId) -> bool {
+        self.activity_sensitive
+            .get(value.0 as usize)
+            .copied()
+            .unwrap_or(false)
     }
 
     pub(super) fn key(
@@ -54,7 +63,7 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
     ) -> (ProcessValueId, Option<IntValue<'ctx>>, Option<u32>) {
         (
             value,
-            self.contains_check(value).then_some(active).flatten(),
+            self.requires_activity(value).then_some(active).flatten(),
             layout_width,
         )
     }
@@ -199,7 +208,7 @@ pub(super) fn process_select<'ctx>(
         cache,
     )?;
     let condition = as_condition(builder, condition)?;
-    let checked_arms = cache.contains_check(then_value) || cache.contains_check(else_value);
+    let checked_arms = cache.requires_activity(then_value) || cache.requires_activity(else_value);
     let (then_active, else_active) = if !checked_arms {
         (None, None)
     } else {

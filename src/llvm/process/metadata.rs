@@ -453,8 +453,8 @@ pub(in crate::llvm) fn emit_metadata<'ctx>(
 ) {
     let process_ir = &design.process_ir;
     let supported_values = &facts.supported;
-    let checked_values = &facts.checked;
-    emit_state_helpers(context, module, design, supported_values, checked_values);
+    let activity_values = &facts.activity_sensitive;
+    emit_state_helpers(context, module, design, supported_values, activity_values);
     emit_wave_metadata(context, module, design);
     emit_source_locations(context, module, design, sources);
     u32_global(
@@ -476,7 +476,7 @@ pub(in crate::llvm) fn emit_metadata<'ctx>(
         process_ir.processes.len() as u32,
     );
     test_name_table(context, module, design);
-    process_entry_table(context, module, design, supported_values, checked_values);
+    process_entry_table(context, module, design, supported_values, activity_values);
 
     let test_roots = process_ir
         .tests

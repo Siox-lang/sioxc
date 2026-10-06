@@ -8,6 +8,121 @@
 
 use std::process::Command;
 
+#[cfg(feature = "llvm")]
+#[test]
+fn object_settle_preserves_shared_and_overwritten_foreign_effects() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let dir = std::env::temp_dir().join(format!("siox_aot_effects_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let object = dir.join("effects.o");
+    let harness = dir.join("effects.c");
+    let binary = dir.join("effects");
+    let source = r#"
+module object_effects;
+extern "C" { fn mark(value: integer) -> integer; }
+struct Packet { pub a: integer, pub b: integer, pub c: integer, pub d: integer, pub e: integer }
+fn spread(value: integer) -> Packet {
+    return { .a = value, .b = value, .c = value, .d = value, .e = value };
+}
+entity Dut { clock: Bit in, enabled: Bool in, packet: Packet out, value: integer out }
+impl Dut {
+    packet = if enabled { spread(mark(65)) } else { { .a = 7, .b = 7, .c = 7, .d = 7, .e = 7 } };
+    if clock.rising() { value = mark(70); value = mark(71); }
+}
+"#;
+    let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+        CompileRequest::new(
+            SourceInput::memory(dir.join("effects.siox"), source),
+            Emit::Object { top: None },
+        )
+        .with_output(&object),
+    );
+    assert!(
+        compilation.succeeded(),
+        "{} {:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    let design = compilation.design.unwrap();
+    assert_eq!(
+        design.drivers.len(),
+        5,
+        "struct leaves must cross a helper boundary"
+    );
+    assert_eq!(
+        design.event_blocks[0].updates.len(),
+        2,
+        "overwritten update must remain canonical"
+    );
+    let clock = design
+        .signals
+        .iter()
+        .position(|signal| signal.path.ends_with(".clock"))
+        .unwrap();
+    let value = design
+        .signals
+        .iter()
+        .position(|signal| signal.path.ends_with(".value"))
+        .unwrap();
+    let enabled = design
+        .signals
+        .iter()
+        .position(|signal| signal.path.ends_with(".enabled"))
+        .unwrap();
+    std::fs::write(&harness, format!(r#"
+#include <stdint.h>
+#include <stdio.h>
+extern void sx_reset(void);
+extern void sx_set(uint32_t id, uint64_t value);
+extern uint64_t sx_read(uint32_t id);
+extern void sx_settle(void);
+static unsigned calls[256];
+static unsigned order[2], order_count;
+int64_t mark(int64_t value) {{
+    ++calls[value];
+    if (value == 70 || value == 71) {{ if (order_count < 2) order[order_count] = value; ++order_count; }}
+    return value;
+}}
+int main(void) {{
+    sx_reset();
+    sx_settle();
+    if (calls[65] != 0 || calls[70] != 0 || calls[71] != 0) return 4;
+    sx_set({enabled}, 1);
+    sx_settle();
+    calls[65] = 0;
+    sx_settle(); /* Stable state: pre-event and post-event combinational passes. */
+    if (calls[65] != 2) {{ fprintf(stderr, "shared call executed %u times\n", calls[65]); return 1; }}
+    sx_set({clock}, 1);
+    sx_settle();
+    if (calls[70] != 1 || calls[71] != 1) {{
+        fprintf(stderr, "overwritten/retained calls: %u/%u\n", calls[70], calls[71]); return 2;
+    }}
+    if (order_count != 2 || order[0] != 70 || order[1] != 71) return 5;
+    if (sx_read({value}) != 71) return 3;
+    return 0;
+}}
+"#)).unwrap();
+    let link = Command::new("clang")
+        .arg(&harness)
+        .arg(&object)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        link.status.success(),
+        "{}",
+        String::from_utf8_lossy(&link.stderr)
+    );
+    let run = Command::new(&binary).output().unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Signal ids are assigned in declaration order, which `--emit ir` prints:
 /// `Counter.clk`, `Counter.rst`, `Counter.n`.
 const HARNESS: &str = r#"

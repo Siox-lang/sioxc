@@ -5,6 +5,68 @@
 use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
 
 #[test]
+fn scheduler_views_cannot_override_canonical_cfgs_through_the_public_api() {
+    use siox::ir::Expr;
+    let source = r#"module canonical_api;
+entity Dut { clock: Bit in, enabled: Bool in, a: unsigned[8] out, b: unsigned[8] out }
+impl Dut {
+    a = 1;
+    b = 2;
+    if clock.rising() { if enabled { a = 3; } }
+}
+"#;
+    for mutation in 0..7 {
+        let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+            CompileRequest::new(
+                SourceInput::memory("/virtual/canonical_api.siox", source),
+                Emit::Metadata,
+            ),
+        );
+        assert!(
+            compilation.succeeded(),
+            "{}",
+            compilation.render_diagnostics()
+        );
+        let mut design = compilation.design.unwrap();
+        assert!(design.validate().is_empty());
+        let other = design.drivers[1].expr.clone();
+        match mutation {
+            0 => design.drivers[0].expr = Expr::Const(7),
+            1 => design.drivers[0].expr = other,
+            2 => design.drivers[0].target = design.drivers[1].target,
+            3 => design.drivers[0].cond = Some(other),
+            4 => design.drivers.clear(),
+            5 => design.event_blocks[0].condition = other,
+            6 => design.event_blocks[0].updates[0].expr = other,
+            _ => unreachable!(),
+        }
+        let issues = design.validate();
+        assert!(
+            !issues.is_empty(),
+            "mutation {mutation} authored independent behavior"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("canonical Process")),
+            "{issues:?}"
+        );
+        #[cfg(feature = "llvm")]
+        {
+            let path = std::env::temp_dir().join(format!(
+                "siox_canonical_api_{}_{}.o",
+                std::process::id(),
+                mutation,
+            ));
+            let _ = std::fs::remove_file(&path);
+            let error = siox::llvm::emit_object(&design, &path).unwrap_err();
+            assert!(error.contains("canonical Process"), "{error}");
+            assert!(!path.exists(), "rejected design emitted an object");
+        }
+    }
+}
+
+#[test]
 fn aggregate_history_reads_old_leaves_with_current_selectors() {
     let source = r#"module aggregate_history;
 use std::bits::unsigned;

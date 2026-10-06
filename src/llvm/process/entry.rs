@@ -16,7 +16,7 @@ pub(super) fn process_entry<'ctx>(
     process: &ProcessCfg,
     index_sites: &HashMap<IndexSite, u32>,
     range_sites: &HashMap<siox::diag::Span, u32>,
-    checked_values: &[bool],
+    activity_values: &[bool],
     supported_values: &ProcessValueSupport,
     schedule_sites: &HashMap<(ProcessId, siox::ir::ProcessBlockId, usize), ScheduleSite>,
 ) -> FunctionValue<'ctx> {
@@ -69,7 +69,7 @@ pub(super) fn process_entry<'ctx>(
             continue;
         }
 
-        let mut cache = ProcessValueCache::new(checked_values, &supported_values.meta_free);
+        let mut cache = ProcessValueCache::new(activity_values, &supported_values.meta_free);
         let mut failed = false;
         for (instruction_index, instruction) in block.instructions.iter().enumerate() {
             let emitted = match instruction {
@@ -844,7 +844,7 @@ pub(super) fn process_entry_table<'ctx>(
     module: &Module<'ctx>,
     design: &Design,
     supported_values: &ProcessValueSupport,
-    checked_values: &[bool],
+    activity_values: &[bool],
 ) {
     let pointer = context.ptr_type(AddressSpace::default());
     let index_sites = design
@@ -877,7 +877,7 @@ pub(super) fn process_entry_table<'ctx>(
                 process,
                 &index_sites,
                 &range_sites,
-                checked_values,
+                activity_values,
                 supported_values,
                 &schedule_by_location,
             )

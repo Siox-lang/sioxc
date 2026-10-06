@@ -768,15 +768,22 @@ pub(super) fn latch_range_failure<'ctx>(
     Some(())
 }
 
-/// Compute which dependency-ordered arena nodes contain a checked access.
+/// Compute which arena nodes need their source activity predicate: checked
+/// accesses and host/foreign effects must be inert on unselected paths.
 /// One shared table serves every process/block in the module.
-pub(super) fn checked_process_values(design: &Design) -> Vec<bool> {
+pub(super) fn activity_sensitive_process_values(design: &Design) -> Vec<bool> {
     let mut checked = Vec::with_capacity(design.process_ir.values.len());
-    let has =
-        |checked: &[bool], id: ProcessValueId| checked.get(id.0 as usize).copied().unwrap_or(false);
+    let has = |activity_sensitive: &[bool], id: ProcessValueId| {
+        activity_sensitive
+            .get(id.0 as usize)
+            .copied()
+            .unwrap_or(false)
+    };
     for value in &design.process_ir.values {
         let contains = match &value.kind {
-            ProcessValueKind::CheckedIndex { .. } => true,
+            ProcessValueKind::CheckedIndex { .. }
+            | ProcessValueKind::ForeignCall { .. }
+            | ProcessValueKind::HostCall { .. } => true,
             ProcessValueKind::Field { base, .. }
             | ProcessValueKind::BitSlice { base, .. }
             | ProcessValueKind::PackedSlice { base, .. }
@@ -816,10 +823,6 @@ pub(super) fn checked_process_values(design: &Design) -> Vec<bool> {
             } => std::iter::once(*callee)
                 .chain(arguments.iter().copied())
                 .any(|value| has(&checked, value)),
-            ProcessValueKind::ForeignCall { arguments, .. }
-            | ProcessValueKind::HostCall { arguments, .. } => {
-                arguments.iter().any(|value| has(&checked, *value))
-            }
             ProcessValueKind::Construct { fields, spread, .. } => fields
                 .iter()
                 .filter_map(|field| field.value)

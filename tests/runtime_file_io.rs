@@ -8,6 +8,81 @@ fn text(output: &Output) -> String {
 
 #[cfg(feature = "llvm")]
 #[test]
+fn hardware_conditional_values_and_event_guards_execute_only_active_effects() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let dir = std::env::temp_dir().join(format!("siox_hardware_effect_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let binary = dir.join("effects");
+    let source = r#"
+module hardware_effect;
+extern "C" { fn putchar(value: integer) -> integer; }
+entity Dut { enabled: Bool in, clock: Bit in, choice: integer in,
+    selected: integer out, matched: integer out, event_result: integer out }
+impl Dut {
+    selected = if enabled { putchar(65) + 1 } else { 7 };
+    matched = match choice { 0 => 9, 1 => putchar(66), _ => putchar(81) };
+    if clock.rising() {
+        if putchar(67) == 67 { event_result = 12; }
+    }
+}
+#[test] entity T {}
+impl T {
+    let enabled: Bool = false;
+    let clock: Bit = '0';
+    let choice: integer = 0;
+    let selected: integer;
+    let matched: integer;
+    let event_result: integer;
+    let dut: Dut = { .enabled = enabled, .clock = clock, .choice = choice,
+        .selected = selected, .matched = matched, .event_result = event_result };
+    process {
+        await 1ns;
+        assert!(selected == 7 and matched == 9, "inactive branches retain values");
+        print!("[activate]");
+        enabled = true;
+        choice = 1;
+        clock = '1';
+        await 1ns;
+        assert!(selected == 66 and matched == 66 and event_result == 12, "active effects retain values");
+    }
+}
+"#;
+    let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+        CompileRequest::new(
+            SourceInput::memory(dir.join("effects.siox"), source),
+            Emit::TestExecutable,
+        )
+        .with_output(&binary),
+    );
+    assert!(
+        compilation.succeeded(),
+        "{} {:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    let run = Command::new(&binary).output().unwrap();
+    let report = text(&run);
+    assert!(run.status.success(), "{report}");
+    let (before, after) = report.split_once("[activate]").expect("activation marker");
+    assert!(
+        !before.contains(['A', 'B', 'C', 'Q']),
+        "inactive effect escaped: {report}"
+    );
+    assert!(
+        !after.contains('Q'),
+        "inactive match default executed: {report}"
+    );
+    for tag in ['A', 'B', 'C'] {
+        assert!(
+            after.contains(tag),
+            "active foreign effect {tag} missing: {report}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(feature = "llvm")]
+#[test]
 fn conditional_initializers_execute_only_selected_host_and_foreign_calls() {
     use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
     let dir = std::env::temp_dir().join(format!("siox_host_branch_{}", std::process::id()));

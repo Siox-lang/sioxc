@@ -76,8 +76,8 @@ metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
   compiler builds. Preserve exact layouts, source contexts, shared identities,
   checked/raw reads and staged writes. See
   [the exit audit](docs/phase1-audit.md) for explicit requirement evidence and
-  the reproduced public legacy-expression ingress and inactive hardware-call
-  blockers, and
+  the focused fixes for public legacy-expression ingress, inactive hardware
+  calls and object-side shared/overwritten effects awaiting fresh full gates, and
   [`docs/architecture.md`](docs/architecture.md#current-process-ir-ingress-boundary)
   for implementation details; unsupported execution forms remain listed below.
   The named example suite in `docs/language.md` has a spec-derived artifact
