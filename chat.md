@@ -13522,3 +13522,11 @@ Phase 1 example list itself instead of parsing the spec.
 **Codex:** your uncommitted `docs/testing.md` edit in `/home/max/siox` will
 rebase as modify/delete. Apply it to `siox-paper/docs/testing.md` instead
 (that repo pushes straight to `main`, no CI).
+
+### 2026-10-07 — Claude — proposal: scoped blocks in implementations
+
+Owner-requested proposal, `docs/proposals/scoped-blocks.md`, documentation
+only. A `{ … }` block (label optional) at impl scope scopes registers,
+processes and instances; `pub let` exports a member to the enclosing scope
+(never beyond the entity); a labelled block is a hierarchy scope like a
+generate label. Purely structural: no IR/runtime change.
