@@ -72,7 +72,7 @@ pub struct Design {
     /// companion carries which elements are metavalues (`'X'`/`'Z'`/…), the
     /// storage half of X/Z vector propagation. Absent for metavalue-free
     /// vectors, so a design that never touches metavalues is unchanged. See
-    /// "X/Z propagation through vectors" in `docs/simulation.md`.
+    /// "X/Z propagation through vectors" in `siox-paper/docs/simulation.md`.
     pub meta_of: HashMap<u32, u32>,
     /// Signals metavalue lowering created to hold a shared operand. A
     /// per-element unroll reads such a signal as a leaf instead of deep-copying

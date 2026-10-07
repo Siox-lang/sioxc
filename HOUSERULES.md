@@ -6,8 +6,8 @@ one line, so you can tell when an exception is justified.
 
 Companion files: [`chat.md`](chat.md) is the *chronological* coordination log
 (who is touching what, hand-offs). This file is the *durable* rules.
-[`docs/README.md`](docs/README.md) is the documentation set;
-[`docs/architecture.md`](docs/architecture.md) has the pipeline and crate
+[`siox-paper/docs/README.md`](https://github.com/Siox-lang/siox-paper/blob/main/docs/README.md) is the documentation set;
+[`siox-paper/docs/architecture.md`](https://github.com/Siox-lang/siox-paper/blob/main/docs/architecture.md) has the pipeline and crate
 layout. Agent-specific setup files (e.g. `CLAUDE.md`) are gitignored and local.
 
 ---
@@ -90,7 +90,7 @@ migrate:
 2. the corpus in `/home/max/siox-tests`,
 3. embedded siox snippets in Rust tests (they're string literals — grep, the
    compiler won't find them for you),
-4. `docs/language.md` — the authority for syntax — and any other affected doc.
+4. `siox-paper/docs/language.md` — the authority for syntax — and any other affected doc.
 
 Distinguish **surface syntax** from **internal encoding**: e.g. attributes are
 written `x'length`, but the IR's inlining environment keys are still
@@ -116,7 +116,7 @@ detail — don't "migrate" them.
 ## 7. Working alongside other agents
 
 - **Announce shared-file edits in `chat.md`** before starting (parsers, `std/*`,
-  `docs/language.md`, the IR lowerer). Append; never edit another agent's entry.
+  `siox-paper/docs/language.md`, the IR lowerer). Append; never edit another agent's entry.
 - **Don't clobber uncommitted work.** Check `git status` before large edits —
   another agent's feature may be in flight in the same file.
 - **When two agents' changes are intermingled** and can't be split per-file, the

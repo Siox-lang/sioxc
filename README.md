@@ -33,7 +33,7 @@ That produces `target/release/sioxc` — the compiler. Put it on your `PATH` or
 call it by path. siox compiles designs through LLVM, which is the permanent
 backend. Frontend-only library consumers such as editors can instead disable
 default features and do not need LLVM; see the
-[embedding API documentation](docs/interoperability.md#compiler-embedding-api).
+[embedding API documentation](https://github.com/Siox-lang/siox-paper/blob/main/docs/interoperability.md#compiler-embedding-api).
 
 Native execution has one path: canonical Process IR is emitted through LLVM
 and linked with the fixed runtime; no design-specific C is generated. Typed
@@ -41,7 +41,7 @@ hardware and source/test processes lower directly under `ir/lower` into that
 product. Hardware CFGs are constructed before scheduler decomposition;
 `Driver`/`EventBlock` compatibility forms are derived from the canonical CFGs,
 not imported back into them.
-See the [architecture status](docs/architecture.md#current-process-ir-ingress-boundary).
+See the [architecture status](https://github.com/Siox-lang/siox-paper/blob/main/docs/architecture.md#current-process-ir-ingress-boundary).
 
 ## Write your first circuit
 
@@ -164,16 +164,16 @@ cargo build --manifest-path siox-lsp/Cargo.toml
 ```
 
 Full capability list and setup notes:
-[docs/interoperability.md](docs/interoperability.md).
+[siox-paper/docs/interoperability.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/interoperability.md).
 
 ## Learn more
 
 - **[Examples](https://github.com/Siox-lang/siox-tests)** — a repo of runnable
   `.siox` programs: counters, FSMs, a FIFO, SPI, RISC-V fragments, tristate
   buses, and more.
-- **[Language specification](docs/language.md)** — the full syntax and
+- **[Language specification](https://github.com/Siox-lang/siox-paper/blob/main/docs/language.md)** — the full syntax and
   semantics (with an at-a-glance tour up front).
-- **[docs/](docs/README.md)** — compiler architecture, simulation, testing, the
+- **[siox-paper/docs/](https://github.com/Siox-lang/siox-paper/blob/main/docs/README.md)** — compiler architecture, simulation, testing, the
   standard-library reference, and interoperability.
 - **[CHANGELOG](CHANGELOG.md)** — what's changed.
 - **[House rules](HOUSERULES.md)** — conventions for contributors: the design

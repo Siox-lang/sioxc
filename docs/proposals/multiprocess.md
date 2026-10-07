@@ -58,7 +58,7 @@ Reset-time initialization uses source-ordered CFGs and the same scheduler for
 resumes before hardware bootstrap and foreground stimulus. The ABI 15 startup
 boundary and the subsequent API/effect fixes are verified by full
 default/bitpack corpus and native waveform gates. The completed Phase 1
-requirement audit is [recorded separately](../phase1-audit.md); this proposal
+requirement audit is [recorded separately](https://github.com/Siox-lang/siox-paper/blob/main/docs/phase1-audit.md); this proposal
 does not claim worker threads are implemented.
 Preserve this ordered startup boundary when introducing workers.
 

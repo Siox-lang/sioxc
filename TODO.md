@@ -7,9 +7,9 @@ layer that owns each change:
 
 This file tracks active work, not implementation history. Completed migration
 details and measurements belong in [`chat.md`](chat.md) and the documents under
-[`docs/`](docs/). Phase 1 completion audited 2026-10-06 against the compiler,
+[`siox-paper/docs/`](https://github.com/Siox-lang/siox-paper/blob/main/docs/README.md). Phase 1 completion audited 2026-10-06 against the compiler,
 standard library, both 225-program corpora, native VCD/FST results and the full
-local CI gate. See the [acceptance evidence](docs/phase1-audit.md). The tasks
+local CI gate. See the [acceptance evidence](https://github.com/Siox-lang/siox-paper/blob/main/docs/phase1-audit.md). The tasks
 below are remaining extensions and later-phase work, not completed history.
 
 Legend: 🔴 not started · 🟡 partial / constrained.
@@ -67,7 +67,7 @@ Owns signals, canonical process control flow, initializers, layouts, enum/logic
 metadata, derived scheduling forms, and semantic lints. Code: `src/ir/`.
 
 The Phase 1 canonical-pipeline migration and exit audit are complete. Preserve
-the [ingress invariants](docs/architecture.md#current-process-ir-ingress-boundary)
+the [ingress invariants](https://github.com/Siox-lang/siox-paper/blob/main/docs/architecture.md#current-process-ir-ingress-boundary)
 when extending the IR; executable extensions and optimization measurements are
 listed under LLVM and Output below.
 
@@ -87,7 +87,7 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   and host contact behind the fixed runtime ABI; LLVM emits value semantics,
   not another host-service implementation. Current RNG, UTF-8/string, fixed
   binary-read and file-probe services are implemented and verified; their
-  behavior is documented in [interoperability.md](docs/interoperability.md).
+  behavior is documented in [interoperability.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/interoperability.md).
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` operations, constants/conversions, ABI rules, formatting,
   and a software fallback before exposing a language feature.
@@ -194,7 +194,7 @@ math/text/file services, and small technology-independent helpers. Code: `std/`.
   executable conformance tests. See
   [the remaining proposal](docs/proposals/std-buildout.md). Memories, FIFOs and
   stream adapters are IP for vendor packages and libraries, not std.
-- 🟡 **API reference.** Keep [`docs/std.md`](docs/std.md) synchronized with each
+- 🟡 **API reference.** Keep [`siox-paper/docs/std.md`](https://github.com/Siox-lang/siox-paper/blob/main/docs/std.md) synchronized with each
   exported declaration and clearly label compiler/runtime intrinsics.
 - 🔴 **Foreign HDL packages (Phase 3).** Map external library names and entity
   metadata without baking VHDL/Verilog syntax into the siox language.

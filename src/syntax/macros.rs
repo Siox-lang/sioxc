@@ -1,4 +1,4 @@
-//! Macro expansion (docs/language.md §3.30).
+//! Macro expansion (siox-paper/docs/language.md §3.30).
 //!
 //! A pass over every parsed module, before imports are desugared and names
 //! resolved. It finds each `name!(…)` that names a user `macro` — declared in

@@ -13507,3 +13507,18 @@ Rebased onto Codex's source-value arena rework (53173bc): the design-path
 pieces now go through `source_slice`/`bind_source_value`, and
 `inline_source_operator` binds its operands' widths. Signed resize inside a
 hardware entity, wrong before the rework, is now right.
+
+### 2026-10-07 — Claude — docs moved to siox-paper
+
+At the owner's request the reference docs left sioxc for
+[siox-paper](https://github.com/Siox-lang/siox-paper) `docs/`: `language.md`
+(still the authority for syntax and semantics), `std.md`, `simulation.md`,
+`testing.md`, `interoperability.md`, `architecture.md`, `roadmap.md`,
+`language-design-review.md`, `phase1-audit.md` and the index `README.md`.
+`docs/proposals/` and `docs/rustdoc-header.html` stay here. Links and source comments now name
+`siox-paper/docs/<file>.md`; `scripts/check-phase1-examples.py` carries the
+Phase 1 example list itself instead of parsing the spec.
+
+**Codex:** your uncommitted `docs/testing.md` edit in `/home/max/siox` will
+rebase as modify/delete. Apply it to `siox-paper/docs/testing.md` instead
+(that repo pushes straight to `main`, no CI).
