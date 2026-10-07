@@ -118,10 +118,14 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
 Owns native objects, test executables, metadata/dumps, diagnostics, waveforms,
 and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
-- 🔴 **Native source debug metadata.** Emit direct DWARF locations and a stable
-  signal/process inspection surface from LLVM Process entries. Until that is
-  implemented, `sioxc --test -g` fails explicitly; it must never resurrect a
-  per-design C translation merely to obtain `#line` metadata.
+- 🟡 **Native source debugging follow-through.** Direct LLVM DWARF now supports
+  source breakpoints/steps, named signal/test storage, process/loop locals and
+  lexical shadowing. Complete wider inspection coverage: non-byte-aligned
+  wide scalar padding, packed-vector X/Z companions, runtime-sized strings and
+  arrays, repeated inline-call scope identity and richer inline call stacks.
+  Keep debug-only aggregate inspection buffers faithful at source stops and
+  document their read-only/snapshot nature. Verify default/bitpack debugger and
+  debug-corpus gates; never resurrect per-design C translation for metadata.
 - 🔴 **Scalable mini-runtime scheduler (Phase 2 optimization).** Build a small
   deterministic runtime that acts like an RTOS for simulation processes. With
   the default thread count of one, language processes are logically concurrent

@@ -235,6 +235,16 @@ pub fn emit_module_ir(design: &Design) -> Result<String, String> {
     Ok(module.print_to_string().to_string())
 }
 
+/// Textual LLVM with the same source DWARF as a native debug object.
+pub fn emit_module_ir_with_debug(
+    design: &Design,
+    sources: &siox::diag::SourceMap,
+) -> Result<String, String> {
+    let ctx = Context::create();
+    let module = build_module_with_debug(&ctx, design, Some(sources), true)?;
+    Ok(module.print_to_string().to_string())
+}
+
 /// Build and verify the LLVM module for `design` in `ctx`.
 pub(crate) fn build_module<'ctx>(
     ctx: &'ctx Context,
@@ -249,6 +259,15 @@ pub(crate) fn build_module_with_sources<'ctx>(
     ctx: &'ctx Context,
     design: &Design,
     sources: Option<&siox::diag::SourceMap>,
+) -> Result<Module<'ctx>, String> {
+    build_module_with_debug(ctx, design, sources, false)
+}
+
+pub(crate) fn build_module_with_debug<'ctx>(
+    ctx: &'ctx Context,
+    design: &Design,
+    sources: Option<&siox::diag::SourceMap>,
+    debug: bool,
 ) -> Result<Module<'ctx>, String> {
     // Reject IR a backend can't compile (bad ids, Unknown, unknown widths)
     // with a clear message rather than emitting malformed LLVM (B0).
@@ -326,7 +345,27 @@ pub(crate) fn build_module_with_sources<'ctx>(
     }
     super::process::declare_state(ctx, &cg.module, design);
     cg.build();
-    super::process::emit_metadata(ctx, &cg.module, design, sources, &cg.canonical);
+    let debug_info = if debug {
+        Some(super::process::DebugInfo::new(
+            ctx,
+            &cg.module,
+            sources.ok_or("DWARF requires source text")?,
+            design,
+        )?)
+    } else {
+        None
+    };
+    super::process::emit_metadata(
+        ctx,
+        &cg.module,
+        design,
+        sources,
+        &cg.canonical,
+        debug_info.as_ref(),
+    );
+    if let Some(debug) = &debug_info {
+        debug.finish();
+    }
     // LLVM's own verifier — a well-formedness net beyond textual checks.
     if let Err(e) = cg.module.verify() {
         return Err(format!(
@@ -416,7 +455,7 @@ fn width_mask(w: u32) -> u64 {
 /// straddling it; wider values start at a word boundary and reserve as many
 /// consecutive words as their own width requires.
 #[cfg(feature = "bitpack")]
-fn pack_layout(design: &Design) -> (Vec<(u32, u32)>, u32) {
+pub(super) fn pack_layout(design: &Design) -> (Vec<(u32, u32)>, u32) {
     let mut slots = Vec::with_capacity(design.signals.len());
     let (mut word, mut bit) = (0u32, 0u32);
     for (id, _) in design.signals.iter().enumerate() {

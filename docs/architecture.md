@@ -312,8 +312,12 @@ Phase 1 acceptance evidence is recorded in the
 [exit audit](phase1-audit.md), including the five pipeline invariants, eleven
 language deliverables, twelve named examples and historical stage/CLI criteria.
 Native recursion, non-packed conversions, general runtime-sized arrays/computed
-file paths and direct DWARF remain separate extensions rather than fallback
-execution paths. The multithreading proposal extends these same CFGs and LLVM
+file paths remain separate extensions rather than fallback execution paths.
+`--debug` emits direct DWARF from these same Process entries, preserves lexical
+local extents and disables LLVM optimization. Debug-only byte-aligned buffers
+make packed aggregate fields inspectable at source boundaries without changing
+simulation storage. See [debugger conventions and limits](testing.md#native-debugger-smoke-test).
+The multithreading proposal extends these same CFGs and LLVM
 entries; it does not introduce a new compiler track.
 
 `lower/source_values.rs` owns canonical bindings while hardware source is

@@ -381,6 +381,7 @@ fn result_local(
         name: format!("<return:{}>", local.0),
         source: None,
         span: node.span,
+        scope: None,
         ty: node.ty.clone(),
         layout: layout.clone(),
     });

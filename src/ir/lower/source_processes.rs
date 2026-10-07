@@ -2025,10 +2025,20 @@ fn lower_statements(
     process: &mut ProcessCfg,
     entry: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
+    let first_local = process.locals.len();
     let mut current = Some(entry);
     for statement in statements {
         let Some(block) = current else { break };
         current = lower_statement(statement, context, process, block);
+    }
+    if let (Some(first), Some(last)) = (statements.first(), statements.last()) {
+        let extent = ast::stmt_span(first).to(ast::stmt_span(last));
+        for local in &mut process.locals[first_local..] {
+            // Nested blocks record their smaller extent before returning.
+            if local.source.is_some() && local.scope.is_none() {
+                local.scope = Some(extent);
+            }
+        }
     }
     current
 }
@@ -2658,6 +2668,7 @@ fn capture_process_operand(
         name: format!("<call:{}>", local.0),
         source: None,
         span: node.span,
+        scope: None,
         ty: node.ty.clone(),
         layout: layout.clone(),
     });
@@ -3417,6 +3428,7 @@ fn lower_for(
         name: variable.text.clone(),
         source: context.resolved.declared(variable.span),
         span: variable.span,
+        scope: Some(span),
         ty,
         layout: None,
     });
@@ -3549,6 +3561,7 @@ fn push_local(
         name: declaration.name.text.clone(),
         source: context.resolved.declared(declaration.name.span),
         span: declaration.span,
+        scope: None,
         ty,
         layout,
     });

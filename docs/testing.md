@@ -120,10 +120,10 @@ test result: ok. 1 passed; 0 failed
 
 - **Filter by qualified name:** `./counter-tests counter::CounterTest` runs the
   matching subset. Partial names also work as filters.
-- **Debugging:** direct Siox DWARF and a stable debugger-facing signal lookup
-  are not implemented yet. `sioxc --test -g` therefore fails explicitly rather
-  than emitting a binary whose stepping or source variables would be
-  misleading. Ordinary runtime failures still carry Siox source locations.
+- **Debugging:** `sioxc --test -g` emits direct LLVM DWARF with optimization
+  disabled. Use GDB source-line breakpoints, `next`, and source variable names;
+  see the debugger checks and inspection conventions below. Ordinary runtime
+  failures still carry Siox source locations without `-g`.
 - **Failures name their source.** A failing `assert!`, a ranged signal leaving
   its domain, and a failing `read<T>` all print `--> file:line:col` beside the
   message, followed by the source line and a caret, so a CI log points at the
@@ -153,9 +153,9 @@ A file with no `#[test]` entity reports zero tests rather than erroring.
 
 ## Native debugger smoke test
 
-GDB can debug the native runtime and emitted process functions today, but not
-step Siox source lines or inspect source variables by name. The reproducible
-check uses the existing FIFO and 128-bit corpus designs:
+GDB can debug the native runtime, or step Siox source and inspect named state
+when compiled with `--debug`. The reproducible check uses the existing FIFO and
+128-bit corpus designs in both ordinary and debug builds:
 
 ```bash
 bash scripts/guarded-run.sh bash scripts/test-gdb.sh /home/max/siox-tests
@@ -164,10 +164,54 @@ bash scripts/guarded-run.sh bash scripts/test-gdb.sh /home/max/siox-tests
 It verifies timed-wait and process-entry breakpoints, scheduler backtraces,
 instruction stepping, signal reads through the waveform metadata and
 `sx_read_word`, and byte-identical VCD output versus normal execution. The wide
-case checks both 64-bit words of a 128-bit carry. It also verifies the explicit
-`--debug` rejection and unavailable source breakpoints. This requires GDB with
-Python support and permission to launch a traced child; it adds no DAP or
-editor integration. Waveform tables are not a stable source-debugger API.
+case checks both 64-bit words of a 128-bit carry, source breakpoints/stepping,
+and named wide structs/arrays. Ordinary builds still omit source metadata.
+This requires GDB with Python support and permission to launch a traced child;
+it adds no DAP or editor integration. Waveform tables are not a stable
+source-debugger API.
+
+```bash
+sioxc --std std --test --debug /home/max/siox-tests/fifo_test.siox -o fifo-tests
+gdb ./fifo-tests
+# (gdb) break fifo_test.siox:26
+# (gdb) run
+# (gdb) print FifoTest::d::count
+# (gdb) next
+```
+
+DWARF namespaces follow elaborated instance paths: `FifoTest::d::head` names
+internal FIFO state, while `FifoTest::dout` names persistent test storage.
+Process locals use their lexical names; shadowed locals regain their outer
+binding after the inner block exits, including across `await`. Select the Siox
+caller frame (`up`) if stopped inside an unannotated native runtime helper.
+Debug artifacts advertise the C++ debugger expression grammar because Siox has
+no native debugger language integration; code generation remains direct LLVM.
+
+Integers, reals, std/user enum discriminants, multiword vectors, structs and
+fixed arrays retain their source types. Packed aggregates that cannot be read
+faithfully as native bitfields use debug-only byte-aligned inspection buffers,
+refreshed at Siox source boundaries. Do not write these buffers to mutate the
+simulation or expect them to update while stopped inside runtime helpers.
+Ascending arrays preserve their lower bound (`words[-1]`); descending arrays
+are labelled records rather than silently reversed C++ arrays. GDB Python can
+inspect their labels with `gdb.parse_and_eval('T::rows')['[3]']`. Flattened
+hardware leaves containing brackets need quoted symbol names, for example
+`print 'FifoTest::d::mem[0]'`.
+
+Remaining inspection work includes general wide scalar padding coverage,
+packed-vector X/Z companion presentation, runtime-sized strings/arrays,
+repeated inline-call scope identity and richer source call stacks. Debug mode
+is deliberately unoptimized; it is not a simulation performance mode. The
+same option applies to native objects and `--emit llvm-ir`.
+
+`tests/debug_info.rs` verifies metadata/object output, native execution,
+source steps, persistent/shadowed locals, loop indices, signed 3/81-bit values,
+nonstandard enums, real/wide packed structs and labelled arrays in default and
+`bitpack` builds. To run the existing native corpus with DWARF enabled:
+
+```bash
+bash scripts/guarded-run.sh env SIOXC_DEBUG=1 bash scripts/test-corpus.sh /home/max/siox-tests
+```
 
 ## How the compiler is tested
 

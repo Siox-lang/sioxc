@@ -797,6 +797,7 @@ fn process_assignment_snapshot_requires_capturable_operands() {
                 name: "values".into(),
                 source: None,
                 span,
+                scope: None,
                 ty: None,
                 layout: None,
             }],

@@ -1,0 +1,872 @@
+//! Direct source DWARF for resumable Process entries and their existing state.
+
+use super::*;
+use std::cell::{Cell, RefCell};
+use std::path::Path;
+
+use inkwell::debug_info::{
+    AsDIScope, DICompileUnit, DIFile, DIFlags, DIFlagsConstants, DIGlobalVariableExpression,
+    DILocation, DIScope, DISubprogram, DIType, DWARFEmissionKind, DWARFSourceLanguage,
+    DebugInfoBuilder,
+};
+use inkwell::module::FlagBehavior;
+#[cfg(not(feature = "bitpack"))]
+use inkwell::targets::TargetData;
+use inkwell::values::{AsValueRef, BasicValue, GlobalValue};
+use siox::diag::{FileId, SourceMap, Span};
+use siox::ir::ScalarDomain;
+
+// DWARF standard opcodes/encodings, not Siox values or runtime layout limits.
+const DW_OP_PLUS_UCONST: i64 = 0x23;
+const DW_OP_DEREF_SIZE: i64 = 0x94;
+const DW_OP_CONSTU: i64 = 0x10;
+const DW_OP_AND: i64 = 0x1a;
+const DW_OP_SHL: i64 = 0x24;
+const DW_OP_SHR: i64 = 0x25;
+const DW_OP_SHRA: i64 = 0x26;
+const DW_OP_STACK_VALUE: i64 = 0x9f;
+const DW_ATE_FLOAT: u32 = 0x04;
+const DW_ATE_SIGNED: u32 = 0x05;
+const DW_ATE_UNSIGNED: u32 = 0x07;
+
+pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
+    context: &'ctx Context,
+    builder: DebugInfoBuilder<'ctx>,
+    unit: DICompileUnit<'ctx>,
+    sources: &'s SourceMap,
+    files: RefCell<HashMap<FileId, DIFile<'ctx>>>,
+    namespaces: RefCell<HashMap<String, DIScope<'ctx>>>,
+    lexical_scopes: RefCell<HashMap<usize, Vec<(Span, DIScope<'ctx>)>>>,
+    file_scopes: RefCell<HashMap<(usize, FileId), DIScope<'ctx>>>,
+    #[cfg(not(feature = "bitpack"))]
+    target: TargetData,
+    mirrors: RefCell<Vec<Mirror<'ctx>>>,
+    refresh: Cell<Option<FunctionValue<'ctx>>>,
+}
+
+struct Mirror<'ctx> {
+    source: GlobalValue<'ctx>,
+    source_byte: u64,
+    buffer: GlobalValue<'ctx>,
+    layout: SourceLayout,
+}
+
+impl<'ctx, 's> DebugInfo<'ctx, 's> {
+    pub fn new(
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        sources: &'s SourceMap,
+        design: &Design,
+    ) -> Result<Self, String> {
+        let source = sources
+            .get(FileId(0))
+            .ok_or("DWARF requires an entry source file")?;
+        let (name, directory) = file_parts(&source.name);
+        let (builder, unit) = module.create_debug_info_builder(
+            true,
+            // Siox has no DWARF language code. C++ gives native debuggers
+            // the matching namespace/field expression syntax, not a C backend.
+            DWARFSourceLanguage::CPlusPlus,
+            &name,
+            &directory,
+            concat!("sioxc ", env!("CARGO_PKG_VERSION")),
+            false,
+            "--debug",
+            0,
+            "",
+            DWARFEmissionKind::Full,
+            0,
+            false,
+            false,
+            "",
+            "",
+        );
+        module.add_basic_value_flag(
+            "Debug Info Version",
+            FlagBehavior::Warning,
+            context.i32_type().const_int(
+                u64::from(inkwell::debug_info::debug_metadata_version()),
+                false,
+            ),
+        );
+        module.add_basic_value_flag(
+            "Dwarf Version",
+            FlagBehavior::Warning,
+            context.i32_type().const_int(4, false),
+        );
+        let machine = crate::llvm::aot::host_target_machine()?;
+        let target = machine.get_target_data();
+        module.set_triple(&machine.get_triple());
+        module.set_data_layout(&target.get_data_layout());
+        let debug = Self {
+            context,
+            builder,
+            unit,
+            sources,
+            #[cfg(not(feature = "bitpack"))]
+            target,
+            files: RefCell::new(HashMap::from([(FileId(0), unit.get_file())])),
+            namespaces: RefCell::new(HashMap::new()),
+            lexical_scopes: RefCell::new(HashMap::new()),
+            file_scopes: RefCell::new(HashMap::new()),
+            mirrors: RefCell::new(Vec::new()),
+            refresh: Cell::new(None),
+        };
+        debug.globals(module, design);
+        Ok(debug)
+    }
+
+    fn file(&self, file: FileId) -> DIFile<'ctx> {
+        if let Some(file) = self.files.borrow().get(&file) {
+            return *file;
+        }
+        let Some(source) = self.sources.get(file) else {
+            return self.unit.get_file();
+        };
+        let (name, directory) = file_parts(&source.name);
+        let metadata = self.builder.create_file(&name, &directory);
+        self.files.borrow_mut().insert(file, metadata);
+        metadata
+    }
+
+    fn namespace(&self, path: &str) -> DIScope<'ctx> {
+        if path.is_empty() {
+            return self.unit.as_debug_info_scope();
+        }
+        if let Some(scope) = self.namespaces.borrow().get(path) {
+            return *scope;
+        }
+        let (parent, name) = path.rsplit_once('.').unwrap_or(("", path));
+        let scope = self
+            .builder
+            .create_namespace(self.namespace(parent), name, false)
+            .as_debug_info_scope();
+        self.namespaces.borrow_mut().insert(path.into(), scope);
+        scope
+    }
+
+    pub fn location(&self, scope: DISubprogram<'ctx>, span: Span) -> DILocation<'ctx> {
+        let (line, column) = self.sources.line_col(span.file, span.start);
+        let key = scope.as_mut_ptr() as usize;
+        let lexical = self.lexical_scopes.borrow().get(&key).and_then(|scopes| {
+            scopes
+                .iter()
+                .filter(|(extent, _)| contains(*extent, span))
+                .min_by_key(|(extent, _)| extent.end - extent.start)
+                .map(|(_, scope)| *scope)
+        });
+        let scope = lexical.unwrap_or_else(|| {
+            if let Some(scope) = self.file_scopes.borrow().get(&(key, span.file)) {
+                return *scope;
+            }
+            let file_scope = self
+                .builder
+                .create_lexical_block(scope.as_debug_info_scope(), self.file(span.file), 0, 0)
+                .as_debug_info_scope();
+            self.file_scopes
+                .borrow_mut()
+                .insert((key, span.file), file_scope);
+            file_scope
+        });
+        self.builder
+            .create_debug_location(self.context, line, column, scope, None)
+    }
+
+    fn basic(&self, name: &str, width: u32, encoding: u32) -> DIType<'ctx> {
+        self.builder
+            .create_basic_type(name, u64::from(width), encoding, DIFlags::ZERO)
+            .expect("nonempty debug type name")
+            .as_type()
+    }
+
+    fn ty(&self, design: &Design, layout: &SourceLayout, normalized: bool) -> Option<DIType<'ctx>> {
+        let width = layout.packed_width()?;
+        let file = self.file(layout.span.file);
+        let line = self.sources.line_col(layout.span.file, layout.span.start).0;
+        Some(match &layout.kind {
+            LayoutKind::Scalar {
+                domain: ScalarDomain::Enum(name),
+                ..
+            } => {
+                let symbols = design.enum_syms.get(name)?;
+                let mut symbols = symbols.iter().collect::<Vec<_>>();
+                symbols.sort_by_key(|(value, _)| **value);
+                let variants = symbols
+                    .iter()
+                    .map(|(value, name)| self.builder.create_enumerator(name, **value as i64, true))
+                    .collect::<Vec<_>>();
+                self.builder
+                    .create_enumeration_type(
+                        self.unit.as_debug_info_scope(),
+                        name,
+                        file,
+                        line,
+                        u64::from(width.div_ceil(8) * 8),
+                        0,
+                        &variants,
+                        self.basic("discriminant", width, DW_ATE_UNSIGNED),
+                    )
+                    .as_type()
+            }
+            LayoutKind::Scalar {
+                domain,
+                nominal,
+                value_range,
+                ..
+            } => {
+                let (fallback, encoding) = match domain {
+                    ScalarDomain::Real => ("real", DW_ATE_FLOAT),
+                    ScalarDomain::Integer => (
+                        "integer",
+                        if value_range.is_some_and(|(left, _)| left >= 0) {
+                            DW_ATE_UNSIGNED
+                        } else {
+                            DW_ATE_SIGNED
+                        },
+                    ),
+                    ScalarDomain::Character => ("Char", DW_ATE_UNSIGNED),
+                    _ => ("bits", DW_ATE_UNSIGNED),
+                };
+                self.basic(nominal.as_deref().unwrap_or(fallback), width, encoding)
+            }
+            LayoutKind::Packed { family, .. } => self.basic(
+                &format!("{family}[{width}]"),
+                width,
+                if process_layout_is_signed(layout) {
+                    DW_ATE_SIGNED
+                } else {
+                    DW_ATE_UNSIGNED
+                },
+            ),
+            LayoutKind::Struct { name, fields, .. } => {
+                let mut offset = 0u64;
+                let mut members = Vec::new();
+                for field in fields {
+                    let ty = self.ty(design, &field.layout, normalized)?;
+                    let size = if normalized {
+                        inspection_bits(&field.layout)?
+                    } else {
+                        field.layout.bit_width()?
+                    };
+                    members.push(
+                        self.builder
+                            .create_member_type(
+                                self.unit.as_debug_info_scope(),
+                                &field.name,
+                                file,
+                                line,
+                                size,
+                                0,
+                                offset,
+                                if !offset.is_multiple_of(8) || !size.is_multiple_of(8) {
+                                    DIFlags::BIT_FIELD
+                                } else {
+                                    DIFlags::ZERO
+                                },
+                                ty,
+                            )
+                            .as_type(),
+                    );
+                    offset += size;
+                }
+                self.builder
+                    .create_struct_type(
+                        self.unit.as_debug_info_scope(),
+                        name,
+                        file,
+                        line,
+                        if normalized {
+                            inspection_bits(layout)?
+                        } else {
+                            u64::from(width.div_ceil(8) * 8)
+                        },
+                        0,
+                        DIFlags::ZERO,
+                        None,
+                        &members,
+                        0,
+                        None,
+                        "",
+                    )
+                    .as_type()
+            }
+            LayoutKind::Array {
+                range: Some(range),
+                element,
+            } if (normalized || element.bit_width()?.is_multiple_of(8)) && range.ascending() => {
+                self.builder
+                    .create_array_type(
+                        self.ty(design, element, normalized)?,
+                        if normalized {
+                            inspection_bits(layout)?
+                        } else {
+                            u64::from(width)
+                        },
+                        0,
+                        std::slice::from_ref(&(range.left..range.right.checked_add(1)?)),
+                    )
+                    .as_type()
+            }
+            LayoutKind::Array {
+                range: Some(range),
+                element,
+            } => {
+                // C++ debuggers assume positive array strides. Preserve
+                // descending Siox labels as named elements instead of
+                // advertising an array whose indexing reverses the data.
+                let element_ty = self.ty(design, element, normalized)?;
+                let size = if normalized {
+                    inspection_bits(element)?
+                } else {
+                    element.bit_width()?
+                };
+                let mut members = Vec::new();
+                for ordinal in 0..range.len()? {
+                    let index = if range.ascending() {
+                        i128::from(range.left) + i128::from(ordinal)
+                    } else {
+                        i128::from(range.left) - i128::from(ordinal)
+                    };
+                    let offset = ordinal.checked_mul(size)?;
+                    members.push(
+                        self.builder
+                            .create_member_type(
+                                self.unit.as_debug_info_scope(),
+                                &format!("[{index}]"),
+                                file,
+                                line,
+                                size,
+                                0,
+                                offset,
+                                if !offset.is_multiple_of(8) || !size.is_multiple_of(8) {
+                                    DIFlags::BIT_FIELD
+                                } else {
+                                    DIFlags::ZERO
+                                },
+                                element_ty,
+                            )
+                            .as_type(),
+                    );
+                }
+                self.builder
+                    .create_struct_type(
+                        self.unit.as_debug_info_scope(),
+                        &format!("array[{}..{}]", range.left, range.right),
+                        file,
+                        line,
+                        if normalized {
+                            inspection_bits(layout)?
+                        } else {
+                            u64::from(width.div_ceil(8) * 8)
+                        },
+                        0,
+                        DIFlags::ZERO,
+                        None,
+                        &members,
+                        0,
+                        None,
+                        "",
+                    )
+                    .as_type()
+            }
+            LayoutKind::Array { .. } => return None,
+            LayoutKind::Opaque { name, .. } => self.basic(name, width, DW_ATE_UNSIGNED),
+        })
+    }
+
+    fn signal_bits(&self, _design: &Design, signal: SignalId) -> u64 {
+        #[cfg(not(feature = "bitpack"))]
+        {
+            let state = self
+                .context
+                .get_struct_type("sx.state")
+                .expect("declared signal state");
+            self.target
+                .offset_of_element(&state, signal.0)
+                .expect("signal field")
+                * 8
+        }
+        #[cfg(feature = "bitpack")]
+        {
+            let (slots, _) = crate::llvm::emit::pack_layout(_design);
+            let (word, bit) = slots[signal.0 as usize];
+            u64::from(word) * 64 + u64::from(bit)
+        }
+    }
+
+    fn globals(&self, module: &Module<'ctx>, design: &Design) {
+        for (id, signal) in design.signals.iter().enumerate() {
+            if design
+                .meta_of
+                .values()
+                .any(|companion| *companion == id as u32)
+                || design.metavalue_temps.contains(&(id as u32))
+            {
+                continue;
+            }
+            let (owner, name) = signal.path.rsplit_once('.').unwrap_or(("", &signal.path));
+            let id = SignalId(id as u32);
+            let Some(layout) = signal_layout(design, &[id]) else {
+                continue;
+            };
+            let normalized = needs_mirror(layout);
+            let Some(ty) = self.ty(design, layout, normalized) else {
+                continue;
+            };
+            let offset = self.signal_bits(design, id);
+            let (global, expression) = if normalized {
+                (
+                    self.mirror_at(
+                        module,
+                        "cur",
+                        &format!("sx.signal.{}", id.0),
+                        layout,
+                        offset / 8,
+                    ),
+                    None,
+                )
+            } else {
+                (
+                    "cur".into(),
+                    Some(self.expression(layout, offset, cfg!(feature = "bitpack"))),
+                )
+            };
+            let info = self.builder.create_global_variable_expression(
+                self.namespace(owner),
+                name,
+                "",
+                self.file(signal.declaration_span.file),
+                self.sources
+                    .line_col(signal.declaration_span.file, signal.declaration_span.start)
+                    .0,
+                ty,
+                true,
+                expression,
+                None,
+                0,
+            );
+            self.attach_global(module, &global, info);
+        }
+        for storage in &design.process_ir.storages {
+            let global = storage_state_name(storage.id);
+            if module.get_global(&global).is_none() {
+                continue;
+            }
+            let Some(layout) = storage.layout.as_ref() else {
+                continue;
+            };
+            let normalized = needs_mirror(layout);
+            let Some(ty) = self.ty(design, layout, normalized) else {
+                continue;
+            };
+            let global = if normalized {
+                self.mirror(module, &global, layout)
+            } else {
+                global
+            };
+            let owner = design
+                .process_ir
+                .processes
+                .iter()
+                .find(|p| p.owner == storage.owner)
+                .and_then(|p| p.label.as_deref())
+                .and_then(|name| name.rsplit_once("::"))
+                .map_or("", |(owner, _)| owner);
+            let info = self.builder.create_global_variable_expression(
+                self.namespace(owner),
+                &storage.name,
+                "",
+                self.file(storage.span.file),
+                self.sources
+                    .line_col(storage.span.file, storage.span.start)
+                    .0,
+                ty,
+                true,
+                (!normalized).then(|| self.expression(layout, 0, false)),
+                None,
+                0,
+            );
+            self.attach_global(module, &global, info);
+        }
+    }
+
+    fn mirror(&self, module: &Module<'ctx>, name: &str, layout: &SourceLayout) -> String {
+        self.mirror_at(module, name, name, layout, 0)
+    }
+
+    fn mirror_at(
+        &self,
+        module: &Module<'ctx>,
+        source: &str,
+        name: &str,
+        layout: &SourceLayout,
+        source_byte: u64,
+    ) -> String {
+        let mirror_name = format!("{name}.debug");
+        let bytes = u32::try_from(inspection_bits(layout).expect("concrete inspection layout") / 8)
+            .expect("validated packed width");
+        let ty = self.context.i8_type().array_type(bytes);
+        let buffer = module.add_global(ty, None, &mirror_name);
+        buffer.set_initializer(&ty.const_zero());
+        buffer.set_linkage(Linkage::Internal);
+        self.mirrors.borrow_mut().push(Mirror {
+            source: module.get_global(source).expect("declared state"),
+            source_byte,
+            buffer,
+            layout: layout.clone(),
+        });
+        if self.refresh.get().is_none() {
+            self.refresh.set(Some(module.add_function(
+                "sx.debug.refresh",
+                self.context.void_type().fn_type(&[], false),
+                Some(Linkage::Internal),
+            )));
+        }
+        mirror_name
+    }
+
+    pub fn sync(&self, builder: &Builder<'ctx>) {
+        if let Some(refresh) = self.refresh.get() {
+            builder.unset_current_debug_location();
+            builder.build_call(refresh, &[], "").unwrap();
+        }
+    }
+
+    fn copy_fields(
+        &self,
+        builder: &Builder<'ctx>,
+        mirror: &Mirror<'ctx>,
+        value: IntValue<'ctx>,
+        layout: &SourceLayout,
+        logical: &mut u32,
+        byte: &mut u32,
+    ) {
+        match &layout.kind {
+            LayoutKind::Struct { fields, .. } => {
+                for field in fields {
+                    self.copy_fields(builder, mirror, value, &field.layout, logical, byte);
+                }
+            }
+            LayoutKind::Array {
+                range: Some(range),
+                element,
+            } => {
+                for _ in 0..range.len().unwrap() {
+                    self.copy_fields(builder, mirror, value, element, logical, byte);
+                }
+            }
+            _ => {
+                let width = layout.packed_width().unwrap();
+                let part = extract_region(builder, value, *logical, width).unwrap();
+                let ty = self
+                    .context
+                    .custom_width_int_type(
+                        std::num::NonZeroU32::new(width.div_ceil(8) * 8).unwrap(),
+                    )
+                    .unwrap();
+                let part = if ty == part.get_type() {
+                    part
+                } else if process_layout_is_signed(layout) {
+                    builder
+                        .build_int_s_extend(part, ty, "debug.signed")
+                        .unwrap()
+                } else {
+                    builder
+                        .build_int_z_extend(part, ty, "debug.unsigned")
+                        .unwrap()
+                };
+                let pointer = unsafe {
+                    builder
+                        .build_in_bounds_gep(
+                            self.context.i8_type(),
+                            mirror.buffer.as_pointer_value(),
+                            &[self.context.i64_type().const_int(u64::from(*byte), false)],
+                            "debug.field",
+                        )
+                        .unwrap()
+                };
+                builder
+                    .build_store(pointer, part)
+                    .unwrap()
+                    .set_alignment(1)
+                    .unwrap();
+                *logical += width;
+                *byte += width.div_ceil(8);
+            }
+        }
+    }
+
+    fn expression(
+        &self,
+        layout: &SourceLayout,
+        offset: u64,
+        packed_word: bool,
+    ) -> inkwell::debug_info::DIExpression<'ctx> {
+        let width = layout.packed_width().expect("concrete debug layout");
+        let mut ops = vec![DW_OP_PLUS_UCONST, (offset / 8) as i64];
+        // Native integer slots round up to bytes; bitpacked signals may start
+        // inside a byte. Compute a value for these scalars so neither padding
+        // nor a neighbouring signal changes what the debugger reports.
+        if width <= 64 && (!offset.is_multiple_of(8) || !width.is_multiple_of(8)) {
+            let (bytes, shift) = if packed_word {
+                ops[1] = ((offset / 64) * 8) as i64;
+                (8, offset % 64)
+            } else {
+                (u64::from(width.div_ceil(8)), offset % 8)
+            };
+            ops.extend([DW_OP_DEREF_SIZE, bytes as i64]);
+            if shift != 0 {
+                ops.extend([DW_OP_CONSTU, shift as i64, DW_OP_SHR]);
+            }
+            if process_layout_is_signed(layout) {
+                let shift = i64::from(64 - width);
+                ops.extend([
+                    DW_OP_CONSTU,
+                    shift,
+                    DW_OP_SHL,
+                    DW_OP_CONSTU,
+                    shift,
+                    DW_OP_SHRA,
+                ]);
+            } else if width != 64 {
+                ops.extend([DW_OP_CONSTU, ((1u64 << width) - 1) as i64, DW_OP_AND]);
+            }
+            ops.push(DW_OP_STACK_VALUE);
+        }
+        self.builder.create_expression(ops)
+    }
+
+    fn attach_global(
+        &self,
+        module: &Module<'ctx>,
+        name: &str,
+        info: DIGlobalVariableExpression<'ctx>,
+    ) {
+        // Multiple source signals share one state global. LLVM expects each
+        // expression attached directly, not wrapped in an MDTuple.
+        unsafe {
+            inkwell::llvm_sys::core::LLVMGlobalAddMetadata(
+                module
+                    .get_global(name)
+                    .expect("declared state")
+                    .as_value_ref(),
+                self.context.get_kind_id("dbg"),
+                inkwell::llvm_sys::core::LLVMValueAsMetadata(
+                    info.as_metadata_value(self.context).as_value_ref(),
+                ),
+            );
+        }
+    }
+
+    pub fn process(
+        &self,
+        module: &Module<'ctx>,
+        design: &Design,
+        process: &ProcessCfg,
+        function: FunctionValue<'ctx>,
+    ) -> DISubprogram<'ctx> {
+        let file = self.file(process.span.file);
+        let line = self
+            .sources
+            .line_col(process.span.file, process.span.start)
+            .0;
+        let label = process
+            .label
+            .clone()
+            .unwrap_or_else(|| format!("process {}", process.id.0));
+        let (owner, name) = label.rsplit_once("::").unwrap_or(("", &label));
+        let scope = self.builder.create_function(
+            self.namespace(owner),
+            name,
+            None,
+            file,
+            line,
+            self.builder.create_subroutine_type(
+                file,
+                Some(self.basic("process status", 8, DW_ATE_UNSIGNED)),
+                &[self.basic("resume block", 32, DW_ATE_UNSIGNED)],
+                DIFlags::ZERO,
+            ),
+            true,
+            true,
+            line,
+            DIFlags::ZERO,
+            false,
+        );
+        function.set_subprogram(scope);
+        let mut extents = process
+            .locals
+            .iter()
+            .filter_map(|local| local.scope)
+            .collect::<Vec<_>>();
+        extents.sort_by_key(|span| {
+            (
+                std::cmp::Reverse(span.end - span.start),
+                span.file.0,
+                span.start,
+            )
+        });
+        extents.dedup();
+        let mut scopes = Vec::<(Span, DIScope<'ctx>)>::new();
+        for extent in extents {
+            let parent = scopes
+                .iter()
+                .filter(|(span, _)| contains(*span, extent))
+                .min_by_key(|(span, _)| span.end - span.start)
+                .map_or(scope.as_debug_info_scope(), |(_, scope)| *scope);
+            let (line, column) = self.sources.line_col(extent.file, extent.start);
+            scopes.push((
+                extent,
+                self.builder
+                    .create_lexical_block(parent, self.file(extent.file), line, column)
+                    .as_debug_info_scope(),
+            ));
+        }
+        self.lexical_scopes
+            .borrow_mut()
+            .insert(scope.as_mut_ptr() as usize, scopes.clone());
+        for local in &process.locals {
+            if local.source.is_none() {
+                continue;
+            }
+            let global_name = local_state_name(process.id, local.id);
+            if module.get_global(&global_name).is_none() {
+                continue;
+            }
+            let fallback;
+            let layout = if let Some(layout) = local
+                .layout
+                .as_ref()
+                .or_else(|| local.ty.as_ref().and_then(|ty| layout_for_type(design, ty)))
+            {
+                layout
+            } else {
+                let Some(width) = local_width(design, process.id, local.id) else {
+                    continue;
+                };
+                let domain = match local.ty.as_ref() {
+                    Some(siox::types::Ty::Integer) => ScalarDomain::Integer,
+                    Some(siox::types::Ty::Real) => ScalarDomain::Real,
+                    Some(siox::types::Ty::Char) => ScalarDomain::Character,
+                    _ => ScalarDomain::Bits,
+                };
+                fallback = SourceLayout {
+                    span: local.span,
+                    kind: LayoutKind::Scalar {
+                        width,
+                        domain,
+                        nominal: None,
+                        value_range: None,
+                    },
+                };
+                &fallback
+            };
+            let normalized = needs_mirror(layout);
+            let Some(ty) = self.ty(design, layout, normalized) else {
+                continue;
+            };
+            let global_name = if normalized {
+                self.mirror(module, &global_name, layout)
+            } else {
+                global_name
+            };
+            // Locals live in persistent global slots, not on a native stack.
+            // Describe them as lexically scoped static variables: dbg.declare
+            // of a global address loses its location in LLVM's O0 selection.
+            let variable = self.builder.create_global_variable_expression(
+                local
+                    .scope
+                    .and_then(|span| scopes.iter().find(|(extent, _)| *extent == span))
+                    .map_or(scope.as_debug_info_scope(), |(_, scope)| *scope),
+                &local.name,
+                "",
+                self.file(local.span.file),
+                self.sources.line_col(local.span.file, local.span.start).0,
+                ty,
+                true,
+                (!normalized).then(|| self.expression(layout, 0, false)),
+                None,
+                0,
+            );
+            self.attach_global(module, &global_name, variable);
+        }
+        scope
+    }
+
+    pub fn finish(&self) {
+        if let Some(function) = self.refresh.get() {
+            let builder = self.context.create_builder();
+            builder.position_at_end(self.context.append_basic_block(function, "refresh"));
+            for mirror in self.mirrors.borrow().iter() {
+                let width = mirror.layout.packed_width().unwrap();
+                let ty = self
+                    .context
+                    .custom_width_int_type(std::num::NonZeroU32::new(width).unwrap())
+                    .unwrap();
+                let pointer = unsafe {
+                    builder
+                        .build_in_bounds_gep(
+                            self.context.i8_type(),
+                            mirror.source.as_pointer_value(),
+                            &[self.context.i64_type().const_int(mirror.source_byte, false)],
+                            "debug.source",
+                        )
+                        .unwrap()
+                };
+                let load = builder.build_load(ty, pointer, "debug.packed").unwrap();
+                load.as_instruction_value()
+                    .unwrap()
+                    .set_alignment(1)
+                    .unwrap();
+                let value = load.into_int_value();
+                self.copy_fields(&builder, mirror, value, &mirror.layout, &mut 0, &mut 0);
+            }
+            builder.build_return(None).unwrap();
+        }
+        self.builder.finalize();
+    }
+}
+
+fn file_parts(name: &str) -> (String, String) {
+    // A relative import directory is relative to the compiler's working
+    // directory, not to the entry source's DW_AT_comp_dir.
+    let path = std::path::absolute(name).unwrap_or_else(|_| Path::new(name).to_path_buf());
+    (
+        path.file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .into_owned(),
+        path.parent()
+            .unwrap_or(Path::new("."))
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+fn contains(extent: Span, span: Span) -> bool {
+    extent.file == span.file && extent.start <= span.start && span.start < extent.end
+}
+
+fn inspection_bits(layout: &SourceLayout) -> Option<u64> {
+    match &layout.kind {
+        LayoutKind::Struct { fields, .. } => fields.iter().try_fold(0u64, |total, field| {
+            total.checked_add(inspection_bits(&field.layout)?)
+        }),
+        LayoutKind::Array { range, element } => range
+            .as_ref()?
+            .len()?
+            .checked_mul(inspection_bits(element)?),
+        _ => Some(u64::from(layout.packed_width()?.div_ceil(8)) * 8),
+    }
+}
+
+fn needs_mirror(layout: &SourceLayout) -> bool {
+    (matches!(
+        layout.kind,
+        LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+    ) && inspection_bits(layout) != layout.bit_width())
+        || (process_layout_is_signed(layout)
+            && layout
+                .packed_width()
+                .is_some_and(|width| width > 64 && !width.is_multiple_of(8)))
+}

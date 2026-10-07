@@ -14,8 +14,8 @@ mod aot;
 mod emit;
 mod process;
 
-pub use aot::{emit_object, emit_object_with_sources};
-pub use emit::emit_module_ir;
+pub use aot::{emit_object, emit_object_with_debug, emit_object_with_sources};
+pub use emit::{emit_module_ir, emit_module_ir_with_debug};
 
 /// Width of one word in the native runtime ABI.
 pub const ABI_WORD_BITS: u32 = 64;

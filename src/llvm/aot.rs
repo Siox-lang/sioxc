@@ -16,7 +16,7 @@ use inkwell::OptimizationLevel;
 use siox::diag::SourceMap;
 use siox::ir::Design;
 
-use super::emit::{build_module, build_module_with_sources};
+use super::emit::build_module;
 
 /// The `(cpu, features)` the target machine is built for. With the `simd`
 /// feature it is the host's own CPU and native feature set — so the backend may
@@ -43,6 +43,10 @@ fn target_cpu_features() -> (String, String) {
 /// A `TargetMachine` for codegen, tuned per the `simd` feature (see
 /// [`target_cpu_features`]).
 pub fn host_target_machine() -> Result<TargetMachine, String> {
+    target_machine(OptimizationLevel::Default)
+}
+
+fn target_machine(level: OptimizationLevel) -> Result<TargetMachine, String> {
     Target::initialize_native(&InitializationConfig::default())
         .map_err(|e| format!("target init failed: {e}"))?;
     let triple = TargetMachine::get_default_triple();
@@ -53,7 +57,7 @@ pub fn host_target_machine() -> Result<TargetMachine, String> {
             &triple,
             &cpu,
             &features,
-            OptimizationLevel::Default,
+            level,
             RelocMode::PIC,
             CodeModel::Default,
         )
@@ -63,7 +67,7 @@ pub fn host_target_machine() -> Result<TargetMachine, String> {
 /// Emit `design` as a native object file at `path` (`.o`). The object exports
 /// `sx_reset`/`sx_set`/`sx_read`/`sx_settle`.
 pub fn emit_object(design: &Design, path: &Path) -> Result<(), String> {
-    emit_object_module(design, None, path)
+    emit_object_module(design, None, path, false)
 }
 
 /// Emit an object with the source locations needed by its fixed runtime.
@@ -72,21 +76,40 @@ pub fn emit_object_with_sources(
     sources: &SourceMap,
     path: &Path,
 ) -> Result<(), String> {
-    emit_object_module(design, Some(sources), path)
+    emit_object_module(design, Some(sources), path, false)
+}
+
+/// Emit source DWARF directly from Process IR, without LLVM optimization.
+pub fn emit_object_with_debug(
+    design: &Design,
+    sources: &SourceMap,
+    path: &Path,
+) -> Result<(), String> {
+    emit_object_module(design, Some(sources), path, true)
 }
 
 fn emit_object_module(
     design: &Design,
     sources: Option<&SourceMap>,
     path: &Path,
+    debug: bool,
 ) -> Result<(), String> {
-    let tm = host_target_machine()?;
+    let tm = target_machine(if debug {
+        OptimizationLevel::None
+    } else {
+        OptimizationLevel::Default
+    })?;
     let ctx = Context::create();
     let module = match sources {
-        Some(sources) => build_module_with_sources(&ctx, design, Some(sources))?,
+        Some(sources) => super::emit::build_module_with_debug(&ctx, design, Some(sources), debug)?,
         None => build_module(&ctx, design)?,
     };
-    super::emit::optimize_module(&module, &tm)?;
+    if debug {
+        module.set_triple(&tm.get_triple());
+        module.set_data_layout(&tm.get_target_data().get_data_layout());
+    } else {
+        super::emit::optimize_module(&module, &tm)?;
+    }
     tm.write_to_file(&module, FileType::Object, path)
         .map_err(|e| format!("object emission failed: {e}"))
 }
@@ -771,6 +794,7 @@ signed main(void) {
                     name: "temporary".into(),
                     source: None,
                     span,
+                    scope: None,
                     ty: None,
                     layout: Some(packed()),
                 }],
@@ -1110,6 +1134,7 @@ signed main(void) {
                     name: "local_pair".into(),
                     source: None,
                     span,
+                    scope: None,
                     ty: Some(pair_ty),
                     layout: Some(pair.clone()),
                 }],
@@ -1360,6 +1385,7 @@ signed main(void) {
                     name: "temporary".into(),
                     source: None,
                     span,
+                    scope: None,
                     ty: None,
                     layout: Some(byte()),
                 }],

@@ -231,6 +231,9 @@ pub struct ProcessLocal {
     pub source: Option<DefId>,
     /// The declaration site.
     pub span: crate::diag::Span,
+    /// Lexical statement extent in the declaring source block, for debugger
+    /// visibility and shadowing. Synthetic/transitional locals may omit it.
+    pub scope: Option<crate::diag::Span>,
     /// Transitional frontend type retained until expression lowering produces
     /// only concrete IR value/layout IDs.
     pub ty: Option<crate::types::Ty>,

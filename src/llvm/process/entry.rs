@@ -19,6 +19,7 @@ pub(super) fn process_entry<'ctx>(
     activity_values: &[bool],
     supported_values: &ProcessValueSupport,
     schedule_sites: &HashMap<(ProcessId, siox::ir::ProcessBlockId, usize), ScheduleSite>,
+    debug: Option<&DebugInfo<'ctx, '_>>,
 ) -> FunctionValue<'ctx> {
     let i8 = context.i8_type();
     let i32 = context.i32_type();
@@ -38,6 +39,7 @@ pub(super) fn process_entry<'ctx>(
         .collect::<Vec<_>>();
 
     builder.position_at_end(dispatch);
+    let scope = debug.map(|debug| debug.process(module, design, process, function));
     let resume = function
         .get_first_param()
         .expect("process entry has a resume block")
@@ -72,6 +74,16 @@ pub(super) fn process_entry<'ctx>(
         let mut cache = ProcessValueCache::new(activity_values, &supported_values.meta_free);
         let mut failed = false;
         for (instruction_index, instruction) in block.instructions.iter().enumerate() {
+            if let (Some(debug), Some(scope)) = (debug, scope) {
+                debug.sync(&builder);
+                let span = match instruction {
+                    ProcessInstruction::Declare { span, .. }
+                    | ProcessInstruction::Assign { span, .. }
+                    | ProcessInstruction::Schedule { span, .. }
+                    | ProcessInstruction::Runtime { span, .. } => *span,
+                };
+                builder.set_current_debug_location(debug.location(scope, span));
+            }
             let emitted = match instruction {
                 ProcessInstruction::Declare {
                     local, initializer, ..
@@ -386,6 +398,28 @@ pub(super) fn process_entry<'ctx>(
                 // Immediate writes must invalidate an earlier arena load of
                 // the same place. Staged signal writes deliberately do not.
                 cache.clear();
+            }
+        }
+        if let (Some(debug), Some(scope)) = (debug, scope) {
+            debug.sync(&builder);
+            let span = match &block.terminator {
+                ProcessTerminator::Return { span, .. } => *span,
+                ProcessTerminator::For { span, .. }
+                | ProcessTerminator::Suspend { span, .. }
+                | ProcessTerminator::Stop { span }
+                | ProcessTerminator::Finish { span } => Some(*span),
+                ProcessTerminator::Branch { condition, .. } => {
+                    Some(design.process_ir.values[condition.0 as usize].span)
+                }
+                ProcessTerminator::Match { scrutinee, .. } => {
+                    Some(design.process_ir.values[scrutinee.0 as usize].span)
+                }
+                ProcessTerminator::Goto(_) => None,
+            };
+            if let Some(span) = span {
+                builder.set_current_debug_location(debug.location(scope, span));
+            } else {
+                builder.unset_current_debug_location();
             }
         }
         let branch_condition = match &block.terminator {
@@ -845,6 +879,7 @@ pub(super) fn process_entry_table<'ctx>(
     design: &Design,
     supported_values: &ProcessValueSupport,
     activity_values: &[bool],
+    debug: Option<&DebugInfo<'ctx, '_>>,
 ) {
     let pointer = context.ptr_type(AddressSpace::default());
     let index_sites = design
@@ -880,6 +915,7 @@ pub(super) fn process_entry_table<'ctx>(
                 activity_values,
                 supported_values,
                 &schedule_by_location,
+                debug,
             )
             .as_global_value()
             .as_pointer_value()

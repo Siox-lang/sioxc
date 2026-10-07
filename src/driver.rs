@@ -28,7 +28,7 @@ struct Cli {
     /// Compile `#[test]` entities into a native test executable.
     #[arg(long)]
     test: bool,
-    /// Request native source-level debug metadata (not implemented yet).
+    /// Emit Siox source DWARF and disable LLVM optimization.
     #[arg(short = 'g', long)]
     debug: bool,
     /// Compiler artifact to emit.

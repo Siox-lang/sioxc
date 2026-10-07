@@ -140,8 +140,7 @@ pub struct CompileRequest {
     /// Required destination override for file artifacts. Textual artifacts are
     /// returned in memory and ignore this field.
     pub output: Option<PathBuf>,
-    /// Request native source-level debug metadata. The Process IR backend
-    /// currently rejects this explicitly until direct DWARF emission exists.
+    /// Emit source DWARF directly from Process IR and disable LLVM optimization.
     pub debug: bool,
     /// Lint levels from the command line (`-A`/`-W`/`-D`/`-F`), in the order
     /// given; later entries override earlier ones, and source directives
@@ -665,10 +664,10 @@ impl Compiler {
         }
 
         match request.emit {
-            Emit::LlvmIr => self.emit_llvm_ir(&mut result),
+            Emit::LlvmIr => self.emit_llvm_ir(&mut result, request.debug),
             Emit::Object { .. } => {
                 let output = request.output.unwrap_or_else(|| path.with_extension("o"));
-                self.emit_object(&mut result, output);
+                self.emit_object(&mut result, output, request.debug);
             }
             Emit::TestExecutable => {
                 let output = request
@@ -710,11 +709,17 @@ impl Compiler {
 
     #[cfg(feature = "llvm")]
     /// Emit textual LLVM IR for the validated design.
-    fn emit_llvm_ir(&self, result: &mut Compilation) {
+    fn emit_llvm_ir(&self, result: &mut Compilation, debug: bool) {
         if !Self::validate_design(result) {
             return;
         }
-        match crate::llvm::emit_module_ir(result.design.as_ref().expect("validated design")) {
+        let design = result.design.as_ref().expect("validated design");
+        let emitted = if debug {
+            crate::llvm::emit_module_ir_with_debug(design, &result.sources)
+        } else {
+            crate::llvm::emit_module_ir(design)
+        };
+        match emitted {
             Ok(text) => result.artifact = Some(Artifact::Text(text)),
             Err(error) => {
                 result.failure = Some(CompileFailure::new(FailureKind::Backend, error));
@@ -725,7 +730,7 @@ impl Compiler {
     #[cfg(not(feature = "llvm"))]
     /// Stub for builds without the `llvm` feature: reports that the backend is
     /// unavailable rather than silently emitting nothing.
-    fn emit_llvm_ir(&self, result: &mut Compilation) {
+    fn emit_llvm_ir(&self, result: &mut Compilation, _debug: bool) {
         result.failure = Some(backend_unavailable());
     }
 
@@ -752,14 +757,20 @@ impl Compiler {
 
     #[cfg(feature = "llvm")]
     /// Emit a native object exposing the `sx_*` design ABI.
-    fn emit_object(&self, result: &mut Compilation, output: PathBuf) {
+    fn emit_object(&self, result: &mut Compilation, output: PathBuf, debug: bool) {
         if !Self::reject_unresolved_widths(result) {
             return;
         }
         if !Self::validate_design(result) {
             return;
         }
-        match crate::llvm::emit_object(result.design.as_ref().expect("validated design"), &output) {
+        let design = result.design.as_ref().expect("validated design");
+        let emitted = if debug {
+            crate::llvm::emit_object_with_debug(design, &result.sources, &output)
+        } else {
+            crate::llvm::emit_object(design, &output)
+        };
+        match emitted {
             Ok(()) => {
                 result.artifact = Some(Artifact::File {
                     kind: FileArtifact::Object,
@@ -774,7 +785,7 @@ impl Compiler {
 
     #[cfg(not(feature = "llvm"))]
     /// Stub for builds without the `llvm` feature.
-    fn emit_object(&self, result: &mut Compilation, _output: PathBuf) {
+    fn emit_object(&self, result: &mut Compilation, _output: PathBuf, _debug: bool) {
         result.failure = Some(backend_unavailable());
     }
 

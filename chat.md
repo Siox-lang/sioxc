@@ -13590,3 +13590,55 @@ LLDB is not installed and was not needed for the requested GDB-or-LLDB check.
 docs/testing.md documents reproduction and the boundary between native and
 source debugging. Commit only this owned entry, the script and that doc; leave
 other agents' 441 chat additions, AGENTS.md and .codex untouched. No push.
+
+### 2026-10-07 — Codex — direct LLVM DWARF implementation
+
+Own src/llvm debug metadata, Process entry source locations, native debug
+options, debug_info integration tests and debugger smoke/documentation updates.
+Implement --debug with LLVM DIBuilder in the canonical pipeline, including
+source lines and inspectable persistent signal/local storage. No generated C,
+new language syntax, DAP or editor work. Verify real GDB breakpoints/stepping,
+multiword values and waveform parity, then ordinary and debug native gates.
+Preserve unrelated AGENTS.md, .codex and the 441 chat additions; stage only
+owned changes and keep source/runtime behavior unchanged for ordinary builds.
+
+DWARF follow-through also owns ProcessLocal lexical extent metadata and its
+source-process lowering, plus hand-built IR fixture updates. Keep scope identity
+in canonical IR rather than parsing source or guessing binding lifetimes in
+LLVM. Source block scopes must preserve shadowed locals across suspensions.
+
+GDB probes found that native wide/real bitfields cannot faithfully expose
+non-byte-aligned packed struct members. Own a debug-only byte-aligned inspection
+buffer for these aggregates, refreshed at source stops by direct LLVM. Ordinary
+state, codegen, simulation and waveforms remain unchanged; no generated C.
+
+Direct LLVM DWARF is working in --debug/-g objects, LLVM text and native test
+executables. GDB verifies source breakpoints/next, named process frames,
+persistent/shadowed locals across await, loop indices, 3/81-bit signed values,
+std/user enum symbols, real/wide unaligned structs and labelled fixed arrays.
+Use existing physical state where debuggers can read it; only packed aggregates
+and wide non-byte-aligned signed scalars need read-only inspection buffers.
+No generated-C path, runtime ABI change, dependency or editor integration.
+
+Gate siox-job-3000-1791363640611599344-3998483.service completed successfully:
+SubState=exited, Result=success, ExecMainStatus=0, MemoryPeak=1611042816 bytes.
+Clippy --all-targets --all-features -D warnings, frontend-only check, focused
+default/bitpack DWARF tests, full default cargo test --locked, ordinary corpus
+225/0, debug corpus 225/0, FIFO/wide GDB smoke with VCD parity, and graphify AST
+refresh all passed. Earlier incomplete gates are not acceptance evidence.
+Additional full bitpack + debug-corpus gate 4036229 is running; inspect its
+terminal state rather than assuming its launcher exit means success.
+
+Document remaining inspection coverage in TODO/docs: wide unsigned padding,
+packed X/Z companions, dynamic string/array values and repeated inline-call
+scope/call-stack identity. Descending array labels are preserved as named
+elements; debug snapshots are refreshed only at Siox source boundaries.
+Preserve unrelated 441 chat additions, AGENTS.md and .codex when staging.
+
+The additional bitpack gate siox-job-3000-1791364278873503577-4036229.service
+also completed with SubState=exited, Result=success, ExecMainStatus=0 and
+MemoryPeak=1611517952 bytes: full cargo test --locked --features bitpack and
+the bitpack debug corpus, 225 passed / 0 failed. Commit the tested DWARF
+foundation and docs only; remaining inspection work keeps the DWARF goal
+active. No compiler push requested. The separate LSP main was pushed to
+3e4f312 under the user's explicit LSP-only request.

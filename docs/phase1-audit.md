@@ -134,6 +134,10 @@ alternate execution routes. Native source DWARF, worker threads, project tooling
 analogue and foreign HDL/synthesis are separately documented later work. This
 audit does not claim those are implemented or change their scope.
 
+Subsequent work (2026-10-07) adds direct LLVM source DWARF without changing
+the audited pipeline. See [current debugger support and limitations](testing.md#native-debugger-smoke-test);
+this note does not retroactively include it in the Phase 1 acceptance results.
+
 ## Current verification identity
 
 Final effects-r3 session `16773` is terminal with exit 0; its scope is
