@@ -12,8 +12,10 @@ module std::fixed;
 // types are ordinary newtypes over `Logic[]`, like `unsigned`/`signed`.
 //
 // Operands of one format give that format. A sum wraps on overflow, as
-// `unsigned` does; a product drops its extra fraction bits rounding toward
-// minus infinity (VHDL's truncate). Inside these impls the operands read as
+// `unsigned` does; a product or quotient drops its extra fraction bits
+// rounding toward minus infinity (VHDL's truncate), and a quotient by zero is
+// zero. Between formats, the constructor resizes: `ufixed<12, 6>(x)` rounds to
+// the nearest step and saturates, VHDL's `resize` defaults. Inside these impls the operands read as
 // kernel words: `self * rhs` is the full product, which the shift by the
 // fraction width brings back to the format before it is stored.
 pub struct ufixed<W: integer, F: integer>(Logic[W - F - 1 .. 0 - F]);
@@ -33,6 +35,14 @@ impl Mul<ufixed, ufixed> for ufixed {
     fn mul(self, rhs: ufixed) -> ufixed { return (self * rhs) >> (0 - self'low); }
 }
 
+// The dividend is scaled by the fraction width first, so the quotient of the
+// words is in the format.
+impl Div<ufixed, ufixed> for ufixed {
+    fn div(self, rhs: ufixed) -> ufixed {
+        return floor_div(word(self) << (0 - self'low), word(rhs));
+    }
+}
+
 impl Eq<ufixed> for ufixed {
     fn eq(self, rhs: ufixed) -> Bool { return self == rhs; }
 }
@@ -45,7 +55,7 @@ impl Ord<ufixed> for ufixed {
 impl ufixed {
     // The number this holds.
     pub fn to_real(self) -> real {
-        return real(integer(self)) / real(1 << (0 - self'low));
+        return real(word(self)) / real(1 << (0 - self'low));
     }
 }
 
@@ -72,6 +82,15 @@ impl Mul<sfixed, sfixed> for sfixed {
     }
 }
 
+impl Div<sfixed, sfixed> for sfixed {
+    fn div(self, rhs: sfixed) -> sfixed {
+        return floor_div(
+            sext_word(word(self), self'length) << (0 - self'low),
+            sext_word(word(rhs), rhs'length)
+        );
+    }
+}
+
 impl Eq<sfixed> for sfixed {
     fn eq(self, rhs: sfixed) -> Bool { return self == rhs; }
 }
@@ -92,9 +111,7 @@ impl Ord<sfixed> for sfixed {
 impl sfixed {
     // The number this holds.
     pub fn to_real(self) -> real {
-        let word: integer = integer(self);
-        let value: integer = word - ((word >> (self'length - 1)) << self'length);
-        return real(value) / real(1 << (0 - self'low));
+        return real(sext_word(word(self), self'length)) / real(1 << (0 - self'low));
     }
 }
 
@@ -117,6 +134,83 @@ impl From<real> for sfixed {
 
 impl From<integer> for sfixed {
     fn from(value: integer) -> sfixed { return sfixed_word(real(value), Self'high, Self'low); }
+}
+
+// --- between formats ---------------------------------------------------------
+
+// `ufixed<12, 6>(x)` from another `ufixed`, `sfixed<8, 4>(y)` from another
+// `sfixed`: rounded to the nearest step (ties away from zero) and saturated.
+impl From<ufixed> for ufixed {
+    fn from(value: ufixed) -> ufixed {
+        return rescale(word(value), 0 - value'low, Self'high, Self'low, false);
+    }
+}
+
+impl From<sfixed> for sfixed {
+    fn from(value: sfixed) -> sfixed {
+        return rescale(
+            sext_word(word(value), value'length), 0 - value'low, Self'high, Self'low, true
+        );
+    }
+}
+
+// The number `n`, with `fraction` fraction bits, in the format
+// `[left..right]`.
+fn rescale(n: integer, fraction: integer, left: integer, right: integer, is_signed: Bool) -> integer {
+    return clamp(
+        scale(n, fraction, right),
+        smallest(left, right, is_signed),
+        largest(left, right, is_signed)
+    );
+}
+
+// `n` with `fraction` fraction bits, as steps of `2^right`.
+fn scale(n: integer, fraction: integer, right: integer) -> integer {
+    if 0 - right >= fraction { return n << (0 - right - fraction); }
+    return round_shift(n, fraction + right);
+}
+
+fn largest(left: integer, right: integer, is_signed: Bool) -> integer {
+    if is_signed { return (1 << (left - right)) - 1; }
+    return (1 << (left - right + 1)) - 1;
+}
+
+fn smallest(left: integer, right: integer, is_signed: Bool) -> integer {
+    if is_signed { return 0 - (1 << (left - right)); }
+    return 0;
+}
+
+fn clamp(v: integer, lo: integer, hi: integer) -> integer {
+    if v > hi { return hi; }
+    if v < lo { return lo; }
+    return v;
+}
+
+// --- helpers -------------------------------------------------------------------
+
+// `n / 2^k` rounded to the nearest integer, ties away from zero.
+fn round_shift(n: integer, k: integer) -> integer {
+    if n < 0 { return 0 - ((0 - n + (1 << (k - 1))) >> k); }
+    return (n + (1 << (k - 1))) >> k;
+}
+
+// `n / d` rounded toward minus infinity; zero when `d` is.
+fn floor_div(n: integer, d: integer) -> integer {
+    if d == 0 { return 0; }
+    if (n - (n / d) * d) != 0 and (n < 0) != (d < 0) { return n / d - 1; }
+    return n / d;
+}
+
+// A value's raw word, narrowed to its own width: a computed value may carry
+// bits above it until it is stored.
+fn word<T>(value: T) -> integer {
+    return integer(value) - ((integer(value) >> value'length) << value'length);
+}
+
+// The number a two's-complement word of `width` bits holds.
+fn sext_word(word: integer, width: integer) -> integer {
+    if (word >> (width - 1)) == 1 { return word - (1 << width); }
+    return word;
 }
 
 // The words of `value` in the format `[left..right]`.

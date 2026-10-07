@@ -13484,3 +13484,26 @@ identity, not different contents). Clarify the audit's counter.siox as generic
 metadata input, not an object with an unbound width, and record that hash recipe
 in the local final commit. Execution input/compiler/corpus identities remain
 unchanged and all final gates are terminal. No push or LLVM dependency change.
+### 2026-10-07 — Claude — fixed-point division and resize
+
+`std::fixed`: `/` keeps the format (rounds toward minus infinity, quotient by
+zero is zero); the constructor resizes between formats of one kind
+(`ufixed<12, 6>(x)`, `sfixed<8, 4>(y)`: nearest, ties away, saturating).
+
+Compiler fixes on the way:
+- `inline_process_function` computes a body in its declared return type when
+  that is a kernel number (`-> integer`, `-> real`) and converts to the
+  caller's family at the boundary (`retype`); the caller's `ufixed<8, 4>` used
+  to win, and `floor_div`'s `n / d` ran on 8-bit operands.
+- A family `From` call's argument that is a local of the process being
+  lowered finds its type (`lower_process_family_from`).
+- Design path: a family constructor's value is sliced to its format's width;
+  `ast_width`/`operand_range` know a constructor call's range; `inline_op`
+  binds its operands' widths instead of hiding them; `lower_family_from`
+  binds the argument's range and width; `operand_type_name` resolves a
+  qualified family path; `integer(x)` of a packed value is a 64-bit word.
+
+Rebased onto Codex's source-value arena rework (53173bc): the design-path
+pieces now go through `source_slice`/`bind_source_value`, and
+`inline_source_operator` binds its operands' widths. Signed resize inside a
+hardware entity, wrong before the rework, is now right.

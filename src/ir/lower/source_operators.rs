@@ -123,7 +123,7 @@ impl Lowering<'_> {
             if let Some((left, right)) = operand.range {
                 self.bind_format_attrs(&mut env, name, left, right, function.span);
             }
-            hidden.push(name.to_owned());
+            hidden.push((name.to_owned(), operand.width));
         };
         bind("self", lhs);
         if let Some(rhs) = rhs {
@@ -136,11 +136,21 @@ impl Lowering<'_> {
                 .text;
             bind(name, rhs);
         }
+        // The body reads its operands as kernel words, so `self - rhs` in it
+        // is the built-in operator, not this impl again; their widths are the
+        // operands' own, which a call in the body passes on (`word(self)`
+        // reads `self'length`).
         let saved = hidden
             .into_iter()
-            .map(|name| {
+            .map(|(name, operand_width)| {
                 let family = self.param_types.borrow_mut().remove(&name);
-                let width = self.param_widths.borrow_mut().remove(&name);
+                let width = if operand_width > 0 {
+                    self.param_widths
+                        .borrow_mut()
+                        .insert(name.clone(), operand_width)
+                } else {
+                    self.param_widths.borrow_mut().remove(&name)
+                };
                 (name, family, width)
             })
             .collect::<Vec<_>>();
@@ -153,9 +163,10 @@ impl Lowering<'_> {
             if let Some(family) = family {
                 self.param_types.borrow_mut().insert(name.clone(), family);
             }
-            if let Some(width) = width {
-                self.param_widths.borrow_mut().insert(name, width);
-            }
+            match width {
+                Some(width) => self.param_widths.borrow_mut().insert(name, width),
+                None => self.param_widths.borrow_mut().remove(&name),
+            };
         }
         result
     }
