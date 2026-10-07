@@ -109,6 +109,42 @@ impl<'ctx> DebugInfo<'ctx, '_> {
         buffer_name
     }
 
+    pub(super) fn string_constant_view(&self, module: &Module<'ctx>, name: &str, text: &str) {
+        let pointer = self.context.ptr_type(AddressSpace::default());
+        let (characters, utf8) = if text.is_empty() {
+            (pointer.const_null(), pointer.const_null())
+        } else {
+            let characters = text
+                .chars()
+                .map(|character| {
+                    self.context
+                        .i32_type()
+                        .const_int(u64::from(u32::from(character)), false)
+                })
+                .collect::<Vec<_>>();
+            let data = self.context.i32_type().const_array(&characters);
+            let global = module.add_global(data.get_type(), None, &format!("{name}.chars"));
+            global.set_initializer(&data);
+            global.set_constant(true);
+            global.set_linkage(Linkage::Private);
+            (
+                global.as_pointer_value(),
+                private_string(self.context, module, &format!("{name}.utf8"), text),
+            )
+        };
+        let integer = self.context.i64_type();
+        let view = self.string_view_type().const_named_struct(&[
+            integer.const_int(text.chars().count() as u64, false).into(),
+            characters.into(),
+            integer.const_int(text.len() as u64, false).into(),
+            utf8.into(),
+        ]);
+        let global = module.add_global(view.get_type(), None, name);
+        global.set_initializer(&view);
+        global.set_constant(true);
+        global.set_linkage(Linkage::Private);
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn string_global(
         &self,

@@ -13833,3 +13833,64 @@ GDB/VCD smoke checks passed. AST graph refreshed (known vendored libfst parser
 warnings remain unrelated). Commit only this verified batch. Estimated
 implement DWARF completion: 96%; expression-only frames, zero-storage argument
 inspection and remaining supported-representation audit are still open.
+
+### 2026-10-07 — Codex — DWARF zero-storage arguments
+
+Own debug/parameters.rs, debug/strings.rs and debug_info regression. Audit
+empty string arguments, which have no physical LLVM integer storage but still
+need a source formal variable/type. Reuse the string view ABI with constant
+empty contents; do not allocate runtime handles, read files or change argument
+evaluation. First demonstrate the omission with real GDB. Preserve unrelated
+AGENTS.md/.codex/441 chat additions. Previous batch is committed as ed4c9d3;
+do not push compiler commits without an explicit request.
+
+Regression 276405 failed before debugger inspection: both debug and ordinary
+native executables reject the empty argument's `length` attribute (ordinary
+probe 278207 confirms block 58 is incomplete). Extend ownership to the shared
+process_layout_attribute helper in value_types.rs: source literal character
+count is known even without a nonzero LLVM integer/layout. Fix that root once
+for support preflight and emission, then verify the actual DWARF omission.
+
+Probe 279296 now runs ordinary/debug native binaries successfully and fails
+exactly at GDB's missing `value` formal variable in check_empty. Reuse the
+runtime string DI type for literal arguments, backed by constant UTF-8/Char
+arrays (null pointers for empty contents), without runtime allocation or
+expression re-evaluation. Job 282633 passed both complete debugger suites,
+then strict Clippy caught two unnecessary borrows introduced by the layout
+refactor; remove those and add literal-length assertions to the existing
+fixed/empty string backend regression. Extend ownership to that test only.
+
+Focused job 285795 finished exited/success/0 (peak 782876672 bytes): strict
+Clippy and both complete debugger suites passed, including runtime/literal
+Unicode-NUL and empty arguments plus ordinary/debug native/VCD parity. Its
+bin-only backend test filter ran zero tests, so it is not unit-test evidence;
+run the actual lib test target in the next acceptance job. Literal-length
+handling is shared by support preflight and code emission. Full acceptance
+and graph refresh are required before a zero-storage batch commit.
+
+Full acceptance job siox-job-3000-1791382472955122018-291824.service is live;
+log ~/.cache/siox-jobs/siox-job-3000-1791382472955122018-291824.log. Poll this
+exact handle to terminal; no compiler source edits or concurrent heavy job
+while it runs. Require full default/bitpack suites, three 225/0 corpus runs,
+real GDB/VCD checks and graph refresh before committing only this owned batch
+and dated entry. Preserve AGENTS.md/.codex/441 unrelated chat additions.
+
+Next expression-inline work must cover both procedural value inlining and
+SourceValues hardware lowering, not only free functions in process CFGs.
+Read-only trace: inline_process_function/inline_value_statements erase local
+and parameter aliases; SourceValues::retain_reachable compacts/remaps value
+IDs. Preserve call-site/local provenance through both paths and rollback/
+compaction. Metadata-only operands must not become executable dependencies:
+hardware effect discovery follows process_value_dependencies, so retaining an
+otherwise-unused argument there could execute foreign/file calls in ordinary
+builds. Likewise pure Select/Match arms currently emit eagerly; source stepping
+must not stop in unselected calls or change simulation effects for inspection.
+
+Acceptance job 291824 finished exited/success/0, peak 1612836864 bytes.
+The actual library fixed/empty string test, formatting, strict Clippy,
+frontend-only check, full default/bitpack suites, three native corpora (225/0
+each), real GDB argument checks and FIFO/wide VCD parity passed. AST graph
+refreshed; vendored parser limitations remain unrelated. Commit this tested
+zero-storage/literal batch only. Estimated implement DWARF completion stays
+96%: expression-only inline provenance/emission is the main outstanding work,
+along with the remaining supported-representation completion audit.

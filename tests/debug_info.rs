@@ -71,6 +71,10 @@ fn check_string(value: string) {
     await 1ns;
     assert!(value'length == 3, "string parameter stop");
 }
+fn check_empty(value: string) {
+    await 1ns;
+    assert!(value'length == 0, "empty parameter stop");
+}
 #[test] entity T {}
 impl T {
     stimulus: process {
@@ -91,6 +95,8 @@ impl T {
         check_real(packet.gain);
         check_wide(packet.wide);
         check_string(text);
+        check_string("β\0🙂");
+        check_empty("");
         packet.inspect();
         assert!(local == 11 and cells[1] == 11 and chosen == 4 and chosen_again == 5, "caller stop");
     }
@@ -144,6 +150,7 @@ payload = gdb.Breakpoint({source:?} + ':{payload_line}')
 real = gdb.Breakpoint({source:?} + ':{real_line}')
 wide = gdb.Breakpoint({source:?} + ':{wide_line}')
 string = gdb.Breakpoint({source:?} + ':{string_line}')
+empty = gdb.Breakpoint({source:?} + ':{empty_line}')
 receiver = gdb.Breakpoint({source:?} + ':{receiver_line}')
 caller = gdb.Breakpoint({source:?} + ':{caller_line}')
 gdb.execute('run')
@@ -203,12 +210,20 @@ assert gdb.selected_frame().name() == 'debug_calls::check_wide'
 assert int(gdb.parse_and_eval('value')) == (1 << 64) + 1
 wide.delete()
 gdb.execute('continue')
-assert gdb.selected_frame().name() == 'debug_calls::check_string'
-view = gdb.parse_and_eval('value')
-assert int(view['length']) == 3 and int(view['byte_length']) == 7
-assert [int(view['data'][i]) for i in range(3)] == [ord(c) for c in 'β\x00🙂']
-assert bytes(int(view['utf8'][i]) for i in range(7)) == 'β\x00🙂'.encode()
+for _ in range(2):
+    assert gdb.selected_frame().name() == 'debug_calls::check_string'
+    view = gdb.parse_and_eval('value')
+    assert int(view['length']) == 3 and int(view['byte_length']) == 7
+    assert [int(view['data'][i]) for i in range(3)] == [ord(c) for c in 'β\x00🙂']
+    assert bytes(int(view['utf8'][i]) for i in range(7)) == 'β\x00🙂'.encode()
+    gdb.execute('continue')
 string.delete()
+assert gdb.selected_frame().name() == 'debug_calls::check_empty'
+view = gdb.parse_and_eval('value')
+assert int(view['length']) == int(view['byte_length']) == 0
+assert int(view['data']) == int(view['utf8']) == 0
+assert 'value =' in gdb.execute('info args', to_string=True)
+empty.delete()
 gdb.execute('continue')
 assert gdb.selected_frame().name().endswith('::inspect')
 view = gdb.parse_and_eval('self')
@@ -235,6 +250,7 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
             real_line = line("real parameter stop"),
             wide_line = line("wide parameter stop"),
             string_line = line("string parameter stop"),
+            empty_line = line("empty parameter stop"),
             receiver_line = line("receiver parameter stop"),
             caller_line = line("caller stop"),
             first_line = line("first call"),

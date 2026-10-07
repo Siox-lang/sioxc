@@ -220,6 +220,10 @@ callee writes through an argument, inspection reports its current value, not
 an entry-time copy. Structs, indexed places, wide/real projections and runtime
 strings use the same read-only inspection conventions as locals. Return types
 are also retained in the source subroutine metadata.
+Literal string arguments use that same `length`/`data`/`byte_length`/`utf8`
+view, backed by immutable character/byte arrays rather than runtime handles.
+Empty literals remain visible formal arguments: both lengths are zero and
+both content pointers are null, even though the language value has no storage.
 
 Runtime-owned `string`/`Char[]` values expose a read-only view under their source
 name: `text.length` counts Unicode code points, `text.data[i]` reads one code
@@ -247,6 +251,8 @@ and runtime string locals through inlined length/index/equality expressions in d
 frames, call-site lines, shadowed locals and suspension for procedures and
 value-returning functions, plus formal arguments, mutable/indexed aliases,
 struct receivers, wide/real fields and Unicode/embedded-NUL string arguments.
+The argument checks cover both runtime strings and literals, including empty
+literals; ordinary/debug executables must agree on character-count attributes.
 To run the existing native corpus with DWARF enabled:
 
 ```bash

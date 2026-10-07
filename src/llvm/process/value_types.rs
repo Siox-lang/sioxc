@@ -603,6 +603,9 @@ pub(super) fn process_layout_attribute(
     attribute: &str,
 ) -> Option<u64> {
     if attribute == "length" {
+        if let Some(text) = process_string(design, base) {
+            return u64::try_from(text.chars().count()).ok();
+        }
         if let Some(value) = design.process_ir.values.get(base.0 as usize) {
             if let Some(siox::types::Ty::Array { len, .. }) = value.ty.as_ref() {
                 return (*len != 0)

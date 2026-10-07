@@ -126,7 +126,8 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   lengths, including process locals and cleanup between tests. CFG calls retain
   distinct call-site scopes, return types and true formal parameters, including
   live mutable/indexed aliases, receivers, aggregates, wide/real projections
-  and borrowed runtime strings across suspension. Complete remaining
+  and borrowed runtime/literal strings (including zero-storage empty values)
+  across suspension. Complete remaining
   runtime-sized array representations and expression-only inline frames.
   Keep debug-only aggregate inspection buffers faithful at source stops and
   document their read-only/snapshot nature. Verify default/bitpack debugger and

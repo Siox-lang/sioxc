@@ -51,7 +51,7 @@ impl<'ctx> DebugInfo<'ctx, '_> {
         design: &Design,
         id: ProcessValueId,
     ) -> Option<DIType<'ctx>> {
-        if dynamic_string_value(design, id) {
+        if dynamic_string_value(design, id) || process_string(design, id).is_some() {
             return Some(self.string_debug_type(
                 self.namespace(""),
                 design.process_ir.values[id.0 as usize].span,
@@ -76,9 +76,8 @@ impl<'ctx> DebugInfo<'ctx, '_> {
             let scope = frames[call_id].0.as_debug_info_scope();
             let mut parameters = Vec::new();
             for (index, parameter) in call.parameters.iter().enumerate() {
-                let Some(layout) = self.value_debug_layout(design, parameter.value) else {
-                    continue;
-                };
+                let literal = process_string(design, parameter.value);
+                let layout = self.value_debug_layout(design, parameter.value);
                 let snapshot = matches!(
                     design.process_ir.values[parameter.value.0 as usize].kind,
                     ProcessValueKind::Field { .. }
@@ -88,84 +87,97 @@ impl<'ctx> DebugInfo<'ctx, '_> {
                         | ProcessValueKind::Concat(_)
                         | ProcessValueKind::Signal { .. }
                 );
-                let string = dynamic_string_value(design, parameter.value);
-                let normalized = string || snapshot || needs_mirror(&layout);
+                let string = literal.is_some() || dynamic_string_value(design, parameter.value);
+                let normalized = string
+                    || snapshot
+                    || layout.as_ref().is_some_and(|layout| needs_mirror(layout));
                 let ty = if string {
                     Some(self.string_debug_type(scope, parameter.span))
                 } else {
-                    self.ty(design, &layout, normalized)
+                    layout
+                        .as_ref()
+                        .and_then(|layout| self.ty(design, layout, normalized))
                 };
                 let Some(ty) = ty else {
                     continue;
                 };
                 let node = &design.process_ir.values[parameter.value.0 as usize];
-                let name = match &node.kind {
-                    ProcessValueKind::Local { process, local } => {
-                        local_state_name(*process, *local)
-                    }
-                    ProcessValueKind::Storage(storage) => storage_state_name(*storage),
-                    ProcessValueKind::Number(_)
-                    | ProcessValueKind::Default
-                    | ProcessValueKind::BitString { .. }
-                    | ProcessValueKind::Char(_)
-                    | ProcessValueKind::String(_) => {
-                        let mut cache = ProcessValueCache::new(&[], &[]);
-                        let Some(value) = process_value_at(
-                            self.context,
-                            module,
-                            builder,
-                            design,
-                            parameter.value,
-                            layout.packed_width().unwrap(),
-                            process_layout_is_signed(&layout),
-                            None,
-                            &HashMap::new(),
-                            &mut cache,
-                        ) else {
-                            continue;
-                        };
-                        if !value.is_const() {
-                            continue;
+                let name = if let Some(text) = literal {
+                    let name = format!("sx.debug.argument.{}.{}.{}", process.id.0, call_id, index);
+                    self.string_constant_view(module, &name, text);
+                    name
+                } else {
+                    match &node.kind {
+                        ProcessValueKind::Local { process, local } => {
+                            local_state_name(*process, *local)
                         }
-                        let name =
-                            format!("sx.debug.argument.{}.{}.{}", process.id.0, call_id, index);
-                        let global = module.add_global(value.get_type(), None, &name);
-                        global.set_initializer(&value);
-                        global.set_linkage(Linkage::Internal);
-                        global.set_constant(true);
-                        name
+                        ProcessValueKind::Storage(storage) => storage_state_name(*storage),
+                        ProcessValueKind::Number(_)
+                        | ProcessValueKind::Default
+                        | ProcessValueKind::BitString { .. }
+                        | ProcessValueKind::Char(_) => {
+                            let layout = layout.as_ref().unwrap();
+                            let mut cache = ProcessValueCache::new(&[], &[]);
+                            let Some(value) = process_value_at(
+                                self.context,
+                                module,
+                                builder,
+                                design,
+                                parameter.value,
+                                layout.packed_width().unwrap(),
+                                process_layout_is_signed(layout),
+                                None,
+                                &HashMap::new(),
+                                &mut cache,
+                            ) else {
+                                continue;
+                            };
+                            if !value.is_const() {
+                                continue;
+                            }
+                            let name =
+                                format!("sx.debug.argument.{}.{}.{}", process.id.0, call_id, index);
+                            let global = module.add_global(value.get_type(), None, &name);
+                            global.set_initializer(&value);
+                            global.set_linkage(Linkage::Internal);
+                            global.set_constant(true);
+                            name
+                        }
+                        ProcessValueKind::Field { .. }
+                        | ProcessValueKind::Index { .. }
+                        | ProcessValueKind::BitSlice { .. }
+                        | ProcessValueKind::PackedSlice { .. }
+                        | ProcessValueKind::Concat(_)
+                        | ProcessValueKind::Signal { .. } => {
+                            let Some(layout) = layout.as_ref() else {
+                                continue;
+                            };
+                            let name =
+                                format!("sx.debug.argument.{}.{}.{}", process.id.0, call_id, index);
+                            let Some(bytes) = inspection_bits(layout)
+                                .and_then(|bits| u32::try_from(bits / 8).ok())
+                            else {
+                                continue;
+                            };
+                            self.inspection_buffer(module, &name, bytes);
+                            name
+                        }
+                        // Only captured constants/places are inspected, never an
+                        // unknown expression with possible language effects.
+                        _ => continue,
                     }
-                    ProcessValueKind::Field { .. }
-                    | ProcessValueKind::Index { .. }
-                    | ProcessValueKind::BitSlice { .. }
-                    | ProcessValueKind::PackedSlice { .. }
-                    | ProcessValueKind::Concat(_)
-                    | ProcessValueKind::Signal { .. } => {
-                        let name =
-                            format!("sx.debug.argument.{}.{}.{}", process.id.0, call_id, index);
-                        let Some(bytes) =
-                            inspection_bits(&layout).and_then(|bits| u32::try_from(bits / 8).ok())
-                        else {
-                            continue;
-                        };
-                        self.inspection_buffer(module, &name, bytes);
-                        name
-                    }
-                    // Only captured constants/places are inspected, never an
-                    // unknown expression with possible language effects.
-                    _ => continue,
                 };
                 if module.get_global(&name).is_none() {
                     continue;
                 }
-                let name = if string {
+                let name = if string && literal.is_none() {
                     self.string_mirror(module, &name, process.root.0)
-                } else if normalized && !snapshot {
+                } else if normalized && !snapshot && !string {
                     let mirror = format!("{name}.debug");
                     if module.get_global(&mirror).is_some() {
                         mirror
                     } else {
-                        self.mirror(module, &name, &layout)
+                        self.mirror(module, &name, layout.as_ref().unwrap())
                     }
                 } else {
                     name
@@ -187,7 +199,7 @@ impl<'ctx> DebugInfo<'ctx, '_> {
                     .unwrap();
                 let mut ops = vec![0x06 /* DW_OP_deref */];
                 if !normalized {
-                    ops.extend(self.expression_ops(&layout, 0, false));
+                    ops.extend(self.expression_ops(layout.as_ref().unwrap(), 0, false));
                 }
                 parameters.push(ParameterLocation {
                     variable: self.builder.create_parameter_variable(
@@ -208,7 +220,7 @@ impl<'ctx> DebugInfo<'ctx, '_> {
                     snapshot: snapshot.then(|| {
                         (
                             parameter.value,
-                            layout.into_owned(),
+                            layout.unwrap().into_owned(),
                             module.get_global(&name).unwrap(),
                         )
                     }),

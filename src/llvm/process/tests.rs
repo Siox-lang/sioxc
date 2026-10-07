@@ -857,6 +857,14 @@ fn fixed_and_empty_strings_are_executable_process_values() {
         supported.values,
         [true, true, true, false, false, true, true]
     );
+    assert_eq!(
+        process_layout_attribute(&design, ProcessValueId(0), "length"),
+        Some(2)
+    );
+    assert_eq!(
+        process_layout_attribute(&design, ProcessValueId(3), "length"),
+        Some(0)
+    );
     let llvm = crate::llvm::emit_module_ir(&design).expect("fixed string Process values lower");
     assert!(llvm.contains("define internal i8 @sx.process.0(i32"));
     assert!(llvm.contains("br i1"), "{llvm}");
