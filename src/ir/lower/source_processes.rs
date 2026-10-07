@@ -2539,12 +2539,13 @@ fn inline_process_procedure_call(
     for (_, value) in &mut bindings {
         *value = capture_process_argument(*value, context, process, block);
     }
+    let bindings = bindings.into_iter().collect();
     let resume = process.push_block();
     let previous_scope = context.inline_scope;
-    let scope = begin_inline_call(&function, call_span, process, context);
+    let scope = begin_inline_call(&function, call_span, receiver, &bindings, process, context);
     let entry = process.push_block();
     process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(entry);
-    context.value_bindings.push(bindings.into_iter().collect());
+    context.value_bindings.push(bindings);
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(None);
     context.inline_return_blocks.push((resume, None));
@@ -2592,6 +2593,8 @@ fn inline_process_procedure_call(
 fn begin_inline_call(
     function: &ast::FnDecl,
     call: crate::diag::Span,
+    receiver: Option<ProcessValueId>,
+    bindings: &std::collections::HashMap<crate::resolve::DefId, ProcessValueId>,
     process: &mut ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> u32 {
@@ -2606,6 +2609,27 @@ fn begin_inline_call(
         name,
         function: function.span,
         call,
+        parameters: function
+            .params
+            .iter()
+            .filter_map(|parameter| {
+                let (name, value) = if parameter.is_self {
+                    ("self".into(), receiver?)
+                } else {
+                    let name = parameter.name.as_ref()?;
+                    (
+                        name.text.clone(),
+                        *bindings.get(&context.resolved.declared(name.span)?)?,
+                    )
+                };
+                Some(crate::ir::ProcessInlineParameter {
+                    name,
+                    value,
+                    span: parameter.span,
+                })
+            })
+            .collect(),
+        result: None,
         blocks: Vec::new(),
         locals: process.locals.len() as u32..process.locals.len() as u32,
     });

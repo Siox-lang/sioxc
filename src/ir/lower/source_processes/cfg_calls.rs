@@ -550,7 +550,8 @@ fn inline_call(
     declare_result(result, process, *block, context);
     let resume = process.push_block();
     let previous_scope = context.inline_scope;
-    let scope = begin_inline_call(function, node.span, process, context);
+    let scope = begin_inline_call(function, node.span, receiver, &bindings, process, context);
+    process.inline_calls[scope as usize].result = Some(result);
     let first_local = process.locals.len();
     let entry = process.push_block();
     process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(entry);

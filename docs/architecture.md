@@ -323,6 +323,12 @@ metadata for distinct inline frames and lexical scopes, even when repeated
 calls share the same callee definition span; it does not reconstruct a stack
 from source text. Call normalization and failed-inline rollback preserve this
 metadata alongside the executable blocks and locals.
+Signature-ordered `ProcessInlineParameter` records refer to the actual captured
+operands, and a value-producing call records its caller-owned return frame.
+LLVM uses these for source parameter/return types and formal argument locations;
+it does not reevaluate call arguments or turn language aliases into copies.
+Debug-only reference slots point at existing persistent storage or its read-only
+inspection view, so parameters remain inspectable after writes and suspension.
 The multithreading proposal extends these same CFGs and LLVM
 entries; it does not introduce a new compiler track.
 

@@ -19,6 +19,16 @@ fn repeated_inline_calls_keep_locals_and_source_frames_across_await() {
     std::fs::create_dir_all(&directory).unwrap();
     let source = directory.join("calls.siox");
     let text = r#"module debug_calls;
+use std::bits::unsigned;
+use std::primitive::string;
+struct Payload { pub tag: integer, pub gain: real, pub wide: unsigned[81] }
+impl Payload {
+    pub fn inspect(self) {
+        self.tag = self.tag + 1;
+        await 1ns;
+        assert!(self.tag == 10, "receiver parameter stop");
+    }
+}
 fn leaf(value: integer) {
     let local: integer = value;
     if value > 0 {
@@ -40,20 +50,53 @@ fn choose(value: integer) -> integer {
     if value > 0 { return local; } // choose stop
     return 0;
 }
+fn mutate(value: integer) {
+    value = value + 1;
+    await 1ns;
+    assert!(value == 11, "alias parameter stop");
+}
+fn check_payload(value: Payload) {
+    await 1ns;
+    assert!(value.tag == 9 and value.gain == 1.5, "payload parameter stop");
+}
+fn check_real(value: real) {
+    await 1ns;
+    assert!(value == 1.5, "real parameter stop");
+}
+fn check_wide(value: unsigned[81]) {
+    await 1ns;
+    assert!(value == 18446744073709551617, "wide parameter stop");
+}
+fn check_string(value: string) {
+    await 1ns;
+    assert!(value'length == 3, "string parameter stop");
+}
 #[test] entity T {}
 impl T {
     stimulus: process {
         let local: integer = 10;
+        let cells: integer[2] = [0, 10];
+        let index: integer = 1;
+        let packet: Payload = { .tag = 9, .gain = 1.5, .wide = 18446744073709551617 };
+        let text: string = read<string>("argument.txt");
         leaf(1); // first call
         leaf(2); // second call
         leaf(6); leaf(7); // paired calls
         outer(3); // outer call
         let chosen: integer = choose(4); // first value call
         let chosen_again: integer = choose(5); // second value call
-        assert!(local == 10 and chosen == 4 and chosen_again == 5, "caller stop");
+        mutate(local);
+        mutate(cells[index]);
+        check_payload(packet);
+        check_real(packet.gain);
+        check_wide(packet.wide);
+        check_string(text);
+        packet.inspect();
+        assert!(local == 11 and cells[1] == 11 and chosen == 4 and chosen_again == 5, "caller stop");
     }
 }"#;
     std::fs::write(&source, text).unwrap();
+    std::fs::write(directory.join("argument.txt"), "β\0🙂").unwrap();
     let debug = directory.join("debug.bin");
     let normal = directory.join("normal.bin");
     for (binary, debugging) in [(&debug, true), (&normal, false)] {
@@ -96,6 +139,12 @@ inner = gdb.Breakpoint({source:?} + ':{inner_line}')
 leaf = gdb.Breakpoint({source:?} + ':{leaf_line}')
 outer = gdb.Breakpoint({source:?} + ':{outer_line}')
 choose = gdb.Breakpoint({source:?} + ':{choose_line}')
+alias = gdb.Breakpoint({source:?} + ':{alias_line}')
+payload = gdb.Breakpoint({source:?} + ':{payload_line}')
+real = gdb.Breakpoint({source:?} + ':{real_line}')
+wide = gdb.Breakpoint({source:?} + ':{wide_line}')
+string = gdb.Breakpoint({source:?} + ':{string_line}')
+receiver = gdb.Breakpoint({source:?} + ':{receiver_line}')
 caller = gdb.Breakpoint({source:?} + ':{caller_line}')
 gdb.execute('run')
 def frame(name, local):
@@ -105,13 +154,17 @@ def frame(name, local):
     return actual
 for expected, call_line in [(1, {first_line}), (2, {second_line}), (6, {paired_line}), (7, {paired_line}), (3, {nested_line})]:
     frame('debug_calls::leaf', 42)
+    assert int(gdb.parse_and_eval('value')) == expected
+    assert 'value =' in gdb.execute('info args', to_string=True)
     gdb.execute('continue')
     actual = frame('debug_calls::leaf', expected)
+    assert int(gdb.parse_and_eval('value')) == expected
     parent = actual.older()
     assert parent.find_sal().line == call_line, (parent.find_sal().line, call_line)
     parent.select()
     if expected == 3:
         frame('debug_calls::outer', 100)
+        assert int(gdb.parse_and_eval('value')) == 3
         assert parent.older().name() == 'T::stimulus'
         assert parent.older().find_sal().line == {outer_call_line}
     else:
@@ -119,16 +172,52 @@ for expected, call_line in [(1, {first_line}), (2, {second_line}), (6, {paired_l
     actual.select()
     gdb.execute('continue')
 frame('debug_calls::outer', 100)
+assert int(gdb.parse_and_eval('value')) == 3
 outer.delete()
 inner.delete()
 leaf.delete()
 gdb.execute('continue')
 for expected, call_line in [(4, {first_value_line}), (5, {second_value_line})]:
     actual = frame('debug_calls::choose', expected)
+    assert int(gdb.parse_and_eval('value')) == expected
     assert actual.older().name() == 'T::stimulus'
     assert actual.older().find_sal().line == call_line
     gdb.execute('continue')
-frame('T::stimulus', 10)
+for _ in range(2):
+    assert gdb.selected_frame().name() == 'debug_calls::mutate'
+    assert int(gdb.parse_and_eval('value')) == 11
+    assert 'value = 11' in gdb.execute('info args', to_string=True)
+    gdb.execute('continue')
+alias.delete()
+assert gdb.selected_frame().name() == 'debug_calls::check_payload'
+view = gdb.parse_and_eval('value')
+assert int(view['tag']) == 9 and float(view['gain']) == 1.5
+assert int(view['wide']) == (1 << 64) + 1
+payload.delete()
+gdb.execute('continue')
+assert gdb.selected_frame().name() == 'debug_calls::check_real'
+assert float(gdb.parse_and_eval('value')) == 1.5
+real.delete()
+gdb.execute('continue')
+assert gdb.selected_frame().name() == 'debug_calls::check_wide'
+assert int(gdb.parse_and_eval('value')) == (1 << 64) + 1
+wide.delete()
+gdb.execute('continue')
+assert gdb.selected_frame().name() == 'debug_calls::check_string'
+view = gdb.parse_and_eval('value')
+assert int(view['length']) == 3 and int(view['byte_length']) == 7
+assert [int(view['data'][i]) for i in range(3)] == [ord(c) for c in 'β\x00🙂']
+assert bytes(int(view['utf8'][i]) for i in range(7)) == 'β\x00🙂'.encode()
+string.delete()
+gdb.execute('continue')
+assert gdb.selected_frame().name().endswith('::inspect')
+view = gdb.parse_and_eval('self')
+assert int(view['tag']) == 10 and float(view['gain']) == 1.5
+assert int(view['wide']) == (1 << 64) + 1
+assert 'self =' in gdb.execute('info args', to_string=True)
+receiver.delete()
+gdb.execute('continue')
+frame('T::stimulus', 11)
 assert int(gdb.parse_and_eval('chosen')) == 4
 assert int(gdb.parse_and_eval('chosen_again')) == 5
 caller.delete()
@@ -141,6 +230,12 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
             inner_line = line("leaf inner stop"),
             outer_line = line("outer stop"),
             choose_line = line("choose stop"),
+            alias_line = line("alias parameter stop"),
+            payload_line = line("payload parameter stop"),
+            real_line = line("real parameter stop"),
+            wide_line = line("wide parameter stop"),
+            string_line = line("string parameter stop"),
+            receiver_line = line("receiver parameter stop"),
             caller_line = line("caller stop"),
             first_line = line("first call"),
             second_line = line("second call"),

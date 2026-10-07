@@ -23,16 +23,7 @@ impl<'ctx> DebugInfo<'ctx, '_> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn string_global(
-        &self,
-        module: &Module<'ctx>,
-        source: &str,
-        scope: DIScope<'ctx>,
-        name: &str,
-        span: Span,
-        root: u32,
-    ) {
+    pub(super) fn string_debug_type(&self, scope: DIScope<'ctx>, span: Span) -> DIType<'ctx> {
         let view_type = self.string_view_type();
         let pointer_bits = u64::from(self.target.get_pointer_byte_size(None)) * 8;
         let pointer = |name, pointee| {
@@ -83,8 +74,7 @@ impl<'ctx> DebugInfo<'ctx, '_> {
             })
             .collect::<Vec<_>>();
         let bits = self.target.get_store_size(&view_type) * 8;
-        let ty = self
-            .builder
+        self.builder
             .create_struct_type(
                 scope,
                 "Char[]",
@@ -99,8 +89,16 @@ impl<'ctx> DebugInfo<'ctx, '_> {
                 None,
                 "",
             )
-            .as_type();
+            .as_type()
+    }
+
+    pub(super) fn string_mirror(&self, module: &Module<'ctx>, source: &str, root: u32) -> String {
         let buffer_name = format!("{source}.string.debug");
+        if module.get_global(&buffer_name).is_some() {
+            return buffer_name;
+        }
+        let view_type = self.string_view_type();
+        let bits = self.target.get_store_size(&view_type) * 8;
         let buffer = self.inspection_buffer(module, &buffer_name, u32::try_from(bits / 8).unwrap());
         buffer.set_alignment(self.target.get_abi_alignment(&view_type));
         self.string_mirrors.borrow_mut().push(StringMirror {
@@ -108,6 +106,23 @@ impl<'ctx> DebugInfo<'ctx, '_> {
             view: buffer,
             root,
         });
+        buffer_name
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn string_global(
+        &self,
+        module: &Module<'ctx>,
+        source: &str,
+        scope: DIScope<'ctx>,
+        name: &str,
+        span: Span,
+        root: u32,
+    ) {
+        let ty = self.string_debug_type(scope, span);
+        let file = self.file(span.file);
+        let line = self.sources.line_col(span.file, span.start).0;
+        let buffer_name = self.string_mirror(module, source, root);
         let info = self.builder.create_global_variable_expression(
             scope, name, "", file, line, ty, true, None, None, 0,
         );

@@ -214,6 +214,12 @@ inline frames and call sites. Use `up`/`down` to select the caller or callee;
 equal-spelled locals remain distinct at repeated calls (even on one source
 line), in nested calls and after `await`. Lexical shadowing stays within its
 own call instance rather than merging scopes with identical definition spans.
+`info args` shows formal parameters under their signature names (including
+`self`). Captured place arguments retain their language aliasing: after a
+callee writes through an argument, inspection reports its current value, not
+an entry-time copy. Structs, indexed places, wide/real projections and runtime
+strings use the same read-only inspection conventions as locals. Return types
+are also retained in the source subroutine metadata.
 
 Runtime-owned `string`/`Char[]` values expose a read-only view under their source
 name: `text.length` counts Unicode code points, `text.data[i]` reads one code
@@ -225,8 +231,8 @@ do not mutate either the view or its pointed-to content. Uninitialized/invalid
 handles and views from inactive tests are empty, without raising runtime errors.
 Snapshots refresh only at Siox source boundaries, as described above.
 
-Remaining inspection work includes additional runtime-sized array representations,
-expression-only inline frames and formal-parameter inspection. Debug mode
+Remaining inspection work includes additional runtime-sized array representations
+and expression-only inline frames. Debug mode
 is deliberately unoptimized; it is not a simulation performance mode. The
 same option applies to native objects and `--emit llvm-ir`.
 
@@ -239,7 +245,9 @@ enums, real/wide packed structs, labelled arrays, dynamic Unicode/UTF-8 strings
 and runtime string locals through inlined length/index/equality expressions in default and
 `bitpack` builds. A second regression checks repeated/same-line/nested CFG call
 frames, call-site lines, shadowed locals and suspension for procedures and
-value-returning functions. To run the existing native corpus with DWARF enabled:
+value-returning functions, plus formal arguments, mutable/indexed aliases,
+struct receivers, wide/real fields and Unicode/embedded-NUL string arguments.
+To run the existing native corpus with DWARF enabled:
 
 ```bash
 bash scripts/guarded-run.sh env SIOXC_DEBUG=1 bash scripts/test-corpus.sh /home/max/siox-tests

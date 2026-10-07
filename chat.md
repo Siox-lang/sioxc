@@ -13785,3 +13785,51 @@ FIFO/wide smoke/VCD checks passed. AST graph refreshed; known vendored libfst
 extractor warnings remain unrelated. Commit only this tested inline batch and
 owned log entry. Estimated implement DWARF completion: 94%; parameter/return
 metadata, expression-only inlines and remaining array coverage still need work.
+
+### 2026-10-07 — Codex — DWARF formal parameters
+
+Own canonical inline argument/result metadata, source_processes/cfg_calls,
+LLVM debug/parameters.rs and entry, debug_info and metadata validation tests.
+Reuse captured argument identities: parameters may alias caller state and
+must not become simulation copies. Retain real formal parameter/return types.
+LLVM-only probes 110970/114053 verified that direct global dbg.value/declare
+records lose locations, while a stack-held reference with DW_OP_deref keeps
+the true global value available as a formal argument. Use LLVM 22 record APIs
+directly (do not cast LLVMDbgRecordRef to InstructionValue). Preserve unrelated
+AGENTS.md/.codex/441 chat additions; no compiler push or editor work.
+
+Focused job 204825 finished exited/success/0 (peak 1611087872 bytes):
+default/bitpack GDB parameter tests and strict Clippy passed. True formal
+arguments retain constants and live mutable/indexed aliases across await,
+including struct, real and 81-bit projections. Extend ownership to
+debug/strings.rs to reuse its existing borrowed-content view for string
+parameters, and validate invalid argument/result IDs. No runtime copies,
+new dependencies or re-evaluation of user expressions for inspection.
+
+Jobs 213451 and 217617 completed exited/success/0 (peaks 1449811968 and
+1083744256 bytes): invalid binding validation, default/bitpack real GDB tests,
+strict Clippy, Unicode/embedded-NUL string parameters and mutated `self`
+receivers passed. Reused/deduplicated existing string inspection buffers;
+no new runtime API or source-expression evaluation. Full acceptance remains
+required before committing. Expression-only inline frames remain open.
+
+Full acceptance job siox-job-3000-1791381079431179320-220391.service is live;
+log ~/.cache/siox-jobs/siox-job-3000-1791381079431179320-220391.log. Default
+full suite passed; corpus runs are still in progress. Poll this exact unit,
+never restart solely on an observation timeout, and keep compiler sources
+unchanged while the gate verifies this snapshot. Require exited/success/0,
+full bitpack suite, three 225/0 corpus summaries and GDB/VCD parity before
+committing only owned parameter/string/debug/test/docs files and this dated
+entry. Preserve unrelated AGENTS.md, .codex and 441 chat additions. No compiler
+push. After this batch: preserve expression-only call/local provenance at
+value lowering, and audit zero-width/empty formal arguments (currently skipped
+without a physical LLVM frame) plus other supported argument representations.
+
+Acceptance job 220391 finished exited/success/0, peak 1612668928 bytes.
+Formatting, strict all-target/all-feature Clippy, frontend-only check, full
+default/bitpack suites, ordinary/default-debug/bitpack-debug corpora (225/0
+each), real GDB formal-argument/receiver/string inspection and all FIFO/wide
+GDB/VCD smoke checks passed. AST graph refreshed (known vendored libfst parser
+warnings remain unrelated). Commit only this verified batch. Estimated
+implement DWARF completion: 96%; expression-only frames, zero-storage argument
+inspection and remaining supported-representation audit are still open.

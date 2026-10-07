@@ -836,6 +836,8 @@ fn process_assignment_snapshot_requires_capturable_operands() {
         name: "test::callee".into(),
         function: span,
         call: span,
+        parameters: vec![],
+        result: None,
         blocks: std::iter::once(0..1).collect(),
         locals: 0..1,
     });
@@ -854,6 +856,25 @@ fn process_assignment_snapshot_requires_capturable_operands() {
         .iter()
         .any(|issue| issue.contains("invalid parent")));
     ir.processes[0].inline_calls[0].parent = None;
+    ir.processes[0].inline_calls[0]
+        .parameters
+        .push(ProcessInlineParameter {
+            name: "value".into(),
+            span,
+            value: ProcessValueId(ir.values.len() as u32),
+        });
+    assert!(ir
+        .validate(0)
+        .iter()
+        .any(|issue| issue.contains("invalid binding")));
+    ir.processes[0].inline_calls[0].parameters.clear();
+    ir.processes[0].inline_calls[0].result = Some(ProcessValueId(ir.values.len() as u32));
+    assert!(ir
+        .validate(0)
+        .iter()
+        .any(|issue| issue.contains("invalid binding")));
+    ir.processes[0].inline_calls[0].result = Some(ProcessValueId(0));
+    assert!(ir.validate(0).is_empty(), "{:#?}", ir.validate(0));
     ir.processes[0].inline_calls[0].blocks.push(1..2);
     assert!(ir
         .validate(0)

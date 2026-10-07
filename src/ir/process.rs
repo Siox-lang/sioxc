@@ -201,10 +201,26 @@ pub struct ProcessInlineCall {
     pub function: crate::diag::Span,
     /// Caller expression/statement extent.
     pub call: crate::diag::Span,
+    /// Captured formal bindings, in signature order, including `self`.
+    pub parameters: Vec<ProcessInlineParameter>,
+    /// Caller-owned return frame for a value-producing CFG call.
+    pub result: Option<ProcessValueId>,
     /// Callee-owned CFG allocation ranges. Normalization can append ranges.
     pub blocks: Vec<std::ops::Range<u32>>,
     /// Callee-local allocation range, including nested calls.
     pub locals: std::ops::Range<u32>,
+}
+
+/// A source parameter aliases this already-captured operand. Debug metadata
+/// must neither reevaluate its argument expression nor change place semantics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessInlineParameter {
+    /// Source spelling; receivers use `self`.
+    pub name: String,
+    /// Signature declaration extent.
+    pub span: crate::diag::Span,
+    /// Actual captured operand in the canonical arena.
+    pub value: ProcessValueId,
 }
 
 /// When a process runs.
@@ -1338,6 +1354,17 @@ impl ProcessIr {
                 ));
             }
             for (id, call) in process.inline_calls.iter().enumerate() {
+                if call
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.value.0 >= value_count)
+                    || call.result.is_some_and(|value| value.0 >= value_count)
+                {
+                    issues.push(format!(
+                        "process {:?} inline call {id} has an invalid binding",
+                        process.id
+                    ));
+                }
                 if call.parent.is_some_and(|parent| parent as usize >= id) {
                     issues.push(format!(
                         "process {:?} inline call {id} has an invalid parent",

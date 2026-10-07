@@ -689,6 +689,11 @@ pub(super) fn latch_index_failure<'ctx>(
     active: Option<IntValue<'ctx>>,
     site: u32,
 ) -> Option<()> {
+    // Inactive reads cannot latch an error. Avoid even writing the unchanged
+    // error state, including read-only debugger inspection of captured places.
+    if active.is_some_and(|active| active.get_zero_extended_constant() == Some(0)) {
+        return Some(());
+    }
     let invalid = builder.build_not(valid, "pv.index.invalid").ok()?;
     let invalid = match active {
         Some(active) => builder.build_and(active, invalid, "pv.index.active").ok()?,

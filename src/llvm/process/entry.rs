@@ -39,7 +39,7 @@ pub(super) fn process_entry<'ctx>(
         .collect::<Vec<_>>();
 
     builder.position_at_end(dispatch);
-    let scope = debug.map(|debug| debug.process(module, design, process, function));
+    let scope = debug.map(|debug| debug.process(module, design, process, function, &builder));
     let resume = function
         .get_first_param()
         .expect("process entry has a resume block")
@@ -71,12 +71,25 @@ pub(super) fn process_entry<'ctx>(
                 .unwrap();
             continue;
         }
+        if let (Some(debug), Some(scope)) = (debug, scope) {
+            debug.declare_parameters(&builder, scope, inline);
+        }
 
         let mut cache = ProcessValueCache::new(activity_values, &supported_values.meta_free);
         let mut failed = false;
         for (instruction_index, instruction) in block.instructions.iter().enumerate() {
             if let (Some(debug), Some(scope)) = (debug, scope) {
                 debug.sync(&builder);
+                debug.sync_parameters(
+                    module,
+                    &builder,
+                    design,
+                    scope,
+                    inline,
+                    index_sites,
+                    activity_values,
+                    &supported_values.meta_free,
+                );
                 let span = match instruction {
                     ProcessInstruction::Declare { span, .. }
                     | ProcessInstruction::Assign { span, .. }
@@ -403,6 +416,16 @@ pub(super) fn process_entry<'ctx>(
         }
         if let (Some(debug), Some(scope)) = (debug, scope) {
             debug.sync(&builder);
+            debug.sync_parameters(
+                module,
+                &builder,
+                design,
+                scope,
+                inline,
+                index_sites,
+                activity_values,
+                &supported_values.meta_free,
+            );
             let span = match &block.terminator {
                 ProcessTerminator::Return { span, .. } => *span,
                 ProcessTerminator::For { span, .. }

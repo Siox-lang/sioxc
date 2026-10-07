@@ -16,8 +16,10 @@ use siox::diag::{FileId, SourceMap, Span};
 use siox::ir::ScalarDomain;
 
 mod logic;
+mod parameters;
 mod strings;
 use logic::{LogicMirror, LogicSource};
+use parameters::ParameterLocation;
 use strings::StringMirror;
 
 // DWARF standard opcodes/encodings, not Siox values or runtime layout limits.
@@ -36,6 +38,7 @@ const DW_ATE_UNSIGNED: u32 = 0x07;
 type ScopeKey = (usize, Option<u32>);
 type LexicalScopes<'ctx> = Vec<(Span, DIScope<'ctx>)>;
 type InlineFrame<'ctx> = (DISubprogram<'ctx>, Option<DILocation<'ctx>>);
+type ParameterLocations<'ctx> = Vec<Vec<ParameterLocation<'ctx>>>;
 
 pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     context: &'ctx Context,
@@ -47,6 +50,8 @@ pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     lexical_scopes: RefCell<HashMap<ScopeKey, LexicalScopes<'ctx>>>,
     file_scopes: RefCell<HashMap<(ScopeKey, FileId), DIScope<'ctx>>>,
     inline_scopes: RefCell<HashMap<usize, Vec<InlineFrame<'ctx>>>>,
+    parameter_locations: RefCell<HashMap<usize, ParameterLocations<'ctx>>>,
+    parameter_parents: RefCell<HashMap<usize, Vec<Option<u32>>>>,
     target: TargetData,
     mirrors: RefCell<Vec<Mirror<'ctx>>>,
     logic_mirrors: RefCell<Vec<LogicMirror<'ctx>>>,
@@ -119,6 +124,8 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             lexical_scopes: RefCell::new(HashMap::new()),
             file_scopes: RefCell::new(HashMap::new()),
             inline_scopes: RefCell::new(HashMap::new()),
+            parameter_locations: RefCell::new(HashMap::new()),
+            parameter_parents: RefCell::new(HashMap::new()),
             mirrors: RefCell::new(Vec::new()),
             logic_mirrors: RefCell::new(Vec::new()),
             string_mirrors: RefCell::new(Vec::new()),
@@ -685,6 +692,11 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
         offset: u64,
         packed_word: bool,
     ) -> inkwell::debug_info::DIExpression<'ctx> {
+        self.builder
+            .create_expression(self.expression_ops(layout, offset, packed_word))
+    }
+
+    fn expression_ops(&self, layout: &SourceLayout, offset: u64, packed_word: bool) -> Vec<i64> {
         let width = layout.packed_width().expect("concrete debug layout");
         let mut ops = vec![DW_OP_PLUS_UCONST, (offset / 8) as i64];
         // Native integer slots round up to bytes; bitpacked signals may start
@@ -716,7 +728,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             }
             ops.push(DW_OP_STACK_VALUE);
         }
-        self.builder.create_expression(ops)
+        ops
     }
 
     fn attach_global(
@@ -747,6 +759,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
         design: &Design,
         process: &ProcessCfg,
         function: FunctionValue<'ctx>,
+        builder: &Builder<'ctx>,
     ) -> DISubprogram<'ctx> {
         let file = self.file(process.span.file);
         let line = self
@@ -790,6 +803,11 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                     .sources
                     .line_col(call.function.file, call.function.start)
                     .0;
+                let parameter_types = call
+                    .parameters
+                    .iter()
+                    .filter_map(|parameter| self.value_debug_type(design, parameter.value))
+                    .collect::<Vec<_>>();
                 (
                     self.builder.create_function(
                         self.namespace(&owner.replace("::", ".")),
@@ -797,8 +815,13 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                         Some(""),
                         file,
                         line,
-                        self.builder
-                            .create_subroutine_type(file, None, &[], DIFlags::ZERO),
+                        self.builder.create_subroutine_type(
+                            file,
+                            call.result
+                                .and_then(|result| self.value_debug_type(design, result)),
+                            &parameter_types,
+                            DIFlags::ZERO,
+                        ),
                         true,
                         true,
                         line,
@@ -810,6 +833,14 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             })
             .collect::<Vec<_>>();
         self.inline_scopes.borrow_mut().insert(key, frames.clone());
+        self.parameter_parents.borrow_mut().insert(
+            key,
+            process
+                .inline_calls
+                .iter()
+                .map(|call| call.parent)
+                .collect(),
+        );
         let mut extents = process
             .locals
             .iter()
@@ -957,6 +988,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             );
             self.attach_global(module, &global_name, variable);
         }
+        self.parameters(module, design, process, builder, scope);
         scope
     }
 
