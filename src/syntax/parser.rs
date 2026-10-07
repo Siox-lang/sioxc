@@ -2880,7 +2880,7 @@ impl<'a> Parser<'a> {
                 inner
             }
             // `builtin # assert(…)`: a compiler primitive, for `core`'s macro
-            // bodies (docs/language.md §3.30). It reads as the bang call the compiler
+            // bodies (siox-paper/docs/language.md §3.30). It reads as the bang call the compiler
             // has always lowered; the expansion pass checks where it stands.
             TokenKind::Ident
                 if self.cur_text() == "builtin"

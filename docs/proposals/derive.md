@@ -30,4 +30,4 @@ keeps one IR. `#[cfg]` should not be added.
 ## Non-goals
 
 - A macro system. `#[...]` directs a fixed set of compiler behaviors; it does
-  not run user code over a token stream (see [language.md](../language.md), §3.30).
+  not run user code over a token stream (see [language.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/language.md), §3.30).
