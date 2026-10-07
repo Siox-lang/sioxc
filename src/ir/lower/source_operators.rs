@@ -39,7 +39,7 @@ impl Lowering<'_> {
         rhs: Option<&str>,
         span: crate::diag::Span,
     ) -> Option<&ast::FnDecl> {
-        let functions = self.op_impls.get(&(op.to_owned(), lhs.to_owned()))?;
+        let functions = self.op_impls.get(op, lhs)?;
         let declared = |function: &ast::FnDecl, argument: &Option<String>| {
             let family = argument.clone().or_else(|| {
                 function
@@ -88,7 +88,7 @@ impl Lowering<'_> {
 
     pub(super) fn source_unary_operator(&self, op: &str, family: &str) -> Option<&ast::FnDecl> {
         self.op_impls
-            .get(&(op.to_owned(), family.to_owned()))?
+            .get(op, family)?
             .iter()
             .find(|(function, _)| function.params.iter().all(|parameter| parameter.is_self))
             .map(|(function, _)| *function)

@@ -53,7 +53,7 @@ impl<'a> Checker<'a> {
                         .enumerate()
                         .find(|(index, definition)| {
                             matches!(definition.kind, DefKind::Struct | DefKind::Enum)
-                                && self.definition_key(DefId(*index as u32)).as_deref()
+                                && self.definition_key_str(DefId(*index as u32))
                                     == Some(ty.as_str())
                         })
                         .map(|(index, _)| Ty::Named(DefId(index as u32)))

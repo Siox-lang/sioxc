@@ -21,7 +21,8 @@ pub struct FunctionIndex<'a> {
     free: HashMap<DefId, &'a ast::FnDecl>,
     /// Static associated functions, keyed by `Type::name` because they do
     /// not yet receive a `DefId` of their own.
-    associated: HashMap<String, &'a ast::FnDecl>,
+    /// Keyed owner first, then name, so a lookup borrows both.
+    associated: HashMap<String, HashMap<String, &'a ast::FnDecl>>,
     /// Concrete operator implementations, keyed by source symbol and resolved
     /// owner type. Each candidate retains the impl's declared input type for
     /// overload selection; the function body remains ordinary Siox source and
@@ -43,7 +44,7 @@ impl<'a> FunctionIndex<'a> {
             resolved,
             free: HashMap::new(),
             associated: HashMap::new(),
-            operators: HashMap::new(),
+            operators: OperatorImpls::default(),
             blanket_array_operators: HashMap::new(),
             conversions: HashMap::new(),
         }
@@ -95,12 +96,21 @@ impl<'a> FunctionIndex<'a> {
 
     /// Register a static associated function, replacing an inherited default.
     pub fn insert_associated(&mut self, key: String, function: &'a ast::FnDecl) {
-        self.associated.insert(key, function);
+        let (owner, name) = split_associated_key(&key);
+        self.associated
+            .entry(owner.to_owned())
+            .or_default()
+            .insert(name.to_owned(), function);
     }
 
     /// Register an inherited static default unless the impl overrides it.
     pub fn insert_associated_default(&mut self, key: String, function: &'a ast::FnDecl) {
-        self.associated.entry(key).or_insert(function);
+        let (owner, name) = split_associated_key(&key);
+        self.associated
+            .entry(owner.to_owned())
+            .or_default()
+            .entry(name.to_owned())
+            .or_insert(function);
     }
 
     /// Register the executable body of one operator impl: a named trait's
@@ -172,8 +182,7 @@ impl<'a> FunctionIndex<'a> {
             };
             if function.name.text == method {
                 self.operators
-                    .entry((symbol.clone(), owner.clone()))
-                    .or_default()
+                    .entry(&symbol, owner.clone())
                     .push((function, input.clone()));
             }
         }
@@ -194,8 +203,7 @@ impl<'a> FunctionIndex<'a> {
             };
             if let Some(symbol) = comparison_symbol(&function.name.text) {
                 self.operators
-                    .entry((symbol.to_string(), owner.clone()))
-                    .or_default()
+                    .entry(symbol, owner.clone())
                     .push((function, input.clone()));
             }
         }
@@ -219,10 +227,7 @@ impl<'a> FunctionIndex<'a> {
         };
         if !overridden {
             let input = self.comparison_input(implementation);
-            self.operators
-                .entry((symbol.to_string(), owner))
-                .or_default()
-                .push((function, input));
+            self.operators.entry(symbol, owner).push((function, input));
         }
     }
 
@@ -249,30 +254,27 @@ impl<'a> FunctionIndex<'a> {
         owner: &str,
         input: Option<&str>,
     ) -> Option<&'a ast::FnDecl> {
-        let candidates = self
-            .operators
-            .get(&(symbol.to_string(), owner.to_string()))?;
-        let declared_input = |function: &ast::FnDecl, input: &Option<String>| {
-            input.clone().or_else(|| {
-                function
-                    .params
-                    .iter()
-                    .find(|parameter| !parameter.is_self)
-                    .and_then(|parameter| parameter.ty.as_ref())
-                    .and_then(|ty| self.type_head_key(ty))
-            })
-        };
+        let candidates = self.operators.get(symbol, owner)?;
+        // The impl's declared input, else its parameter's type; `Self` is
+        // the owner. Borrowed where it can be: this runs per candidate.
         let matches = |function: &ast::FnDecl, declared: &Option<String>, wanted: &str| {
-            declared_input(function, declared)
-                .map(|input| {
-                    if input == "Self" {
-                        owner.to_string()
-                    } else {
-                        input
+            let from_parameter;
+            let input = match declared {
+                Some(declared) => declared.as_str(),
+                None => {
+                    from_parameter = function
+                        .params
+                        .iter()
+                        .find(|parameter| !parameter.is_self)
+                        .and_then(|parameter| parameter.ty.as_ref())
+                        .and_then(|ty| self.type_head_key(ty));
+                    match &from_parameter {
+                        Some(input) => input.as_str(),
+                        None => return false,
                     }
-                })
-                .as_deref()
-                == Some(wanted)
+                }
+            };
+            (if input == "Self" { owner } else { input }) == wanted
         };
         match input {
             Some(input) => candidates
@@ -298,7 +300,7 @@ impl<'a> FunctionIndex<'a> {
     /// not add a runtime argument.
     pub fn get_unary_operator(&self, symbol: &str, owner: &str) -> Option<&'a ast::FnDecl> {
         self.operators
-            .get(&(symbol.to_string(), owner.to_string()))?
+            .get(symbol, owner)?
             .iter()
             .find_map(|(function, _)| {
                 (function
@@ -331,7 +333,7 @@ impl<'a> FunctionIndex<'a> {
     /// receiver/owner type. This is used by Process lowering for ordinary
     /// method syntax, whose callee is a field expression rather than a path.
     pub fn get_associated(&self, owner: &str, name: &str) -> Option<&'a ast::FnDecl> {
-        self.associated.get(&format!("{owner}::{name}")).copied()
+        self.associated.get(owner)?.get(name).copied()
     }
 
     /// Retrieve a free function using a canonical callee's resolved identity.
@@ -366,7 +368,7 @@ impl<'a> FunctionIndex<'a> {
             .enumerate()
             .find_map(|(index, _definition)| {
                 let id = DefId(u32::try_from(index).ok()?);
-                (self.resolved.qualified_name(id).as_deref() == Some(key))
+                (self.resolved.qualified_name_str(id) == Some(key))
                     .then(|| self.nominal_type_key(id))
                     .flatten()
             })
@@ -383,7 +385,8 @@ impl<'a> FunctionIndex<'a> {
                 }
             }
             if let Some(key) = self.associated_path_key(path) {
-                return self.associated.get(&key).copied();
+                let (owner, name) = split_associated_key(&key);
+                return self.associated.get(owner)?.get(name).copied();
             }
         }
         None
@@ -757,4 +760,9 @@ fn comparison_symbol(method: &str) -> Option<&'static str> {
         "ge" => ">=",
         _ => return None,
     })
+}
+
+/// `"owner::name"` split at its last `::`; an owner path keeps its own.
+fn split_associated_key(key: &str) -> (&str, &str) {
+    key.rsplit_once("::").unwrap_or(("", key))
 }

@@ -420,7 +420,7 @@ fn nominal_type_from_name(name: &str, resolved: &Resolved) -> Option<crate::type
         .filter(|(_, definition)| type_definition(definition))
         .find_map(|(index, _)| {
             let definition = crate::resolve::DefId(u32::try_from(index).ok()?);
-            (resolved.qualified_name(definition).as_deref() == Some(name)).then_some(definition)
+            (resolved.qualified_name_str(definition) == Some(name)).then_some(definition)
         });
     let definition = exact.or_else(|| {
         let leaf = name.rsplit("::").next()?;
@@ -2460,14 +2460,11 @@ fn inline_process_procedure_call(
                 .and_then(|value| value.ty.as_ref())
                 .and_then(|ty| process_type_key(ty, context))?;
             (
-                context
-                    .functions
-                    .get_associated(&owner, &field.text)?
-                    .clone(),
+                context.functions.get_associated(&owner, &field.text)?,
                 Some(receiver),
             )
         }
-        _ => (context.functions.get(callee)?.clone(), None),
+        _ => (context.functions.get(callee)?, None),
     };
     let body = function.body.as_ref()?;
     if function.ret.is_some()
@@ -4287,7 +4284,7 @@ fn lower_process_foreign_call(
     if !type_args.is_empty() || !matches!(callee.as_ref(), ast::Expr::Path(_)) {
         return None;
     }
-    let function = context.functions.get(callee)?.clone();
+    let function = context.functions.get(callee)?;
     if function.body.is_some() || function.params.iter().any(|parameter| parameter.is_self) {
         return None;
     }
@@ -4693,7 +4690,8 @@ fn inline_process_function(
     context.value_bindings.push(bindings);
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(return_type);
-    let result = inline_value_statements(&body.stmts, process, context);
+    let statements = body.stmts.iter().collect::<Vec<_>>();
+    let result = inline_value_statements(&statements, process, context);
     context.inline_return_types.pop();
     context.inline_self_values.pop();
     context.value_bindings.pop();
@@ -5284,12 +5282,12 @@ fn inline_process_unary_operator(
 /// by std and hardware lowering; other statements deliberately leave the call
 /// explicit and fail closed in native Process lowering.
 fn inline_value_statements(
-    statements: &[Stmt],
+    statements: &[&Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> Option<ProcessValueId> {
     let (statement, rest) = statements.split_first()?;
-    match statement {
+    match *statement {
         Stmt::Return {
             value: Some(value), ..
         } => {
@@ -5324,14 +5322,16 @@ fn inline_value_statements(
 
 /// Inline one branch in a fresh lexical binding scope, appending the source
 /// continuation so a branch without an early return falls through normally.
+/// The sequence borrows both: copying the statements here re-copied the whole
+/// rest of a function at every nested `if`.
 fn inline_value_branch(
     branch: &[Stmt],
-    continuation: &[Stmt],
+    continuation: &[&Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> Option<ProcessValueId> {
     let mut statements = Vec::with_capacity(branch.len() + continuation.len());
-    statements.extend_from_slice(branch);
+    statements.extend(branch);
     statements.extend_from_slice(continuation);
     context
         .value_bindings
@@ -5344,7 +5344,7 @@ fn inline_value_branch(
 /// Turn a function-body `if` into a dependency-ordered Process selection.
 fn inline_value_if(
     statement: &ast::IfStmt,
-    continuation: &[Stmt],
+    continuation: &[&Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> Option<ProcessValueId> {
@@ -5354,9 +5354,14 @@ fn inline_value_if(
         Some(ElseBranch::Block(block)) => {
             inline_value_branch(&block.stmts, continuation, process, context)?
         }
+        // `else if` is the branch `{ if … }`: inline it in its own scope.
         Some(ElseBranch::If(inner)) => {
-            let branch = [Stmt::If(inner.clone())];
-            inline_value_branch(&branch, continuation, process, context)?
+            context
+                .value_bindings
+                .push(std::collections::HashMap::new());
+            let value = inline_value_if(inner, continuation, process, context);
+            context.value_bindings.pop();
+            value?
         }
         None => inline_value_branch(&[], continuation, process, context)?,
     };
@@ -5369,7 +5374,7 @@ fn inline_value_if(
 /// comparisons and selects.
 fn inline_value_match(
     statement: &ast::MatchStmt,
-    continuation: &[Stmt],
+    continuation: &[&Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> Option<ProcessValueId> {

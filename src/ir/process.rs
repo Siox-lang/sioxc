@@ -1602,7 +1602,7 @@ impl ProcessIr {
             if value.bit_width == Some(0) {
                 issues.push(format!("process value {:?} has zero packed width", id));
             }
-            for dependency in process_value_dependencies(&value.kind) {
+            for_each_process_value_dependency(&value.kind, |dependency| {
                 if dependency.0 >= value_count {
                     issues.push(format!(
                         "process value {:?} references invalid value {:?}",
@@ -1614,7 +1614,7 @@ impl ProcessIr {
                         id, dependency
                     ));
                 }
-            }
+            });
             match &value.kind {
                 ProcessValueKind::Signal { signals, .. } => {
                     if signals.is_empty() {
@@ -1906,8 +1906,48 @@ fn process_terminator_values(terminator: &ProcessTerminator) -> Vec<ProcessValue
     }
 }
 
-/// Operand ids embedded by one value node.
+/// Operand ids embedded by one value node, collected. Prefer
+/// [`for_each_process_value_dependency`] or
+/// [`any_process_value_dependency`] where a visit is enough: this allocates.
 pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<ProcessValueId> {
+    let mut dependencies = Vec::new();
+    for_each_process_value_dependency(value, |id| dependencies.push(id));
+    dependencies
+}
+
+/// Visit each operand id embedded by one value node, in operand order,
+/// without allocating.
+pub(crate) fn for_each_process_value_dependency(
+    value: &ProcessValueKind,
+    mut visit: impl FnMut(ProcessValueId),
+) {
+    let _ = try_for_each_process_value_dependency(value, |id| {
+        visit(id);
+        std::ops::ControlFlow::Continue(())
+    });
+}
+
+/// Whether any operand id embedded by one value node satisfies `predicate`;
+/// stops at the first that does.
+pub(crate) fn any_process_value_dependency(
+    value: &ProcessValueKind,
+    mut predicate: impl FnMut(ProcessValueId) -> bool,
+) -> bool {
+    try_for_each_process_value_dependency(value, |id| {
+        if predicate(id) {
+            std::ops::ControlFlow::Break(())
+        } else {
+            std::ops::ControlFlow::Continue(())
+        }
+    })
+    .is_break()
+}
+
+fn try_for_each_process_value_dependency(
+    value: &ProcessValueKind,
+    mut visit: impl FnMut(ProcessValueId) -> std::ops::ControlFlow<()>,
+) -> std::ops::ControlFlow<()> {
+    use std::ops::ControlFlow::Continue;
     match value {
         ProcessValueKind::Field { base, .. }
         | ProcessValueKind::Attribute { base, .. }
@@ -1915,39 +1955,61 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
         | ProcessValueKind::PackedSlice { base, .. }
         | ProcessValueKind::TableLookup { index: base, .. }
         | ProcessValueKind::Unary { operand: base, .. }
-        | ProcessValueKind::RawResize { operand: base } => vec![*base],
-        ProcessValueKind::Index { base, index } => vec![*base, *index],
-        ProcessValueKind::CheckedIndex { index, valid, .. } => vec![*index, *valid],
-        ProcessValueKind::Range { left, right } => left.iter().chain(right).copied().collect(),
-        ProcessValueKind::Binary { left, right, .. } => vec![*left, *right],
+        | ProcessValueKind::RawResize { operand: base } => visit(*base),
+        ProcessValueKind::Index { base, index } => {
+            visit(*base)?;
+            visit(*index)
+        }
+        ProcessValueKind::CheckedIndex { index, valid, .. } => {
+            visit(*index)?;
+            visit(*valid)
+        }
+        ProcessValueKind::Range { left, right } => {
+            left.iter().chain(right).try_for_each(|id| visit(*id))
+        }
+        ProcessValueKind::Binary { left, right, .. } => {
+            visit(*left)?;
+            visit(*right)
+        }
         ProcessValueKind::Select {
             condition,
             then_value,
             else_value,
-        } => vec![*condition, *then_value, *else_value],
+        } => {
+            visit(*condition)?;
+            visit(*then_value)?;
+            visit(*else_value)
+        }
         ProcessValueKind::MetaCompare {
             operands, inner, ..
-        } => operands
-            .iter()
-            .copied()
-            .chain(std::iter::once(*inner))
-            .collect(),
-        ProcessValueKind::Match { scrutinee, arms } => std::iter::once(*scrutinee)
-            .chain(arms.iter().map(|arm| arm.value))
-            .collect(),
+        } => {
+            operands.iter().try_for_each(|id| visit(*id))?;
+            visit(*inner)
+        }
+        ProcessValueKind::Match { scrutinee, arms } => {
+            visit(*scrutinee)?;
+            arms.iter().try_for_each(|arm| visit(arm.value))
+        }
         ProcessValueKind::Call {
             callee, arguments, ..
-        } => std::iter::once(*callee)
-            .chain(arguments.iter().copied())
-            .collect(),
+        } => {
+            visit(*callee)?;
+            arguments.iter().try_for_each(|id| visit(*id))
+        }
         ProcessValueKind::ForeignCall { arguments, .. }
-        | ProcessValueKind::HostCall { arguments, .. } => arguments.clone(),
-        ProcessValueKind::Construct { fields, spread, .. } => fields
-            .iter()
-            .filter_map(|field| field.value)
-            .chain(spread.iter().copied())
-            .collect(),
-        ProcessValueKind::Concat(values) | ProcessValueKind::Array(values) => values.clone(),
+        | ProcessValueKind::HostCall { arguments, .. } => {
+            arguments.iter().try_for_each(|id| visit(*id))
+        }
+        ProcessValueKind::Construct { fields, spread, .. } => {
+            fields
+                .iter()
+                .filter_map(|field| field.value)
+                .try_for_each(&mut visit)?;
+            spread.iter().try_for_each(|id| visit(*id))
+        }
+        ProcessValueKind::Concat(values) | ProcessValueKind::Array(values) => {
+            values.iter().try_for_each(|id| visit(*id))
+        }
         ProcessValueKind::Number(_)
         | ProcessValueKind::Suffixed { .. }
         | ProcessValueKind::BitString { .. }
@@ -1960,7 +2022,7 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
         | ProcessValueKind::Definition(_)
         | ProcessValueKind::Intrinsic(_)
         | ProcessValueKind::Default
-        | ProcessValueKind::Invalid => Vec::new(),
+        | ProcessValueKind::Invalid => Continue(()),
     }
 }
 

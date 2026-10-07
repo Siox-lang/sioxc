@@ -58,7 +58,7 @@ impl<'a> Lowering<'a> {
             .free_fns
             .struct_path_key(path)
             .or_else(|| expr_path(base))?;
-        let fns = self.op_impls.get(&("From".to_string(), target))?;
+        let fns = self.op_impls.get("From", &target)?;
         // The operand's own family first (`sfixed<16, 8>` resizing): the
         // checker records this conversion form's argument as a kernel integer.
         let source = match self
@@ -173,7 +173,7 @@ impl<'a> Lowering<'a> {
         let src = src.map(str::to_string);
         // No explicit `impl From<src> for target`: try a derivation-total
         // conversion (spec: T(x) is auto for total derivations).
-        let Some(fns) = self.op_impls.get(&("From".to_string(), target.to_string())) else {
+        let Some(fns) = self.op_impls.get("From", target) else {
             return self.derived_conversion(target, src.as_deref(), arg, env);
         };
         let declared = |f: &ast::FnDecl, a: &Option<String>| -> Option<String> {
@@ -555,8 +555,8 @@ impl<'a> Lowering<'a> {
         if let Some(f) = self
             .op_impls
             .iter()
-            .filter(|((_, t), _)| t == ty)
-            .flat_map(|(_, fns)| fns.iter())
+            .filter(|(_, owner, _)| *owner == ty)
+            .flat_map(|(_, _, fns)| fns.iter())
             .find(|(f, rhs)| {
                 // An integer literal argument adopts the owner type, as an
                 // operator's right operand does (`x < 0` on `signed`).
