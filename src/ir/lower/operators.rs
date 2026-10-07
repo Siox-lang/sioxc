@@ -613,10 +613,7 @@ impl<'a> Lowering<'a> {
     ) -> Option<Expr> {
         let (trait_name, method) = comparison_method(op_str)?;
         let ty = self.operand_type_name(lhs)?;
-        if !self
-            .op_impls
-            .contains_key(&(trait_name.to_string(), ty.clone()))
-        {
+        if !self.op_impls.contains(trait_name, &ty) {
             return None;
         }
         if self

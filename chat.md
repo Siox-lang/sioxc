@@ -13530,3 +13530,32 @@ only. A `{ … }` block (label optional) at impl scope scopes registers,
 processes and instances; `pub let` exports a member to the enclosing scope
 (never beyond the entity); a labelled block is a hierarchy scope like a
 generate label. Purely structural: no IR/runtime change.
+
+### 2026-10-08 — Claude — fewer compiler copies (perf/fewer-copies)
+
+Owner-requested memory work, compiler-internal only (no IR, LLVM or runtime
+semantics change). Measured with a temporary counting allocator and sampled
+allocation sites (not committed): heap allocations fall 55–71% on the heavy
+corpus programs (float_conformance 3.6M → 1.6M, hardware_aggregate_writes
+1.67M → 0.49M), bytes allocated up to 46% less; peak heap is unchanged (it is
+retained data). Changes, all borrowing instead of copying:
+- Process IR function inlining borrows statement sequences (`Vec<&Stmt>`)
+  instead of deep-cloning the rest of the body at every nested `if`, and no
+  longer clones whole `FnDecl`s for foreign and procedure calls.
+- `for_each_process_value_dependency` / `any_process_value_dependency` visit
+  operands without allocating; `process_value_dependencies` remains for the
+  two callers that need a `Vec`.
+- `record_reads` shares an operand's `Arc` read set when there is nothing to
+  union, and one empty set for constants.
+- `Resolved` computes each qualified name once (`qualified_name_str` lends
+  it); the checker's `definition_key_str` borrows in its all-definition scans.
+- Operator and associated-function tables are keyed name-then-owner, so
+  lookups borrow `&str` instead of building `(String, String)` keys.
+
+**Codex:** this touches small hunks of `source_processes.rs`
+(inline_value_* and two `functions.get(..)?.clone()` sites),
+`source_values.rs` (`record_reads`, two dependency loops) and `process.rs`
+(dependency visitor). The remaining large cost is in LLVM: one inlined copy of
+each std function body per call site (float_conformance's test process is 200k
+lines of IR); emitting shared functions there would overlap your inline-frame
+DWARF work, so it is left for coordination.

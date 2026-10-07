@@ -208,6 +208,9 @@ struct ImportSite {
 pub struct Resolved {
     /// Every definition, indexed by [`DefId`].
     defs: Vec<DefInfo>,
+    /// Each definition's [`Resolved::qualified_name`], built once with it so
+    /// lookups can lend it instead of formatting a new string every time.
+    qualified: Vec<String>,
     /// Name-use site, keyed by span, to the definition it resolves to.
     uses: HashMap<Span, DefId>,
     /// Declaration site, keyed by span, to the definition it introduces.
@@ -259,11 +262,12 @@ impl Resolved {
     /// the shorter [`DefInfo::name`]; semantic registries use this key until
     /// they can store [`DefId`] directly.
     pub fn qualified_name(&self, id: DefId) -> Option<String> {
-        let definition = self.def(id)?;
-        Some(match &definition.module {
-            Some(module) => format!("{module}::{}", definition.name),
-            None => definition.name.clone(),
-        })
+        self.qualified_name_str(id).map(str::to_owned)
+    }
+
+    /// [`Resolved::qualified_name`], borrowed.
+    pub fn qualified_name_str(&self, id: DefId) -> Option<&str> {
+        self.qualified.get(id.0 as usize).map(String::as_str)
     }
 
     /// What kind of thing `id` names, or `None` if it is unknown here.
@@ -1291,6 +1295,10 @@ impl<'a> Resolver<'a> {
         if let Some(span) = span {
             self.out.declarations.insert(span, id);
         }
+        self.out.qualified.push(match &self.current_module {
+            Some(module) => format!("{module}::{name}"),
+            None => name.clone(),
+        });
         self.out.defs.push(DefInfo {
             name,
             module: self.current_module.clone(),

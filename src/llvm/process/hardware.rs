@@ -39,9 +39,9 @@ impl HardwareValueFacts {
             let effect = matches!(
                 value.kind,
                 ProcessValueKind::ForeignCall { .. } | ProcessValueKind::HostCall { .. }
-            ) || crate::ir::process::process_value_dependencies(&value.kind)
-                .iter()
-                .any(|id| effects.get(id.0 as usize).copied().unwrap_or(false));
+            ) || crate::ir::process::any_process_value_dependency(&value.kind, |id| {
+                effects.get(id.0 as usize).copied().unwrap_or(false)
+            });
             effects.push(effect);
         }
         let mut pending = design
@@ -77,7 +77,9 @@ impl HardwareValueFacts {
             ) {
                 calls.push(id);
             }
-            pending.extend(crate::ir::process::process_value_dependencies(&value.kind));
+            crate::ir::process::for_each_process_value_dependency(&value.kind, |id| {
+                pending.push(id)
+            });
         }
         calls.sort_unstable_by_key(|id| id.0);
         Self {

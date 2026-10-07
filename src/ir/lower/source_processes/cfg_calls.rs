@@ -56,9 +56,10 @@ fn has_call(value: ProcessValueId, context: &mut LoweringContext<'_>) -> bool {
                 | ProcessValueKind::HostCall { .. }
                 | ProcessValueKind::ForeignCall { .. }
                 | ProcessValueKind::Invalid
-        ) || crate::ir::process_value_dependencies(&node.kind)
-            .iter()
-            .any(|dependency| context.cfg_call_cache[dependency.0 as usize]);
+        ) || crate::ir::process::any_process_value_dependency(
+            &node.kind,
+            |dependency| context.cfg_call_cache[dependency.0 as usize],
+        );
         context.cfg_call_cache.push(contains);
     }
     context.cfg_call_cache[value.0 as usize]

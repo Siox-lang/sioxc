@@ -66,7 +66,41 @@ pub use query::{read_set, IndexSite, Process, ProcessKind};
 /// `(operator trait, implementing type)` to the `fn` declarations that
 /// implement it, each paired with the impl's declared right-operand type
 /// (`None` reads as `Self`). Overload selection matches on that type.
-type OperatorImpls<'a> = HashMap<(String, String), Vec<(&'a ast::FnDecl, Option<String>)>>;
+#[derive(Default)]
+struct OperatorImpls<'a>(HashMap<String, HashMap<String, OperatorCandidates<'a>>>);
+
+/// The implementations of one operator or hook trait for one owner type.
+type OperatorCandidates<'a> = Vec<(&'a ast::FnDecl, Option<String>)>;
+
+impl<'a> OperatorImpls<'a> {
+    /// The implementations of `name` for `owner`. Keyed trait/operator name
+    /// first, then owner, so a lookup borrows both instead of building a
+    /// `(String, String)` key.
+    fn get(&self, name: &str, owner: &str) -> Option<&OperatorCandidates<'a>> {
+        self.0.get(name)?.get(owner)
+    }
+
+    fn contains(&self, name: &str, owner: &str) -> bool {
+        self.get(name, owner).is_some()
+    }
+
+    fn entry(&mut self, name: &str, owner: String) -> &mut OperatorCandidates<'a> {
+        self.0
+            .entry(name.to_owned())
+            .or_default()
+            .entry(owner)
+            .or_default()
+    }
+
+    /// Every `(name, owner, implementations)`.
+    fn iter(&self) -> impl Iterator<Item = (&str, &str, &OperatorCandidates<'a>)> {
+        self.0.iter().flat_map(|(name, owners)| {
+            owners
+                .iter()
+                .map(move |(owner, functions)| (name.as_str(), owner.as_str(), functions))
+        })
+    }
+}
 /// A value-range-constrained numeric type, as
 /// `(storage width, is_real, declared bounds)`.
 type NumericRangeInfo = (u32, bool, Option<(i64, i64)>);

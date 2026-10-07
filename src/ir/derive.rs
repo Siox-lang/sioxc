@@ -355,15 +355,21 @@ fn digital_expr(ir: &ProcessIr, id: ProcessValueId) -> Result<Expr, String> {
             ))
             }
         }
-        let dependencies = super::process::process_value_dependencies(&value.kind);
-        for child in dependencies.iter().rev() {
+        // Children go on the stack last-first, as a reversed list would.
+        let first = pending.len();
+        let mut non_dominating = None;
+        super::process::for_each_process_value_dependency(&value.kind, |child| {
             if child.0 >= id.0 {
-                return Err(format!(
-                    "Process value {id:?} has non-dominating dependency {child:?}"
-                ));
+                non_dominating = Some(child);
             }
-            pending.push(*child);
+            pending.push(child);
+        });
+        if let Some(child) = non_dominating {
+            return Err(format!(
+                "Process value {id:?} has non-dominating dependency {child:?}"
+            ));
         }
+        pending[first..].reverse();
     }
     Ok(Expr::Canonical {
         value: id,

@@ -128,9 +128,7 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             let ty = self.sig_type.get(t).cloned().unwrap_or_default();
-            let direct_resolve = self
-                .op_impls
-                .contains_key(&("Resolve".to_string(), ty.clone()));
+            let direct_resolve = self.op_impls.contains("Resolve", &ty);
             let element_resolve = self
                 .out
                 .array_element_enums
@@ -138,10 +136,7 @@ impl<'a> Lowering<'a> {
                 .filter(|element| {
                     self.blanket_array_impls
                         .get("Resolve")
-                        .is_some_and(|requirement| {
-                            self.op_impls
-                                .contains_key(&(requirement.clone(), (*element).clone()))
-                        })
+                        .is_some_and(|requirement| self.op_impls.contains(requirement, element))
                 })
                 .cloned();
             let has_resolve = direct_resolve || element_resolve.is_some();
@@ -430,9 +425,7 @@ impl<'a> Lowering<'a> {
 
     /// Inline `impl Resolve for <ty>` over two already-lowered expressions.
     pub(super) fn inline_resolve(&self, ty: &str, a: Expr, b: Expr) -> Option<Expr> {
-        let fns = self
-            .op_impls
-            .get(&("Resolve".to_string(), ty.to_string()))?;
+        let fns = self.op_impls.get("Resolve", ty)?;
         let (f, _) = fns.first()?;
         let body = f.body.as_ref()?;
         let mut env: HashMap<String, Val> = HashMap::new();

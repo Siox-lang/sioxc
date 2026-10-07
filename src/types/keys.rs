@@ -38,14 +38,19 @@ impl<'a> Checker<'a> {
     /// The stable module-qualified key for a definition, used everywhere a type
     /// is compared by identity rather than spelling.
     pub(super) fn definition_key(&self, id: DefId) -> Option<String> {
+        self.definition_key_str(id).map(str::to_owned)
+    }
+
+    /// [`Checker::definition_key`], borrowed.
+    pub(super) fn definition_key_str(&self, id: DefId) -> Option<&str> {
         let definition = self.resolved.def(id)?;
         if matches!(
             definition.kind,
             DefKind::Builtin | DefKind::Param | DefKind::Local
         ) {
-            Some(definition.name.clone())
+            Some(&definition.name)
         } else {
-            self.resolved.qualified_name(id)
+            self.resolved.qualified_name_str(id)
         }
     }
 
@@ -222,9 +227,7 @@ impl<'a> Checker<'a> {
                 .iter()
                 .enumerate()
                 .filter(|(_, definition)| is_type_kind(definition.kind))
-                .find(|(index, _)| {
-                    self.definition_key(DefId(*index as u32)).as_deref() == Some(name)
-                })
+                .find(|(index, _)| self.definition_key_str(DefId(*index as u32)) == Some(name))
                 // Compiler-created values such as comparison results and
                 // system attributes name their library type by its stable
                 // kernel leaf. Prefer the canonical std declaration before
