@@ -13744,3 +13744,44 @@ known vendored libfst parser limitations, unrelated to the compiler changes.
 Commit this verified batch only; estimated implement DWARF completion: 90%.
 Next: canonical inline-call identities and LLVM inlinedAt chains, including
 repeated/nested calls and suspension. Keep the full goal active.
+
+### 2026-10-07 — Codex — DWARF inline-call identity
+
+Own ir/process.rs, source_processes.rs and cfg_calls.rs, LLVM debug/entry,
+hand-built IR fixtures and debug_info tests. Preserve call-site/parent identity
+in canonical CFG metadata; no source parsing or renamed-local workaround in
+LLVM. Procedures need separate callee entry/caller resume blocks, including
+across await. Value-call normalization must retain scope ownership and roll
+it back on unsupported calls. Verify repeated/nested calls with real GDB.
+Preserve AGENTS.md, .codex and 441 unrelated chat additions. No compiler push.
+
+Inline CFG source frames now use canonical call/parent IDs and allocation
+ranges, with distinct callee entries and caller resumes. LLVM lexical scopes
+include the call identity and DILocation chains use inlinedAt. GDB verified
+procedures and returned CFG calls, nested/same-line/repeated calls, callee
+shadowing and restored caller locals after await; ordinary/debug VCD is equal.
+Unit validation rejects cyclic/forward parents and invalid ranges. The first
+focused gate 47861 stopped at Clippy type-complexity/single-range lint errors;
+named metadata aliases and explicit range collection fixed those, no bypass.
+Gate 49769 is terminal success (exit 0, peak 1610985472 bytes): strict Clippy,
+526 library tests and both complete default/bitpack debug_info tests passed.
+Remaining: expression-only inline frames, formal-parameter inspection and any
+additional runtime-sized array representations. Keep the DWARF goal active.
+
+Full acceptance job siox-job-3000-1791369035463179915-56175.service is live;
+log ~/.cache/siox-jobs/siox-job-3000-1791369035463179915-56175.log. Poll the exact
+unit to terminal success; do not restart on an observation timeout or change
+compiler source during verification. Require default/bitpack full suites,
+three 225/0 corpus runs and GDB/VCD parity before committing the inline batch.
+Stage only the owned IR/LLVM/test/TODO/docs files and this dated chat entry;
+preserve AGENTS.md, .codex and 441 unrelated chat additions. Include a named
+implement DWARF completion estimate, and do not push the compiler repository.
+
+Acceptance job 56175 finished with SubState=exited, Result=success,
+ExecMainStatus=0 and MemoryPeak=1612677120 bytes. Formatting/strict Clippy,
+frontend-only check, full default/bitpack suites, ordinary/default-debug/
+bitpack-debug corpora (225/0 each), real GDB inline/inspection tests and all
+FIFO/wide smoke/VCD checks passed. AST graph refreshed; known vendored libfst
+extractor warnings remain unrelated. Commit only this tested inline batch and
+owned log entry. Estimated implement DWARF completion: 94%; parameter/return
+metadata, expression-only inlines and remaining array coverage still need work.

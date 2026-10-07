@@ -64,6 +64,8 @@ struct LoweringContext<'a> {
     /// Procedure returns resume the enclosing caller, not the whole process.
     inline_return_blocks: Vec<(ProcessBlockId, Option<ProcessValueId>)>,
     inline_functions: std::collections::HashSet<crate::diag::Span>,
+    /// Current canonical source call instance while expanding a CFG body.
+    inline_scope: Option<u32>,
     /// Memoized call reachability in the append-only procedural value arena.
     cfg_call_cache: Vec<bool>,
 }
@@ -1108,6 +1110,7 @@ pub fn lower(
             activation: ProcessActivation::Initialization,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
+            inline_calls: Vec::new(),
             locals: Vec::new(),
             blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
         };
@@ -1149,6 +1152,7 @@ pub fn lower(
                 inline_return_types: Vec::new(),
                 inline_return_blocks: Vec::new(),
                 inline_functions: std::collections::HashSet::new(),
+                inline_scope: None,
                 cfg_call_cache: Vec::new(),
             };
             let mut block = ProcessBlockId(0);
@@ -1207,6 +1211,7 @@ pub fn lower(
                             inline_return_types: Vec::new(),
                             inline_return_blocks: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
+                            inline_scope: None,
                             cfg_call_cache: Vec::new(),
                         };
                         lower_process(
@@ -1258,6 +1263,7 @@ pub fn lower(
                             inline_return_types: Vec::new(),
                             inline_return_blocks: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
+                            inline_scope: None,
                             cfg_call_cache: Vec::new(),
                         };
                         lower_process(
@@ -1325,6 +1331,7 @@ pub fn lower(
                     inline_return_types: Vec::new(),
                     inline_return_blocks: Vec::new(),
                     inline_functions: std::collections::HashSet::new(),
+                    inline_scope: None,
                     cfg_call_cache: Vec::new(),
                 };
                 lower_legacy_process(
@@ -1626,6 +1633,7 @@ fn lower_process(
         activation,
         region: ProcessRegion::Procedural,
         entry: ProcessBlockId(0),
+        inline_calls: Vec::new(),
         locals: Vec::new(),
         blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
     };
@@ -1656,6 +1664,7 @@ fn lower_legacy_process(
         activation,
         region: ProcessRegion::Procedural,
         entry: ProcessBlockId(0),
+        inline_calls: Vec::new(),
         locals: Vec::new(),
         blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
     };
@@ -2419,7 +2428,7 @@ fn lower_call(
         }
         _ => {
             if let Some(tail) =
-                inline_process_procedure_call(callee, arguments, context, process, block)
+                inline_process_procedure_call(callee, arguments, span, context, process, block)
             {
                 return Some(tail);
             }
@@ -2455,6 +2464,7 @@ fn lower_call(
 fn inline_process_procedure_call(
     callee: &ast::Expr,
     arguments: &[ast::Expr],
+    call_span: crate::diag::Span,
     context: &mut LoweringContext<'_>,
     process: &mut ProcessCfg,
     block: ProcessBlockId,
@@ -2520,6 +2530,7 @@ fn inline_process_procedure_call(
 
     let first_block = process.blocks.len();
     let first_local = process.locals.len();
+    let first_inline = process.inline_calls.len();
     let original_block = process.blocks[block.0 as usize].clone();
     // Evaluate non-place arguments and place selectors once, before callee
     // writes or suspension. Places themselves remain aliases, so later reads
@@ -2529,11 +2540,17 @@ fn inline_process_procedure_call(
         *value = capture_process_argument(*value, context, process, block);
     }
     let resume = process.push_block();
+    let previous_scope = context.inline_scope;
+    let scope = begin_inline_call(&function, call_span, process, context);
+    let entry = process.push_block();
+    process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(entry);
     context.value_bindings.push(bindings.into_iter().collect());
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(None);
     context.inline_return_blocks.push((resume, None));
-    let tail = lower_statements(&body.stmts, context, process, block);
+    let tail = lower_statements(&body.stmts, context, process, entry);
+    finish_inline_call(scope, entry, first_local, process);
+    context.inline_scope = previous_scope;
     context.inline_return_blocks.pop();
     context.inline_return_types.pop();
     context.inline_self_values.pop();
@@ -2561,6 +2578,7 @@ fn inline_process_procedure_call(
     {
         process.blocks.truncate(first_block);
         process.locals.truncate(first_local);
+        process.inline_calls.truncate(first_inline);
         process.blocks[block.0 as usize] = original_block;
         truncate_process_values(context, first_value);
         return None;
@@ -2569,6 +2587,41 @@ fn inline_process_procedure_call(
         process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(resume);
     }
     Some(resume)
+}
+
+fn begin_inline_call(
+    function: &ast::FnDecl,
+    call: crate::diag::Span,
+    process: &mut ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> u32 {
+    let id = process.inline_calls.len() as u32;
+    let name = context
+        .resolved
+        .declared(function.name.span)
+        .and_then(|definition| context.resolved.qualified_name(definition))
+        .unwrap_or_else(|| function.name.text.clone());
+    process.inline_calls.push(crate::ir::ProcessInlineCall {
+        parent: context.inline_scope,
+        name,
+        function: function.span,
+        call,
+        blocks: Vec::new(),
+        locals: process.locals.len() as u32..process.locals.len() as u32,
+    });
+    context.inline_scope = Some(id);
+    id
+}
+
+fn finish_inline_call(
+    scope: u32,
+    entry: ProcessBlockId,
+    first_local: usize,
+    process: &mut ProcessCfg,
+) {
+    let call = &mut process.inline_calls[scope as usize];
+    call.blocks.push(entry.0..process.blocks.len() as u32);
+    call.locals = first_local as u32..process.locals.len() as u32;
 }
 
 /// Keep a call's evaluation boundary in ordinary Process locals. Dynamic
@@ -6983,6 +7036,7 @@ mod tests {
             inline_return_types: vec![],
             inline_return_blocks: vec![],
             inline_functions: Default::default(),
+            inline_scope: None,
             cfg_call_cache: vec![],
         };
 
@@ -7946,6 +8000,7 @@ mod tests {
                     activation: ProcessActivation::TimeZero,
                     region: ProcessRegion::Procedural,
                     entry: ProcessBlockId(1),
+                    inline_calls: Vec::new(),
                     locals: Vec::new(),
                     blocks: vec![ProcessBlock {
                         id: ProcessBlockId(0),

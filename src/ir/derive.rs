@@ -614,6 +614,7 @@ mod tests {
                     driver_context: 9,
                 },
                 entry: ProcessBlockId(0),
+                inline_calls: Vec::new(),
                 locals: vec![],
                 blocks: vec![
                     ProcessBlock {

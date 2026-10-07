@@ -295,6 +295,7 @@ fn new_process(
         },
         region: ProcessRegion::Procedural,
         entry: ProcessBlockId(0),
+        inline_calls: Vec::new(),
         locals: Vec::new(),
         blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
     })

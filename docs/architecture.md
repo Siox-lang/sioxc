@@ -317,6 +317,12 @@ file paths remain separate extensions rather than fallback execution paths.
 local extents and disables LLVM optimization. Debug-only byte-aligned buffers
 make packed aggregate fields inspectable at source boundaries without changing
 simulation storage. See [debugger conventions and limits](testing.md#native-debugger-smoke-test).
+Source calls expanded into CFGs also carry a parent/call-site identity and
+block/local allocation ranges in `ProcessCfg::inline_calls`. LLVM uses this
+metadata for distinct inline frames and lexical scopes, even when repeated
+calls share the same callee definition span; it does not reconstruct a stack
+from source text. Call normalization and failed-inline rollback preserve this
+metadata alongside the executable blocks and locals.
 The multithreading proposal extends these same CFGs and LLVM
 entries; it does not introduce a new compiler track.
 

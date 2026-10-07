@@ -33,6 +33,10 @@ const DW_ATE_FLOAT: u32 = 0x04;
 const DW_ATE_SIGNED: u32 = 0x05;
 const DW_ATE_UNSIGNED: u32 = 0x07;
 
+type ScopeKey = (usize, Option<u32>);
+type LexicalScopes<'ctx> = Vec<(Span, DIScope<'ctx>)>;
+type InlineFrame<'ctx> = (DISubprogram<'ctx>, Option<DILocation<'ctx>>);
+
 pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     context: &'ctx Context,
     builder: DebugInfoBuilder<'ctx>,
@@ -40,8 +44,9 @@ pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     sources: &'s SourceMap,
     files: RefCell<HashMap<FileId, DIFile<'ctx>>>,
     namespaces: RefCell<HashMap<String, DIScope<'ctx>>>,
-    lexical_scopes: RefCell<HashMap<usize, Vec<(Span, DIScope<'ctx>)>>>,
-    file_scopes: RefCell<HashMap<(usize, FileId), DIScope<'ctx>>>,
+    lexical_scopes: RefCell<HashMap<ScopeKey, LexicalScopes<'ctx>>>,
+    file_scopes: RefCell<HashMap<(ScopeKey, FileId), DIScope<'ctx>>>,
+    inline_scopes: RefCell<HashMap<usize, Vec<InlineFrame<'ctx>>>>,
     target: TargetData,
     mirrors: RefCell<Vec<Mirror<'ctx>>>,
     logic_mirrors: RefCell<Vec<LogicMirror<'ctx>>>,
@@ -113,6 +118,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             namespaces: RefCell::new(HashMap::new()),
             lexical_scopes: RefCell::new(HashMap::new()),
             file_scopes: RefCell::new(HashMap::new()),
+            inline_scopes: RefCell::new(HashMap::new()),
             mirrors: RefCell::new(Vec::new()),
             logic_mirrors: RefCell::new(Vec::new()),
             string_mirrors: RefCell::new(Vec::new()),
@@ -151,9 +157,22 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
         scope
     }
 
-    pub fn location(&self, scope: DISubprogram<'ctx>, span: Span) -> DILocation<'ctx> {
+    pub fn location(
+        &self,
+        root: DISubprogram<'ctx>,
+        span: Span,
+        inline: Option<u32>,
+    ) -> DILocation<'ctx> {
         let (line, column) = self.sources.line_col(span.file, span.start);
-        let key = scope.as_mut_ptr() as usize;
+        let key = (root.as_mut_ptr() as usize, inline);
+        let frame = inline.and_then(|id| {
+            self.inline_scopes
+                .borrow()
+                .get(&key.0)
+                .and_then(|frames| frames.get(id as usize))
+                .copied()
+        });
+        let scope = frame.map_or(root, |(scope, _)| scope);
         let lexical = self.lexical_scopes.borrow().get(&key).and_then(|scopes| {
             scopes
                 .iter()
@@ -174,8 +193,13 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                 .insert((key, span.file), file_scope);
             file_scope
         });
-        self.builder
-            .create_debug_location(self.context, line, column, scope, None)
+        self.builder.create_debug_location(
+            self.context,
+            line,
+            column,
+            scope,
+            frame.and_then(|(_, call)| call),
+        )
     }
 
     fn basic(&self, name: &str, width: u32, encoding: u32) -> DIType<'ctx> {
@@ -755,37 +779,85 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             false,
         );
         function.set_subprogram(scope);
+        let key = scope.as_mut_ptr() as usize;
+        let frames = process
+            .inline_calls
+            .iter()
+            .map(|call| {
+                let (owner, name) = call.name.rsplit_once("::").unwrap_or(("", &call.name));
+                let file = self.file(call.function.file);
+                let line = self
+                    .sources
+                    .line_col(call.function.file, call.function.start)
+                    .0;
+                (
+                    self.builder.create_function(
+                        self.namespace(&owner.replace("::", ".")),
+                        name,
+                        Some(""),
+                        file,
+                        line,
+                        self.builder
+                            .create_subroutine_type(file, None, &[], DIFlags::ZERO),
+                        true,
+                        true,
+                        line,
+                        DIFlags::ZERO,
+                        false,
+                    ),
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        self.inline_scopes.borrow_mut().insert(key, frames.clone());
         let mut extents = process
             .locals
             .iter()
-            .filter_map(|local| local.scope)
+            .filter_map(|local| {
+                local
+                    .scope
+                    .map(|span| (process.local_inline_call(local.id), span))
+            })
             .collect::<Vec<_>>();
-        extents.sort_by_key(|span| {
+        extents.sort_by_key(|(inline, span)| {
             (
+                *inline,
                 std::cmp::Reverse(span.end - span.start),
                 span.file.0,
                 span.start,
             )
         });
         extents.dedup();
-        let mut scopes = Vec::<(Span, DIScope<'ctx>)>::new();
-        for extent in extents {
+        let mut scopes = Vec::<(Option<u32>, Span, DIScope<'ctx>)>::new();
+        for (inline, extent) in extents {
+            let base = inline
+                .map_or(scope, |id| frames[id as usize].0)
+                .as_debug_info_scope();
             let parent = scopes
                 .iter()
-                .filter(|(span, _)| contains(*span, extent))
-                .min_by_key(|(span, _)| span.end - span.start)
-                .map_or(scope.as_debug_info_scope(), |(_, scope)| *scope);
+                .filter(|(id, span, _)| *id == inline && contains(*span, extent))
+                .min_by_key(|(_, span, _)| span.end - span.start)
+                .map_or(base, |(_, _, scope)| *scope);
             let (line, column) = self.sources.line_col(extent.file, extent.start);
             scopes.push((
+                inline,
                 extent,
                 self.builder
                     .create_lexical_block(parent, self.file(extent.file), line, column)
                     .as_debug_info_scope(),
             ));
         }
-        self.lexical_scopes
-            .borrow_mut()
-            .insert(scope.as_mut_ptr() as usize, scopes.clone());
+        for (inline, span, lexical) in &scopes {
+            self.lexical_scopes
+                .borrow_mut()
+                .entry((key, *inline))
+                .or_default()
+                .push((*span, *lexical));
+        }
+        for (id, call) in process.inline_calls.iter().enumerate() {
+            let location = self.location(scope, call.call, call.parent);
+            self.inline_scopes.borrow_mut().get_mut(&key).unwrap()[id].1 = Some(location);
+        }
         for local in &process.locals {
             if local.source.is_none() {
                 continue;
@@ -794,10 +866,18 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             if module.get_global(&global_name).is_none() {
                 continue;
             }
+            let inline = process.local_inline_call(local.id);
+            let base = inline
+                .map_or(scope, |id| frames[id as usize].0)
+                .as_debug_info_scope();
             let local_scope = local
                 .scope
-                .and_then(|span| scopes.iter().find(|(extent, _)| *extent == span))
-                .map_or(scope.as_debug_info_scope(), |(_, scope)| *scope);
+                .and_then(|span| {
+                    scopes
+                        .iter()
+                        .find(|(id, extent, _)| *id == inline && *extent == span)
+                })
+                .map_or(base, |(_, _, scope)| *scope);
             if runtime_handle_layout(local.layout.as_ref()).is_some()
                 || runtime_handle_width(local.ty.as_ref()).is_some()
             {

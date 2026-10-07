@@ -209,6 +209,12 @@ alongside the other inspection buffers; they do not change simulation storage.
 Process frames and function breakpoints are instance-qualified, for example
 `break T::stimulus`.
 
+Procedures and value-returning functions expanded into CFGs retain source
+inline frames and call sites. Use `up`/`down` to select the caller or callee;
+equal-spelled locals remain distinct at repeated calls (even on one source
+line), in nested calls and after `await`. Lexical shadowing stays within its
+own call instance rather than merging scopes with identical definition spans.
+
 Runtime-owned `string`/`Char[]` values expose a read-only view under their source
 name: `text.length` counts Unicode code points, `text.data[i]` reads one code
 point, `text.byte_length` counts UTF-8 bytes and `text.utf8[i]` reads a byte.
@@ -220,7 +226,7 @@ handles and views from inactive tests are empty, without raising runtime errors.
 Snapshots refresh only at Siox source boundaries, as described above.
 
 Remaining inspection work includes additional runtime-sized array representations,
-repeated inline-call scope identity and richer source call stacks. Debug mode
+expression-only inline frames and formal-parameter inspection. Debug mode
 is deliberately unoptimized; it is not a simulation performance mode. The
 same option applies to native objects and `--emit llvm-ir`.
 
@@ -231,7 +237,9 @@ all nine std logic states across waits, recursive companion views, nonstandard
 enums, real/wide packed structs, labelled arrays, dynamic Unicode/UTF-8 strings
 (including empty/embedded-NUL values, updates and cleanup between two tests),
 and runtime string locals through inlined length/index/equality expressions in default and
-`bitpack` builds. To run the existing native corpus with DWARF enabled:
+`bitpack` builds. A second regression checks repeated/same-line/nested CFG call
+frames, call-site lines, shadowed locals and suspension for procedures and
+value-returning functions. To run the existing native corpus with DWARF enabled:
 
 ```bash
 bash scripts/guarded-run.sh env SIOXC_DEBUG=1 bash scripts/test-corpus.sh /home/max/siox-tests

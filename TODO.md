@@ -124,8 +124,9 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   `$logic` companion views (including recursive structs/arrays and weak states).
   Runtime-owned `Char[]` strings expose borrowed Unicode/UTF-8 content and
   lengths, including process locals and cleanup between tests. Complete
-  remaining runtime-sized array representations, repeated inline-call scope
-  identity and richer inline call stacks.
+  remaining runtime-sized array representations, expression-only inline frames
+  and formal-parameter inspection. CFG calls retain distinct call-site scopes
+  and source call stacks, including repeated/nested calls across suspension.
   Keep debug-only aggregate inspection buffers faithful at source stops and
   document their read-only/snapshot nature. Verify default/bitpack debugger and
   debug-corpus gates; never resurrect per-design C translation for metadata.

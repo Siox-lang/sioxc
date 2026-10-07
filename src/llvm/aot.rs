@@ -168,6 +168,7 @@ mod tests {
                 activation: ProcessActivation::TimeZero,
                 region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
+                inline_calls: Vec::new(),
                 locals: vec![],
                 blocks: vec![
                     ProcessBlock {
@@ -448,6 +449,7 @@ signed main(void) {
                     activation: ProcessActivation::TimeZero,
                     region: ProcessRegion::Procedural,
                     entry: ProcessBlockId(0),
+                    inline_calls: Vec::new(),
                     locals: vec![],
                     blocks: vec![ProcessBlock {
                         id: ProcessBlockId(0),
@@ -464,6 +466,7 @@ signed main(void) {
                     activation: ProcessActivation::TimeZero,
                     region: ProcessRegion::Procedural,
                     entry: ProcessBlockId(0),
+                    inline_calls: Vec::new(),
                     locals: vec![],
                     blocks: vec![
                         ProcessBlock {
@@ -496,6 +499,7 @@ signed main(void) {
                     activation: ProcessActivation::TimeZero,
                     region: ProcessRegion::Procedural,
                     entry: ProcessBlockId(0),
+                    inline_calls: Vec::new(),
                     locals: vec![],
                     blocks: vec![
                         ProcessBlock {
@@ -789,6 +793,7 @@ signed main(void) {
                 activation: ProcessActivation::TimeZero,
                 region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
+                inline_calls: Vec::new(),
                 locals: vec![ProcessLocal {
                     id: ProcessLocalId(0),
                     name: "temporary".into(),
@@ -1129,6 +1134,7 @@ signed main(void) {
                 activation: ProcessActivation::TimeZero,
                 region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
+                inline_calls: Vec::new(),
                 locals: vec![ProcessLocal {
                     id: ProcessLocalId(0),
                     name: "local_pair".into(),
@@ -1380,6 +1386,7 @@ signed main(void) {
                 activation: ProcessActivation::TimeZero,
                 region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
+                inline_calls: Vec::new(),
                 locals: vec![ProcessLocal {
                     id: ProcessLocalId(0),
                     name: "temporary".into(),
@@ -1588,6 +1595,7 @@ signed main(void) {
             activation: ProcessActivation::TimeZero,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
+            inline_calls: Vec::new(),
             locals: vec![],
             blocks: vec![ProcessBlock {
                 id: ProcessBlockId(0),
@@ -1607,6 +1615,7 @@ signed main(void) {
             activation: ProcessActivation::TimeZero,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
+            inline_calls: Vec::new(),
             locals: vec![],
             blocks: vec![
                 ProcessBlock {
@@ -1834,6 +1843,7 @@ signed main(void) {
             activation,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
+            inline_calls: Vec::new(),
             locals: vec![],
             blocks: vec![ProcessBlock {
                 id: ProcessBlockId(0),
@@ -1894,6 +1904,7 @@ signed main(void) {
             activation: ProcessActivation::TimeZero,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
+            inline_calls: Vec::new(),
             locals: vec![],
             blocks: vec![
                 ProcessBlock {

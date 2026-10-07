@@ -63,6 +63,7 @@ pub(super) fn process_entry<'ctx>(
         .unwrap();
 
     for (block, llvm) in process.blocks.iter().zip(&blocks) {
+        let inline = debug.and_then(|_| process.block_inline_call(block.id));
         builder.position_at_end(*llvm);
         if !block_is_supported(design, process, block, supported_values) {
             builder
@@ -82,7 +83,7 @@ pub(super) fn process_entry<'ctx>(
                     | ProcessInstruction::Schedule { span, .. }
                     | ProcessInstruction::Runtime { span, .. } => *span,
                 };
-                builder.set_current_debug_location(debug.location(scope, span));
+                builder.set_current_debug_location(debug.location(scope, span, inline));
             }
             let emitted = match instruction {
                 ProcessInstruction::Declare {
@@ -417,7 +418,7 @@ pub(super) fn process_entry<'ctx>(
                 ProcessTerminator::Goto(_) => None,
             };
             if let Some(span) = span {
-                builder.set_current_debug_location(debug.location(scope, span));
+                builder.set_current_debug_location(debug.location(scope, span, inline));
             } else {
                 builder.unset_current_debug_location();
             }

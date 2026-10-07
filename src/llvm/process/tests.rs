@@ -464,6 +464,7 @@ fn scheduled_process(id: u32, schedules: &[(Option<u32>, ProcessValueId)]) -> Pr
         activation: ProcessActivation::TimeZero,
         region: ProcessRegion::Procedural,
         entry: ProcessBlockId(0),
+        inline_calls: Vec::new(),
         locals: Vec::new(),
         blocks: vec![ProcessBlock {
             id: ProcessBlockId(0),
@@ -571,6 +572,7 @@ fn emits_runtime_discovery_metadata() {
                 activation: ProcessActivation::TimeZero,
                 region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
+                inline_calls: Vec::new(),
                 locals: vec![],
                 blocks: vec![ProcessBlock {
                     id: ProcessBlockId(0),
@@ -592,6 +594,7 @@ fn emits_runtime_discovery_metadata() {
                 },
                 region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
+                inline_calls: Vec::new(),
                 locals: vec![],
                 blocks: vec![ProcessBlock {
                     id: ProcessBlockId(0),
@@ -817,6 +820,7 @@ fn fixed_and_empty_strings_are_executable_process_values() {
             activation: ProcessActivation::TimeZero,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
+            inline_calls: Vec::new(),
             locals: vec![],
             blocks: vec![
                 ProcessBlock {
@@ -872,6 +876,7 @@ fn process_entries_dispatch_control_only_cfgs() {
             activation: ProcessActivation::TimeZero,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
+            inline_calls: Vec::new(),
             locals: vec![],
             blocks: vec![
                 ProcessBlock {
@@ -940,6 +945,7 @@ fn process_branch_reads_exact_width_state_and_operations() {
             activation: ProcessActivation::TimeZero,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
+            inline_calls: Vec::new(),
             locals: vec![],
             blocks: vec![
                 ProcessBlock {

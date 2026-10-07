@@ -14,6 +14,164 @@ fn success(output: Output) -> Output {
 }
 
 #[test]
+fn repeated_inline_calls_keep_locals_and_source_frames_across_await() {
+    let directory = std::env::temp_dir().join(format!("siox_dwarf_calls_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("calls.siox");
+    let text = r#"module debug_calls;
+fn leaf(value: integer) {
+    let local: integer = value;
+    if value > 0 {
+        let local: integer = 42;
+        await 1ns;
+        assert!(local == 42, "leaf inner stop");
+    }
+    await 1ns;
+    assert!(local == value, "leaf stop");
+}
+fn outer(value: integer) {
+    let local: integer = 100;
+    leaf(value); // nested call
+    assert!(local == 100, "outer stop");
+}
+fn choose(value: integer) -> integer {
+    let local: integer = value;
+    await 1ns;
+    if value > 0 { return local; } // choose stop
+    return 0;
+}
+#[test] entity T {}
+impl T {
+    stimulus: process {
+        let local: integer = 10;
+        leaf(1); // first call
+        leaf(2); // second call
+        leaf(6); leaf(7); // paired calls
+        outer(3); // outer call
+        let chosen: integer = choose(4); // first value call
+        let chosen_again: integer = choose(5); // second value call
+        assert!(local == 10 and chosen == 4 and chosen_again == 5, "caller stop");
+    }
+}"#;
+    std::fs::write(&source, text).unwrap();
+    let debug = directory.join("debug.bin");
+    let normal = directory.join("normal.bin");
+    for (binary, debugging) in [(&debug, true), (&normal, false)] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+        command.args(["--std", "std", "--test"]);
+        if debugging {
+            command.arg("--debug");
+        }
+        success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+        success(
+            Command::new(binary)
+                .arg("-o")
+                .arg(binary.with_extension("vcd"))
+                .output()
+                .unwrap(),
+        );
+    }
+    assert_eq!(
+        std::fs::read(debug.with_extension("vcd")).unwrap(),
+        std::fs::read(normal.with_extension("vcd")).unwrap()
+    );
+    if Command::new("llvm-dwarfdump")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        success(
+            Command::new("llvm-dwarfdump")
+                .arg("--verify")
+                .arg(&debug)
+                .output()
+                .unwrap(),
+        );
+    }
+    if Command::new("gdb").arg("--version").output().is_ok() {
+        let line = |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
+        let python = format!(
+            r#"import gdb
+inner = gdb.Breakpoint({source:?} + ':{inner_line}')
+leaf = gdb.Breakpoint({source:?} + ':{leaf_line}')
+outer = gdb.Breakpoint({source:?} + ':{outer_line}')
+choose = gdb.Breakpoint({source:?} + ':{choose_line}')
+caller = gdb.Breakpoint({source:?} + ':{caller_line}')
+gdb.execute('run')
+def frame(name, local):
+    actual = gdb.selected_frame()
+    assert actual.name() == name, (actual.name(), name)
+    assert int(gdb.parse_and_eval('local')) == local, (name, str(gdb.parse_and_eval('local')), local)
+    return actual
+for expected, call_line in [(1, {first_line}), (2, {second_line}), (6, {paired_line}), (7, {paired_line}), (3, {nested_line})]:
+    frame('debug_calls::leaf', 42)
+    gdb.execute('continue')
+    actual = frame('debug_calls::leaf', expected)
+    parent = actual.older()
+    assert parent.find_sal().line == call_line, (parent.find_sal().line, call_line)
+    parent.select()
+    if expected == 3:
+        frame('debug_calls::outer', 100)
+        assert parent.older().name() == 'T::stimulus'
+        assert parent.older().find_sal().line == {outer_call_line}
+    else:
+        frame('T::stimulus', 10)
+    actual.select()
+    gdb.execute('continue')
+frame('debug_calls::outer', 100)
+outer.delete()
+inner.delete()
+leaf.delete()
+gdb.execute('continue')
+for expected, call_line in [(4, {first_value_line}), (5, {second_value_line})]:
+    actual = frame('debug_calls::choose', expected)
+    assert actual.older().name() == 'T::stimulus'
+    assert actual.older().find_sal().line == call_line
+    gdb.execute('continue')
+frame('T::stimulus', 10)
+assert int(gdb.parse_and_eval('chosen')) == 4
+assert int(gdb.parse_and_eval('chosen_again')) == 5
+caller.delete()
+choose.delete()
+gdb.execute('continue')
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+"#,
+            source = source.to_string_lossy(),
+            leaf_line = line("leaf stop"),
+            inner_line = line("leaf inner stop"),
+            outer_line = line("outer stop"),
+            choose_line = line("choose stop"),
+            caller_line = line("caller stop"),
+            first_line = line("first call"),
+            second_line = line("second call"),
+            paired_line = line("paired calls"),
+            nested_line = line("nested call"),
+            outer_call_line = line("outer call"),
+            first_value_line = line("first value call"),
+            second_value_line = line("second value call")
+        );
+        success(
+            Command::new("gdb")
+                .args(["-nx", "-q", "--batch"])
+                .arg(&debug)
+                .args([
+                    "-ex",
+                    "set disable-randomization off",
+                    "-ex",
+                    "set breakpoint pending off",
+                    "-ex",
+                    &format!("python {python}"),
+                ])
+                .output()
+                .unwrap(),
+        );
+    } else {
+        eprintln!("GDB unavailable: inline native/metadata checked, debugger probe skipped");
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn direct_dwarf_supports_source_steps_and_persistent_values() {
     let directory = std::env::temp_dir().join(format!("siox_dwarf_{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();

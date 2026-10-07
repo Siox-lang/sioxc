@@ -147,17 +147,64 @@ pub struct ProcessCfg {
     pub entry: ProcessBlockId,
     /// Locals owned by this process, indexed by [`ProcessLocalId`].
     pub locals: Vec<ProcessLocal>,
+    /// Source call instances, independent of lexical spans shared by repeated
+    /// inlines. This is metadata, not a runtime call stack.
+    pub inline_calls: Vec<ProcessInlineCall>,
     /// The control-flow graph's blocks, indexed by [`ProcessBlockId`].
     pub blocks: Vec<ProcessBlock>,
 }
 
 impl ProcessCfg {
+    /// Innermost source call owning a CFG block. Calls are parent-first;
+    /// nested calls therefore override their enclosing allocation ranges.
+    pub fn block_inline_call(&self, block: ProcessBlockId) -> Option<u32> {
+        // ponytail: linear metadata lookup; index block ownership if profiling
+        // finds debug builds with many call instances dominated by this scan.
+        self.inline_calls
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(id, call)| {
+                call.blocks
+                    .iter()
+                    .any(|range| range.contains(&block.0))
+                    .then_some(id as u32)
+            })
+    }
+
+    /// Distinguish equal-spelled/equal-span locals at separate inline sites.
+    pub fn local_inline_call(&self, local: ProcessLocalId) -> Option<u32> {
+        self.inline_calls
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(id, call)| call.locals.contains(&local.0).then_some(id as u32))
+    }
+
     /// Append one empty block and return its dense id.
     pub(crate) fn push_block(&mut self) -> ProcessBlockId {
         let id = ProcessBlockId(self.blocks.len() as u32);
         self.blocks.push(ProcessBlock::empty(id));
         id
     }
+}
+
+/// One source function expanded into a process CFG. Allocation ranges retain
+/// identity without attaching a second source payload to every instruction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessInlineCall {
+    /// Enclosing call in this process, absent for a direct process call.
+    pub parent: Option<u32>,
+    /// Resolver-qualified source function name.
+    pub name: String,
+    /// Callee definition extent.
+    pub function: crate::diag::Span,
+    /// Caller expression/statement extent.
+    pub call: crate::diag::Span,
+    /// Callee-owned CFG allocation ranges. Normalization can append ranges.
+    pub blocks: Vec<std::ops::Range<u32>>,
+    /// Callee-local allocation range, including nested calls.
+    pub locals: std::ops::Range<u32>,
 }
 
 /// When a process runs.
@@ -1289,6 +1336,26 @@ impl ProcessIr {
                     "process at index {index} has non-dense id {:?}",
                     process.id
                 ));
+            }
+            for (id, call) in process.inline_calls.iter().enumerate() {
+                if call.parent.is_some_and(|parent| parent as usize >= id) {
+                    issues.push(format!(
+                        "process {:?} inline call {id} has an invalid parent",
+                        process.id
+                    ));
+                }
+                if call.blocks.is_empty()
+                    || call.blocks.iter().any(|range| {
+                        range.start >= range.end || range.end as usize > process.blocks.len()
+                    })
+                    || call.locals.start > call.locals.end
+                    || call.locals.end as usize > process.locals.len()
+                {
+                    issues.push(format!(
+                        "process {:?} inline call {id} has invalid allocation ranges",
+                        process.id
+                    ));
+                }
             }
             if process
                 .blocks
