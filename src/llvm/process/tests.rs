@@ -1,6 +1,159 @@
 use super::*;
 
 #[test]
+fn shared_debug_calls_emit_one_body_per_consumer_format() {
+    let context = Context::create();
+    let module = context.create_module("shared_debug_calls");
+    let builder = context.create_builder();
+    let mut sources = siox::diag::SourceMap::new();
+    let text = "fn bump(value: integer, unused: integer) -> integer {\n let local = value + 1;\n return local;\n}\n";
+    let file = sources.add("shared.siox", text);
+    let span = Span::new(file, 0..text.len() as u32);
+    let source = siox::ir::ProcessValueInline {
+        name: "bump".into(),
+        function: span,
+        call: span,
+        result_span: span,
+        parameters: vec![
+            siox::ir::ProcessValueBinding {
+                name: "value".into(),
+                span,
+                value: Some(ProcessValueId(0)),
+            },
+            siox::ir::ProcessValueBinding {
+                name: "unused".into(),
+                span,
+                value: Some(ProcessValueId(1)),
+            },
+        ],
+        locals: vec![siox::ir::ProcessValueBinding {
+            name: "local".into(),
+            span,
+            value: Some(ProcessValueId(3)),
+        }],
+    };
+    let node = |kind| ProcessValue {
+        span,
+        ty: Some(siox::types::Ty::Integer),
+        bit_width: Some(64),
+        kind,
+    };
+    let design = Design {
+        process_ir: ProcessIr {
+            values: vec![
+                node(ProcessValueKind::Signal {
+                    signals: vec![SignalId(0)],
+                    state: ProcessSignalState::Current,
+                }),
+                node(ProcessValueKind::ForeignCall {
+                    name: "must_not_run".into(),
+                    arguments: Vec::new(),
+                    float_arguments: Vec::new(),
+                    integer_arguments: Vec::new(),
+                    float_result: false,
+                    integer_result: true,
+                }),
+                node(ProcessValueKind::Number(ProcessNumber::Integer(vec![1]))),
+                node(ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::Add,
+                    left: ProcessValueId(0),
+                    right: ProcessValueId(2),
+                }),
+                node(ProcessValueKind::InlineCall {
+                    operand: ProcessValueId(3),
+                    source: Box::new(source),
+                }),
+            ],
+            ..ProcessIr::default()
+        },
+        signals: vec![Signal {
+            path: "value".into(),
+            declaration_span: span,
+            width: 64,
+            real: false,
+            integer: true,
+            char: false,
+            range: None,
+            init: vec![0],
+            enum_type: None,
+        }],
+        ..Design::default()
+    };
+    let debug = DebugInfo::new(&context, &module, &sources, &design).unwrap();
+    let function = module.add_function(
+        "probe",
+        context
+            .void_type()
+            .fn_type(&[context.i64_type().into()], false),
+        None,
+    );
+    builder.position_at_end(context.append_basic_block(function, "entry"));
+    let input = function.get_first_param().unwrap().into_int_value();
+    let mut cache = ProcessValueCache::new(&[false; 5], &[true; 5]);
+    cache.debug = Some(&debug);
+    cache.parameters.insert(ProcessValueId(0), input);
+    // Different selected consumers must reuse the function definition, never
+    // recursively duplicate its body. Width formats remain distinct.
+    for width in [64, 128] {
+        for threshold in 0..8 {
+            let active = builder
+                .build_int_compare(
+                    IntPredicate::UGT,
+                    input,
+                    context.i64_type().const_int(threshold, false),
+                    "active",
+                )
+                .unwrap();
+            let value = process_value_at(
+                &context,
+                &module,
+                &builder,
+                &design,
+                ProcessValueId(4),
+                width,
+                false,
+                Some(active),
+                &HashMap::new(),
+                &mut cache,
+            )
+            .unwrap();
+            assert_eq!(value.get_type().get_bit_width(), width);
+        }
+    }
+    builder.build_return(None).unwrap();
+    debug.finish(&module, &design);
+    module.verify().unwrap();
+    let llvm = module.print_to_string().to_string();
+    assert!(
+        !llvm.contains("@must_not_run"),
+        "metadata must not execute unused arguments: {llvm}"
+    );
+    assert_eq!(
+        llvm.lines()
+            .filter(|line| {
+                line.starts_with("define internal") && line.contains("@sx.debug.call.4")
+            })
+            .count(),
+        2,
+        "{llvm}"
+    );
+    assert_eq!(
+        llvm.lines()
+            .filter(|line| line.contains(" = add i64 "))
+            .count(),
+        1,
+        "{llvm}"
+    );
+    assert_eq!(
+        llvm.lines()
+            .filter(|line| line.contains(" = add i128 "))
+            .count(),
+        1,
+        "{llvm}"
+    );
+}
+
+#[test]
 fn derived_hardware_keeps_shared_values_when_widening_arithmetic() {
     use siox::ir::{Driver, Expr, ProcessIr, ProcessValue};
     let span = siox::diag::Span::new(siox::diag::FileId(0), 0..1);
@@ -303,6 +456,194 @@ fn state_epoch_caches_preserve_signal_versions_widths_and_metadata_layouts() {
         13,
         "two current words + one narrow word + eight companion words + two after invalidation"
     );
+}
+
+#[test]
+fn inactive_inline_debug_call_does_not_emit_its_body_or_frame() {
+    let context = Context::create();
+    let module = context.create_module("inactive_inline");
+    let builder = context.create_builder();
+    let function = module.add_function("probe", context.void_type().fn_type(&[], false), None);
+    builder.position_at_end(context.append_basic_block(function, "entry"));
+    let mut sources = siox::diag::SourceMap::new();
+    sources.add("inactive.siox", "fn inactive() {}\n");
+    let design = Design::default();
+    let debug = DebugInfo::new(&context, &module, &sources, &design).unwrap();
+    let mut cache = ProcessValueCache::new(&[], &[]);
+    cache.debug = Some(&debug);
+    let source = siox::ir::ProcessValueInline {
+        name: "inactive".into(),
+        function: span(),
+        call: span(),
+        result_span: span(),
+        parameters: Vec::new(),
+        locals: Vec::new(),
+    };
+    let result = debug::inline_value(
+        &module,
+        &builder,
+        &design,
+        ProcessValueId(0),
+        ProcessValueId(0),
+        &source,
+        129,
+        false,
+        None,
+        Some(context.bool_type().const_zero()),
+        &HashMap::new(),
+        &mut cache,
+        |_, _, _| panic!("a compile-time-inactive call must not emit its body"),
+    )
+    .unwrap();
+    assert_eq!(result.get_type().get_bit_width(), 129);
+    assert!(result.is_const());
+    assert!(cache.value_frames.is_empty());
+    assert_eq!(function.count_basic_blocks(), 1);
+    let storage = builder
+        .build_alloca(context.bool_type(), "predicate")
+        .unwrap();
+    builder
+        .build_store(storage, context.bool_type().const_int(1, false))
+        .unwrap();
+    let predicate = builder
+        .build_load(context.bool_type(), storage, "predicate")
+        .unwrap()
+        .into_int_value();
+    let key = ProcessValueId(7);
+    cache.emitted.insert((key, None, None), result);
+    cache.contextual.insert((key, None, 129, false), result);
+    assert_eq!(
+        cache.emitted_value((key, Some(predicate), None)),
+        Some(result)
+    );
+    assert_eq!(
+        cache.contextual_value((key, Some(predicate), 129, false)),
+        Some(result)
+    );
+    assert!(cache
+        .contextual_value((key, Some(predicate), 128, false))
+        .is_none());
+    assert!(cache
+        .contextual_value((key, Some(predicate), 129, true))
+        .is_none());
+    cache.clear();
+    assert!(cache.emitted_value((key, Some(predicate), None)).is_none());
+    assert!(cache
+        .contextual_value((key, Some(predicate), 129, false))
+        .is_none());
+    for active in [context.bool_type().const_int(1, false), predicate] {
+        let result = debug::inline_value(
+            &module,
+            &builder,
+            &design,
+            ProcessValueId(0),
+            ProcessValueId(0),
+            &source,
+            129,
+            false,
+            None,
+            Some(active),
+            &HashMap::new(),
+            &mut cache,
+            |_, _, active| {
+                assert!(
+                    active.is_none(),
+                    "the selected arm already guarantees activity"
+                );
+                Some(
+                    context
+                        .custom_width_int_type(std::num::NonZeroU32::new(129).unwrap())
+                        .unwrap()
+                        .const_zero(),
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(result.get_type().get_bit_width(), 129);
+    }
+    builder.build_return(None).unwrap();
+    debug.finish(&module, &design);
+    module.verify().unwrap();
+}
+
+#[test]
+fn branch_cache_retains_values_not_replaced_keys_or_invalidated_reads() {
+    fn bind<'ctx>(
+        cache: &mut ProcessValueCache<'ctx, '_>,
+        id: u32,
+        value: IntValue<'ctx>,
+        layout: &SourceLayout,
+    ) {
+        let node = ProcessValueId(id);
+        cache.emitted.insert((node, None, None), value);
+        cache.contextual.insert((node, None, 64, false), value);
+        cache.metadata.insert((node, None, layout.clone()), value);
+        cache
+            .signals
+            .insert((SignalId(id), ProcessSignalState::Current, 64), value);
+        cache.evaluated_calls.insert((node, None), value);
+    }
+    let context = Context::create();
+    let module = context.create_module("branch_cache");
+    let builder = context.create_builder();
+    let function = module.add_function("probe", context.void_type().fn_type(&[], false), None);
+    let entry = context.append_basic_block(function, "entry");
+    let arm = context.append_basic_block(function, "arm");
+    let join = context.append_basic_block(function, "join");
+    builder.position_at_end(entry);
+    let integer = context.i64_type();
+    let storage = builder.build_alloca(integer, "value").unwrap();
+    builder
+        .build_store(storage, integer.const_int(1, false))
+        .unwrap();
+    let load = || {
+        builder
+            .build_load(integer, storage, "read")
+            .unwrap()
+            .into_int_value()
+    };
+    let first = load();
+    let second = load();
+    let layout = SourceLayout {
+        span: span(),
+        kind: LayoutKind::Scalar {
+            width: 64,
+            domain: siox::ir::ScalarDomain::Integer,
+            nominal: None,
+            value_range: None,
+        },
+    };
+    let mut cache = ProcessValueCache::new(&[], &[]);
+    bind(&mut cache, 0, first, &layout);
+    bind(&mut cache, 1, second, &layout);
+    let dominating = cache.dominating_values();
+    builder.build_unconditional_branch(arm).unwrap();
+    builder.position_at_end(arm);
+    let replacement = load();
+    bind(&mut cache, 0, replacement, &layout);
+    bind(&mut cache, 2, replacement, &layout);
+    builder.build_unconditional_branch(join).unwrap();
+    builder.position_at_end(join);
+    cache.retain_dominating(&dominating);
+    assert_eq!(cache.emitted.len(), 1);
+    assert_eq!(cache.contextual.len(), 1);
+    assert_eq!(cache.metadata.len(), 1);
+    assert_eq!(cache.signals.len(), 1);
+    assert_eq!(cache.evaluated_calls.len(), 1);
+    assert_eq!(cache.emitted[&(ProcessValueId(1), None, None)], second);
+
+    // A foreign call can invalidate old state and reload an existing key.
+    // Pruning must not restore either the old read or that new definition.
+    cache.clear();
+    bind(&mut cache, 1, load(), &layout);
+    cache.retain_dominating(&dominating);
+    assert!(cache.emitted.is_empty());
+    assert!(cache.contextual.is_empty());
+    assert!(cache.metadata.is_empty());
+    assert!(cache.signals.is_empty());
+    assert!(cache.evaluated_calls.is_empty());
+    builder.build_return(None).unwrap();
+    module.verify().unwrap();
 }
 
 #[test]

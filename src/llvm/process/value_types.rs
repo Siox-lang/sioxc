@@ -31,6 +31,11 @@ pub(super) struct ProcessValueCache<'ctx, 'checks> {
     /// not SSA values belonging to a different LLVM function.
     pub(super) hardware_calls: bool,
     pub(super) evaluating_hardware_call: Option<ProcessValueId>,
+    pub(super) debug: Option<&'checks DebugInfo<'ctx, 'checks>>,
+    pub(super) value_frames: Vec<debug::ValueFrame<'ctx>>,
+    pub(super) source_location: Option<inkwell::debug_info::DILocation<'ctx>>,
+    /// Native debug call parameters are stable SSA inputs, not state reads.
+    pub(super) parameters: HashMap<ProcessValueId, IntValue<'ctx>>,
 }
 
 impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
@@ -45,14 +50,21 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
             meta_free,
             hardware_calls: false,
             evaluating_hardware_call: None,
+            debug: None,
+            value_frames: Vec::new(),
+            source_location: None,
+            parameters: HashMap::new(),
         }
     }
 
     pub(super) fn requires_activity(&self, value: ProcessValueId) -> bool {
-        self.activity_sensitive
-            .get(value.0 as usize)
-            .copied()
-            .unwrap_or(false)
+        self.debug
+            .is_some_and(|debug| debug.value_requires_activity(value))
+            || self
+                .activity_sensitive
+                .get(value.0 as usize)
+                .copied()
+                .unwrap_or(false)
     }
 
     pub(super) fn key(
@@ -74,6 +86,54 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
         self.metadata.clear();
         self.signals.clear();
     }
+
+    pub(super) fn emitted_value(
+        &self,
+        key: (ProcessValueId, Option<IntValue<'ctx>>, Option<u32>),
+    ) -> Option<IntValue<'ctx>> {
+        self.emitted.get(&key).copied().or_else(|| {
+            // Debug predicates must not re-expand a source value that already
+            // ran unconditionally. Cache pruning ensures that it dominates.
+            (self.debug.is_some() && key.1.is_some())
+                .then(|| self.emitted.get(&(key.0, None, key.2)).copied())
+                .flatten()
+        })
+    }
+
+    pub(super) fn contextual_value(
+        &self,
+        key: (ProcessValueId, Option<IntValue<'ctx>>, u32, bool),
+    ) -> Option<IntValue<'ctx>> {
+        self.contextual.get(&key).copied().or_else(|| {
+            (self.debug.is_some() && key.1.is_some())
+                .then(|| self.contextual.get(&(key.0, None, key.2, key.3)).copied())
+                .flatten()
+        })
+    }
+
+    /// Values available before a branch dominate both its arm and its join.
+    /// Snapshot handles, not keys: invalidation can replace an existing key
+    /// with a branch-only instruction, which must not escape the arm.
+    pub(super) fn dominating_values(&self) -> std::collections::HashSet<IntValue<'ctx>> {
+        self.emitted
+            .values()
+            .chain(self.contextual.values())
+            .chain(self.metadata.values())
+            .chain(self.signals.values())
+            .chain(self.evaluated_calls.values())
+            .copied()
+            .collect()
+    }
+
+    /// Prune branch-only definitions without resurrecting invalidated reads.
+    pub(super) fn retain_dominating(&mut self, values: &std::collections::HashSet<IntValue<'ctx>>) {
+        self.emitted.retain(|_, value| values.contains(value));
+        self.contextual.retain(|_, value| values.contains(value));
+        self.metadata.retain(|_, value| values.contains(value));
+        self.signals.retain(|_, value| values.contains(value));
+        self.evaluated_calls
+            .retain(|_, value| values.contains(value));
+    }
 }
 
 /// Emit an arena value and convert it to the operation's contextual width.
@@ -91,6 +151,52 @@ pub(super) fn process_value_at<'ctx>(
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
     let value = design.process_ir.values.get(id.0 as usize)?;
+    let _location = debug::ValueLocationGuard::new(builder, cache, value.span);
+    if let Some(parameter) = cache.parameters.get(&id).copied() {
+        return if signed && process_value_is_signed(design, id) {
+            fit_signed(builder, parameter, width)
+        } else {
+            fit(builder, parameter, width)
+        };
+    }
+    if let ProcessValueKind::InlineCall { operand, source } = &value.kind {
+        let key = (id, cache.key(id, active, None).1, width, signed);
+        if let Some(value) = cache.contextual_value(key) {
+            debug::capture_value(builder, cache, id, value);
+            return Some(value);
+        }
+        let emitted = debug::inline_value(
+            module,
+            builder,
+            design,
+            id,
+            *operand,
+            source,
+            width,
+            signed,
+            None,
+            active,
+            index_sites,
+            cache,
+            |builder, cache, active| {
+                process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    width,
+                    signed,
+                    active,
+                    index_sites,
+                    cache,
+                )
+            },
+        )?;
+        cache.contextual.insert(key, emitted);
+        debug::capture_value(builder, cache, id, emitted);
+        return Some(emitted);
+    }
     let natural_width = value.bit_width?;
     // Arithmetic is evaluated in the width supplied by its consumer, not
     // necessarily in the minimum width recorded on the arena node. This is
@@ -101,7 +207,8 @@ pub(super) fn process_value_at<'ctx>(
     // consumer widens the expression.
     if width > natural_width {
         let key = (id, cache.key(id, active, None).1, width, signed);
-        if let Some(value) = cache.contextual.get(&key).copied() {
+        if let Some(value) = cache.contextual_value(key) {
+            debug::capture_value(builder, cache, id, value);
             return Some(value);
         }
         let contextual = match &value.kind {
@@ -161,6 +268,7 @@ pub(super) fn process_value_at<'ctx>(
         };
         if let Some(value) = contextual {
             cache.contextual.insert(key, value);
+            debug::capture_value(builder, cache, id, value);
             return Some(value);
         }
     }
@@ -297,6 +405,7 @@ pub(super) fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bo
         }
     }
     match &value.kind {
+        ProcessValueKind::InlineCall { operand, .. } => process_value_is_signed(design, *operand),
         ProcessValueKind::Signal { signals, state } => {
             let [signal] = signals.as_slice() else {
                 return false;
@@ -505,6 +614,7 @@ pub(super) fn process_value_layout(design: &Design, id: ProcessValueId) -> Optio
     }
     let value = design.process_ir.values.get(id.0 as usize)?;
     match &value.kind {
+        ProcessValueKind::InlineCall { operand, .. } => process_value_layout(design, *operand),
         ProcessValueKind::Storage(storage) => {
             let storage = design.process_ir.storages.get(storage.0 as usize)?;
             storage.layout.as_ref().or_else(|| {
@@ -653,6 +763,7 @@ pub(super) fn process_bool_discriminant(design: &Design, value: bool) -> Option<
 
 pub(super) fn process_constant_i64(design: &Design, id: ProcessValueId) -> Option<i64> {
     match &design.process_ir.values.get(id.0 as usize)?.kind {
+        ProcessValueKind::InlineCall { operand, .. } => process_constant_i64(design, *operand),
         ProcessValueKind::Number(ProcessNumber::Integer(words)) => {
             let [word] = words.as_slice() else {
                 return None;

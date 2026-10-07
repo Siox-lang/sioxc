@@ -18,12 +18,44 @@ pub(super) fn process_value_in_layout<'ctx>(
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
     let width = process_value_width_in_layout(design, id, layout)?;
+    if let Some(parameter) = cache.parameters.get(&id).copied() {
+        return fit(builder, parameter, width);
+    }
     let cache_key = cache.key(id, active, Some(width));
-    if let Some(value) = cache.emitted.get(&cache_key).copied() {
+    if let Some(value) = cache.emitted_value(cache_key) {
+        debug::capture_value(builder, cache, id, value);
         return (value.get_type().get_bit_width() == width).then_some(value);
     }
     let value = design.process_ir.values.get(id.0 as usize)?;
+    let _location = debug::ValueLocationGuard::new(builder, cache, value.span);
     let emitted = match &value.kind {
+        ProcessValueKind::InlineCall { operand, source } => debug::inline_value(
+            module,
+            builder,
+            design,
+            id,
+            *operand,
+            source,
+            width,
+            false,
+            Some(layout),
+            active,
+            index_sites,
+            cache,
+            |builder, cache, active| {
+                process_value_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )
+            },
+        )?,
         ProcessValueKind::Storage(storage) => match storage_state_width(design, *storage) {
             Some(storage_width) if storage_width == width => state_value(
                 context,
@@ -151,7 +183,23 @@ pub(super) fn process_value_in_layout<'ctx>(
         }
         ProcessValueKind::Index { base, index } => {
             let base_layout = process_value_layout(design, *base)?;
-            if let Some(index) = process_constant_i64(design, *index) {
+            if matches!(base_layout.kind, LayoutKind::Packed { .. }) {
+                // Packed elements may be enum discriminants, not physical
+                // one-bit array slices. Use the same source-owned decoding
+                // as scalar expression consumers, including debug arguments.
+                process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    id,
+                    width,
+                    false,
+                    active,
+                    index_sites,
+                    cache,
+                )?
+            } else if let Some(index) = process_constant_i64(design, *index) {
                 let selected = array_slice(base_layout, index)?;
                 if selected.width != width {
                     return None;
@@ -487,6 +535,7 @@ pub(super) fn process_value_in_layout<'ctx>(
         )?,
     };
     cache.emitted.insert(cache_key, emitted);
+    debug::capture_value(builder, cache, id, emitted);
     Some(emitted)
 }
 
@@ -505,11 +554,20 @@ pub(super) fn process_value<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
+    if let Some(parameter) = cache.parameters.get(&id).copied() {
+        return fit(
+            builder,
+            parameter,
+            design.process_ir.values.get(id.0 as usize)?.bit_width?,
+        );
+    }
     let cache_key = cache.key(id, active, None);
-    if let Some(value) = cache.emitted.get(&cache_key).copied() {
+    if let Some(value) = cache.emitted_value(cache_key) {
+        debug::capture_value(builder, cache, id, value);
         return Some(value);
     }
     let value = design.process_ir.values.get(id.0 as usize)?;
+    let _location = debug::ValueLocationGuard::new(builder, cache, value.span);
     let width = value.bit_width?;
     if width > super::super::emit::LLVM_MAX_INT_BITS {
         return None;
@@ -1225,6 +1283,32 @@ pub(super) fn process_value<'ctx>(
                     .into_int_value()
             }
         },
+        ProcessValueKind::InlineCall { operand, source } => debug::inline_value(
+            module,
+            builder,
+            design,
+            id,
+            *operand,
+            source,
+            width,
+            false,
+            None,
+            active,
+            index_sites,
+            cache,
+            |builder, cache, active| {
+                process_value(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    active,
+                    index_sites,
+                    cache,
+                )
+            },
+        )?,
         ProcessValueKind::RawResize { operand } => {
             let operand = process_value(
                 context,
@@ -1238,6 +1322,20 @@ pub(super) fn process_value<'ctx>(
             )?;
             fit(builder, operand, width)?
         }
+        ProcessValueKind::Binary {
+            operation: ProcessBinaryOp::And | ProcessBinaryOp::Or | ProcessBinaryOp::Xor,
+            ..
+        } => process_bitwise_chain(
+            context,
+            module,
+            builder,
+            design,
+            id,
+            width,
+            active,
+            index_sites,
+            cache,
+        )?,
         ProcessValueKind::Binary {
             operation,
             left,
@@ -1477,5 +1575,6 @@ pub(super) fn process_value<'ctx>(
         _ => return None,
     };
     cache.emitted.insert(cache_key, emitted);
+    debug::capture_value(builder, cache, id, emitted);
     Some(emitted)
 }

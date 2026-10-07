@@ -213,6 +213,11 @@ pub(super) fn process_value_supported_in_layout(
             let Some(base_layout) = process_value_layout(design, *base) else {
                 return false;
             };
+            if matches!(base_layout.kind, LayoutKind::Packed { .. }) {
+                // Scalar packed projections use the ordinary source enum
+                // decoder, not the array-layout slicing path below.
+                return has(id);
+            }
             let selected = match process_constant_i64(design, *index) {
                 Some(index) => array_slice(base_layout, index),
                 None => match &base_layout.kind {
@@ -521,10 +526,11 @@ pub(super) fn process_packed_meta_supported(
                 process_packed_meta_supported(design, *part, &part_layout, supported)
             })
         }
-        ProcessValueKind::RawResize { operand } => packed_operand_layout(design, layout, *operand)
-            .is_some_and(|operand_layout| {
+        ProcessValueKind::RawResize { operand } | ProcessValueKind::InlineCall { operand, .. } => {
+            packed_operand_layout(design, layout, *operand).is_some_and(|operand_layout| {
                 process_packed_meta_supported(design, *operand, &operand_layout, supported)
-            }),
+            })
+        }
         _ => false,
     }
 }
@@ -732,9 +738,9 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                         && value.bit_width == Some(1)
                 }
             },
-            ProcessValueKind::Unary { operand, .. } | ProcessValueKind::RawResize { operand } => {
-                has(&supported, *operand)
-            }
+            ProcessValueKind::Unary { operand, .. }
+            | ProcessValueKind::RawResize { operand }
+            | ProcessValueKind::InlineCall { operand, .. } => has(&supported, *operand),
             ProcessValueKind::Binary {
                 operation,
                 left,

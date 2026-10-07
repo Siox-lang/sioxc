@@ -423,6 +423,9 @@ impl SourceValues {
                 assert!(child.0 < id.0, "source operands precede their users");
                 mapped[child.0 as usize]
             });
+            super::super::process::remap_process_value_bindings(&mut value.kind, |child| {
+                live.contains(&child).then(|| mapped[child.0 as usize])
+            });
             let layout = old.ir.value_layouts.get_mut(index).and_then(Option::take);
             mapped[index] = self.push_node(value, layout);
             if old.raw_bits.contains(&id) {
@@ -1097,6 +1100,96 @@ mod tests {
             ProcessValueKind::TableLookup { .. }
         ));
         assert_eq!(arena.ir.values[bound_id.0 as usize], bound_node);
+    }
+
+    #[test]
+    fn inline_source_bindings_remap_without_retaining_discarded_effects() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 0..10);
+        let mut arena = SourceValues::default();
+        let unused = arena.push_node(
+            ProcessValue {
+                span,
+                ty: Some(crate::types::Ty::Integer),
+                bit_width: Some(64),
+                kind: ProcessValueKind::ForeignCall {
+                    name: "must_not_run".into(),
+                    arguments: Vec::new(),
+                    float_arguments: Vec::new(),
+                    integer_arguments: Vec::new(),
+                    float_result: false,
+                    integer_result: true,
+                },
+            },
+            None,
+        );
+        let input = arena.import_test_fragment(&Expr::Current(SignalId(0)), span, None);
+        let root = arena.push_node(
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::InlineCall {
+                    operand: input,
+                    source: Box::new(crate::ir::ProcessValueInline {
+                        name: "identity".into(),
+                        function: span,
+                        call: span,
+                        result_span: span,
+                        parameters: vec![
+                            crate::ir::ProcessValueBinding {
+                                name: "unused".into(),
+                                span,
+                                value: Some(unused),
+                            },
+                            crate::ir::ProcessValueBinding {
+                                name: "used".into(),
+                                span,
+                                value: Some(input),
+                            },
+                        ],
+                        locals: Vec::new(),
+                    }),
+                },
+            },
+            None,
+        );
+        assert_eq!(
+            crate::ir::process_value_dependencies(&arena.ir.values[root.0 as usize].kind),
+            vec![input]
+        );
+        let mapped =
+            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new());
+        let mut draft = HardwareDraft::default();
+        draft.drivers.push(Driver {
+            target: SignalId(0),
+            cond: None,
+            expr: arena.reference(mapped[root.0 as usize]),
+            meta: None,
+            ctx: 0,
+            span: Some(span),
+        });
+        arena.retain_reachable(&mut draft);
+        assert_eq!(
+            arena.ir.values.len(),
+            2,
+            "debug bindings are not executable roots"
+        );
+        let ProcessValueKind::InlineCall { operand, source } = &mut arena.ir.values[1].kind else {
+            panic!("inline boundary lost")
+        };
+        assert_eq!(*operand, ProcessValueId(0));
+        assert_eq!(source.parameters[0].value, None);
+        assert_eq!(source.parameters[1].value, Some(ProcessValueId(0)));
+        assert!(arena.ir.validate(1).is_empty());
+        let ProcessValueKind::InlineCall { source, .. } = &mut arena.ir.values[1].kind else {
+            unreachable!()
+        };
+        source.parameters[1].value = Some(ProcessValueId(99));
+        assert!(arena
+            .ir
+            .validate(1)
+            .iter()
+            .any(|issue| issue.contains("invalid source binding used")));
     }
 
     #[test]

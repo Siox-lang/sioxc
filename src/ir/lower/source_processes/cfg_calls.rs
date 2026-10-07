@@ -354,6 +354,11 @@ fn normalize_value(
             crate::ir::remap_process_value_dependencies(&mut kind, |_| {
                 operands.next().expect("matching canonical operand order")
             });
+            crate::ir::process::remap_process_value_bindings(&mut kind, |child| {
+                memo.get(&child)
+                    .copied()
+                    .or_else(|| (!has_call(child, context)).then_some(child))
+            });
             let result = push_value(node.span, node.ty, node.bit_width, kind, context);
             context.process_ir.value_layouts[result.0 as usize] =
                 context.process_ir.value_layouts[value.0 as usize].clone();

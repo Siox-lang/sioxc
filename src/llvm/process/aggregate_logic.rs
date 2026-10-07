@@ -269,7 +269,8 @@ impl<'ctx> MetadataEmitter<'_, 'ctx, '_> {
                 }
                 result
             }
-            ProcessValueKind::RawResize { operand } => {
+            ProcessValueKind::RawResize { operand }
+            | ProcessValueKind::InlineCall { operand, .. } => {
                 let source = process_value_layout(self.design, *operand)?;
                 let part = self.emit(*operand, source, active)?;
                 fit(self.builder, part, width)
@@ -532,10 +533,11 @@ pub(super) fn process_value_meta_supported(
                         && process_value_meta_supported(design, arm.value, layout, supported)
                 })
         }
-        ProcessValueKind::RawResize { operand } => process_value_layout(design, *operand)
-            .is_some_and(|source| {
+        ProcessValueKind::RawResize { operand } | ProcessValueKind::InlineCall { operand, .. } => {
+            process_value_layout(design, *operand).is_some_and(|source| {
                 process_value_meta_supported(design, *operand, source, supported)
-            }),
+            })
+        }
         _ => false,
     }
 }

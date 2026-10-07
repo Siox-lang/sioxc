@@ -14,6 +14,140 @@ fn success(output: Output) -> Output {
 }
 
 #[test]
+fn expression_inline_calls_keep_source_frames_and_value_bindings() {
+    let directory = std::env::temp_dir().join(format!("siox_dwarf_values_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("values.siox");
+    let text = r#"module debug_values;
+use std::bits::unsigned;
+fn echo(value: Logic) -> Logic {
+    return value; // packed element return stop
+}
+fn bump(value: integer) -> integer {
+    let local: integer = value + 1;
+    return local + 1; // value return stop
+}
+fn outer(value: integer) -> integer {
+    let local: integer = 100;
+    let computed: integer = bump(value); // nested value call
+    return computed + local; // nested value caller stop
+}
+#[test] entity T {}
+impl T {
+    stimulus: process {
+        let start: integer = 5;
+        let first: integer = bump(start); // first value call
+        let second: integer = bump(start + 1); let third: integer = bump(start + 2); // paired value calls
+        let nested: integer = outer(start + 3); // outer value call
+        let conditional: integer = if start > 0 { bump(start + 4) } else { bump(99) }; // selected value call
+        assert!(first == 7 and second == 8 and third == 9 and nested == 110 and conditional == 11, "value caller stop");
+        let sample: unsigned[8] = 130;
+        let bit: Logic = sample[7];
+        let echoed: Logic = echo(sample[7]);
+        let tap: Logic = sample[7] xor sample[5];
+        assert!(bit == '1' and echoed == '1' and tap == '1', "packed element arguments retain source discriminants");
+    }
+}"#;
+    std::fs::write(&source, text).unwrap();
+    let debug = directory.join("debug.bin");
+    let ordinary = directory.join("ordinary.bin");
+    for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+        command.args(["--std", "std", "--test"]);
+        if debugging {
+            command.arg("--debug");
+        }
+        success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+        success(
+            Command::new(binary)
+                .arg("-o")
+                .arg(binary.with_extension("vcd"))
+                .output()
+                .unwrap(),
+        );
+    }
+    assert_eq!(
+        std::fs::read(debug.with_extension("vcd")).unwrap(),
+        std::fs::read(ordinary.with_extension("vcd")).unwrap()
+    );
+    if Command::new("gdb").arg("--version").output().is_ok() {
+        let line = |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
+        let python = format!(
+            r#"import gdb
+stop = gdb.Breakpoint({source:?} + ':{return_line}')
+echo_stop = gdb.Breakpoint({source:?} + ':{echo_return_line}')
+assert not stop.pending, 'expression-only callee has no compiled source location'
+gdb.execute('run')
+for expected, caller_line in [(5, {first_line}), (6, {paired_line}), (7, {paired_line}), (8, {nested_line}), (9, {selected_line})]:
+    frame = gdb.selected_frame()
+    assert frame.name() == 'debug_values::bump', frame.name()
+    assert int(gdb.parse_and_eval('value')) == expected
+    assert int(gdb.parse_and_eval('local')) == expected + 1
+    parent = frame.older()
+    assert parent.find_sal().line == caller_line, (parent.find_sal().line, caller_line)
+    parent.select()
+    if expected == 8:
+        assert parent.name() == 'debug_values::outer', parent.name()
+        assert int(gdb.parse_and_eval('value')) == 8
+        assert int(gdb.parse_and_eval('local')) == 100
+        assert parent.older().name() == 'T::stimulus'
+        assert parent.older().find_sal().line == {outer_line}
+    else:
+        assert parent.name() == 'T::stimulus', parent.name()
+        assert int(gdb.parse_and_eval('start')) == 5
+    frame.select()
+    if expected == 8:
+        outer_stop = gdb.Breakpoint({source:?} + ':{outer_return_line}')
+    gdb.execute('continue')
+    if expected == 8:
+        assert gdb.selected_frame().name() == 'debug_values::outer'
+        assert int(gdb.parse_and_eval('value')) == 8
+        assert int(gdb.parse_and_eval('local')) == 100
+        assert int(gdb.parse_and_eval('computed')) == 10
+        outer_stop.delete()
+        gdb.execute('continue')
+stop.delete()
+assert gdb.selected_frame().name() == 'debug_values::echo'
+actual = int(gdb.parse_and_eval('value'))
+assert 'value =' in gdb.execute('info args', to_string=True)
+gdb.selected_frame().older().select()
+assert actual == int(gdb.parse_and_eval('bit'))
+echo_stop.delete()
+gdb.execute('continue')
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+"#,
+            source = source.to_string_lossy(),
+            return_line = line("value return stop"),
+            echo_return_line = line("packed element return stop"),
+            first_line = line("first value call"),
+            paired_line = line("paired value calls"),
+            nested_line = line("nested value call"),
+            outer_line = line("outer value call"),
+            outer_return_line = line("nested value caller stop"),
+            selected_line = line("selected value call")
+        );
+        success(
+            Command::new("gdb")
+                .args(["-nx", "-q", "--batch"])
+                .arg(&debug)
+                .args([
+                    "-ex",
+                    "set disable-randomization off",
+                    "-ex",
+                    "set breakpoint pending off",
+                    "-ex",
+                    &format!("python {python}"),
+                ])
+                .output()
+                .unwrap(),
+        );
+    } else {
+        eprintln!("GDB unavailable: expression native execution checked, debugger probe skipped");
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn repeated_inline_calls_keep_locals_and_source_frames_across_await() {
     let directory = std::env::temp_dir().join(format!("siox_dwarf_calls_{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();

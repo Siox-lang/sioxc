@@ -639,6 +639,35 @@ pub struct ProcessValue {
     pub kind: ProcessValueKind,
 }
 
+/// Non-executable source bindings retained by a value-shaped inline call.
+/// A pruned binding has no value; inspection must not make it executable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessValueBinding {
+    /// Source spelling.
+    pub name: String,
+    /// Declaration extent.
+    pub span: crate::diag::Span,
+    /// Existing value, when retained by ordinary reachability.
+    pub value: Option<ProcessValueId>,
+}
+
+/// Source identity of one expansion, including calls returning an existing value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessValueInline {
+    /// Qualified function spelling.
+    pub name: String,
+    /// Function declaration extent.
+    pub function: crate::diag::Span,
+    /// Caller expression extent.
+    pub call: crate::diag::Span,
+    /// Return expression extent, even when it aliases an existing argument.
+    pub result_span: crate::diag::Span,
+    /// Formal parameters in signature order.
+    pub parameters: Vec<ProcessValueBinding>,
+    /// Source-local aliases, not simulation storage.
+    pub locals: Vec<ProcessValueBinding>,
+}
+
 /// Which version of signal storage a process expression reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProcessSignalState {
@@ -913,6 +942,14 @@ pub enum ProcessValueKind {
     RawResize {
         /// Value whose bit pattern is resized.
         operand: ProcessValueId,
+    },
+    /// Transparent source-call boundary. Unlike RawResize, this preserves
+    /// the consumer's arithmetic width and introduces no simulation copy.
+    InlineCall {
+        /// Executable result; the only semantic dependency.
+        operand: ProcessValueId,
+        /// Inspection-only source identity and bindings.
+        source: Box<ProcessValueInline>,
     },
     /// A binary operation.
     Binary {
@@ -1713,6 +1750,18 @@ impl ProcessIr {
                 }
             }
             match &value.kind {
+                ProcessValueKind::InlineCall { source, .. } => {
+                    for binding in source.parameters.iter().chain(&source.locals) {
+                        if let Some(child) = binding.value {
+                            if child.0 >= id.0 {
+                                issues.push(format!(
+                                    "process value {:?} has invalid source binding {}: {:?}",
+                                    id, binding.name, child
+                                ));
+                            }
+                        }
+                    }
+                }
                 ProcessValueKind::Signal { signals, .. } => {
                     if signals.is_empty() {
                         issues.push(format!("process value {:?} has no signal leaves", id));
@@ -2012,7 +2061,8 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
         | ProcessValueKind::PackedSlice { base, .. }
         | ProcessValueKind::TableLookup { index: base, .. }
         | ProcessValueKind::Unary { operand: base, .. }
-        | ProcessValueKind::RawResize { operand: base } => vec![*base],
+        | ProcessValueKind::RawResize { operand: base }
+        | ProcessValueKind::InlineCall { operand: base, .. } => vec![*base],
         ProcessValueKind::Index { base, index } => vec![*base, *index],
         ProcessValueKind::CheckedIndex { index, valid, .. } => vec![*index, *valid],
         ProcessValueKind::Range { left, right } => left.iter().chain(right).copied().collect(),
@@ -2075,7 +2125,8 @@ pub(crate) fn remap_process_value_dependencies(
         | ProcessValueKind::PackedSlice { base, .. }
         | ProcessValueKind::TableLookup { index: base, .. }
         | ProcessValueKind::Unary { operand: base, .. }
-        | ProcessValueKind::RawResize { operand: base } => remap(base),
+        | ProcessValueKind::RawResize { operand: base }
+        | ProcessValueKind::InlineCall { operand: base, .. } => remap(base),
         ProcessValueKind::Index { base, index } => {
             remap(base);
             remap(index);
@@ -2141,6 +2192,18 @@ pub(crate) fn remap_process_value_dependencies(
         | ProcessValueKind::Intrinsic(_)
         | ProcessValueKind::Default
         | ProcessValueKind::Invalid => {}
+    }
+}
+
+/// Remap inspection-only bindings separately from executable dependencies.
+pub(crate) fn remap_process_value_bindings(
+    value: &mut ProcessValueKind,
+    mut map: impl FnMut(ProcessValueId) -> Option<ProcessValueId>,
+) {
+    if let ProcessValueKind::InlineCall { source, .. } = value {
+        for binding in source.parameters.iter_mut().chain(&mut source.locals) {
+            binding.value = binding.value.and_then(&mut map);
+        }
     }
 }
 

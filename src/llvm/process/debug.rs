@@ -15,9 +15,11 @@ use inkwell::values::{AsValueRef, BasicValue, GlobalValue};
 use siox::diag::{FileId, SourceMap, Span};
 use siox::ir::ScalarDomain;
 
+mod inline_values;
 mod logic;
 mod parameters;
 mod strings;
+pub(super) use inline_values::{capture_value, inline_value, ValueFrame, ValueLocationGuard};
 use logic::{LogicMirror, LogicSource};
 use parameters::ParameterLocation;
 use strings::StringMirror;
@@ -39,6 +41,7 @@ type ScopeKey = (usize, Option<u32>);
 type LexicalScopes<'ctx> = Vec<(Span, DIScope<'ctx>)>;
 type InlineFrame<'ctx> = (DISubprogram<'ctx>, Option<DILocation<'ctx>>);
 type ParameterLocations<'ctx> = Vec<Vec<ParameterLocation<'ctx>>>;
+type ValueFunctionKey = (ProcessValueId, u32, bool, Option<SourceLayout>);
 
 pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     context: &'ctx Context,
@@ -57,6 +60,9 @@ pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     logic_mirrors: RefCell<Vec<LogicMirror<'ctx>>>,
     string_mirrors: RefCell<Vec<StringMirror<'ctx>>>,
     refresh: Cell<Option<FunctionValue<'ctx>>>,
+    /// Calls in otherwise-pure selections still need taken-path source ranges.
+    value_activity: Vec<bool>,
+    value_functions: RefCell<HashMap<ValueFunctionKey, FunctionValue<'ctx>>>,
 }
 
 struct Mirror<'ctx> {
@@ -113,6 +119,15 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
         let target = machine.get_target_data();
         module.set_triple(&machine.get_triple());
         module.set_data_layout(&target.get_data_layout());
+        let mut value_activity = Vec::with_capacity(design.process_ir.values.len());
+        for value in &design.process_ir.values {
+            value_activity.push(
+                matches!(value.kind, ProcessValueKind::InlineCall { .. })
+                    || crate::ir::process::process_value_dependencies(&value.kind)
+                        .iter()
+                        .any(|id| value_activity.get(id.0 as usize).copied().unwrap_or(false)),
+            );
+        }
         let debug = Self {
             context,
             builder,
@@ -130,6 +145,8 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             logic_mirrors: RefCell::new(Vec::new()),
             string_mirrors: RefCell::new(Vec::new()),
             refresh: Cell::new(None),
+            value_activity,
+            value_functions: RefCell::new(HashMap::new()),
         };
         debug.globals(module, design);
         Ok(debug)

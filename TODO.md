@@ -127,8 +127,11 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   distinct call-site scopes, return types and true formal parameters, including
   live mutable/indexed aliases, receivers, aggregates, wide/real projections
   and borrowed runtime/literal strings (including zero-storage empty values)
-  across suspension. Complete remaining
-  runtime-sized array representations and expression-only inline frames.
+  across suspension. Procedural expression-shaped calls now preserve repeated,
+  same-line and nested source frames, scalar bindings and selected-call stops
+  without ordinary-build copies. Complete expression provenance in hardware
+  SourceValues lowering, branch-local/aggregate expression inspection and the
+  remaining runtime-sized array representation audit.
   Keep debug-only aggregate inspection buffers faithful at source stops and
   document their read-only/snapshot nature. Verify default/bitpack debugger and
   debug-corpus gates; never resurrect per-design C translation for metadata.

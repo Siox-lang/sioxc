@@ -794,7 +794,8 @@ pub(super) fn activity_sensitive_process_values(design: &Design) -> Vec<bool> {
             | ProcessValueKind::PackedSlice { base, .. }
             | ProcessValueKind::TableLookup { index: base, .. }
             | ProcessValueKind::Unary { operand: base, .. }
-            | ProcessValueKind::RawResize { operand: base } => has(&checked, *base),
+            | ProcessValueKind::RawResize { operand: base }
+            | ProcessValueKind::InlineCall { operand: base, .. } => has(&checked, *base),
             ProcessValueKind::Index { base, index }
             | ProcessValueKind::Binary {
                 left: base,

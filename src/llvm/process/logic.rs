@@ -121,6 +121,7 @@ pub(super) fn meta_free_process_values(design: &Design) -> Vec<bool> {
             }
             ProcessValueKind::Unary { operand, .. }
             | ProcessValueKind::RawResize { operand }
+            | ProcessValueKind::InlineCall { operand, .. }
             | ProcessValueKind::Field { base: operand, .. }
             | ProcessValueKind::BitSlice { base: operand, .. }
             | ProcessValueKind::PackedSlice { base: operand, .. } => free(*operand),
@@ -805,7 +806,7 @@ fn process_packed_meta_uncached<'ctx>(
             }
             (offset == 0).then_some(result)
         }
-        ProcessValueKind::RawResize { operand } => {
+        ProcessValueKind::RawResize { operand } | ProcessValueKind::InlineCall { operand, .. } => {
             let operand_layout = packed_operand_layout(design, layout, *operand)?;
             let (operand_width, _) = packed_logic_layout(design, &operand_layout)?;
             let operand = process_packed_meta_in_layout(

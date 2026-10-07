@@ -425,7 +425,9 @@ fn normalized_value_width(
             ProcessUnaryOp::RealToInteger | ProcessUnaryOp::IntegerToReal => Some(64),
             ProcessUnaryOp::Neg | ProcessUnaryOp::Not => width(operand),
         },
-        ProcessValueKind::RawResize { operand } => width(operand),
+        ProcessValueKind::RawResize { operand } | ProcessValueKind::InlineCall { operand, .. } => {
+            width(operand)
+        }
         ProcessValueKind::Binary {
             operation,
             left,

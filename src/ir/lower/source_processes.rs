@@ -66,6 +66,7 @@ struct LoweringContext<'a> {
     inline_functions: std::collections::HashSet<crate::diag::Span>,
     /// Current canonical source call instance while expanding a CFG body.
     inline_scope: Option<u32>,
+    inline_value_locals: Vec<Vec<crate::ir::ProcessValueBinding>>,
     /// Memoized call reachability in the append-only procedural value arena.
     cfg_call_cache: Vec<bool>,
 }
@@ -1153,6 +1154,7 @@ pub fn lower(
                 inline_return_blocks: Vec::new(),
                 inline_functions: std::collections::HashSet::new(),
                 inline_scope: None,
+                inline_value_locals: Vec::new(),
                 cfg_call_cache: Vec::new(),
             };
             let mut block = ProcessBlockId(0);
@@ -1212,6 +1214,7 @@ pub fn lower(
                             inline_return_blocks: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
                             inline_scope: None,
+                            inline_value_locals: Vec::new(),
                             cfg_call_cache: Vec::new(),
                         };
                         lower_process(
@@ -1264,6 +1267,7 @@ pub fn lower(
                             inline_return_blocks: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
                             inline_scope: None,
+                            inline_value_locals: Vec::new(),
                             cfg_call_cache: Vec::new(),
                         };
                         lower_process(
@@ -1332,6 +1336,7 @@ pub fn lower(
                     inline_return_blocks: Vec::new(),
                     inline_functions: std::collections::HashSet::new(),
                     inline_scope: None,
+                    inline_value_locals: Vec::new(),
                     cfg_call_cache: Vec::new(),
                 };
                 lower_legacy_process(
@@ -3991,6 +3996,7 @@ fn lower_process_named_conversion(
     if let Some(function) = context.functions.get_conversion(&target, &source) {
         let result = inline_process_function(
             function,
+            *span,
             None,
             &[operand],
             process,
@@ -4264,6 +4270,7 @@ fn lower_process_family_from(
     context.self_formats.push(format);
     let result = inline_process_function(
         function,
+        *span,
         None,
         &[operand],
         process,
@@ -4702,6 +4709,7 @@ fn inline_process_call(
         .collect::<Vec<_>>();
     let result = inline_process_function(
         function,
+        ast::expr_span(expression),
         receiver,
         &arguments,
         process,
@@ -4753,8 +4761,10 @@ fn returns_receiver_type(
 /// Inline one already-selected Siox function over already-lowered operands.
 /// Calls and operators share this implementation so receiver binding,
 /// overload bodies, recursion recovery, and result typing cannot drift.
+#[allow(clippy::too_many_arguments)]
 fn inline_process_function(
     function: &ast::FnDecl,
+    call: crate::diag::Span,
     receiver: Option<ProcessValueId>,
     arguments: &[ProcessValueId],
     process: &ProcessCfg,
@@ -4807,16 +4817,68 @@ fn inline_process_function(
     context.value_bindings.push(bindings);
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(return_type);
+    context.inline_value_locals.push(Vec::new());
     let result = inline_value_statements(&body.stmts, process, context);
+    let locals = context.inline_value_locals.pop().unwrap();
     context.inline_return_types.pop();
     context.inline_self_values.pop();
     context.value_bindings.pop();
     context.inline_functions.remove(&function.span);
     // ...and that argument's format: `abs(x)` on a `ufixed<8, 4>` is one.
-    match (result, generic_argument) {
+    let result = match (result, generic_argument) {
         (Some(result), Some(argument)) => Some(inherit_receiver_layout(result, argument, context)),
         (result, _) => result,
-    }
+    }?;
+    let parameters = function
+        .params
+        .iter()
+        .zip(receiver.into_iter().chain(arguments.iter().copied()))
+        .map(|(parameter, value)| crate::ir::ProcessValueBinding {
+            name: parameter
+                .name
+                .as_ref()
+                .map_or_else(|| "self".to_string(), |name| name.text.clone()),
+            span: parameter.span,
+            value: Some(value),
+        })
+        .collect();
+    let name = context
+        .resolved
+        .declared(function.name.span)
+        .and_then(|definition| context.resolved.qualified_name(definition))
+        .unwrap_or_else(|| function.name.text.clone());
+    let node = &context.process_ir.values[result.0 as usize];
+    let ty = node.ty.clone();
+    let width = node.bit_width;
+    let layout = process_value_source_layout(result, context.process_ir).cloned();
+    let id = push_value(
+        call,
+        ty,
+        width,
+        ProcessValueKind::InlineCall {
+            operand: result,
+            source: Box::new(crate::ir::ProcessValueInline {
+                name,
+                function: function.span,
+                call,
+                result_span: body
+                    .stmts
+                    .iter()
+                    .find_map(|stmt| match stmt {
+                        Stmt::Return {
+                            value: Some(value), ..
+                        } => Some(ast::expr_span(value)),
+                        _ => None,
+                    })
+                    .unwrap_or(node.span),
+                parameters,
+                locals,
+            }),
+        },
+        context,
+    );
+    context.process_ir.value_layouts[id.0 as usize] = layout;
+    Some(id)
 }
 
 /// The caller operand that determines a generic function's return type and
@@ -4999,6 +5061,7 @@ fn inline_process_array_binary_operator(
         .map(|(left, right)| {
             inline_process_function(
                 function,
+                span,
                 Some(left),
                 &[right],
                 process,
@@ -5040,7 +5103,15 @@ fn inline_process_array_unary_operator(
     let elements = operands
         .into_iter()
         .map(|operand| {
-            inline_process_function(function, Some(operand), &[], process, context, Some(elem))
+            inline_process_function(
+                function,
+                span,
+                Some(operand),
+                &[],
+                process,
+                context,
+                Some(elem),
+            )
         })
         .collect::<Option<Vec<_>>>()?;
     let result_type = return_type
@@ -5128,6 +5199,7 @@ fn inline_process_binary_operator(
     let right = value_ref_with_type(rhs, process, context, right_context);
     let result = inline_process_function(
         function,
+        ast::expr_span(lhs),
         Some(left),
         &[right],
         process,
@@ -5192,6 +5264,7 @@ fn inline_process_comparison(
     let right = narrow_to_type(right, right_context, context);
     let result = inline_process_function(
         function,
+        ast::expr_span(lhs),
         Some(left),
         &[right],
         process,
@@ -5336,8 +5409,15 @@ fn inline_process_unary_operator(
 
     let first_value = context.process_ir.values.len();
     let operand = value_ref_with_type(rhs, process, context, Some(&operand_type));
-    let result =
-        inline_process_function(function, Some(operand), &[], process, context, return_type);
+    let result = inline_process_function(
+        function,
+        ast::expr_span(rhs),
+        Some(operand),
+        &[],
+        process,
+        context,
+        return_type,
+    );
     if result.is_none() {
         truncate_process_values(context, first_value);
     }
@@ -5380,6 +5460,13 @@ fn inline_value_statements(
             );
             let definition = context.resolved.declared(declaration.name.span)?;
             context.value_bindings.last_mut()?.insert(definition, value);
+            if let Some(locals) = context.inline_value_locals.last_mut() {
+                locals.push(crate::ir::ProcessValueBinding {
+                    name: declaration.name.text.clone(),
+                    span: declaration.span,
+                    value: Some(value),
+                });
+            }
             inline_value_statements(rest, process, context)
         }
         Stmt::If(statement) => inline_value_if(statement, rest, process, context),
@@ -6593,7 +6680,9 @@ fn source_value_width(
             ProcessUnaryOp::RealToInteger | ProcessUnaryOp::IntegerToReal => Some(64),
             ProcessUnaryOp::Neg | ProcessUnaryOp::Not => value_width(operand),
         },
-        ProcessValueKind::RawResize { operand } => value_width(operand),
+        ProcessValueKind::RawResize { operand } | ProcessValueKind::InlineCall { operand, .. } => {
+            value_width(operand)
+        }
         ProcessValueKind::Binary {
             operation,
             left,
@@ -7061,6 +7150,7 @@ mod tests {
             inline_return_blocks: vec![],
             inline_functions: Default::default(),
             inline_scope: None,
+            inline_value_locals: Vec::new(),
             cfg_call_cache: vec![],
         };
 
@@ -7188,10 +7278,12 @@ mod tests {
             design.process_ir.values.iter().any(|value| matches!(
                 &value.kind,
                 ProcessValueKind::Array(elements)
-                    if elements.len() == 2 && elements.iter().all(|element| matches!(
-                        design.process_ir.values[element.0 as usize].kind,
-                        ProcessValueKind::Select { .. }
-                    ))
+                    if elements.len() == 2 && elements.iter().all(|element| {
+                        let ProcessValueKind::InlineCall { operand, .. } =
+                            &design.process_ir.values[element.0 as usize].kind else { return false };
+                        matches!(design.process_ir.values[operand.0 as usize].kind,
+                            ProcessValueKind::Select { .. })
+                    })
             )),
             "blanket array operators should inline each element's source implementation"
         );

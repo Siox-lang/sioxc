@@ -13894,3 +13894,328 @@ refreshed; vendored parser limitations remain unrelated. Commit this tested
 zero-storage/literal batch only. Estimated implement DWARF completion stays
 96%: expression-only inline provenance/emission is the main outstanding work,
 along with the remaining supported-representation completion audit.
+
+### 2026-10-07 — Codex — DWARF expression inlines
+
+Own the debug_info expression-call regression and subsequent canonical value
+provenance in ir/process.rs, procedural/source value inliners and LLVM value
+debug emission. First prove the missing source frames with real GDB, repeated
+same-line calls, nested calls and signature/local inspection. Preserve normal
+native execution and VCD parity. Do not force pure calls through persistent
+CFG return frames solely for debug metadata: source identity needs a distinct
+canonical value boundary without simulation copies. Compaction/reconstruction
+must preserve or explicitly invalidate non-executable bindings; never make
+discarded arguments executable dependencies. Untaken calls must not gain
+source stops or host/foreign effects. Cover both procedural and hardware
+value lowering before claiming the full goal complete. Preserve unrelated
+AGENTS.md/.codex/441 chat additions; compiler pushes remain unauthorized.
+
+Zero-storage batch committed as 5a48839 after full acceptance. Expression
+regression job 352835 is terminal failure (exit 101, peak 193601536 bytes):
+both native executables run successfully and their VCDs match, but GDB reports
+"No compiled code for line 4" for the pure bump return. No callee frame exists.
+The failing test is owned/uncommitted, not a passed gate; tightened its pending
+breakpoint assertion after observing that failure. Scratch source/binaries are
+in ~/.cache/siox-jobs/tmp/siox_dwarf_values_353120/. No heavy job remains live.
+
+Read-only scope trace: hardware pure bodies enter inline_block via calls.rs
+(free functions, methods and From), source_operators.rs, values.rs (suffixes)
+and resolution.rs. Procedural pure bodies share inline_process_function with
+operators/conversions, and inline_value_statements retains only alias IDs.
+SourceValues::reconstruct_metavalues remaps IDs before retain_reachable removes
+dead values. A call returning an existing operand can allocate no body value,
+so allocation ranges alone cannot identify that call; preserve a unique
+identity boundary without ordinary LLVM copies. Binding provenance must remain
+non-executable and survive/invalidate correctly through both remapping passes.
+
+Expression source-frame implementation now uses transparent InlineCall values
+with non-executable signature/local provenance. SourceValues reconstruction and
+reachability remap bindings separately; dropped bindings become None instead of
+keeping discarded foreign/host effects executable. CFG normalization updates
+binding aliases to already-captured operands. Ordinary emission forwards the
+consumer width and introduces no simulation copies for the boundary.
+
+Real GDB exposed two backend issues: Inkwell's deprecated location getter can
+turn absent locations into empty tuples, and SelectionDAG combines nested
+return arithmetic even at O0. Preserve raw metadata locations; use the existing
+read-only inspection buffers and dispatch-allocated references for bindings and
+debug-only return views. No argument/body reevaluation for inspection. Predicate
+guards keep unselected expression calls unreachable and preserve call dominance.
+
+Focused job 396286 passed the extended expression regression. Acceptance probe
+400405 passed strict Clippy and all three GDB/VCD tests in default and bitpack;
+525/526 lib tests passed, with one old internal array-shape assertion expecting
+a Select directly instead of its new source identity boundary. Update that
+assertion to verify the same executable Select through InlineCall, not weaken
+its implementation check. Add explicit SourceValues compaction/validation proof
+that metadata cannot retain a discarded foreign effect. Full gate still needed.
+Remaining goal work: actual hardware-inliner provenance, expression lexical/
+aggregate/string inspection and runtime-sized representation audit. Do not mark
+the full DWARF goal complete based on the procedural regression alone.
+
+Full gate 408926 passed Clippy/frontend-only/default tests up to
+testbench_methods, then delayed_dynamic_composites overflowed its test-thread
+stack. Probe 418130 is terminal and GDB proves a deep canonical bitwise
+reduction through process_value/process_binary/process_value_at, not an IR
+cycle. Extend ownership to binary.rs: reuse the value cache and operand emitter
+with an explicit work/value stack for equal-width bitwise chains. Preserve
+written operand order, checked/foreign activity, per-node debug bindings and
+source locations. Do not enlarge thread stacks or skip the failing test.
+The scheduled third corpus command used an ignored SIOXC_BITPACK variable;
+the actual representation switch is SIOXC_FEATURES=bitpack. No bitpack corpus
+claim from that command; run the correct gate after fixing the stack issue.
+
+Probe 422940 finished exited/success/0, peak 743362560 bytes. The previously
+overflowing native composite test and all three complete DWARF regressions
+passed after iterative bitwise emission. Preserve debug source identity and
+refresh already-emitted/cache-hit bindings without reevaluating operands.
+Extend the expression regression to inspect a caller local holding an inner
+call result at the caller's return stop, not just constants and leaf arithmetic.
+Run full default/bitpack suites and correctly configured native corpora next.
+
+Gate 425076 caught a checked-index activity regression in the new work-stack
+emitter before proceeding past lib tests (526/527 passed). Share the existing
+right-operand activity rule between recursive arithmetic and iterative bitwise
+emission, with separate left/right/finish phases, rather than treating a
+Boolean reduction as eager packed arithmetic. Normalize cached leaf widths too.
+Focused job 433771 finished exited/success/0, peak 810700800 bytes: the exact
+checked-index/range probe, all ten testbench_methods native tests and all three
+GDB/VCD regressions passed, including caller locals holding callee results.
+
+Continuation audit while acceptance job 437801 remains live: strict Clippy,
+frontend-only checking, both complete Rust suites and the ordinary corpus
+(225 passed / 0 failed) have passed. The two debug corpora, final native GDB
+smoke check and graph refresh are not yet acceptance evidence; keep polling
+the same service and do not edit compiler sources while it runs.
+
+Runtime-sized representation trace: llvm/process/names.rs only grants the
+64-bit handle ABI to unconstrained Char[]; source_processes.rs uses the same
+character-domain guard. Other unconstrained arrays have no supported native
+storage layout (places.rs rejects them); general runtime-owned arrays remain
+the existing LLVM host-service extension, not a hidden DWARF implementation
+requirement. Existing string storage/CFG tests cover that supported handle
+representation, but expression-frame string bindings still need real GDB
+coverage and borrowed-content views rather than packed handle inspection.
+
+Next owned subsystem after the current gate/commit: lower/calls.rs pure-body
+inlining and its conversion/operator/suffix callers, reusing Process InlineCall
+identity instead of allocation ranges. Preserve lazy aggregate leaves and
+discarded effects; do not turn debug-only bindings into executable roots.
+
+Gate 437801 was intentionally stopped, not accepted, during the default debug
+float_conformance compile. Both Rust suites and ordinary 225/0 remain partial
+evidence only. At the observation its cgroup peaked at 1634582528 bytes,
+memory.events recorded 178542 high-limit events with no OOM, and the compiler
+was sleeping in mem_cgroup_handle_over_high. A live GDB backtrace (detached
+cleanly) showed nested inline_value guards allocating source-frame bindings.
+The guard clears all shared SSA caches on entry and exit, causing dominating
+shared subgraphs to be emitted repeatedly. Own process/value_types.rs,
+debug/inline_values.rs and process/tests.rs for a dominance-safe cache fix:
+reuse pre-branch values inside the arm, then retain only SSA values that already
+dominated the branch. Never restore state caches invalidated by a foreign call,
+and never keep a branch-only replacement merely because its key existed before.
+
+Dominance probe 499842 failed to compile its new test because ScalarDomain was
+not imported; qualified the existing IR enum. Probe 501529 then passed that
+cache test and all three real GDB/native/VCD regressions, but ended exit 127
+before the float measurement because /usr/bin/time is absent. No float pass
+claimed; use the shell timer and guarded-service peak rather than add a tool.
+
+Float-only probe 505632 was stopped intentionally after it also reached the
+high-memory throttle: peak 1634766848 bytes, 66581 high-limit events, no OOM.
+Dominating-cache retention passes correctness probes but is not yet sufficient
+to accept the large debug compile. Next remove emission of compile-time-false
+debug call arms at the shared inline_value boundary, preserving the actual
+consumer width. Unreachable bodies need neither machine code nor source stops;
+do not drop frames/bindings for executed std or user calls.
+
+Probe 523135 passed both cache/constant-inactive units and all three debugger
+regressions, then failed with Result=oom-kill / ExecMainStatus=9 during the
+large float debug compile. User-journal records the kernel kill inside the
+guarded unit at 17:46:12; host memory is healthy afterward, and kernel journal
+entries are unavailable. No completed float result or resource improvement
+claimed. Trace the shared guard callback: recursion removes the predicate, but
+the emitter closure captures the original predicate and reapplies it to the
+entire callee body. Pass effective activity explicitly to all three emitters;
+inside a selected arm it is None. Add a direct check for dynamic and constant
+true guards as well as the inactive consumer-width check.
+
+Probe 540745 passes those units and all three GDB/native/VCD tests, but the
+float compile still reaches the high-memory throttle (observed peak
+1633214464 bytes); stopped deliberately before accepting it. A bounded live
+GDB sample, detached cleanly, shows contextual arithmetic emission, so do not
+claim that removing the redundant predicates alone fixed resource growth.
+Next reuse already-dominating unconditional cached results in conditional
+consumers, and avoid repeated inspection stores for the same binding/SSA value
+within one basic block. Keep branch-only results and post-foreign reads out of
+that reuse. These are debug correctness/resource fixes, not permission to omit
+executed std frames or source bindings.
+
+Probe 566178 again passes the two units and all three GDB/native/VCD tests,
+including unconditional-cache fallback, but ends oom-kill/9 on float debug
+compilation (observed peak 1632989184 bytes). The full gate remains unproven.
+Audit metadata origins next: inline_value creates a new DISubprogram for every
+expansion of the same source function. Share the abstract function definition
+only when definition span and all return/binding debug types match; keep each
+call's inlinedAt location, reference storage and capture state distinct. Use
+the existing repeated/same-line/nested GDB checks to prove real values remain
+separate, and measure the same full float workload again.
+
+Probe 597103 passed strict Clippy, both cache/guard units and all three real
+GDB/native/VCD tests with shared function origins; float debug still ended
+oom-kill/9. Parent user/app slices have unlimited memory.max and the unit has
+the expected 2 GiB cap, so no parent-limit explanation was found. The reported
+terminal service peak (1170255872 bytes) is not a trustworthy whole-run upper
+bound after the kill; do not infer a successful resource reduction from it.
+Graph refresh completed: 5565 nodes / 14617 edges / 264 communities, with the
+known vendored libfst parser warnings. Use one explicitly bounded 4 GiB / 3 GiB
+high-limit diagnostic for this measured >2 GiB workload, never an unlimited
+build or a claim that the completed full gate is already green.
+
+Standalone float probe 618030 also failed oom-kill/9 under the explicitly
+bounded 4 GiB cap (observed peak 2588528640 bytes; no completed compiler output).
+Do not raise budgets further without understanding the expansion. Add a
+disk-cache-only diagnostic consumer of the existing public phase APIs: select
+the actual test hierarchy, lower once to Process IR, then emit ordinary/debug
+LLVM text for a reduced number of the same corpus operations. Count executable
+instructions separately from metadata and compare growth; this is a root-cause
+probe, not a substitute for the full 44-pair corpus acceptance requirement.
+
+### 2026-10-07 — Codex — DWARF float expansion diagnostic
+
+The external scratch consumer (job 672668) ended exit 101: lower_processes is
+intentionally crate-private. Do not widen the compiler API for instrumentation
+or use its independently resolved dependency lock as acceptance evidence.
+Own llvm/process/tests.rs for a temporary ignored in-crate probe using the
+root locked dependencies and existing frontend/test lowering/LLVM APIs. Compare
+reduced ordinary/debug instruction and metadata counts before native codegen;
+retain probe artifacts in disk-backed cache. Full corpus and hardware/string
+expression coverage remain required. Previous status-only turn was no progress;
+the safe next action is this measured diagnostic, not another memory increase.
+
+Probe 696015 completed success/0: one float operation has 807 arena values,
+80 InlineCalls and 1134 ordinary versus 15303 debug instructions. Probe 700935
+also completed success/0: three operations have 2651 values, 261 InlineCalls,
+4680 ordinary versus 860567 debug instructions (87 MB text, 13897 return
+buffers and 9532 guards). Only 2218 metadata definitions: the dominant problem
+is repeated executable expression emission, not distinct DWARF origins.
+Own process/debug{,/inline_values.rs}, values.rs and value_types.rs to compile
+each debug expression call once as a native source function per arena/consumer
+format. Pass live source operands through the function ABI; preserve selected
+execution and source arguments/locals, while ordinary emission stays unchanged.
+This reuses canonical Process values and LLVM emission, not a second frontend
+pipeline or generated C. Keep real GDB/native/VCD parity checks and add an
+instruction-growth regression. No acceptance claim until measured/full gates.
+
+Probe 923941 completed success/0 under the default 2 GiB cap: the inactive
+unit, reduced three-op LLVM probe and all three actual GDB/native/VCD tests
+pass. Three-op debug output is now 33659 instructions / 3.49 MB, emitted in
+1.12 s, versus 860567 / 87.16 MB / 29.84 s before native expression functions.
+This proves a measured reduction, not acceptance of the full float workload.
+
+Probe 929270 completed success/0: strict all-target/all-feature Clippy passed;
+the full float_conformance debug executable compiled in 63.153 s and ran its
+complete test successfully, with guarded peak 781631488 bytes under the usual
+2 GiB cap. Replace the temporary corpus-dependent ignored probe with a portable
+shared-call/consumer-width regression. Bitwise-chain emission must respect
+captured native parameters as well as the recursive scalar emitters. Update
+testing.md to describe real expression functions and retain the full goal's
+hardware, lexical and string/aggregate gaps. All packing/corpus gates pending.
+
+Gate 939441 ended exit 1, not accepted: both complete Rust suites and ordinary
+corpus 225/0 passed; default debug corpus is 224/1, failing only lfsr_test's
+last local packed-element xor (process 1 block 26). The bitpack corpus/GDB
+smoke commands were not reached. The native expression ABI exposes a shared
+renderer gap: process_value_in_layout treats every Index as an array slice,
+even when its base is Packed and the result is a source enum discriminant.
+Own the shared Index arm in values.rs; delegate packed projection to the
+existing scalar emitter rather than patch each debug caller or reinterpret a
+physical bit as an enum. Extend the actual GDB/native/VCD expression test with
+a direct Logic local, packed-element argument, and the existing xor shape.
+
+Probe 1018665 ended exit 101 on the added direct Logic local before the LFSR
+or bitpack probes ran. Its preflight support check mirrored the same array-only
+Index assumption. Update that shared support arm alongside emission, reusing
+the already-computed scalar support result for packed projections. Do not
+weaken array shape checks or skip the new ordinary-execution regression.
+
+Probe 1028813 completed success/0: the extended native/GDB/VCD expression test
+passes in both default and bitpack modes, and the actual full LFSR executable
+now passes with debug output. No diagnostic instrumentation or corpus-dependent
+ignored test remains. Rerun the complete current gate; previous suite/corpus
+results do not prove the latest shared packed-index support/emission change.
+
+Gate 1034636 was intentionally stopped (authoritative SubState=dead), not
+accepted, to close a code-audit invariant before committing: a binding can be
+retained elsewhere in the global arena without being an executable operand of
+this callee. The native debug ABI must not evaluate such a metadata-only
+argument. Walk the callee's semantic dependencies, stopping at source argument
+boundaries; only those arguments enter the native ABI. Extend the portable
+shared-call test with a retained but unused ForeignCall and require that no
+foreign call is emitted. Preserve source parameter metadata without making it
+an executable root. Both suites were green in that stopped run; corpus results
+are incomplete. Full gates remain required after this fix.
+
+Graph refresh completed: 5328 nodes / 14681 edges / 248 communities, AST-only
+with the known four vendored libfst parser warnings and seven no-symbol files.
+
+Probe 1072726 completed success/0: shared-body/width-format regression passes
+with a retained but unused ForeignCall (no emitted foreign call), all three
+actual GDB/native/VCD tests pass in both packing modes, and strict all-target /
+all-feature Clippy passes. Restart the full current gate and leave its handle
+for authoritative polling if this turn yields. Do not commit or claim complete
+until that gate succeeds; the full DWARF objective still includes hardware
+provenance, lexical/aggregate/string expression inspection and the supported
+runtime-sized representation audit. Also test source aliases used under
+different predicates for faithful call counts, not just compiled-body reuse.
+
+Gate 1082074 ended exit 101: 529 units passed, but the existing no-argument
+activity unit uses a callback-backed empty design and the new argument walker
+looked up its nonexistent operand. Skip dependency traversal when the candidate
+parameter set is empty; there are no argument roots to discover. This also
+avoids unnecessary walks for genuine nullary calls. Keep the no-argument unit
+and full gate; do not treat earlier focused passes as complete verification.
+
+### 2026-10-07 — Codex — DWARF remaining-path audit
+
+Gate 1088551 is authoritatively running; both full Rust suites and the ordinary
+corpus 225/0 have passed. No source changes while its debug corpora run.
+Read-only tracing confirms that hardware inline_block loses function identity
+at its seven entry paths, HardwareValueFacts::emit never receives DebugInfo,
+and Codegen::build emits hardware before DebugInfo is created. Preserve the
+bounded combinational helpers while sharing the existing Process emitter.
+The existing runtime-sized native value contract is Char[] handles only;
+general dynamic arrays remain the separate host-service extension in TODO.md.
+Expression argument emission currently chooses packed layout emission even
+for a runtime string handle, and expression bindings cannot allocate an
+inspection view for its unconstrained layout. Own debug/inline_values.rs,
+debug/strings.rs and the native debug_info regression for that next concrete
+gap, reusing the existing borrowed runtime string query and literal views.
+After acceptance of the current batch, add native/GDB/VCD expression coverage
+for runtime, literal and empty strings, aggregates and predicate-shared aliases.
+Hardware and lexical work still remain; do not claim the goal complete.
+
+Gate 1088551 remains SubState=running, with ordinary and default debug corpus
+summaries both 225/0. The bitpack debug corpus is now at fixed_test, with no
+failure markers; peak is 1611534336 bytes under the usual 2 GiB cap. Its GDB
+smoke command is still pending. Re-poll the same service/log after a turn
+interruption; no rerun, commit or acceptance claim from launcher/running status.
+
+Audit correction before editing: process_value_width_in_layout already uses
+the arena's ABI bit_width for aggregate/unconstrained layouts, and its Local
+and Storage arms can load Char[] handles correctly. The proven string gap is
+the expression binding/return inspection path (inspection_bits and copy_fields
+require packed_width); do not bypass the shared argument emitter without a
+failing native regression. Reuse existing string views, preserve typed handle
+widths, and let real execution/GDB evidence determine any additional fix.
+
+Gate 1088551 completed SubState=exited / Result=success / ExecMainStatus=0.
+Formatting, strict all-target/all-feature Clippy, frontend-only check, both full
+Rust suites, ordinary/default-debug/bitpack-debug corpora (225/0 each), and
+native GDB stepping/inspection plus VCD parity smoke checks passed. Guarded
+peak was 1611534336 bytes. Commit only the owned expression identity/native
+frame, dominance cache, iterative reduction, packed-index fix, regressions and
+documentation batch plus owned log tail. Preserve AGENTS.md, .codex/ and the
+unrelated pre-marker chat additions. No compiler push. The full DWARF goal
+remains active; estimated completion stays 96% with hardware, lexical,
+expression-string/aggregate inspection and predicate-shared call counts open.

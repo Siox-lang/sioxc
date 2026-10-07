@@ -76,6 +76,7 @@ pub(super) fn process_entry<'ctx>(
         }
 
         let mut cache = ProcessValueCache::new(activity_values, &supported_values.meta_free);
+        cache.debug = debug;
         let mut failed = false;
         for (instruction_index, instruction) in block.instructions.iter().enumerate() {
             if let (Some(debug), Some(scope)) = (debug, scope) {
@@ -96,7 +97,9 @@ pub(super) fn process_entry<'ctx>(
                     | ProcessInstruction::Schedule { span, .. }
                     | ProcessInstruction::Runtime { span, .. } => *span,
                 };
-                builder.set_current_debug_location(debug.location(scope, span, inline));
+                let location = debug.location(scope, span, inline);
+                cache.source_location = Some(location);
+                builder.set_current_debug_location(location);
             }
             let emitted = match instruction {
                 ProcessInstruction::Declare {
@@ -441,8 +444,11 @@ pub(super) fn process_entry<'ctx>(
                 ProcessTerminator::Goto(_) => None,
             };
             if let Some(span) = span {
-                builder.set_current_debug_location(debug.location(scope, span, inline));
+                let location = debug.location(scope, span, inline);
+                cache.source_location = Some(location);
+                builder.set_current_debug_location(location);
             } else {
+                cache.source_location = None;
                 builder.unset_current_debug_location();
             }
         }
