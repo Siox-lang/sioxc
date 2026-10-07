@@ -72,8 +72,8 @@ use writes::*;
 ///
 /// This is deliberately a data version rather than the compiler package
 /// version: the reusable native runtime only needs to change when one of the
-/// exported table layouts or encodings changes.
-const PROCESS_ABI_VERSION: u32 = 15;
+/// exported table layouts, encodings or runtime call signatures changes.
+const PROCESS_ABI_VERSION: u32 = 16;
 
 /// A process returned normally and has no pending resume.
 const PROCESS_COMPLETED: u8 = 0;

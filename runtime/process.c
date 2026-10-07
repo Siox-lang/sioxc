@@ -13,7 +13,7 @@ enum {
     SX_PROCESS_FINISHED = 3,
     SX_PROCESS_SETTLING = 4,
     SX_PROCESS_UNSUPPORTED = 255,
-    SX_PROCESS_ABI = 15,
+    SX_PROCESS_ABI = 16,
     SX_EVENT_WRITE = 0,
     SX_EVENT_RESUME = 1,
     SX_SUSPENSION_NONE = 0,
@@ -415,12 +415,12 @@ uint64_t sx_runtime_string_index(uint64_t handle, uint64_t index) {
     return string->values[index];
 }
 
-uint64_t sx_runtime_string_equals_utf8(uint64_t handle, const char *text) {
+uint64_t sx_runtime_string_equals_utf8(uint64_t handle, const char *text,
+                                       uint64_t length) {
     sx_runtime_string *string = sx_runtime_string_for(handle);
     if (!string || !text) return 0;
-    size_t length = strlen(text);
     return length == string->byte_length
-        && memcmp(string->utf8, text, length) == 0;
+        && memcmp(string->utf8, text, (size_t)length) == 0;
 }
 
 static void sx_clear_error(void) {

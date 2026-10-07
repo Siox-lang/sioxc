@@ -14219,3 +14219,129 @@ documentation batch plus owned log tail. Preserve AGENTS.md, .codex/ and the
 unrelated pre-marker chat additions. No compiler push. The full DWARF goal
 remains active; estimated completion stays 96% with hardware, lexical,
 expression-string/aggregate inspection and predicate-shared call counts open.
+
+Local commit f7f8adb contains the accepted expression-frame batch; verified its
+stat and preserved unrelated work. Own process/debug/inline_values.rs,
+debug/strings.rs, process/entry.rs, process/value_types.rs and tests/debug_info.rs
+for borrowed expression-string inspection. First extend the actual native/GDB/
+VCD regression with runtime/literal/empty string formals and aliases, plus an
+aggregate parameter/local. Reuse the existing runtime query, literal views and
+normalized aggregate copies; add no ordinary-build storage or dependencies.
+
+Probe 1192731 ended exit 101 before GDB: the extended native fixture's block 0
+is unsupported. A --test/--emit ir diagnostic was correctly rejected by the
+CLI (1195806, exit 1); ordinary --emit ir excludes the test process (1197049,
+success/0), so neither isolates this failure. Temporarily own blocks.rs for
+preflight instruction/value diagnostics under the guarded native probe. Remove
+the instrumentation after locating the actual root; do not weaken preflight.
+
+Probe 1202518 located the emission failure at literal count("μ\\0🙂"), not
+preflight: a compile-time string operand was incorrectly materialized through
+an unconstrained layout by the native debug ABI. Skip literal string ABI inputs;
+the callee retains the IR constant and source inspection uses its constant view.
+Temporary blocks/entry diagnostics have been removed. Probe 1219568 proves all
+three string results now execute correctly, but exposes an aggregate conversion
+bug. Probe 1223206's ordinary executable fails the same aggregate assertion;
+its success status belongs only to the final GDB diagnostic, not the simulation.
+The return is real's bit pattern plus the integer tag: frontend real detection
+does not consult a projected field's retained SourceLayout. Own the shared
+process_value_is_real helper in source_processes.rs; recover the declared
+domain through process_value_source_layout. Keep the aggregate fixture and
+verify both ordinary/debug execution rather than avoiding its conversion.
+
+Probe 1226693 now proves ordinary/debug execution and VCD parity for all added
+cases, but GDB stops first in T::stimulus on count's return line. CFG extraction
+of StringLength retains the callee's span after moving the operation to the
+caller. Own cfg_calls.rs to give extracted caller instructions the source
+call-site span while keeping canonical value/body spans and native return
+metadata intact. The regression must see only the actual count frames at its
+return line; do not filter away a mislabeled caller stop in the test.
+
+Probe 1238437 completed success/0: the actual native/GDB expression test now
+passes all runtime/literal/empty string and aggregate stops, caller locations,
+ordinary/debug execution and VCD parity. Extend the same regression with a
+borrowed string returned through a native expression frame; this exercises
+passed-handle capture rather than only the CFG-normalized persistent mirror.
+Reuse the existing fixture and Python inspection checks. No source edits while
+the next guarded verification job is live; full acceptance gates remain due.
+
+Probe 1247945 failed the new borrowed-return native assertion before GDB.
+Independent ordinary compile/run probe 1249292 fails identically. The shared
+frontend representation classifier does not follow transparent InlineCall
+identities, so count on a returned runtime handle lowers a constant layout
+length instead of StringLength. Own the shared runtime-string classifier in
+source_processes.rs; preserve the literal/runtime distinction and fix length,
+indexing and equality together at their existing common helper.
+
+Probe 1250846 completed success/0: all three native/GDB/VCD regressions pass
+with default and bitpack builds, followed by strict all-target/all-feature
+Clippy. Peak 1298341888 bytes under the ordinary cap. Add downstream borrowed
+string index/literal-equality assertions and DWARF verification to that same
+test, and document the supported expression aggregate/string views and the
+remaining hardware/lexical/predicate-count work. The shared representation
+fix follows InlineCall without changing literal or empty-string storage.
+Refresh the ignored AST graph and launch the full gate before committing.
+
+Probe 1255860 failed because the new test used an unsupported escaped character
+literal, not because of native emission. Use the language's existing numeric
+Char conversion for the embedded NUL assertion; keep the Unicode/string checks.
+
+Probe 1257317 passes returned-handle length/indexing but fails embedded-NUL
+literal equality. Runtime StringEqualsUtf8 uses strlen on a literal whose
+explicit bytes include NUL; the comparison truncates its operand. Own
+runtime/process.c and process.h, the shared LLVM HostCall equality emitter,
+Process ABI constant/contract tests and affected architecture docs. Pass the
+existing literal byte length explicitly; bump the fixed runtime ABI rather
+than silently changing an old object's call contract. No new service or
+dependency, and keep the runnable ordinary/debug assertion.
+
+Probe 1263063 completed success/0: all three native/GDB/VCD regressions pass
+in default and bitpack builds, including borrowed return length/indexing,
+embedded-NUL literal equality and llvm-dwarfdump verification. Peak 937308160
+bytes. AST-only graph update completed (5346 nodes, 14715 edges); its known
+vendored libfst partial-extraction warnings and no-symbol files remain visible.
+Native Process ABI 16 carries the explicit literal UTF-8 length. Launch the
+full fmt/Clippy/frontend/default/bitpack/corpus/GDB gate on this source state;
+leave it unchanged while verification is live. Commit only owned files and the
+post-f7f8adb owned chat tail after successful terminal evidence. No push.
+
+Gate 1268018 is running: both complete Rust configurations have passed and
+ordinary corpus execution is underway, peak 1612169216 bytes. Re-poll this
+same unit/log after interruption; no source edits or gate restart.
+Read-only lexical audit: ProcessValueBinding retains declaration spans but
+not owning block extents; value_location selects only a function scope.
+process_select and layout Select emit both pure arms, so lexical metadata alone
+cannot prevent unselected branch stops. After this batch is accepted, add an
+actual native/GDB pure-if shadow/fallback regression, retain frontend block
+extents and use debug-only taken-arm emission while preserving ordinary code.
+Predicate-shared alias verification still needs an actual GDB call-count test,
+not the existing one-body-per-format structural test. Hardware provenance is
+also still open. None of these findings is a completion claim.
+
+Gate 1268018 ordinary corpus completed 225/0; default-debug corpus is live
+(through fixed_test), with no failure markers and peak still 1612169216 bytes.
+Scope-reuse refinement: lower_statements already fills unscoped locals after
+nested blocks return, preserving the smallest extent. Apply that existing
+pattern to expression bindings rather than an extra whole-AST scope walk;
+guard concatenated branch continuations with declaration containment so an
+outer declaration cannot acquire a branch's scope. Resolve's lexical lookup
+maps do not expose owning block extents in Resolved. Reuse DebugInfo's existing
+lexical_scope/location machinery for native expression frames after acceptance.
+
+Gate 1268018 ordinary and default-debug corpora are both complete at 225/0;
+bitpack-debug corpus is live, with final GDB smoke still pending. The slow
+default-debug float_test compiler was observed doing CPU work at roughly
+218 MiB RSS and then finished successfully; no timeout/OOM or evidence of a
+layout-lookup regression. Peak remains 1612169216 bytes. Keep the same handle
+and unchanged source state until terminal success; do not accept a partial gate.
+
+Gate 1268018 completed SubState=exited / Result=success / ExecMainStatus=0.
+Both full Rust configurations, fmt, strict all-target/all-feature Clippy,
+frontend-only check, ordinary/default-debug/bitpack-debug corpora (225/0 each),
+and final native GDB/VCD smoke checks passed. Peak 1612169216 bytes.
+Commit the owned expression aggregate/string inspection, caller provenance,
+real-field conversion and returned-string classification fixes, embedded-NUL
+equality ABI 16, regressions and docs plus only the post-f7f8adb owned chat tail.
+Preserve AGENTS.md, .codex/ and unrelated chat additions. No push. DWARF remains
+active: hardware provenance, branch scopes/taken-arm stops, predicate-shared
+call counts and literal/zero-storage string return-frame coverage remain open.

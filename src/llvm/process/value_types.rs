@@ -32,6 +32,8 @@ pub(super) struct ProcessValueCache<'ctx, 'checks> {
     pub(super) hardware_calls: bool,
     pub(super) evaluating_hardware_call: Option<ProcessValueId>,
     pub(super) debug: Option<&'checks DebugInfo<'ctx, 'checks>>,
+    /// Runtime-owned inspection views belong to the current test root.
+    pub(super) debug_root: Option<u32>,
     pub(super) value_frames: Vec<debug::ValueFrame<'ctx>>,
     pub(super) source_location: Option<inkwell::debug_info::DILocation<'ctx>>,
     /// Native debug call parameters are stable SSA inputs, not state reads.
@@ -51,6 +53,7 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
             hardware_calls: false,
             evaluating_hardware_call: None,
             debug: None,
+            debug_root: None,
             value_frames: Vec::new(),
             source_location: None,
             parameters: HashMap::new(),

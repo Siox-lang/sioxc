@@ -1166,8 +1166,13 @@ pub(super) fn process_value<'ctx>(
                     };
                     (
                         "sx_runtime_string_equals_utf8",
-                        i64.fn_type(&[i64.into(), pointer.into()], false),
-                        vec![scalar_argument(*handle, cache)?, string_argument(*literal)?],
+                        i64.fn_type(&[i64.into(), pointer.into(), i64.into()], false),
+                        vec![
+                            scalar_argument(*handle, cache)?,
+                            string_argument(*literal)?,
+                            i64.const_int(process_string(design, *literal)?.len() as u64, false)
+                                .into(),
+                        ],
                     )
                 }
             };

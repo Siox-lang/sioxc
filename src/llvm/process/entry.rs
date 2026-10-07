@@ -77,6 +77,7 @@ pub(super) fn process_entry<'ctx>(
 
         let mut cache = ProcessValueCache::new(activity_values, &supported_values.meta_free);
         cache.debug = debug;
+        cache.debug_root = Some(process.root.0);
         let mut failed = false;
         for (instruction_index, instruction) in block.instructions.iter().enumerate() {
             if let (Some(debug), Some(scope)) = (debug, scope) {

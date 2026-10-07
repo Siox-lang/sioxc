@@ -20,6 +20,20 @@ fn expression_inline_calls_keep_source_frames_and_value_bindings() {
     let source = directory.join("values.siox");
     let text = r#"module debug_values;
 use std::bits::unsigned;
+use std::primitive::string;
+struct Payload { pub tag: integer, pub gain: real, pub wide: unsigned[81] }
+fn inspect_payload(value: Payload) -> integer {
+    let copy: Payload = value;
+    return copy.tag + integer(copy.gain); // expression payload return stop
+}
+fn count(value: string) -> integer {
+    let copy: string = value;
+    return copy'length; // expression string return stop
+}
+fn echo_text(value: string) -> string {
+    let copy: string = value;
+    return copy; // borrowed string return stop
+}
 fn echo(value: Logic) -> Logic {
     return value; // packed element return stop
 }
@@ -46,9 +60,24 @@ impl T {
         let echoed: Logic = echo(sample[7]);
         let tap: Logic = sample[7] xor sample[5];
         assert!(bit == '1' and echoed == '1' and tap == '1', "packed element arguments retain source discriminants");
+        let text: string = read<string>("argument.txt");
+        let borrowed: string = echo_text(text); // expression borrowed string call
+        let runtime_length: integer = count(borrowed); // expression runtime string call
+        let literal_length: integer = count("μ\0🙂"); // expression literal string call
+        let empty_length: integer = count(""); // expression empty string call
+        let packet: Payload = { .tag = 9, .gain = 1.5, .wide = 18446744073709551617 };
+        let payload_result: integer = inspect_payload(packet); // expression payload call
+        assert!(runtime_length == 3, "runtime expression string length");
+        assert!(borrowed == text, "borrowed expression string result");
+        assert!(borrowed[0] == 'β' and integer(borrowed[1]) == 0, "borrowed expression string indexing");
+        assert!(borrowed == "β\0🙂", "borrowed expression string content");
+        assert!(literal_length == 3, "literal expression string length");
+        assert!(empty_length == 0, "empty expression string length");
+        assert!(payload_result == 10, "expression aggregate result");
     }
 }"#;
     std::fs::write(&source, text).unwrap();
+    std::fs::write(directory.join("argument.txt"), "β\0🙂").unwrap();
     let debug = directory.join("debug.bin");
     let ordinary = directory.join("ordinary.bin");
     for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
@@ -60,6 +89,7 @@ impl T {
         success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
         success(
             Command::new(binary)
+                .current_dir(&directory)
                 .arg("-o")
                 .arg(binary.with_extension("vcd"))
                 .output()
@@ -70,12 +100,28 @@ impl T {
         std::fs::read(debug.with_extension("vcd")).unwrap(),
         std::fs::read(ordinary.with_extension("vcd")).unwrap()
     );
+    if Command::new("llvm-dwarfdump")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        success(
+            Command::new("llvm-dwarfdump")
+                .arg("--verify")
+                .arg(&debug)
+                .output()
+                .unwrap(),
+        );
+    }
     if Command::new("gdb").arg("--version").output().is_ok() {
         let line = |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
         let python = format!(
             r#"import gdb
 stop = gdb.Breakpoint({source:?} + ':{return_line}')
 echo_stop = gdb.Breakpoint({source:?} + ':{echo_return_line}')
+string_stop = gdb.Breakpoint({source:?} + ':{string_return_line}')
+borrowed_stop = gdb.Breakpoint({source:?} + ':{borrowed_return_line}')
+payload_stop = gdb.Breakpoint({source:?} + ':{payload_return_line}')
 assert not stop.pending, 'expression-only callee has no compiled source location'
 gdb.execute('run')
 for expected, caller_line in [(5, {first_line}), (6, {paired_line}), (7, {paired_line}), (8, {nested_line}), (9, {selected_line})]:
@@ -114,11 +160,50 @@ gdb.selected_frame().older().select()
 assert actual == int(gdb.parse_and_eval('bit'))
 echo_stop.delete()
 gdb.execute('continue')
+def check_string(first):
+    for name in ['value', 'copy']:
+        view = gdb.parse_and_eval(name)
+        assert int(view['length']) == (0 if first is None else 3)
+        assert int(view['byte_length']) == (0 if first is None else 7)
+        if first is None:
+            assert int(view['data']) == 0 and int(view['utf8']) == 0
+        else:
+            assert [int(view['data'][i]) for i in range(3)] == [first, 0, 0x1f642]
+            assert int(view['utf8'][2]) == 0
+assert gdb.selected_frame().name() == 'debug_values::echo_text'
+assert gdb.selected_frame().older().find_sal().line == {borrowed_call_line}
+check_string(0x3b2)
+borrowed_stop.delete()
+gdb.execute('continue')
+for first, caller_line in [(0x3b2, {runtime_string_line}), (0x3bc, {literal_string_line}), (None, {empty_string_line})]:
+    actual = gdb.selected_frame()
+    assert actual.name() == 'debug_values::count', actual.name()
+    assert actual.older().find_sal().line == caller_line
+    assert 'value =' in gdb.execute('info args', to_string=True)
+    check_string(first)
+    gdb.execute('continue')
+string_stop.delete()
+assert gdb.selected_frame().name() == 'debug_values::inspect_payload'
+assert gdb.selected_frame().older().find_sal().line == {payload_call_line}
+for name in ['value', 'copy']:
+    view = gdb.parse_and_eval(name)
+    assert int(view['tag']) == 9 and float(view['gain']) == 1.5
+    assert int(view['wide']) == (1 << 64) + 1
+payload_stop.delete()
+gdb.execute('continue')
 assert int(gdb.parse_and_eval('$_exitcode')) == 0
 "#,
             source = source.to_string_lossy(),
             return_line = line("value return stop"),
             echo_return_line = line("packed element return stop"),
+            string_return_line = line("expression string return stop"),
+            borrowed_return_line = line("borrowed string return stop"),
+            borrowed_call_line = line("expression borrowed string call"),
+            payload_return_line = line("expression payload return stop"),
+            runtime_string_line = line("expression runtime string call"),
+            literal_string_line = line("expression literal string call"),
+            empty_string_line = line("expression empty string call"),
+            payload_call_line = line("expression payload call"),
             first_line = line("first value call"),
             paired_line = line("paired value calls"),
             nested_line = line("nested value call"),
@@ -135,6 +220,8 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
                     "set disable-randomization off",
                     "-ex",
                     "set breakpoint pending off",
+                    "-ex",
+                    &format!("cd {}", directory.display()),
                     "-ex",
                     &format!("python {python}"),
                 ])

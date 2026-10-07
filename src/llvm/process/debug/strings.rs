@@ -97,16 +97,21 @@ impl<'ctx> DebugInfo<'ctx, '_> {
         if module.get_global(&buffer_name).is_some() {
             return buffer_name;
         }
-        let view_type = self.string_view_type();
-        let bits = self.target.get_store_size(&view_type) * 8;
-        let buffer = self.inspection_buffer(module, &buffer_name, u32::try_from(bits / 8).unwrap());
-        buffer.set_alignment(self.target.get_abi_alignment(&view_type));
+        let buffer = self.string_buffer(module, &buffer_name);
         self.string_mirrors.borrow_mut().push(StringMirror {
             source: module.get_global(source).expect("declared string handle"),
             view: buffer,
             root,
         });
         buffer_name
+    }
+
+    pub(super) fn string_buffer(&self, module: &Module<'ctx>, name: &str) -> GlobalValue<'ctx> {
+        let view_type = self.string_view_type();
+        let bytes = self.target.get_store_size(&view_type);
+        let buffer = self.inspection_buffer(module, name, u32::try_from(bytes).unwrap());
+        buffer.set_alignment(self.target.get_abi_alignment(&view_type));
+        buffer
     }
 
     pub(super) fn string_constant_view(&self, module: &Module<'ctx>, name: &str, text: &str) {
@@ -165,10 +170,7 @@ impl<'ctx> DebugInfo<'ctx, '_> {
         self.attach_global(module, &buffer_name, info);
     }
 
-    pub(super) fn refresh_strings(&self, module: &Module<'ctx>, builder: &Builder<'ctx>) {
-        if self.string_mirrors.borrow().is_empty() {
-            return;
-        }
+    pub(super) fn string_query(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
         let pointer = self.context.ptr_type(AddressSpace::default());
         let function_type = self.context.void_type().fn_type(
             &[
@@ -181,8 +183,48 @@ impl<'ctx> DebugInfo<'ctx, '_> {
             ],
             false,
         );
-        let query = module.add_function("sx_runtime_debug_string", function_type, None);
+        module
+            .get_function("sx_runtime_debug_string")
+            .unwrap_or_else(|| module.add_function("sx_runtime_debug_string", function_type, None))
+    }
+
+    pub(super) fn capture_string(
+        &self,
+        builder: &Builder<'ctx>,
+        query: FunctionValue<'ctx>,
+        root: u32,
+        handle: IntValue<'ctx>,
+        view: GlobalValue<'ctx>,
+    ) {
         let view_type = self.string_view_type();
+        let mut arguments = vec![
+            self.context
+                .i32_type()
+                .const_int(u64::from(root), false)
+                .into(),
+            handle.into(),
+        ];
+        for index in 0..4 {
+            arguments.push(
+                builder
+                    .build_struct_gep(
+                        view_type,
+                        view.as_pointer_value(),
+                        index,
+                        "debug.string.field",
+                    )
+                    .unwrap()
+                    .into(),
+            );
+        }
+        builder.build_call(query, &arguments, "").unwrap();
+    }
+
+    pub(super) fn refresh_strings(&self, module: &Module<'ctx>, builder: &Builder<'ctx>) {
+        if self.string_mirrors.borrow().is_empty() {
+            return;
+        }
+        let query = self.string_query(module);
         for mirror in self.string_mirrors.borrow().iter() {
             let handle = builder
                 .build_load(
@@ -191,27 +233,13 @@ impl<'ctx> DebugInfo<'ctx, '_> {
                     "debug.string.handle",
                 )
                 .unwrap();
-            let mut arguments = vec![
-                self.context
-                    .i32_type()
-                    .const_int(u64::from(mirror.root), false)
-                    .into(),
-                handle.into(),
-            ];
-            for index in 0..4 {
-                arguments.push(
-                    builder
-                        .build_struct_gep(
-                            view_type,
-                            mirror.view.as_pointer_value(),
-                            index,
-                            "debug.string.field",
-                        )
-                        .unwrap()
-                        .into(),
-                );
-            }
-            builder.build_call(query, &arguments, "").unwrap();
+            self.capture_string(
+                builder,
+                query,
+                mirror.root,
+                handle.into_int_value(),
+                mirror.view,
+            );
         }
     }
 }

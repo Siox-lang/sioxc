@@ -3772,7 +3772,9 @@ fn process_value_is_real(id: ProcessValueId, context: &LoweringContext<'_>) -> b
         let Some(value) = context.process_ir.values.get(id.0 as usize) else {
             continue;
         };
-        if matches!(value.ty, Some(crate::types::Ty::Real)) {
+        if matches!(value.ty, Some(crate::types::Ty::Real))
+            || process_value_source_layout(id, context.process_ir).is_some_and(layout_is_real)
+        {
             return true;
         }
         match &value.kind {
@@ -4589,6 +4591,9 @@ fn process_value_is_runtime_string(
         return false;
     };
     match &value.kind {
+        ProcessValueKind::InlineCall { operand, .. } => {
+            process_value_is_runtime_string(*operand, process, context)
+        }
         ProcessValueKind::HostCall {
             operation: ProcessHostValueOp::ReadUtf8,
             ..

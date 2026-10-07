@@ -192,8 +192,10 @@ dynamic projections therefore share one waveform identity without retaining
 live selectors. Inertial comparison/rejection includes companion values, and
 masked apply sites preserve unselected value/companion lanes. Overlapping
 whole/slice targets compose without teaching the runtime concrete design
-layouts. Native Process ABI version 15 retains the selected offset through
-enqueue/expiry and adds initialization activation before normal bootstrap.
+layouts. Native Process ABI version 16 retains the selected offset through
+enqueue/expiry and initialization activation before normal bootstrap. Runtime
+string/literal equality carries an explicit UTF-8 byte length so embedded NUL
+characters are not truncated at a C-string boundary.
 The object links with a
 fixed descriptor-driven CLI and the pinned libfst waveform runtime. These
 design-independent C sources are compiled once

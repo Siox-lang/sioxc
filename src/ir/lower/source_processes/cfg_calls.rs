@@ -324,6 +324,13 @@ fn normalize_value(
             result
         }
         _ => {
+            let call = match &node.kind {
+                ProcessValueKind::InlineCall { source, .. } => Some((source.function, source.call)),
+                _ => None,
+            };
+            let caller_block = *block;
+            let first_instruction = process.blocks[block.0 as usize].instructions.len();
+            let first_block = process.blocks.len();
             let dependencies = crate::ir::process_value_dependencies(&node.kind);
             let mut operands = Vec::with_capacity(dependencies.len());
             for (index, operand) in dependencies.iter().copied().enumerate() {
@@ -344,6 +351,34 @@ fn normalize_value(
                 // call must observe its immediate writes.
                 if has_call(operand, context) {
                     memo.insert(operand, lowered);
+                }
+            }
+            if let Some((function, call)) = call {
+                // Extracted effects run in the caller CFG, not in the native
+                // value frame. Preserve their evaluation order, but do not
+                // label a caller instruction as the callee's return line.
+                for (id, body) in process.blocks.iter_mut().enumerate() {
+                    let start = if id == caller_block.0 as usize {
+                        first_instruction
+                    } else if id >= first_block {
+                        0
+                    } else {
+                        continue;
+                    };
+                    for instruction in &mut body.instructions[start..] {
+                        let span = match instruction {
+                            ProcessInstruction::Declare { span, .. }
+                            | ProcessInstruction::Assign { span, .. }
+                            | ProcessInstruction::Schedule { span, .. }
+                            | ProcessInstruction::Runtime { span, .. } => span,
+                        };
+                        if span.file == function.file
+                            && span.start >= function.start
+                            && span.end <= function.end
+                        {
+                            *span = call;
+                        }
+                    }
                 }
             }
             let mut kind = node.kind;

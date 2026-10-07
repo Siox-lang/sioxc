@@ -230,7 +230,7 @@ frames for repeated, same-line and nested calls. Debug builds compile each
 canonical call once per consumer format as a native function: conditional
 consumers reuse that body instead of recursively duplicating it. These are
 direct LLVM functions over the same Process IR, not generated C or a separate
-frontend pipeline. Their scalar parameters and
+frontend pipeline. Their scalar/aggregate parameters and
 local aliases use read-only debug views populated from values the program
 already evaluates, not by reevaluating expressions. Debug-only return views
 keep return-line breakpoints observable when LLVM combines nested arithmetic
@@ -239,6 +239,11 @@ boundaries. Unselected expression calls must not acquire runtime source stops.
 Metadata-only arguments do not enter the native call ABI: only the callee's
 executable source operands may be evaluated, even if an unused binding remains
 retained elsewhere in the IR.
+Expression string formals and aliases use the same borrowed or immutable
+content views as CFG parameters. Returning a runtime string preserves its
+handle; downstream length, indexing and literal comparisons retain runtime
+semantics. CFG-hoisted host operations are labelled with the caller's call
+site, not the callee's return line, so return breakpoints stop in its frame.
 
 Runtime-owned `string`/`Char[]` values expose a read-only view under their source
 name: `text.length` counts Unicode code points, `text.data[i]` reads one code
@@ -250,9 +255,11 @@ do not mutate either the view or its pointed-to content. Uninitialized/invalid
 handles and views from inactive tests are empty, without raising runtime errors.
 Snapshots refresh only at Siox source boundaries, as described above.
 
-Remaining inspection work includes additional runtime-sized array representations,
-hardware expression-call provenance, branch-local scopes and aggregate expression
-bindings. Debug mode
+Remaining inspection work includes hardware expression-call provenance,
+branch-local expression scopes and actual call counts for shared aliases under
+different predicates. Runtime-sized native values currently support Char[]
+handles only; general dynamic arrays are a separate host-service extension,
+not an already-supported representation missing debugger metadata. Debug mode
 is deliberately unoptimized; it is not a simulation performance mode. The
 same option applies to native objects and `--emit llvm-ir`.
 
@@ -269,11 +276,14 @@ value-returning functions, plus formal arguments, mutable/indexed aliases,
 struct receivers, wide/real fields and Unicode/embedded-NUL string arguments.
 The argument checks cover both runtime strings and literals, including empty
 literals; ordinary/debug executables must agree on character-count attributes.
-A third regression checks procedural expression calls, scalar bindings, nested
+A third regression checks procedural expression calls, scalar/aggregate bindings, nested
 return-line breakpoints and selected versus unselected calls, with ordinary/debug
 native execution and byte-identical VCDs in both packing modes. It also checks
 direct packed-element locals and function arguments: a logic element keeps its
 source discriminant instead of being read as a physical one-bit array slice.
+Expression string coverage includes runtime/literal/empty formals and aliases,
+borrowed-handle returns and caller locations, Unicode/embedded-NUL contents,
+length/index/equality semantics, plus aggregate integer/real/wide field values.
 The backend's shared-call regression also checks that differently selected
 consumers emit one function body per width format, without merging formats.
 To run the existing native corpus with DWARF enabled:

@@ -18,8 +18,13 @@ struct ValueBinding<'ctx> {
     location: DILocation<'ctx>,
     reference: PointerValue<'ctx>,
     buffer: GlobalValue<'ctx>,
-    layout: SourceLayout,
+    inspection: ValueInspection<'ctx>,
     captured: Cell<Option<(IntValue<'ctx>, BasicBlock<'ctx>)>>,
+}
+
+enum ValueInspection<'ctx> {
+    Packed(SourceLayout),
+    String(u32, FunctionValue<'ctx>),
 }
 
 impl DebugInfo<'_, '_> {
@@ -176,7 +181,10 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
         let Some(value) = parameter.value else {
             continue;
         };
-        if !needed.contains(&value) {
+        // Literal strings remain compile-time operands, including empty
+        // zero-storage values. The body already owns their contents; an
+        // unconstrained source type is not an ABI for their literal bits.
+        if !needed.contains(&value) || process_string(design, value).is_some() {
             continue;
         }
         let argument = if let Some(layout) = debug.value_debug_layout(design, value) {
@@ -226,6 +234,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
         body_builder.position_at_end(debug.context.append_basic_block(function, "entry"));
         let mut body_cache = ProcessValueCache::new(cache.activity_sensitive, cache.meta_free);
         body_cache.debug = Some(debug);
+        body_cache.debug_root = cache.debug_root;
         body_cache.hardware_calls = cache.hardware_calls;
         for (index, (parameter, _)) in parameters.iter().enumerate() {
             body_cache.parameters.insert(
@@ -329,13 +338,16 @@ fn inline_body<'ctx>(
         let Some(ty) = ty else {
             continue;
         };
-        let Some(layout) = debug.value_debug_layout(design, id) else {
-            continue;
+        let literal = process_string(design, id);
+        let string = literal.is_some() || dynamic_string_value(design, id);
+        let layout = if string {
+            None
+        } else {
+            debug.value_debug_layout(design, id)
         };
-        let Some(bytes) = inspection_bits(&layout).and_then(|bits| u32::try_from(bits / 8).ok())
-        else {
+        if !string && layout.is_none() {
             continue;
-        };
+        }
         let (line, column) = debug
             .sources
             .line_col(binding.span.file, binding.span.start);
@@ -367,7 +379,55 @@ fn inline_body<'ctx>(
             debug
                 .builder
                 .create_debug_location(debug.context, line, column, scope, caller);
-        let buffer = debug.inspection_buffer(module, "sx.debug.value", bytes);
+        let name = format!(
+            "{}.debug.value.{index}",
+            function.get_name().to_string_lossy()
+        );
+        let mut available = false;
+        let (buffer, inspection) = if let Some(text) = literal {
+            debug.string_constant_view(module, &name, text);
+            available = true;
+            (module.get_global(&name).unwrap(), None)
+        } else if string {
+            let Some(root) = cache.debug_root else {
+                continue;
+            };
+            // A CFG-normalized host call can consume the argument before
+            // this native frame. Borrow its existing persistent place;
+            // inspection never reexecutes the source expression.
+            let place = if cache.parameters.contains_key(&id) {
+                None
+            } else {
+                match design.process_ir.values[id.0 as usize].kind {
+                    ProcessValueKind::Local { process, local } => {
+                        Some(local_state_name(process, local))
+                    }
+                    ProcessValueKind::Storage(storage) => Some(storage_state_name(storage)),
+                    _ => None,
+                }
+            };
+            if let Some(place) = place {
+                let name = debug.string_mirror(module, &place, root);
+                available = true;
+                (module.get_global(&name).unwrap(), None)
+            } else {
+                (
+                    debug.string_buffer(module, &name),
+                    Some(ValueInspection::String(root, debug.string_query(module))),
+                )
+            }
+        } else {
+            let layout = layout.unwrap();
+            let Some(bytes) =
+                inspection_bits(&layout).and_then(|bits| u32::try_from(bits / 8).ok())
+            else {
+                continue;
+            };
+            (
+                debug.inspection_buffer(module, &name, bytes),
+                Some(ValueInspection::Packed(layout.into_owned())),
+            )
+        };
         // Allocate references once per process invocation, never in a source
         // loop. Their contents are inspection-only and do not own source state.
         let entry = builder
@@ -388,7 +448,14 @@ fn inline_body<'ctx>(
             .build_alloca(pointer, "debug.value.reference")
             .unwrap();
         builder
-            .build_store(reference, pointer.const_null())
+            .build_store(
+                reference,
+                if available {
+                    buffer.as_pointer_value()
+                } else {
+                    pointer.const_null()
+                },
+            )
             .unwrap();
         unsafe {
             inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd(
@@ -403,15 +470,17 @@ fn inline_body<'ctx>(
                 builder.get_insert_block().unwrap().as_mut_ptr(),
             );
         }
-        bindings.push(ValueBinding {
-            id,
-            variable,
-            location,
-            reference,
-            buffer,
-            layout: layout.into_owned(),
-            captured: Cell::new(None),
-        });
+        if let Some(inspection) = inspection {
+            bindings.push(ValueBinding {
+                id,
+                variable,
+                location,
+                reference,
+                buffer,
+                inspection,
+                captured: Cell::new(None),
+            });
+        }
     }
     cache.value_frames.push(ValueFrame {
         function: source.function,
@@ -510,17 +579,22 @@ pub(in crate::llvm::process) fn capture_value<'ctx>(
             }
             // Arithmetic may use wider carry temporaries than the source
             // binding. Describe its declared value, not the carry bits.
-            let Some(value) = fit(builder, value, binding.layout.packed_width().unwrap()) else {
-                continue;
-            };
-            debug.copy_fields(
-                builder,
-                binding.buffer,
-                value,
-                &binding.layout,
-                &mut 0,
-                &mut 0,
-            );
+            match &binding.inspection {
+                ValueInspection::Packed(layout) => {
+                    let Some(value) = fit(builder, value, layout.packed_width().unwrap()) else {
+                        continue;
+                    };
+                    debug.copy_fields(builder, binding.buffer, value, layout, &mut 0, &mut 0);
+                }
+                ValueInspection::String(root, query) => {
+                    let Some(value) = fit(builder, value, 64) else {
+                        continue;
+                    };
+                    // The module owns this global and the runtime query.
+                    // Keep borrowed content behind the existing inspection ABI.
+                    debug.capture_string(builder, *query, *root, value, binding.buffer);
+                }
+            }
             builder
                 .build_store(binding.reference, binding.buffer.as_pointer_value())
                 .unwrap();
