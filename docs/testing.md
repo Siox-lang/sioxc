@@ -198,15 +198,27 @@ inspect their labels with `gdb.parse_and_eval('T::rows')['[3]']`. Flattened
 hardware leaves containing brackets need quoted symbol names, for example
 `print 'FifoTest::d::mem[0]'`.
 
-Remaining inspection work includes general wide scalar padding coverage,
-packed-vector X/Z companion presentation, runtime-sized strings/arrays,
+Packed vectors retain their numeric view and additionally expose a read-only
+`$logic` snapshot (`print T::bus$logic` or `print local_bus$logic`). Its elements
+are the source enum variants, not raw metadata nibbles: X/Z, weak values and
+user enum symbols come from elaborated type metadata. For structs and arrays
+containing packed vectors, the companion preserves the recursive shape and
+ordinary scalar fields. Apply the same ascending-array/descending-record
+indexing conventions described above. These views refresh at source boundaries
+alongside the other inspection buffers; they do not change simulation storage.
+Process frames and function breakpoints are instance-qualified, for example
+`break T::stimulus`.
+
+Remaining inspection work includes runtime-sized strings/arrays,
 repeated inline-call scope identity and richer source call stacks. Debug mode
 is deliberately unoptimized; it is not a simulation performance mode. The
 same option applies to native objects and `--emit llvm-ir`.
 
 `tests/debug_info.rs` verifies metadata/object output, native execution,
-source steps, persistent/shadowed locals, loop indices, signed 3/81-bit values,
-nonstandard enums, real/wide packed structs and labelled arrays in default and
+source/function breakpoints and steps, persistent/shadowed locals, loop indices,
+3-bit signed and 65/81/127/129-bit signed/unsigned storage/ports/locals,
+all nine std logic states across waits, recursive companion views, nonstandard
+enums, real/wide packed structs and labelled arrays in default and
 `bitpack` builds. To run the existing native corpus with DWARF enabled:
 
 ```bash

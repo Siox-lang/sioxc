@@ -120,9 +120,10 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
 
 - 🟡 **Native source debugging follow-through.** Direct LLVM DWARF now supports
   source breakpoints/steps, named signal/test storage, process/loop locals and
-  lexical shadowing. Complete wider inspection coverage: non-byte-aligned
-  wide scalar padding, packed-vector X/Z companions, runtime-sized strings and
-  arrays, repeated inline-call scope identity and richer inline call stacks.
+  lexical shadowing, normalized non-byte-aligned wide scalars and source-enum
+  `$logic` companion views (including recursive structs/arrays and weak states).
+  Complete runtime-sized strings and arrays, repeated inline-call scope identity
+  and richer inline call stacks.
   Keep debug-only aggregate inspection buffers faithful at source stops and
   document their read-only/snapshot nature. Verify default/bitpack debugger and
   debug-corpus gates; never resurrect per-design C translation for metadata.

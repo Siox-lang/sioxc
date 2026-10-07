@@ -16,6 +16,9 @@ use inkwell::values::{AsValueRef, BasicValue, GlobalValue};
 use siox::diag::{FileId, SourceMap, Span};
 use siox::ir::ScalarDomain;
 
+mod logic;
+use logic::{LogicMirror, LogicSource};
+
 // DWARF standard opcodes/encodings, not Siox values or runtime layout limits.
 const DW_OP_PLUS_UCONST: i64 = 0x23;
 const DW_OP_DEREF_SIZE: i64 = 0x94;
@@ -41,6 +44,7 @@ pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     #[cfg(not(feature = "bitpack"))]
     target: TargetData,
     mirrors: RefCell<Vec<Mirror<'ctx>>>,
+    logic_mirrors: RefCell<Vec<LogicMirror<'ctx>>>,
     refresh: Cell<Option<FunctionValue<'ctx>>>,
 }
 
@@ -110,6 +114,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             lexical_scopes: RefCell::new(HashMap::new()),
             file_scopes: RefCell::new(HashMap::new()),
             mirrors: RefCell::new(Vec::new()),
+            logic_mirrors: RefCell::new(Vec::new()),
             refresh: Cell::new(None),
         };
         debug.globals(module, design);
@@ -409,6 +414,19 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             let Some(layout) = signal_layout(design, &[id]) else {
                 continue;
             };
+            self.logic_global(
+                module,
+                design,
+                layout,
+                self.namespace(owner),
+                name,
+                signal.declaration_span,
+                LogicSource::Signal(id),
+                design
+                    .meta_of
+                    .get(&id.0)
+                    .map(|id| LogicSource::Signal(SignalId(*id))),
+            );
             let normalized = needs_mirror(layout);
             let Some(ty) = self.ty(design, layout, normalized) else {
                 continue;
@@ -455,6 +473,26 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             let Some(layout) = storage.layout.as_ref() else {
                 continue;
             };
+            let owner = design
+                .process_ir
+                .processes
+                .iter()
+                .find(|p| p.owner == storage.owner)
+                .and_then(|p| p.label.as_deref())
+                .and_then(|name| name.rsplit_once("::"))
+                .map_or("", |(owner, _)| owner);
+            self.logic_global(
+                module,
+                design,
+                layout,
+                self.namespace(owner),
+                &storage.name,
+                storage.span,
+                LogicSource::State(global.clone()),
+                module
+                    .get_global(&storage_meta_name(storage.id))
+                    .map(|_| LogicSource::State(storage_meta_name(storage.id))),
+            );
             let normalized = needs_mirror(layout);
             let Some(ty) = self.ty(design, layout, normalized) else {
                 continue;
@@ -464,14 +502,6 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             } else {
                 global
             };
-            let owner = design
-                .process_ir
-                .processes
-                .iter()
-                .find(|p| p.owner == storage.owner)
-                .and_then(|p| p.label.as_deref())
-                .and_then(|name| name.rsplit_once("::"))
-                .map_or("", |(owner, _)| owner);
             let info = self.builder.create_global_variable_expression(
                 self.namespace(owner),
                 &storage.name,
@@ -505,16 +535,26 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
         let mirror_name = format!("{name}.debug");
         let bytes = u32::try_from(inspection_bits(layout).expect("concrete inspection layout") / 8)
             .expect("validated packed width");
-        let ty = self.context.i8_type().array_type(bytes);
-        let buffer = module.add_global(ty, None, &mirror_name);
-        buffer.set_initializer(&ty.const_zero());
-        buffer.set_linkage(Linkage::Internal);
+        let buffer = self.inspection_buffer(module, &mirror_name, bytes);
         self.mirrors.borrow_mut().push(Mirror {
             source: module.get_global(source).expect("declared state"),
             source_byte,
             buffer,
             layout: layout.clone(),
         });
+        mirror_name
+    }
+
+    fn inspection_buffer(
+        &self,
+        module: &Module<'ctx>,
+        name: &str,
+        bytes: u32,
+    ) -> GlobalValue<'ctx> {
+        let ty = self.context.i8_type().array_type(bytes);
+        let buffer = module.add_global(ty, None, name);
+        buffer.set_initializer(&ty.const_zero());
+        buffer.set_linkage(Linkage::Internal);
         if self.refresh.get().is_none() {
             self.refresh.set(Some(module.add_function(
                 "sx.debug.refresh",
@@ -522,7 +562,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                 Some(Linkage::Internal),
             )));
         }
-        mirror_name
+        buffer
     }
 
     pub fn sync(&self, builder: &Builder<'ctx>) {
@@ -535,7 +575,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
     fn copy_fields(
         &self,
         builder: &Builder<'ctx>,
-        mirror: &Mirror<'ctx>,
+        buffer: GlobalValue<'ctx>,
         value: IntValue<'ctx>,
         layout: &SourceLayout,
         logical: &mut u32,
@@ -544,7 +584,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
         match &layout.kind {
             LayoutKind::Struct { fields, .. } => {
                 for field in fields {
-                    self.copy_fields(builder, mirror, value, &field.layout, logical, byte);
+                    self.copy_fields(builder, buffer, value, &field.layout, logical, byte);
                 }
             }
             LayoutKind::Array {
@@ -552,7 +592,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                 element,
             } => {
                 for _ in 0..range.len().unwrap() {
-                    self.copy_fields(builder, mirror, value, element, logical, byte);
+                    self.copy_fields(builder, buffer, value, element, logical, byte);
                 }
             }
             _ => {
@@ -579,7 +619,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                     builder
                         .build_in_bounds_gep(
                             self.context.i8_type(),
-                            mirror.buffer.as_pointer_value(),
+                            buffer.as_pointer_value(),
                             &[self.context.i64_type().const_int(u64::from(*byte), false)],
                             "debug.field",
                         )
@@ -678,7 +718,9 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
         let scope = self.builder.create_function(
             self.namespace(owner),
             name,
-            None,
+            // No native linkage spelling: Inkwell's None defaults to the
+            // unqualified name, which hides the elaborated namespace in GDB.
+            Some(""),
             file,
             line,
             self.builder.create_subroutine_type(
@@ -761,6 +803,22 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                 };
                 &fallback
             };
+            let local_scope = local
+                .scope
+                .and_then(|span| scopes.iter().find(|(extent, _)| *extent == span))
+                .map_or(scope.as_debug_info_scope(), |(_, scope)| *scope);
+            self.logic_global(
+                module,
+                design,
+                layout,
+                local_scope,
+                &local.name,
+                local.span,
+                LogicSource::State(global_name.clone()),
+                module
+                    .get_global(&local_meta_name(process.id, local.id))
+                    .map(|_| LogicSource::State(local_meta_name(process.id, local.id))),
+            );
             let normalized = needs_mirror(layout);
             let Some(ty) = self.ty(design, layout, normalized) else {
                 continue;
@@ -774,10 +832,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             // Describe them as lexically scoped static variables: dbg.declare
             // of a global address loses its location in LLVM's O0 selection.
             let variable = self.builder.create_global_variable_expression(
-                local
-                    .scope
-                    .and_then(|span| scopes.iter().find(|(extent, _)| *extent == span))
-                    .map_or(scope.as_debug_info_scope(), |(_, scope)| *scope),
+                local_scope,
                 &local.name,
                 "",
                 self.file(local.span.file),
@@ -793,7 +848,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
         scope
     }
 
-    pub fn finish(&self) {
+    pub fn finish(&self, module: &Module<'ctx>, design: &Design) {
         if let Some(function) = self.refresh.get() {
             let builder = self.context.create_builder();
             builder.position_at_end(self.context.append_basic_block(function, "refresh"));
@@ -819,8 +874,16 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                     .set_alignment(1)
                     .unwrap();
                 let value = load.into_int_value();
-                self.copy_fields(&builder, mirror, value, &mirror.layout, &mut 0, &mut 0);
+                self.copy_fields(
+                    &builder,
+                    mirror.buffer,
+                    value,
+                    &mirror.layout,
+                    &mut 0,
+                    &mut 0,
+                );
             }
+            self.refresh_logic(module, design, &builder);
             builder.build_return(None).unwrap();
         }
         self.builder.finalize();
@@ -865,8 +928,9 @@ fn needs_mirror(layout: &SourceLayout) -> bool {
         layout.kind,
         LayoutKind::Array { .. } | LayoutKind::Struct { .. }
     ) && inspection_bits(layout) != layout.bit_width())
-        || (process_layout_is_signed(layout)
-            && layout
-                .packed_width()
-                .is_some_and(|width| width > 64 && !width.is_multiple_of(8)))
+        // DWARF addresses expose whole bytes, but LLVM iN stores do not
+        // specify the unused bits of the final byte. Normalize both signs.
+        || layout
+            .packed_width()
+            .is_some_and(|width| width > 64 && !width.is_multiple_of(8))
 }

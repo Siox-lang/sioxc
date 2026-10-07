@@ -364,7 +364,7 @@ pub(crate) fn build_module_with_debug<'ctx>(
         debug_info.as_ref(),
     );
     if let Some(debug) = &debug_info {
-        debug.finish();
+        debug.finish(&cg.module, design);
     }
     // LLVM's own verifier — a well-formedness net beyond textual checks.
     if let Err(e) = cg.module.verify() {

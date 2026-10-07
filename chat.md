@@ -13642,3 +13642,39 @@ the bitpack debug corpus, 225 passed / 0 failed. Commit the tested DWARF
 foundation and docs only; remaining inspection work keeps the DWARF goal
 active. No compiler push requested. The separate LSP main was pushed to
 3e4f312 under the user's explicit LSP-only request.
+
+### 2026-10-07 — Codex — DWARF wide padding and qualified process frames
+
+Own src/llvm/process/debug.rs, tests/debug_info.rs and associated TODO/testing
+documentation. Generalize the existing inspection mirror to unsigned wide
+non-byte-aligned values as well as signed ones, and verify storage, ports and
+process locals at 65/81/127/129 bits under default and bitpack layouts. Check
+qualified process frame names using actual GDB source/function breakpoints.
+Reuse direct LLVM debug support; no runtime ABI change or generated C. Preserve
+unrelated AGENTS.md, .codex and the 441 historical chat additions. Keep the full
+DWARF goal active for logic companions, dynamic values and inline identities.
+
+The focused default and bitpack GDB gates passed for all new wide checks and
+qualified T::stimulus frames (4065058, terminal success, peak 1082834944 bytes).
+Extend ownership to src/llvm/process/debug/logic.rs and emit.rs's debug finalize
+call for source-typed packed logic inspection. Reuse packed_discriminant and
+the existing storage/signal readers; include recursive aggregates, source
+index labels and std-derived enum symbols rather than raw companion nibbles.
+
+DWARF wide/logic inspection batch verified. Gate
+siox-job-3000-1791365280531269901-4075933.service is terminal success:
+SubState=exited, Result=success, ExecMainStatus=0, MemoryPeak=1612480512 bytes.
+Clippy all-targets/all-features -D warnings, frontend-only check, full default
+and bitpack cargo test --locked, ordinary/default-debug/bitpack-debug corpus
+(225/0 each), FIFO/wide GDB smoke with identical VCD, and graphify AST update
+all passed. Expanded GDB coverage includes qualified function breakpoints,
+65/81/127/129-bit signed and unsigned storage/ports/locals, all nine std logic
+states, hardware output companions, recursive structs/arrays and updates after
+await. No per-design C, new dependency, simulation ABI or ordinary-codegen change.
+
+Estimated implement DWARF completion: 85%. Remaining: dynamic string/array
+inspection and repeated inline-call scope/call-stack identity. Runtime strings
+are opaque Char[] handles, so the next inspection change must read their
+runtime-owned content safely rather than claiming an inline character layout.
+Source inlining needs canonical scope identity, not filename/span guessing in
+LLVM. Keep the goal active. Commit owned files only; no compiler push requested.
