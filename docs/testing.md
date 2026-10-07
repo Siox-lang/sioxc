@@ -209,7 +209,17 @@ alongside the other inspection buffers; they do not change simulation storage.
 Process frames and function breakpoints are instance-qualified, for example
 `break T::stimulus`.
 
-Remaining inspection work includes runtime-sized strings/arrays,
+Runtime-owned `string`/`Char[]` values expose a read-only view under their source
+name: `text.length` counts Unicode code points, `text.data[i]` reads one code
+point, `text.byte_length` counts UTF-8 bytes and `text.utf8[i]` reads a byte.
+For example, `print *text.data@text.length` displays the entire character array.
+Use the explicit byte length for embedded NULs; normal C-string printing stops
+at the first NUL. Content pointers borrow runtime storage until test cleanup;
+do not mutate either the view or its pointed-to content. Uninitialized/invalid
+handles and views from inactive tests are empty, without raising runtime errors.
+Snapshots refresh only at Siox source boundaries, as described above.
+
+Remaining inspection work includes additional runtime-sized array representations,
 repeated inline-call scope identity and richer source call stacks. Debug mode
 is deliberately unoptimized; it is not a simulation performance mode. The
 same option applies to native objects and `--emit llvm-ir`.
@@ -218,7 +228,9 @@ same option applies to native objects and `--emit llvm-ir`.
 source/function breakpoints and steps, persistent/shadowed locals, loop indices,
 3-bit signed and 65/81/127/129-bit signed/unsigned storage/ports/locals,
 all nine std logic states across waits, recursive companion views, nonstandard
-enums, real/wide packed structs and labelled arrays in default and
+enums, real/wide packed structs, labelled arrays, dynamic Unicode/UTF-8 strings
+(including empty/embedded-NUL values, updates and cleanup between two tests),
+and runtime string locals through inlined length/index/equality expressions in default and
 `bitpack` builds. To run the existing native corpus with DWARF enabled:
 
 ```bash

@@ -81,4 +81,10 @@ uint64_t sx_runtime_string_index_at(uint64_t handle, uint64_t index,
                                     uint32_t file, uint32_t offset);
 uint64_t sx_runtime_string_equals_utf8(uint64_t handle, const char *text);
 
+/* Read-only debugger snapshots borrow immutable content until test cleanup.
+ * An unset/stale handle yields an empty view without changing runtime errors. */
+void sx_runtime_debug_string(uint32_t root, uint64_t handle, uint64_t *length,
+                             const uint32_t **data, uint64_t *byte_length,
+                             const char **utf8);
+
 #endif

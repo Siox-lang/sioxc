@@ -10,14 +10,15 @@ use inkwell::debug_info::{
     DebugInfoBuilder,
 };
 use inkwell::module::FlagBehavior;
-#[cfg(not(feature = "bitpack"))]
 use inkwell::targets::TargetData;
 use inkwell::values::{AsValueRef, BasicValue, GlobalValue};
 use siox::diag::{FileId, SourceMap, Span};
 use siox::ir::ScalarDomain;
 
 mod logic;
+mod strings;
 use logic::{LogicMirror, LogicSource};
+use strings::StringMirror;
 
 // DWARF standard opcodes/encodings, not Siox values or runtime layout limits.
 const DW_OP_PLUS_UCONST: i64 = 0x23;
@@ -41,10 +42,10 @@ pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     namespaces: RefCell<HashMap<String, DIScope<'ctx>>>,
     lexical_scopes: RefCell<HashMap<usize, Vec<(Span, DIScope<'ctx>)>>>,
     file_scopes: RefCell<HashMap<(usize, FileId), DIScope<'ctx>>>,
-    #[cfg(not(feature = "bitpack"))]
     target: TargetData,
     mirrors: RefCell<Vec<Mirror<'ctx>>>,
     logic_mirrors: RefCell<Vec<LogicMirror<'ctx>>>,
+    string_mirrors: RefCell<Vec<StringMirror<'ctx>>>,
     refresh: Cell<Option<FunctionValue<'ctx>>>,
 }
 
@@ -107,7 +108,6 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             builder,
             unit,
             sources,
-            #[cfg(not(feature = "bitpack"))]
             target,
             files: RefCell::new(HashMap::from([(FileId(0), unit.get_file())])),
             namespaces: RefCell::new(HashMap::new()),
@@ -115,6 +115,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             file_scopes: RefCell::new(HashMap::new()),
             mirrors: RefCell::new(Vec::new()),
             logic_mirrors: RefCell::new(Vec::new()),
+            string_mirrors: RefCell::new(Vec::new()),
             refresh: Cell::new(None),
         };
         debug.globals(module, design);
@@ -470,9 +471,6 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             if module.get_global(&global).is_none() {
                 continue;
             }
-            let Some(layout) = storage.layout.as_ref() else {
-                continue;
-            };
             let owner = design
                 .process_ir
                 .processes
@@ -481,6 +479,27 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                 .and_then(|p| p.label.as_deref())
                 .and_then(|name| name.rsplit_once("::"))
                 .map_or("", |(owner, _)| owner);
+            if runtime_handle_layout(storage.layout.as_ref()).is_some()
+                || runtime_handle_width(storage.ty.as_ref()).is_some()
+            {
+                self.string_global(
+                    module,
+                    &global,
+                    self.namespace(owner),
+                    &storage.name,
+                    storage.span,
+                    design
+                        .process_ir
+                        .processes
+                        .iter()
+                        .find(|p| p.owner == storage.owner)
+                        .map_or(storage.owner.0, |p| p.root.0),
+                );
+                continue;
+            }
+            let Some(layout) = storage.layout.as_ref() else {
+                continue;
+            };
             self.logic_global(
                 module,
                 design,
@@ -775,6 +794,23 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             if module.get_global(&global_name).is_none() {
                 continue;
             }
+            let local_scope = local
+                .scope
+                .and_then(|span| scopes.iter().find(|(extent, _)| *extent == span))
+                .map_or(scope.as_debug_info_scope(), |(_, scope)| *scope);
+            if runtime_handle_layout(local.layout.as_ref()).is_some()
+                || runtime_handle_width(local.ty.as_ref()).is_some()
+            {
+                self.string_global(
+                    module,
+                    &global_name,
+                    local_scope,
+                    &local.name,
+                    local.span,
+                    process.root.0,
+                );
+                continue;
+            }
             let fallback;
             let layout = if let Some(layout) = local
                 .layout
@@ -803,10 +839,6 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                 };
                 &fallback
             };
-            let local_scope = local
-                .scope
-                .and_then(|span| scopes.iter().find(|(extent, _)| *extent == span))
-                .map_or(scope.as_debug_info_scope(), |(_, scope)| *scope);
             self.logic_global(
                 module,
                 design,
@@ -884,6 +916,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                 );
             }
             self.refresh_logic(module, design, &builder);
+            self.refresh_strings(module, &builder);
             builder.build_return(None).unwrap();
         }
         self.builder.finalize();

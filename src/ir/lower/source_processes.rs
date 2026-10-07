@@ -4485,7 +4485,22 @@ fn lower_process_file_call(
     Some(push_value(*span, ty, width, kind, context))
 }
 
-fn process_value_is_runtime_string(id: ProcessValueId, context: &LoweringContext<'_>) -> bool {
+fn runtime_handle_width(layout: Option<&SourceLayout>) -> Option<u32> {
+    matches!(
+        layout.map(|layout| &layout.kind),
+        Some(LayoutKind::Array { range: None, element }) if matches!(
+            element.kind,
+            LayoutKind::Scalar { domain: crate::ir::ScalarDomain::Character, .. }
+        )
+    )
+    .then_some(64)
+}
+
+fn process_value_is_runtime_string(
+    id: ProcessValueId,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> bool {
     let Some(value) = context.process_ir.values.get(id.0 as usize) else {
         return false;
     };
@@ -4499,14 +4514,48 @@ fn process_value_is_runtime_string(id: ProcessValueId, context: &LoweringContext
             .storages
             .get(storage.0 as usize)
             .and_then(|storage| storage.initializer)
-            .is_some_and(|initializer| process_value_is_runtime_string(initializer, context)),
+            .is_some_and(|initializer| {
+                process_value_is_runtime_string(initializer, process, context)
+            }),
+        ProcessValueKind::Local {
+            process: owner,
+            local,
+        } if *owner == process.id => {
+            // The active CFG is not published yet. Follow its declaration's
+            // representation, not an unconstrained alias: even literal empty
+            // strings use fixed storage rather than a runtime handle.
+            // ponytail: linear declaration lookup; cache binding representation
+            // if profiling identifies many string operations in huge CFGs.
+            process
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .find_map(|instruction| match instruction {
+                    ProcessInstruction::Declare {
+                        local: declared,
+                        initializer,
+                        ..
+                    } if declared == local => Some(initializer.map_or_else(
+                        || {
+                            process.locals.get(local.0 as usize).is_some_and(|local| {
+                                runtime_handle_width(local.layout.as_ref()).is_some()
+                            })
+                        },
+                        |initializer| {
+                            process_value_is_runtime_string(initializer, process, context)
+                        },
+                    )),
+                    _ => None,
+                })
+                .unwrap_or(false)
+        }
         ProcessValueKind::Select {
             then_value,
             else_value,
             ..
         } => {
-            process_value_is_runtime_string(*then_value, context)
-                && process_value_is_runtime_string(*else_value, context)
+            process_value_is_runtime_string(*then_value, process, context)
+                && process_value_is_runtime_string(*else_value, process, context)
         }
         _ => false,
     }
@@ -5806,7 +5855,8 @@ fn value_ref_with_type_inner(
                     Some(format) if is_self_type => format,
                     _ => value_ref(base, process, context),
                 };
-                if attr.text == "length" && process_value_is_runtime_string(base, context) {
+                if attr.text == "length" && process_value_is_runtime_string(base, process, context)
+                {
                     ProcessValueKind::HostCall {
                         operation: ProcessHostValueOp::StringLength,
                         arguments: vec![base],
@@ -5827,7 +5877,7 @@ fn value_ref_with_type_inner(
                 }
             } else {
                 let base = value_ref(base, process, context);
-                if process_value_is_runtime_string(base, context) {
+                if process_value_is_runtime_string(base, process, context) {
                     let index_span = ast::expr_span(index);
                     let index = value_ref_with_type(
                         index,
@@ -5974,11 +6024,11 @@ fn value_ref_with_type_inner(
                 )
             };
             if matches!(op, ast::BinOp::Eq | ast::BinOp::Ne) {
-                let operands = if process_value_is_runtime_string(left, context)
+                let operands = if process_value_is_runtime_string(left, process, context)
                     && process_value_is_string_literal(right, context)
                 {
                     Some((left, right))
-                } else if process_value_is_runtime_string(right, context)
+                } else if process_value_is_runtime_string(right, process, context)
                     && process_value_is_string_literal(left, context)
                 {
                     Some((right, left))
@@ -6202,7 +6252,10 @@ fn value_ref_with_type_inner(
         }
     };
 
-    ty = ty.or_else(|| process_kind_type(&kind, context));
+    ty = ty.or_else(|| match &kind {
+        ProcessValueKind::Local { local, .. } => process.locals.get(local.0 as usize)?.ty.clone(),
+        _ => process_kind_type(&kind, context),
+    });
     let width = source_value_width(&kind, ty.as_ref(), process, context);
     // The CFG under construction is not yet in process_ir.processes. Bind
     // local reads to its declaration now so nested fields/indices retain the
@@ -6289,22 +6342,6 @@ fn source_value_width(
     process: &ProcessCfg,
     context: &LoweringContext<'_>,
 ) -> Option<u32> {
-    let runtime_handle_width = |layout: Option<&crate::ir::SourceLayout>| {
-        matches!(
-            layout.map(|layout| &layout.kind),
-            Some(LayoutKind::Array {
-                range: None,
-                element,
-            }) if matches!(
-                element.kind,
-                LayoutKind::Scalar {
-                    domain: crate::ir::ScalarDomain::Character,
-                    ..
-                }
-            )
-        )
-        .then_some(64)
-    };
     let value_width = |id: &ProcessValueId| context.process_ir.values.get(id.0 as usize)?.bit_width;
     let typed_width = |ty: &crate::types::Ty| {
         ty.bit_width()

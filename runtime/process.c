@@ -379,6 +379,25 @@ static sx_runtime_string *sx_runtime_string_for(uint64_t handle) {
     return &sx_strings[handle - 1];
 }
 
+void sx_runtime_debug_string(uint32_t root, uint64_t handle, uint64_t *length,
+                             const uint32_t **data, uint64_t *byte_length,
+                             const char **utf8) {
+    *length = 0;
+    *data = 0;
+    *byte_length = 0;
+    *utf8 = 0;
+    /* Do not use string_for: inspection must not raise a simulation error,
+     * including before initialization and between tests. No allocation. */
+    if (sx_current_process >= sx_process_count
+        || sx_process_roots[sx_current_process] != root
+        || !handle || handle > sx_string_count) return;
+    const sx_runtime_string *string = &sx_strings[handle - 1];
+    *length = (uint64_t)string->length;
+    *data = string->values;
+    *byte_length = (uint64_t)string->byte_length;
+    *utf8 = string->utf8;
+}
+
 uint64_t sx_runtime_string_length(uint64_t handle) {
     sx_runtime_string *string = sx_runtime_string_for(handle);
     return string ? (uint64_t)string->length : 0;

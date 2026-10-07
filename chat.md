@@ -13678,3 +13678,69 @@ are opaque Char[] handles, so the next inspection change must read their
 runtime-owned content safely rather than claiming an inline character layout.
 Source inlining needs canonical scope identity, not filename/span guessing in
 LLVM. Keep the goal active. Commit owned files only; no compiler push requested.
+
+### 2026-10-07 — Codex — DWARF dynamic string inspection
+
+Own runtime/process.c and process.h's read-only debug string query,
+src/llvm/process/debug.rs and debug/strings.rs, tests/debug_info.rs and related
+TODO/testing docs. Describe supported runtime-owned Char[] handles as borrowed
+content/length views, refreshed by the existing LLVM inspection helper. Query
+zero/invalid handles without changing runtime errors, allocating or invoking
+language IO. Verify Unicode, embedded NUL, empty content, repeated reads and
+test resets with native GDB plus ordinary/debug waveform parity. Preserve
+AGENTS.md, .codex and the unrelated 441 chat additions; no compiler push.
+
+The new string-local regression exposed an existing shared lowering bug:
+process_value_is_runtime_string recognizes reads/storage initializers but not
+typed process locals. Their length/index/equality paths are consequently sent
+to fixed-array lowering. Extend ownership to source_processes.rs for this
+root-cause recognition fix and entry.rs for temporary diagnostics (remove all
+diagnostic instrumentation before acceptance). Preserve source/runtime semantics.
+
+Focused gate 4159423 completed successfully (peak 1159782400 bytes): default
+and bitpack native/GDB tests and all-target/all-feature Clippy passed. Temporary
+entry/test diagnostics are removed. Actual root cause also needed local reads
+in cloned inline expressions to retain declaration-owned type metadata before
+the active CFG enters ProcessIr. Reuse the existing handle-layout recognition
+helper, moving it out of a closure rather than adding a second classifier.
+
+String views carry their source test root. The fixed read-only query checks the
+currently executing process root so reused handle numbers cannot display
+another test's content. GDB verifies unset handles, Unicode code points,
+embedded NUL/byte lengths, empty strings, reassignment/alias lifetime across
+await and cleanup/inactive views in a second test. No allocations or runtime
+error changes in inspection. Full default/bitpack + three corpus gates follow.
+
+Acceptance gate siox-job-3000-1791367253754253604-4163517.service failed during
+build_binary::native_formatting_preserves_wide_unicode_and_long_messages;
+SubState=failed, Result=exit-code, ExecMainStatus=101. Investigate the retained
+log ~/.cache/siox-jobs/siox-job-3000-1791367253754253604-4163517.log before a
+fresh gate. No acceptance/commit claimed. Preserve 441 unrelated chat additions
+when staging later, and keep the goal active for repeated inline-call scope/
+call-stack identity and remaining array coverage.
+
+The regression is fixed by following the active local's Declare initializer,
+not classifying an unconstrained string alias as a runtime handle. Literal
+empty strings intentionally use fixed storage. Gate 4172986 passed the existing
+wide/Unicode/empty formatting regression, default and bitpack GDB string tests,
+and all four runtime_file_io tests (peak 986136576 bytes). Retain this regression
+coverage and rerun a fresh full gate on the corrected snapshot before committing.
+
+Corrected acceptance job siox-job-3000-1791367569976590143-4176484.service is
+live now; log ~/.cache/siox-jobs/siox-job-3000-1791367569976590143-4176484.log.
+Poll this exact unit to its terminal state; do not restart on an observation
+timeout or edit compiler source while it runs. Success still requires exited /
+success / exit 0 and all three 225-file corpus summaries. On success, commit
+only owned dynamic-string/runtime/source-lowering/test/docs files and this
+dated chat entry, with a named implement DWARF completion estimate. Preserve
+the unrelated 441 chat additions, AGENTS.md and .codex. No compiler push.
+
+Acceptance job 4176484 completed: SubState=exited, Result=success,
+ExecMainStatus=0, MemoryPeak=1612652544 bytes. Formatting, all-target/all-feature
+Clippy, frontend-only check, full default and bitpack tests, ordinary/default
+debug/bitpack debug corpus (225/0 each), real GDB string inspection and FIFO/wide
+smoke with byte-identical VCD, and AST graph refresh passed. Graphify reports
+known vendored libfst parser limitations, unrelated to the compiler changes.
+Commit this verified batch only; estimated implement DWARF completion: 90%.
+Next: canonical inline-call identities and LLVM inlinedAt chains, including
+repeated/nested calls and suspension. Keep the full goal active.

@@ -20,6 +20,7 @@ fn direct_dwarf_supports_source_steps_and_persistent_values() {
     let source = directory.join("debug.siox");
     let mut text = r#"module debug;
 use std::bits::{unsigned, signed};
+use std::primitive::string;
 enum Mode { Idle = 3, Active = 7 }
 struct Packet { pub tag: unsigned[3], pub data: unsigned[128], pub gain: real }
 struct LogicPacket { pub tag: unsigned[3], pub gain: real, pub data: unsigned[4] }
@@ -29,6 +30,9 @@ entity Probe { a: unsigned[3] in, b: unsigned[5] in, y: unsigned[8] out, negativ
 impl Probe { y = unsigned[8](a) + unsigned[8](b); }
 #[test] entity T {}
 impl T {
+    let text: string = read<string>("message.txt");
+    let alias: string = text;
+    let empty: string = read<string>("empty.txt");
     let a: unsigned[3] = 5;
     let b: unsigned[5] = 17;
     let y: unsigned[8];
@@ -47,6 +51,7 @@ impl T {
     let logic_matrix: unsigned[4][3..2] = ["1XZ0", "0ZX1"];
     let logic_probe: LogicProbe = { .states = states, .ascending = ascending };
     stimulus: process {
+        let local_text: string = read<string>("short.txt");
         let local_states: unsigned[9] = states;
         let local_packet: LogicPacket = logic_packet;
         let local: integer = 3;
@@ -66,10 +71,22 @@ impl T {
         local_states = states;
         await 1ns;
         assert!(states[8] == 'Z' and states[7] == 'X', "logic updates");
+        text = read<string>("replacement.txt");
+        local_text = text;
+        await 1ns;
+        assert!(text'length == 2 and local_text'length == 2 and local_text[0] == 'β' and local_text == "β🙂", "string updates");
         for i in 0..1 {
             await 1ns;
             assert!(i >= 0, "loop index");
         }
+    }
+}
+#[test] entity Reset {}
+impl Reset {
+    let text: string = read<string>("short.txt"); // reset init
+    process {
+        await 1ns;
+        assert!(text'length == 1, "reset strings");
     }
 }"#
     .to_owned();
@@ -95,7 +112,9 @@ impl T {
         &format!("entity WideProbe {{ {ports} }}\nimpl WideProbe {{}}\n#[test] entity T"),
     );
     text = text.replace("    stimulus: process {", &format!("{declarations}    let wide_probe: WideProbe = {{ {bindings} }};\n    stimulus: process {{\n{locals}"));
-    std::fs::write(&source, &text).unwrap();
+    // Ordinary objects/LLVM text describe one structural root; the native
+    // test artifact below includes both roots to exercise runtime cleanup.
+    std::fs::write(&source, text.split("#[test] entity Reset").next().unwrap()).unwrap();
     let compile = |extra: &[&str], path: &std::path::Path| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
         command
@@ -119,10 +138,20 @@ impl T {
     }
     let object = directory.join("debug.o");
     compile(&["--emit", "object", "--debug"], &object);
+    std::fs::write(&source, &text).unwrap();
     let debug = directory.join("debug.bin");
     compile(&["--test", "--debug"], &debug);
     let normal = directory.join("normal.bin");
     compile(&["--test"], &normal);
+    // Dynamic IO must remain runtime-owned, even with source debugging.
+    for (name, contents) in [
+        ("message.txt", "Aé\0🦀"),
+        ("empty.txt", ""),
+        ("short.txt", "Z"),
+        ("replacement.txt", "β🙂"),
+    ] {
+        std::fs::write(directory.join(name), contents).unwrap();
+    }
     let baseline = directory.join("normal.vcd");
     let debug_wave = directory.join("debug.vcd");
     success(
@@ -167,8 +196,15 @@ impl T {
         let python = format!(
             r#"import gdb
 bp = gdb.Breakpoint({source:?} + ':{line}')
+uninitialized = gdb.Breakpoint({source:?} + ':{initial_string_line}')
 entry = gdb.Breakpoint('T::stimulus')
 gdb.execute('run')
+assert gdb.selected_frame().find_sal().line == {initial_string_line}
+initial = gdb.parse_and_eval('T::text')
+assert int(initial['length']) == int(initial['byte_length']) == 0
+assert int(initial['data']) == int(initial['utf8']) == 0
+uninitialized.delete()
+gdb.execute('continue')
 assert gdb.selected_frame().name() == 'T::stimulus'
 entry.delete()
 gdb.execute('continue')
@@ -176,6 +212,15 @@ frame = gdb.selected_frame()
 assert frame.find_sal().line == {line}
 assert frame.name() == 'T::stimulus', frame.name()
 def value(expr): return gdb.parse_and_eval(expr)
+def string(expr, expected):
+    view = value(expr)
+    assert int(view['length']) == len(expected), (expr, str(view))
+    assert [int(view['data'][i]) for i in range(len(expected))] == [ord(c) for c in expected]
+    raw = bytes(int(view['utf8'][i]) for i in range(int(view['byte_length'])))
+    assert raw == expected.encode('utf-8'), (expr, raw)
+for expr in ['T::text', 'T::alias']: string(expr, 'Aé\x00🦀')
+string('T::empty', '')
+string('local_text', 'Z')
 def symbols(v, labels):
     return ''.join(str(v[i] if v.type.code == gdb.TYPE_CODE_ARRAY else v['[' + str(i) + ']']).strip("'") for i in labels)
 for expr in ['T::states$logic', 'T::logic_probe::states$logic', 'T::logic_probe::echo$logic', 'local_states$logic']:
@@ -226,12 +271,31 @@ gdb.execute('continue')
 for expr in ['T::states$logic', 'T::logic_probe::states$logic', 'T::logic_probe::echo$logic', 'local_states$logic']:
     assert symbols(value(expr), range(8, -1, -1)) == 'ZX10UWLH-'
 updated.delete()
+strings = gdb.Breakpoint({source:?} + ':{string_line}')
+gdb.execute('continue')
+string('T::text', 'β🙂')
+string('local_text', 'β🙂')
+string('T::alias', 'Aé\x00🦀')
+strings.delete()
 loop = gdb.Breakpoint({source:?} + ':{loop_line}')
 for expected in [0, 1]:
     gdb.execute('continue')
     assert gdb.selected_frame().find_sal().line == {loop_line}
     assert int(value('i')) == expected
 loop.delete()
+reset_init = gdb.Breakpoint({source:?} + ':{reset_init_line}')
+gdb.execute('continue')
+for expr in ['T::text', 'T::alias', 'Reset::text']:
+    view = value(expr)
+    assert int(view['length']) == int(view['byte_length']) == 0
+    assert int(view['data']) == int(view['utf8']) == 0
+reset_init.delete()
+reset = gdb.Breakpoint({source:?} + ':{reset_line}')
+gdb.execute('continue')
+string('Reset::text', 'Z')
+assert int(value('T::text')['data']) == 0
+assert int(value('T::alias')['utf8']) == 0
+reset.delete()
 gdb.execute('continue')
 assert int(value('$_exitcode')) == 0
 "#,
@@ -255,6 +319,26 @@ assert int(value('$_exitcode')) == 0
             update_line = text
                 .lines()
                 .position(|line| line.contains("logic updates"))
+                .unwrap()
+                + 1,
+            initial_string_line = text
+                .lines()
+                .position(|line| line.contains("let text: string"))
+                .unwrap()
+                + 1,
+            string_line = text
+                .lines()
+                .position(|line| line.contains("string updates"))
+                .unwrap()
+                + 1,
+            reset_init_line = text
+                .lines()
+                .position(|line| line.contains("reset init"))
+                .unwrap()
+                + 1,
+            reset_line = text
+                .lines()
+                .position(|line| line.contains("reset strings"))
                 .unwrap()
                 + 1,
         );

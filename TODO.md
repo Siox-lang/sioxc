@@ -122,8 +122,10 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   source breakpoints/steps, named signal/test storage, process/loop locals and
   lexical shadowing, normalized non-byte-aligned wide scalars and source-enum
   `$logic` companion views (including recursive structs/arrays and weak states).
-  Complete runtime-sized strings and arrays, repeated inline-call scope identity
-  and richer inline call stacks.
+  Runtime-owned `Char[]` strings expose borrowed Unicode/UTF-8 content and
+  lengths, including process locals and cleanup between tests. Complete
+  remaining runtime-sized array representations, repeated inline-call scope
+  identity and richer inline call stacks.
   Keep debug-only aggregate inspection buffers faithful at source stops and
   document their read-only/snapshot nature. Verify default/bitpack debugger and
   debug-corpus gates; never resurrect per-design C translation for metadata.
