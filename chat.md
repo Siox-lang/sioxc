@@ -13553,3 +13553,40 @@ full cargo test --locked and 225 corpus programs passed, MemoryPeak=534097920.
 Commit these docs and only the two owned LSP chat entries; preserve 441 unrelated
 historical additions, AGENTS.md and .codex. No compiler/source/corpus changes
 and no push. The first working-server objective is fully verified locally.
+
+### 2026-10-07 — Codex — native GDB verification
+
+Own debugger verification and a minimal reusable native smoke check if useful.
+Test actual FIFO and wide-value corpus executables with installed GDB, without
+editor integration or a custom DAP. Check runtime/process breakpoints, machine
+stepping, backtraces and signal inspection, plus the explicit --debug rejection.
+Source DWARF remains a declared TODO; do not implement it under a testing request.
+Use guarded services and disk-backed artifacts. Preserve the 441 unrelated chat
+additions, AGENTS.md and .codex. No production code, syntax or corpus edits.
+
+Native GDB verification complete with installed GNU GDB 18.1 (Python enabled).
+Final job siox-job-3000-1791359980682243043-3851256.service exited successfully:
+SubState=exited, Result=success, ExecMainStatus=0, MemoryPeak=416133120 bytes.
+Full cargo test --locked and the existing 225-file native corpus passed, then
+the new scripts/test-gdb.sh passed on FIFO and wide_test. Graphify AST refresh
+completed; vendored C extraction warnings remain unrelated to debugger checks.
+
+The smoke check stops on timed waits, verifies the process/runtime backtrace,
+reads waveform metadata and calls sx_read_word with explicit native types,
+then stops at an entry obtained from sx_process_entries and executes stepi.
+FIFO at 11 ns reports occupancy 1 and front data 11. The wide case at time zero
+reports y as 128 bits with ABI words [0, 1], proving the carry into the high word.
+Both inferior runs exit 0 and produce byte-identical VCD to normal execution.
+GDB's Python assertion failures return nonzero, verified by an exploratory
+probe that sampled the wide fixture after the next stimulus had already changed
+its output; the final probe observes the intended carry before that change.
+
+Source debugging is not implemented: --debug rejects the build without leaving
+an executable, Siox source-line breakpoints fail, and source variable `head`
+is not a debugger symbol. Keep the native DWARF/inspection TODO open. The first
+assert-helper probe never hit because successful assertions bypass that helper;
+timed-wait and actual entry-table breakpoints cover execution reliably instead.
+LLDB is not installed and was not needed for the requested GDB-or-LLDB check.
+docs/testing.md documents reproduction and the boundary between native and
+source debugging. Commit only this owned entry, the script and that doc; leave
+other agents' 441 chat additions, AGENTS.md and .codex untouched. No push.

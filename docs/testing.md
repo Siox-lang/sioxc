@@ -151,6 +151,24 @@ test result: ok. 1 passed; 0 failed
 
 A file with no `#[test]` entity reports zero tests rather than erroring.
 
+## Native debugger smoke test
+
+GDB can debug the native runtime and emitted process functions today, but not
+step Siox source lines or inspect source variables by name. The reproducible
+check uses the existing FIFO and 128-bit corpus designs:
+
+```bash
+bash scripts/guarded-run.sh bash scripts/test-gdb.sh /home/max/siox-tests
+```
+
+It verifies timed-wait and process-entry breakpoints, scheduler backtraces,
+instruction stepping, signal reads through the waveform metadata and
+`sx_read_word`, and byte-identical VCD output versus normal execution. The wide
+case checks both 64-bit words of a 128-bit carry. It also verifies the explicit
+`--debug` rejection and unavailable source breakpoints. This requires GDB with
+Python support and permission to launch a traced child; it adds no DAP or
+editor integration. Waveform tables are not a stable source-debugger API.
+
 ## How the compiler is tested
 
 - **Unit and integration tests** across the package (`cargo test`).
