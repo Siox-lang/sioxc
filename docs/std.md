@@ -299,8 +299,12 @@ let r: real = gain.to_real();                       // 2.5
 - The constructor `ufixed<W, F>(x)` / `sfixed<W, F>(x)` takes a `real` or an
   `integer` to that format, rounding to nearest (ties away from zero) and
   saturating; it works in hardware too. `x.to_real()` goes back.
-- Not yet: division, and a `resize` that chooses saturate/wrap and
-  round/truncate.
+- `/` keeps the format, rounding toward minus infinity as `*` does; a quotient
+  by zero is zero, as for `unsigned`.
+- Between formats the constructor resizes: `ufixed<12, 6>(x)` from another
+  `ufixed`, `sfixed<8, 4>(y)` from another `sfixed`, rounding to the nearest
+  step (ties away from zero) and saturating, VHDL's `resize` defaults.
+- Not yet: the other resize styles (wrap, truncate).
 
 ## `std::float`
 

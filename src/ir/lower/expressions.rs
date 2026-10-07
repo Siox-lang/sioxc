@@ -565,9 +565,18 @@ impl<'a> Lowering<'a> {
                         .as_deref()
                         .is_some_and(|h| self.array_families.contains(h)) =>
                 {
-                    self.eval_const(index, &self.cur_env)
-                        .map(|w| w as u32)
-                        .unwrap_or(64)
+                    // A width (`unsigned[8]`) or a range (`sfixed[3..-4]`).
+                    match index.as_ref() {
+                        ast::Expr::Range { lo, hi, .. } => self
+                            .eval_const(lo, &self.cur_env)
+                            .zip(self.eval_const(hi, &self.cur_env))
+                            .map(|(lo, hi)| (lo.abs_diff(hi) + 1) as u32)
+                            .unwrap_or(64),
+                        _ => self
+                            .eval_const(index, &self.cur_env)
+                            .map(|w| w as u32)
+                            .unwrap_or(64),
+                    }
                 }
                 ast::Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "resize" => {
                     args.get(1)
@@ -770,6 +779,18 @@ impl<'a> Lowering<'a> {
             }
             ast::Expr::Binary { lhs, .. } => self.operand_range(lhs, env),
             ast::Expr::Unary { rhs, .. } => self.operand_range(rhs, env),
+            // A constructor builds its written format: `sfixed[7..-8](x)`,
+            // the expansion of `sfixed<16, 8>(x)`.
+            ast::Expr::Call { callee, .. } => match callee.as_ref() {
+                ast::Expr::Index { index, .. } => match index.as_ref() {
+                    ast::Expr::Range { lo, hi, .. } => Some((
+                        self.eval_const(lo, &self.cur_env)?,
+                        self.eval_const(hi, &self.cur_env)?,
+                    )),
+                    _ => None,
+                },
+                _ => None,
+            },
             _ => None,
         }
     }

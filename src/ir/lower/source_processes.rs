@@ -4117,8 +4117,22 @@ fn lower_process_family_from(
     // no type for a literal argument, so the value says what it is.
     let checked = operand_type(argument, process, context);
     let operand = value_ref_with_type(argument, process, context, checked.as_ref());
+    // A local of the process being lowered is in `process`, not yet in the
+    // arena's finished processes.
+    let own_local =
+        |context: &LoweringContext<'_>| match &context.process_ir.values[operand.0 as usize].kind {
+            ProcessValueKind::Local { local, .. } => {
+                let local = process.locals.get(local.0 as usize)?;
+                local
+                    .ty
+                    .clone()
+                    .or_else(|| process_type_from_layout(local.layout.as_ref()?, context.resolved))
+            }
+            _ => None,
+        };
     let source_type = checked
         .or_else(|| process_value_type(operand, context))
+        .or_else(|| own_local(context))
         .or_else(|| {
             Some(if process_value_is_real(operand, context) {
                 crate::types::Ty::Real
@@ -4655,16 +4669,27 @@ fn inline_process_function(
         return None;
     }
 
-    let return_type = return_type
+    // The body computes in its declared return type when that is a kernel
+    // number (`-> integer`): the caller's type narrows at the boundary.
+    // Evaluated in the caller's `ufixed<8, 4>`, `return n / d;` divided
+    // 8-bit operands. A family (`-> ufixed`), an abstract parameter or no
+    // declaration leaves it to the caller's type, then the arguments'.
+    let declared = function
+        .ret
+        .as_ref()
+        .and_then(|ty| declared_process_type(ty, context.resolved))
+        .filter(|ty| is_concrete_type(ty, context));
+    let caller_type = return_type
         .filter(|ty| is_concrete_type(ty, context))
-        .cloned()
-        .or(generic_return)
-        .or_else(|| {
-            function
-                .ret
-                .as_ref()
-                .and_then(|ty| declared_process_type(ty, context.resolved))
-        });
+        .cloned();
+    let return_type = match declared {
+        Some(declared @ (crate::types::Ty::Integer | crate::types::Ty::Real)) => Some(declared),
+        declared => return_type
+            .filter(|ty| is_concrete_type(ty, context))
+            .cloned()
+            .or(generic_return)
+            .or(declared),
+    };
     context.value_bindings.push(bindings);
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(return_type);
@@ -4674,10 +4699,58 @@ fn inline_process_function(
     context.value_bindings.pop();
     context.inline_functions.remove(&function.span);
     // ...and that argument's format: `abs(x)` on a `ufixed<8, 4>` is one.
-    match (result, generic_argument) {
+    let result = match (result, generic_argument) {
         (Some(result), Some(argument)) => Some(inherit_receiver_layout(result, argument, context)),
         (result, _) => result,
+    };
+    // At the boundary a numeric value becomes the caller's family:
+    // `floor_div`'s integer is the `ufixed` the `/` impl returns. Only a
+    // family: a generic body's checked types can expect `Bool` of an operand
+    // that is not one.
+    match (result, caller_type) {
+        (
+            Some(value),
+            Some(
+                caller @ crate::types::Ty::Array {
+                    family: Some(_), ..
+                },
+            ),
+        ) => Some(retype(value, &caller, context)),
+        _ => result,
     }
+}
+
+/// `value` as a `ty`: narrowed to a sized array's width, otherwise relabelled
+/// with the type at its own width. Unchanged when it already has that type.
+fn retype(
+    value: ProcessValueId,
+    ty: &crate::types::Ty,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    let current = context.process_ir.values[value.0 as usize].ty.clone();
+    if current.as_ref() == Some(ty) {
+        return value;
+    }
+    let key = |ty: &crate::types::Ty| process_type_key(ty, context);
+    if current.as_ref().and_then(key).is_some() && current.as_ref().and_then(key) == key(ty) {
+        return value;
+    }
+    if matches!(ty, crate::types::Ty::Array { len, .. } if *len > 0) {
+        return narrow_to_type(value, Some(ty), context);
+    }
+    let process_value = &context.process_ir.values[value.0 as usize];
+    let (span, width) = (process_value.span, process_value.bit_width);
+    let retyped = push_value(
+        span,
+        Some(ty.clone()),
+        width,
+        ProcessValueKind::RawResize { operand: value },
+        context,
+    );
+    if let Some(layout) = process_value_source_layout(value, context.process_ir).cloned() {
+        context.process_ir.value_layouts[retyped.0 as usize] = Some(layout);
+    }
+    retyped
 }
 
 /// The caller operand that determines a generic function's return type and
