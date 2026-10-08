@@ -143,12 +143,86 @@ pub(super) fn emit_process_format<'ctx>(
                 Some(Linkage::External),
             )
         });
+    let runtime = |name: &str, parameters: &[inkwell::types::BasicMetadataTypeEnum<'ctx>]| {
+        module.get_function(name).unwrap_or_else(|| {
+            module.add_function(
+                name,
+                context.void_type().fn_type(parameters, false),
+                Some(Linkage::External),
+            )
+        })
+    };
+    let i32 = context.i32_type();
     for (part_index, part) in format.iter().enumerate() {
+        match part {
+            ProcessFormatPart::Open {
+                fill,
+                align,
+                width,
+                zero,
+            } => {
+                let open = runtime(
+                    "sx_runtime_format_open",
+                    &[i32.into(), i32.into(), i32.into(), i32.into()],
+                );
+                let align = match align {
+                    siox::syntax::format::FormatAlign::Left => 0,
+                    siox::syntax::format::FormatAlign::Center => 1,
+                    siox::syntax::format::FormatAlign::Right => 2,
+                };
+                let arguments = [
+                    u64::from(u32::from(*fill)),
+                    align,
+                    u64::from(*width),
+                    u64::from(*zero),
+                ]
+                .map(|argument| i32.const_int(argument, false).into());
+                builder.build_call(open, &arguments, "").ok()?;
+                continue;
+            }
+            ProcessFormatPart::Close => {
+                builder
+                    .build_call(runtime("sx_runtime_format_close", &[]), &[], "")
+                    .ok()?;
+                continue;
+            }
+            ProcessFormatPart::Value { spec, kind, .. }
+                if !spec.is_plain()
+                    && matches!(
+                        kind,
+                        ProcessDisplayKind::Unsigned
+                            | ProcessDisplayKind::Signed
+                            | ProcessDisplayKind::Real
+                    ) =>
+            {
+                // How the next number is written; the runtime resets it after.
+                let notation = runtime(
+                    "sx_runtime_format_notation",
+                    &[i32.into(), i32.into(), i32.into()],
+                );
+                let form = match spec.kind {
+                    siox::syntax::format::FormatKind::Display => 0,
+                    siox::syntax::format::FormatKind::LowerExp => 1,
+                    siox::syntax::format::FormatKind::UpperExp => 2,
+                    siox::syntax::format::FormatKind::LowerHex => 3,
+                    siox::syntax::format::FormatKind::UpperHex => 4,
+                    siox::syntax::format::FormatKind::Binary => 5,
+                    siox::syntax::format::FormatKind::Octal => 6,
+                };
+                let precision = spec.precision.map_or(-1i64, i64::from);
+                let flags = u64::from(spec.plus) | (u64::from(spec.alternate) << 1);
+                let arguments = [form, precision as u64, flags]
+                    .map(|argument| i32.const_int(argument, true).into());
+                builder.build_call(notation, &arguments, "").ok()?;
+            }
+            _ => {}
+        }
         let text = match part {
             ProcessFormatPart::Text(text) => Some(text.as_str()),
             ProcessFormatPart::Value {
                 value,
                 kind: ProcessDisplayKind::String,
+                ..
             } => process_string(design, *value),
             _ => None,
         };
@@ -165,7 +239,7 @@ pub(super) fn emit_process_format<'ctx>(
             builder.build_call(append_text, &[text.into()], "").ok()?;
             continue;
         }
-        let ProcessFormatPart::Value { value, kind } = part else {
+        let ProcessFormatPart::Value { value, kind, .. } = part else {
             return None;
         };
         match kind {
@@ -222,7 +296,8 @@ pub(super) fn emit_process_format<'ctx>(
                 )?;
                 emit_format_character(context, module, builder, value)?;
             }
-            ProcessDisplayKind::Enum(name) => {
+            ProcessDisplayKind::Enum(name) | ProcessDisplayKind::Symbol(name) => {
+                let bare = matches!(kind, ProcessDisplayKind::Symbol(_));
                 let value = process_value_at(
                     context,
                     module,
@@ -248,6 +323,11 @@ pub(super) fn emit_process_format<'ctx>(
                 let mut symbols = design.enum_syms.get(name)?.iter().collect::<Vec<_>>();
                 symbols.sort_by_key(|(discriminant, _)| **discriminant);
                 for (symbol_index, (discriminant, symbol)) in symbols.into_iter().enumerate() {
+                    let symbol = if bare {
+                        symbol.trim_matches('\'')
+                    } else {
+                        symbol.as_str()
+                    };
                     let symbol = private_string(
                         context,
                         module,

@@ -52,6 +52,19 @@ impl Ord<ufixed> for ufixed {
     fn le(self, rhs: ufixed) -> Bool { return self <= rhs; }
 }
 
+// Each format prints as its value, with the caller's precision.
+impl Display for ufixed {
+    fn fmt(self, f: Formatter) {
+        write!(f, "{}", self.to_real());
+    }
+}
+
+impl Display for sfixed {
+    fn fmt(self, f: Formatter) {
+        write!(f, "{}", self.to_real());
+    }
+}
+
 impl ufixed {
     // The number this holds.
     pub fn to_real(self) -> real {
