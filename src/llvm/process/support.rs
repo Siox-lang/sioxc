@@ -640,6 +640,7 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                             && (1..=64).contains(&table.element_width)
                     })
             }
+            ProcessValueKind::Parameter { .. } => packed_width,
             ProcessValueKind::ForeignCall {
                 arguments,
                 float_arguments,

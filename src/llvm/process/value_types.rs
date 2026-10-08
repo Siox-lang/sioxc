@@ -31,6 +31,8 @@ pub(super) struct ProcessValueCache<'ctx, 'checks> {
     /// not SSA values belonging to a different LLVM function.
     pub(super) hardware_calls: bool,
     pub(super) evaluating_hardware_call: Option<ProcessValueId>,
+    /// A shared function's `Parameter` values, bound to its LLVM arguments.
+    pub(super) parameters: HashMap<ProcessValueId, IntValue<'ctx>>,
 }
 
 impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
@@ -45,6 +47,7 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
             meta_free,
             hardware_calls: false,
             evaluating_hardware_call: None,
+            parameters: HashMap::new(),
         }
     }
 
@@ -92,6 +95,31 @@ pub(super) fn process_value_at<'ctx>(
 ) -> Option<IntValue<'ctx>> {
     let value = design.process_ir.values.get(id.0 as usize)?;
     let natural_width = value.bit_width?;
+    // A shared call's result is fitted like any value of its width. A
+    // narrow kernel integer is the exception: re-evaluating it wider (below)
+    // can yield a different number, so it keeps its expansion.
+    if let Some(call) = design.process_ir.call_of(id) {
+        let narrow_integer = width > natural_width
+            && natural_width < 64
+            && matches!(value.ty, Some(siox::types::Ty::Integer));
+        if !narrow_integer && shared_call_eligible(design, call, cache.meta_free) {
+            let result = process_value(
+                context,
+                module,
+                builder,
+                design,
+                id,
+                active,
+                index_sites,
+                cache,
+            )?;
+            return if signed {
+                fit_signed(builder, result, width)
+            } else {
+                fit(builder, result, width)
+            };
+        }
+    }
     // Arithmetic is evaluated in the width supplied by its consumer, not
     // necessarily in the minimum width recorded on the arena node. This is
     // observable for kernel integers: evaluating `0 - 7` as i3 first turns it

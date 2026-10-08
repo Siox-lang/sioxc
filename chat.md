@@ -13575,3 +13575,32 @@ sources, both fixed on chore/dead-check:
 After: 0 dead in fixed_test, packed_partial_write, engine_differential; 4 in
 hardware_aggregate_writes (select arm-activity flags built for an arm whose
 value is already cached; left, LLVM -O1 removes them).
+
+### 2026-10-08 — Claude — #[inline] and shared value functions
+
+Owner-requested: `#[inline]`, `#[inline(always)]`, `#[inline(never)]` on
+functions (parser, `ast::Inline`, printer). Simulation-only: a call's meaning
+never changes. Without a directive, an expansion larger than 32 values is
+shared.
+
+Design (no new value kind in expressions):
+- `ProcessIr::functions` holds shared bodies, built once per signature over
+  `ProcessValueKind::Parameter` leaves (parameter width = the type's full
+  width: 64 for kernel numbers, the layout width for packed values).
+- `ProcessIr::calls` records that an expanded value is also a call. The
+  expansion stays and defines the value; every analysis keeps seeing it.
+- The LLVM emitter (`llvm/process/functions.rs`) emits a call instead of the
+  expansion only when interchangeable: metavalue-free result, and arguments
+  metavalue-free or a body that never reads parameter metavalues; hooks in
+  `process_value`, `process_value_at` (narrow kernel integers excepted) and
+  `process_value_in_layout`.
+- Shared only for pure value bodies in procedural/test code; hardware drivers
+  (design path) still expand everything.
+
+Measured: float_conformance_test compiles in 1.1 s instead of ~21 s
+(21k instead of 200k lines of pre-optimization IR); float_test 0.66 s
+instead of 1.5 s. **Codex:** touches `inline_process_function` (now a
+wrapper over `expand_process_function`), `truncate_process_values`, the
+LoweringContext (`shared_functions`), `ir/process.rs` (functions, calls,
+Parameter, validation, dump) and `llvm/process/{values,value_types}.rs`.
+Shared functions have no DWARF subprogram yet.

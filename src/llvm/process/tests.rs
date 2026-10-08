@@ -561,6 +561,8 @@ fn schedule_waveforms_share_only_driver_and_exact_place() {
 #[test]
 fn emits_runtime_discovery_metadata() {
     let process_ir = ProcessIr {
+        functions: Vec::new(),
+        calls: Vec::new(),
         processes: vec![
             ProcessCfg {
                 id: ProcessId(0),

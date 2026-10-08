@@ -23,6 +23,10 @@ pub struct ProcessLocalId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessStorageId(pub u32);
 
+/// Index of a [`ProcessFunction`] in [`ProcessIr::functions`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ProcessFunctionId(pub u32);
+
 /// Index of a [`ProcessValue`] in [`ProcessIr`]'s operand arena. CFG nodes
 /// carry these rather than embedding operands, so an operand is stored once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -54,6 +58,42 @@ pub struct ProcessIr {
     /// Transitional hand-built fixtures may leave this empty. Production
     /// lowering keeps it index-aligned with [`Self::values`].
     pub value_layouts: Vec<Option<SourceLayout>>,
+    /// Shared value-function bodies, which [`Self::calls`] may call instead
+    /// of evaluating the copy expanded at each call site.
+    pub functions: Vec<ProcessFunction>,
+    /// Values that are also a call of a shared function.
+    pub calls: Vec<ProcessCall>,
+}
+
+/// `value`, an inlined function body, is also `function(arguments)`. The
+/// expanded value defines the meaning; a backend may emit the call instead
+/// wherever the two are interchangeable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessCall {
+    /// The expanded result at the call site.
+    pub value: ProcessValueId,
+    /// The shared body.
+    pub function: ProcessFunctionId,
+    /// Arguments in [`ProcessFunction::parameters`] order.
+    pub arguments: Vec<ProcessValueId>,
+}
+
+/// One shared copy of a pure value function, specialized for one set of
+/// argument types: an arena graph from its [`ProcessValueKind::Parameter`]
+/// leaves to its result. Only the simulation calls it; its meaning is the
+/// inlined value of each [`ProcessCall`] naming it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessFunction {
+    /// This function's id.
+    pub id: ProcessFunctionId,
+    /// Source function name, for the emitted symbol.
+    pub name: String,
+    /// The source declaration.
+    pub span: crate::diag::Span,
+    /// One `Parameter` value per argument, in call order (receiver first).
+    pub parameters: Vec<ProcessValueId>,
+    /// The body's result.
+    pub result: ProcessValueId,
 }
 
 /// Persistent state declared in a test entity implementation.
@@ -883,6 +923,13 @@ pub enum ProcessValueKind {
         /// Arms in first-match order.
         arms: Vec<ProcessValueMatchArm>,
     },
+    /// Argument `index` of shared function `function`, inside its body.
+    Parameter {
+        /// The function whose body this value belongs to.
+        function: ProcessFunctionId,
+        /// Position in [`ProcessFunction::parameters`].
+        index: u32,
+    },
     /// A function, method, intrinsic, or conversion call.
     Call {
         /// Callable value or method field.
@@ -1067,6 +1114,15 @@ pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]
 }
 
 impl ProcessIr {
+    /// The shared-function call `value` also is, if lowering recorded one.
+    /// [`Self::calls`] is sorted by value once lowering completes.
+    pub fn call_of(&self, value: ProcessValueId) -> Option<&ProcessCall> {
+        self.calls
+            .binary_search_by_key(&value.0, |call| call.value.0)
+            .ok()
+            .map(|index| &self.calls[index])
+    }
+
     /// First-seen distinct signal reads of one canonical value graph. Walk
     /// arena identities once rather than recursively expanding a shared DAG.
     /// Malformed dependencies fail closed even before Design validation.
@@ -1701,6 +1757,67 @@ impl ProcessIr {
             }
         }
 
+        let width = |value: &ProcessValueId| {
+            self.values
+                .get(value.0 as usize)
+                .and_then(|value| value.bit_width)
+        };
+        for call in &self.calls {
+            // Arguments are passed at their parameter's width, never narrower.
+            let consistent = self
+                .functions
+                .get(call.function.0 as usize)
+                .is_some_and(|callee| {
+                    call.value.0 < value_count
+                        && call
+                            .arguments
+                            .iter()
+                            .all(|argument| argument.0 < call.value.0)
+                        && callee.parameters.len() == call.arguments.len()
+                        && callee
+                            .parameters
+                            .iter()
+                            .zip(&call.arguments)
+                            .all(|(parameter, argument)| width(parameter) >= width(argument))
+                        && width(&callee.result) == width(&call.value)
+                });
+            if !consistent {
+                issues.push(format!(
+                    "process value {:?} records an inconsistent call of {:?}",
+                    call.value, call.function
+                ));
+            }
+        }
+        for (index, function) in self.functions.iter().enumerate() {
+            if function.id.0 as usize != index {
+                issues.push(format!(
+                    "process function {:?} is out of order",
+                    function.id
+                ));
+            }
+            if function.result.0 >= value_count {
+                issues.push(format!(
+                    "process function {:?} has invalid result {:?}",
+                    function.id, function.result
+                ));
+            }
+            for (position, parameter) in function.parameters.iter().enumerate() {
+                let declared = self.values.get(parameter.0 as usize).is_some_and(|value| {
+                    matches!(
+                        value.kind,
+                        ProcessValueKind::Parameter { function: owner, index }
+                            if owner == function.id && index as usize == position
+                    )
+                });
+                if !declared {
+                    issues.push(format!(
+                        "process function {:?} parameter {} is not its Parameter value",
+                        function.id, position
+                    ));
+                }
+            }
+        }
+
         for test in &self.tests {
             if !test_names.insert(test.qualified_name.clone()) {
                 issues.push(format!(
@@ -1751,6 +1868,30 @@ impl ProcessIr {
                 .map(|ty| format!(" : {ty:?}"))
                 .unwrap_or_default();
             output.push_str(&format!("value %v{index}{width}{ty} = {:?}\n", value.kind));
+        }
+        for function in &self.functions {
+            let parameters = function
+                .parameters
+                .iter()
+                .map(|parameter| format!("%v{}", parameter.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            output.push_str(&format!(
+                "function f{} {}({parameters}) = %v{}\n",
+                function.id.0, function.name, function.result.0
+            ));
+        }
+        for call in &self.calls {
+            let arguments = call
+                .arguments
+                .iter()
+                .map(|argument| format!("%v{}", argument.0))
+                .collect::<Vec<_>>()
+                .join(", ");
+            output.push_str(&format!(
+                "call %v{} = f{}({arguments})\n",
+                call.value.0, call.function.0
+            ));
         }
         for storage in &self.storages {
             let ty = storage
@@ -1917,7 +2058,7 @@ pub(crate) fn process_value_dependencies(value: &ProcessValueKind) -> Vec<Proces
 
 /// Visit each operand id embedded by one value node, in operand order,
 /// without allocating.
-pub(crate) fn for_each_process_value_dependency(
+pub fn for_each_process_value_dependency(
     value: &ProcessValueKind,
     mut visit: impl FnMut(ProcessValueId),
 ) {
@@ -1929,7 +2070,7 @@ pub(crate) fn for_each_process_value_dependency(
 
 /// Whether any operand id embedded by one value node satisfies `predicate`;
 /// stops at the first that does.
-pub(crate) fn any_process_value_dependency(
+pub fn any_process_value_dependency(
     value: &ProcessValueKind,
     mut predicate: impl FnMut(ProcessValueId) -> bool,
 ) -> bool {
@@ -2022,6 +2163,7 @@ fn try_for_each_process_value_dependency(
         | ProcessValueKind::Definition(_)
         | ProcessValueKind::Intrinsic(_)
         | ProcessValueKind::Default
+        | ProcessValueKind::Parameter { .. }
         | ProcessValueKind::Invalid => Continue(()),
     }
 }
@@ -2105,6 +2247,7 @@ pub(crate) fn remap_process_value_dependencies(
         | ProcessValueKind::Definition(_)
         | ProcessValueKind::Intrinsic(_)
         | ProcessValueKind::Default
+        | ProcessValueKind::Parameter { .. }
         | ProcessValueKind::Invalid => {}
     }
 }
