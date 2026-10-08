@@ -227,13 +227,13 @@ pub(super) fn process_value_at<'ctx>(
             active,
             index_sites,
             cache,
-            |builder, cache, active| {
+            |builder, cache, active, operand| {
                 process_value_at(
                     context,
                     module,
                     builder,
                     design,
-                    *operand,
+                    operand,
                     width,
                     signed,
                     active,

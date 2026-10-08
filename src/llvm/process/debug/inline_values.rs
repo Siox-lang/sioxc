@@ -268,6 +268,43 @@ enum ValueInspection<'ctx> {
 pub(in crate::llvm::process) struct ValueArguments<'ctx> {
     ids: std::collections::HashSet<ProcessValueId>,
     values: Vec<(ValueFunctionKey, IntValue<'ctx>)>,
+    /// Consumed compile-time arguments need source calls, but no native payload.
+    literals: Vec<ProcessValueId>,
+}
+
+impl ValueArguments<'_> {
+    fn new(source: &ProcessValueInline) -> Self {
+        Self {
+            ids: source
+                .parameters
+                .iter()
+                .flat_map(|parameter| parameter.values())
+                .collect(),
+            values: Vec::new(),
+            literals: Vec::new(),
+        }
+    }
+}
+
+fn literal_argument(
+    design: &Design,
+    cache: &mut ProcessValueCache<'_, '_>,
+    id: ProcessValueId,
+) -> Option<ProcessValueId> {
+    let arguments = cache.debug_arguments.as_mut()?;
+    if !arguments.ids.contains(&id) || process_string(design, id).is_none() {
+        return None;
+    }
+    if !arguments.literals.contains(&id) {
+        arguments.literals.push(id);
+    }
+    let mut literal = id;
+    while let ProcessValueKind::InlineCall { operand, .. } =
+        design.process_ir.values[literal.0 as usize].kind
+    {
+        literal = operand;
+    }
+    Some(literal)
 }
 
 pub(in crate::llvm::process) fn argument_value<'ctx>(
@@ -277,7 +314,7 @@ pub(in crate::llvm::process) fn argument_value<'ctx>(
     mut key: ValueFunctionKey,
 ) -> Option<IntValue<'ctx>> {
     let arguments = cache.debug_arguments.as_mut()?;
-    if !arguments.ids.contains(&key.0) {
+    if !arguments.ids.contains(&key.0) || process_string(design, key.0).is_some() {
         return None;
     }
     let (id, width, signed) = (key.0, key.1, key.2);
@@ -422,11 +459,15 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
         &Builder<'ctx>,
         &mut ProcessValueCache<'ctx, '_>,
         Option<IntValue<'ctx>>,
+        ProcessValueId,
     ) -> Option<IntValue<'ctx>>,
 ) -> Option<IntValue<'ctx>> {
     let Some(debug) = cache.debug else {
-        return emit(builder, cache, active);
+        return emit(builder, cache, active, operand);
     };
+    if let Some(literal) = literal_argument(design, cache, id) {
+        return emit(builder, cache, active, literal);
+    }
     if let Some(active) = active {
         return active_value(
             debug.context,
@@ -467,7 +508,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
     }
     let key = (id, width, signed, layout.cloned());
     let existing = debug.value_functions.borrow().get(&key).cloned();
-    let (function, formats) = if let Some(existing) = existing {
+    let (function, formats, literals) = if let Some(existing) = existing {
         existing
     } else {
         let ty = source_return_type(debug, design, source, operand, width)?;
@@ -485,17 +526,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
         body_cache.debug = Some(debug);
         body_cache.debug_root = cache.debug_root;
         body_cache.hardware_calls = cache.hardware_calls;
-        body_cache.debug_arguments = Some(ValueArguments {
-            ids: source
-                .parameters
-                .iter()
-                .flat_map(|parameter| parameter.values())
-                // Literal strings, including zero-storage strings, are still
-                // compile-time operands rather than an unconstrained ABI.
-                .filter(|value| process_string(design, *value).is_none())
-                .collect(),
-            values: Vec::new(),
-        });
+        body_cache.debug_arguments = Some(ValueArguments::new(source));
         let returned = inline_body(
             module,
             &body_builder,
@@ -504,11 +535,13 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
             operand,
             source,
             &mut body_cache,
-            emit,
+            |builder, cache, active| emit(builder, cache, active, operand),
         )?;
         let returned = return_value(&body_builder, returned)?;
         body_builder.build_return(Some(&returned)).ok()?;
-        let values = body_cache.debug_arguments.take()?.values;
+        let arguments = body_cache.debug_arguments.take()?;
+        let values = arguments.values;
+        let literals = arguments.literals;
         let types = values
             .iter()
             .map(|(_, value)| value.get_type().into())
@@ -536,12 +569,15 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
         debug
             .value_functions
             .borrow_mut()
-            .insert(key.clone(), (function, formats.clone()));
-        (function, formats)
+            .insert(key.clone(), (function, formats.clone(), literals.clone()));
+        (function, formats, literals)
     };
     // Metadata never requests arguments. Emit only formats actually consumed
     // by the body, through exactly the same paths as an ordinary inline call.
     call_value(debug.context, builder, key, cache, |builder, cache| {
+        for literal in literals {
+            literal_value(module, builder, design, literal, index_sites, cache)?;
+        }
         let mut arguments = Vec::with_capacity(formats.len());
         for (value, width, signed, layout) in formats {
             let argument = if let Some(layout) = layout {
@@ -581,6 +617,109 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
     })
 }
 
+/// Preserve a consumed constant-string call without evaluating debug bindings.
+/// Nonempty results use the ordinary value emitter. Empty results have no
+/// packed payload: their source boundary is a void specialization of the same
+/// inline body, not a fabricated integer or runtime string handle.
+pub(in crate::llvm::process) fn literal_value<'ctx>(
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    id: ProcessValueId,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<()> {
+    let Some(debug) = cache.debug else {
+        return Some(());
+    };
+    if literal_argument(design, cache, id).is_some() {
+        return Some(());
+    }
+    let _location =
+        ValueLocationGuard::new(builder, cache, design.process_ir.values[id.0 as usize].span);
+    let text = process_string(design, id)?;
+    let ProcessValueKind::InlineCall { operand, source } =
+        &design.process_ir.values[id.0 as usize].kind
+    else {
+        return Some(());
+    };
+    if !text.is_empty() {
+        process_value(
+            debug.context,
+            module,
+            builder,
+            design,
+            id,
+            None,
+            index_sites,
+            cache,
+        )?;
+        return Some(());
+    }
+    let key = (id, 0, false, None);
+    let existing = debug.value_functions.borrow().get(&key).cloned();
+    let (function, _, literals) = if let Some(existing) = existing {
+        existing
+    } else {
+        let function = module.add_function(
+            &format!("sx.debug.call.{}.empty", id.0),
+            debug.context.void_type().fn_type(&[], false),
+            Some(Linkage::Internal),
+        );
+        let body_builder = debug.context.create_builder();
+        body_builder.position_at_end(debug.context.append_basic_block(function, "entry"));
+        let mut body_cache = ProcessValueCache::new(cache.activity_sensitive, cache.meta_free);
+        body_cache.debug = Some(debug);
+        body_cache.debug_root = cache.debug_root;
+        body_cache.debug_arguments = Some(ValueArguments::new(source));
+        let mut emitted = false;
+        inline_body(
+            module,
+            &body_builder,
+            design,
+            function,
+            *operand,
+            source,
+            &mut body_cache,
+            |builder, cache, _| {
+                emitted =
+                    literal_value(module, builder, design, *operand, index_sites, cache).is_some();
+                None
+            },
+        );
+        if !emitted {
+            return None;
+        }
+        body_builder.build_return(None).ok()?;
+        let arguments = body_cache.debug_arguments.take()?;
+        if !arguments.values.is_empty() {
+            return None;
+        }
+        let entry = (function, Vec::new(), arguments.literals);
+        debug
+            .value_functions
+            .borrow_mut()
+            .insert(key, entry.clone());
+        entry
+    };
+    call_value(
+        debug.context,
+        builder,
+        (id, 0, false, None),
+        cache,
+        |builder, cache| {
+            for literal in literals {
+                literal_value(module, builder, design, literal, index_sites, cache)?;
+            }
+            builder.build_call(function, &[], "").ok()?;
+            // This is only the shared emitter's execution/readiness marker. The
+            // native callee is void; no integer stands in for an empty string.
+            Some(debug.context.bool_type().const_int(1, false))
+        },
+    )?;
+    Some(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn aggregate_value<'ctx>(
     module: &Module<'ctx>,
@@ -616,7 +755,7 @@ fn aggregate_value<'ctx>(
         None,
         index_sites,
         cache,
-        |builder, cache, _| {
+        |builder, cache, _, _| {
             aggregate_result(
                 module,
                 builder,
@@ -879,11 +1018,15 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
             }
         })
         .collect::<Vec<_>>();
-    let result_type = source
-        .result_layout
-        .as_ref()
-        .and_then(|layout| debug.ty(design, layout, needs_mirror(layout)))
-        .or_else(|| debug.value_debug_type(design, operand));
+    let result_type = if process_string(design, operand) == Some("") {
+        None // This specialization has no executable return payload.
+    } else {
+        source
+            .result_layout
+            .as_ref()
+            .and_then(|layout| debug.ty(design, layout, needs_mirror(layout)))
+            .or_else(|| debug.value_debug_type(design, operand))
+    };
     let types = binding_types[..source.parameters.len()]
         .iter()
         .flatten()

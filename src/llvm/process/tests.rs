@@ -580,7 +580,7 @@ fn inactive_inline_debug_call_does_not_emit_its_body_or_frame() {
         Some(context.bool_type().const_zero()),
         &HashMap::new(),
         &mut cache,
-        |_, _, _| panic!("a compile-time-inactive call must not emit its body"),
+        |_, _, _, _| panic!("a compile-time-inactive call must not emit its body"),
     )
     .unwrap();
     assert_eq!(result.get_type().get_bit_width(), 129);
@@ -633,7 +633,7 @@ fn inactive_inline_debug_call_does_not_emit_its_body_or_frame() {
             Some(active),
             &HashMap::new(),
             &mut cache,
-            |_, _, active| {
+            |_, _, active, _| {
                 assert!(
                     active.is_none(),
                     "the selected arm already guarantees activity"

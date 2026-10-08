@@ -70,13 +70,13 @@ pub(super) fn process_value_in_layout<'ctx>(
             active,
             index_sites,
             cache,
-            |builder, cache, active| {
+            |builder, cache, active, operand| {
                 process_value_in_layout(
                     context,
                     module,
                     builder,
                     design,
-                    *operand,
+                    operand,
                     layout,
                     active,
                     index_sites,
@@ -824,7 +824,21 @@ pub(super) fn process_value<'ctx>(
             _ => ty.const_zero(),
         },
         ProcessValueKind::Attribute { base, attribute } => {
-            ty.const_int(process_layout_attribute(design, *base, attribute)?, false)
+            let value = ty.const_int(process_layout_attribute(design, *base, attribute)?, false);
+            if cache.debug.is_some() && process_string(design, *base).is_some() {
+                let emit = |builder: &Builder<'ctx>, cache: &mut ProcessValueCache<'ctx, '_>| {
+                    debug::literal_value(module, builder, design, *base, index_sites, cache)?;
+                    Some(value)
+                };
+                if let Some(active) = active {
+                    // The attribute stays a constant; only its consumed source
+                    // boundary is selected. Never execute an untaken empty call.
+                    debug::active_value(context, builder, width, active, cache, emit)?;
+                } else {
+                    emit(builder, cache)?;
+                }
+            }
+            value
         }
         ProcessValueKind::BitSlice { base, high, low } => {
             // A slice introduced for a packed conversion is a raw resize even
@@ -1122,7 +1136,10 @@ pub(super) fn process_value<'ctx>(
                 )
                 .map(Into::into)
             };
-            let string_argument = |argument: ProcessValueId| -> Option<MetadataValue<'ctx>> {
+            let string_argument = |argument: ProcessValueId,
+                                   cache: &mut ProcessValueCache<'ctx, '_>|
+             -> Option<MetadataValue<'ctx>> {
+                debug::literal_value(module, builder, design, argument, index_sites, cache)?;
                 let text = process_string(design, argument)?;
                 Some(
                     private_string(
@@ -1161,7 +1178,7 @@ pub(super) fn process_value<'ctx>(
                     (
                         "sx_runtime_read_utf8",
                         i64.fn_type(&[pointer.into()], false),
-                        vec![string_argument(*path)?],
+                        vec![string_argument(*path, cache)?],
                     )
                 }
                 ProcessHostValueOp::ReadUtf8Fixed | ProcessHostValueOp::ReadBinary => {
@@ -1177,6 +1194,7 @@ pub(super) fn process_value<'ctx>(
                         } else {
                             ("sx_runtime_read_binary", width.div_ceil(8))
                         };
+                    debug::literal_value(module, builder, design, *path, index_sites, cache)?;
                     return emit_buffered_read_value(
                         context,
                         module,
@@ -1196,7 +1214,7 @@ pub(super) fn process_value<'ctx>(
                     (
                         "sx_runtime_file_exists",
                         i64.fn_type(&[pointer.into()], false),
-                        vec![string_argument(*path)?],
+                        vec![string_argument(*path, cache)?],
                     )
                 }
                 ProcessHostValueOp::StringLength => {
@@ -1247,7 +1265,7 @@ pub(super) fn process_value<'ctx>(
                         i64.fn_type(&[i64.into(), pointer.into(), i64.into()], false),
                         vec![
                             scalar_argument(*handle, cache)?,
-                            string_argument(*literal)?,
+                            string_argument(*literal, cache)?,
                             i64.const_int(process_string(design, *literal)?.len() as u64, false)
                                 .into(),
                         ],
@@ -1379,13 +1397,13 @@ pub(super) fn process_value<'ctx>(
             active,
             index_sites,
             cache,
-            |builder, cache, active| {
+            |builder, cache, active, operand| {
                 process_value(
                     context,
                     module,
                     builder,
                     design,
-                    *operand,
+                    operand,
                     active,
                     index_sites,
                     cache,

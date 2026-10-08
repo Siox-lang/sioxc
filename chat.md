@@ -15201,3 +15201,67 @@ unowned AGENTS/441 chat lines/.codex and all backups. The full DWARF goal
 remains active: demand-preserving effectful/checked/nested-call and partial
 aggregate grouping, folded string frames, formal audits, packed companions
 and remaining return ABIs are still required. No push authorized.
+
+### 2026-10-08 — Codex — DWARF folded string-return frames
+
+Previous goal turn made verified progress: compiler 6c84707 and docs 5d86533
+passed acceptance 2518381 for selected aggregate return frames. Continue owning
+native expression-call emission, string inspection and debugger regressions.
+Reproduce literal/empty echo_text calls bypassed by folded length consumers,
+then preserve the actual source call through the existing canonical emitter.
+Do not invent an i1 empty value, force metadata-only arguments/effects, add a
+debug evaluator or promise unverified string return ABIs. Preserve unrelated
+AGENTS/441 chat lines/.codex and backups; full DWARF remains active. No push.
+
+Probe 2583770 failed/101, peak 170168320: native/VCD/DWARF output passes but
+GDB reaches count directly instead of its literal echo_text argument frame.
+Preserve consumed literal arguments at the caller through common emission;
+use a void specialization for zero-storage empty returns. Probe 2593177 first
+failed at two test closures still using the old callback arity; update both.
+Probe 2594275 passes exited/success/0, peak 887177216, including strict Clippy
+and the literal/empty frame regression. Expanded probe 2597521 failed/101,
+peak 81801216: nested/selected calls stop correctly, but a direct folded length
+in an untaken branch emits an empty source stop. Reuse active_value to guard
+only that boundary, preserving the ordinary constant attribute result.
+
+Probe 2603687 failed/101, peak 743776256: strict Clippy, selected/nested calls
+and nonempty reuse pass, but an empty result shared by two count calls produces
+two echo_text stops. Route void calls through the existing call_value readiness
+join/cache as well. Its Boolean marker describes completed execution only;
+the native callee remains void and no empty string gains an integer payload.
+Keep the GDB finish history check to prove there is no fabricated return value.
+
+Probes 2607065 and 2612354 pass exited/success/0 in default/bitpack: nested
+literal/empty calls, exact caller/assignment lines, constant views, selected
+reuse across both/first-only/second-only/neither consumers and empty GDB finish
+without a history value. The same folded-operand bypass occurs in formatting
+and host-string arguments; reuse literal_value at those native consumption
+sites. Probe 2617747 rejects the attempted source file-path functions under
+the existing E-P003 literal-path rule, and rejects unavailable println syntax.
+Preserve that language constraint; use supported print! and warning formatting
+for the regression. Probe 2623524 passes exited/success/0, peak 610488320:
+strict Clippy and both native/GDB modes include print/warning frames, with no
+string stops for successful assertions or suppressed warnings. No computed
+file paths or new runtime representations are implemented. Update TODO and
+siox-paper architecture/testing notes and freeze source for full acceptance.
+Effectful/checked/nested-call/partial aggregate grouping, formal audits, packed
+companions and runtime/nonempty-literal string/wide/mixed return ABIs remain
+required DWARF work. No push or completion claim.
+
+Acceptance 2631262 is terminal exited/success/0, peak 1612468224 bytes.
+Formatting, strict all-feature Clippy, frontend-only compilation, full default/
+bitpack suites (534/513 units plus integrations), all six DWARF fixtures and
+ordinary/default-debug/bitpack-debug corpora (228/0 each) pass. All four FIFO/
+wide native GDB inspection/stepping and VCD parity smokes pass. The literal
+regression proves nested/selected frames, argument order, exact caller and
+assignment lines, Unicode/NUL/empty views, conditional reuse, diagnostic
+non-execution and empty finish with no returned history value in both modes.
+AST refresh finishes at 5251 nodes, 14932 edges and 257 communities with the
+known four vendor partial-parse and six no-symbol warnings, without LLM/API
+work. Correct duplicated TODO prose after the gate; no Rust source changed.
+Commit only owned native consumption/constant-argument/void-frame code,
+regressions, TODO and this coordination tail, with separate architecture/
+testing notes. Preserve AGENTS/441 historical chat lines/.codex and backups.
+Full DWARF remains active: effectful/checked/nested-call/partial aggregate
+grouping, formal audits, packed companions and runtime/nonempty-literal
+string, normalized-wide and mixed-layout return ABI checks remain. No push.

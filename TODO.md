@@ -130,9 +130,16 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   across suspension. Procedural expression-shaped calls now preserve repeated,
   same-line and nested source frames, scalar/aggregate bindings, borrowed
   runtime-string arguments/returns, literal/empty string bindings and
-  selected-call stops without ordinary-build copies. Pure function-body
-  if/match branches retain nested lexical shadowing and selected alias/aggregate
-  return stops. Hardware SourceValues calls now retain nested frames,
+  selected-call stops without ordinary-build copies. Consumed
+  literal/empty string returns also retain their source frames through
+  folded length and formatted text consumers. Constant arguments execute at
+  the caller only when requested by the native body; empty specializations
+  return void, with no fabricated payload. Readiness joins preserve one source
+  call across both/first-only/second-only consumers, and none for untaken calls.
+  GDB `finish` on the empty specialization adds no returned value.
+  Pure function-body if/match branches retain nested lexical shadowing and
+  selected alias/aggregate return stops. Hardware SourceValues calls now retain
+  nested frames,
   selected return scopes, declaration-owned types and shared-helper/event owners.
   Native expression arguments retain the actual consumer width/sign/layout
   requests independently of inspection types, including narrow signed nested
@@ -151,8 +158,7 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   selected-return SSA join, with return scopes and lexical shadowing preserved.
   Complete demand-preserving grouping for effectful/checked/nested-call and
   partial aggregate returns; no debug boundary may force an unconsumed field
-  or invent an available zero for a pruned member. Complete literal/empty-string
-  return frames bypassed by folded length consumers.
+  or invent an available zero for a pruned member.
   Shared Process functions now retain their source frames directly on the
   canonical native body, including selected branches, lexical locals and
   declaration-owned scalar inspection types. Keep native body-count, actual
@@ -160,8 +166,9 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   not be inferred from the debugger's read-only inspection representation.
   Audit formal declaration types for hardware operators/suffixes/conversions
   and constrained/generic signatures. Add packed unknown-state expression
-  companion checks and verify GDB `finish` for string and normalized wide/
-  mixed-layout/partial aggregate return ABIs. Two-integer hardware aggregate
+  companion checks and verify GDB `finish` for runtime/nonempty-literal strings,
+  normalized wide scalars and mixed-layout/partial aggregate return ABIs.
+  Two-integer hardware aggregate
   `finish` values are checked for straight-line, nested/match, independent and
   alias returns with positive, negative and zero inputs. Scalar
   real native boundaries use double returns, with actual `finish` checks for

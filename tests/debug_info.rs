@@ -35,6 +35,13 @@ fn echo_text(value: string) -> string {
     let copy: string = value;
     return copy; // borrowed string return stop
 }
+fn reuse_text(value: string, mask: integer) -> integer {
+    if mask == 0 { return 0; }
+    let saved: string = echo_text(value); // reused string assignment
+    let first: integer = if mask > 0 { count(saved) } else { 0 }; // first reused string consumer
+    let second: integer = if mask < 9 { count(saved) } else { 0 }; // second reused string consumer
+    return first + second;
+}
 fn echo(value: Logic) -> Logic {
     return value; // packed element return stop
 }
@@ -67,6 +74,22 @@ impl T {
         let runtime_length: integer = count(borrowed); // expression runtime string call
         let literal_length: integer = count("μ\0🙂"); // expression literal string call
         let empty_length: integer = count(""); // expression empty string call
+        let folded_literal: integer = count(echo_text("μ\0🙂")); // folded literal string call
+        let folded_empty: integer = count(echo_text("")); // folded empty string call
+        let folded_nested: integer = count(echo_text(echo_text("μ\0🙂"))); // nested folded string call
+        let selected_literal: integer = if start > 0 { count(echo_text("μ\0🙂")) } else { count(echo_text("untaken")) }; // selected folded string call
+        let selected_empty: integer = if start < 0 { count(echo_text("")) } else { 17 };
+        let inactive_length: integer = if start < 0 { echo_text("")'length } else { 19 }; // inactive folded length
+        let reused_literal: integer = reuse_text("μ\0🙂", 5); // reused literal string call
+        let reused_empty: integer = reuse_text("", 5); // reused empty string call
+        let first_only: integer = reuse_text("", 10); // first-only empty string call
+        let second_only: integer = reuse_text("", -5); // second-only empty string call
+        let neither: integer = reuse_text("", 0);
+        print!("{}", echo_text("μ\0🙂")); // formatted literal string call
+        print!("{}", echo_text("")); // formatted empty string call
+        warn!(false, "{}", echo_text("μ\0🙂")); // formatted warning string call
+        warn!(true, "{}", echo_text(""));
+        assert!(true, "{}", echo_text(""));
         let packet: Payload = { .tag = 9, .gain = 1.5, .wide = 18446744073709551617 };
         let payload_result: integer = inspect_payload(packet); // expression payload call
         assert!(runtime_length == 3, "runtime expression string length");
@@ -75,6 +98,10 @@ impl T {
         assert!(borrowed == "β\0🙂", "borrowed expression string content");
         assert!(literal_length == 3, "literal expression string length");
         assert!(empty_length == 0, "empty expression string length");
+        assert!(folded_literal == 3 and folded_empty == 0, "folded string return lengths");
+        assert!(folded_nested == 3 and selected_literal == 3 and selected_empty == 17 and inactive_length == 19, "nested and selected folded string calls");
+        assert!(reused_literal == 6 and reused_empty == 0, "reused string return lengths");
+        assert!(first_only == 0 and second_only == 0 and neither == 0, "selected reused empty strings");
         assert!(payload_result == 10, "expression aggregate result");
     }
 }"#;
@@ -176,16 +203,48 @@ assert gdb.selected_frame().name() == 'debug_values::echo_text'
 assert gdb.selected_frame().older().find_sal().line == {borrowed_call_line}
 check_string(0x3b2)
 borrowed_stop.delete()
+folded_stop = gdb.Breakpoint({source:?} + ':{borrowed_return_line}')
 gdb.execute('continue')
-for first, caller_line in [(0x3b2, {runtime_string_line}), (0x3bc, {literal_string_line}), (None, {empty_string_line})]:
+for first, caller_line, nested in [(0x3b2, {runtime_string_line}, 0), (0x3bc, {literal_string_line}, 0), (None, {empty_string_line}, 0), (0x3bc, {folded_literal_line}, 1), (None, {folded_empty_line}, 1), (0x3bc, {folded_nested_line}, 2), (0x3bc, {selected_literal_line}, 1)]:
+    for _ in range(nested):
+        actual = gdb.selected_frame()
+        assert actual.name() == 'debug_values::echo_text', ('folded string frame', actual.name())
+        assert actual.older().name() == 'T::stimulus', actual.older().name()
+        assert actual.older().find_sal().line == caller_line
+        assert actual.find_sal().line == {borrowed_return_line}
+        check_string(first)
+        gdb.execute('continue')
     actual = gdb.selected_frame()
     assert actual.name() == 'debug_values::count', actual.name()
     assert actual.older().find_sal().line == caller_line
     assert 'value =' in gdb.execute('info args', to_string=True)
     check_string(first)
     gdb.execute('continue')
+for first, caller_line, consumers in [(0x3bc, {reused_literal_line}, [{first_consumer_line}, {second_consumer_line}]), (None, {reused_empty_line}, [{first_consumer_line}, {second_consumer_line}]), (None, {first_only_line}, [{first_consumer_line}]), (None, {second_only_line}, [{second_consumer_line}])]:
+    actual = gdb.selected_frame()
+    assert actual.name() == 'debug_values::echo_text', ('shared literal frame', actual.name())
+    assert actual.older().name() == 'debug_values::reuse_text'
+    assert actual.older().find_sal().line == {reused_assignment_line}, actual.older().find_sal().line
+    assert actual.older().older().find_sal().line == caller_line
+    check_string(first)
+    gdb.execute('continue')
+    for consumer_line in consumers:
+        actual = gdb.selected_frame()
+        assert actual.name() == 'debug_values::count', ('repeated string boundary', actual.name())
+        assert actual.older().name() == 'debug_values::reuse_text'
+        assert actual.older().find_sal().line == consumer_line
+        check_string(first)
+        gdb.execute('continue')
+for first, caller_line in [(0x3bc, {formatted_literal_line}), (None, {formatted_empty_line}), (0x3bc, {formatted_warning_line})]:
+    actual = gdb.selected_frame()
+    assert actual.name() == 'debug_values::echo_text', ('formatted string frame', actual.name())
+    assert actual.older().name() == 'T::stimulus'
+    assert actual.older().find_sal().line == caller_line
+    check_string(first)
+    gdb.execute('continue')
 string_stop.delete()
-assert gdb.selected_frame().name() == 'debug_values::inspect_payload'
+folded_stop.delete()
+assert gdb.selected_frame().name() == 'debug_values::inspect_payload', ('unexpected source stop', gdb.selected_frame().name(), gdb.selected_frame().older().find_sal().line)
 assert gdb.selected_frame().older().find_sal().line == {payload_call_line}
 for name in ['value', 'copy']:
     view = gdb.parse_and_eval(name)
@@ -205,6 +264,20 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
             runtime_string_line = line("expression runtime string call"),
             literal_string_line = line("expression literal string call"),
             empty_string_line = line("expression empty string call"),
+            folded_literal_line = line("folded literal string call"),
+            folded_empty_line = line("folded empty string call"),
+            folded_nested_line = line("nested folded string call"),
+            selected_literal_line = line("selected folded string call"),
+            reused_literal_line = line("reused literal string call"),
+            reused_empty_line = line("reused empty string call"),
+            reused_assignment_line = line("reused string assignment"),
+            first_consumer_line = line("first reused string consumer"),
+            second_consumer_line = line("second reused string consumer"),
+            first_only_line = line("first-only empty string call"),
+            second_only_line = line("second-only empty string call"),
+            formatted_literal_line = line("formatted literal string call"),
+            formatted_empty_line = line("formatted empty string call"),
+            formatted_warning_line = line("formatted warning string call"),
             payload_call_line = line("expression payload call"),
             first_line = line("first value call"),
             paired_line = line("paired value calls"),
@@ -226,6 +299,48 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
                     &format!("cd {}", directory.display()),
                     "-ex",
                     &format!("python {python}"),
+                ])
+                .output()
+                .unwrap(),
+        );
+        let finish = format!(
+            r#"import gdb
+class Empty(gdb.Breakpoint):
+    def stop(self):
+        parent = gdb.selected_frame().older()
+        return parent.name() == 'T::stimulus' and parent.find_sal().line == {caller_line}
+stop = Empty({source:?} + ':{return_line}')
+gdb.execute('run')
+assert gdb.selected_frame().name() == 'debug_values::echo_text'
+for name in ['value', 'copy']:
+    view = gdb.parse_and_eval(name)
+    assert int(view['length']) == 0 and int(view['byte_length']) == 0
+    assert int(view['data']) == 0 and int(view['utf8']) == 0
+history = gdb.execute('show values', to_string=True)
+gdb.execute('finish')
+assert gdb.selected_frame().name() == 'T::stimulus'
+assert history == gdb.execute('show values', to_string=True), 'empty call invented a return value'
+stop.delete()
+gdb.execute('continue')
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+"#,
+            source = source.to_string_lossy(),
+            caller_line = line("folded empty string call"),
+            return_line = line("borrowed string return stop"),
+        );
+        success(
+            Command::new("gdb")
+                .args(["-nx", "-q", "--batch"])
+                .arg(&debug)
+                .args([
+                    "-ex",
+                    "set disable-randomization off",
+                    "-ex",
+                    "set breakpoint pending off",
+                    "-ex",
+                    &format!("cd {}", directory.display()),
+                    "-ex",
+                    &format!("python {finish}"),
                 ])
                 .output()
                 .unwrap(),

@@ -21,8 +21,8 @@ mod parameters;
 mod strings;
 pub(super) use inline_values::{
     active_value, argument_value, call_value, capture_value, inline_body, inline_value,
-    return_bits, return_value, selected_value, source_return_type, ValueArguments, ValueFrame,
-    ValueLocationGuard,
+    literal_value, return_bits, return_value, selected_value, source_return_type, ValueArguments,
+    ValueFrame, ValueLocationGuard,
 };
 use logic::{LogicMirror, LogicSource};
 use parameters::ParameterLocation;
@@ -47,7 +47,11 @@ type InlineFrame<'ctx> = (DISubprogram<'ctx>, Option<DILocation<'ctx>>);
 type ParameterLocations<'ctx> = Vec<Vec<ParameterLocation<'ctx>>>;
 pub(super) type ValueFunctionKey = (ProcessValueId, u32, bool, Option<SourceLayout>);
 pub(super) type ValueResults<'ctx> = HashMap<ValueFunctionKey, (IntValue<'ctx>, IntValue<'ctx>)>;
-type ValueFunction<'ctx> = (FunctionValue<'ctx>, Vec<ValueFunctionKey>);
+type ValueFunction<'ctx> = (
+    FunctionValue<'ctx>,
+    Vec<ValueFunctionKey>,
+    Vec<ProcessValueId>,
+);
 
 struct AggregateReturn {
     layout: SourceLayout,
