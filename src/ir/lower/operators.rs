@@ -63,7 +63,7 @@ impl<'a> Lowering<'a> {
     /// per-element `std_ulogic` discriminant packed 4 bits each (element *i* at
     /// nibble *i*), so a metavalue's exact value survives. A hex string (`x"…"`)
     /// is pure 2-value. This is the front-end half of X/Z vector support (see
-    /// "X/Z propagation through vectors" in `docs/simulation.md`); `discs` is
+    /// "X/Z propagation through vectors" in `siox-paper/docs/simulation.md`); `discs` is
     /// stored in the element-container companion.
     pub(super) fn decode_bit_string(&self, base: char, digits: &str) -> (u64, u64) {
         let (value, discs) = self.decode_bit_string_words(base, digits);
@@ -613,10 +613,7 @@ impl<'a> Lowering<'a> {
     ) -> Option<Expr> {
         let (trait_name, method) = comparison_method(op_str)?;
         let ty = self.operand_type_name(lhs)?;
-        if !self
-            .op_impls
-            .contains_key(&(trait_name.to_string(), ty.clone()))
-        {
+        if !self.op_impls.contains(trait_name, &ty) {
             return None;
         }
         if self

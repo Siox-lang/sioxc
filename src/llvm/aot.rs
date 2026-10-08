@@ -769,6 +769,8 @@ signed main(void) {
             },
         ];
         let process_ir = ProcessIr {
+            functions: Vec::new(),
+            calls: Vec::new(),
             storages: vec![ProcessStorage {
                 id: ProcessStorageId(0),
                 owner: InstanceId(0),

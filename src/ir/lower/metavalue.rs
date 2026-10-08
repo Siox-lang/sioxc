@@ -10,7 +10,7 @@ impl<'a> Lowering<'a> {
     pub(super) fn compute_logic_encodings(&self) -> HashMap<String, LogicEncoding> {
         // A compiler hook trait keeps its short key (`is_compiler_trait`).
         let mut out = HashMap::new();
-        for ((trait_name, ty), methods) in &self.op_impls {
+        for (trait_name, ty, methods) in self.op_impls.iter() {
             if trait_name != "LogicEncoding" {
                 continue;
             }
@@ -89,7 +89,7 @@ impl<'a> Lowering<'a> {
             for op in ["and", "or", "xor", "nand", "nor", "xnor"] {
                 let Some((function, _)) = self
                     .op_impls
-                    .get(&(op.to_string(), ty.clone()))
+                    .get(op, ty)
                     .and_then(|functions| functions.first())
                 else {
                     continue;
@@ -122,7 +122,7 @@ impl<'a> Lowering<'a> {
             // branch tree.
             if let Some((function, _)) = self
                 .op_impls
-                .get(&("Resolve".to_string(), ty.clone()))
+                .get("Resolve", ty)
                 .and_then(|functions| functions.first())
             {
                 if let Some(rhs_name) = function
@@ -149,7 +149,7 @@ impl<'a> Lowering<'a> {
             }
             if let Some((function, _)) = self
                 .op_impls
-                .get(&("not".to_string(), ty.clone()))
+                .get("not", ty)
                 .and_then(|functions| functions.first())
             {
                 let mut table = HashMap::new();
@@ -165,8 +165,8 @@ impl<'a> Lowering<'a> {
             // A derived enum has the same representation and variants. Make
             // the contract available under both `Logic` and its ULogic base so
             // literals, scalar signals, and packed family elements agree.
-            out.insert(ty.clone(), encoding.clone());
-            let mut current = ty.as_str();
+            out.insert(ty.to_owned(), encoding.clone());
+            let mut current = ty;
             let mut seen = std::collections::HashSet::new();
             while seen.insert(current.to_string()) {
                 let Some(base) = self.enum_bases.get(current) else {

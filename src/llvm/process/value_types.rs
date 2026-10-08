@@ -36,7 +36,7 @@ pub(super) struct ProcessValueCache<'ctx, 'checks> {
     pub(super) debug_root: Option<u32>,
     pub(super) value_frames: Vec<debug::ValueFrame<'ctx>>,
     pub(super) source_location: Option<inkwell::debug_info::DILocation<'ctx>>,
-    /// Native debug call parameters are stable SSA inputs, not state reads.
+    /// A shared function's `Parameter` values, bound to its LLVM arguments.
     pub(super) parameters: HashMap<ProcessValueId, IntValue<'ctx>>,
 }
 
@@ -162,6 +162,33 @@ pub(super) fn process_value_at<'ctx>(
             fit(builder, parameter, width)
         };
     }
+    let natural_width = value.bit_width?;
+    // The ordinary source wrapper is transparent to shared-function lowering.
+    // Debug builds keep its actual source frame until shared bodies have DWARF.
+    if cache.debug.is_none() {
+        if let Some(call) = design.process_ir.call_of(id) {
+            let narrow_integer = width > natural_width
+                && natural_width < 64
+                && matches!(value.ty, Some(siox::types::Ty::Integer));
+            if !narrow_integer && shared_call_eligible(design, call, cache.meta_free) {
+                let result = process_value(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    id,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                return if signed {
+                    fit_signed(builder, result, width)
+                } else {
+                    fit(builder, result, width)
+                };
+            }
+        }
+    }
     if let ProcessValueKind::InlineCall { operand, source } = &value.kind {
         let key = (id, cache.key(id, active, None).1, width, signed);
         if let Some(value) = cache.contextual_value(key) {
@@ -200,7 +227,6 @@ pub(super) fn process_value_at<'ctx>(
         debug::capture_value(builder, cache, id, emitted);
         return Some(emitted);
     }
-    let natural_width = value.bit_width?;
     // Arithmetic is evaluated in the width supplied by its consumer, not
     // necessarily in the minimum width recorded on the arena node. This is
     // observable for kernel integers: evaluating `0 - 7` as i3 first turns it

@@ -70,7 +70,18 @@ struct LoweringContext<'a> {
     inline_value_branches: Vec<Vec<(ProcessValueId, [crate::diag::Span; 2])>>,
     /// Memoized call reachability in the append-only procedural value arena.
     cfg_call_cache: Vec<bool>,
+    /// Shared function bodies by signature, across every process lowered.
+    shared_functions: &'a std::cell::RefCell<SharedFunctions>,
 }
+
+/// A shared value-function body per signature; `None` marks a signature whose
+/// body cannot be shared (it reads state, has effects or uses caller values).
+type SharedFunctions = std::collections::HashMap<String, Option<crate::ir::ProcessFunctionId>>;
+
+/// An expansion larger than this many arena values calls one shared copy of
+/// its function unless `#[inline]` says otherwise. Small helpers (`abs`,
+/// `word`) stay inline; arithmetic like `std::float`'s is shared.
+const SHARE_ABOVE_VALUES: usize = 32;
 
 /// Non-generic type aliases indexed by resolver identity.
 fn source_type_aliases<'a>(
@@ -424,7 +435,7 @@ fn nominal_type_from_name(name: &str, resolved: &Resolved) -> Option<crate::type
         .filter(|(_, definition)| type_definition(definition))
         .find_map(|(index, _)| {
             let definition = crate::resolve::DefId(u32::try_from(index).ok()?);
-            (resolved.qualified_name(definition).as_deref() == Some(name)).then_some(definition)
+            (resolved.qualified_name_str(definition) == Some(name)).then_some(definition)
         });
     let definition = exact.or_else(|| {
         let leaf = name.rsplit("::").next()?;
@@ -1050,6 +1061,7 @@ pub fn lower(
     let suffixes = constant_suffixes(modules, resolved);
     let constants = source_constants(modules, resolved);
     let type_aliases = source_type_aliases(modules, resolved);
+    let shared_functions = std::cell::RefCell::new(SharedFunctions::new());
     let functions = process_functions(modules, resolved);
     let constant_integers = module_constant_integers(modules, &functions);
 
@@ -1158,6 +1170,7 @@ pub fn lower(
                 inline_value_locals: Vec::new(),
                 inline_value_branches: Vec::new(),
                 cfg_call_cache: Vec::new(),
+                shared_functions: &shared_functions,
             };
             let mut block = ProcessBlockId(0);
             for declaration in initializers {
@@ -1219,6 +1232,7 @@ pub fn lower(
                             inline_value_locals: Vec::new(),
                             inline_value_branches: Vec::new(),
                             cfg_call_cache: Vec::new(),
+                            shared_functions: &shared_functions,
                         };
                         lower_process(
                             id,
@@ -1273,6 +1287,7 @@ pub fn lower(
                             inline_value_locals: Vec::new(),
                             inline_value_branches: Vec::new(),
                             cfg_call_cache: Vec::new(),
+                            shared_functions: &shared_functions,
                         };
                         lower_process(
                             id,
@@ -1343,6 +1358,7 @@ pub fn lower(
                     inline_value_locals: Vec::new(),
                     inline_value_branches: Vec::new(),
                     cfg_call_cache: Vec::new(),
+                    shared_functions: &shared_functions,
                 };
                 lower_legacy_process(
                     id,
@@ -1380,6 +1396,8 @@ pub fn lower(
         process_ir.processes.push(process);
     }
 
+    // Backends look calls up by value (`ProcessIr::call_of`).
+    process_ir.calls.sort_unstable_by_key(|call| call.value.0);
     design.process_ir = process_ir;
     crate::ir::derive_scheduler_forms(design)
 }
@@ -2490,14 +2508,11 @@ fn inline_process_procedure_call(
                 .and_then(|value| value.ty.as_ref())
                 .and_then(|ty| process_type_key(ty, context))?;
             (
-                context
-                    .functions
-                    .get_associated(&owner, &field.text)?
-                    .clone(),
+                context.functions.get_associated(&owner, &field.text)?,
                 Some(receiver),
             )
         }
-        _ => (context.functions.get(callee)?.clone(), None),
+        _ => (context.functions.get(callee)?, None),
     };
     let body = function.body.as_ref()?;
     if function.ret.is_some()
@@ -2552,7 +2567,7 @@ fn inline_process_procedure_call(
     let bindings = bindings.into_iter().collect();
     let resume = process.push_block();
     let previous_scope = context.inline_scope;
-    let scope = begin_inline_call(&function, call_span, receiver, &bindings, process, context);
+    let scope = begin_inline_call(function, call_span, receiver, &bindings, process, context);
     let entry = process.push_block();
     process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(entry);
     context.value_bindings.push(bindings);
@@ -4220,8 +4235,22 @@ fn lower_process_family_from(
     // no type for a literal argument, so the value says what it is.
     let checked = operand_type(argument, process, context);
     let operand = value_ref_with_type(argument, process, context, checked.as_ref());
+    // A local of the process being lowered is in `process`, not yet in the
+    // arena's finished processes.
+    let own_local =
+        |context: &LoweringContext<'_>| match &context.process_ir.values[operand.0 as usize].kind {
+            ProcessValueKind::Local { local, .. } => {
+                let local = process.locals.get(local.0 as usize)?;
+                local
+                    .ty
+                    .clone()
+                    .or_else(|| process_type_from_layout(local.layout.as_ref()?, context.resolved))
+            }
+            _ => None,
+        };
     let source_type = checked
         .or_else(|| process_value_type(operand, context))
+        .or_else(|| own_local(context))
         .or_else(|| {
             Some(if process_value_is_real(operand, context) {
                 crate::types::Ty::Real
@@ -4377,7 +4406,7 @@ fn lower_process_foreign_call(
     if !type_args.is_empty() || !matches!(callee.as_ref(), ast::Expr::Path(_)) {
         return None;
     }
-    let function = context.functions.get(callee)?.clone();
+    let function = context.functions.get(callee)?;
     if function.body.is_some() || function.params.iter().any(|parameter| parameter.is_self) {
         return None;
     }
@@ -4768,11 +4797,226 @@ fn returns_receiver_type(
     declared.is_some() && declared == receiver
 }
 
-/// Inline one already-selected Siox function over already-lowered operands.
+/// Inline one already-selected Siox function over already-lowered operands,
+/// and, when the function is large or `#[inline(never)]`, record that the
+/// result is also a call of one shared copy (`ProcessIr::calls`). The
+/// expansion always stays: it defines the value, and a backend calls the
+/// shared copy only where the two are interchangeable.
+#[allow(clippy::too_many_arguments)]
+fn inline_process_function(
+    function: &ast::FnDecl,
+    call: crate::diag::Span,
+    receiver: Option<ProcessValueId>,
+    arguments: &[ProcessValueId],
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let first_value = context.process_ir.values.len();
+    let result = expand_process_function(
+        function,
+        call,
+        receiver,
+        arguments,
+        process,
+        context,
+        return_type,
+    )?;
+    let share = match function.inline {
+        ast::Inline::Always | ast::Inline::Hint => false,
+        ast::Inline::Never => true,
+        ast::Inline::Auto => context.process_ir.values.len() - first_value > SHARE_ABOVE_VALUES,
+    };
+    let operands = receiver
+        .into_iter()
+        .chain(arguments.iter().copied())
+        .collect::<Vec<_>>();
+    // Only a value the expansion built can stand for the call.
+    if !share
+        || (result.0 as usize) < first_value
+        || operands.iter().any(|operand| operand.0 >= result.0)
+    {
+        return Some(result);
+    }
+    let Some(shared) = shared_process_function(
+        function,
+        &operands,
+        receiver.is_some(),
+        process,
+        context,
+        return_type,
+    ) else {
+        return Some(result);
+    };
+    let width = |value: ProcessValueId| context.process_ir.values[value.0 as usize].bit_width;
+    let callee = &context.process_ir.functions[shared.0 as usize];
+    if width(callee.result) == width(result) {
+        context.process_ir.calls.push(crate::ir::ProcessCall {
+            value: result,
+            function: shared,
+            arguments: operands,
+        });
+    }
+    Some(result)
+}
+
+/// The shared copy of `function` for these operands' types, built once per
+/// signature over `Parameter` leaves. `None` when the body cannot stand
+/// alone: it reads state, has an effect, checks at run time, or depends on a
+/// value of its caller.
+fn shared_process_function(
+    function: &ast::FnDecl,
+    operands: &[ProcessValueId],
+    has_receiver: bool,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<crate::ir::ProcessFunctionId> {
+    let layouts = operands
+        .iter()
+        .map(|operand| operand_source_layout(*operand, process, context))
+        .collect::<Vec<_>>();
+    // The signature is the operands' shapes, never where they were declared.
+    let mut key = format!("{:?}->{:?}", function.span, return_type);
+    for (operand, layout) in operands.iter().zip(&layouts) {
+        let value = &context.process_ir.values[operand.0 as usize];
+        let shape = layout.as_ref().map(|layout| &layout.kind);
+        key.push_str(&format!(
+            "|{:?}/{:?}/{:?}",
+            value.ty, value.bit_width, shape
+        ));
+    }
+    if let Some(known) = context.shared_functions.borrow().get(&key) {
+        return *known;
+    }
+    let id = crate::ir::ProcessFunctionId(context.process_ir.functions.len() as u32);
+    // A parameter has its type's full width, not its first argument's
+    // natural one: a constant `float(0)` is one bit wide, and an expanded
+    // body would have re-read it at the width each use needs. An argument
+    // without such a type cannot be passed faithfully, so its signature is
+    // not shared.
+    let mut widths = Vec::with_capacity(operands.len());
+    for (operand, layout) in operands.iter().zip(&layouts) {
+        let value = &context.process_ir.values[operand.0 as usize];
+        let natural = value.bit_width.unwrap_or(0);
+        let width = match (&value.ty, layout.as_ref()) {
+            (Some(crate::types::Ty::Integer | crate::types::Ty::Real), _) => Some(64),
+            (_, Some(layout)) => layout.packed_width(),
+            _ => None,
+        }
+        .filter(|width| *width >= natural && *width > 0);
+        match width {
+            Some(width) => widths.push(width),
+            None => {
+                context.shared_functions.borrow_mut().insert(key, None);
+                return None;
+            }
+        }
+    }
+    let first_value = context.process_ir.values.len();
+    let mut parameters = Vec::with_capacity(operands.len());
+    for (index, operand) in operands.iter().enumerate() {
+        let value = &context.process_ir.values[operand.0 as usize];
+        let (span, ty, width) = (value.span, value.ty.clone(), Some(widths[index]));
+        let layout = layouts[index].clone();
+        let parameter = push_value(
+            span,
+            ty,
+            width,
+            ProcessValueKind::Parameter {
+                function: id,
+                index: index as u32,
+            },
+            context,
+        );
+        context.process_ir.value_layouts[parameter.0 as usize] = layout;
+        parameters.push(parameter);
+    }
+    let (receiver, arguments) = if has_receiver {
+        (Some(parameters[0]), &parameters[1..])
+    } else {
+        (None, &parameters[..])
+    };
+    let result = expand_process_function(
+        function,
+        function.span,
+        receiver,
+        arguments,
+        process,
+        context,
+        return_type,
+    )
+    .filter(|result| standalone_body(first_value, *result, context));
+    let shared = match result {
+        Some(result) => {
+            context
+                .process_ir
+                .functions
+                .push(crate::ir::ProcessFunction {
+                    id,
+                    name: function.name.text.clone(),
+                    span: function.span,
+                    parameters,
+                    result,
+                });
+            Some(id)
+        }
+        None => {
+            truncate_process_values(context, first_value);
+            None
+        }
+    };
+    context.shared_functions.borrow_mut().insert(key, shared);
+    shared
+}
+
+/// An operand's source layout, including a local of the process being
+/// lowered, which is not in the arena's finished processes yet.
+fn operand_source_layout(
+    operand: ProcessValueId,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> Option<crate::ir::SourceLayout> {
+    if let Some(layout) = process_value_source_layout(operand, context.process_ir) {
+        return Some(layout.clone());
+    }
+    match &context.process_ir.values.get(operand.0 as usize)?.kind {
+        ProcessValueKind::Local {
+            process: owner,
+            local,
+        } if *owner == process.id => process.locals.get(local.0 as usize)?.layout.clone(),
+        _ => None,
+    }
+}
+
+/// Whether the values built from `first` on (one function body over its
+/// parameters, with any bodies it shares in turn) compute `result` from
+/// those values alone, without state, effects or run-time checks.
+fn standalone_body(first: usize, result: ProcessValueId, context: &LoweringContext<'_>) -> bool {
+    (result.0 as usize) >= first
+        && context.process_ir.values[first..].iter().all(|value| {
+            !matches!(
+                value.kind,
+                ProcessValueKind::Signal { .. }
+                    | ProcessValueKind::Storage(_)
+                    | ProcessValueKind::StorageState { .. }
+                    | ProcessValueKind::Local { .. }
+                    | ProcessValueKind::ForeignCall { .. }
+                    | ProcessValueKind::HostCall { .. }
+                    | ProcessValueKind::Call { .. }
+                    | ProcessValueKind::CheckedIndex { .. }
+                    | ProcessValueKind::Invalid
+            ) && !crate::ir::process::any_process_value_dependency(&value.kind, |dependency| {
+                (dependency.0 as usize) < first
+            })
+        })
+}
+
+/// Expand one already-selected Siox function over already-lowered operands.
 /// Calls and operators share this implementation so receiver binding,
 /// overload bodies, recursion recovery, and result typing cannot drift.
 #[allow(clippy::too_many_arguments)]
-fn inline_process_function(
+fn expand_process_function(
     function: &ast::FnDecl,
     call: crate::diag::Span,
     receiver: Option<ProcessValueId>,
@@ -4814,22 +5058,34 @@ fn inline_process_function(
         return None;
     }
 
-    let return_type = return_type
+    // The body computes in its declared return type when that is a kernel
+    // number (`-> integer`): the caller's type narrows at the boundary.
+    // Evaluated in the caller's `ufixed<8, 4>`, `return n / d;` divided
+    // 8-bit operands. A family (`-> ufixed`), an abstract parameter or no
+    // declaration leaves it to the caller's type, then the arguments'.
+    let declared = function
+        .ret
+        .as_ref()
+        .and_then(|ty| declared_process_type(ty, context.resolved))
+        .filter(|ty| is_concrete_type(ty, context));
+    let caller_type = return_type
         .filter(|ty| is_concrete_type(ty, context))
-        .cloned()
-        .or(generic_return)
-        .or_else(|| {
-            function
-                .ret
-                .as_ref()
-                .and_then(|ty| declared_process_type(ty, context.resolved))
-        });
+        .cloned();
+    let return_type = match declared {
+        Some(declared @ (crate::types::Ty::Integer | crate::types::Ty::Real)) => Some(declared),
+        declared => return_type
+            .filter(|ty| is_concrete_type(ty, context))
+            .cloned()
+            .or(generic_return)
+            .or(declared),
+    };
     context.value_bindings.push(bindings);
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(return_type);
     context.inline_value_locals.push(Vec::new());
     context.inline_value_branches.push(Vec::new());
-    let result = inline_value_statements(&body.stmts, process, context);
+    let statements = body.stmts.iter().collect::<Vec<_>>();
+    let result = inline_value_statements(&statements, process, context);
     let branches = context.inline_value_branches.pop().unwrap();
     let mut locals = context.inline_value_locals.pop().unwrap();
     for local in &mut locals {
@@ -4846,6 +5102,16 @@ fn inline_process_function(
         (Some(result), Some(argument)) => Some(inherit_receiver_layout(result, argument, context)),
         (result, _) => result,
     }?;
+    // Keep the declared numeric evaluation and caller-family boundary from
+    // fixed-point lowering; source provenance wraps that same executable value.
+    let result = match caller_type {
+        Some(
+            caller @ crate::types::Ty::Array {
+                family: Some(_), ..
+            },
+        ) => retype(result, &caller, context),
+        _ => result,
+    };
     let parameters = function
         .params
         .iter()
@@ -4889,6 +5155,39 @@ fn inline_process_function(
     );
     context.process_ir.value_layouts[id.0 as usize] = layout;
     Some(id)
+}
+
+/// `value` as a `ty`: narrowed to a sized array's width, otherwise relabelled
+/// with the type at its own width. Unchanged when it already has that type.
+fn retype(
+    value: ProcessValueId,
+    ty: &crate::types::Ty,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    let current = context.process_ir.values[value.0 as usize].ty.clone();
+    if current.as_ref() == Some(ty) {
+        return value;
+    }
+    let key = |ty: &crate::types::Ty| process_type_key(ty, context);
+    if current.as_ref().and_then(key).is_some() && current.as_ref().and_then(key) == key(ty) {
+        return value;
+    }
+    if matches!(ty, crate::types::Ty::Array { len, .. } if *len > 0) {
+        return narrow_to_type(value, Some(ty), context);
+    }
+    let process_value = &context.process_ir.values[value.0 as usize];
+    let (span, width) = (process_value.span, process_value.bit_width);
+    let retyped = push_value(
+        span,
+        Some(ty.clone()),
+        width,
+        ProcessValueKind::RawResize { operand: value },
+        context,
+    );
+    if let Some(layout) = process_value_source_layout(value, context.process_ir).cloned() {
+        context.process_ir.value_layouts[retyped.0 as usize] = Some(layout);
+    }
+    retyped
 }
 
 /// The caller operand that determines a generic function's return type and
@@ -5440,12 +5739,12 @@ fn inline_process_unary_operator(
 /// by std and hardware lowering; other statements deliberately leave the call
 /// explicit and fail closed in native Process lowering.
 fn inline_value_statements(
-    statements: &[Stmt],
+    statements: &[&Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> Option<(ProcessValueId, crate::diag::Span)> {
     let (statement, rest) = statements.split_first()?;
-    match statement {
+    match *statement {
         Stmt::Return {
             value: Some(value), ..
         } => {
@@ -5486,16 +5785,18 @@ fn inline_value_statements(
 
 /// Inline one branch in a fresh lexical binding scope, appending the source
 /// continuation so a branch without an early return falls through normally.
+/// The sequence borrows both: copying the statements here re-copied the whole
+/// rest of a function at every nested `if`.
 fn inline_value_branch(
     branch: &[Stmt],
     extent: Option<crate::diag::Span>,
-    continuation: &[Stmt],
+    continuation: &[&Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> Option<(ProcessValueId, crate::diag::Span)> {
     let first_local = context.inline_value_locals.last()?.len();
     let mut statements = Vec::with_capacity(branch.len() + continuation.len());
-    statements.extend_from_slice(branch);
+    statements.extend(branch);
     statements.extend_from_slice(continuation);
     context
         .value_bindings
@@ -5520,7 +5821,7 @@ fn inline_value_branch(
 /// Turn a function-body `if` into a dependency-ordered Process selection.
 fn inline_value_if(
     statement: &ast::IfStmt,
-    continuation: &[Stmt],
+    continuation: &[&Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> Option<(ProcessValueId, crate::diag::Span)> {
@@ -5540,9 +5841,14 @@ fn inline_value_if(
             process,
             context,
         )?,
+        // `else if` is the branch `{ if … }`: inline it in its own scope.
         Some(ElseBranch::If(inner)) => {
-            let branch = [Stmt::If(inner.clone())];
-            inline_value_branch(&branch, None, continuation, process, context)?
+            context
+                .value_bindings
+                .push(std::collections::HashMap::new());
+            let value = inline_value_if(inner, continuation, process, context);
+            context.value_bindings.pop();
+            value?
         }
         None => inline_value_branch(&[], None, continuation, process, context)?,
     };
@@ -5555,7 +5861,7 @@ fn inline_value_if(
 /// comparisons and selects.
 fn inline_value_match(
     statement: &ast::MatchStmt,
-    continuation: &[Stmt],
+    continuation: &[&Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> Option<(ProcessValueId, crate::diag::Span)> {
@@ -6487,6 +6793,20 @@ fn truncate_process_values(context: &mut LoweringContext<'_>, length: usize) {
     context.cfg_call_cache.truncate(length);
     context.process_ir.values.truncate(length);
     context.process_ir.value_layouts.truncate(length);
+    // Shared bodies and recorded calls built in the removed range go too.
+    // Bodies are appended as they complete, so only a tail is ever removed.
+    let process_ir = &mut *context.process_ir;
+    process_ir
+        .functions
+        .retain(|function| (function.result.0 as usize) < length);
+    let functions = process_ir.functions.len() as u32;
+    process_ir
+        .calls
+        .retain(|call| (call.value.0 as usize) < length && call.function.0 < functions);
+    context
+        .shared_functions
+        .borrow_mut()
+        .retain(|_, shared| shared.is_none_or(|id| id.0 < functions));
 }
 
 fn push_value(
@@ -6693,6 +7013,8 @@ fn source_value_width(
             ProcessNumber::Integer(_) | ProcessNumber::Real(_) => Some(64),
         },
         ProcessValueKind::BitString { width, .. } => Some(*width),
+        // A parameter is pushed with its argument's width.
+        ProcessValueKind::Parameter { .. } => None,
         ProcessValueKind::Char(_) => Some(32),
         ProcessValueKind::String(value) => {
             u32::try_from(value.chars().count()).ok()?.checked_mul(32)
@@ -7197,6 +7519,7 @@ mod tests {
             inline_value_locals: Vec::new(),
             inline_value_branches: Vec::new(),
             cfg_call_cache: vec![],
+            shared_functions: &std::cell::RefCell::new(SharedFunctions::new()),
         };
 
         let result = inherit_receiver_layout(ProcessValueId(1), ProcessValueId(0), &mut context);
@@ -8151,6 +8474,8 @@ mod tests {
         let span = crate::diag::Span::new(FileId(0), 0..1);
         let design = Design {
             process_ir: ProcessIr {
+                functions: Vec::new(),
+                calls: Vec::new(),
                 storages: Vec::new(),
                 processes: vec![ProcessCfg {
                     id: ProcessId(0),

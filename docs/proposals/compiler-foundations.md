@@ -160,8 +160,8 @@ registry.
 The lang-item mechanism is implemented: `Resolved::lang` maps roles to `DefId`,
 `core` is embedded by the compiler, and `core`/`std` declare hook roles through
 `attr lang`. Built-in macros live in `core::macros` over `builtin #`.
-The current library surface is in [std.md](../std.md); macro semantics are in
-[language.md](../language.md), §3.30. These are no longer proposals.
+The current library surface is in [std.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/std.md); macro semantics are in
+[language.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/language.md), §3.30. These are no longer proposals.
 
 **Remaining problem.** Type classification still has leaf-name dispatch such
 as `types/keys.rs::ty_from_head`, and frontend-only fixtures retain fallback

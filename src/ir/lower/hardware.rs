@@ -401,6 +401,7 @@ fn normalized_value_width(
         | ProcessValueKind::ForeignCall { .. }
         | ProcessValueKind::HostCall { .. } => Some(64),
         ProcessValueKind::BitString { width, .. } => Some(*width),
+        ProcessValueKind::Parameter { .. } => value.bit_width,
         ProcessValueKind::Char(_) => Some(1),
         ProcessValueKind::Signal {
             state: ProcessSignalState::Event,

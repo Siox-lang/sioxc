@@ -602,7 +602,7 @@ impl<'a> Lowering<'a> {
         let mut out = HashMap::new();
         // Trait impls land in `op_impls` keyed by (trait, type); `impl New for T`
         // has a `new()` whose constant body is `T`'s uninitialized default.
-        for ((tr, ty), fns) in &self.op_impls {
+        for (tr, ty, fns) in self.op_impls.iter() {
             if tr != "New" {
                 continue;
             }
@@ -616,7 +616,7 @@ impl<'a> Lowering<'a> {
                             let is_char = ty == "Char"
                                 || struct_derives_kernel(ty, "Char", &self.structs, &self.free_fns);
                             if let Some(v) = self.const_init_value(e, Some(ty), is_char) {
-                                out.insert(ty.clone(), v);
+                                out.insert(ty.to_owned(), v);
                             }
                         }
                     }

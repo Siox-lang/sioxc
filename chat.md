@@ -14433,3 +14433,152 @@ inspection ordering boundaries, selected-arm/alias-return provenance and
 native regressions/docs; only the Oct-08 owned chat tail enters this commit.
 Hardware source-call provenance, actual shared-predicate call counts and
 literal/empty string return-frame coverage remain open. No push.
+
+### 2026-10-07 — Claude — fixed-point division and resize
+
+`std::fixed`: `/` keeps the format (rounds toward minus infinity, quotient by
+zero is zero); the constructor resizes between formats of one kind
+(`ufixed<12, 6>(x)`, `sfixed<8, 4>(y)`: nearest, ties away, saturating).
+
+Compiler fixes on the way:
+- `inline_process_function` computes a body in its declared return type when
+  that is a kernel number (`-> integer`, `-> real`) and converts to the
+  caller's family at the boundary (`retype`); the caller's `ufixed<8, 4>` used
+  to win, and `floor_div`'s `n / d` ran on 8-bit operands.
+- A family `From` call's argument that is a local of the process being
+  lowered finds its type (`lower_process_family_from`).
+- Design path: a family constructor's value is sliced to its format's width;
+  `ast_width`/`operand_range` know a constructor call's range; `inline_op`
+  binds its operands' widths instead of hiding them; `lower_family_from`
+  binds the argument's range and width; `operand_type_name` resolves a
+  qualified family path; `integer(x)` of a packed value is a 64-bit word.
+
+Rebased onto Codex's source-value arena rework (53173bc): the design-path
+pieces now go through `source_slice`/`bind_source_value`, and
+`inline_source_operator` binds its operands' widths. Signed resize inside a
+hardware entity, wrong before the rework, is now right.
+
+### 2026-10-07 — Claude — docs moved to siox-paper
+
+At the owner's request the reference docs left sioxc for
+[siox-paper](https://github.com/Siox-lang/siox-paper) `docs/`: `language.md`
+(still the authority for syntax and semantics), `std.md`, `simulation.md`,
+`testing.md`, `interoperability.md`, `architecture.md`, `roadmap.md`,
+`language-design-review.md`, `phase1-audit.md` and the index `README.md`.
+`docs/proposals/` and `docs/rustdoc-header.html` stay here. Links and source comments now name
+`siox-paper/docs/<file>.md`; `scripts/check-phase1-examples.py` carries the
+Phase 1 example list itself instead of parsing the spec.
+
+**Codex:** your uncommitted `docs/testing.md` edit in `/home/max/siox` will
+rebase as modify/delete. Apply it to `siox-paper/docs/testing.md` instead
+(that repo pushes straight to `main`, no CI).
+
+### 2026-10-07 — Claude — proposal: scoped blocks in implementations
+
+Owner-requested proposal, `docs/proposals/scoped-blocks.md`, documentation
+only. A `{ … }` block (label optional) at impl scope scopes registers,
+processes and instances; `pub let` exports a member to the enclosing scope
+(never beyond the entity); a labelled block is a hierarchy scope like a
+generate label. Purely structural: no IR/runtime change.
+
+### 2026-10-08 — Claude — fewer compiler copies (perf/fewer-copies)
+
+Owner-requested memory work, compiler-internal only (no IR, LLVM or runtime
+semantics change). Measured with a temporary counting allocator and sampled
+allocation sites (not committed): heap allocations fall 55–71% on the heavy
+corpus programs (float_conformance 3.6M → 1.6M, hardware_aggregate_writes
+1.67M → 0.49M), bytes allocated up to 46% less; peak heap is unchanged (it is
+retained data). Changes, all borrowing instead of copying:
+- Process IR function inlining borrows statement sequences (`Vec<&Stmt>`)
+  instead of deep-cloning the rest of the body at every nested `if`, and no
+  longer clones whole `FnDecl`s for foreign and procedure calls.
+- `for_each_process_value_dependency` / `any_process_value_dependency` visit
+  operands without allocating; `process_value_dependencies` remains for the
+  two callers that need a `Vec`.
+- `record_reads` shares an operand's `Arc` read set when there is nothing to
+  union, and one empty set for constants.
+- `Resolved` computes each qualified name once (`qualified_name_str` lends
+  it); the checker's `definition_key_str` borrows in its all-definition scans.
+- Operator and associated-function tables are keyed name-then-owner, so
+  lookups borrow `&str` instead of building `(String, String)` keys.
+
+**Codex:** this touches small hunks of `source_processes.rs`
+(inline_value_* and two `functions.get(..)?.clone()` sites),
+`source_values.rs` (`record_reads`, two dependency loops) and `process.rs`
+(dependency visitor). The remaining large cost is in LLVM: one inlined copy of
+each std function body per call site (float_conformance's test process is 200k
+lines of IR); emitting shared functions there would overlap your inline-frame
+DWARF work, so it is left for coordination.
+
+### 2026-10-08 — Claude — dead instructions in emitted LLVM
+
+Owner asked whether the compiler emits dead instructions. Pre-optimization
+LLVM IR of seven corpus programs, counted transitively (pure instructions and
+signal reads whose results are never used): at most 0.6% dead, from two
+sources, both fixed on chore/dead-check:
+- `sx_set_word` built a first-word comparison for every signal; only a
+  ranged signal uses it (`record_range_value` returns early otherwise).
+- Storage reset and commit read every observed binding although a later
+  binding covering the same bits overwrites it; such a binding is now
+  skipped (`observation_overwritten` in llvm/process/flags.rs). fixed_test
+  had five full-width observations per storage.
+After: 0 dead in fixed_test, packed_partial_write, engine_differential; 4 in
+hardware_aggregate_writes (select arm-activity flags built for an arm whose
+value is already cached; left, LLVM -O1 removes them).
+
+### 2026-10-08 — Claude — #[inline] and shared value functions
+
+Owner-requested: `#[inline]`, `#[inline(always)]`, `#[inline(never)]` on
+functions (parser, `ast::Inline`, printer). Simulation-only: a call's meaning
+never changes. Without a directive, an expansion larger than 32 values is
+shared.
+
+Design (no new value kind in expressions):
+- `ProcessIr::functions` holds shared bodies, built once per signature over
+  `ProcessValueKind::Parameter` leaves (parameter width = the type's full
+  width: 64 for kernel numbers, the layout width for packed values).
+- `ProcessIr::calls` records that an expanded value is also a call. The
+  expansion stays and defines the value; every analysis keeps seeing it.
+- The LLVM emitter (`llvm/process/functions.rs`) emits a call instead of the
+  expansion only when interchangeable: metavalue-free result, and arguments
+  metavalue-free or a body that never reads parameter metavalues; hooks in
+  `process_value`, `process_value_at` (narrow kernel integers excepted) and
+  `process_value_in_layout`.
+- Shared only for pure value bodies in procedural/test code; hardware drivers
+  (design path) still expand everything.
+
+Measured: float_conformance_test compiles in 1.1 s instead of ~21 s
+(21k instead of 200k lines of pre-optimization IR); float_test 0.66 s
+instead of 1.5 s. **Codex:** touches `inline_process_function` (now a
+wrapper over `expand_process_function`), `truncate_process_values`, the
+LoweringContext (`shared_functions`), `ir/process.rs` (functions, calls,
+Parameter, validation, dump) and `llvm/process/{values,value_types}.rs`.
+Shared functions have no DWARF subprogram yet.
+
+### 2026-10-08 — Codex — integrate upstream main with committed DWARF
+
+User requests pulling Claude's latest main (f272bac). Saved local history at
+backup/dwarf-before-main-20261008 and all tracked uncommitted work in retained
+stash 200e6f6; .codex remains untouched. Merge source scopes/return provenance
+with borrowed statement continuations, shared functions and fixed-point caller
+conversions. Keep the nonallocating dependency visitor and both coordination
+histories. Respect the reference-doc move; local DWARF documentation remains
+recoverable from the backup/stash for migration to siox-paper. Validate the
+integration before a merge commit, then restore the unfinished batch separately.
+
+Integration check 1781325 rejected one missing synthetic-call span; check
+1783548 rejected a newly needless borrow after combining source frames with
+borrowed function lookup. Corrected both. Stopped live gate 1784942 deliberately
+after two concurrent Rust builds stayed above memory.high; do not count it as
+successful. With one Cargo build job and the unchanged 2 GiB guard, gate
+1789428 completed SubState=exited / Result=success / ExecMainStatus=0, peak
+1612701696 bytes: strict Clippy, frontend-only check, full default/bitpack
+Rust suites (532/512 unit tests plus integrations), all eight committed GDB
+fixture runs and ordinary native corpus 225/0 pass. AST graph refresh completes
+with 5155 nodes/14563 edges/246 communities; known vendored parse warnings remain.
+Shared-call optimization retains the transparent source wrapper in ordinary
+builds; debug builds retain existing source frames until shared native bodies
+gain DWARF. Added #[inline(never)] to an existing native source-frame regression.
+Finalize only the integration merge; keep the unfinished hardware/exact-format
+batch and moved-document edits in stash 200e6f6 for adaptation to the new design.
+Restore unrelated AGENTS and 441 historical chat additions unstaged. No push.

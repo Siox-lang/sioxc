@@ -440,7 +440,7 @@ pub fn elaborate_top(
     top: &str,
 ) -> Hierarchy {
     elaborate_roots(modules, resolved, typed, sink, |ent, id| {
-        ent.name.text == top || resolved.qualified_name(id).as_deref() == Some(top)
+        ent.name.text == top || resolved.qualified_name_str(id) == Some(top)
     })
 }
 

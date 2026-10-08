@@ -1,6 +1,6 @@
 # Remaining standard-library build-out
 
-Status: active proposal; implemented exports live in [std.md](../std.md).
+Status: active proposal; implemented exports live in [std.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/std.md).
 Outstanding items are tracked under [std in TODO.md](../../TODO.md#std).
 
 ## Boundary
@@ -8,7 +8,7 @@ Outstanding items are tracked under [std in TODO.md](../../TODO.md#std).
 Std is the mandatory, vendor-independent library of source-defined types,
 operators, conversions, math, text, time and small technology-independent
 helpers. Compiler mechanisms and primitive hooks live in the compiler/core;
-the current split is documented in [std.md](../std.md), not proposed here.
+the current split is documented in [std.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/std.md), not proposed here.
 
 Synchronizers, base metadata, fixed-point formats and initial floating-point
 operators are implemented. Floating-point operators execute through the same
@@ -18,10 +18,11 @@ reference, not in a completed migration plan.
 
 ## Remaining numeric capabilities
 
-1. **Fixed point.** Add division and a resize operation with explicit
-   saturate/wrap and round/truncate choices. Define intermediate precision,
-   signed division, division-by-zero behavior and result-format rules before
-   implementation. Keep `ufixed<W, F>`/`sfixed<W, F>` semantics source-owned.
+1. **Fixed point.** Division and the resizing constructor are implemented
+   (std.md): same-format quotients rounding toward minus infinity, zero for a
+   quotient by zero, and a nearest/saturating resize. Remaining: wrap and
+   truncate resize styles. Keep
+   `ufixed<W, F>`/`sfixed<W, F>` semantics source-owned.
 2. **Floating point.** Add division, square root, subnormal support, additional
    rounding modes and conversions to/from fixed point. Specify exceptional
    values and rounding per operation; do not silently change existing

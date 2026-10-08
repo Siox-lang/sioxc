@@ -14,6 +14,8 @@ mod reconstruct;
 pub(super) struct SourceValues {
     pub(super) ir: ProcessIr,
     reads: Vec<Arc<[SignalId]>>,
+    /// The one shared empty read set, so a constant costs a pointer.
+    no_reads: Option<Arc<[SignalId]>>,
     pub(super) real: HashMap<ProcessValueId, bool>,
     pub(super) non_integer: HashMap<ProcessValueId, bool>,
     pub(super) meta_width: HashMap<(ProcessValueId, u32), u32>,
@@ -75,18 +77,19 @@ impl SourceValues {
             .enumerate()
             .skip(self.meta_presence.len())
         {
-            let has_meta = self
-                .explicit_meta
-                .contains_key(&ProcessValueId(index as u32))
-                || match &node.kind {
-                    ProcessValueKind::Signal { signals, state } => {
-                        !matches!(state, ProcessSignalState::Event)
-                            && signals.iter().any(|signal| meta_of.contains_key(&signal.0))
-                    }
-                    kind => super::super::process::process_value_dependencies(kind)
-                        .iter()
-                        .any(|dependency| self.meta_presence[dependency.0 as usize]),
-                };
+            let has_meta =
+                self.explicit_meta
+                    .contains_key(&ProcessValueId(index as u32))
+                    || match &node.kind {
+                        ProcessValueKind::Signal { signals, state } => {
+                            !matches!(state, ProcessSignalState::Event)
+                                && signals.iter().any(|signal| meta_of.contains_key(&signal.0))
+                        }
+                        kind => super::super::process::any_process_value_dependency(
+                            kind,
+                            |dependency| self.meta_presence[dependency.0 as usize],
+                        ),
+                    };
             self.meta_presence.push(has_meta);
         }
         self.meta_presence[id.0 as usize]
@@ -166,20 +169,46 @@ impl SourceValues {
     fn record_reads(&mut self, first: usize) {
         for index in first..self.ir.values.len() {
             let node = &self.ir.values[index];
-            let mut seen = HashSet::new();
-            let mut reads = Vec::new();
-            if let ProcessValueKind::Signal { signals, .. } = &node.kind {
-                reads.extend(signals.iter().copied());
+            let reads = if let ProcessValueKind::Signal { signals, .. } = &node.kind {
+                Arc::from(signals.as_slice())
             } else {
-                for dependency in super::super::process::process_value_dependencies(&node.kind) {
-                    for &signal in self.reads[dependency.0 as usize].iter() {
-                        if seen.insert(signal) {
-                            reads.push(signal);
+                // A node reading through at most one distinct operand set
+                // shares that set; only a real union is copied.
+                let mut shared: Option<&Arc<[SignalId]>> = None;
+                let mut union = false;
+                super::super::process::for_each_process_value_dependency(
+                    &node.kind,
+                    |dependency| {
+                        let operand = &self.reads[dependency.0 as usize];
+                        match shared {
+                            _ if operand.is_empty() => {}
+                            None => shared = Some(operand),
+                            Some(set) if Arc::ptr_eq(set, operand) => {}
+                            Some(_) => union = true,
                         }
+                    },
+                );
+                match (shared, union) {
+                    (Some(set), false) => Arc::clone(set),
+                    (None, _) => Arc::clone(self.no_reads.get_or_insert_with(|| Arc::from([]))),
+                    (Some(_), true) => {
+                        let mut seen = HashSet::new();
+                        let mut reads = Vec::new();
+                        super::super::process::for_each_process_value_dependency(
+                            &node.kind,
+                            |dependency| {
+                                for &signal in self.reads[dependency.0 as usize].iter() {
+                                    if seen.insert(signal) {
+                                        reads.push(signal);
+                                    }
+                                }
+                            },
+                        );
+                        reads.into()
                     }
                 }
-            }
-            self.reads.push(reads.into());
+            };
+            self.reads.push(reads);
         }
     }
 
@@ -407,9 +436,10 @@ impl SourceValues {
                         self.reference(id)
                     });
                 }
-                pending.extend(super::super::process::process_value_dependencies(
+                super::super::process::for_each_process_value_dependency(
                     &self.ir.values[id.0 as usize].kind,
-                ));
+                    |id| pending.push(id),
+                );
             }
         }
         let mut old = std::mem::take(self);

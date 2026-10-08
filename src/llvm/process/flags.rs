@@ -358,8 +358,11 @@ pub(super) fn emit_state_helpers<'ctx>(
         });
         // Pure output fields are observations, not reset-time drivers. Read
         // their already-reset DUT leaves into the packed storage object.
-        for binding in &storage.bindings {
-            if !matches!(binding.direction, LayoutDirection::Out) {
+        let observes = |direction: &LayoutDirection| matches!(direction, LayoutDirection::Out);
+        for (index, binding) in storage.bindings.iter().enumerate() {
+            if !observes(&binding.direction)
+                || observation_overwritten(design, storage, index, observes)
+            {
                 continue;
             }
             let (offset, binding_width) =
@@ -589,11 +592,13 @@ pub(super) fn emit_state_helpers<'ctx>(
             .expect("declared storage metadata")
         });
         let meta_before_observation = meta_current;
-        for binding in &storage.bindings {
-            if !matches!(
-                binding.direction,
-                LayoutDirection::Out | LayoutDirection::InOut
-            ) {
+        let observes = |direction: &LayoutDirection| {
+            matches!(direction, LayoutDirection::Out | LayoutDirection::InOut)
+        };
+        for (index, binding) in storage.bindings.iter().enumerate() {
+            if !observes(&binding.direction)
+                || observation_overwritten(design, storage, index, observes)
+            {
                 continue;
             }
             let (offset, binding_width) =
@@ -825,4 +830,28 @@ pub(super) fn emit_state_helpers<'ctx>(
         .unwrap()
         .into_int_value();
     builder.build_return(Some(&result)).unwrap();
+}
+
+/// Whether a later observed binding of `storage` covers every bit of binding
+/// `index`. Observations are inserted in order, so such a binding's read
+/// would be overwritten unseen; skipping it leaves no dead reads behind.
+fn observation_overwritten(
+    design: &Design,
+    storage: &crate::ir::ProcessStorage,
+    index: usize,
+    observes: impl Fn(&LayoutDirection) -> bool,
+) -> bool {
+    let Some((offset, width)) =
+        storage_binding_slice(design, storage.id, &storage.bindings[index].projection)
+    else {
+        return false;
+    };
+    storage.bindings[index + 1..].iter().any(|later| {
+        observes(&later.direction)
+            && storage_binding_slice(design, storage.id, &later.projection).is_some_and(
+                |(later_offset, later_width)| {
+                    later_offset <= offset && offset + width <= later_offset + later_width
+                },
+            )
+    })
 }

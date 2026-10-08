@@ -37,6 +37,7 @@ fn echo_text(value: string) -> string {
 fn echo(value: Logic) -> Logic {
     return value; // packed element return stop
 }
+#[inline(never)]
 fn bump(value: integer) -> integer {
     let local: integer = value + 1;
     return local + 1; // value return stop

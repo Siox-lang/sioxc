@@ -51,7 +51,7 @@ impl<'a> Lowering<'a> {
             view_dirs: HashMap::new(),
             enum_reprs: HashMap::new(),
             enum_bases: HashMap::new(),
-            op_impls: HashMap::new(),
+            op_impls: Default::default(),
             blanket_array_impls: HashMap::new(),
             suffix_impls: HashMap::new(),
             free_fns: FunctionIndex::new(resolved),
@@ -247,8 +247,7 @@ impl<'a> Lowering<'a> {
                                 for it in &im.items {
                                     if let ast::ImplItem::Fn(f) = it {
                                         self.op_impls
-                                            .entry((operator.clone(), ty.clone()))
-                                            .or_default()
+                                            .entry(&operator, ty.clone())
                                             .push((f, rhs_arg.clone()));
                                     }
                                 }

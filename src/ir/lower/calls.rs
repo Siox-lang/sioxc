@@ -58,11 +58,19 @@ impl<'a> Lowering<'a> {
             .free_fns
             .struct_path_key(path)
             .or_else(|| expr_path(base))?;
-        let fns = self.op_impls.get(&("From".to_string(), target))?;
-        let source = match self.expr_types.get(&ast::expr_span(arg)) {
-            Some(crate::types::Ty::Real) => "real".to_string(),
-            Some(crate::types::Ty::Integer) => "integer".to_string(),
-            _ => self.operand_type_name(arg)?,
+        let fns = self.op_impls.get("From", &target)?;
+        // The operand's own family first (`sfixed<16, 8>` resizing): the
+        // checker records this conversion form's argument as a kernel integer.
+        let source = match self
+            .operand_type_name(arg)
+            .filter(|family| family != "integer")
+        {
+            Some(family) => family,
+            None => match self.expr_types.get(&ast::expr_span(arg)) {
+                Some(crate::types::Ty::Real) => "real".to_string(),
+                _ if self.is_real_expr(&self.lower_scalar_env(arg, env)) => "real".to_string(),
+                _ => "integer".to_string(),
+            },
         };
         let (f, _) = fns.iter().find(|(f, declared)| {
             declared.clone().or_else(|| {
@@ -115,13 +123,40 @@ impl<'a> Lowering<'a> {
             param.text.clone(),
             self.bind_source_value(self.lower_val_env(arg, env), ast::expr_span(arg), None),
         );
-        let _shapes = self.source_shape_scope(
+        // A resize reads the source format too: `value'low`, and its width
+        // travels to the calls in the body (`word(value)`).
+        self.bind_range_attrs(&mut fenv, &param.text, arg, env);
+        let width = self.ast_width(arg);
+        fenv.insert(
+            format!("{}::length", param.text),
+            Val::Scalar(Expr::Const(width as u64)),
+        );
+        let saved_width = self
+            .param_widths
+            .borrow_mut()
+            .insert(param.text.clone(), width);
+        let shapes = self.source_shape_scope(
             HashMap::new(),
             f.ret
                 .as_ref()
                 .map(|ty| self.source_layout(ty, &self.cur_env)),
         );
-        match self.inline_block(&body.stmts, &fenv)? {
+        let out = self.inline_block(&body.stmts, &fenv);
+        drop(shapes);
+        match saved_width {
+            Some(previous) => self
+                .param_widths
+                .borrow_mut()
+                .insert(param.text.clone(), previous),
+            None => self.param_widths.borrow_mut().remove(&param.text),
+        };
+        // The value is a word of the format, as a stored one is: operator
+        // bodies read its sign bit at `'length - 1`.
+        let length = u32::try_from(left.abs_diff(right) + 1).ok()?;
+        match out? {
+            Val::Scalar(value) if length < 64 => {
+                Some(self.source_slice(&value, length - 1, 0, ast::expr_span(arg)))
+            }
             Val::Scalar(value) => Some(value),
             _ => None,
         }
@@ -138,7 +173,7 @@ impl<'a> Lowering<'a> {
         let src = src.map(str::to_string);
         // No explicit `impl From<src> for target`: try a derivation-total
         // conversion (spec: T(x) is auto for total derivations).
-        let Some(fns) = self.op_impls.get(&("From".to_string(), target.to_string())) else {
+        let Some(fns) = self.op_impls.get("From", target) else {
             return self.derived_conversion(target, src.as_deref(), arg, env);
         };
         let declared = |f: &ast::FnDecl, a: &Option<String>| -> Option<String> {
@@ -520,8 +555,8 @@ impl<'a> Lowering<'a> {
         if let Some(f) = self
             .op_impls
             .iter()
-            .filter(|((_, t), _)| t == ty)
-            .flat_map(|(_, fns)| fns.iter())
+            .filter(|(_, owner, _)| *owner == ty)
+            .flat_map(|(_, _, fns)| fns.iter())
             .find(|(f, rhs)| {
                 // An integer literal argument adopts the owner type, as an
                 // operator's right operand does (`x < 0` on `signed`).
@@ -895,8 +930,18 @@ impl<'a> Lowering<'a> {
                 ast::expr_span(callee),
             );
         }
+        // `integer(x)` of a packed value is its raw word as a 64-bit kernel
+        // integer: the slice makes the backend evaluate it at that width, so
+        // the kernel arithmetic built on it does too. Left at the vector's
+        // width (16 bits for `sfixed<16, 8>`), a later signed step misread
+        // its top bit.
+        let packed_operand = target_w.is_none()
+            && self
+                .operand_type_name(arg)
+                .is_some_and(|family| self.array_families.contains(&family));
         Some(match target_w {
             Some(w) if w > 0 && w < 64 => self.source_slice(&v, w - 1, 0, ast::expr_span(callee)),
+            None if packed_operand => self.source_slice(&v, 63, 0, ast::expr_span(callee)),
             _ => v,
         })
     }
@@ -995,7 +1040,14 @@ impl<'a> Lowering<'a> {
                     .then_some(ret);
                 }
                 let head = match callee.as_ref() {
-                    ast::Expr::Index { base, .. } => expr_path(base),
+                    // `std::fixed::sfixed[7..-8](x)`: the family the path
+                    // resolves to, however it is spelled.
+                    ast::Expr::Index { base, .. } => match base.as_ref() {
+                        ast::Expr::Path(p) => {
+                            self.free_fns.type_owner_key(p).or_else(|| expr_path(base))
+                        }
+                        _ => expr_path(base),
+                    },
                     ast::Expr::Path(p) => self
                         .free_fns
                         .type_owner_key(p)
