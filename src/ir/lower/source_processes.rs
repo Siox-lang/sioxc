@@ -4132,22 +4132,8 @@ fn lower_process_family_from(
     // no type for a literal argument, so the value says what it is.
     let checked = operand_type(argument, process, context);
     let operand = value_ref_with_type(argument, process, context, checked.as_ref());
-    // A local of the process being lowered is in `process`, not yet in the
-    // arena's finished processes.
-    let own_local =
-        |context: &LoweringContext<'_>| match &context.process_ir.values[operand.0 as usize].kind {
-            ProcessValueKind::Local { local, .. } => {
-                let local = process.locals.get(local.0 as usize)?;
-                local
-                    .ty
-                    .clone()
-                    .or_else(|| process_type_from_layout(local.layout.as_ref()?, context.resolved))
-            }
-            _ => None,
-        };
     let source_type = checked
         .or_else(|| process_value_type(operand, context))
-        .or_else(|| own_local(context))
         .or_else(|| {
             Some(if process_value_is_real(operand, context) {
                 crate::types::Ty::Real
@@ -6484,6 +6470,23 @@ fn value_ref_with_type_inner(
         }
     };
 
+    // A local of the CFG under construction is not in process_ir.processes
+    // yet, so later lookups through the arena cannot find its declaration.
+    // Give the read its declared type now: a `print!` argument has no
+    // checked expression type, and an untyped `unsigned` local had no
+    // display kind, so its `print!` was rejected.
+    if ty.is_none() {
+        if let ProcessValueKind::Local { local, .. } = &kind {
+            ty = process.locals.get(local.0 as usize).and_then(|local| {
+                local.ty.clone().or_else(|| {
+                    local
+                        .layout
+                        .as_ref()
+                        .and_then(|layout| process_type_from_layout(layout, context.resolved))
+                })
+            });
+        }
+    }
     ty = ty.or_else(|| process_kind_type(&kind, context));
     let width = source_value_width(&kind, ty.as_ref(), process, context);
     // The CFG under construction is not yet in process_ir.processes. Bind
