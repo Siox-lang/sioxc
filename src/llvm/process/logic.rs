@@ -173,6 +173,7 @@ pub(super) fn process_packed_meta_in_layout<'ctx>(
 ) -> Option<IntValue<'ctx>> {
     let key = (id, cache.key(id, active, None).1, layout.clone());
     if let Some(value) = cache.metadata.get(&key).copied() {
+        debug::capture_metadata(builder, design, cache, id, layout);
         return Some(value);
     }
     let value = process_packed_meta_uncached(
@@ -187,6 +188,7 @@ pub(super) fn process_packed_meta_in_layout<'ctx>(
         cache,
     )?;
     cache.metadata.insert(key, value);
+    debug::capture_metadata(builder, design, cache, id, layout);
     Some(value)
 }
 

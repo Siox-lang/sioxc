@@ -26,12 +26,12 @@ pub(super) fn process_bitwise_chain<'ctx>(
             if let Some(value) =
                 debug::argument_value(builder, design, cache, (id, width, false, None))
             {
-                debug::capture_value(builder, cache, id, value);
+                debug::capture_value(builder, design, cache, id, value);
                 operands.push(value);
                 continue;
             }
             if let Some(value) = cache.emitted_value(key) {
-                debug::capture_value(builder, cache, id, value);
+                debug::capture_value(builder, design, cache, id, value);
                 operands.push(fit(builder, value, width)?);
                 continue;
             }
@@ -103,7 +103,7 @@ pub(super) fn process_bitwise_chain<'ctx>(
             _ => unreachable!("only equal-width bitwise nodes are scheduled"),
         };
         cache.emitted.insert(key, value);
-        debug::capture_value(builder, cache, id, value);
+        debug::capture_value(builder, design, cache, id, value);
         operands.push(value);
     }
     (operands.len() == 1).then(|| operands[0])

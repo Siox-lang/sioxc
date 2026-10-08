@@ -20,10 +20,12 @@ impl<'ctx> MetadataEmitter<'_, 'ctx, '_> {
     ) -> Option<IntValue<'ctx>> {
         let key = (id, self.cache.key(id, active, None).1, layout.clone());
         if let Some(value) = self.cache.metadata.get(&key).copied() {
+            debug::capture_metadata(self.builder, self.design, self.cache, id, layout);
             return Some(value);
         }
         let value = self.emit_uncached(id, layout, active)?;
         self.cache.metadata.insert(key, value);
+        debug::capture_metadata(self.builder, self.design, self.cache, id, layout);
         Some(value)
     }
 

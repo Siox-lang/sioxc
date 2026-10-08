@@ -15364,3 +15364,68 @@ active: demand-preserving effectful/checked/nested-call/partial aggregate
 grouping, formal declaration-type audits, packed expression companions and
 runtime/nonempty-literal string, normalized-wide and mixed return ABI checks
 remain. Completion estimate remains 97%; no push.
+
+### 2026-10-08 — Codex — DWARF packed expression companions
+
+Previous goal turn completed acceptance 2755037 and commits becea98/f0f7808.
+Continue owning native source-frame metadata and tests/debug_info.rs. Reproduce
+packed expression parameter/local companion inspection using source-defined
+Logic symbols, then reuse the existing recursive inspection layout/copy code.
+Only already-consumed value/metadata planes may make a binding available; do
+not evaluate a source expression merely to inspect it or fabricate known zeros
+for an unavailable plane. Audit procedural and hardware expression callers and
+native argument demand before changing the common capture path. Preserve
+unrelated AGENTS/441 historical chat lines/.codex. Full DWARF remains active;
+no push.
+
+Probe 2819825 fails/101, peak 169930752: native/VCD results pass but the
+expression frame has no value$logic/copy$logic. Reuse the existing recursive
+Logic inspection layout and decoder, with captures at normal value/metadata
+emission. Probe 2825087 passes/0, peak 804552704, for scalar expression bindings.
+Expanded probe 2829653 passes strict Clippy but fails native hardware Logic
+index results. Independent ordinary build 2832089 fails identically (peak
+23859200): a packed struct-port element return loses its X discriminant before
+DWARF. Record that separate SourceValues value-lowering bug in TODO; do not
+claim the metadata change fixes it. The hardware companion regression instead
+uses the working tag projection to verify packed fields are unavailable when
+pruned. Add full procedural struct-plane inspection and an unconsumed-metadata
+case that must never appear as binary zeros. No extra expression/plane demand
+or native argument is introduced by the companion capture hooks.
+
+Probe 2835082 passes/0, peak 829210624, for recursive struct and partial hardware
+views in both modes. Probe 2839387 passes/0, peak 144556032, after adding 81-bit
+multiword states, descending arrays with negative labels and selected/untaken
+branches. Probe 2842159 passes strict Clippy and seven DWARF fixtures but fails
+the existing wide low-byte formal at its return stop. Disassembly probe 2846807
+confirms SelectionDAG reused the later packed extraction inside entry inspection
+stores, giving it the return source line before references became available.
+Separate discovered-native-input inspection from body emission with a common
+basic-block boundary; do not weaken the wide formal checks or change ABI demand.
+Probe 2849002 passes exited/success/0, peak 952139776: strict all-feature Clippy
+and all eight DWARF fixtures in default/bitpack modes. Missing companions retain
+their declarations without an invented null/zero location and GDB reports them
+optimized out. Full enum snapshots reuse existing std-owned decoding; buffers
+and fragment offsets are inspection-only. Own architecture/testing notes now;
+freeze source for full acceptance. Preserve remaining aggregate grouping,
+formal-type/plane-transport audits and string/wide/mixed return ABI work. No push.
+
+Acceptance 2856154 is terminal exited/success/0, peak 1612632064 bytes.
+Formatting, strict all-feature Clippy, frontend-only compilation, full default/
+bitpack suites (534/513 units plus integrations), all eight DWARF fixtures and
+ordinary/default-debug/bitpack-debug corpora (228/0 each) pass. All four FIFO/
+wide native GDB inspection/stepping and VCD parity smokes pass. Companion checks
+cover all nine std states, 9/81-bit snapshots, known binary values, recursive
+structs, negative descending array labels, selected/untaken branches and
+unavailable/pruned planes. The existing wide regression also verifies complete
+formal visibility before a narrow callee's return stop after the entry/body
+ordering fix. No Rust source changed after acceptance.
+AST refresh finishes at 5265 nodes, 14956 edges and 246 communities with the
+known four vendor partial-parse and six no-symbol warnings, without LLM/API
+work. Commit only consumed-plane inspection hooks, native frame setup/order,
+regression, TODO and this tail, with separate architecture/testing notes.
+Preserve AGENTS/441 historical chat lines/.codex and all backups. Full DWARF
+remains active: demand-preserving effectful/checked/nested-call/partial
+aggregate grouping, formal-type and further plane-transport audits, and
+runtime/nonempty-literal string, normalized-wide and mixed return ABI checks
+remain open. The independent hardware scalar packed-index bug is recorded in
+TODO, not fixed or counted as passing. Completion estimate remains 97%; no push.

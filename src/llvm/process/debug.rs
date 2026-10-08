@@ -20,9 +20,9 @@ mod logic;
 mod parameters;
 mod strings;
 pub(super) use inline_values::{
-    active_value, argument_value, call_value, capture_value, inline_body, inline_value,
-    literal_value, return_bits, return_value, selected_value, source_return_type, ValueArguments,
-    ValueFrame, ValueLocationGuard,
+    active_value, argument_value, call_value, capture_metadata, capture_value, inline_body,
+    inline_value, literal_value, return_bits, return_value, selected_value, source_return_type,
+    ValueArguments, ValueFrame, ValueLocationGuard,
 };
 use logic::{LogicMirror, LogicSource};
 use parameters::ParameterLocation;

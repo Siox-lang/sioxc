@@ -19,7 +19,7 @@ pub(super) fn process_value_in_layout<'ctx>(
 ) -> Option<IntValue<'ctx>> {
     let width = process_value_width_in_layout(design, id, layout)?;
     if let Some(parameter) = cache.parameters.get(&id).copied() {
-        debug::capture_value(builder, cache, id, parameter);
+        debug::capture_value(builder, design, cache, id, parameter);
         return fit(builder, parameter, width);
     }
     if let Some(parameter) = debug::argument_value(
@@ -28,12 +28,12 @@ pub(super) fn process_value_in_layout<'ctx>(
         cache,
         (id, width, false, Some(layout.clone())),
     ) {
-        debug::capture_value(builder, cache, id, parameter);
+        debug::capture_value(builder, design, cache, id, parameter);
         return Some(parameter);
     }
     let cache_key = cache.key(id, active, Some(width));
     if let Some(value) = cache.emitted_value(cache_key) {
-        debug::capture_value(builder, cache, id, value);
+        debug::capture_value(builder, design, cache, id, value);
         return (value.get_type().get_bit_width() == width).then_some(value);
     }
     let value = design.process_ir.values.get(id.0 as usize)?;
@@ -588,7 +588,7 @@ pub(super) fn process_value_in_layout<'ctx>(
         )?,
     };
     cache.emitted.insert(cache_key, emitted);
-    debug::capture_value(builder, cache, id, emitted);
+    debug::capture_value(builder, design, cache, id, emitted);
     Some(emitted)
 }
 
@@ -618,12 +618,12 @@ pub(super) fn process_value<'ctx>(
             None,
         ),
     ) {
-        debug::capture_value(builder, cache, id, parameter);
+        debug::capture_value(builder, design, cache, id, parameter);
         return Some(parameter);
     }
     let cache_key = cache.key(id, active, None);
     if let Some(value) = cache.emitted_value(cache_key) {
-        debug::capture_value(builder, cache, id, value);
+        debug::capture_value(builder, design, cache, id, value);
         return Some(value);
     }
     let value = design.process_ir.values.get(id.0 as usize)?;
@@ -648,7 +648,7 @@ pub(super) fn process_value<'ctx>(
             cache,
         ) {
             cache.emitted.insert(cache_key, result);
-            debug::capture_value(builder, cache, id, result);
+            debug::capture_value(builder, design, cache, id, result);
             return Some(result);
         }
     }
@@ -1677,6 +1677,6 @@ pub(super) fn process_value<'ctx>(
         _ => return None,
     };
     cache.emitted.insert(cache_key, emitted);
-    debug::capture_value(builder, cache, id, emitted);
+    debug::capture_value(builder, design, cache, id, emitted);
     Some(emitted)
 }

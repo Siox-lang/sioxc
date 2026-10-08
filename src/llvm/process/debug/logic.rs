@@ -41,7 +41,7 @@ pub(super) struct LogicMirror<'ctx> {
 
 /// Replace only packed enum leaves; keep struct fields, array labels and all
 /// other scalar types. This layout belongs to debugger snapshots, not the IR.
-fn inspection_layout(design: &Design, layout: &SourceLayout) -> Option<SourceLayout> {
+pub(super) fn inspection_layout(design: &Design, layout: &SourceLayout) -> Option<SourceLayout> {
     let mut result = layout.clone();
     match &mut result.kind {
         LayoutKind::Packed {
@@ -156,7 +156,7 @@ impl<'ctx> DebugInfo<'ctx, '_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn copy_logic_fields(
+    pub(super) fn copy_logic_fields(
         &self,
         builder: &Builder<'ctx>,
         design: &Design,

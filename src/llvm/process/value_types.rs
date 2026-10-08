@@ -170,7 +170,7 @@ pub(super) fn process_value_at<'ctx>(
     let value = design.process_ir.values.get(id.0 as usize)?;
     let _location = debug::ValueLocationGuard::new(builder, cache, value.span);
     if let Some(parameter) = cache.parameters.get(&id).copied() {
-        debug::capture_value(builder, cache, id, parameter);
+        debug::capture_value(builder, design, cache, id, parameter);
         return if signed && process_value_is_signed(design, id) {
             fit_signed(builder, parameter, width)
         } else {
@@ -180,7 +180,7 @@ pub(super) fn process_value_at<'ctx>(
     if let Some(parameter) =
         debug::argument_value(builder, design, cache, (id, width, signed, None))
     {
-        debug::capture_value(builder, cache, id, parameter);
+        debug::capture_value(builder, design, cache, id, parameter);
         return Some(parameter);
     }
     let natural_width = value.bit_width?;
@@ -211,7 +211,7 @@ pub(super) fn process_value_at<'ctx>(
     if let ProcessValueKind::InlineCall { operand, source } = &value.kind {
         let key = (id, cache.key(id, active, None).1, width, signed);
         if let Some(value) = cache.contextual_value(key) {
-            debug::capture_value(builder, cache, id, value);
+            debug::capture_value(builder, design, cache, id, value);
             return Some(value);
         }
         let emitted = debug::inline_value(
@@ -243,7 +243,7 @@ pub(super) fn process_value_at<'ctx>(
             },
         )?;
         cache.contextual.insert(key, emitted);
-        debug::capture_value(builder, cache, id, emitted);
+        debug::capture_value(builder, design, cache, id, emitted);
         return Some(emitted);
     }
     // Arithmetic is evaluated in the width supplied by its consumer, not
@@ -256,7 +256,7 @@ pub(super) fn process_value_at<'ctx>(
     if width > natural_width {
         let key = (id, cache.key(id, active, None).1, width, signed);
         if let Some(value) = cache.contextual_value(key) {
-            debug::capture_value(builder, cache, id, value);
+            debug::capture_value(builder, design, cache, id, value);
             return Some(value);
         }
         let contextual = match &value.kind {
@@ -317,7 +317,7 @@ pub(super) fn process_value_at<'ctx>(
         };
         if let Some(value) = contextual {
             cache.contextual.insert(key, value);
-            debug::capture_value(builder, cache, id, value);
+            debug::capture_value(builder, design, cache, id, value);
             return Some(value);
         }
     }

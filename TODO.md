@@ -71,6 +71,14 @@ the [ingress invariants](https://github.com/Siox-lang/siox-paper/blob/main/docs/
 when extending the IR; executable extensions and optimization measurements are
 listed under LLVM and Output below.
 
+- 🔴 **Hardware scalar packed-index metavalues.** A pure source function
+  returning a `Logic` element from a packed struct port currently loses the
+  discriminant in hardware lowering (`copy.data[6]` on `"01XZUWLH-"` returns
+  binary zero rather than `X`). Both ordinary and DWARF native builds reproduce
+  the failure; the same procedural call is correct. Preserve the source enum
+  and companion-plane dependency through SourceValues field/index expansion,
+  then verify native results and waveform parity in both packing modes.
+
 ## LLVM
 
 Owns exact-width native code generation and the object-side runtime ABI. Code:
@@ -167,9 +175,12 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   Audit formal declaration types for hardware operators/suffixes/conversions
   and constrained/generic signatures. Procedural 81/129-bit constructor and
   generic bindings now retain their checked signed/unsigned target type even
-  without stored layouts, including narrow/wider consumer tests. Add packed
-  unknown-state expression companion checks and verify GDB `finish` for
-  runtime/nonempty-literal strings,
+  without stored layouts, including narrow/wider consumer tests. Expression
+  parameters/locals now expose recursive `$logic` companions over already
+  consumed value/metadata planes, with 9/81-bit, selected-branch, negative-array
+  label and partial-hardware-field checks. Unconsumed or pruned planes remain
+  unavailable, not fabricated binary values. Audit other argument/return-plane
+  transports and verify GDB `finish` for runtime/nonempty-literal strings,
   normalized wide scalars and mixed-layout/partial aggregate return ABIs.
   GDB 18.1 on AMD64 does not classify arbitrary-width basic integer returns:
   an 81-bit signed return reports zero and a 129-bit return triggers an internal

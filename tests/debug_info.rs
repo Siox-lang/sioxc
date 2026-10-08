@@ -873,6 +873,214 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
 }
 
 #[test]
+fn packed_expression_bindings_expose_logic_companions() {
+    let directory = std::env::temp_dir().join(format!(
+        "siox_dwarf_expression_logic_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("companions.siox");
+    let text = r#"module debug_expression_logic;
+use std::bits::unsigned;
+struct Packet { pub tag: integer, pub data: unsigned[9], pub tail: unsigned[3], pub matrix: unsigned[3][-1..-2] }
+fn tap(value: unsigned[9]) -> Logic {
+    let copy: unsigned[9] = value;
+    let result: Logic = copy[6];
+    return result; // expression logic return stop
+}
+fn tap_packet(value: Packet) -> Logic {
+    let copy: Packet = value;
+    let result: Logic = copy.data[6];
+    return result; // aggregate logic return stop
+}
+fn tap_tag(value: Packet) -> integer {
+    let copy: Packet = value;
+    return copy.tag; // partial hardware logic return stop
+}
+fn value_only(value: unsigned[9]) -> integer {
+    let copy: unsigned[9] = value;
+    return integer(copy); // unavailable logic return stop
+}
+fn tap_wide(value: unsigned[81]) -> Logic {
+    let copy: unsigned[81] = value;
+    let result: Logic = copy[78];
+    return result; // wide logic return stop
+}
+fn selected(value: unsigned[9], take: integer) -> Logic {
+    if take > 0 {
+        let copy: unsigned[9] = value;
+        let result: Logic = copy[6];
+        return result; // selected logic return stop
+    }
+    return '0'; // unselected logic return stop
+}
+entity Probe { value: Packet in, seen: integer out }
+impl Probe { seen = tap_tag(value); }
+#[test] entity T {}
+impl T {
+    let packet: Packet = { .tag = 7, .data = "01XZUWLH-", .tail = "Z1X", .matrix = ["Z10", "H-L"] };
+    let seen: integer;
+    let probe: Probe = { .value = packet, .seen = seen };
+    stimulus: process {
+        let states: unsigned[9] = "01XZUWLH-";
+        let unknown: Logic = tap(states);
+        assert!(unknown == 'X', "unknown expression result");
+        let clean: unsigned[9] = "101010101";
+        let known: Logic = tap(clean);
+        assert!(known == '1', "known expression result");
+        let packet_result: Logic = tap_packet(packet);
+        assert!(packet_result == 'X', "aggregate expression result");
+        let number: integer = value_only(states);
+        assert!(number == 130, "value-only expression result");
+        let wide: unsigned[81] = "WIDE_STATES";
+        let wide_result: Logic = tap_wide(wide);
+        assert!(wide_result == 'X', "multiword expression result");
+        let taken: Logic = selected(states, 1);
+        let skipped: Logic = selected(states, 0);
+        assert!(taken == 'X' and skipped == '0', "selected expression result");
+        await 1ns;
+        assert!(seen == 7, "hardware expression result");
+    }
+}
+"#;
+    let text = text.replace("WIDE_STATES", &"01XZUWLH-".repeat(9));
+    std::fs::write(&source, &text).unwrap();
+    let debug = directory.join("debug.bin");
+    let ordinary = directory.join("ordinary.bin");
+    for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+        command.args(["--std", "std", "--test"]);
+        if debugging {
+            command.arg("--debug");
+        }
+        success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+        success(
+            Command::new(binary)
+                .arg("-o")
+                .arg(binary.with_extension("vcd"))
+                .output()
+                .unwrap(),
+        );
+    }
+    assert_eq!(
+        std::fs::read(debug.with_extension("vcd")).unwrap(),
+        std::fs::read(ordinary.with_extension("vcd")).unwrap()
+    );
+    if Command::new("llvm-dwarfdump")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        success(
+            Command::new("llvm-dwarfdump")
+                .arg("--verify")
+                .arg(&debug)
+                .output()
+                .unwrap(),
+        );
+    }
+    if Command::new("gdb").arg("--version").output().is_ok() {
+        let line = |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
+        let python = format!(
+            r#"import gdb
+bp = gdb.Breakpoint({source:?} + ':{line}')
+aggregate = gdb.Breakpoint({source:?} + ':{aggregate_line}')
+partial = gdb.Breakpoint({source:?} + ':{partial_line}')
+unavailable = gdb.Breakpoint({source:?} + ':{unavailable_line}')
+wide = gdb.Breakpoint({source:?} + ':{wide_line}')
+selected = gdb.Breakpoint({source:?} + ':{selected_line}')
+unselected = gdb.Breakpoint({source:?} + ':{unselected_line}')
+gdb.execute('run')
+counts = {{'tap': 0, 'packet': 0, 'hardware': 0, 'unavailable': 0, 'wide': 0, 'selected': 0, 'unselected': 0}}
+def symbols(view, labels=range(8, -1, -1)):
+    return ''.join(str(view[i] if view.type.code == gdb.TYPE_CODE_ARRAY else view['[' + str(i) + ']']).strip("'") for i in labels)
+def missing(frame, name):
+    try:
+        view = frame.read_var(name)
+        assert view.is_optimized_out, ('missing metadata reported as available', name, str(view))
+    except gdb.MemoryError:
+        pass
+while True:
+    frame = gdb.selected_frame()
+    if frame.name() == 'debug_expression_logic::tap':
+        expected = ['01XZUWLH-', '101010101'][counts['tap']]
+        counts['tap'] += 1
+        for name in ['value$logic', 'copy$logic']:
+            assert symbols(frame.read_var(name)) == expected, (name, str(frame.read_var(name)))
+        assert str(frame.read_var('result')).strip("'") == expected[2]
+    elif frame.name() == 'debug_expression_logic::tap_packet':
+        assert frame.name() == 'debug_expression_logic::tap_packet'
+        counts['packet'] += 1
+        for name in ['value$logic', 'copy$logic']:
+            view = frame.read_var(name)
+            assert symbols(view['data']) == '01XZUWLH-', (name, str(view))
+            assert int(view['tag']) == 7
+            tail = view['tail']
+            assert symbols(tail, range(2, -1, -1)) == 'Z1X'
+            assert symbols(view['matrix']['[-1]'], range(2, -1, -1)) == 'Z10'
+            assert symbols(view['matrix']['[-2]'], range(2, -1, -1)) == 'H-L'
+    elif frame.name() == 'debug_expression_logic::tap_tag':
+        counts['hardware'] += 1
+        for name in ['value$logic', 'copy$logic']:
+            view = frame.read_var(name)
+            assert int(view['tag']) == 7
+            assert view['data'].is_optimized_out and view['tail'].is_optimized_out and view['matrix'].is_optimized_out, (name, str(view))
+    elif frame.name() == 'debug_expression_logic::value_only':
+        assert frame.name() == 'debug_expression_logic::value_only'
+        counts['unavailable'] += 1
+        for name in ['value$logic', 'copy$logic']: missing(frame, name)
+    elif frame.name() == 'debug_expression_logic::tap_wide':
+        counts['wide'] += 1
+        for name in ['value$logic', 'copy$logic']:
+            view = frame.read_var(name)
+            assert symbols(view, range(80, -1, -1)) == '01XZUWLH-' * 9
+            assert view.type.sizeof == 81
+        assert str(frame.read_var('result')).strip("'") == 'X'
+    else:
+        assert frame.name() == 'debug_expression_logic::selected'
+        if frame.find_sal().line == {selected_line}:
+            counts['selected'] += 1
+            for name in ['value$logic', 'copy$logic']:
+                assert symbols(frame.read_var(name)) == '01XZUWLH-'
+        else:
+            assert frame.find_sal().line == {unselected_line}
+            counts['unselected'] += 1
+            missing(frame, 'value$logic')
+    gdb.execute('continue')
+    if gdb.selected_thread() is None: break
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+assert counts['tap'] == 2 and counts['packet'] == 1 and counts['unavailable'] == 1 and counts['hardware'] >= 1, counts
+assert counts['wide'] == counts['selected'] == counts['unselected'] == 1, counts
+"#,
+            source = source.to_string_lossy(),
+            line = line("expression logic return stop"),
+            aggregate_line = line("aggregate logic return stop"),
+            partial_line = line("partial hardware logic return stop"),
+            unavailable_line = line("unavailable logic return stop"),
+            wide_line = line("wide logic return stop"),
+            selected_line = line("selected logic return stop"),
+            unselected_line = line("unselected logic return stop"),
+        );
+        success(
+            Command::new("gdb")
+                .args(["-nx", "-q", "--batch"])
+                .arg(&debug)
+                .args([
+                    "-ex",
+                    "set disable-randomization off",
+                    "-ex",
+                    &format!("python {python}"),
+                ])
+                .output()
+                .unwrap(),
+        );
+    } else {
+        eprintln!("GDB unavailable: native packed results checked, companion probe skipped");
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn hardware_expression_calls_keep_source_frames() {
     let directory =
         std::env::temp_dir().join(format!("siox_dwarf_hardware_{}", std::process::id()));
