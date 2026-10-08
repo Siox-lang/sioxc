@@ -2,7 +2,7 @@
 //! function, called wherever a recorded call can replace its inlined copy.
 
 use super::*;
-use inkwell::types::BasicMetadataTypeEnum;
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
 
 /// Whether `call` may be emitted as a call of its shared function. Its
 /// value must have no metavalues, and an argument may carry metavalues only
@@ -153,7 +153,7 @@ pub(super) fn shared_call<'ctx>(
                 .ok()?
                 .try_as_basic_value()
             {
-                inkwell::values::ValueKind::Basic(value) => Some(value.into_int_value()),
+                inkwell::values::ValueKind::Basic(value) => debug::return_bits(builder, value),
                 _ => None,
             }
         },
@@ -185,9 +185,24 @@ fn shared_function<'ctx>(
         .iter()
         .map(|parameter| int(*parameter).map(BasicMetadataTypeEnum::from))
         .collect::<Option<Vec<_>>>()?;
+    let result: BasicTypeEnum =
+        if let (Some(debug), ProcessValueKind::InlineCall { operand, source }) = (
+            cache.debug,
+            &design.process_ir.values[shared.result.0 as usize].kind,
+        ) {
+            debug::source_return_type(
+                debug,
+                design,
+                source,
+                *operand,
+                int(shared.result)?.get_bit_width(),
+            )?
+        } else {
+            int(shared.result)?.into()
+        };
     let function = module.add_function(
         &name,
-        int(shared.result)?.fn_type(&parameters, false),
+        result.fn_type(&parameters, false),
         Some(Linkage::Internal),
     );
     let builder = context.create_builder();
@@ -251,6 +266,7 @@ fn shared_function<'ctx>(
             &mut body,
         )
     }
+    .and_then(|result| debug::return_value(&builder, result))
     .and_then(|result| builder.build_return(Some(&result)).ok());
     if returned.is_none() {
         // SAFETY: the function was created above and nothing calls it yet.

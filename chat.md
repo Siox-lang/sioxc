@@ -14972,3 +14972,45 @@ the architecture/testing notes in siox-paper. Retain unrelated AGENTS, 441
 historical chat additions and .codex. The full goal stays active: aggregate
 hardware boundaries, folded string returns, formal type audits, packed
 expression companions and real/string finish ABI remain. No push authorized.
+
+### 2026-10-08 — Codex — DWARF real return ABI probe
+
+Accepted alias batch bf30ea6 and docs 785284a are local, not pushed. Continue
+the full goal by owning native source-call return ABI and debugger regressions.
+Prove real-returning identity functions with actual GDB finish/history checks
+for inline/shared bodies, keeping ordinary/debug native results and VCD parity.
+Current LLVM bodies return integer bits while source metadata declares real;
+do not infer correctness from a valid DWARF file or an incidental floating
+register value. Preserve unrelated AGENTS/441 chat lines and .codex, and keep
+the unchanged guarded verification limits. No generated C or alternate path.
+
+Probe 2163771 failed/101 with direct evidence: at identity(value=3.5), GDB
+finish reported 0.0, although ordinary/debug native results and VCD matched.
+The native body used an integer return ABI but advertised real in DWARF.
+Use double at real source-call native boundaries and bitcast to/from the
+existing integer-bit emitter contract; share this boundary logic across
+inline and canonical shared bodies. Probe 2167726 passed exited/success/0,
+peak 1262850048 bytes: strict Clippy and all six default/bitpack debugger
+fixtures pass, including actual finish values 3.5 and 5.25. Extend to negative
+values and signed zero with DWARF verification before full acceptance.
+
+Probe 2173835 completed exited/success/0 (103673856-byte peak): the real
+finish regression passes positive/negative values and negative-zero sign
+checks in inline/shared bodies in default/bitpack, with DWARF verification
+and ordinary/debug native/VCD parity. Update TODO and reference notes to name
+this proven scalar return boundary while retaining string and normalized
+wide/aggregate ABI work. Freeze source for the full acceptance gate; no commit
+of this second batch yet, no push and no full-goal completion claim.
+
+Acceptance gate 2176125 completed exited/success/0, peak 1434497024 bytes.
+Formatting, strict Clippy, frontend-only check, full default/bitpack Rust
+suites (534/513 units plus integrations), all twenty native GDB fixture
+executions and ordinary/default-debug/bitpack-debug corpora (228/0 each) pass.
+All four FIFO/wide GDB/VCD smoke checks pass. AST refresh completes at 5233
+nodes, 14848 edges and 249 communities with the known vendor extraction
+warnings; hub-based labels refresh without API use. Commit only owned real
+return boundary/test/TODO and coordination changes, plus reference notes in
+siox-paper. Keep the full goal active: hardware aggregate bindings and call
+boundaries, folded string frames, formal-type audits, packed companions and
+string/normalized-wide/aggregate finish ABI remain. Preserve unrelated AGENTS,
+441 chat lines and .codex; no push authorized.

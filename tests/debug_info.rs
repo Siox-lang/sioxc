@@ -498,6 +498,113 @@ assert calls == [5, -5, 20], ('one source call per reused local', calls)
 }
 
 #[test]
+fn source_real_returns_match_the_debugger_finish_abi() {
+    let directory = std::env::temp_dir().join(format!("siox_dwarf_return_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    for inline in ["never", "always"] {
+        let source = directory.join(format!("returns_{inline}.siox"));
+        let text = format!(
+            r#"module debug_returns;
+#[inline({inline})]
+fn identity(value: real) -> real {{
+    return value; // real return stop
+}}
+#[test] entity T {{}}
+impl T {{
+    stimulus: process {{
+        let first: real = identity(3.5);
+        assert!(first == 3.5, "first real result");
+        let second: real = identity(5.25);
+        assert!(second == 5.25, "second real result");
+        let negative: real = identity(-2.75);
+        assert!(negative == -2.75, "negative real result");
+        let zero: real = identity(-0.0);
+        assert!(zero == 0.0, "negative zero result");
+    }}
+}}
+"#
+        );
+        std::fs::write(&source, &text).unwrap();
+        let debug = directory.join("debug.bin");
+        let ordinary = directory.join("ordinary.bin");
+        for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+            success(
+                Command::new(binary)
+                    .arg("-o")
+                    .arg(binary.with_extension("vcd"))
+                    .output()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            std::fs::read(debug.with_extension("vcd")).unwrap(),
+            std::fs::read(ordinary.with_extension("vcd")).unwrap()
+        );
+        if Command::new("llvm-dwarfdump")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            success(
+                Command::new("llvm-dwarfdump")
+                    .arg("--verify")
+                    .arg(&debug)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        if Command::new("gdb").arg("--version").output().is_ok() {
+            let line = text
+                .lines()
+                .position(|line| line.contains("real return stop"))
+                .unwrap()
+                + 1;
+            let python = format!(
+                r#"import gdb, math
+stop = gdb.Breakpoint({source:?} + ':{line}')
+gdb.execute('run')
+for expected in [3.5, 5.25, -2.75, -0.0]:
+    assert gdb.selected_frame().name() == 'debug_returns::identity'
+    assert float(gdb.parse_and_eval('value')) == expected
+    report = gdb.execute('finish', to_string=True)
+    returned = float(gdb.history(0))
+    assert returned == expected, ('real finish ABI', returned, expected, report)
+    assert math.copysign(1.0, returned) == math.copysign(1.0, expected), ('real finish sign', returned, expected)
+    assert gdb.selected_frame().name() == 'T::stimulus'
+    gdb.execute('continue')
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+"#,
+                source = source.to_string_lossy()
+            );
+            success(
+                Command::new("gdb")
+                    .args(["-nx", "-q", "--batch"])
+                    .arg(&debug)
+                    .args([
+                        "-ex",
+                        "set disable-randomization off",
+                        "-ex",
+                        "set breakpoint pending off",
+                        "-ex",
+                        &format!("python {python}"),
+                    ])
+                    .output()
+                    .unwrap(),
+            );
+        } else {
+            eprintln!("GDB unavailable: native real return checked, finish probe skipped");
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn hardware_expression_calls_keep_source_frames() {
     let directory =
         std::env::temp_dir().join(format!("siox_dwarf_hardware_{}", std::process::id()));

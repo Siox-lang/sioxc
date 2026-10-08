@@ -3,7 +3,78 @@
 use super::*;
 use inkwell::basic_block::BasicBlock;
 use inkwell::debug_info::DILocalVariable;
+use inkwell::types::{BasicType, BasicTypeEnum};
+use inkwell::values::BasicValueEnum;
 use siox::ir::ProcessValueInline;
+
+/// Use the source real ABI only at the native boundary. The common emitter
+/// and its exact consumer formats continue to exchange the same integer bits.
+pub(in crate::llvm::process) fn source_return_type<'ctx>(
+    debug: &DebugInfo<'ctx, '_>,
+    design: &Design,
+    source: &ProcessValueInline,
+    operand: ProcessValueId,
+    width: u32,
+) -> Option<BasicTypeEnum<'ctx>> {
+    let layout = source
+        .result_layout
+        .as_ref()
+        .map(std::borrow::Cow::Borrowed)
+        .or_else(|| debug.value_debug_layout(design, operand));
+    if width == 64
+        && layout.is_some_and(|layout| {
+            matches!(
+                layout.kind,
+                LayoutKind::Scalar {
+                    domain: ScalarDomain::Real,
+                    ..
+                }
+            )
+        })
+    {
+        Some(debug.context.f64_type().into())
+    } else {
+        debug
+            .context
+            .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+            .ok()
+            .map(Into::into)
+    }
+}
+
+pub(in crate::llvm::process) fn return_value<'ctx>(
+    builder: &Builder<'ctx>,
+    value: IntValue<'ctx>,
+) -> Option<BasicValueEnum<'ctx>> {
+    let ty = builder
+        .get_insert_block()?
+        .get_parent()?
+        .get_type()
+        .get_return_type()?;
+    if ty.is_float_type() {
+        builder.build_bit_cast(value, ty, "debug.return.real").ok()
+    } else {
+        Some(value.into())
+    }
+}
+
+pub(in crate::llvm::process) fn return_bits<'ctx>(
+    builder: &Builder<'ctx>,
+    value: BasicValueEnum<'ctx>,
+) -> Option<IntValue<'ctx>> {
+    match value {
+        BasicValueEnum::FloatValue(value) => builder
+            .build_bit_cast(
+                value,
+                value.get_type().get_context().i64_type(),
+                "debug.return.bits",
+            )
+            .ok()
+            .map(|value| value.into_int_value()),
+        BasicValueEnum::IntValue(value) => Some(value),
+        _ => None,
+    }
+}
 
 pub(in crate::llvm::process) struct ValueFrame<'ctx> {
     function: Span,
@@ -226,10 +297,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
     let (function, formats) = if let Some(existing) = existing {
         existing
     } else {
-        let ty = debug
-            .context
-            .custom_width_int_type(std::num::NonZeroU32::new(width)?)
-            .ok()?;
+        let ty = source_return_type(debug, design, source, operand, width)?;
         // Let the common emitter request its real operand formats once. A
         // source argument can be used at several widths inside this body;
         // capturing it at its minimum width first changes contextual arithmetic.
@@ -265,6 +333,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
             &mut body_cache,
             emit,
         )?;
+        let returned = return_value(&body_builder, returned)?;
         body_builder.build_return(Some(&returned)).ok()?;
         let values = body_cache.debug_arguments.take()?.values;
         let types = values
@@ -335,7 +404,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
             .ok()?
             .try_as_basic_value()
             .basic()
-            .map(|value| value.into_int_value())
+            .and_then(|value| return_bits(builder, value))
     })
 }
 

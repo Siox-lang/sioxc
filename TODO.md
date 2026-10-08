@@ -149,7 +149,10 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   not be inferred from the debugger's read-only inspection representation.
   Audit formal declaration types for hardware operators/suffixes/conversions
   and constrained/generic signatures. Add packed unknown-state expression
-  companion checks and verify GDB `finish` for real/string return ABIs.
+  companion checks and verify GDB `finish` for string and normalized wide/
+  aggregate return ABIs. Scalar real native boundaries use double returns,
+  with actual `finish` checks for positive/negative values and signed zero in
+  inline/shared bodies; the internal emitter still exchanges integer bits.
   The supported runtime-sized native representation is currently Char[] handles;
   general dynamic arrays remain the separate host-service extension below.
   Keep debug-only aggregate inspection buffers faithful at source stops and
