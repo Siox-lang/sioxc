@@ -7,6 +7,112 @@ use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::BasicValueEnum;
 use siox::ir::ProcessValueInline;
 
+type AggregateMembers = HashMap<ProcessValueId, (ProcessValueId, u32, u32)>;
+
+/// Retain one native source boundary for jointly evaluable aggregate leaves.
+/// No binding metadata or discarded field is made an executable dependency.
+pub(super) fn aggregate_returns(
+    design: &Design,
+) -> (HashMap<ProcessValueId, AggregateReturn>, AggregateMembers) {
+    let mut pure = Vec::with_capacity(design.process_ir.values.len());
+    let mut groups: HashMap<_, Vec<_>> = HashMap::new();
+    for (index, value) in design.process_ir.values.iter().enumerate() {
+        // ponytail: effectful/checked/nested-call leaves need demand-preserving
+        // grouping; eager packing must not introduce effects or source stops.
+        let safe = matches!(
+            value.kind,
+            ProcessValueKind::Number(_)
+                | ProcessValueKind::BitString { .. }
+                | ProcessValueKind::Char(_)
+                | ProcessValueKind::Signal { .. }
+                | ProcessValueKind::RawResize { .. }
+                | ProcessValueKind::BitSlice { .. }
+                | ProcessValueKind::PackedSlice { .. }
+                | ProcessValueKind::Unary {
+                    operation: ProcessUnaryOp::Neg | ProcessUnaryOp::Not,
+                    ..
+                }
+        ) || matches!(
+            value.kind,
+            ProcessValueKind::Binary { ref operation, .. }
+                if !matches!(operation,
+                    ProcessBinaryOp::Div | ProcessBinaryOp::SignedDiv | ProcessBinaryOp::Custom(_))
+        );
+        pure.push(
+            safe && !siox::ir::any_process_value_dependency(&value.kind, |id| {
+                !pure.get(id.0 as usize).copied().unwrap_or(false)
+            }),
+        );
+        if let ProcessValueKind::InlineCall { source, .. } = &value.kind {
+            if let Some((expansion, _)) = &source.aggregate {
+                groups
+                    .entry((*expansion, source.function, source.call))
+                    .or_default()
+                    .push(ProcessValueId(index as u32));
+            }
+        }
+    }
+    let mut returns = HashMap::new();
+    let mut members = HashMap::new();
+    for group in groups.into_values().filter(|group| group.len() > 1) {
+        let leader = group[0];
+        let ProcessValueKind::InlineCall { source, .. } =
+            &design.process_ir.values[leader.0 as usize].kind
+        else {
+            continue;
+        };
+        let Some(layout) = &source.result_layout else {
+            continue;
+        };
+        let pieces = group
+            .iter()
+            .map(|id| {
+                let ProcessValueKind::InlineCall { operand, source } =
+                    &design.process_ir.values[id.0 as usize].kind
+                else {
+                    return None;
+                };
+                let (_, path) = source.aggregate.as_ref()?;
+                let projection = if path.starts_with('[') {
+                    path.clone()
+                } else {
+                    format!(".{path}")
+                };
+                let selected = projection_slice(layout, &projection)?;
+                (pure[operand.0 as usize]
+                    && design.process_ir.values[operand.0 as usize].bit_width
+                        == Some(selected.width))
+                .then(|| (*operand, selected.offset, selected.layout.clone()))
+            })
+            .collect::<Option<Vec<_>>>();
+        let Some(pieces) = pieces else { continue };
+        // A packed native return cannot describe missing fields as unavailable.
+        // Keep partial returns leaf-backed rather than inventing zero values.
+        let mut regions = pieces
+            .iter()
+            .map(|(_, offset, layout)| (*offset, layout_width(layout).unwrap()))
+            .collect::<Vec<_>>();
+        regions.sort_unstable();
+        let covered = regions.into_iter().try_fold(0u32, |end, (offset, width)| {
+            (offset == end).then(|| end.checked_add(width)).flatten()
+        });
+        if covered != layout_width(layout) {
+            continue;
+        }
+        for (id, (_, offset, layout)) in group.into_iter().zip(&pieces) {
+            members.insert(id, (leader, *offset, layout_width(layout).unwrap()));
+        }
+        returns.insert(
+            leader,
+            AggregateReturn {
+                layout: layout.clone(),
+                pieces,
+            },
+        );
+    }
+    (returns, members)
+}
+
 /// Use the source real ABI only at the native boundary. The common emitter
 /// and its exact consumer formats continue to exchange the same integer bits.
 pub(in crate::llvm::process) fn source_return_type<'ctx>(
@@ -346,6 +452,18 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
             },
         );
     }
+    if source.aggregate.is_some() && debug.aggregate_members.contains_key(&id) {
+        return aggregate_value(
+            module,
+            builder,
+            design,
+            id,
+            width,
+            signed,
+            index_sites,
+            cache,
+        );
+    }
     let key = (id, width, signed, layout.cloned());
     let existing = debug.value_functions.borrow().get(&key).cloned();
     let (function, formats) = if let Some(existing) = existing {
@@ -460,6 +578,72 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
             .basic()
             .and_then(|value| return_bits(builder, value))
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn aggregate_value<'ctx>(
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    id: ProcessValueId,
+    width: u32,
+    signed: bool,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let debug = cache.debug?;
+    let &(leader, offset, field_width) = debug.aggregate_members.get(&id)?;
+    let aggregate = debug.aggregate_returns.get(&leader)?;
+    let ProcessValueKind::InlineCall { operand, source } =
+        &design.process_ir.values[leader.0 as usize].kind
+    else {
+        return None;
+    };
+    let mut source = source.as_ref().clone();
+    source.aggregate = None;
+    let root_width = layout_width(&aggregate.layout)?;
+    let returned = inline_value(
+        module,
+        builder,
+        design,
+        leader,
+        *operand,
+        &source,
+        root_width,
+        false,
+        Some(&aggregate.layout),
+        None,
+        index_sites,
+        cache,
+        |builder, cache, active| {
+            let mut result = debug
+                .context
+                .custom_width_int_type(std::num::NonZeroU32::new(root_width)?)
+                .ok()?
+                .const_zero();
+            for (operand, offset, layout) in &aggregate.pieces {
+                let part = process_value_in_layout(
+                    debug.context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                result = insert_region(builder, result, part, *offset, layout_width(layout)?)?;
+            }
+            Some(result)
+        },
+    )?;
+    let field = extract_region(builder, returned, offset, field_width)?;
+    if signed && process_value_is_signed(design, id) {
+        fit_signed(builder, field, width)
+    } else {
+        fit(builder, field, width)
+    }
 }
 
 /// A selected alias is evaluated once per actual consumer format. Readiness
@@ -913,13 +1097,27 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
     }
     let result_span = source.result_span;
     if let Some(value) = result {
-        capture_result(module, builder, design, operand, value, result_span, cache);
+        capture_result(
+            module,
+            builder,
+            design,
+            operand,
+            value,
+            result_span,
+            source
+                .aggregate
+                .is_none()
+                .then_some(source.result_layout.as_ref())
+                .flatten(),
+            cache,
+        );
     }
     cache.value_frames.pop();
     builder.set_current_debug_location(debug.location(scope, result_span, None));
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn capture_result<'ctx>(
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
@@ -927,10 +1125,14 @@ fn capture_result<'ctx>(
     id: ProcessValueId,
     value: IntValue<'ctx>,
     span: Span,
+    layout: Option<&SourceLayout>,
     cache: &ProcessValueCache<'ctx, '_>,
 ) {
     let Some(debug) = cache.debug else { return };
-    let Some(layout) = debug.value_debug_layout(design, id) else {
+    let Some(layout) = layout
+        .map(std::borrow::Cow::Borrowed)
+        .or_else(|| debug.value_debug_layout(design, id))
+    else {
         return;
     };
     // A constant/arithmetic return can otherwise have no machine range even
@@ -997,7 +1199,7 @@ pub(in crate::llvm::process) fn selected_value<'ctx>(
     {
         builder.position_at_end(block);
         let value = emit(builder, id, cache)?;
-        capture_result(module, builder, design, id, value, span, cache);
+        capture_result(module, builder, design, id, value, span, None, cache);
         let exit = builder.get_insert_block()?;
         builder.build_unconditional_branch(join).ok()?;
         results.push((value, exit));

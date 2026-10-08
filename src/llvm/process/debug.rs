@@ -49,6 +49,12 @@ pub(super) type ValueFunctionKey = (ProcessValueId, u32, bool, Option<SourceLayo
 pub(super) type ValueResults<'ctx> = HashMap<ValueFunctionKey, (IntValue<'ctx>, IntValue<'ctx>)>;
 type ValueFunction<'ctx> = (FunctionValue<'ctx>, Vec<ValueFunctionKey>);
 
+struct AggregateReturn {
+    layout: SourceLayout,
+    /// Only retained executable operands, at their declared packed offsets.
+    pieces: Vec<(ProcessValueId, u32, SourceLayout)>,
+}
+
 pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     context: &'ctx Context,
     builder: DebugInfoBuilder<'ctx>,
@@ -70,6 +76,8 @@ pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     value_activity: Vec<bool>,
     /// Only multiply-consumed source calls need readiness across branch joins.
     reused_calls: std::collections::HashSet<ProcessValueId>,
+    aggregate_returns: HashMap<ProcessValueId, AggregateReturn>,
+    aggregate_members: HashMap<ProcessValueId, (ProcessValueId, u32, u32)>,
     value_functions: RefCell<HashMap<ValueFunctionKey, ValueFunction<'ctx>>>,
     hardware_processes: HashMap<u32, siox::ir::ProcessId>,
     hardware_frames: RefCell<HashMap<(usize, siox::ir::ProcessId), DISubprogram<'ctx>>>,
@@ -144,6 +152,18 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                         .any(|id| value_activity.get(id.0 as usize).copied().unwrap_or(false)),
             );
         }
+        let (aggregate_returns, aggregate_members) = inline_values::aggregate_returns(design);
+        let reused_calls = design
+            .process_ir
+            .values
+            .iter()
+            .enumerate()
+            .filter(|(index, value)| {
+                uses[*index] > 1 && matches!(value.kind, ProcessValueKind::InlineCall { .. })
+            })
+            .map(|(index, _)| ProcessValueId(index as u32))
+            .chain(aggregate_returns.keys().copied())
+            .collect();
         let debug = Self {
             context,
             builder,
@@ -162,16 +182,9 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             string_mirrors: RefCell::new(Vec::new()),
             refresh: Cell::new(None),
             value_activity,
-            reused_calls: design
-                .process_ir
-                .values
-                .iter()
-                .enumerate()
-                .filter(|(index, value)| {
-                    uses[*index] > 1 && matches!(value.kind, ProcessValueKind::InlineCall { .. })
-                })
-                .map(|(index, _)| ProcessValueId(index as u32))
-                .collect(),
+            reused_calls,
+            aggregate_returns,
+            aggregate_members,
             value_functions: RefCell::new(HashMap::new()),
             hardware_processes: design
                 .process_ir

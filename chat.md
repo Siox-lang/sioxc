@@ -15088,3 +15088,66 @@ siox-paper reference notes. Preserve unrelated AGENTS/441 chat lines/.codex.
 Full DWARF remains active: whole aggregate-return boundaries, folded string
 frames, formal-type audits, packed expression companions and string/wide/
 aggregate finish ABI remain. No push authorized.
+
+### 2026-10-08 — Codex — DWARF whole aggregate call-boundary probe
+
+Previous goal turn made verified progress: compiler ada5341 and documentation
+5839b05 commit leaf-backed aggregate inspection after acceptance 2315177.
+Continue owning source_bindings/source_values, canonical call metadata and the
+native source-frame emitter. Prove that one hardware call returning a two-field
+struct currently stops once per result leaf, then retain one source-call
+identity and faithfully shared return boundary. Reuse canonical Process IR;
+do not introduce a debugger-only evaluator, force unused result/argument fields
+or duplicate foreign effects. Preserve AGENTS/441 chat lines/.codex. Whole
+aggregate ABI finish remains a separate requirement, not inferred from frame
+counts. No push or commit before gates; full goal stays active.
+
+Resume after the requested pull: origin/main remains 18f3e83, with no incoming
+commits and all local/unowned work preserved. The pull-only turn yielded no
+DWARF progress; revalidate the open probe and implement the next safe action.
+Continue owning the shared source lowerer, Process call metadata, native debug
+emitter/cache and debugger regressions. Preserve each call expansion identity
+through pruning/remapping and reuse the existing exact-layout return/cache
+path. Jointly materialize retained pure leaves only when their declared widths
+match; never force pruned leaves, checked accesses or foreign/nested call stops.
+Effectful/conditionally demanded aggregate boundaries remain required work,
+not a redefinition of the full goal. No push or completion claim.
+
+Probe 2419961 failed/101 at Rust monomorphization, not at runtime: recursively
+creating a new closure type inside generic inline_value exceeded its recursion
+limit. Route aggregate packing through a non-generic helper that reuses the
+same native emitter. Probe 2423297 passes exited/success/0, peak 998817792:
+strict Clippy and actual native/GDB frames plus VCD/DWARF checks pass.
+Expanded probe 2424411 failed/101, peak 1546735616: pruning/remapping and
+native parity pass, but a masked-call count test observes legitimate separate
+hardware reevaluations after separate input/flag writes. Derive both independent
+consumer predicates from one input transition; do not hide genuine calls.
+Continue testing `finish` and inactive foreign-return fields before full gates.
+
+Probe 2428268 passes exited/success/0, peak 865931264 bytes: strict Clippy,
+IR identity/path remapping without effect retention, and actual native/GDB
+hardware regressions in default/bitpack. Fully retained pure typed leaves share
+one native boundary and exact-layout SSA result, including both/first-only/
+second-only consumers; the untaken call has no stop. The inactive retained
+abort() return leaf never executes. GDB `finish` returns both integer fields
+for positive, negative and zero inputs; ordinary/debug VCDs and DWARF checks
+agree. Preserve pure-group coverage holes rather than filling pruned fields
+with fake zeros. Update TODO and siox-paper architecture/testing notes with
+these exact limits. Freeze source for complete acceptance before any commit.
+Effectful/checked/nested/partial aggregate grouping, mixed real/wide return ABI,
+folded string frames, formal audits and packed companions remain required.
+
+Acceptance 2429375 is terminal exited/success/0, peak 1610874880 bytes.
+Formatting, strict all-feature Clippy, frontend-only compilation, full default/
+bitpack Rust suites (534/513 units plus integrations), all native GDB fixtures
+and ordinary/default-debug/bitpack-debug corpora (228/0 each) pass. All four
+FIFO/wide GDB/VCD smoke checks pass. AST refresh finishes at 5242 nodes,
+14890 edges and 259 communities, with the known four vendor partial-parse and
+six no-symbol warnings; community hub labels/large-graph HTML refresh without
+LLM/API use. Clarify the documented boundary as straight-line pure, not every
+pure branch-return shape. Commit only owned metadata, common native grouping/
+SSA readiness, regressions, TODO and this coordination tail; separately commit
+siox-paper notes. Preserve unowned AGENTS/441 chat lines/.codex and all backups.
+Full DWARF remains active: branch-return/effectful/checked/nested/partial
+aggregate grouping, folded string frames, formal audits, packed companions and
+string/normalized-wide/mixed-layout return ABI remain. No push authorized.

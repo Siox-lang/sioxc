@@ -5541,6 +5541,7 @@ fn expand_process_function(
                     process,
                     context,
                 ),
+                aggregate: None,
                 branches,
                 parameters,
                 locals,

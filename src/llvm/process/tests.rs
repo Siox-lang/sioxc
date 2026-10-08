@@ -15,6 +15,7 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
         call: span,
         result_span: span,
         result_layout: None,
+        aggregate: None,
         branches: Vec::new(),
         parameters: vec![
             siox::ir::ProcessValueBinding {
@@ -561,6 +562,7 @@ fn inactive_inline_debug_call_does_not_emit_its_body_or_frame() {
         call: span(),
         result_span: span(),
         result_layout: None,
+        aggregate: None,
         branches: Vec::new(),
         parameters: Vec::new(),
         locals: Vec::new(),

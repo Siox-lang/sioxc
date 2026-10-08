@@ -741,6 +741,10 @@ pub struct ProcessValueInline {
     pub result_span: crate::diag::Span,
     /// Declared return shape for inspection; not an executable conversion.
     pub result_layout: Option<SourceLayout>,
+    /// One field of a shared aggregate source call: stable expansion identity
+    /// and flattened result path. The identity is not an arena value index and
+    /// survives value remapping. It creates no executable dependencies.
+    pub aggregate: Option<(u64, String)>,
     /// Selected return-expression extents, keyed by existing selection values.
     /// Inspection metadata only; these IDs must not become executable roots.
     pub branches: Vec<(ProcessValueId, [crate::diag::Span; 2])>,

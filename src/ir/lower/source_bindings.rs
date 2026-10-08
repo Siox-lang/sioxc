@@ -99,6 +99,7 @@ impl Lowering<'_> {
             call,
             result_span: body.span,
             result_layout: self.source_return_layout(),
+            aggregate: None,
             branches: Vec::new(),
             parameters,
             locals: Vec::new(),
@@ -109,7 +110,11 @@ impl Lowering<'_> {
         let (result, result_span) = result?;
         source.result_span = result_span;
         let mut arena = self.source_values.borrow_mut();
-        let mut wrap = |expression: Expr| {
+        // Each expansion appends fresh boundaries. Keep their shared source
+        // identity independent of subsequent arena compaction/remapping.
+        let expansion = arena.ir.values.len() as u64;
+        let mut wrap = |expression: Expr, path: Option<String>| {
+            source.aggregate = path.map(|path| (expansion, path));
             let operand = arena.append(&expression, source.result_span, None);
             let node = &arena.ir.values[operand.0 as usize];
             let value = ProcessValue {
@@ -126,11 +131,11 @@ impl Lowering<'_> {
             arena.reference(id)
         };
         Some(match result {
-            Val::Scalar(expression) => Val::Scalar(wrap(expression)),
+            Val::Scalar(expression) => Val::Scalar(wrap(expression, None)),
             Val::Fields(fields) => Val::Fields(
                 fields
                     .into_iter()
-                    .map(|(name, value)| (name, wrap(value)))
+                    .map(|(name, value)| (name.clone(), wrap(value, Some(name))))
                     .collect(),
             ),
         })

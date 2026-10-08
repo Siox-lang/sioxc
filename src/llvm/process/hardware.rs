@@ -13,6 +13,7 @@ pub(in crate::llvm) struct HardwareValueCache<'ctx> {
     contextual: HashMap<(ProcessValueId, Option<IntValue<'ctx>>, u32, bool), IntValue<'ctx>>,
     metadata: HashMap<(ProcessValueId, Option<IntValue<'ctx>>, SourceLayout), IntValue<'ctx>>,
     signals: HashMap<(SignalId, ProcessSignalState, u32), IntValue<'ctx>>,
+    source_results: debug::ValueResults<'ctx>,
 }
 
 impl HardwareValueCache<'_> {
@@ -21,6 +22,7 @@ impl HardwareValueCache<'_> {
         self.contextual.clear();
         self.metadata.clear();
         self.signals.clear();
+        self.source_results.clear();
     }
 }
 
@@ -165,6 +167,7 @@ impl HardwareValueFacts {
         cache.contextual = std::mem::take(&mut values.contextual);
         cache.metadata = std::mem::take(&mut values.metadata);
         cache.signals = std::mem::take(&mut values.signals);
+        cache.source_results = std::mem::take(&mut values.source_results);
         let result = process_value_at(
             context,
             module,
@@ -182,6 +185,7 @@ impl HardwareValueFacts {
         values.contextual = cache.contextual;
         values.metadata = cache.metadata;
         values.signals = cache.signals;
+        values.source_results = cache.source_results;
         result
     }
 }

@@ -1189,6 +1189,7 @@ mod tests {
                         call: span,
                         result_span: span,
                         result_layout: None,
+                        aggregate: Some((1234, "payload.tag".into())),
                         branches: vec![(unused_selection, [span; 2])],
                         parameters: vec![
                             crate::ir::ProcessValueBinding {
@@ -1250,6 +1251,14 @@ mod tests {
             panic!("inline boundary lost")
         };
         assert_eq!(*operand, ProcessValueId(0));
+        assert_eq!(
+            source
+                .aggregate
+                .as_ref()
+                .map(|(identity, path)| (*identity, path.as_str())),
+            Some((1234, "payload.tag")),
+            "aggregate identity/path survive arena reconstruction and pruning"
+        );
         assert_eq!(source.parameters[0].value, None);
         assert_eq!(source.parameters[1].value, Some(ProcessValueId(0)));
         assert_eq!(

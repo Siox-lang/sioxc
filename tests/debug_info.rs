@@ -614,6 +614,38 @@ fn hardware_expression_calls_keep_source_frames() {
 use std::bits::{unsigned, signed};
 struct Nested { pub flags: unsigned[3], pub negative: signed[81] }
 struct Wrapper { pub word: integer }
+struct Pair { pub left: integer, pub right: integer }
+fn make_pair(value: integer) -> Pair {
+    let base: integer = value + 1;
+    return Pair { .left = base, .right = base + 1 }; // hardware pair return
+}
+fn sum_pair(value: integer) -> integer {
+    let pair: Pair = make_pair(value); // hardware pair assignment
+    return pair.left + pair.right;
+}
+entity Paired { value: integer in, total: integer out }
+impl Paired { total = sum_pair(value); }
+fn make_masked_pair(value: integer) -> Pair {
+    let base: integer = value + 1;
+    return Pair { .left = base, .right = base + 1 }; // masked pair return
+}
+fn sum_masked_pair(value: integer) -> integer {
+    let pair: Pair = make_masked_pair(value); // masked pair assignment
+    return (if value == 5 or value == 6 { pair.left } else { 0 })
+        + (if value == 5 or value == -6 { pair.right } else { 0 });
+}
+entity Masked { value: integer in, total: integer out }
+impl Masked { total = sum_masked_pair(value); }
+extern "C" { fn abort() -> integer; }
+fn risky_pair(value: integer) -> Pair {
+    return Pair { .left = value + 1, .right = abort() };
+}
+fn consume_risky_pair(value: integer, enabled: Bool) -> integer {
+    let pair: Pair = risky_pair(value);
+    return if enabled { pair.right } else { pair.left };
+}
+entity Risky { value: integer in, enabled: Bool in, total: integer out }
+impl Risky { total = consume_risky_pair(value, enabled); }
 struct Bundle {
     pub tag: integer, pub gain: real, pub wide: unsigned[81], pub unused: integer,
     pub nested: Nested, pub lanes: integer[2..1], pub samples: integer[-1..0]
@@ -688,6 +720,10 @@ impl T {
     let input: integer = 5;
     let dut: Dut = { .value = input };
     let other: Dut = { .value = 10 };
+    let paired: Paired = { .value = input };
+    let disabled: Bool = false;
+    let masked: Masked = { .value = input };
+    let risky: Risky = { .value = input, .enabled = disabled };
     let typed: Typed = { .value = 18446744073709551617, .gain = 1.5, .negative = -2 };
     let bundle: Bundle = {
         .tag = 5, .gain = 1.5, .wide = 18446744073709551617, .unused = 101,
@@ -703,21 +739,30 @@ impl T {
         assert!(dut.result == 107 and dut.selected == 7, "first hardware result");
         assert!(typed.result == 1 and other.result == 112 and other.selected == 12, "typed and shared helper results");
         assert!(bundled.result == 6, "hardware aggregate input and local result");
+        assert!(paired.total == 13, "whole aggregate return result");
+        assert!(masked.total == 13 and risky.total == 6, "selected aggregate consumers and untaken foreign leaf");
         assert!(narrow.result == -24, "nested arguments retain consumer widths and signs");
         input = 6;
         small = 3;
         clock = '1';
         await 1ns;
         assert!(dut.result == 108 and dut.selected == 8, "updated hardware result");
+        assert!(paired.total == 15, "updated whole aggregate return result");
+        assert!(masked.total == 7 and risky.total == 7, "first-only aggregate consumer");
         assert!(narrow.result == 24, "nested formats reevaluate after input changes");
         assert!(reg.result == 16, "event call result");
         input = -6;
         clock = '0';
         await 1ns;
         assert!(dut.result == 96 and dut.selected == 15, "fallback hardware result");
+        assert!(paired.total == -9, "negative whole aggregate return result");
+        assert!(masked.total == -4 and risky.total == -5, "second-only aggregate consumer");
         clock = '1';
         await 1ns;
         assert!(reg.result == 4, "updated event call result");
+        input = 0;
+        await 1ns;
+        assert!(masked.total == 0, "untaken aggregate call");
     }
 }"#;
     std::fs::write(&source, text).unwrap();
@@ -764,6 +809,8 @@ owners = set()
 events = set()
 typed_seen = False
 bundle_seen = False
+pair_calls = []
+masked_calls = []
 failures = []
 class Check(gdb.Breakpoint):
     def stop(self):
@@ -856,9 +903,29 @@ class Aggregate(Check):
         assert [int(local_lanes['[2]']), int(local_lanes['[1]']), int(local_samples[-1]), int(local_samples[0])] == observed
         bundle_seen |= tag == 5 and gain == 1.5 and wide == (1 << 64) + 1 and flags == 5 and negative == -2 and observed == [7, 9, 41, 43]
         return False
+class PairCall(Check):
+    def check(self):
+        frame = gdb.selected_frame()
+        assert frame.name() == 'debug_hardware::make_pair', frame.name()
+        assert frame.older().find_sal().line == {pair_assignment}
+        value = int(gdb.parse_and_eval('value'))
+        assert int(gdb.parse_and_eval('base')) == value + 1
+        pair_calls.append(value)
+        return False
+class MaskedPair(Check):
+    def check(self):
+        frame = gdb.selected_frame()
+        assert frame.name() == 'debug_hardware::make_masked_pair', frame.name()
+        assert frame.older().find_sal().line == {masked_assignment}
+        value = int(gdb.parse_and_eval('value'))
+        assert int(gdb.parse_and_eval('base')) == value + 1
+        masked_calls.append(value)
+        return False
 Typed({source:?} + ':{typed_return}')
 Event({source:?} + ':{event_return}')
 Aggregate({source:?} + ':{bundle_return}')
+PairCall({source:?} + ':{pair_return}')
+MaskedPair({source:?} + ':{masked_return}')
 leaf = gdb.Breakpoint({source:?} + ':{leaf_return}')
 outer = gdb.Breakpoint({source:?} + ':{outer_return}')
 gdb.execute('run')
@@ -886,6 +953,8 @@ assert {{5, 6, -6, 10}} <= seen <= {{0, 5, 6, -6, 10}}, seen
 assert events == {{6, -6}}, events
 assert typed_seen
 assert bundle_seen
+assert all(pair_calls.count(value) == 1 for value in [5, 6, -6]), pair_calls
+assert sorted(masked_calls) == [-6, 5, 6], masked_calls
 "#,
             source = source.to_string_lossy(),
             leaf_return = line("hardware leaf return"),
@@ -901,6 +970,10 @@ assert bundle_seen
             event_assignment = line("hardware event assignment"),
             bundle_return = line("hardware aggregate return"),
             bundle_assignment = line("hardware aggregate assignment"),
+            pair_assignment = line("hardware pair assignment"),
+            pair_return = line("hardware pair return"),
+            masked_assignment = line("masked pair assignment"),
+            masked_return = line("masked pair return"),
         );
         success(
             Command::new("gdb")
@@ -913,6 +986,39 @@ assert bundle_seen
                     "set breakpoint pending off",
                     "-ex",
                     &format!("python {python}"),
+                ])
+                .output()
+                .unwrap(),
+        );
+        let finish = format!(
+            r#"import gdb
+stop = gdb.Breakpoint({source:?} + ':{line}')
+gdb.execute('run')
+for expected in [5, 6, -6, 0]:
+    assert gdb.selected_frame().name() == 'debug_hardware::make_pair'
+    assert int(gdb.parse_and_eval('value')) == expected
+    report = gdb.execute('finish', to_string=True)
+    returned = gdb.history(0)
+    assert int(returned['left']) == expected + 1, ('aggregate finish left', str(returned), report)
+    assert int(returned['right']) == expected + 2, ('aggregate finish right', str(returned), report)
+    assert gdb.selected_frame().name() == 'debug_hardware::sum_pair'
+    gdb.execute('continue')
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+"#,
+            source = source.to_string_lossy(),
+            line = line("hardware pair return"),
+        );
+        success(
+            Command::new("gdb")
+                .args(["-nx", "-q", "--batch"])
+                .arg(&debug)
+                .args([
+                    "-ex",
+                    "set disable-randomization off",
+                    "-ex",
+                    "set breakpoint pending off",
+                    "-ex",
+                    &format!("python {finish}"),
                 ])
                 .output()
                 .unwrap(),
