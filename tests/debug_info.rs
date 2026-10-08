@@ -625,6 +625,64 @@ fn sum_pair(value: integer) -> integer {
 }
 entity Paired { value: integer in, total: integer out }
 impl Paired { total = sum_pair(value); }
+fn choose_pair(value: integer) -> Pair {
+    let base: integer = value + 1;
+    if value > 0 {
+        let local: integer = base + 1;
+        if value == 6 {
+            let local: integer = base + 2;
+            return Pair { .left = local, .right = local + 1 }; // nested pair return
+        }
+        return Pair { .left = local, .right = local + 2 }; // positive pair return
+    }
+    return Pair { .left = base, .right = base + 10 }; // fallback pair return
+}
+fn sum_chosen_pair(value: integer) -> integer {
+    let pair: Pair = choose_pair(value); // chosen pair assignment
+    return pair.left + pair.right;
+}
+entity Chosen { value: integer in, total: integer out }
+impl Chosen { total = sum_chosen_pair(value); }
+fn independent_pair(value: integer) -> Pair {
+    return Pair { .left = if value > 0 { value } else { value - 1 }, .right = if value == 6 { value + 3 } else { value + 1 } }; // independent pair return
+}
+fn sum_independent_pair(value: integer) -> integer {
+    let pair: Pair = independent_pair(value); // independent pair assignment
+    return pair.left + pair.right;
+}
+entity Independent { value: integer in, total: integer out }
+impl Independent { total = sum_independent_pair(value); }
+fn alias_pair(value: integer) -> Pair {
+    let pair: Pair = { .left = value, .right = value + 1 };
+    if value > 0 {
+        return pair; // positive alias pair return
+    }
+    return Pair { .left = pair.left, .right = pair.right + 10 }; // fallback alias pair return
+}
+fn sum_alias_pair(value: integer) -> integer {
+    let pair: Pair = alias_pair(value); // alias pair assignment
+    return pair.left + pair.right;
+}
+entity Aliased { value: integer in, total: integer out }
+impl Aliased { total = sum_alias_pair(value); }
+fn match_pair(value: integer) -> Pair {
+    let local: integer = value + 10;
+    match value {
+        6 => {
+            let local: integer = value + 20;
+            return Pair { .left = local, .right = local + 1 }; // matched pair return
+        }
+        _ => {
+            return Pair { .left = local, .right = local + 1 }; // default pair return
+        }
+    }
+}
+fn sum_matched_pair(value: integer) -> integer {
+    let pair: Pair = match_pair(value); // matched pair assignment
+    return pair.left + pair.right;
+}
+entity Matched { value: integer in, total: integer out }
+impl Matched { total = sum_matched_pair(value); }
 fn make_masked_pair(value: integer) -> Pair {
     let base: integer = value + 1;
     return Pair { .left = base, .right = base + 1 }; // masked pair return
@@ -721,6 +779,10 @@ impl T {
     let dut: Dut = { .value = input };
     let other: Dut = { .value = 10 };
     let paired: Paired = { .value = input };
+    let chosen: Chosen = { .value = input };
+    let independent: Independent = { .value = input };
+    let aliased: Aliased = { .value = input };
+    let matched: Matched = { .value = input };
     let disabled: Bool = false;
     let masked: Masked = { .value = input };
     let risky: Risky = { .value = input, .enabled = disabled };
@@ -740,6 +802,9 @@ impl T {
         assert!(typed.result == 1 and other.result == 112 and other.selected == 12, "typed and shared helper results");
         assert!(bundled.result == 6, "hardware aggregate input and local result");
         assert!(paired.total == 13, "whole aggregate return result");
+        assert!(chosen.total == 16, "positive aggregate return branch");
+        assert!(independent.total == 11 and aliased.total == 11, "independent and aliased positive fields");
+        assert!(matched.total == 31, "default positive match return");
         assert!(masked.total == 13 and risky.total == 6, "selected aggregate consumers and untaken foreign leaf");
         assert!(narrow.result == -24, "nested arguments retain consumer widths and signs");
         input = 6;
@@ -748,6 +813,9 @@ impl T {
         await 1ns;
         assert!(dut.result == 108 and dut.selected == 8, "updated hardware result");
         assert!(paired.total == 15, "updated whole aggregate return result");
+        assert!(chosen.total == 19, "nested aggregate return branch");
+        assert!(independent.total == 15 and aliased.total == 13, "independent condition and aliased positive fields");
+        assert!(matched.total == 53, "selected match return");
         assert!(masked.total == 7 and risky.total == 7, "first-only aggregate consumer");
         assert!(narrow.result == 24, "nested formats reevaluate after input changes");
         assert!(reg.result == 16, "event call result");
@@ -756,6 +824,9 @@ impl T {
         await 1ns;
         assert!(dut.result == 96 and dut.selected == 15, "fallback hardware result");
         assert!(paired.total == -9, "negative whole aggregate return result");
+        assert!(chosen.total == 0, "fallback aggregate return branch");
+        assert!(independent.total == -12 and aliased.total == -1, "independent and aliased negative fields");
+        assert!(matched.total == 9, "default negative match return");
         assert!(masked.total == -4 and risky.total == -5, "second-only aggregate consumer");
         clock = '1';
         await 1ns;
@@ -763,6 +834,9 @@ impl T {
         input = 0;
         await 1ns;
         assert!(masked.total == 0, "untaken aggregate call");
+        assert!(chosen.total == 12, "zero aggregate return branch");
+        assert!(independent.total == 0 and aliased.total == 11, "independent and aliased zero fields");
+        assert!(matched.total == 21, "default zero match return");
     }
 }"#;
     std::fs::write(&source, text).unwrap();
@@ -811,6 +885,10 @@ typed_seen = False
 bundle_seen = False
 pair_calls = []
 masked_calls = []
+chosen_calls = []
+independent_calls = []
+alias_calls = []
+match_calls = []
 failures = []
 class Check(gdb.Breakpoint):
     def stop(self):
@@ -921,11 +999,63 @@ class MaskedPair(Check):
         assert int(gdb.parse_and_eval('base')) == value + 1
         masked_calls.append(value)
         return False
+class ChosenPair(Check):
+    def check(self):
+        frame = gdb.selected_frame()
+        assert frame.name() == 'debug_hardware::choose_pair', frame.name()
+        assert frame.older().find_sal().line == {chosen_assignment}
+        value = int(gdb.parse_and_eval('value'))
+        expected_line = {nested_pair_return} if value == 6 else {positive_pair_return} if value > 0 else {fallback_pair_return}
+        assert frame.find_sal().line == expected_line, (value, frame.find_sal().line, expected_line)
+        assert int(gdb.parse_and_eval('base')) == value + 1
+        if value > 0:
+            assert int(gdb.parse_and_eval('local')) == value + (3 if value == 6 else 2)
+        else:
+            symbol, _ = gdb.lookup_symbol('local', frame.block())
+            assert symbol is None, 'branch local escaped its scope'
+        chosen_calls.append(value)
+        return False
+class IndependentPair(Check):
+    def check(self):
+        frame = gdb.selected_frame()
+        assert frame.name() == 'debug_hardware::independent_pair', frame.name()
+        assert frame.older().find_sal().line == {independent_assignment}
+        independent_calls.append(int(gdb.parse_and_eval('value')))
+        return False
+class AliasPair(Check):
+    def check(self):
+        frame = gdb.selected_frame()
+        assert frame.name() == 'debug_hardware::alias_pair', frame.name()
+        assert frame.older().find_sal().line == {alias_assignment}
+        value = int(gdb.parse_and_eval('value'))
+        assert frame.find_sal().line == ({positive_alias_return} if value > 0 else {fallback_alias_return})
+        assert int(gdb.parse_and_eval('pair.left')) == value
+        assert int(gdb.parse_and_eval('pair.right')) == value + 1
+        alias_calls.append(value)
+        return False
+class MatchedPair(Check):
+    def check(self):
+        frame = gdb.selected_frame()
+        assert frame.name() == 'debug_hardware::match_pair', frame.name()
+        assert frame.older().find_sal().line == {matched_assignment}
+        value = int(gdb.parse_and_eval('value'))
+        assert frame.find_sal().line == ({matched_return} if value == 6 else {default_return})
+        assert int(gdb.parse_and_eval('local')) == value + (20 if value == 6 else 10)
+        match_calls.append(value)
+        return False
 Typed({source:?} + ':{typed_return}')
 Event({source:?} + ':{event_return}')
 Aggregate({source:?} + ':{bundle_return}')
 PairCall({source:?} + ':{pair_return}')
 MaskedPair({source:?} + ':{masked_return}')
+ChosenPair({source:?} + ':{nested_pair_return}')
+ChosenPair({source:?} + ':{positive_pair_return}')
+ChosenPair({source:?} + ':{fallback_pair_return}')
+IndependentPair({source:?} + ':{independent_return}')
+AliasPair({source:?} + ':{positive_alias_return}')
+AliasPair({source:?} + ':{fallback_alias_return}')
+MatchedPair({source:?} + ':{matched_return}')
+MatchedPair({source:?} + ':{default_return}')
 leaf = gdb.Breakpoint({source:?} + ':{leaf_return}')
 outer = gdb.Breakpoint({source:?} + ':{outer_return}')
 gdb.execute('run')
@@ -955,6 +1085,10 @@ assert typed_seen
 assert bundle_seen
 assert all(pair_calls.count(value) == 1 for value in [5, 6, -6]), pair_calls
 assert sorted(masked_calls) == [-6, 5, 6], masked_calls
+assert sorted(chosen_calls) == [-6, 0, 5, 6], chosen_calls
+assert sorted(independent_calls) == [-6, 0, 5, 6], independent_calls
+assert sorted(alias_calls) == [-6, 0, 5, 6], alias_calls
+assert sorted(match_calls) == [-6, 0, 5, 6], match_calls
 "#,
             source = source.to_string_lossy(),
             leaf_return = line("hardware leaf return"),
@@ -974,6 +1108,18 @@ assert sorted(masked_calls) == [-6, 5, 6], masked_calls
             pair_return = line("hardware pair return"),
             masked_assignment = line("masked pair assignment"),
             masked_return = line("masked pair return"),
+            chosen_assignment = line("chosen pair assignment"),
+            nested_pair_return = line("nested pair return"),
+            positive_pair_return = line("positive pair return"),
+            fallback_pair_return = line("fallback pair return"),
+            independent_assignment = line("independent pair assignment"),
+            independent_return = line("independent pair return"),
+            alias_assignment = line("alias pair assignment"),
+            positive_alias_return = line("positive alias pair return"),
+            fallback_alias_return = line("fallback alias pair return"),
+            matched_assignment = line("matched pair assignment"),
+            matched_return = line("matched pair return"),
+            default_return = line("default pair return"),
         );
         success(
             Command::new("gdb")
@@ -990,39 +1136,76 @@ assert sorted(masked_calls) == [-6, 5, 6], masked_calls
                 .output()
                 .unwrap(),
         );
-        let finish = format!(
-            r#"import gdb
-stop = gdb.Breakpoint({source:?} + ':{line}')
+        for (callee, caller, markers, expected) in [
+            (
+                "make_pair",
+                "sum_pair",
+                vec!["hardware pair return"],
+                vec![(5, 6, 7), (6, 7, 8), (-6, -5, -4), (0, 1, 2)],
+            ),
+            (
+                "choose_pair",
+                "sum_chosen_pair",
+                vec![
+                    "nested pair return",
+                    "positive pair return",
+                    "fallback pair return",
+                ],
+                vec![(5, 7, 9), (6, 9, 10), (-6, -5, 5), (0, 1, 11)],
+            ),
+            (
+                "independent_pair",
+                "sum_independent_pair",
+                vec!["independent pair return"],
+                vec![(5, 5, 6), (6, 6, 9), (-6, -7, -5), (0, -1, 1)],
+            ),
+            (
+                "alias_pair",
+                "sum_alias_pair",
+                vec!["positive alias pair return", "fallback alias pair return"],
+                vec![(5, 5, 6), (6, 6, 7), (-6, -6, 5), (0, 0, 11)],
+            ),
+            (
+                "match_pair",
+                "sum_matched_pair",
+                vec!["matched pair return", "default pair return"],
+                vec![(5, 15, 16), (6, 26, 27), (-6, 4, 5), (0, 10, 11)],
+            ),
+        ] {
+            let lines = markers.into_iter().map(line).collect::<Vec<_>>();
+            let finish = format!(
+                r#"import gdb
+stops = [gdb.Breakpoint({source:?} + ':' + str(line)) for line in {lines:?}]
 gdb.execute('run')
-for expected in [5, 6, -6, 0]:
-    assert gdb.selected_frame().name() == 'debug_hardware::make_pair'
-    assert int(gdb.parse_and_eval('value')) == expected
+for value, left, right in {expected:?}:
+    assert gdb.selected_frame().name() == 'debug_hardware::' + {callee:?}
+    assert int(gdb.parse_and_eval('value')) == value
     report = gdb.execute('finish', to_string=True)
     returned = gdb.history(0)
-    assert int(returned['left']) == expected + 1, ('aggregate finish left', str(returned), report)
-    assert int(returned['right']) == expected + 2, ('aggregate finish right', str(returned), report)
-    assert gdb.selected_frame().name() == 'debug_hardware::sum_pair'
+    assert int(returned['left']) == left, ('aggregate finish left', str(returned), report)
+    assert int(returned['right']) == right, ('aggregate finish right', str(returned), report)
+    assert gdb.selected_frame().name() == 'debug_hardware::' + {caller:?}
     gdb.execute('continue')
 assert int(gdb.parse_and_eval('$_exitcode')) == 0
 "#,
-            source = source.to_string_lossy(),
-            line = line("hardware pair return"),
-        );
-        success(
-            Command::new("gdb")
-                .args(["-nx", "-q", "--batch"])
-                .arg(&debug)
-                .args([
-                    "-ex",
-                    "set disable-randomization off",
-                    "-ex",
-                    "set breakpoint pending off",
-                    "-ex",
-                    &format!("python {finish}"),
-                ])
-                .output()
-                .unwrap(),
-        );
+                source = source.to_string_lossy(),
+            );
+            success(
+                Command::new("gdb")
+                    .args(["-nx", "-q", "--batch"])
+                    .arg(&debug)
+                    .args([
+                        "-ex",
+                        "set disable-randomization off",
+                        "-ex",
+                        "set breakpoint pending off",
+                        "-ex",
+                        &format!("python {finish}"),
+                    ])
+                    .output()
+                    .unwrap(),
+            );
+        }
     } else {
         eprintln!("GDB unavailable: hardware native execution checked, debugger probe skipped");
     }

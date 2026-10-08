@@ -15151,3 +15151,53 @@ siox-paper notes. Preserve unowned AGENTS/441 chat lines/.codex and all backups.
 Full DWARF remains active: branch-return/effectful/checked/nested/partial
 aggregate grouping, folded string frames, formal audits, packed companions and
 string/normalized-wide/mixed-layout return ABI remain. No push authorized.
+
+### 2026-10-08 — Codex — DWARF aggregate branch-return probe
+
+Previous goal turn made verified progress: compiler 91f54d2 and docs a68a29d
+commit shared straight-line aggregate source frames after acceptance 2429375.
+Continue owning the native source selection/grouping emitter and regression.
+Prove nested hardware struct-return branches retain one selected source stop,
+exact caller lines and lexical locals, then reuse the existing selected-value
+SSA join emitter for a whole retained return. Preserve inactive effects and
+pruned fields; do not pack metadata-only operands or declare the full goal
+complete. Keep unrelated AGENTS/441 chat lines/.codex and backups. No push.
+
+Probe 2479628 failed/101 as expected: native outputs, DWARF/VCD and branch
+locals are correct, but selected returns stop twice per input (5/6/-6/0).
+Group existing pure Select leaves through the common selected-value SSA join,
+passing an arm index independently of aliased value IDs and capturing the
+whole packed return layout at the selected source boundary. Probe 2481639
+passes exited/success/0, peak 732241920, including strict Clippy and nested
+branch source/caller lines. Expanded probe 2492703 passes for independent
+field conditions and aliased aggregate locals. Probe 2496846 passes default/
+bitpack, peak 774672384: same-line independent field conditions, one selected
+stop per input, branch-private/shadowed locals and actual GDB finish values for
+straight-line, nested, independent and alias return bodies. Add a source match
+case using this same selection pipeline before full acceptance. Effectful/
+checked/nested-call and partial-result grouping remains open, not forced eager.
+
+Probe 2506480 passes exited/success/0, peak 183336960: strict Clippy and
+expanded hardware native/GDB coverage in default/bitpack, including match
+returns, shadowed locals, exact caller/return lines, selected return counts
+and finish values for all five return shapes (straight-line, nested, match,
+independent conditions and aliases). Strengthen fallback scope validation to
+require no visible branch-local symbol, not merely a failed memory read.
+Update TODO and siox-paper architecture/testing notes, keeping checked,
+effectful, nested-call and partial grouping plus other required DWARF work
+explicit. Freeze source for full acceptance before committing; no push.
+
+Acceptance 2518381 is terminal exited/success/0, peak 1581228032 bytes.
+Formatting, strict all-feature Clippy, frontend-only compilation, complete
+default/bitpack suites (534/513 units plus integrations), all six native DWARF
+fixtures in both modes and ordinary/default-debug/bitpack-debug corpora (228/0
+each) pass. All four FIFO/wide GDB inspection/stepping and VCD parity smokes
+pass. The exact fallback lookup proves the branch-private symbol is absent.
+AST refresh finishes at 5243 nodes, 14905 edges and 259 communities with the
+known four vendor partial-parse and six no-symbol warnings, without LLM/API
+work. Commit only owned grouping/selection code, regressions, TODO and this
+coordination tail; separately commit architecture/testing notes. Preserve
+unowned AGENTS/441 chat lines/.codex and all backups. The full DWARF goal
+remains active: demand-preserving effectful/checked/nested-call and partial
+aggregate grouping, folded string frames, formal audits, packed companions
+and remaining return ABIs are still required. No push authorized.

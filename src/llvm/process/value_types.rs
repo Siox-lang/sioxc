@@ -373,8 +373,9 @@ pub(super) fn process_select<'ctx>(
             design,
             id,
             condition,
+            None,
             cache,
-            |builder, id, cache| {
+            |builder, _, id, cache| {
                 process_value_at(
                     context,
                     module,

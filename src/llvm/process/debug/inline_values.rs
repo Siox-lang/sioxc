@@ -28,6 +28,7 @@ pub(super) fn aggregate_returns(
                 | ProcessValueKind::RawResize { .. }
                 | ProcessValueKind::BitSlice { .. }
                 | ProcessValueKind::PackedSlice { .. }
+                | ProcessValueKind::Select { .. }
                 | ProcessValueKind::Unary {
                     operation: ProcessUnaryOp::Neg | ProcessUnaryOp::Not,
                     ..
@@ -615,27 +616,16 @@ fn aggregate_value<'ctx>(
         None,
         index_sites,
         cache,
-        |builder, cache, active| {
-            let mut result = debug
-                .context
-                .custom_width_int_type(std::num::NonZeroU32::new(root_width)?)
-                .ok()?
-                .const_zero();
-            for (operand, offset, layout) in &aggregate.pieces {
-                let part = process_value_in_layout(
-                    debug.context,
-                    module,
-                    builder,
-                    design,
-                    *operand,
-                    layout,
-                    active,
-                    index_sites,
-                    cache,
-                )?;
-                result = insert_region(builder, result, part, *offset, layout_width(layout)?)?;
-            }
-            Some(result)
+        |builder, cache, _| {
+            aggregate_result(
+                module,
+                builder,
+                design,
+                &aggregate.layout,
+                &aggregate.pieces,
+                index_sites,
+                cache,
+            )
         },
     )?;
     let field = extract_region(builder, returned, offset, field_width)?;
@@ -644,6 +634,87 @@ fn aggregate_value<'ctx>(
     } else {
         fit(builder, field, width)
     }
+}
+
+/// Synchronized field selectors represent one aggregate source return.
+/// Select its whole value once, including nested return branches, rather than
+/// emitting a separate source return range for every field.
+fn aggregate_result<'ctx>(
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    layout: &SourceLayout,
+    pieces: &[(ProcessValueId, u32, SourceLayout)],
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let debug = cache.debug?;
+    let selector = pieces[0].0;
+    let selection = |id: ProcessValueId| match design.process_ir.values[id.0 as usize].kind {
+        ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } => Some((condition, [then_value, else_value])),
+        _ => None,
+    };
+    if let Some((condition, _)) = selection(selector) {
+        let arms = pieces
+            .iter()
+            .map(|(id, offset, layout)| {
+                let (other, arms) = selection(*id)?;
+                (condition == other).then_some((arms, *offset, layout))
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(arms) = arms {
+            let condition = process_value(
+                debug.context,
+                module,
+                builder,
+                design,
+                condition,
+                None,
+                index_sites,
+                cache,
+            )?;
+            return selected_value(
+                module,
+                builder,
+                design,
+                selector,
+                as_condition(builder, condition)?,
+                Some(layout),
+                cache,
+                |builder, arm, _, cache| {
+                    let pieces = arms
+                        .iter()
+                        .map(|(ids, offset, layout)| (ids[arm], *offset, (*layout).clone()))
+                        .collect::<Vec<_>>();
+                    aggregate_result(module, builder, design, layout, &pieces, index_sites, cache)
+                },
+            );
+        }
+    }
+    let mut result = debug
+        .context
+        .custom_width_int_type(std::num::NonZeroU32::new(layout_width(layout)?)?)
+        .ok()?
+        .const_zero();
+    for (operand, offset, layout) in pieces {
+        let part = process_value_in_layout(
+            debug.context,
+            module,
+            builder,
+            design,
+            *operand,
+            layout,
+            None,
+            index_sites,
+            cache,
+        )?;
+        result = insert_region(builder, result, part, *offset, layout_width(layout)?)?;
+    }
+    Some(result)
 }
 
 /// A selected alias is evaluated once per actual consumer format. Readiness
@@ -1146,15 +1217,18 @@ fn capture_result<'ctx>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::llvm::process) fn selected_value<'ctx>(
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     design: &Design,
     selection: ProcessValueId,
     condition: IntValue<'ctx>,
+    layout: Option<&SourceLayout>,
     cache: &mut ProcessValueCache<'ctx, '_>,
     mut emit: impl FnMut(
         &Builder<'ctx>,
+        usize,
         ProcessValueId,
         &mut ProcessValueCache<'ctx, '_>,
     ) -> Option<IntValue<'ctx>>,
@@ -1193,13 +1267,14 @@ pub(in crate::llvm::process) fn selected_value<'ctx>(
     let saved = cache.source_results.clone();
     let mut results = Vec::with_capacity(2);
     let mut calls = Vec::with_capacity(2);
-    for ((block, id), span) in [(then_block, arms[0]), (else_block, arms[1])]
+    for (arm, ((block, id), span)) in [(then_block, arms[0]), (else_block, arms[1])]
         .into_iter()
         .zip(spans)
+        .enumerate()
     {
         builder.position_at_end(block);
-        let value = emit(builder, id, cache)?;
-        capture_result(module, builder, design, id, value, span, None, cache);
+        let value = emit(builder, arm, id, cache)?;
+        capture_result(module, builder, design, id, value, span, layout, cache);
         let exit = builder.get_insert_block()?;
         builder.build_unconditional_branch(join).ok()?;
         results.push((value, exit));

@@ -144,13 +144,15 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   already-emitted values, including nested structs, descending/negative-label
   arrays, non-byte-aligned wide signed/unsigned leaves and real fields. Pruned
   members remain unavailable; metadata never adds executable dependencies.
-  Fully retained, typed straight-line pure hardware aggregate returns share
+  Fully retained, typed pure hardware aggregate returns share
   one native source boundary and exact-layout SSA result across selected field
-  consumers. Complete demand-preserving grouping for branch-return,
-  effectful/checked/nested and partial aggregate returns; no debug boundary
-  may force an unconsumed field or invent
-  an available zero for a pruned member. Complete literal/empty-string return
-  frames bypassed by folded length consumers.
+  consumers, including nested if/match return branches, independent field
+  conditions and aliased values. Matching field selectors use one whole
+  selected-return SSA join, with return scopes and lexical shadowing preserved.
+  Complete demand-preserving grouping for effectful/checked/nested-call and
+  partial aggregate returns; no debug boundary may force an unconsumed field
+  or invent an available zero for a pruned member. Complete literal/empty-string
+  return frames bypassed by folded length consumers.
   Shared Process functions now retain their source frames directly on the
   canonical native body, including selected branches, lexical locals and
   declaration-owned scalar inspection types. Keep native body-count, actual
@@ -160,7 +162,8 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   and constrained/generic signatures. Add packed unknown-state expression
   companion checks and verify GDB `finish` for string and normalized wide/
   mixed-layout/partial aggregate return ABIs. Two-integer hardware aggregate
-  `finish` values are checked for positive, negative and zero inputs. Scalar
+  `finish` values are checked for straight-line, nested/match, independent and
+  alias returns with positive, negative and zero inputs. Scalar
   real native boundaries use double returns, with actual `finish` checks for
   positive/negative values and signed zero in
   inline/shared bodies; the internal emitter still exchanges integer bits.

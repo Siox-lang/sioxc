@@ -455,8 +455,9 @@ pub(super) fn process_value_in_layout<'ctx>(
                     design,
                     id,
                     condition,
+                    None,
                     cache,
-                    |builder, id, cache| {
+                    |builder, _, id, cache| {
                         process_value_in_layout(
                             context,
                             module,
