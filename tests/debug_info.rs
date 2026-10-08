@@ -241,7 +241,6 @@ fn expression_branches_preserve_shadowing_and_selected_source_stops() {
     let directory =
         std::env::temp_dir().join(format!("siox_dwarf_branches_{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
-    let source = directory.join("branches.siox");
     let text = r#"module debug_branches;
 struct Pair { pub first: integer, pub second: integer }
 #[inline(never)]
@@ -268,6 +267,17 @@ fn alias(value: integer) -> integer {
 fn typed(value: integer) -> integer {
     let local: integer = value;
     return local + 1; // declared integer return
+}
+#[inline(never)]
+fn increment(value: integer) -> integer {
+    return value + 1; // shared alias increment return
+}
+#[inline(always)]
+fn reuse(value: integer) -> integer {
+    let local: integer = increment(value);
+    let first: integer = if value > 0 { local } else { 0 };
+    let second: integer = if value < 9 { local } else { 0 };
+    return first + second;
 }
 fn choose_pair(value: integer) -> Pair {
     if value > 0 {
@@ -308,70 +318,103 @@ impl T {
         let narrow: integer<-8..7> = -3;
         let narrow_result: integer = typed(narrow); // declared integer call
         let next_result: integer = typed(0 - narrow); // declared integer second call
+        let both: integer = reuse(input);
+        let second_only: integer = reuse(negative_input);
+        let first_only: integer = reuse(20);
+        let unselected: integer = if input < 0 { reuse(input) } else { 0 };
         assert!(selected == 35 and inner == 12 and fallback == 100, "branch results");
         assert!(positive == 5 and negative == -5, "same operand returns");
         assert!(first.first == 5 and first.second == 6 and second.first == -5 and second.second == 100, "aggregate selection results");
         assert!(matched == 7 and unmatched == 100, "match results");
         assert!(narrow_result == -2 and next_result == 4, "shared declared integer results");
+        assert!(both == 12 and second_only == -4 and first_only == 21, "shared alias results");
+        assert!(unselected == 0, "inactive source call must not run");
     }
 }"#;
-    std::fs::write(&source, text).unwrap();
-    let debug = directory.join("debug.bin");
-    let ordinary = directory.join("ordinary.bin");
-    for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
-        command.args(["--std", "std", "--test"]);
-        if debugging {
-            command.arg("--debug");
-        }
-        success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
-        success(
-            Command::new(binary)
-                .arg("-o")
-                .arg(binary.with_extension("vcd"))
-                .output()
-                .unwrap(),
-        );
-    }
-    assert_eq!(
-        std::fs::read(debug.with_extension("vcd")).unwrap(),
-        std::fs::read(ordinary.with_extension("vcd")).unwrap()
-    );
-    if Command::new("llvm-dwarfdump")
-        .arg("--version")
-        .output()
-        .is_ok()
-    {
-        success(
-            Command::new("llvm-dwarfdump")
-                .arg("--verify")
-                .arg(&debug)
-                .output()
-                .unwrap(),
-        );
-    }
-    if Command::new("nm").arg("--version").output().is_ok() {
-        let symbols = success(Command::new("nm").arg(&debug).output().unwrap());
-        let symbols = String::from_utf8_lossy(&symbols.stdout);
-        for function in ["choose", "alias"] {
-            assert_eq!(
-                symbols
-                    .lines()
-                    .filter(|line| {
-                        line.split_whitespace().last().is_some_and(|name| {
-                            name.starts_with("sx.fn.") && name.ends_with(&format!(".{function}"))
-                        })
-                    })
-                    .count(),
-                1,
-                "repeated calls must share one native source body: {symbols}"
+    for (increment, reuse) in [
+        ("never", "always"),
+        ("always", "always"),
+        ("never", "never"),
+        ("always", "never"),
+    ] {
+        let source = directory.join(format!("branches_{increment}_{reuse}.siox"));
+        let text = text
+            .replace(
+                "#[inline(never)]\nfn increment",
+                &format!("#[inline({increment})]\nfn increment"),
+            )
+            .replace(
+                "#[inline(always)]\nfn reuse",
+                &format!("#[inline({reuse})]\nfn reuse"),
+            );
+        std::fs::write(&source, &text).unwrap();
+        let debug = directory.join("debug.bin");
+        let ordinary = directory.join("ordinary.bin");
+        for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+            success(
+                Command::new(binary)
+                    .arg("-o")
+                    .arg(binary.with_extension("vcd"))
+                    .output()
+                    .unwrap(),
             );
         }
-    }
-    if Command::new("gdb").arg("--version").output().is_ok() {
-        let line = |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
-        let python = format!(
-            r#"import gdb
+        assert_eq!(
+            std::fs::read(debug.with_extension("vcd")).unwrap(),
+            std::fs::read(ordinary.with_extension("vcd")).unwrap()
+        );
+        if Command::new("llvm-dwarfdump")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            success(
+                Command::new("llvm-dwarfdump")
+                    .arg("--verify")
+                    .arg(&debug)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        if Command::new("nm").arg("--version").output().is_ok() {
+            let symbols = success(Command::new("nm").arg(&debug).output().unwrap());
+            let symbols = String::from_utf8_lossy(&symbols.stdout);
+            for function in ["choose", "alias"] {
+                assert_eq!(
+                    symbols
+                        .lines()
+                        .filter(|line| {
+                            line.split_whitespace().last().is_some_and(|name| {
+                                name.starts_with("sx.fn.")
+                                    && name.ends_with(&format!(".{function}"))
+                            })
+                        })
+                        .count(),
+                    1,
+                    "repeated calls must share one native source body: {symbols}"
+                );
+            }
+        }
+        if Command::new("gdb").arg("--version").output().is_ok() {
+            let line = |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
+            let python = format!(
+                r#"import gdb
+calls, failures = [], []
+class CountCalls(gdb.Breakpoint):
+    def stop(self):
+        try:
+            assert gdb.selected_frame().name() == 'debug_branches::increment'
+            calls.append(int(gdb.parse_and_eval('value')))
+        except Exception as error:
+            failures.append(str(error))
+        return False
+counter = CountCalls({source:?} + ':{increment_return}')
 stops = [
     ('choose', 5, 35, {nested_line}, {true_line}),
     ('choose', 2, 12, {inner_line}, {inner_call_line}),
@@ -405,47 +448,51 @@ for function, expected, local, return_line, call_line in stops:
     assert actual.older().find_sal().line == call_line
     gdb.execute('continue')
 assert int(gdb.parse_and_eval('$_exitcode')) == 0, 'unselected branch produced an extra stop'
+assert not failures, failures
+assert calls == [5, -5, 20], ('one source call per reused local', calls)
 "#,
-            source = source.to_string_lossy(),
-            nested_line = line("branch nested return"),
-            inner_line = line("branch inner return"),
-            outer_line = line("branch outer return"),
-            true_line = line("branch true call"),
-            inner_call_line = line("branch inner call"),
-            false_line = line("branch false call"),
-            alias_true_return = line("alias true return"),
-            alias_true_call = line("alias true call"),
-            alias_false_return = line("alias false return"),
-            alias_false_call = line("alias false call"),
-            pair_true_return = line("pair true return"),
-            pair_true_call = line("pair true call"),
-            pair_false_return = line("pair false return"),
-            pair_false_call = line("pair false call"),
-            match_true_return = line("match true return"),
-            match_true_call = line("match true call"),
-            match_false_return = line("match false return"),
-            match_false_call = line("match false call"),
-            typed_return = line("declared integer return"),
-            typed_call = line("declared integer call"),
-            typed_second_call = line("declared integer second call"),
-        );
-        success(
-            Command::new("gdb")
-                .args(["-nx", "-q", "--batch"])
-                .arg(&debug)
-                .args([
-                    "-ex",
-                    "set disable-randomization off",
-                    "-ex",
-                    "set breakpoint pending off",
-                    "-ex",
-                    &format!("python {python}"),
-                ])
-                .output()
-                .unwrap(),
-        );
-    } else {
-        eprintln!("GDB unavailable: branch native execution checked, debugger probe skipped");
+                source = source.to_string_lossy(),
+                nested_line = line("branch nested return"),
+                inner_line = line("branch inner return"),
+                outer_line = line("branch outer return"),
+                true_line = line("branch true call"),
+                inner_call_line = line("branch inner call"),
+                false_line = line("branch false call"),
+                alias_true_return = line("alias true return"),
+                alias_true_call = line("alias true call"),
+                alias_false_return = line("alias false return"),
+                alias_false_call = line("alias false call"),
+                pair_true_return = line("pair true return"),
+                pair_true_call = line("pair true call"),
+                pair_false_return = line("pair false return"),
+                pair_false_call = line("pair false call"),
+                match_true_return = line("match true return"),
+                match_true_call = line("match true call"),
+                match_false_return = line("match false return"),
+                match_false_call = line("match false call"),
+                typed_return = line("declared integer return"),
+                typed_call = line("declared integer call"),
+                typed_second_call = line("declared integer second call"),
+                increment_return = line("shared alias increment return"),
+            );
+            success(
+                Command::new("gdb")
+                    .args(["-nx", "-q", "--batch"])
+                    .arg(&debug)
+                    .args([
+                        "-ex",
+                        "set disable-randomization off",
+                        "-ex",
+                        "set breakpoint pending off",
+                        "-ex",
+                        &format!("python {python}"),
+                    ])
+                    .output()
+                    .unwrap(),
+            );
+        } else {
+            eprintln!("GDB unavailable: branch native execution checked, debugger probe skipped");
+        }
     }
     std::fs::remove_dir_all(directory).unwrap();
 }

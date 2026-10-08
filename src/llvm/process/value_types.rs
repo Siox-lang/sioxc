@@ -40,6 +40,8 @@ pub(super) struct ProcessValueCache<'ctx, 'checks> {
     pub(super) parameters: HashMap<ProcessValueId, IntValue<'ctx>>,
     /// Native debug parameters retain each actual consumer format as SSA.
     pub(super) debug_arguments: Option<debug::ValueArguments<'ctx>>,
+    /// Selected source-call results and their SSA availability predicates.
+    pub(super) source_results: debug::ValueResults<'ctx>,
 }
 
 impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
@@ -60,6 +62,7 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
             source_location: None,
             parameters: HashMap::new(),
             debug_arguments: None,
+            source_results: HashMap::new(),
         }
     }
 
@@ -91,6 +94,7 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
         self.contextual.clear();
         self.metadata.clear();
         self.signals.clear();
+        self.source_results.clear();
     }
 
     pub(super) fn emitted_value(
@@ -128,6 +132,11 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
             .chain(self.signals.values())
             .chain(self.evaluated_calls.values())
             .copied()
+            .chain(
+                self.source_results
+                    .values()
+                    .flat_map(|(value, ready)| [*value, *ready]),
+            )
             .collect()
     }
 
@@ -139,6 +148,8 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
         self.signals.retain(|_, value| values.contains(value));
         self.evaluated_calls
             .retain(|_, value| values.contains(value));
+        self.source_results
+            .retain(|_, (value, ready)| values.contains(value) && values.contains(ready));
     }
 }
 

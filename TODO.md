@@ -137,8 +137,10 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   Native expression arguments retain the actual consumer width/sign/layout
   requests independently of inspection types, including narrow signed nested
   arithmetic and multiple formats used inside one callee.
+  Multiply-used scalar call results retain exact-format SSA readiness through
+  selected joins; native GDB counts cover both/first-only/second-only consumers
+  and untaken calls across all four inline/shared caller/callee combinations.
   Complete aggregate hardware bindings and faithful aggregate-return call boundaries,
-  actual call-count checks for aliases consumed under different predicates and
   literal/empty-string return frames bypassed by folded length consumers.
   Shared Process functions now retain their source frames directly on the
   canonical native body, including selected branches, lexical locals and

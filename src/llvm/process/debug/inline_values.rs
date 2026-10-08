@@ -294,47 +294,123 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
         debug
             .value_functions
             .borrow_mut()
-            .insert(key, (function, formats.clone()));
+            .insert(key.clone(), (function, formats.clone()));
         (function, formats)
     };
     // Metadata never requests arguments. Emit only formats actually consumed
     // by the body, through exactly the same paths as an ordinary inline call.
-    let mut arguments = Vec::with_capacity(formats.len());
-    for (value, width, signed, layout) in formats {
-        let argument = if let Some(layout) = layout {
-            process_value_in_layout(
-                debug.context,
-                module,
-                builder,
-                design,
-                value,
-                &layout,
-                None,
-                index_sites,
-                cache,
-            )?
-        } else {
-            process_value_at(
-                debug.context,
-                module,
-                builder,
-                design,
-                value,
-                width,
-                signed,
-                None,
-                index_sites,
-                cache,
-            )?
-        };
-        arguments.push(argument.into());
+    call_value(debug.context, builder, key, cache, |builder, cache| {
+        let mut arguments = Vec::with_capacity(formats.len());
+        for (value, width, signed, layout) in formats {
+            let argument = if let Some(layout) = layout {
+                process_value_in_layout(
+                    debug.context,
+                    module,
+                    builder,
+                    design,
+                    value,
+                    &layout,
+                    None,
+                    index_sites,
+                    cache,
+                )?
+            } else {
+                process_value_at(
+                    debug.context,
+                    module,
+                    builder,
+                    design,
+                    value,
+                    width,
+                    signed,
+                    None,
+                    index_sites,
+                    cache,
+                )?
+            };
+            arguments.push(argument.into());
+        }
+        builder
+            .build_call(function, &arguments, "debug.call")
+            .ok()?
+            .try_as_basic_value()
+            .basic()
+            .map(|value| value.into_int_value())
+    })
+}
+
+/// A selected alias is evaluated once per actual consumer format. Readiness
+/// travels with its value through SSA joins, never through runtime storage.
+pub(in crate::llvm::process) fn call_value<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    key: ValueFunctionKey,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+    emit: impl FnOnce(&Builder<'ctx>, &mut ProcessValueCache<'ctx, '_>) -> Option<IntValue<'ctx>>,
+) -> Option<IntValue<'ctx>> {
+    if !cache
+        .debug
+        .is_some_and(|debug| debug.reused_calls.contains(&key.0))
+    {
+        return emit(builder, cache);
     }
-    builder
-        .build_call(function, &arguments, "debug.call")
-        .ok()?
-        .try_as_basic_value()
-        .basic()
-        .map(|value| value.into_int_value())
+    let ready = context.bool_type().const_int(1, false);
+    if let Some((value, available)) = cache.source_results.get(&key).copied() {
+        if available.get_zero_extended_constant() == Some(1) {
+            return Some(value);
+        }
+        let missing = builder.build_not(available, "debug.call.missing").ok()?;
+        active_value(context, builder, key.1, missing, cache, |builder, cache| {
+            let value = emit(builder, cache)?;
+            cache.source_results.insert(key.clone(), (value, ready));
+            Some(value)
+        })?;
+        let value = cache.source_results.get(&key)?.0;
+        cache.source_results.insert(key, (value, ready));
+        Some(value)
+    } else {
+        let value = emit(builder, cache)?;
+        cache.source_results.insert(key, (value, ready));
+        Some(value)
+    }
+}
+
+/// Keep both a result and whether its call actually ran on each predecessor.
+fn merge_results<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    arms: [(&ValueResults<'ctx>, BasicBlock<'ctx>); 2],
+) -> Option<ValueResults<'ctx>> {
+    let mut results = HashMap::new();
+    for key in arms[0].0.keys().chain(arms[1].0.keys()) {
+        if results.contains_key(key) {
+            continue;
+        }
+        let (value, _) = arms[0].0.get(key).or_else(|| arms[1].0.get(key))?;
+        let absent = (
+            value.get_type().const_zero(),
+            context.bool_type().const_zero(),
+        );
+        let left = arms[0].0.get(key).copied().unwrap_or(absent);
+        let right = arms[1].0.get(key).copied().unwrap_or(absent);
+        let merge = |left: IntValue<'ctx>, right: IntValue<'ctx>, name| {
+            if left == right {
+                Some(left)
+            } else {
+                let phi = builder.build_phi(left.get_type(), name).ok()?;
+                phi.add_incoming(&[(&left, arms[0].1), (&right, arms[1].1)]);
+                Some(phi.as_basic_value().into_int_value())
+            }
+        };
+        results.insert(
+            key.clone(),
+            (
+                merge(left.0, right.0, "debug.call.saved")?,
+                merge(left.1, right.1, "debug.call.ready")?,
+            ),
+        );
+    }
+    Some(results)
 }
 
 /// Native source calls execute only on their selected source path. Both
@@ -367,12 +443,16 @@ pub(in crate::llvm::process) fn active_value<'ctx>(
         .build_conditional_branch(active, execute, join)
         .ok()?;
     let dominating = cache.dominating_values();
+    let saved = cache.source_results.clone();
     builder.position_at_end(execute);
     let returned = emit(builder, cache)?;
     let exit = builder.get_insert_block()?;
+    let executed = std::mem::take(&mut cache.source_results);
     builder.build_unconditional_branch(join).ok()?;
     builder.position_at_end(join);
     cache.retain_dominating(&dominating);
+    cache.source_results =
+        merge_results(context, builder, [(&saved, previous), (&executed, exit)])?;
     let result = builder
         .build_phi(returned.get_type(), "debug.call.result")
         .ok()?;
@@ -763,7 +843,9 @@ pub(in crate::llvm::process) fn selected_value<'ctx>(
         .build_conditional_branch(condition, then_block, else_block)
         .ok()?;
     let dominating = cache.dominating_values();
+    let saved = cache.source_results.clone();
     let mut results = Vec::with_capacity(2);
+    let mut calls = Vec::with_capacity(2);
     for ((block, id), span) in [(then_block, arms[0]), (else_block, arms[1])]
         .into_iter()
         .zip(spans)
@@ -774,9 +856,16 @@ pub(in crate::llvm::process) fn selected_value<'ctx>(
         let exit = builder.get_insert_block()?;
         builder.build_unconditional_branch(join).ok()?;
         results.push((value, exit));
+        calls.push(std::mem::take(&mut cache.source_results));
         cache.retain_dominating(&dominating);
+        cache.source_results = saved.clone();
     }
     builder.position_at_end(join);
+    cache.source_results = merge_results(
+        debug.context,
+        builder,
+        [(&calls[0], results[0].1), (&calls[1], results[1].1)],
+    )?;
     let result = builder
         .build_phi(results[0].0.get_type(), "debug.select.result")
         .ok()?;

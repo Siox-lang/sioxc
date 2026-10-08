@@ -14912,3 +14912,63 @@ fast-forwarded to 05278a8, including Claude's already-committed migrations.
 Gate 2072731 completed exited/success/0, peak 491655168 bytes: all default Rust
 tests (534 units plus integrations) and 228/0 native corpus simulations pass.
 Finalize the main merge without including the saved unfinished edits.
+
+### 2026-10-08 — Codex — DWARF alias execution counts
+
+Continue the full debugging goal after accepted batch 32a22cd and reference
+docs 1d809da. Own native expression/shared-call emission and debugger regressions:
+prove that one local call result consumed under distinct predicates executes
+once on paths selecting both uses. Count real GDB callee stops, retaining
+ordinary/debug native results and VCD parity, before choosing a root fix.
+Do not hoist unchecked effects, create metadata-only executable roots or
+weaken inactive-path/source-frame checks. Preserve unrelated AGENTS/441 chat
+lines and .codex. No push; full acceptance remains required before commit.
+
+Probe 2029707 failed/101 with the intended native GDB evidence: calls were
+[5, 5, -5, 20] rather than [5, -5, 20], while ordinary/debug native results,
+VCD and DWARF checks passed. Branch-only call SSA is discarded after a select.
+Retain readiness and exact-format results through SSA joins for multiply-used
+canonical source calls, using the same selected-path guard for inline and
+shared bodies. Keep cache epoch invalidation, argument evaluation laziness and
+consumer formats intact; no eager source-local hoisting or runtime buffers.
+
+Probe 2042031 completed exited/success/0 (peak 955805696 bytes): strict Clippy,
+all five default debugger fixtures and exact-format unit pass with the SSA
+readiness fix. Expand the alias regression across all four inline/shared
+callee/caller combinations, retaining negative/first-only/second-only paths
+and real breakpoint callback failures. This is focused progress, not complete
+default/bitpack/corpus acceptance or full-goal completion.
+
+### 2026-10-08 — Codex — DWARF alias acceptance after print-format merge
+
+Continue the full DWARF goal on merged main 33bdeeb and corpus 05278a8.
+Probe 2049324 completed exited/success/0 before integration (952078336-byte
+peak): all four inline/shared alias combinations pass default/bitpack GDB
+checks, and the debug float build/run passes in 57.492 seconds. This does not
+prove acceptance on the new main. Own the same shared emitter and tests:
+extend cache epoch/dominance checks for saved result/readiness pairs and retain
+an unselected nested-call regression. Then freeze source for strict/default/
+bitpack/native/debug-corpus and GDB gates. Preserve unrelated AGENTS, 441 chat
+lines and .codex; no push and no full-goal completion claim.
+
+Probe 2092983 completed exited/success/0 (peak 1612390400 bytes): strict Clippy,
+the enhanced dominance/epoch regression and all default/bitpack GDB fixtures
+pass on merged main. Four alias caller/callee variants count exactly one actual
+call for each selected source local and no outer untaken call. Update TODO and
+siox-paper architecture/testing with this bounded evidence, retaining aggregate,
+folded-string, formal-type, packed companion and finish-ABI gaps. Freeze source
+for the complete acceptance gate; no commit yet.
+
+Acceptance gate 2102618 completed SubState=exited / Result=success /
+ExecMainStatus=0, MemoryPeak=1320615936 bytes under the unchanged guard.
+Formatting, strict all-feature Clippy, frontend-only check, full default and
+bitpack Rust suites (534/513 units plus integrations), all sixteen native GDB
+fixture executions, and ordinary/default-debug/bitpack-debug corpora (228/0
+each) pass. All four final FIFO/wide GDB/VCD smoke checks pass. AST refresh
+completes at 5226 nodes, 14826 edges and 246 communities; the known four
+vendored partial-parse/six no-symbol warnings remain. Commit only the owned
+SSA readiness/emitter/tests/TODO and these DWARF coordination entries, with
+the architecture/testing notes in siox-paper. Retain unrelated AGENTS, 441
+historical chat additions and .codex. The full goal stays active: aggregate
+hardware boundaries, folded string returns, formal type audits, packed
+expression companions and real/string finish ABI remain. No push authorized.

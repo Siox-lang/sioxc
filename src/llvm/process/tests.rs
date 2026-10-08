@@ -627,6 +627,19 @@ fn branch_cache_retains_values_not_replaced_keys_or_invalidated_reads() {
             .signals
             .insert((SignalId(id), ProcessSignalState::Current, 64), value);
         cache.evaluated_calls.insert((node, None), value);
+        for width in [64, 128] {
+            cache.source_results.insert(
+                (node, width, false, None),
+                (
+                    value,
+                    value
+                        .get_type()
+                        .get_context()
+                        .bool_type()
+                        .const_int(1, false),
+                ),
+            );
+        }
     }
     let context = Context::create();
     let module = context.create_module("branch_cache");
@@ -667,6 +680,12 @@ fn branch_cache_retains_values_not_replaced_keys_or_invalidated_reads() {
     let replacement = load();
     bind(&mut cache, 0, replacement, &layout);
     bind(&mut cache, 2, replacement, &layout);
+    let branch_ready = builder
+        .build_int_compare(IntPredicate::EQ, replacement, first, "branch.ready")
+        .unwrap();
+    cache
+        .source_results
+        .insert((ProcessValueId(3), 64, false, None), (second, branch_ready));
     builder.build_unconditional_branch(join).unwrap();
     builder.position_at_end(join);
     cache.retain_dominating(&dominating);
@@ -675,11 +694,19 @@ fn branch_cache_retains_values_not_replaced_keys_or_invalidated_reads() {
     assert_eq!(cache.metadata.len(), 1);
     assert_eq!(cache.signals.len(), 1);
     assert_eq!(cache.evaluated_calls.len(), 1);
+    assert_eq!(cache.source_results.len(), 2);
+    for width in [64, 128] {
+        assert_eq!(
+            cache.source_results[&(ProcessValueId(1), width, false, None)].0,
+            second
+        );
+    }
     assert_eq!(cache.emitted[&(ProcessValueId(1), None, None)], second);
 
     // A foreign call can invalidate old state and reload an existing key.
     // Pruning must not restore either the old read or that new definition.
     cache.clear();
+    assert!(cache.source_results.is_empty());
     bind(&mut cache, 1, load(), &layout);
     cache.retain_dominating(&dominating);
     assert!(cache.emitted.is_empty());
@@ -687,6 +714,7 @@ fn branch_cache_retains_values_not_replaced_keys_or_invalidated_reads() {
     assert!(cache.metadata.is_empty());
     assert!(cache.signals.is_empty());
     assert!(cache.evaluated_calls.is_empty());
+    assert!(cache.source_results.is_empty());
     builder.build_return(None).unwrap();
     module.verify().unwrap();
 }

@@ -20,8 +20,8 @@ mod logic;
 mod parameters;
 mod strings;
 pub(super) use inline_values::{
-    active_value, argument_value, capture_value, inline_body, inline_value, selected_value,
-    ValueArguments, ValueFrame, ValueLocationGuard,
+    active_value, argument_value, call_value, capture_value, inline_body, inline_value,
+    selected_value, ValueArguments, ValueFrame, ValueLocationGuard,
 };
 use logic::{LogicMirror, LogicSource};
 use parameters::ParameterLocation;
@@ -45,6 +45,7 @@ type LexicalScopes<'ctx> = Vec<(Span, DIScope<'ctx>)>;
 type InlineFrame<'ctx> = (DISubprogram<'ctx>, Option<DILocation<'ctx>>);
 type ParameterLocations<'ctx> = Vec<Vec<ParameterLocation<'ctx>>>;
 pub(super) type ValueFunctionKey = (ProcessValueId, u32, bool, Option<SourceLayout>);
+pub(super) type ValueResults<'ctx> = HashMap<ValueFunctionKey, (IntValue<'ctx>, IntValue<'ctx>)>;
 type ValueFunction<'ctx> = (FunctionValue<'ctx>, Vec<ValueFunctionKey>);
 
 pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
@@ -66,6 +67,8 @@ pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     refresh: Cell<Option<FunctionValue<'ctx>>>,
     /// Calls in otherwise-pure selections still need taken-path source ranges.
     value_activity: Vec<bool>,
+    /// Only multiply-consumed source calls need readiness across branch joins.
+    reused_calls: std::collections::HashSet<ProcessValueId>,
     value_functions: RefCell<HashMap<ValueFunctionKey, ValueFunction<'ctx>>>,
     hardware_processes: HashMap<u32, siox::ir::ProcessId>,
     hardware_frames: RefCell<HashMap<(usize, siox::ir::ProcessId), DISubprogram<'ctx>>>,
@@ -126,7 +129,13 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
         module.set_triple(&machine.get_triple());
         module.set_data_layout(&target.get_data_layout());
         let mut value_activity = Vec::with_capacity(design.process_ir.values.len());
+        let mut uses = vec![0u8; design.process_ir.values.len()];
         for value in &design.process_ir.values {
+            crate::ir::for_each_process_value_dependency(&value.kind, |id| {
+                if let Some(count) = uses.get_mut(id.0 as usize) {
+                    *count = count.saturating_add(1);
+                }
+            });
             value_activity.push(
                 matches!(value.kind, ProcessValueKind::InlineCall { .. })
                     || crate::ir::process::process_value_dependencies(&value.kind)
@@ -152,6 +161,16 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             string_mirrors: RefCell::new(Vec::new()),
             refresh: Cell::new(None),
             value_activity,
+            reused_calls: design
+                .process_ir
+                .values
+                .iter()
+                .enumerate()
+                .filter(|(index, value)| {
+                    uses[*index] > 1 && matches!(value.kind, ProcessValueKind::InlineCall { .. })
+                })
+                .map(|(index, _)| ProcessValueId(index as u32))
+                .collect(),
             value_functions: RefCell::new(HashMap::new()),
             hardware_processes: design
                 .process_ir

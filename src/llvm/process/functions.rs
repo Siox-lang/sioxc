@@ -114,37 +114,50 @@ pub(super) fn shared_call<'ctx>(
             );
         }
     }
-    let function = shared_function(context, module, design, shared, index_sites, cache)?;
-    // Each argument at its parameter's width, extended as its own type is.
-    let mut arguments = Vec::with_capacity(call.arguments.len());
-    for (argument, parameter) in call.arguments.iter().zip(&shared.parameters) {
-        let width = design
-            .process_ir
-            .values
-            .get(parameter.0 as usize)?
-            .bit_width?;
-        let value = process_value_at(
-            context,
-            module,
-            builder,
-            design,
-            *argument,
-            width,
-            process_value_is_signed(design, *argument),
-            active,
-            index_sites,
-            cache,
-        )?;
-        arguments.push(value.into());
-    }
-    match builder
-        .build_call(function, &arguments, "pv.shared")
-        .ok()?
-        .try_as_basic_value()
-    {
-        inkwell::values::ValueKind::Basic(value) => Some(value.into_int_value()),
-        _ => None,
-    }
+    let width = design
+        .process_ir
+        .values
+        .get(call.value.0 as usize)?
+        .bit_width?;
+    debug::call_value(
+        context,
+        builder,
+        (call.value, width, false, None),
+        cache,
+        |builder, cache| {
+            let function = shared_function(context, module, design, shared, index_sites, cache)?;
+            // Each argument at its parameter's width, extended as its own type is.
+            let mut arguments = Vec::with_capacity(call.arguments.len());
+            for (argument, parameter) in call.arguments.iter().zip(&shared.parameters) {
+                let width = design
+                    .process_ir
+                    .values
+                    .get(parameter.0 as usize)?
+                    .bit_width?;
+                let value = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *argument,
+                    width,
+                    process_value_is_signed(design, *argument),
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                arguments.push(value.into());
+            }
+            match builder
+                .build_call(function, &arguments, "pv.shared")
+                .ok()?
+                .try_as_basic_value()
+            {
+                inkwell::values::ValueKind::Basic(value) => Some(value.into_int_value()),
+                _ => None,
+            }
+        },
+    )
 }
 
 /// The LLVM function for `shared`, emitted on first use: its parameters bind
