@@ -618,6 +618,24 @@ pub struct FnDecl {
     pub body: Option<Block>,
     /// `fn` keyword through the closing brace, or through `;` when bodiless.
     pub span: Span,
+    /// What `#[inline]` asked for. It shapes only the simulation the
+    /// compiler builds; a function's hardware meaning never depends on it.
+    pub inline: Inline,
+}
+
+/// Whether a call to a function is expanded at the call site or calls one
+/// shared copy of its body, in the simulation the compiler builds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Inline {
+    /// No directive: the compiler inlines small functions and calls large ones.
+    #[default]
+    Auto,
+    /// `#[inline]`: a hint to inline.
+    Hint,
+    /// `#[inline(always)]`: expand at every call site.
+    Always,
+    /// `#[inline(never)]`: call one shared copy.
+    Never,
 }
 
 /// One parameter of an [`FnDecl`], either the `self` receiver or a named

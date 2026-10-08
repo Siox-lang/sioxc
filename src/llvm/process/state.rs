@@ -784,6 +784,7 @@ pub(super) fn activity_sensitive_process_values(design: &Design) -> Vec<bool> {
             ProcessValueKind::CheckedIndex { .. }
             | ProcessValueKind::ForeignCall { .. }
             | ProcessValueKind::HostCall { .. } => true,
+            ProcessValueKind::Parameter { .. } => false,
             ProcessValueKind::Field { base, .. }
             | ProcessValueKind::BitSlice { base, .. }
             | ProcessValueKind::PackedSlice { base, .. }

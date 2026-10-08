@@ -558,6 +558,16 @@ impl<'a> Parser<'a> {
             });
         }
 
+        let (inline, attrs) = if self.at(TokenKind::Fn) {
+            self.take_inline(attrs)
+        } else {
+            self.reject_inline(&attrs);
+            let attrs = attrs
+                .into_iter()
+                .filter(|attr| !is_inline_directive(attr))
+                .collect::<Vec<_>>();
+            (Inline::Auto, attrs)
+        };
         if !attrs.is_empty() && !matches!(self.kind(), TokenKind::Entity | TokenKind::Impl) {
             self.error_here("attributes are only allowed on entities and implementations");
         }
@@ -571,7 +581,9 @@ impl<'a> Parser<'a> {
                 let start = self.span();
                 self.bump();
                 let name = self.parse_ident();
-                Item::Fn(self.parse_fn_after_name(start, name, is_pub))
+                let mut function = self.parse_fn_after_name(start, name, is_pub);
+                function.inline = inline;
+                Item::Fn(function)
             }
             TokenKind::Struct => Item::Struct(self.parse_struct(is_pub)),
             TokenKind::View => Item::View(self.parse_view(is_pub)),
@@ -677,6 +689,19 @@ impl<'a> Parser<'a> {
                 self.pending_lints.push(directive);
                 continue;
             }
+            // `#[inline(always)]`: the mode is kept as a path value.
+            if path_text(&name) == "inline" && self.eat(TokenKind::LParen) {
+                let mode = self.parse_path();
+                self.expect(TokenKind::RParen, "to close `#[inline(...)]`");
+                self.expect(TokenKind::RBracket, "to close an attribute");
+                attrs.push(Attr {
+                    name,
+                    value: Some(Expr::Path(mode)),
+                    span: start.to(self.prev_span()),
+                    directive: true,
+                });
+                continue;
+            }
             let value = if self.eat(TokenKind::Eq) {
                 let value = self.parse_expr(false);
                 if name.segments.len() == 1 && name.segments[0].text == "test" {
@@ -711,7 +736,7 @@ impl<'a> Parser<'a> {
     ) {
         for attr in attrs {
             let name = attr.name.segments.last().map_or("", |s| s.text.as_str());
-            if name == "test" {
+            if name == "test" || is_inline_directive(attr) {
                 continue;
             }
             let path = attr
@@ -1447,6 +1472,18 @@ impl<'a> Parser<'a> {
     fn parse_impl_item(&mut self) -> Option<ImplItem> {
         // `#[external_clock] let p: Pll = { .. };` — per-instance attributes.
         let attrs = self.parse_attrs();
+        let at_fn = self.at(TokenKind::Fn)
+            || self.at(TokenKind::Pub) && matches!(self.kind_at(self.pos + 1), TokenKind::Fn);
+        let (inline, attrs) = if at_fn {
+            self.take_inline(attrs)
+        } else {
+            self.reject_inline(&attrs);
+            let attrs = attrs
+                .into_iter()
+                .filter(|attr| !is_inline_directive(attr))
+                .collect::<Vec<_>>();
+            (Inline::Auto, attrs)
+        };
         if !attrs.is_empty() && !self.at(TokenKind::Let) {
             self.error_here("attributes on impl items are only allowed on `let` declarations");
         }
@@ -1495,7 +1532,9 @@ impl<'a> Parser<'a> {
                 let start = self.span();
                 self.bump();
                 let name = self.parse_ident();
-                Some(ImplItem::Fn(self.parse_fn_after_name(start, name, is_pub)))
+                let mut function = self.parse_fn_after_name(start, name, is_pub);
+                function.inline = inline;
+                Some(ImplItem::Fn(function))
             }
             TokenKind::Process => {
                 let start = label.as_ref().map_or(self.span(), |label| label.span);
@@ -1642,6 +1681,48 @@ impl<'a> Parser<'a> {
             ret,
             body,
             span: start.to(self.prev_span()),
+            inline: Inline::Auto,
+        }
+    }
+
+    /// Split `#[inline]`, `#[inline(always)]` and `#[inline(never)]` off a
+    /// function's directives.
+    fn take_inline(&mut self, attrs: Vec<Attr>) -> (Inline, Vec<Attr>) {
+        let mut inline = None;
+        let mut rest = Vec::new();
+        for attr in attrs {
+            if !is_inline_directive(&attr) {
+                rest.push(attr);
+                continue;
+            }
+            let mode = match &attr.value {
+                None => Inline::Hint,
+                Some(Expr::Path(path)) if path_text(path) == "always" => Inline::Always,
+                Some(Expr::Path(path)) if path_text(path) == "never" => Inline::Never,
+                Some(value) => {
+                    self.sink.emit(
+                        Diagnostic::error("`#[inline]` takes `always` or `never`")
+                            .at(expr_span(value))
+                            .help("write `#[inline]`, `#[inline(always)]` or `#[inline(never)]`"),
+                    );
+                    continue;
+                }
+            };
+            if inline.replace(mode).is_some() {
+                self.error_at(attr.span, "a function takes one `#[inline]` directive");
+            }
+        }
+        (inline.unwrap_or_default(), rest)
+    }
+
+    /// `#[inline]` on something that is not a function.
+    fn reject_inline(&mut self, attrs: &[Attr]) {
+        for attr in attrs.iter().filter(|attr| is_inline_directive(attr)) {
+            self.sink.emit(
+                Diagnostic::error("`#[inline]` applies to functions")
+                    .at(attr.span)
+                    .help("put it on the `fn`, or remove it"),
+            );
         }
     }
 
@@ -3721,6 +3802,19 @@ fn unescape(raw: &str) -> String {
     out
 }
 
+/// `#[inline]` or `#[inline(..)]`.
+fn is_inline_directive(attr: &Attr) -> bool {
+    attr.directive && path_text(&attr.name) == "inline"
+}
+
+/// A one-segment path's text; empty for a longer path.
+fn path_text(path: &Path) -> &str {
+    match path.segments.as_slice() {
+        [only] => &only.text,
+        _ => "",
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -3819,6 +3913,51 @@ mod tests {
         assert_eq!(diags.len(), 2, "one per field, got {diags:#?}");
         assert!(diags[0].message.contains("direction goes after its name"));
         assert!(diags[0].help.as_ref().is_some_and(|h| h.contains("a out")));
+    }
+
+    /// `#[inline]` and its two modes attach to free functions and impl
+    /// methods, and the printer writes them back.
+    #[test]
+    fn inline_directives_attach_to_functions() {
+        let src = "module m;\n\n#[inline(never)]\nfn big() -> integer {\n    return 1;\n}\n\nimpl Add<T, T> for T {\n    #[inline(always)]\n    fn add(self, rhs: T) -> T {\n        return self;\n    }\n    #[inline]\n    pub fn hint(self) -> T {\n        return self;\n    }\n}\n";
+        let m = parse_ok(src);
+        let Item::Fn(big) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        assert_eq!(big.inline, Inline::Never);
+        let Item::Impl(i) = &m.items[1] else {
+            panic!("expected impl")
+        };
+        let modes: Vec<_> = i
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ImplItem::Fn(function) => Some(function.inline),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(modes, [Inline::Always, Inline::Hint]);
+        assert_eq!(crate::syntax::pretty::print_module(&m), src);
+    }
+
+    /// Anything but a function, or any mode but `always`/`never`, is an error.
+    #[test]
+    fn inline_directive_misuse_is_reported() {
+        let diags = diagnostics("module m;\n#[inline]\nstruct S { a: Bit }\n");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("applies to functions")),
+            "{diags:#?}"
+        );
+        let diags =
+            diagnostics("module m;\n#[inline(sometimes)]\nfn f() -> integer { return 1; }\n");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("`always` or `never`")),
+            "{diags:#?}"
+        );
     }
 
     /// A `;` between members is the old separator, and "expected `,`" alone

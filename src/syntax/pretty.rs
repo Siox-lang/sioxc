@@ -479,6 +479,12 @@ impl Printer {
 
     /// Print a function signature and, when present, its body.
     fn fn_decl(&mut self, f: &FnDecl) {
+        match f.inline {
+            Inline::Auto => {}
+            Inline::Hint => self.line("#[inline]"),
+            Inline::Always => self.line("#[inline(always)]"),
+            Inline::Never => self.line("#[inline(never)]"),
+        }
         let kw = pub_kw(f.is_pub);
         let ps = f.params.iter().map(fn_param).collect::<Vec<_>>().join(", ");
         let ret = match &f.ret {

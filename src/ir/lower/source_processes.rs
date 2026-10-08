@@ -66,7 +66,18 @@ struct LoweringContext<'a> {
     inline_functions: std::collections::HashSet<crate::diag::Span>,
     /// Memoized call reachability in the append-only procedural value arena.
     cfg_call_cache: Vec<bool>,
+    /// Shared function bodies by signature, across every process lowered.
+    shared_functions: &'a std::cell::RefCell<SharedFunctions>,
 }
+
+/// A shared value-function body per signature; `None` marks a signature whose
+/// body cannot be shared (it reads state, has effects or uses caller values).
+type SharedFunctions = std::collections::HashMap<String, Option<crate::ir::ProcessFunctionId>>;
+
+/// An expansion larger than this many arena values calls one shared copy of
+/// its function unless `#[inline]` says otherwise. Small helpers (`abs`,
+/// `word`) stay inline; arithmetic like `std::float`'s is shared.
+const SHARE_ABOVE_VALUES: usize = 32;
 
 /// Non-generic type aliases indexed by resolver identity.
 fn source_type_aliases<'a>(
@@ -1046,6 +1057,7 @@ pub fn lower(
     let suffixes = constant_suffixes(modules, resolved);
     let constants = source_constants(modules, resolved);
     let type_aliases = source_type_aliases(modules, resolved);
+    let shared_functions = std::cell::RefCell::new(SharedFunctions::new());
     let functions = process_functions(modules, resolved);
     let constant_integers = module_constant_integers(modules, &functions);
 
@@ -1150,6 +1162,7 @@ pub fn lower(
                 inline_return_blocks: Vec::new(),
                 inline_functions: std::collections::HashSet::new(),
                 cfg_call_cache: Vec::new(),
+                shared_functions: &shared_functions,
             };
             let mut block = ProcessBlockId(0);
             for declaration in initializers {
@@ -1208,6 +1221,7 @@ pub fn lower(
                             inline_return_blocks: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
                             cfg_call_cache: Vec::new(),
+                            shared_functions: &shared_functions,
                         };
                         lower_process(
                             id,
@@ -1259,6 +1273,7 @@ pub fn lower(
                             inline_return_blocks: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
                             cfg_call_cache: Vec::new(),
+                            shared_functions: &shared_functions,
                         };
                         lower_process(
                             id,
@@ -1326,6 +1341,7 @@ pub fn lower(
                     inline_return_blocks: Vec::new(),
                     inline_functions: std::collections::HashSet::new(),
                     cfg_call_cache: Vec::new(),
+                    shared_functions: &shared_functions,
                 };
                 lower_legacy_process(
                     id,
@@ -1363,6 +1379,8 @@ pub fn lower(
         process_ir.processes.push(process);
     }
 
+    // Backends look calls up by value (`ProcessIr::call_of`).
+    process_ir.calls.sort_unstable_by_key(|call| call.value.0);
     design.process_ir = process_ir;
     crate::ir::derive_scheduler_forms(design)
 }
@@ -4622,10 +4640,209 @@ fn returns_receiver_type(
     declared.is_some() && declared == receiver
 }
 
-/// Inline one already-selected Siox function over already-lowered operands.
+/// Inline one already-selected Siox function over already-lowered operands,
+/// and, when the function is large or `#[inline(never)]`, record that the
+/// result is also a call of one shared copy (`ProcessIr::calls`). The
+/// expansion always stays: it defines the value, and a backend calls the
+/// shared copy only where the two are interchangeable.
+fn inline_process_function(
+    function: &ast::FnDecl,
+    receiver: Option<ProcessValueId>,
+    arguments: &[ProcessValueId],
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let first_value = context.process_ir.values.len();
+    let result =
+        expand_process_function(function, receiver, arguments, process, context, return_type)?;
+    let share = match function.inline {
+        ast::Inline::Always | ast::Inline::Hint => false,
+        ast::Inline::Never => true,
+        ast::Inline::Auto => context.process_ir.values.len() - first_value > SHARE_ABOVE_VALUES,
+    };
+    let operands = receiver
+        .into_iter()
+        .chain(arguments.iter().copied())
+        .collect::<Vec<_>>();
+    // Only a value the expansion built can stand for the call.
+    if !share
+        || (result.0 as usize) < first_value
+        || operands.iter().any(|operand| operand.0 >= result.0)
+    {
+        return Some(result);
+    }
+    let Some(shared) = shared_process_function(
+        function,
+        &operands,
+        receiver.is_some(),
+        process,
+        context,
+        return_type,
+    ) else {
+        return Some(result);
+    };
+    let width = |value: ProcessValueId| context.process_ir.values[value.0 as usize].bit_width;
+    let callee = &context.process_ir.functions[shared.0 as usize];
+    if width(callee.result) == width(result) {
+        context.process_ir.calls.push(crate::ir::ProcessCall {
+            value: result,
+            function: shared,
+            arguments: operands,
+        });
+    }
+    Some(result)
+}
+
+/// The shared copy of `function` for these operands' types, built once per
+/// signature over `Parameter` leaves. `None` when the body cannot stand
+/// alone: it reads state, has an effect, checks at run time, or depends on a
+/// value of its caller.
+fn shared_process_function(
+    function: &ast::FnDecl,
+    operands: &[ProcessValueId],
+    has_receiver: bool,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<crate::ir::ProcessFunctionId> {
+    let layouts = operands
+        .iter()
+        .map(|operand| operand_source_layout(*operand, process, context))
+        .collect::<Vec<_>>();
+    // The signature is the operands' shapes, never where they were declared.
+    let mut key = format!("{:?}->{:?}", function.span, return_type);
+    for (operand, layout) in operands.iter().zip(&layouts) {
+        let value = &context.process_ir.values[operand.0 as usize];
+        let shape = layout.as_ref().map(|layout| &layout.kind);
+        key.push_str(&format!(
+            "|{:?}/{:?}/{:?}",
+            value.ty, value.bit_width, shape
+        ));
+    }
+    if let Some(known) = context.shared_functions.borrow().get(&key) {
+        return *known;
+    }
+    let id = crate::ir::ProcessFunctionId(context.process_ir.functions.len() as u32);
+    // A parameter has its type's full width, not its first argument's
+    // natural one: a constant `float(0)` is one bit wide, and an expanded
+    // body would have re-read it at the width each use needs. An argument
+    // without such a type cannot be passed faithfully, so its signature is
+    // not shared.
+    let mut widths = Vec::with_capacity(operands.len());
+    for (operand, layout) in operands.iter().zip(&layouts) {
+        let value = &context.process_ir.values[operand.0 as usize];
+        let natural = value.bit_width.unwrap_or(0);
+        let width = match (&value.ty, layout.as_ref()) {
+            (Some(crate::types::Ty::Integer | crate::types::Ty::Real), _) => Some(64),
+            (_, Some(layout)) => layout.packed_width(),
+            _ => None,
+        }
+        .filter(|width| *width >= natural && *width > 0);
+        match width {
+            Some(width) => widths.push(width),
+            None => {
+                context.shared_functions.borrow_mut().insert(key, None);
+                return None;
+            }
+        }
+    }
+    let first_value = context.process_ir.values.len();
+    let mut parameters = Vec::with_capacity(operands.len());
+    for (index, operand) in operands.iter().enumerate() {
+        let value = &context.process_ir.values[operand.0 as usize];
+        let (span, ty, width) = (value.span, value.ty.clone(), Some(widths[index]));
+        let layout = layouts[index].clone();
+        let parameter = push_value(
+            span,
+            ty,
+            width,
+            ProcessValueKind::Parameter {
+                function: id,
+                index: index as u32,
+            },
+            context,
+        );
+        context.process_ir.value_layouts[parameter.0 as usize] = layout;
+        parameters.push(parameter);
+    }
+    let (receiver, arguments) = if has_receiver {
+        (Some(parameters[0]), &parameters[1..])
+    } else {
+        (None, &parameters[..])
+    };
+    let result =
+        expand_process_function(function, receiver, arguments, process, context, return_type)
+            .filter(|result| standalone_body(first_value, *result, context));
+    let shared = match result {
+        Some(result) => {
+            context
+                .process_ir
+                .functions
+                .push(crate::ir::ProcessFunction {
+                    id,
+                    name: function.name.text.clone(),
+                    span: function.span,
+                    parameters,
+                    result,
+                });
+            Some(id)
+        }
+        None => {
+            truncate_process_values(context, first_value);
+            None
+        }
+    };
+    context.shared_functions.borrow_mut().insert(key, shared);
+    shared
+}
+
+/// An operand's source layout, including a local of the process being
+/// lowered, which is not in the arena's finished processes yet.
+fn operand_source_layout(
+    operand: ProcessValueId,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> Option<crate::ir::SourceLayout> {
+    if let Some(layout) = process_value_source_layout(operand, context.process_ir) {
+        return Some(layout.clone());
+    }
+    match &context.process_ir.values.get(operand.0 as usize)?.kind {
+        ProcessValueKind::Local {
+            process: owner,
+            local,
+        } if *owner == process.id => process.locals.get(local.0 as usize)?.layout.clone(),
+        _ => None,
+    }
+}
+
+/// Whether the values built from `first` on (one function body over its
+/// parameters, with any bodies it shares in turn) compute `result` from
+/// those values alone, without state, effects or run-time checks.
+fn standalone_body(first: usize, result: ProcessValueId, context: &LoweringContext<'_>) -> bool {
+    (result.0 as usize) >= first
+        && context.process_ir.values[first..].iter().all(|value| {
+            !matches!(
+                value.kind,
+                ProcessValueKind::Signal { .. }
+                    | ProcessValueKind::Storage(_)
+                    | ProcessValueKind::StorageState { .. }
+                    | ProcessValueKind::Local { .. }
+                    | ProcessValueKind::ForeignCall { .. }
+                    | ProcessValueKind::HostCall { .. }
+                    | ProcessValueKind::Call { .. }
+                    | ProcessValueKind::CheckedIndex { .. }
+                    | ProcessValueKind::Invalid
+            ) && !crate::ir::process::any_process_value_dependency(&value.kind, |dependency| {
+                (dependency.0 as usize) < first
+            })
+        })
+}
+
+/// Expand one already-selected Siox function over already-lowered operands.
 /// Calls and operators share this implementation so receiver binding,
 /// overload bodies, recursion recovery, and result typing cannot drift.
-fn inline_process_function(
+fn expand_process_function(
     function: &ast::FnDecl,
     receiver: Option<ProcessValueId>,
     arguments: &[ProcessValueId],
@@ -6291,6 +6508,20 @@ fn truncate_process_values(context: &mut LoweringContext<'_>, length: usize) {
     context.cfg_call_cache.truncate(length);
     context.process_ir.values.truncate(length);
     context.process_ir.value_layouts.truncate(length);
+    // Shared bodies and recorded calls built in the removed range go too.
+    // Bodies are appended as they complete, so only a tail is ever removed.
+    let process_ir = &mut *context.process_ir;
+    process_ir
+        .functions
+        .retain(|function| (function.result.0 as usize) < length);
+    let functions = process_ir.functions.len() as u32;
+    process_ir
+        .calls
+        .retain(|call| (call.value.0 as usize) < length && call.function.0 < functions);
+    context
+        .shared_functions
+        .borrow_mut()
+        .retain(|_, shared| shared.is_none_or(|id| id.0 < functions));
 }
 
 fn push_value(
@@ -6513,6 +6744,8 @@ fn source_value_width(
             ProcessNumber::Integer(_) | ProcessNumber::Real(_) => Some(64),
         },
         ProcessValueKind::BitString { width, .. } => Some(*width),
+        // A parameter is pushed with its argument's width.
+        ProcessValueKind::Parameter { .. } => None,
         ProcessValueKind::Char(_) => Some(32),
         ProcessValueKind::String(value) => {
             u32::try_from(value.chars().count()).ok()?.checked_mul(32)
@@ -7012,6 +7245,7 @@ mod tests {
             inline_return_blocks: vec![],
             inline_functions: Default::default(),
             cfg_call_cache: vec![],
+            shared_functions: &std::cell::RefCell::new(SharedFunctions::new()),
         };
 
         let result = inherit_receiver_layout(ProcessValueId(1), ProcessValueId(0), &mut context);
@@ -7964,6 +8198,8 @@ mod tests {
         let span = crate::diag::Span::new(FileId(0), 0..1);
         let design = Design {
             process_ir: ProcessIr {
+                functions: Vec::new(),
+                calls: Vec::new(),
                 storages: Vec::new(),
                 processes: vec![ProcessCfg {
                     id: ProcessId(0),

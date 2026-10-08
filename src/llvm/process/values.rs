@@ -23,6 +23,24 @@ pub(super) fn process_value_in_layout<'ctx>(
         return (value.get_type().get_bit_width() == width).then_some(value);
     }
     let value = design.process_ir.values.get(id.0 as usize)?;
+    // A shared call already has the layout's representation at its width.
+    if value.bit_width == Some(width)
+        && design
+            .process_ir
+            .call_of(id)
+            .is_some_and(|call| shared_call_eligible(design, call, cache.meta_free))
+    {
+        return process_value(
+            context,
+            module,
+            builder,
+            design,
+            id,
+            active,
+            index_sites,
+            cache,
+        );
+    }
     let emitted = match &value.kind {
         ProcessValueKind::Storage(storage) => match storage_state_width(design, *storage) {
             Some(storage_width) if storage_width == width => state_value(
@@ -517,6 +535,22 @@ pub(super) fn process_value<'ctx>(
     let ty = context
         .custom_width_int_type(std::num::NonZeroU32::new(width)?)
         .ok()?;
+    // A large function body, expanded here, may call its shared copy.
+    if let Some(call) = design.process_ir.call_of(id) {
+        if let Some(result) = shared_call(
+            context,
+            module,
+            builder,
+            design,
+            call,
+            active,
+            index_sites,
+            cache,
+        ) {
+            cache.emitted.insert(cache_key, result);
+            return Some(result);
+        }
+    }
     if let Some(active) = active.filter(|_| {
         matches!(
             value.kind,
@@ -588,6 +622,7 @@ pub(super) fn process_value<'ctx>(
         );
     }
     let emitted = match &value.kind {
+        ProcessValueKind::Parameter { .. } => cache.parameters.get(&id).copied()?,
         ProcessValueKind::Number(ProcessNumber::Integer(words))
         | ProcessValueKind::BitString { words, .. } => ty.const_int_arbitrary_precision(words),
         ProcessValueKind::Number(ProcessNumber::Real(bits)) => ty.const_int(*bits, false),

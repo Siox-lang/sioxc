@@ -98,6 +98,8 @@ pub(super) fn meta_free_process_values(design: &Design) -> Vec<bool> {
             | ProcessValueKind::TableLookup { .. }
             | ProcessValueKind::ForeignCall { .. }
             | ProcessValueKind::HostCall { .. }
+            // A shared function is only called with metavalue-free arguments.
+            | ProcessValueKind::Parameter { .. }
             | ProcessValueKind::MetaCompare { .. } => true,
             ProcessValueKind::Signal { signals, state } => {
                 !matches!(state, ProcessSignalState::Event)
