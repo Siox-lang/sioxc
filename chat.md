@@ -14582,3 +14582,23 @@ gain DWARF. Added #[inline(never)] to an existing native source-frame regression
 Finalize only the integration merge; keep the unfinished hardware/exact-format
 batch and moved-document edits in stash 200e6f6 for adaptation to the new design.
 Restore unrelated AGENTS and 441 historical chat additions unstaged. No push.
+
+### 2026-10-08 — Codex — include upstream typed-local read fix
+
+Upstream main advanced to e51edbc while the first integration gate ran.
+Merge its single source_processes change as well: assign an unfinished CFG's
+local declaration type at read creation, removing the redundant family-From
+fallback. Preserve the restored unrelated AGENTS/chat/.codex work; rerun the
+merged native gates before finalizing this additional local merge. Stash
+200e6f6 and backup/dwarf-before-main-20261008 still preserve the unfinished
+DWARF batch; shared-function source metadata is the next integration task.
+
+The local-read conflict extends the already-present declaration-type fallback
+with upstream's layout-derived type fallback. Probe 1828558 stopped at fmt
+because the conflict was still present; no build or gate passed there. After
+resolution, gate 1829848 completed exited/success/0, peak 1288011776 bytes:
+strict checks, full default/bitpack Rust suites, eight GDB fixture runs and
+native corpus 225/0 pass. AST graph refresh is 5155 nodes/14562 edges/246
+communities with the same known vendored warnings. Finalize this second merge
+through e51edbc; retain the draft stash, backup branch and unrelated unstaged
+AGENTS/441 chat lines/.codex. No push and no DWARF completion claim.
