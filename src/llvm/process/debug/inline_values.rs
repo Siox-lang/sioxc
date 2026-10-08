@@ -114,7 +114,7 @@ pub(super) fn aggregate_returns(
     (returns, members)
 }
 
-/// Use the source real ABI only at the native boundary. The common emitter
+/// Use the source ABI only at the native boundary. The common emitter
 /// and its exact consumer formats continue to exchange the same integer bits.
 pub(in crate::llvm::process) fn source_return_type<'ctx>(
     debug: &DebugInfo<'ctx, '_>,
@@ -129,7 +129,7 @@ pub(in crate::llvm::process) fn source_return_type<'ctx>(
         .map(std::borrow::Cow::Borrowed)
         .or_else(|| debug.value_debug_layout(design, operand));
     if width == 64
-        && layout.is_some_and(|layout| {
+        && layout.as_ref().is_some_and(|layout| {
             matches!(
                 layout.kind,
                 LayoutKind::Scalar {
@@ -141,12 +141,70 @@ pub(in crate::llvm::process) fn source_return_type<'ctx>(
     {
         Some(debug.context.f64_type().into())
     } else {
+        if let Some(layout) = layout.as_deref() {
+            // ponytail: small word-aligned SysV aggregates only; larger or
+            // normalized layouts need a caller-owned sret memory transport.
+            // The native backend targets this host, not a cross-target triple.
+            if cfg!(all(target_arch = "x86_64", not(target_os = "windows")))
+                && matches!(
+                    layout.kind,
+                    LayoutKind::Struct { .. } | LayoutKind::Array { .. }
+                )
+                && layout_width(layout) == Some(width)
+                && width <= 128
+            {
+                let mut fields = Vec::new();
+                if return_fields(debug.context, layout, &mut fields).is_some()
+                    && fields.iter().any(|field| field.is_float_type())
+                {
+                    return Some(debug.context.struct_type(&fields, false).into());
+                }
+            }
+        }
         debug
             .context
             .custom_width_int_type(std::num::NonZeroU32::new(width)?)
             .ok()
             .map(Into::into)
     }
+}
+
+/// Flatten complete 64-bit storage leaves in declaration order, matching
+/// SysV's INTEGER/SSE eightbytes without inventing padding or missing fields.
+fn return_fields<'ctx>(
+    context: &'ctx Context,
+    layout: &SourceLayout,
+    fields: &mut Vec<BasicTypeEnum<'ctx>>,
+) -> Option<()> {
+    match &layout.kind {
+        LayoutKind::Struct {
+            fields: members, ..
+        } => {
+            for field in members {
+                return_fields(context, &field.layout, fields)?;
+            }
+        }
+        LayoutKind::Array {
+            range: Some(range),
+            element,
+        } => {
+            for _ in 0..range.len()? {
+                return_fields(context, element, fields)?;
+            }
+        }
+        LayoutKind::Scalar {
+            width: 64,
+            domain: ScalarDomain::Real,
+            ..
+        } => {
+            fields.push(context.f64_type().into());
+        }
+        LayoutKind::Scalar { width: 64, .. } | LayoutKind::Packed { width: 64, .. } => {
+            fields.push(context.i64_type().into());
+        }
+        _ => return None,
+    }
+    Some(())
 }
 
 pub(in crate::llvm::process) fn return_value<'ctx>(
@@ -160,6 +218,39 @@ pub(in crate::llvm::process) fn return_value<'ctx>(
         .get_return_type()?;
     if ty.is_float_type() {
         builder.build_bit_cast(value, ty, "debug.return.real").ok()
+    } else if let BasicTypeEnum::StructType(ty) = ty {
+        let mut result = ty.get_undef();
+        let mut offset = 0;
+        for (index, field) in ty.get_field_types().into_iter().enumerate() {
+            let shifted = builder
+                .build_right_shift(
+                    value,
+                    value.get_type().const_int(offset, false),
+                    false,
+                    "debug.return.field",
+                )
+                .ok()?;
+            let bits = builder
+                .build_int_truncate(
+                    shifted,
+                    value.get_type().get_context().i64_type(),
+                    "debug.return.word",
+                )
+                .ok()?;
+            let field_value = if field.is_float_type() {
+                builder
+                    .build_bit_cast(bits, field, "debug.return.real")
+                    .ok()?
+            } else {
+                bits.into()
+            };
+            result = builder
+                .build_insert_value(result, field_value, index as u32, "debug.return.aggregate")
+                .ok()?
+                .into_struct_value();
+            offset += 64;
+        }
+        Some(result.into())
     } else {
         Some(value.into())
     }
@@ -179,6 +270,32 @@ pub(in crate::llvm::process) fn return_bits<'ctx>(
             .ok()
             .map(|value| value.into_int_value()),
         BasicValueEnum::IntValue(value) => Some(value),
+        BasicValueEnum::StructValue(value) => {
+            let count = value.get_type().count_fields();
+            let context = value.get_type().get_context();
+            let ty = context
+                .custom_width_int_type(std::num::NonZeroU32::new(count.checked_mul(64)?)?)
+                .ok()?;
+            let mut bits = ty.const_zero();
+            for index in 0..count {
+                let field = builder
+                    .build_extract_value(value, index, "debug.return.field")
+                    .ok()?;
+                let field = return_bits(builder, field)?;
+                let field = builder
+                    .build_int_z_extend(field, ty, "debug.return.word")
+                    .ok()?;
+                let field = builder
+                    .build_left_shift(
+                        field,
+                        ty.const_int(u64::from(index) * 64, false),
+                        "debug.return.shift",
+                    )
+                    .ok()?;
+                bits = builder.build_or(bits, field, "debug.return.bits").ok()?;
+            }
+            Some(bits)
+        }
         _ => None,
     }
 }

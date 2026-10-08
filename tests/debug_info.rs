@@ -873,6 +873,182 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
 }
 
 #[test]
+fn mixed_aggregate_returns_match_the_debugger_finish_abi() {
+    let directory =
+        std::env::temp_dir().join(format!("siox_dwarf_mixed_return_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("mixed.siox");
+    let text = r#"module debug_mixed_returns;
+struct Pair { pub gain: real, pub tag: integer }
+struct Reverse { pub tag: integer, pub gain: real }
+struct Nested { pub pair: Pair }
+struct Reals { pub values: real[2] }
+struct Gain { pub gain: real }
+fn make_pair(tag: integer, gain: real) -> Pair {
+    return Pair { .gain = gain, .tag = tag }; // mixed pair return stop
+}
+fn make_reverse(tag: integer, gain: real) -> Reverse {
+    return Reverse { .tag = tag, .gain = gain }; // reversed pair return stop
+}
+fn make_nested(tag: integer, gain: real) -> Nested {
+    return Nested { .pair = Pair { .gain = gain, .tag = tag } }; // nested pair return stop
+}
+fn make_reals(gain: real) -> Reals {
+    return Reals { .values = [gain, -gain] }; // real array return stop
+}
+fn make_gain(gain: real) -> Gain {
+    return Gain { .gain = gain }; // real wrapper return stop
+}
+fn consume_pair(tag: integer, gain: real) -> real {
+    let pair: Pair = make_pair(tag, gain);
+    return pair.gain + real(pair.tag);
+}
+fn consume_reverse(tag: integer, gain: real) -> real {
+    let pair: Reverse = make_reverse(tag, gain);
+    return pair.gain + real(pair.tag);
+}
+fn consume_nested(tag: integer, gain: real) -> real {
+    let nested: Nested = make_nested(tag, gain);
+    return nested.pair.gain + real(nested.pair.tag);
+}
+fn consume_reals(gain: real) -> real {
+    let reals: Reals = make_reals(gain);
+    return reals.values[0] + reals.values[1];
+}
+fn consume_gain(gain: real) -> real {
+    let single: Gain = make_gain(gain);
+    return single.gain;
+}
+entity Probe { tag: integer in, gain: real in, pair: real out, reverse: real out, nested: real out, reals: real out, single: real out }
+impl Probe {
+    pair = consume_pair(tag, gain);
+    reverse = consume_reverse(tag, gain);
+    nested = consume_nested(tag, gain);
+    reals = consume_reals(gain);
+    single = consume_gain(gain);
+}
+#[test] entity T {}
+impl T {
+    let tag: integer = 5;
+    let gain: real = 1.5;
+    let probe: Probe = { .tag = tag, .gain = gain };
+    stimulus: process {
+        await 1ns;
+        assert!(probe.pair == 6.5 and probe.reverse == 6.5 and probe.nested == 6.5, "positive mixed result");
+        assert!(probe.reals == 0.0 and probe.single == 1.5, "positive real aggregate");
+        tag = -7;
+        gain = -2.5;
+        await 1ns;
+        assert!(probe.pair == -9.5 and probe.reverse == -9.5 and probe.nested == -9.5, "negative mixed result");
+        assert!(probe.reals == 0.0 and probe.single == -2.5, "negative real aggregate");
+        tag = 0;
+        gain = -0.0;
+        await 1ns;
+        assert!(probe.pair == 0.0 and probe.reverse == 0.0 and probe.nested == 0.0, "zero mixed result");
+        assert!(probe.reals == 0.0 and probe.single == 0.0, "zero real aggregate");
+    }
+}
+"#;
+    for inline in ["never", "always"] {
+        let text = text.replace("fn make_", &format!("#[inline({inline})]\nfn make_"));
+        std::fs::write(&source, &text).unwrap();
+        let debug = directory.join("debug.bin");
+        let ordinary = directory.join("ordinary.bin");
+        for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+            success(
+                Command::new(binary)
+                    .arg("-o")
+                    .arg(binary.with_extension("vcd"))
+                    .output()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            std::fs::read(debug.with_extension("vcd")).unwrap(),
+            std::fs::read(ordinary.with_extension("vcd")).unwrap()
+        );
+        if Command::new("llvm-dwarfdump")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            success(
+                Command::new("llvm-dwarfdump")
+                    .arg("--verify")
+                    .arg(&debug)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        if Command::new("gdb").arg("--version").output().is_ok() {
+            let line = |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
+            let python = format!(
+                r#"import gdb, math
+stops = [gdb.Breakpoint({source:?} + ':' + str(line)) for line in [{pair_line}, {reverse_line}, {nested_line}, {reals_line}, {gain_line}]]
+seen = {{name: set() for name in ['make_pair', 'make_reverse', 'make_nested', 'make_reals', 'make_gain']}}
+gdb.execute('run')
+while True:
+    frame = gdb.selected_frame()
+    name = frame.name().split('::')[-1]
+    assert name in seen, frame.name()
+    gain = float(frame.read_var('gain'))
+    sign = math.copysign(1.0, gain)
+    mixed = name in ['make_pair', 'make_reverse', 'make_nested']
+    tag = int(frame.read_var('tag')) if mixed else None
+    seen[name].add((tag, gain, sign))
+    gdb.execute('finish')
+    result = gdb.history(0)
+    assert result.type.sizeof == (8 if name == 'make_gain' else 16), str(result.type)
+    if name == 'make_nested': result = result['pair']
+    if mixed: assert int(result['tag']) == tag, (name, str(result), tag)
+    gains = [float(result['values'][i]) for i in range(2)] if name == 'make_reals' else [float(result['gain'])]
+    expected_gains = [gain, -gain] if name == 'make_reals' else [gain]
+    for actual_gain, expected_gain in zip(gains, expected_gains):
+        assert actual_gain == expected_gain and math.copysign(1.0, actual_gain) == math.copysign(1.0, expected_gain), (name, str(result), expected_gain)
+    gdb.execute('continue')
+    if gdb.selected_thread() is None: break
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+# Independent signal writes can expose intermediate delta-cycle inputs.
+# Check every actual invocation above, and require all settled cases below.
+for name, calls in seen.items():
+    expected = [(5, 1.5, 1.0), (-7, -2.5, -1.0), (0, -0.0, -1.0)]
+    if name in ['make_reals', 'make_gain']: expected = [(None, gain, sign) for _, gain, sign in expected]
+    assert set(expected).issubset(calls), (name, calls)
+"#,
+                source = source.to_string_lossy(),
+                pair_line = line("mixed pair return stop"),
+                reverse_line = line("reversed pair return stop"),
+                nested_line = line("nested pair return stop"),
+                reals_line = line("real array return stop"),
+                gain_line = line("real wrapper return stop")
+            );
+            success(
+                Command::new("gdb")
+                    .args(["-nx", "-q", "--batch"])
+                    .arg(&debug)
+                    .args([
+                        "-ex",
+                        "set disable-randomization off",
+                        "-ex",
+                        &format!("python {python}"),
+                    ])
+                    .output()
+                    .unwrap(),
+            );
+        } else {
+            eprintln!("GDB unavailable: native mixed returns checked, finish probe skipped");
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn packed_expression_bindings_expose_logic_companions() {
     let directory = std::env::temp_dir().join(format!(
         "siox_dwarf_expression_logic_{}",

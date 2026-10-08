@@ -194,6 +194,12 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   real native boundaries use double returns, with actual `finish` checks for
   positive/negative values and signed zero in
   inline/shared bodies; the internal emitter still exchanges integer bits.
+  Complete small native SysV aggregates with one or two 64-bit scalar leaves
+  now use integer/double return slots, with actual finish checks for both
+  mixed field orders, nested wrappers, real arrays and one-real wrappers under
+  both inline hints and packing modes. Extend the ABI transport to subword,
+  unaligned, larger, normalized-wide and partial layouts without forcing
+  discarded fields or reading inspection buffers as executable values.
   The supported runtime-sized native representation is currently Char[] handles;
   general dynamic arrays remain the separate host-service extension below.
   Keep debug-only aggregate inspection buffers faithful at source stops and

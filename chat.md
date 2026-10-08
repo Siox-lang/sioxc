@@ -15429,3 +15429,71 @@ aggregate grouping, formal-type and further plane-transport audits, and
 runtime/nonempty-literal string, normalized-wide and mixed return ABI checks
 remain open. The independent hardware scalar packed-index bug is recorded in
 TODO, not fixed or counted as passing. Completion estimate remains 97%; no push.
+
+### 2026-10-08 — Codex — DWARF mixed aggregate native return ABI
+
+Previous goal turn completed acceptance 2856154 and commits 796332a/8004715.
+Own native source return encoding/decoding and tests/debug_info.rs. Reproduce
+GDB finish for a complete real/integer aggregate in both field orders before
+changing the shared boundary helpers. Reuse existing canonical packed-value
+emission, do not infer executable operands from inspection metadata or force
+unconsumed fields. Preserve remaining wide/string/partial return and formal
+audits, unrelated AGENTS/441 historical chat lines/.codex and backups. Full
+DWARF remains active; no push.
+
+Probe 2928329 is terminal failed/101, peak 151252992 bytes. Ordinary/debug
+native execution and VCD parity pass; actual GDB finish of {real, integer}
+returns gain=0 and tag=the real bit pattern. The shared source boundary still
+returns i128, incorrectly using integer registers instead of the declared
+floating/integer register classes. Own the common return type/encoder/decoder;
+preserve canonical bits, source DI types and actual operand demand. Verify both
+field orders, nested/array wrappers and all-real small aggregates. Larger,
+unaligned, normalized and partial ABI work remains open, not silently passed.
+
+### 2026-10-09 — Codex — DWARF mixed-return coverage and documentation
+
+Continue ownership of native return helpers and tests/debug_info.rs; also own
+the corresponding TODO and sibling architecture/testing notes. Probe 2975370
+decodes both mixed field orders correctly, then fails because independent
+signal writes produce an intermediate delta-cycle input, not the next settled
+tuple. Check each finish against its captured formals and separately require
+all settled tuples; no returned-field check is removed. Expanded probe 2977942
+passes exited/success/0, peak 83791872 bytes, for both field orders, a nested
+wrapper, a real array and a one-real wrapper under both inline hint settings.
+The helpers change only the return transport for complete 64-bit leaves in
+small native SysV aggregates; canonical evaluation widths, dependencies and
+source DI types are unchanged. Larger/unaligned/normalized/partial returns,
+string/wide return ABIs and remaining formal/plane/grouping audits stay open.
+No push; preserve unrelated AGENTS/441 historical chat lines/.codex and backups.
+
+Probe 2981642 fails/101 during test compilation (missing Parameter.function
+and an unnecessary import), before running checks. Corrected probe 2981803 is
+terminal exited/success/0, peak 860454912 bytes: strict all-feature Clippy,
+the canonical shared-function mixed/reversed/all-real boundary unit, and all
+nine DWARF integration fixtures in default/bitpack modes pass. The real array
+now returns distinct gain/-gain values, including opposite signed zeros, to
+verify both floating return slots independently. The unit checks actual shared
+native signatures, canonical i128 result width, module validity and absence
+of a second source-call wrapper; it does not claim frontend eligibility for
+every aggregate. Freeze Rust source for the full acceptance gate. No push;
+the complete DWARF objective and all explicitly remaining gaps stay active.
+
+Acceptance 2984800 is terminal exited/success/0, peak 1612460032 bytes.
+Formatting, Phase 1 artifacts, frontend-only check/Clippy, strict all-feature
+Clippy, complete default/bitpack suites (535/514 units plus integrations), all
+nine DWARF regressions and four ordinary/debug default/bitpack corpora pass
+(228/0 each). All four FIFO/wide native GDB inspection/stepping and VCD parity
+smokes pass. The ninth fixture verifies actual finish values for both mixed
+field orders, nested structs, distinct two-real arrays and one-real wrappers,
+including signed zero under both inline hints and packing modes. Shared-body
+unit coverage verifies the common native signature/result conversion without
+adding another wrapper. The frozen Rust diff hash remains
+b558ccf3ffcf6bcd8b79c6982d035ebedcabc66c; no source changed during acceptance.
+AST-only graph refresh finishes at 5268 nodes, 14969 edges and 250 communities
+with the known four vendor partial-parse and six no-symbol warnings; no LLM/API
+work. Commit only the common return helpers, their unit/native regressions,
+TODO and this owned tail, with separate architecture/testing notes. Preserve
+AGENTS/441 historical chat lines/.codex and backups. Completion estimate stays
+97%: larger/subword/unaligned/normalized/partial and string/wide return ABIs,
+demand-preserving aggregate grouping and formal/plane audits remain open.
+Full DWARF stays active; no push.

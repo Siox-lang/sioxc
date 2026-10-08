@@ -1,6 +1,151 @@
 use super::*;
 
 #[test]
+#[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
+fn shared_mixed_return_boundary_preserves_canonical_bits() {
+    use siox::ir::{
+        LayoutField, ProcessCall, ProcessFunction, ProcessFunctionId, ProcessValueInline,
+        ScalarDomain,
+    };
+
+    for (domains, signature) in [
+        (
+            [ScalarDomain::Real, ScalarDomain::Integer],
+            "{ double, i64 }",
+        ),
+        (
+            [ScalarDomain::Integer, ScalarDomain::Real],
+            "{ i64, double }",
+        ),
+        (
+            [ScalarDomain::Real, ScalarDomain::Real],
+            "{ double, double }",
+        ),
+    ] {
+        let context = Context::create();
+        let module = context.create_module("shared_return");
+        let builder = context.create_builder();
+        let mut sources = siox::diag::SourceMap::new();
+        let text = "fn identity(value: Pair) -> Pair { return value; }";
+        let file = sources.add("shared_return.siox", text);
+        let span = Span::new(file, 0..text.len() as u32);
+        let layout = SourceLayout {
+            span,
+            kind: LayoutKind::Struct {
+                name: "Pair".into(),
+                view: None,
+                fields: domains
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, domain)| LayoutField {
+                        name: format!("field{index}"),
+                        direction: None,
+                        layout: SourceLayout {
+                            span,
+                            kind: LayoutKind::Scalar {
+                                width: 64,
+                                domain,
+                                nominal: None,
+                                value_range: None,
+                            },
+                        },
+                    })
+                    .collect(),
+            },
+        };
+        let source = ProcessValueInline {
+            name: "identity".into(),
+            function: span,
+            call: span,
+            result_span: span,
+            result_layout: Some(layout),
+            aggregate: None,
+            branches: Vec::new(),
+            parameters: Vec::new(),
+            locals: Vec::new(),
+        };
+        let node = |kind| ProcessValue {
+            span,
+            ty: None,
+            bit_width: Some(128),
+            kind,
+        };
+        let call = ProcessCall {
+            value: ProcessValueId(1),
+            function: ProcessFunctionId(0),
+            arguments: vec![ProcessValueId(0)],
+        };
+        let design = Design {
+            process_ir: ProcessIr {
+                values: vec![
+                    node(ProcessValueKind::Parameter {
+                        function: ProcessFunctionId(0),
+                        index: 0,
+                    }),
+                    node(ProcessValueKind::InlineCall {
+                        operand: ProcessValueId(0),
+                        source: Box::new(source),
+                    }),
+                ],
+                functions: vec![ProcessFunction {
+                    id: call.function,
+                    name: "identity".into(),
+                    span,
+                    parameters: vec![ProcessValueId(0)],
+                    result: ProcessValueId(1),
+                }],
+                ..ProcessIr::default()
+            },
+            ..Design::default()
+        };
+        let debug = DebugInfo::new(&context, &module, &sources, &design).unwrap();
+        let bits = context.i128_type();
+        let probe = module.add_function("probe", bits.fn_type(&[bits.into()], false), None);
+        builder.position_at_end(context.append_basic_block(probe, "entry"));
+        let mut cache = ProcessValueCache::new(&[false; 2], &[true; 2]);
+        cache.debug = Some(&debug);
+        cache.parameters.insert(
+            ProcessValueId(0),
+            probe.get_first_param().unwrap().into_int_value(),
+        );
+        let returned = shared_call(
+            &context,
+            &module,
+            &builder,
+            &design,
+            &call,
+            None,
+            &HashMap::new(),
+            &mut cache,
+        )
+        .unwrap();
+        assert_eq!(returned.get_type(), bits);
+        builder.build_return(Some(&returned)).unwrap();
+        debug.finish(&module, &design);
+        module.verify().unwrap();
+        let native = module.get_function("sx.fn.0.identity").unwrap();
+        assert_eq!(
+            native
+                .get_type()
+                .get_return_type()
+                .unwrap()
+                .print_to_string()
+                .to_string(),
+            signature
+        );
+        assert_eq!(native.count_params(), 1);
+        assert_eq!(
+            module
+                .get_functions()
+                .filter(|function| function.get_name().to_bytes().starts_with(b"sx.debug.call"))
+                .count(),
+            0,
+            "shared bodies must not acquire a second execution wrapper"
+        );
+    }
+}
+
+#[test]
 fn shared_debug_calls_emit_one_body_per_consumer_format() {
     let context = Context::create();
     let module = context.create_module("shared_debug_calls");
