@@ -440,7 +440,25 @@ pub enum ProcessFormatPart {
         value: ProcessValueId,
         /// Source-level presentation semantics.
         kind: ProcessDisplayKind,
+        /// How a number is written: radix, scientific form, precision, sign
+        /// and prefix. Padding is not here; [`Self::Open`] owns it.
+        spec: crate::syntax::format::FormatSpec,
     },
+    /// The start of one placeholder's output padded to `width`; everything up
+    /// to the matching [`Self::Close`] is measured and padded as one piece,
+    /// so a struct or a `Display` impl's output aligns as a whole.
+    Open {
+        /// Padding character.
+        fill: char,
+        /// Where the output sits within `width`.
+        align: crate::syntax::format::FormatAlign,
+        /// Minimum width in characters.
+        width: u32,
+        /// Pad a number with zeros after its sign and radix prefix.
+        zero: bool,
+    },
+    /// The end of the innermost [`Self::Open`].
+    Close,
 }
 
 /// How a Process value is presented by the simulation runtime.
@@ -458,6 +476,9 @@ pub enum ProcessDisplayKind {
     String,
     /// An enum discriminant rendered through the retained symbol table.
     Enum(String),
+    /// An enum discriminant rendered as its symbol without quotes: one
+    /// element of a printed logic vector, `01XZ` rather than `'0''1'…`.
+    Symbol(String),
 }
 
 /// One arm of a [`ProcessTerminator::Match`].
@@ -2026,8 +2047,10 @@ fn process_instruction_values(instruction: &ProcessInstruction) -> Vec<ProcessVa
             .iter()
             .copied()
             .chain(format.iter().flatten().filter_map(|part| match part {
-                ProcessFormatPart::Text(_) => None,
                 ProcessFormatPart::Value { value, .. } => Some(*value),
+                ProcessFormatPart::Text(_)
+                | ProcessFormatPart::Open { .. }
+                | ProcessFormatPart::Close => None,
             }))
             .collect(),
     }

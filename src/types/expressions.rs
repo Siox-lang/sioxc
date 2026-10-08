@@ -448,7 +448,7 @@ impl<'a> Checker<'a> {
                     self.check_expr(a, sym);
                 }
                 if *bang {
-                    self.check_format_arity(callee, args);
+                    self.check_format_arity(callee, args, sym);
                 } else if matches!(callee.as_ref(), Expr::Field { .. }) {
                     self.check_method_call(callee, args, sym);
                 } else if matches!(callee.as_ref(), Expr::Path(path) if path.segments.len() > 1) {

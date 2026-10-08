@@ -9,6 +9,13 @@ pub struct Complex {
     pub im: real
 }
 
+// `1 + 2i`; a precision applies to both parts.
+impl Display for Complex {
+    fn fmt(self, f: Formatter) {
+        write!(f, "{} + {}i", self.re, self.im);
+    }
+}
+
 impl Add<Complex, Complex> for Complex {
     fn add(self, rhs: Complex) -> Complex {
         return Complex { .re = self.re + rhs.re, .im = self.im + rhs.im };

@@ -274,6 +274,13 @@ impl float {
 // `float<32, 23>(1.5)`: a number in the format being built — `Self'high`
 // exponent and `-Self'low` fraction bits — rounded to nearest even; beyond
 // the range it is infinite, below it zero.
+// Prints as its value: `{:.3}` and `{:e}` reach the real it converts to.
+impl Display for float {
+    fn fmt(self, f: Formatter) {
+        write!(f, "{}", self.to_real());
+    }
+}
+
 impl From<real> for float {
     fn from(value: real) -> float {
         return float_word(value, Self'high, 0 - Self'low);

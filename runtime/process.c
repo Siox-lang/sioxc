@@ -1,6 +1,7 @@
 #include "process.h"
 #include "wave.h"
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -472,8 +473,44 @@ static int sx_format_reserve(size_t extra) {
     return 1;
 }
 
+/* The notation the next number is written in (`{:.3e}`, `{:#x}`), set by
+ * sx_runtime_format_notation and reset once a number consumes it. */
+enum {
+    SX_FORM_DISPLAY = 0,
+    SX_FORM_LOWER_EXP = 1,
+    SX_FORM_UPPER_EXP = 2,
+    SX_FORM_LOWER_HEX = 3,
+    SX_FORM_UPPER_HEX = 4,
+    SX_FORM_BINARY = 5,
+    SX_FORM_OCTAL = 6,
+};
+enum { SX_NOTATION_PLUS = 1u, SX_NOTATION_ALTERNATE = 2u };
+static uint32_t sx_notation_form;
+static int32_t sx_notation_precision = -1;
+static uint32_t sx_notation_flags;
+
+static void sx_notation_reset(void) {
+    sx_notation_form = SX_FORM_DISPLAY;
+    sx_notation_precision = -1;
+    sx_notation_flags = 0;
+}
+
+/* Padded regions: each `{:width}` placeholder's whole output, measured and
+ * padded when it closes. Deeper nesting than this is written unpadded. */
+#define SX_FORMAT_FRAMES 32u
+static struct {
+    size_t start;
+    uint32_t fill;
+    uint32_t align;
+    uint32_t width;
+    uint32_t zero;
+} sx_format_frames[SX_FORMAT_FRAMES];
+static uint32_t sx_format_depth;
+
 void sx_runtime_format_begin(void) {
     sx_format_len = 0;
+    sx_format_depth = 0;
+    sx_notation_reset();
     if (sx_format_reserve(0)) sx_format[0] = 0;
 }
 
@@ -485,9 +522,153 @@ void sx_runtime_format_text(const char *text) {
     sx_format_len += length;
 }
 
+void sx_runtime_format_notation(uint32_t form, int32_t precision, uint32_t flags) {
+    sx_notation_form = form;
+    sx_notation_precision = precision;
+    sx_notation_flags = flags;
+}
+
+void sx_runtime_format_open(uint32_t fill, uint32_t align, uint32_t width,
+                            uint32_t zero) {
+    if (sx_format_depth < SX_FORMAT_FRAMES) {
+        sx_format_frames[sx_format_depth].start = sx_format_len;
+        sx_format_frames[sx_format_depth].fill = fill;
+        sx_format_frames[sx_format_depth].align = align;
+        sx_format_frames[sx_format_depth].width = width;
+        sx_format_frames[sx_format_depth].zero = zero;
+    }
+    ++sx_format_depth;
+}
+
+/* Insert `count` copies of the UTF-8 encoding of `fill` at `at`. */
+static void sx_format_insert(size_t at, uint32_t fill, size_t count) {
+    char encoded[5] = {0};
+    size_t size;
+    if (fill <= 0x7fu) {
+        encoded[0] = (char)fill;
+        size = 1;
+    } else if (fill <= 0x7ffu) {
+        encoded[0] = (char)(0xc0u | (fill >> 6u));
+        encoded[1] = (char)(0x80u | (fill & 0x3fu));
+        size = 2;
+    } else if (fill <= 0xffffu) {
+        encoded[0] = (char)(0xe0u | (fill >> 12u));
+        encoded[1] = (char)(0x80u | ((fill >> 6u) & 0x3fu));
+        encoded[2] = (char)(0x80u | (fill & 0x3fu));
+        size = 3;
+    } else {
+        encoded[0] = (char)(0xf0u | (fill >> 18u));
+        encoded[1] = (char)(0x80u | ((fill >> 12u) & 0x3fu));
+        encoded[2] = (char)(0x80u | ((fill >> 6u) & 0x3fu));
+        encoded[3] = (char)(0x80u | (fill & 0x3fu));
+        size = 4;
+    }
+    if (!count || count > SIZE_MAX / size || !sx_format_reserve(count * size)) return;
+    memmove(sx_format + at + count * size, sx_format + at, sx_format_len - at + 1);
+    for (size_t index = 0; index < count; ++index)
+        memcpy(sx_format + at + index * size, encoded, size);
+    sx_format_len += count * size;
+}
+
+void sx_runtime_format_close(void) {
+    if (!sx_format_depth) return;
+    uint32_t depth = --sx_format_depth;
+    if (depth >= SX_FORMAT_FRAMES || sx_error) return;
+    size_t start = sx_format_frames[depth].start;
+    size_t characters = 0;
+    for (size_t at = start; at < sx_format_len; ++at)
+        characters += ((unsigned char)sx_format[at] & 0xc0u) != 0x80u;
+    uint32_t width = sx_format_frames[depth].width;
+    if (characters >= width) return;
+    size_t pad = width - characters;
+    if (sx_format_frames[depth].zero) {
+        /* Zeros go after the sign and any radix prefix: -0042, 0x002a. */
+        size_t at = start;
+        if (at < sx_format_len && (sx_format[at] == '-' || sx_format[at] == '+')) ++at;
+        if (at + 1 < sx_format_len && sx_format[at] == '0' &&
+            (sx_format[at + 1] == 'x' || sx_format[at + 1] == 'b' ||
+             sx_format[at + 1] == 'o'))
+            at += 2;
+        sx_format_insert(at, '0', pad);
+        return;
+    }
+    uint32_t fill = sx_format_frames[depth].fill;
+    switch (sx_format_frames[depth].align) {
+    case 0: /* left */
+        sx_format_insert(sx_format_len, fill, pad);
+        break;
+    case 1: /* center: the odd character goes right, as in Rust */
+        sx_format_insert(sx_format_len, fill, pad - pad / 2u);
+        sx_format_insert(start, fill, pad / 2u);
+        break;
+    default: /* right */
+        sx_format_insert(start, fill, pad);
+        break;
+    }
+}
+
+/* Append `length` decimal digits (most significant first) in scientific
+ * form, Rust's `1.2345e4`: `precision` digits after the point (rounded half
+ * up), or as many as the value has when negative. */
+static void sx_format_scientific(const char *digits, size_t length, int negative,
+                                 int32_t precision, int upper) {
+    char *mantissa = malloc(length + 2u);
+    if (!mantissa) {
+        sx_fail("cannot allocate runtime scientific value");
+        return;
+    }
+    memcpy(mantissa, digits, length);
+    size_t exponent = length - 1u;
+    size_t keep = length;
+    if (precision >= 0 && (size_t)precision + 1u < length) {
+        keep = (size_t)precision + 1u;
+        if (mantissa[keep] >= '5') {
+            size_t at = keep;
+            while (at > 0) {
+                if (mantissa[at - 1] != '9') {
+                    ++mantissa[at - 1];
+                    break;
+                }
+                mantissa[at - 1] = '0';
+                --at;
+            }
+            if (at == 0) {
+                /* 9.99 rounded up: one more digit before the point. */
+                memmove(mantissa + 1, mantissa, keep);
+                mantissa[0] = '1';
+                ++exponent;
+            }
+        }
+    } else if (precision < 0) {
+        while (keep > 1 && mantissa[keep - 1] == '0') --keep;
+    }
+    size_t after = precision >= 0 ? (size_t)precision : keep - 1u;
+    char exponent_text[32];
+    snprintf(exponent_text, sizeof exponent_text, "%c%zu", upper ? 'E' : 'e', exponent);
+    size_t total = (size_t)negative + 1u + (after ? after + 1u : 0u) + strlen(exponent_text);
+    if (!sx_format_reserve(total)) {
+        free(mantissa);
+        return;
+    }
+    if (negative) sx_format[sx_format_len++] = '-';
+    sx_format[sx_format_len++] = mantissa[0];
+    if (after) {
+        sx_format[sx_format_len++] = '.';
+        for (size_t index = 1; index <= after; ++index)
+            sx_format[sx_format_len++] = index < keep ? mantissa[index] : '0';
+    }
+    sx_format[sx_format_len] = 0;
+    sx_runtime_format_text(exponent_text);
+    free(mantissa);
+}
+
 static void sx_runtime_format_integer(const uint64_t *words,
                                       uint32_t word_count, uint32_t width,
                                       uint8_t is_signed) {
+    uint32_t form = sx_notation_form;
+    int32_t precision = sx_notation_precision;
+    uint32_t flags = sx_notation_flags;
+    sx_notation_reset();
     if (sx_error) return;
     if (!words || !word_count || !width ||
         word_count != (width - 1u) / 64u + 1u) {
@@ -507,7 +688,13 @@ static void sx_runtime_format_integer(const uint64_t *words,
     uint32_t top_bits = width % 64u;
     uint64_t top_mask = top_bits ? (UINT64_MAX >> (64u - top_bits)) : UINT64_MAX;
     magnitude[word_count - 1] &= top_mask;
-    uint8_t negative = is_signed &&
+    uint32_t base = 10;
+    if (form == SX_FORM_LOWER_HEX || form == SX_FORM_UPPER_HEX) base = 16;
+    if (form == SX_FORM_BINARY) base = 2;
+    if (form == SX_FORM_OCTAL) base = 8;
+    /* A radix form writes the bits, two's complement included, as Rust's
+     * `{:x}` of a negative number does; decimal writes the signed value. */
+    uint8_t negative = base == 10 && is_signed &&
         ((magnitude[(width - 1u) / 64u] >> ((width - 1u) % 64u)) & 1u);
     if (negative) {
         for (uint32_t word = 0; word < word_count; ++word)
@@ -522,13 +709,14 @@ static void sx_runtime_format_integer(const uint64_t *words,
         magnitude[word_count - 1] &= top_mask;
     }
 
-    size_t digit_cap = (size_t)width / 3u + 3u;
+    size_t digit_cap = (size_t)width + 3u;
     char *digits = malloc(digit_cap);
     if (!digits) {
         free(magnitude);
         sx_fail("cannot allocate runtime decimal value");
         return;
     }
+    const char *alphabet = form == SX_FORM_UPPER_HEX ? "0123456789ABCDEF" : "0123456789abcdef";
     size_t length = 0;
     for (;;) {
         uint8_t nonzero = 0;
@@ -538,20 +726,36 @@ static void sx_runtime_format_integer(const uint64_t *words,
         uint64_t remainder = 0;
         for (uint32_t word = word_count; word-- > 0;) {
             __uint128_t dividend = ((__uint128_t)remainder << 64u) | magnitude[word];
-            magnitude[word] = (uint64_t)(dividend / 10u);
-            remainder = (uint64_t)(dividend % 10u);
+            magnitude[word] = (uint64_t)(dividend / base);
+            remainder = (uint64_t)(dividend % base);
         }
-        digits[length++] = (char)('0' + remainder);
+        digits[length++] = alphabet[remainder];
     }
     if (!length) digits[length++] = '0';
-    if (!sx_format_reserve(length + negative)) {
-        free(digits);
-        free(magnitude);
-        return;
+    /* Most significant digit first from here on. */
+    for (size_t low = 0, high = length - 1; low < high; ++low, --high) {
+        char swap = digits[low];
+        digits[low] = digits[high];
+        digits[high] = swap;
     }
-    if (negative) sx_format[sx_format_len++] = '-';
-    while (length) sx_format[sx_format_len++] = digits[--length];
-    sx_format[sx_format_len] = 0;
+    if ((flags & SX_NOTATION_PLUS) && !negative) sx_runtime_format_text("+");
+    if (form == SX_FORM_LOWER_EXP || form == SX_FORM_UPPER_EXP) {
+        sx_format_scientific(digits, length, negative, precision,
+                             form == SX_FORM_UPPER_EXP);
+    } else {
+        const char *prefix = "";
+        if (flags & SX_NOTATION_ALTERNATE)
+            prefix = base == 16 ? "0x" : base == 2 ? "0b" : base == 8 ? "0o" : "";
+        size_t prefix_length = strlen(prefix);
+        if (sx_format_reserve(length + negative + prefix_length)) {
+            if (negative) sx_format[sx_format_len++] = '-';
+            memcpy(sx_format + sx_format_len, prefix, prefix_length);
+            sx_format_len += prefix_length;
+            memcpy(sx_format + sx_format_len, digits, length);
+            sx_format_len += length;
+            sx_format[sx_format_len] = 0;
+        }
+    }
     free(digits);
     free(magnitude);
 }
@@ -567,11 +771,46 @@ void sx_runtime_format_signed(const uint64_t *words, uint32_t word_count,
 }
 
 void sx_runtime_format_real(uint64_t bits) {
+    uint32_t form = sx_notation_form;
+    int32_t precision = sx_notation_precision;
+    uint32_t flags = sx_notation_flags;
+    sx_notation_reset();
     union { uint64_t bits; double value; } real;
-    char rendered[64];
+    char rendered[512];
     real.bits = bits;
-    snprintf(rendered, sizeof rendered, "%g", real.value);
+    if ((flags & SX_NOTATION_PLUS) && !signbit(real.value) && !isnan(real.value))
+        sx_runtime_format_text("+");
+    if (!isfinite(real.value) ||
+        (form != SX_FORM_LOWER_EXP && form != SX_FORM_UPPER_EXP)) {
+        if (precision >= 0 && isfinite(real.value))
+            snprintf(rendered, sizeof rendered, "%.*f", (int)(precision > 300 ? 300 : precision),
+                     real.value);
+        else
+            snprintf(rendered, sizeof rendered, "%g", real.value);
+        sx_runtime_format_text(rendered);
+        return;
+    }
+    /* Scientific: the requested digits, or the fewest that read back as the
+     * same double, then Rust's exponent form (`e4`, `e-5`, no padding). */
+    int digits = precision >= 0 ? (precision > 300 ? 300 : precision) : 0;
+    if (precision < 0) {
+        for (; digits < 17; ++digits) {
+            snprintf(rendered, sizeof rendered, "%.*e", digits, real.value);
+            if (strtod(rendered, NULL) == real.value) break;
+        }
+    }
+    snprintf(rendered, sizeof rendered, "%.*e", digits, real.value);
+    char *exponent = strchr(rendered, 'e');
+    if (!exponent) {
+        sx_runtime_format_text(rendered);
+        return;
+    }
+    long power = strtol(exponent + 1, NULL, 10);
+    *exponent = 0;
+    char tail[32];
+    snprintf(tail, sizeof tail, "%c%ld", form == SX_FORM_UPPER_EXP ? 'E' : 'e', power);
     sx_runtime_format_text(rendered);
+    sx_runtime_format_text(tail);
 }
 
 void sx_runtime_format_char(uint32_t value) {

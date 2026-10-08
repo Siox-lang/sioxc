@@ -1,0 +1,24 @@
+module core::fmt;
+
+// Formatting, as rustc's `core::fmt`. A type that implements `Display` prints
+// through its `fmt` body wherever a `{}` placeholder meets it; any other type
+// prints in its built-in form (numbers, enum variants, `Name { field: .. }`).
+//
+//   impl Display for Complex {
+//       fn fmt(self, f: Formatter) {
+//           write!(f, "{} + {}i", self.re, self.im);
+//       }
+//   }
+//
+// A `fmt` body is a sequence of `write!` calls and `let`s; it is expanded at
+// compile time, so the runtime only ever prints text and numbers. A plain
+// `{}` inside it takes the caller's precision and notation: `{:.3}` on a
+// value whose `fmt` writes `{}` prints three decimals.
+
+// The destination `write!` appends to. It carries nothing a body can read.
+pub struct Formatter {}
+
+// How a type prints.
+pub trait Display {
+    fn fmt(self, f: Formatter);
+}

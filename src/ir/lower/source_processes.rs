@@ -2438,7 +2438,8 @@ fn lower_call(
                 "seed" if builtin_callee_is(callee, "seed", context) => ProcessRuntimeOp::Seed,
                 _ => ProcessRuntimeOp::Call(name),
             };
-            let format = lower_process_format(&operation, arguments, &lowered_arguments, context);
+            let format =
+                lower_process_format(&operation, arguments, &lowered_arguments, process, context);
             process.blocks[block.0 as usize]
                 .instructions
                 .push(ProcessInstruction::Runtime {
@@ -2701,7 +2702,8 @@ fn lower_process_format(
     operation: &ProcessRuntimeOp,
     arguments: &[ast::Expr],
     lowered: &[ProcessValueId],
-    context: &LoweringContext<'_>,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
 ) -> Option<Vec<ProcessFormatPart>> {
     let message_index = match operation {
         ProcessRuntimeOp::Print => 0,
@@ -2712,19 +2714,385 @@ fn lower_process_format(
         return None;
     };
     let mut values = arguments.iter().zip(lowered).skip(message_index + 1);
-    crate::syntax::format::parts(text)
-        .into_iter()
-        .map(|part| match part {
-            crate::syntax::format::FormatPart::Text(text) => Some(ProcessFormatPart::Text(text)),
-            crate::syntax::format::FormatPart::Placeholder => {
-                let (expression, value) = values.next()?;
-                Some(ProcessFormatPart::Value {
-                    value: *value,
-                    kind: process_display_kind(expression, *value, context)?,
-                })
+    let mut parts = Vec::new();
+    for part in crate::syntax::format::parts(text) {
+        match part {
+            crate::syntax::format::FormatPart::Text(text) => {
+                parts.push(ProcessFormatPart::Text(text));
             }
+            crate::syntax::format::FormatPart::Placeholder(spec) => {
+                let (expression, value) = values.next()?;
+                lower_format_value(
+                    Some(expression),
+                    *value,
+                    &spec,
+                    &mut parts,
+                    process,
+                    context,
+                )?;
+            }
+        }
+    }
+    Some(parts)
+}
+
+/// Append the parts that print `value` with `spec`. A width wraps the whole
+/// output in `Open`/`Close`; numbers sit right by default, everything else
+/// left, as in Rust. `expression` is the source argument, when there is one;
+/// a field or element printed inside a composite has none.
+fn lower_format_value(
+    expression: Option<&ast::Expr>,
+    value: ProcessValueId,
+    spec: &crate::syntax::format::FormatSpec,
+    parts: &mut Vec<ProcessFormatPart>,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<()> {
+    let layout = operand_source_layout(value, process, context);
+    let display = display_function(value, context);
+    let composite = display.is_some() || layout.as_ref().is_some_and(is_composite_layout);
+    let kind = if composite {
+        None
+    } else {
+        Some(match expression {
+            Some(expression) => process_display_kind(expression, value, context)?,
+            None => process_value_type(value, context)
+                .and_then(|ty| process_display_kind_for_type(&ty, context))?,
         })
-        .collect()
+    };
+    // A number-format family (`float`, `ufixed`) is a number even when its
+    // `Display` writes it: it sits right in a width.
+    let numeric = matches!(
+        kind,
+        Some(ProcessDisplayKind::Unsigned | ProcessDisplayKind::Signed | ProcessDisplayKind::Real)
+    ) || display.is_some()
+        && matches!(
+            layout.as_ref().map(|layout| &layout.kind),
+            Some(LayoutKind::Packed { .. })
+        );
+    if let Some(width) = spec.width {
+        parts.push(ProcessFormatPart::Open {
+            fill: spec.fill,
+            align: spec.align.unwrap_or(if numeric {
+                crate::syntax::format::FormatAlign::Right
+            } else {
+                crate::syntax::format::FormatAlign::Left
+            }),
+            width,
+            zero: spec.zero && numeric,
+        });
+    }
+    match (kind, layout) {
+        _ if display.is_some() => {
+            lower_format_display(value, display?, &spec.numeric(), parts, process, context)?
+        }
+        (Some(kind), _) => parts.push(ProcessFormatPart::Value {
+            value,
+            kind,
+            spec: spec.numeric(),
+        }),
+        (None, Some(layout)) => {
+            lower_format_composite(value, &layout, &spec.numeric(), parts, process, context)?
+        }
+        (None, None) => return None,
+    }
+    if spec.width.is_some() {
+        parts.push(ProcessFormatPart::Close);
+    }
+    Some(())
+}
+
+/// The `Display::fmt` a value's type implements: a method `fmt(self, f:
+/// Formatter)` with a body.
+fn display_function<'a>(
+    value: ProcessValueId,
+    context: &LoweringContext<'a>,
+) -> Option<&'a ast::FnDecl> {
+    let ty = process_value_type(value, context)?;
+    let owner = process_type_key(&ty, context)?;
+    let function = context.functions.get_associated(&owner, "fmt")?;
+    let formatter = function
+        .params
+        .iter()
+        .find(|parameter| !parameter.is_self)
+        .and_then(|parameter| parameter.ty.as_ref());
+    let takes_formatter = matches!(formatter, Some(ast::Type::Path(path))
+        if path.segments.last().is_some_and(|segment| segment.text == "Formatter"));
+    (takes_formatter && function.body.is_some() && function.ret.is_none()).then_some(function)
+}
+
+/// Expand a `Display::fmt` body into format parts: each `write!` appends its
+/// text and values, with `self` bound to `value`; `let`s bind as in any
+/// inlined body. A plain `{}` inside takes the caller's numeric `spec`.
+fn lower_format_display(
+    value: ProcessValueId,
+    function: &ast::FnDecl,
+    spec: &crate::syntax::format::FormatSpec,
+    parts: &mut Vec<ProcessFormatPart>,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<()> {
+    // A `fmt` that prints its own type would expand forever.
+    if !context.inline_functions.insert(function.span) {
+        return None;
+    }
+    context.inline_self_values.push(Some(value));
+    context
+        .value_bindings
+        .push(std::collections::HashMap::new());
+    let mut expanded = Some(());
+    for statement in &function.body.as_ref()?.stmts {
+        let done = match statement {
+            Stmt::Let(declaration) => (|| {
+                let declared = declaration
+                    .ty
+                    .as_ref()
+                    .and_then(|ty| process_declared_type(ty, context));
+                let bound = value_ref_with_type(
+                    declaration.value.as_ref()?,
+                    process,
+                    context,
+                    declared.as_ref(),
+                );
+                let definition = context.resolved.declared(declaration.name.span)?;
+                context.value_bindings.last_mut()?.insert(definition, bound);
+                Some(())
+            })(),
+            Stmt::Expr(ast::Expr::Call {
+                callee,
+                args,
+                bang: true,
+                ..
+            }) if matches!(callee.as_ref(), ast::Expr::Path(path) if path_name(path) == "write") => {
+                lower_format_write(args, spec, parts, process, context)
+            }
+            _ => None,
+        };
+        if done.is_none() {
+            expanded = None;
+            break;
+        }
+    }
+    context.value_bindings.pop();
+    context.inline_self_values.pop();
+    context.inline_functions.remove(&function.span);
+    expanded
+}
+
+/// One `write!(f, "text {}", args)` inside a `Display::fmt`.
+fn lower_format_write(
+    args: &[ast::Expr],
+    inherited: &crate::syntax::format::FormatSpec,
+    parts: &mut Vec<ProcessFormatPart>,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<()> {
+    let ast::Expr::StrLit { text, .. } = args.get(1)? else {
+        return None;
+    };
+    let mut values = args.iter().skip(2);
+    for part in crate::syntax::format::parts(text) {
+        match part {
+            crate::syntax::format::FormatPart::Text(text) => {
+                parts.push(ProcessFormatPart::Text(text));
+            }
+            crate::syntax::format::FormatPart::Placeholder(own) => {
+                let expression = values.next()?;
+                let value = value_ref(expression, process, context);
+                let spec = if own.is_plain() {
+                    inherited.clone()
+                } else {
+                    own
+                };
+                lower_format_value(Some(expression), value, &spec, parts, process, context)?;
+            }
+        }
+    }
+    Some(())
+}
+
+/// Whether a value of this layout prints as its parts rather than as one
+/// number: a struct or view, an array, or a vector of logic symbols. Numeric
+/// vector families (`unsigned`, `signed`) stay numbers.
+fn is_composite_layout(layout: &crate::ir::SourceLayout) -> bool {
+    match &layout.kind {
+        // A `Char` array is a string, printed as text.
+        LayoutKind::Array { element, .. } => !matches!(
+            element.kind,
+            LayoutKind::Scalar {
+                domain: crate::ir::ScalarDomain::Character,
+                ..
+            }
+        ),
+        LayoutKind::Struct { .. } => true,
+        LayoutKind::Packed {
+            family,
+            element_enum,
+            ..
+        } => {
+            element_enum.is_some()
+                && !matches!(family.rsplit("::").next(), Some("unsigned" | "signed"))
+        }
+        _ => false,
+    }
+}
+
+/// Print a composite value, Rust `Debug` style: `Name { field: value, .. }`
+/// for a struct or view, `[a, b]` for an array, and a logic vector's symbols
+/// in declared order (`01XZ`). Numeric leaves inside take `spec`.
+fn lower_format_composite(
+    value: ProcessValueId,
+    layout: &crate::ir::SourceLayout,
+    spec: &crate::syntax::format::FormatSpec,
+    parts: &mut Vec<ProcessFormatPart>,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<()> {
+    let span = context.process_ir.values[value.0 as usize].span;
+    match &layout.kind {
+        LayoutKind::Struct { name, view, fields } => {
+            let shown = view.as_deref().unwrap_or(name);
+            let shown = shown.rsplit("::").next().unwrap_or(shown);
+            if fields.is_empty() {
+                parts.push(ProcessFormatPart::Text(shown.to_owned()));
+                return Some(());
+            }
+            parts.push(ProcessFormatPart::Text(format!("{shown} {{ ")));
+            for (index, field) in fields.iter().enumerate() {
+                let separator = if index == 0 { "" } else { ", " };
+                parts.push(ProcessFormatPart::Text(format!(
+                    "{separator}{}: ",
+                    field.name
+                )));
+                let kind = ProcessValueKind::Field {
+                    base: value,
+                    field: field.name.clone(),
+                };
+                let member = push_projection(span, kind, &field.layout, process, context);
+                lower_format_value(None, member, spec, parts, process, context)?;
+            }
+            parts.push(ProcessFormatPart::Text(" }".to_owned()));
+        }
+        // A vector of character-literal enums (`Bit`, `Logic`) reads as its
+        // symbols, `01XZ`, as VHDL's `to_string` writes it.
+        LayoutKind::Array { range, element } if symbol_enum(element, context).is_some() => {
+            let name = symbol_enum(element, context)?;
+            for label in layout_labels((*range)?)? {
+                let member = push_element(span, value, label, element, process, context);
+                parts.push(ProcessFormatPart::Value {
+                    value: member,
+                    kind: ProcessDisplayKind::Symbol(name.clone()),
+                    spec: crate::syntax::format::FormatSpec::default(),
+                });
+            }
+        }
+        LayoutKind::Array { range, element } => {
+            parts.push(ProcessFormatPart::Text("[".to_owned()));
+            for (position, label) in layout_labels((*range)?)?.into_iter().enumerate() {
+                if position > 0 {
+                    parts.push(ProcessFormatPart::Text(", ".to_owned()));
+                }
+                let member = push_element(span, value, label, element, process, context);
+                lower_format_value(None, member, spec, parts, process, context)?;
+            }
+            parts.push(ProcessFormatPart::Text("]".to_owned()));
+        }
+        LayoutKind::Packed {
+            range,
+            element_enum: Some(element),
+            ..
+        } => {
+            let element_layout = crate::ir::SourceLayout {
+                span: layout.span,
+                kind: LayoutKind::Scalar {
+                    width: 1,
+                    domain: crate::ir::ScalarDomain::Enum(element.clone()),
+                    nominal: Some(element.clone()),
+                    value_range: None,
+                },
+            };
+            for label in layout_labels((*range)?)? {
+                let member = push_element(span, value, label, &element_layout, process, context);
+                parts.push(ProcessFormatPart::Value {
+                    value: member,
+                    kind: ProcessDisplayKind::Symbol(element.clone()),
+                    spec: crate::syntax::format::FormatSpec::default(),
+                });
+            }
+        }
+        _ => return None,
+    }
+    Some(())
+}
+
+/// The symbol-table key of an enum element whose every variant is a
+/// character literal (`'0'`, `'X'`), so a vector of it prints as a word.
+fn symbol_enum(element: &crate::ir::SourceLayout, context: &LoweringContext<'_>) -> Option<String> {
+    let LayoutKind::Scalar {
+        domain: crate::ir::ScalarDomain::Enum(name),
+        ..
+    } = &element.kind
+    else {
+        return None;
+    };
+    let symbols = context.design.enum_syms.get(name)?;
+    symbols
+        .values()
+        .all(|symbol| symbol.len() == 3 && symbol.starts_with('\'') && symbol.ends_with('\''))
+        .then(|| name.clone())
+}
+
+/// A range's labels in declared order: `7..0` is 7, 6, ... 0.
+fn layout_labels(range: crate::ir::LayoutRange) -> Option<Vec<i64>> {
+    let length = i64::try_from(range.len()?).ok()?;
+    let step = if range.ascending() { 1 } else { -1 };
+    Some(
+        (0..length)
+            .map(|offset| range.left + step * offset)
+            .collect(),
+    )
+}
+
+/// A projection of `layout` from an existing value, typed and laid out as the
+/// lowering of `value.field` would be.
+fn push_projection(
+    span: crate::diag::Span,
+    kind: ProcessValueKind,
+    layout: &crate::ir::SourceLayout,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    let ty = process_type_from_layout(layout, context.resolved);
+    let width =
+        source_value_width(&kind, ty.as_ref(), process, context).or_else(|| layout.packed_width());
+    let id = push_value(span, ty, width, kind, context);
+    context.process_ir.value_layouts[id.0 as usize] = Some(layout.clone());
+    id
+}
+
+/// Element `label` of an array or vector value.
+fn push_element(
+    span: crate::diag::Span,
+    base: ProcessValueId,
+    label: i64,
+    element: &crate::ir::SourceLayout,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    let index = push_value(
+        span,
+        Some(crate::types::Ty::Integer),
+        Some(64),
+        ProcessValueKind::Number(ProcessNumber::Integer(vec![label as u64])),
+        context,
+    );
+    push_projection(
+        span,
+        ProcessValueKind::Index { base, index },
+        element,
+        process,
+        context,
+    )
 }
 
 /// Recover the recursive declaration layout of an arena projection while the
@@ -7772,8 +8140,8 @@ mod tests {
             })
             .flatten()
             .filter_map(|part| match part {
-                ProcessFormatPart::Value { value, kind } => Some((*value, kind)),
-                ProcessFormatPart::Text(_) => None,
+                ProcessFormatPart::Value { value, kind, .. } => Some((*value, kind)),
+                _ => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(formatted.len(), 6, "{formatted:#?}");

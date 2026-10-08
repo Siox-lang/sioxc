@@ -13604,3 +13604,25 @@ wrapper over `expand_process_function`), `truncate_process_values`, the
 LoweringContext (`shared_functions`), `ir/process.rs` (functions, calls,
 Parameter, validation, dump) and `llvm/process/{values,value_types}.rs`.
 Shared functions have no DWARF subprogram yet.
+
+### 2026-10-08 — Claude — print formatting: specs, built-in forms, Display
+
+Owner-requested (choices made by the owner: Rust-style specs, Rust `Debug`
+struct form, a `Display` trait now).
+- `syntax/format.rs`: placeholders carry a `FormatSpec`
+  (`{:[[fill]align][+][#][0][width][.precision][e|E|x|X|b|o]}`); malformed or
+  type-mismatched specs are type-check errors.
+- Process IR: `ProcessFormatPart::Value` carries the numeric spec;
+  `Open`/`Close` parts pad a placeholder's whole output;
+  `ProcessDisplayKind::Symbol` prints an enum symbol unquoted.
+- Runtime ABI (fixed runtime, `runtime/process.c`): new
+  `sx_runtime_format_notation`, `sx_runtime_format_open`,
+  `sx_runtime_format_close`; existing value calls honour a pending notation.
+- Lowering expands structs/views (`Name { f: v }`), arrays (`[a, b]`) and
+  logic vectors (`10XZ`) into parts, and inlines a `Display::fmt` body
+  (`write!` + `let`) with plain `{}` inheriting the caller's numeric spec.
+- `core::fmt::{Display, Formatter}` + `write!` (core prelude), `std::fmt`
+  re-export; std impls for `float`, `ufixed`, `sfixed`, `Complex`.
+**Codex:** touches `lower_process_format` and helpers in
+`source_processes.rs`, `llvm/process/instructions.rs` format emission,
+`llvm/process/support.rs`, and the runtime format functions.

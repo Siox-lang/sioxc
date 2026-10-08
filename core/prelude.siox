@@ -12,4 +12,5 @@ pub use core::cmp::{Eq, Ord, Ordering};
 pub use core::default::New;
 pub use core::convert::From;
 pub use core::attrs::precedence;
-pub use core::macros::{assert, warn, print, error};
+pub use core::macros::{assert, warn, print, error, write};
+pub use core::fmt::{Display, Formatter};
