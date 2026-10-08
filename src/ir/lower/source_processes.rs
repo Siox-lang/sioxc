@@ -5367,6 +5367,19 @@ fn process_binding_layout(
             (layout.packed_width()? > 0).then_some(layout)
         })
         .or_else(|| operand_source_layout(value, process, context))
+        .or_else(|| {
+            // Constructors retain their checked target type even without a
+            // stored/projection layout. Generic inspection must use that
+            // instantiated type, not the operand's raw integer bit pattern.
+            let ty = context
+                .process_ir
+                .values
+                .get(value.0 as usize)?
+                .ty
+                .as_ref()?;
+            let layout = process_layout_for_type(ty, span, context)?;
+            (layout.packed_width()? > 0).then_some(layout)
+        })
 }
 
 /// Whether the values built from `first` on (one function body over its

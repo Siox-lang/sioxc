@@ -15265,3 +15265,102 @@ testing notes. Preserve AGENTS/441 historical chat lines/.codex and backups.
 Full DWARF remains active: effectful/checked/nested-call/partial aggregate
 grouping, formal audits, packed companions and runtime/nonempty-literal
 string, normalized-wide and mixed-layout return ABI checks remain. No push.
+
+### 2026-10-08 — Codex — DWARF wide scalar native return audit
+
+Previous DWARF turn made verified progress: acceptance 2631262 and commits
+94e3ad3/905e275 preserve folded literal and empty string source frames. The
+requested main pull found no new upstream commits. Continue owning native
+source return emission and debugger regressions. Reproduce GDB finish for
+non-byte-aligned wide signed/unsigned scalars and differing consumer widths;
+reuse the common emitter and keep declaration metadata independent of actual
+consumer evaluation formats. Do not introduce executable inspection roots or
+invent missing values. Preserve unrelated AGENTS/441 historical chat lines,
+.codex and backups. Full DWARF remains active; no push.
+
+Probe 2712767 is terminal failed/101, peak 147070976 bytes. Native output,
+VCD parity and DWARF verification pass; GDB finish on a correct signed[81]
+argument/local reports 0 instead of -2. Current upstream GDB amd64_classify
+only assigns integer classes to 1/2/4/8-byte basic integers, leaving an
+11-byte scalar in NO_CLASS; larger basic integers also hit a 16-byte assertion.
+Do not change source types or native values to appease that debugger bug.
+Continue the regression with print-finish disabled: verify stepping and
+declaration bindings at 81/129 bits, inline/shared bodies and narrow/wider
+consumers, while keeping automatic arbitrary-width return decoding explicitly
+open. Investigate any compiler-side loss of declared binding bits separately.
+
+Probe 2719013 confirms a GDB 18.1 AMD64 assertion for signed[129], even with
+print-finish disabled (failed/101, peak 124776448). Probe 2720402 passes
+exited/success/0 in both modes, peak 89763840: step out at the caller's actual
+return PC instead, preserving arbitrary-width declaration metadata and native
+values. Expanded narrow-callee probe 2723685 passes, peak 81707008.
+Generic probe 2725573 rejects explicit call templates under the existing
+read<T>-only rule; infer T from its typed argument. Probe 2726568 reaches a
+correct signed generic frame but its demangled name includes the argument
+type; compare the qualified name before that suffix. Probe 2729702 then
+finds signed[81](-18446744073709551617) differs from a typed assignment.
+Ordinary native probe 2731825 also fails, and isolated constructor probe
+2733538 fails before calling generic_identity. This is a pre-existing value
+conversion issue, not evidence of a DWARF/shared-frame error. Record it in TODO
+and use exact-width two's-complement literal bits to audit generic sharing.
+Also own architecture/testing documentation for these verified limitations
+and the precise width/consumer/signature coverage. No source-type/ABI workaround
+or compiler behavior change is justified by the debugger-only failure.
+
+Probe 2734630 passes native values/VCD/DWARF but rejects an assumed shared
+generic body count: these packed calls use SourceValues, not shared Process
+functions. Remove the unsupported sharing claim, not the declaration checks.
+Probe 2737786 proves a compiler metadata gap: native signed generic results
+are correct, yet the generic constructor argument is described as unsigned
+(its complete bits print positive). source_operand_layout recognizes stored
+values and free/method return declarations but omits constructor target types.
+Own source_bindings.rs in the shared IR lowerer now; reuse expr_to_type,
+normalize_layout_type and existing nominal registries to recover the constructor
+shape at that common boundary. Audit all its callers and full native gates.
+The apparent negative-constructor mismatch needs a semantic correction to the
+earlier note: raw resize explicitly zero-extends in source_processes.rs. Check
+documented constructor semantics before calling it a value-lowering bug.
+
+Probe 2744890 fails/101, peak 653176832: the attempted SourceValues constructor
+shape change does not fix this procedural call. Revert that owned change;
+these bindings come from process_binding_layout in source_processes.rs.
+Concrete declarations and stored/projection layouts are retained, but generic
+constructor arguments fall through because RawResize has a checked Ty and no
+stored layout. Own that shared IR metadata helper now: recover its already
+checked instantiated type through process_layout_for_type as the final
+inspection fallback. This adds neither an executable layout nor new roots.
+language.md section 3 conversions explicitly specifies raw zero-extension;
+remove the incorrect negative-constructor TODO and preserve those semantics.
+The exact-width two's-complement constructor remains the signed metadata probe.
+
+Probe 2749048 passes exited/success/0, peak 962457600: strict all-feature
+Clippy and the wide regression in both packing modes. The procedural helper
+fallback fixes both generic argument and local signed views while native/VCD
+results remain identical. Four width/inline-hint variants inspect 81/129-bit
+signed/unsigned values, positive/negative/zero data, 8-bit narrowing, 193-bit
+widening, a low-byte callee and inferred generic constructor types. Low-byte
+GDB finish is correct; arbitrary-width returns step out via the real return PC.
+These packed cases do not claim shared Process body eligibility or a debugger
+ABI workaround. Updated TODO and sibling architecture/testing notes preserve
+remaining work and document the GDB limitation. Freeze source for the full
+acceptance gate; no push and full DWARF remains active.
+
+Acceptance 2755037 is terminal exited/success/0, peak 1612697600 bytes.
+Formatting, strict all-feature Clippy, frontend-only compilation, full default/
+bitpack suites (534/513 units plus integrations), all seven DWARF regressions
+and ordinary/default-debug/bitpack-debug corpora (228/0 each) pass. All four
+FIFO/wide native GDB inspection/stepping and VCD parity smokes pass. The new
+81/129-bit regression verifies declared signed/unsigned generic constructor
+arguments and copied locals, zero/positive/negative values, narrowing/widening
+consumers and native results in both packing modes. Low-byte finish is checked;
+arbitrary-width GDB return decoding remains a documented debugger limitation,
+not claimed as passing. No Rust source changed after acceptance.
+AST refresh finishes at 5262 nodes, 14942 edges and 254 communities with the
+known four vendor partial-parse and six no-symbol warnings; no LLM/API work.
+Commit only the checked-type inspection fallback, regression, TODO and this
+coordination tail, with separate architecture/testing notes. Preserve unrelated
+AGENTS/441 historical chat lines/.codex and all backups. Full DWARF remains
+active: demand-preserving effectful/checked/nested-call/partial aggregate
+grouping, formal declaration-type audits, packed expression companions and
+runtime/nonempty-literal string, normalized-wide and mixed return ABI checks
+remain. Completion estimate remains 97%; no push.

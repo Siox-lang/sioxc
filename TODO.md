@@ -165,9 +165,18 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   call-count and memory regressions as coverage expands; LLVM ABI types must
   not be inferred from the debugger's read-only inspection representation.
   Audit formal declaration types for hardware operators/suffixes/conversions
-  and constrained/generic signatures. Add packed unknown-state expression
-  companion checks and verify GDB `finish` for runtime/nonempty-literal strings,
+  and constrained/generic signatures. Procedural 81/129-bit constructor and
+  generic bindings now retain their checked signed/unsigned target type even
+  without stored layouts, including narrow/wider consumer tests. Add packed
+  unknown-state expression companion checks and verify GDB `finish` for
+  runtime/nonempty-literal strings,
   normalized wide scalars and mixed-layout/partial aggregate return ABIs.
+  GDB 18.1 on AMD64 does not classify arbitrary-width basic integer returns:
+  an 81-bit signed return reports zero and a 129-bit return triggers an internal
+  assertion, even with return printing disabled. Do not change source types to
+  hide that limitation; wide-call inspection/step-out tests use the actual
+  caller return address, not GDB's unsupported return decoding. Track the
+  debugger fix independently from compiler return-ABI checks.
   Two-integer hardware aggregate
   `finish` values are checked for straight-line, nested/match, independent and
   alias returns with positive, negative and zero inputs. Scalar

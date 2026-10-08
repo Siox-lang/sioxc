@@ -720,6 +720,159 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
 }
 
 #[test]
+fn wide_source_returns_keep_declared_bindings() {
+    let directory =
+        std::env::temp_dir().join(format!("siox_dwarf_wide_return_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    for width in [81usize, 129] {
+        for inline in ["never", "always"] {
+            let source = directory.join(format!("returns_{width}_{inline}.siox"));
+            let signed_bits = format!("{}0{}", "1".repeat(width - 65), "1".repeat(64));
+            let text = format!(
+                r#"module debug_wide_returns;
+use std::bits::{{signed, unsigned}};
+#[inline({inline})]
+fn signed_identity(value: signed[{width}]) -> signed[{width}] {{
+    let copy: signed[{width}] = value;
+    return copy; // signed wide return stop
+}}
+#[inline({inline})]
+fn unsigned_identity(value: unsigned[{width}]) -> unsigned[{width}] {{
+    let copy: unsigned[{width}] = value;
+    return copy; // unsigned wide return stop
+}}
+#[inline({inline})]
+fn low_byte(value: unsigned[{width}]) -> unsigned[8] {{
+    let copy: unsigned[{width}] = value;
+    return unsigned[8](copy); // narrow callee return stop
+}}
+#[inline({inline})]
+fn generic_identity<T>(value: T) -> T {{
+    let copy: T = value;
+    return copy; // generic wide return stop
+}}
+#[test] entity T {{}}
+impl T {{
+    stimulus: process {{
+        let negative: signed[{width}] = signed_identity(-2);
+        assert!(negative == -2, "negative wide result");
+        let large_negative: signed[{width}] = signed_identity(-18446744073709551617);
+        assert!(large_negative == -18446744073709551617, "large negative wide result");
+        let signed_zero: signed[{width}] = signed_identity(0);
+        assert!(signed_zero == 0, "signed zero result");
+        let positive: signed[{width}] = signed_identity(18446744073709551617);
+        assert!(positive == 18446744073709551617, "positive wide result");
+        let large: unsigned[{width}] = unsigned_identity(1208925819614629174706177);
+        assert!(large == 1208925819614629174706177, "large unsigned result");
+        let unsigned_zero: unsigned[{width}] = unsigned_identity(0);
+        assert!(unsigned_zero == 0, "unsigned zero result");
+        let narrow: unsigned[8] = unsigned[8](unsigned_identity(1208925819614629174706177));
+        assert!(narrow == 1, "narrow consumer result");
+        let wider: unsigned[193] = unsigned[193](unsigned_identity(18446744073709551617));
+        assert!(wider == 18446744073709551617, "wider consumer result");
+        let low: unsigned[8] = low_byte(1208925819614629174706177);
+        assert!(low == 1, "narrow callee result");
+        let generic_signed: signed[{width}] = generic_identity(signed[{width}](0b{signed_bits}));
+        assert!(generic_signed == large_negative, "generic signed result");
+        let generic_unsigned: unsigned[{width}] = generic_identity(unsigned[{width}](1208925819614629174706177));
+        assert!(generic_unsigned == large, "generic unsigned result");
+    }}
+}}
+"#
+            );
+            std::fs::write(&source, &text).unwrap();
+            let debug = directory.join("debug.bin");
+            let ordinary = directory.join("ordinary.bin");
+            for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+                let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+                command.args(["--std", "std", "--test"]);
+                if debugging {
+                    command.arg("--debug");
+                }
+                success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+                success(
+                    Command::new(binary)
+                        .arg("-o")
+                        .arg(binary.with_extension("vcd"))
+                        .output()
+                        .unwrap(),
+                );
+            }
+            assert_eq!(
+                std::fs::read(debug.with_extension("vcd")).unwrap(),
+                std::fs::read(ordinary.with_extension("vcd")).unwrap()
+            );
+            if Command::new("llvm-dwarfdump")
+                .arg("--version")
+                .output()
+                .is_ok()
+            {
+                success(
+                    Command::new("llvm-dwarfdump")
+                        .arg("--verify")
+                        .arg(&debug)
+                        .output()
+                        .unwrap(),
+                );
+            }
+            if Command::new("gdb").arg("--version").output().is_ok() {
+                let line =
+                    |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
+                let python = format!(
+                    r#"import gdb
+# GDB's AMD64 classifier does not recognize arbitrary-width basic integer
+# returns, even with print-finish disabled. Step out at the real caller PC
+# instead; native assertions verify the result without accepting fabricated 0.
+stops = [gdb.Breakpoint({source:?} + ':' + str(line)) for line in [{signed_line}, {unsigned_line}, {low_line}, {generic_line}]]
+gdb.execute('run')
+for name, expected in [('signed_identity', -2), ('signed_identity', -(1 << 64) - 1), ('signed_identity', 0), ('signed_identity', (1 << 64) + 1), ('unsigned_identity', (1 << 80) + 1), ('unsigned_identity', 0), ('unsigned_identity', (1 << 80) + 1), ('unsigned_identity', (1 << 64) + 1), ('low_byte', (1 << 80) + 1), ('generic_identity', -(1 << 64) - 1), ('generic_identity', (1 << 80) + 1)]:
+    assert gdb.selected_frame().name().split('(')[0] == 'debug_wide_returns::' + name
+    for binding in ['value', 'copy']:
+        actual = gdb.parse_and_eval(binding)
+        assert int(actual) == expected, ('wide source binding', name, binding, actual, expected)
+        assert actual.type.sizeof == ({width} + 7) // 8
+    if name == 'low_byte':
+        gdb.execute('finish')
+        returned = gdb.history(0)
+        assert int(returned) == 1 and returned.type.sizeof == 1, ('narrow finish', returned)
+    else:
+        caller = gdb.newest_frame().older().pc()
+        gdb.execute('tbreak *%#x' % caller)
+        gdb.execute('continue')
+    assert gdb.selected_frame().name() == 'T::stimulus'
+    gdb.execute('continue')
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+"#,
+                    source = source.to_string_lossy(),
+                    signed_line = line("signed wide return stop"),
+                    unsigned_line = line("unsigned wide return stop"),
+                    low_line = line("narrow callee return stop"),
+                    generic_line = line("generic wide return stop"),
+                );
+                success(
+                    Command::new("gdb")
+                        .args(["-nx", "-q", "--batch"])
+                        .arg(&debug)
+                        .args([
+                            "-ex",
+                            "set disable-randomization off",
+                            "-ex",
+                            "set breakpoint pending off",
+                            "-ex",
+                            &format!("python {python}"),
+                        ])
+                        .output()
+                        .unwrap(),
+                );
+            } else {
+                eprintln!("GDB unavailable: native wide returns checked, binding probe skipped");
+            }
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn hardware_expression_calls_keep_source_frames() {
     let directory =
         std::env::temp_dir().join(format!("siox_dwarf_hardware_{}", std::process::id()));
