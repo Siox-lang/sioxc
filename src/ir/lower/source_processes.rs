@@ -2916,7 +2916,15 @@ fn lower_format_write(
 /// vector families (`unsigned`, `signed`) stay numbers.
 fn is_composite_layout(layout: &crate::ir::SourceLayout) -> bool {
     match &layout.kind {
-        LayoutKind::Struct { .. } | LayoutKind::Array { .. } => true,
+        // A `Char` array is a string, printed as text.
+        LayoutKind::Array { element, .. } => !matches!(
+            element.kind,
+            LayoutKind::Scalar {
+                domain: crate::ir::ScalarDomain::Character,
+                ..
+            }
+        ),
+        LayoutKind::Struct { .. } => true,
         LayoutKind::Packed {
             family,
             element_enum,
