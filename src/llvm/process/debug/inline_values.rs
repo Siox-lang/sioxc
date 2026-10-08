@@ -94,6 +94,60 @@ struct ValueBinding<'ctx> {
     signed: bool,
     parameter: bool,
     captured: Cell<Option<(IntValue<'ctx>, BasicBlock<'ctx>)>>,
+    fragment: Option<(u64, u64)>,
+}
+
+/// Byte-aligned inspection offsets, not the executable packed bit offsets.
+fn inspection_projection<'a>(
+    layout: &'a SourceLayout,
+    path: &str,
+) -> Option<(u64, &'a SourceLayout)> {
+    if path.is_empty() {
+        return Some((0, layout));
+    }
+    match &layout.kind {
+        LayoutKind::Struct { fields, .. } => {
+            let path = path.strip_prefix('.').unwrap_or(path);
+            let end = path.find(['.', '[']).unwrap_or(path.len());
+            let mut offset = 0u64;
+            for field in fields {
+                if field.name == path[..end] {
+                    let (child, layout) = inspection_projection(&field.layout, &path[end..])?;
+                    return Some((offset.checked_add(child)?, layout));
+                }
+                offset = offset.checked_add(inspection_bits(&field.layout)?)?;
+            }
+            None
+        }
+        LayoutKind::Array {
+            range: Some(range),
+            element,
+        } => {
+            let (index, rest) = path.strip_prefix('[')?.split_once(']')?;
+            let index = index.parse::<i64>().ok()?;
+            if index < range.left.min(range.right) || index > range.left.max(range.right) {
+                return None;
+            }
+            let (child, layout) = inspection_projection(element, rest)?;
+            let offset = index
+                .abs_diff(range.left)
+                .checked_mul(inspection_bits(element)?)?;
+            Some((offset.checked_add(child)?, layout))
+        }
+        _ => None,
+    }
+}
+
+fn binding_expression(fragment: Option<(u64, u64)>) -> Vec<i64> {
+    let mut expression = vec![0x06 /* DW_OP_deref */];
+    if let Some((offset, size)) = fragment {
+        expression.extend([
+            0x1000, /* DW_OP_LLVM_fragment */
+            offset as i64,
+            size as i64,
+        ]);
+    }
+    expression
 }
 
 enum ValueInspection<'ctx> {
@@ -316,7 +370,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
             ids: source
                 .parameters
                 .iter()
-                .filter_map(|parameter| parameter.value)
+                .flat_map(|parameter| parameter.values())
                 // Literal strings, including zero-storage strings, are still
                 // compile-time operands rather than an unconstrained ABI.
                 .filter(|value| process_string(design, *value).is_none())
@@ -559,13 +613,14 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
         .iter()
         .chain(&source.locals)
         .map(|binding| {
-            let id = binding.value?;
-            if dynamic_string_value(design, id) || process_string(design, id).is_some() {
-                return debug.value_debug_type(design, id);
+            if let Some(id) = binding.value {
+                if dynamic_string_value(design, id) || process_string(design, id).is_some() {
+                    return debug.value_debug_type(design, id);
+                }
             }
             match &binding.layout {
                 Some(layout) => debug.ty(design, layout, needs_mirror(layout)),
-                None => debug.value_debug_type(design, id),
+                None => debug.value_debug_type(design, binding.value?),
             }
         })
         .collect::<Vec<_>>();
@@ -621,24 +676,9 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
         .zip(binding_types)
         .enumerate()
     {
-        let Some(id) = binding.value else { continue };
         let Some(ty) = ty else {
             continue;
         };
-        let literal = process_string(design, id);
-        let string = literal.is_some() || dynamic_string_value(design, id);
-        let layout = if string {
-            None
-        } else {
-            binding
-                .layout
-                .as_ref()
-                .map(std::borrow::Cow::Borrowed)
-                .or_else(|| debug.value_debug_layout(design, id))
-        };
-        if !string && layout.is_none() {
-            continue;
-        }
         let (line, column) = debug
             .sources
             .line_col(binding.span.file, binding.span.start);
@@ -674,105 +714,141 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
             debug
                 .builder
                 .create_debug_location(debug.context, line, column, scope, caller);
-        let name = format!(
-            "{}.debug.value.{index}",
-            function.get_name().to_string_lossy()
-        );
-        let mut available = false;
-        let (buffer, inspection) = if let Some(text) = literal {
-            debug.string_constant_view(module, &name, text);
-            available = true;
-            (module.get_global(&name).unwrap(), None)
-        } else if string {
-            let Some(root) = cache.debug_root else {
+        let pieces = if let Some(id) = binding.value {
+            vec![(id, binding.layout.as_ref(), None)]
+        } else {
+            binding
+                .fields
+                .iter()
+                .filter_map(|(path, id)| {
+                    let root = binding.layout.as_ref()?;
+                    let (offset, layout) = inspection_projection(root, path)?;
+                    let size = inspection_bits(layout)?;
+                    // LLVM fragments must describe a proper subregion. A
+                    // one-leaf wrapper already supplies the whole variable.
+                    let fragment =
+                        (offset != 0 || size != inspection_bits(root)?).then_some((offset, size));
+                    Some(((*id)?, Some(layout), fragment))
+                })
+                .collect()
+        };
+        for (id, layout, fragment) in pieces {
+            let literal = process_string(design, id);
+            let string = literal.is_some() || dynamic_string_value(design, id);
+            let layout = if string {
+                None
+            } else {
+                layout
+                    .map(std::borrow::Cow::Borrowed)
+                    .or_else(|| debug.value_debug_layout(design, id))
+            };
+            if !string && layout.is_none() {
                 continue;
-            };
-            // A CFG-normalized host call can consume the argument before
-            // this native frame. Borrow its existing persistent place;
-            // inspection never reexecutes the source expression.
-            let place = match design.process_ir.values[id.0 as usize].kind {
-                ProcessValueKind::Local { process, local } => {
-                    Some(local_state_name(process, local))
-                }
-                ProcessValueKind::Storage(storage) => Some(storage_state_name(storage)),
-                _ => None,
-            };
-            if let Some(place) = place {
-                let name = debug.string_mirror(module, &place, root);
+            }
+            let name = format!(
+                "{}.debug.value.{index}.{}",
+                function.get_name().to_string_lossy(),
+                fragment.map_or(0, |(offset, _)| offset)
+            );
+            let mut available = false;
+            let (buffer, inspection) = if let Some(text) = literal {
+                debug.string_constant_view(module, &name, text);
                 available = true;
                 (module.get_global(&name).unwrap(), None)
-            } else {
-                (
-                    debug.string_buffer(module, &name),
-                    Some(ValueInspection::String(root, debug.string_query(module))),
-                )
-            }
-        } else {
-            let layout = layout.unwrap();
-            let Some(bytes) =
-                inspection_bits(&layout).and_then(|bits| u32::try_from(bits / 8).ok())
-            else {
-                continue;
-            };
-            (
-                debug.inspection_buffer(module, &name, bytes),
-                Some(ValueInspection::Packed(layout.into_owned())),
-            )
-        };
-        // Allocate references once per process invocation, never in a source
-        // loop. Their contents are inspection-only and do not own source state.
-        let entry = builder
-            .get_insert_block()
-            .unwrap()
-            .get_parent()
-            .unwrap()
-            .get_first_basic_block()
-            .unwrap();
-        let entry_builder = debug.context.create_builder();
-        if let Some(first) = entry.get_first_instruction() {
-            entry_builder.position_before(&first);
-        } else {
-            entry_builder.position_at_end(entry);
-        }
-        let pointer = debug.context.ptr_type(AddressSpace::default());
-        let reference = entry_builder
-            .build_alloca(pointer, "debug.value.reference")
-            .unwrap();
-        builder
-            .build_store(
-                reference,
-                if available {
-                    buffer.as_pointer_value()
+            } else if string {
+                let Some(root) = cache.debug_root else {
+                    continue;
+                };
+                // A CFG-normalized host call can consume the argument before
+                // this native frame. Borrow its existing persistent place;
+                // inspection never reexecutes the source expression.
+                let place = match design.process_ir.values[id.0 as usize].kind {
+                    ProcessValueKind::Local { process, local } => {
+                        Some(local_state_name(process, local))
+                    }
+                    ProcessValueKind::Storage(storage) => Some(storage_state_name(storage)),
+                    _ => None,
+                };
+                if let Some(place) = place {
+                    let name = debug.string_mirror(module, &place, root);
+                    available = true;
+                    (module.get_global(&name).unwrap(), None)
                 } else {
-                    pointer.const_null()
-                },
-            )
-            .unwrap();
-        unsafe {
-            inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd(
-                debug.builder.as_mut_ptr(),
-                reference.as_value_ref(),
-                variable.as_mut_ptr(),
-                debug
-                    .builder
-                    .create_expression(vec![0x06 /* DW_OP_deref */])
-                    .as_mut_ptr(),
-                location.as_mut_ptr(),
-                builder.get_insert_block().unwrap().as_mut_ptr(),
-            );
-        }
-        if let Some(inspection) = inspection {
-            bindings.push(ValueBinding {
-                id,
-                variable,
-                location,
-                reference,
-                buffer,
-                inspection,
-                signed: process_value_is_signed(design, id),
-                parameter: index < source.parameters.len(),
-                captured: Cell::new(None),
-            });
+                    (
+                        debug.string_buffer(module, &name),
+                        Some(ValueInspection::String(root, debug.string_query(module))),
+                    )
+                }
+            } else {
+                let layout = layout.unwrap();
+                let Some(bytes) =
+                    inspection_bits(&layout).and_then(|bits| u32::try_from(bits / 8).ok())
+                else {
+                    continue;
+                };
+                (
+                    debug.inspection_buffer(module, &name, bytes),
+                    Some(ValueInspection::Packed(layout.into_owned())),
+                )
+            };
+            // Allocate references once per process invocation, never in a source
+            // loop. Their contents are inspection-only and do not own source state.
+            let entry = builder
+                .get_insert_block()
+                .unwrap()
+                .get_parent()
+                .unwrap()
+                .get_first_basic_block()
+                .unwrap();
+            let entry_builder = debug.context.create_builder();
+            if let Some(first) = entry.get_first_instruction() {
+                entry_builder.position_before(&first);
+            } else {
+                entry_builder.position_at_end(entry);
+            }
+            let pointer = debug.context.ptr_type(AddressSpace::default());
+            let reference = entry_builder
+                .build_alloca(pointer, "debug.value.reference")
+                .unwrap();
+            builder
+                .build_store(
+                    reference,
+                    if available {
+                        buffer.as_pointer_value()
+                    } else {
+                        pointer.const_null()
+                    },
+                )
+                .unwrap();
+            if available || fragment.is_none() {
+                unsafe {
+                    inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd(
+                        debug.builder.as_mut_ptr(),
+                        reference.as_value_ref(),
+                        variable.as_mut_ptr(),
+                        debug
+                            .builder
+                            .create_expression(binding_expression(fragment))
+                            .as_mut_ptr(),
+                        location.as_mut_ptr(),
+                        builder.get_insert_block().unwrap().as_mut_ptr(),
+                    );
+                }
+            }
+            if let Some(inspection) = inspection {
+                bindings.push(ValueBinding {
+                    id,
+                    variable,
+                    location,
+                    reference,
+                    buffer,
+                    inspection,
+                    signed: process_value_is_signed(design, id),
+                    parameter: index < source.parameters.len(),
+                    captured: Cell::new(None),
+                    fragment,
+                });
+            }
         }
     }
     cache.value_frames.push(ValueFrame {
@@ -785,7 +861,7 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
     // Constants need no execution. Other bindings become available only when
     // their ordinary SSA value is actually emitted (never inspect by reevaluation).
     for binding in source.parameters.iter().chain(&source.locals) {
-        if let Some(id) = binding.value {
+        for id in binding.values() {
             if let Some(number) = process_constant_i64(design, id) {
                 let width = design.process_ir.values[id.0 as usize]
                     .bit_width
@@ -1025,7 +1101,10 @@ fn capture_binding<'ctx>(
                     debug.builder.as_mut_ptr(),
                     binding.reference.as_value_ref(),
                     binding.variable.as_mut_ptr(),
-                    debug.builder.create_expression(vec![0x06]).as_mut_ptr(),
+                    debug
+                        .builder
+                        .create_expression(binding_expression(binding.fragment))
+                        .as_mut_ptr(),
                     binding.location.as_mut_ptr(),
                     builder.get_insert_block().unwrap().as_mut_ptr(),
                 );

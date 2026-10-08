@@ -61,6 +61,7 @@ impl Lowering<'_> {
                 .as_ref()
                 .map_or("self", |name| name.text.as_str());
             let value = env.get_mut(name)?;
+            let mut fields = Vec::new();
             let id = match value {
                 Val::Scalar(expression) => {
                     let mut arena = self.source_values.borrow_mut();
@@ -68,7 +69,15 @@ impl Lowering<'_> {
                     *expression = arena.reference(id);
                     Some(id)
                 }
-                Val::Fields(_) => None,
+                Val::Fields(values) => {
+                    let mut arena = self.source_values.borrow_mut();
+                    for (name, expression) in values {
+                        let id = arena.append(expression, parameter.span, None);
+                        *expression = arena.reference(id);
+                        fields.push((name.clone(), Some(id)));
+                    }
+                    None
+                }
             };
             parameters.push(crate::ir::ProcessValueBinding {
                 name: name.to_owned(),
@@ -76,6 +85,7 @@ impl Lowering<'_> {
                 scope: None,
                 layout: self.source_bound_layout(name),
                 value: id,
+                fields,
             });
         }
         let name = self
@@ -143,18 +153,30 @@ impl Lowering<'_> {
         else {
             return;
         };
-        let Val::Scalar(expression) = value else {
-            return;
-        };
         let mut arena = self.source_values.borrow_mut();
-        let id = arena.append(expression, span, None);
-        *expression = arena.reference(id);
+        let mut fields = Vec::new();
+        let id = match value {
+            Val::Scalar(expression) => {
+                let id = arena.append(expression, span, None);
+                *expression = arena.reference(id);
+                Some(id)
+            }
+            Val::Fields(values) => {
+                for (name, expression) in values {
+                    let id = arena.append(expression, span, None);
+                    *expression = arena.reference(id);
+                    fields.push((name.clone(), Some(id)));
+                }
+                None
+            }
+        };
         source.locals.push(crate::ir::ProcessValueBinding {
             name: name.to_owned(),
             span,
             scope,
             layout,
-            value: Some(id),
+            value: id,
+            fields,
         });
     }
 

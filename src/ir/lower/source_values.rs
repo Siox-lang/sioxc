@@ -1197,6 +1197,7 @@ mod tests {
                                 scope: None,
                                 layout: None,
                                 value: Some(unused),
+                                fields: Vec::new(),
                             },
                             crate::ir::ProcessValueBinding {
                                 name: "used".into(),
@@ -1204,6 +1205,18 @@ mod tests {
                                 scope: None,
                                 layout: None,
                                 value: Some(input),
+                                fields: Vec::new(),
+                            },
+                            crate::ir::ProcessValueBinding {
+                                name: "aggregate".into(),
+                                span,
+                                scope: None,
+                                layout: None,
+                                value: None,
+                                fields: vec![
+                                    ("discarded".into(), Some(unused)),
+                                    ("retained".into(), Some(input)),
+                                ],
                             },
                         ],
                         locals: Vec::new(),
@@ -1239,6 +1252,14 @@ mod tests {
         assert_eq!(*operand, ProcessValueId(0));
         assert_eq!(source.parameters[0].value, None);
         assert_eq!(source.parameters[1].value, Some(ProcessValueId(0)));
+        assert_eq!(
+            source.parameters[2].fields,
+            vec![
+                ("discarded".into(), None),
+                ("retained".into(), Some(ProcessValueId(0))),
+            ],
+            "pruned debug leaves retain their source path but never retain effects"
+        );
         assert!(
             source.branches.is_empty(),
             "discarded source selections are not roots"
@@ -1247,12 +1268,12 @@ mod tests {
         let ProcessValueKind::InlineCall { source, .. } = &mut arena.ir.values[1].kind else {
             unreachable!()
         };
-        source.parameters[1].value = Some(ProcessValueId(99));
+        source.parameters[2].fields[1].1 = Some(ProcessValueId(99));
         assert!(arena
             .ir
             .validate(1)
             .iter()
-            .any(|issue| issue.contains("invalid source binding used")));
+            .any(|issue| issue.contains("invalid source binding aggregate")));
     }
 
     #[test]

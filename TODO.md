@@ -132,7 +132,7 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   runtime-string arguments/returns, literal/empty string bindings and
   selected-call stops without ordinary-build copies. Pure function-body
   if/match branches retain nested lexical shadowing and selected alias/aggregate
-  return stops. Scalar hardware SourceValues calls now retain nested frames,
+  return stops. Hardware SourceValues calls now retain nested frames,
   selected return scopes, declaration-owned types and shared-helper/event owners.
   Native expression arguments retain the actual consumer width/sign/layout
   requests independently of inspection types, including narrow signed nested
@@ -140,8 +140,12 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   Multiply-used scalar call results retain exact-format SSA readiness through
   selected joins; native GDB counts cover both/first-only/second-only consumers
   and untaken calls across all four inline/shared caller/callee combinations.
-  Complete aggregate hardware bindings and faithful aggregate-return call boundaries,
-  literal/empty-string return frames bypassed by folded length consumers.
+  Field-backed hardware aggregate parameters/locals use LLVM fragments over
+  already-emitted values, including nested structs, descending/negative-label
+  arrays, non-byte-aligned wide signed/unsigned leaves and real fields. Pruned
+  members remain unavailable; metadata never adds executable dependencies.
+  Complete faithful whole aggregate-return call boundaries and literal/empty-
+  string return frames bypassed by folded length consumers.
   Shared Process functions now retain their source frames directly on the
   canonical native body, including selected branches, lexical locals and
   declaration-owned scalar inspection types. Keep native body-count, actual

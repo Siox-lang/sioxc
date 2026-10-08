@@ -15014,3 +15014,77 @@ siox-paper. Keep the full goal active: hardware aggregate bindings and call
 boundaries, folded string frames, formal-type audits, packed companions and
 string/normalized-wide/aggregate finish ABI remain. Preserve unrelated AGENTS,
 441 chat lines and .codex; no push authorized.
+
+### 2026-10-08 — Codex — DWARF hardware aggregate binding probe
+
+Real return batch b0b4c8a and reference notes a1775e9 are accepted and local.
+Continue owning hardware source-call metadata in source_bindings/source_values
+and native debugger tests. Add an integer/real/81-bit aggregate parameter and
+local to the existing hardware fixture, retaining native results, exact source
+owners, callback failures, DWARF verification and VCD parity. The current
+Val::Fields parameter/local branches omit bindings, and aggregate return
+wrapping is per leaf. Prove the missing binding before reusing the canonical
+whole-value representation; do not create metadata-only execution roots or
+reevaluate unused arguments. Preserve unrelated AGENTS/441 chat/.codex work;
+no push, no commit before complete gates, no full-goal completion claim.
+
+Probe 2241022 failed/101 with the intended evidence: native/VCD/DWARF checks
+pass, but the aggregate callback reports no symbol value. Preserve leaf IDs as
+non-executable binding metadata and emit LLVM variable fragments over their
+existing SSA captures. Do not pack all fields into a new executable root:
+that would evaluate otherwise-unused arguments. Keep pruned fields unavailable
+and retain their declared type/position. Whole aggregate-return call grouping
+remains a separate boundary task, not proven by this parameter/local fix.
+
+### 2026-10-08 — Codex — DWARF aggregate fragment verification
+
+The fresh origin/main pull is already up to date at 18f3e83; local work is
+preserved. Probe 2252295 is terminal failed/101: formatting and strict Clippy
+pass, but the hardware aggregate GDB callback fails an assertion after leaf
+fragment emission. Inspect the retained native artifact to identify the exact
+field discrepancy before changing debug layout or capture semantics. Continue
+owning these lowerer/debug files and the regression; preserve unrelated edits.
+No push and no claim of full DWARF completion.
+
+Probe 2258648 completed exited/success/0, peak 1389613056 bytes: strict
+Clippy, binding-pruning validation, native body/consumer-format checks and
+the hardware GDB regression pass. The retained native diagnostic showed
+correct tag/real/wide values; only the test's invented 16-byte ABI-padding
+expectation was wrong. Inspection uses byte-rounded logical widths (81 bits
+occupy 11 bytes), independently of native ABI padding. Extend the fixture to
+nested structs, sub-byte and signed wide leaves, descending arrays and negative
+ascending labels. Probe 2266027 passes exited/success/0 in default/bitpack,
+peak 1032650752 bytes. Actual GDB also requires unused members unavailable;
+IR remapping and native emission reject metadata-only foreign execution.
+Update TODO and siox-paper architecture/testing notes for this bounded binding
+coverage, keeping whole aggregate-return boundaries explicitly outstanding.
+Freeze source for full acceptance before committing; preserve unrelated work.
+
+Acceptance 2269400 is terminal failed/1, peak 1192407040 bytes. Full Rust
+default/bitpack suites and the ordinary 228/0 corpus pass, but the debug corpus
+is 227/1: trait_default_test hits LLVM's "fragment covers entire variable"
+verifier rule for one-field receivers. Do not commit or count this gate green.
+Omit the fragment operator when the captured leaf covers the whole declared
+inspection layout; retain ordinary variable location/type and leaf capture.
+Add a native/GDB one-field wrapper formal alongside the nested aggregate probe,
+then rerun the focused check and complete gates, including the failing corpus.
+
+Probe 2312592 is terminal exited/success/0, peak 667570176 bytes: strict
+Clippy, the nested aggregate/one-field GDB probe, native trait_default_test
+simulation and DWARF verification pass. Whole-leaf wrappers now use a normal
+variable location rather than LLVM's invalid entire-variable fragment.
+Restart complete acceptance on this exact source; no commit or push yet.
+
+Acceptance 2315177 is terminal exited/success/0, peak 1610928128 bytes.
+Formatting, strict Clippy, frontend-only check, full default/bitpack Rust
+suites (534/513 units plus integrations), all native GDB fixtures and ordinary/
+default-debug/bitpack-debug corpora (228/0 each) pass. All four final FIFO/wide
+GDB/VCD smoke checks pass. AST refresh completes at 5237 nodes, 14859 edges,
+243 communities; known four vendor parse and six no-symbol warnings remain,
+with hub-based labels and the large-graph community view refreshed without LLM.
+Commit only owned leaf-binding metadata, fragment/whole-variable emission,
+strengthened regressions, TODO and this coordination tail; separately commit
+siox-paper reference notes. Preserve unrelated AGENTS/441 chat lines/.codex.
+Full DWARF remains active: whole aggregate-return boundaries, folded string
+frames, formal-type audits, packed expression companions and string/wide/
+aggregate finish ABI remain. No push authorized.

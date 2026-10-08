@@ -5511,6 +5511,7 @@ fn expand_process_function(
                 context,
             ),
             value: Some(value),
+            fields: Vec::new(),
         })
         .collect();
     let name = context
@@ -6175,6 +6176,7 @@ fn inline_value_statements(
                     scope: None,
                     layout,
                     value: Some(value),
+                    fields: Vec::new(),
                 });
             }
             inline_value_statements(rest, process, context)

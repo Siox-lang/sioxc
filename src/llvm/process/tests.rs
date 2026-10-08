@@ -23,6 +23,7 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
                 scope: None,
                 layout: None,
                 value: Some(ProcessValueId(0)),
+                fields: Vec::new(),
             },
             siox::ir::ProcessValueBinding {
                 name: "unused".into(),
@@ -30,6 +31,40 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
                 scope: None,
                 layout: None,
                 value: Some(ProcessValueId(1)),
+                fields: Vec::new(),
+            },
+            siox::ir::ProcessValueBinding {
+                name: "aggregate".into(),
+                span,
+                scope: None,
+                layout: Some(siox::ir::SourceLayout {
+                    span,
+                    kind: siox::ir::LayoutKind::Struct {
+                        name: "Bundle".into(),
+                        view: None,
+                        fields: ["used", "unused"]
+                            .into_iter()
+                            .map(|name| siox::ir::LayoutField {
+                                name: name.into(),
+                                direction: None,
+                                layout: siox::ir::SourceLayout {
+                                    span,
+                                    kind: siox::ir::LayoutKind::Scalar {
+                                        width: 64,
+                                        domain: siox::ir::ScalarDomain::Integer,
+                                        nominal: None,
+                                        value_range: None,
+                                    },
+                                },
+                            })
+                            .collect(),
+                    },
+                }),
+                value: None,
+                fields: vec![
+                    ("used".into(), Some(ProcessValueId(0))),
+                    ("unused".into(), Some(ProcessValueId(1))),
+                ],
             },
         ],
         locals: vec![siox::ir::ProcessValueBinding {
@@ -38,6 +73,7 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
             scope: None,
             layout: None,
             value: Some(ProcessValueId(3)),
+            fields: Vec::new(),
         }],
     };
     let node = |kind| ProcessValue {
@@ -170,6 +206,11 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
     assert!(
         !llvm.contains("@must_not_run"),
         "metadata must not execute unused arguments: {llvm}"
+    );
+    assert!(llvm.contains("DW_OP_LLVM_fragment, 0, 64"), "{llvm}");
+    assert!(
+        !llvm.contains("DW_OP_LLVM_fragment, 64, 64"),
+        "unused aggregate fields must remain unavailable: {llvm}"
     );
     assert_eq!(
         llvm.lines()

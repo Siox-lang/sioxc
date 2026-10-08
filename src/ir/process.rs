@@ -714,6 +714,18 @@ pub struct ProcessValueBinding {
     pub layout: Option<SourceLayout>,
     /// Existing value, when retained by ordinary reachability.
     pub value: Option<ProcessValueId>,
+    /// Field-backed aggregate pieces; pruned leaves retain their source path.
+    /// These are inspection metadata, never executable dependencies.
+    pub fields: Vec<(String, Option<ProcessValueId>)>,
+}
+
+impl ProcessValueBinding {
+    /// Retained inspection values, without promoting them to execution roots.
+    pub fn values(&self) -> impl Iterator<Item = ProcessValueId> + '_ {
+        self.value
+            .into_iter()
+            .chain(self.fields.iter().filter_map(|(_, value)| *value))
+    }
 }
 
 /// Source identity of one expansion, including calls returning an existing value.
@@ -1846,7 +1858,7 @@ impl ProcessIr {
                         }
                     }
                     for binding in source.parameters.iter().chain(&source.locals) {
-                        if let Some(child) = binding.value {
+                        for child in binding.values() {
                             if child.0 >= id.0 {
                                 issues.push(format!(
                                     "process value {:?} has invalid source binding {}: {:?}",
@@ -2456,6 +2468,9 @@ pub(crate) fn remap_process_value_bindings(
         });
         for binding in source.parameters.iter_mut().chain(&mut source.locals) {
             binding.value = binding.value.and_then(&mut map);
+            for (_, value) in &mut binding.fields {
+                *value = value.and_then(&mut map);
+            }
         }
     }
 }

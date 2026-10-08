@@ -612,6 +612,23 @@ fn hardware_expression_calls_keep_source_frames() {
     let source = directory.join("hardware.siox");
     let text = r#"module debug_hardware;
 use std::bits::{unsigned, signed};
+struct Nested { pub flags: unsigned[3], pub negative: signed[81] }
+struct Wrapper { pub word: integer }
+struct Bundle {
+    pub tag: integer, pub gain: real, pub wide: unsigned[81], pub unused: integer,
+    pub nested: Nested, pub lanes: integer[2..1], pub samples: integer[-1..0]
+}
+fn inspect_bundle(value: Bundle, wrapped: Wrapper) -> integer {
+    let copy: Bundle = value;
+    return copy.tag + integer(copy.gain)
+        + if copy.wide == 18446744073709551617 { 0 } else { 1000 }
+        + if copy.nested.flags == 5 and copy.nested.negative == -2
+            and copy.lanes[2] == 7 and copy.lanes[1] == 9
+            and copy.samples[-1] == 41 and copy.samples[0] == 43 { 0 } else { 2000 }
+        + if wrapped.word == copy.tag { 0 } else { 4000 }; // hardware aggregate return
+}
+entity Bundled { value: Bundle in, result: integer out }
+impl Bundled { result = inspect_bundle(value, Wrapper { .word = value.tag }); } // hardware aggregate assignment
 fn bump(value: integer) -> integer {
     let local: integer = value + 1;
     return local + 1; // hardware leaf return
@@ -672,6 +689,11 @@ impl T {
     let dut: Dut = { .value = input };
     let other: Dut = { .value = 10 };
     let typed: Typed = { .value = 18446744073709551617, .gain = 1.5, .negative = -2 };
+    let bundle: Bundle = {
+        .tag = 5, .gain = 1.5, .wide = 18446744073709551617, .unused = 101,
+        .nested = { .flags = 5, .negative = -2 }, .lanes = [7, 9], .samples = [41, 43]
+    };
+    let bundled: Bundled = { .value = bundle };
     let small: integer<-8..7> = -3;
     let narrow: Narrow = { .value = small };
     let clock: Bit = '0';
@@ -680,6 +702,7 @@ impl T {
         await 1ns;
         assert!(dut.result == 107 and dut.selected == 7, "first hardware result");
         assert!(typed.result == 1 and other.result == 112 and other.selected == 12, "typed and shared helper results");
+        assert!(bundled.result == 6, "hardware aggregate input and local result");
         assert!(narrow.result == -24, "nested arguments retain consumer widths and signs");
         input = 6;
         small = 3;
@@ -740,6 +763,7 @@ seen = set()
 owners = set()
 events = set()
 typed_seen = False
+bundle_seen = False
 failures = []
 class Check(gdb.Breakpoint):
     def stop(self):
@@ -798,8 +822,43 @@ class Event(Check):
         assert int(gdb.parse_and_eval('local')) == value + 10
         events.add(value)
         return False
+class Aggregate(Check):
+    def check(self):
+        global bundle_seen
+        frame = gdb.selected_frame()
+        assert frame.name() == 'debug_hardware::inspect_bundle', frame.name()
+        assert frame.older().find_sal().line == {bundle_assignment}
+        assert frame.older().name().removesuffix('(void)') == 'T::bundled::<hardware:T.bundled.result>', frame.older().name()
+        tag = int(gdb.parse_and_eval('value.tag'))
+        gain = float(gdb.parse_and_eval('value.gain'))
+        wide = int(gdb.parse_and_eval('value.wide'))
+        assert tag in [0, 5] and gain in [0, 1.5] and wide in [0, (1 << 64) + 1], (tag, gain, wide)
+        assert int(gdb.parse_and_eval('copy.tag')) == tag
+        assert int(gdb.parse_and_eval('wrapped.word')) == tag
+        assert int(gdb.parse_and_eval('sizeof(wrapped)')) == 8
+        assert float(gdb.parse_and_eval('copy.gain')) == gain
+        assert int(gdb.parse_and_eval('copy.wide')) == wide
+        assert int(gdb.parse_and_eval('sizeof(value.wide)')) == 11
+        assert int(gdb.parse_and_eval('sizeof(value)')) == 79
+        assert gdb.parse_and_eval('value.unused').is_optimized_out
+        assert gdb.parse_and_eval('copy.unused').is_optimized_out
+        flags = int(gdb.parse_and_eval('value.nested.flags'))
+        negative = int(gdb.parse_and_eval('value.nested.negative'))
+        assert flags in [0, 5] and negative in [0, -2], (flags, negative)
+        assert int(gdb.parse_and_eval('copy.nested.flags')) == flags
+        assert int(gdb.parse_and_eval('copy.nested.negative')) == negative
+        lanes = gdb.parse_and_eval('value.lanes')
+        local_lanes = gdb.parse_and_eval('copy.lanes')
+        samples = gdb.parse_and_eval('value.samples')
+        local_samples = gdb.parse_and_eval('copy.samples')
+        observed = [int(lanes['[2]']), int(lanes['[1]']), int(samples[-1]), int(samples[0])]
+        assert all(actual in [0, expected] for actual, expected in zip(observed, [7, 9, 41, 43])), observed
+        assert [int(local_lanes['[2]']), int(local_lanes['[1]']), int(local_samples[-1]), int(local_samples[0])] == observed
+        bundle_seen |= tag == 5 and gain == 1.5 and wide == (1 << 64) + 1 and flags == 5 and negative == -2 and observed == [7, 9, 41, 43]
+        return False
 Typed({source:?} + ':{typed_return}')
 Event({source:?} + ':{event_return}')
+Aggregate({source:?} + ':{bundle_return}')
 leaf = gdb.Breakpoint({source:?} + ':{leaf_return}')
 outer = gdb.Breakpoint({source:?} + ':{outer_return}')
 gdb.execute('run')
@@ -826,6 +885,7 @@ assert owners == {{'T::dut::<hardware:T.dut.selected>', 'T::other::<hardware:T.o
 assert {{5, 6, -6, 10}} <= seen <= {{0, 5, 6, -6, 10}}, seen
 assert events == {{6, -6}}, events
 assert typed_seen
+assert bundle_seen
 "#,
             source = source.to_string_lossy(),
             leaf_return = line("hardware leaf return"),
@@ -839,6 +899,8 @@ assert typed_seen
             typed_assignment = line("hardware typed assignment"),
             event_return = line("hardware event return"),
             event_assignment = line("hardware event assignment"),
+            bundle_return = line("hardware aggregate return"),
+            bundle_assignment = line("hardware aggregate assignment"),
         );
         success(
             Command::new("gdb")
