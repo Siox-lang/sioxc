@@ -10,6 +10,7 @@ pub(in crate::llvm::process) struct ValueFrame<'ctx> {
     scope: DISubprogram<'ctx>,
     caller: Option<DILocation<'ctx>>,
     bindings: Vec<ValueBinding<'ctx>>,
+    branches: Vec<(ProcessValueId, [Span; 2])>,
 }
 
 struct ValueBinding<'ctx> {
@@ -19,6 +20,7 @@ struct ValueBinding<'ctx> {
     reference: PointerValue<'ctx>,
     buffer: GlobalValue<'ctx>,
     inspection: ValueInspection<'ctx>,
+    parameter: bool,
     captured: Cell<Option<(IntValue<'ctx>, BasicBlock<'ctx>)>>,
 }
 
@@ -317,6 +319,15 @@ fn inline_body<'ctx>(
         false,
     );
     function.set_subprogram(scope);
+    debug.declare_lexical_scopes(
+        scope,
+        source
+            .locals
+            .iter()
+            .filter_map(|binding| binding.scope.map(|extent| (None, extent)))
+            .collect(),
+        &[],
+    );
     let caller = None;
     cache.source_location = Some(debug.builder.create_debug_location(
         debug.context,
@@ -351,7 +362,11 @@ fn inline_body<'ctx>(
         let (line, column) = debug
             .sources
             .line_col(binding.span.file, binding.span.start);
-        let scope = scope.as_debug_info_scope();
+        let scope = if index < source.parameters.len() {
+            scope.as_debug_info_scope()
+        } else {
+            debug.source_scope(scope, binding.span, None).0
+        };
         let variable = if index < source.parameters.len() {
             debug.builder.create_parameter_variable(
                 scope,
@@ -478,6 +493,7 @@ fn inline_body<'ctx>(
                 reference,
                 buffer,
                 inspection,
+                parameter: index < source.parameters.len(),
                 captured: Cell::new(None),
             });
         }
@@ -487,6 +503,7 @@ fn inline_body<'ctx>(
         scope,
         caller,
         bindings,
+        branches: source.branches.clone(),
     });
     // Constants need no execution. Other bindings become available only when
     // their ordinary SSA value is actually emitted (never inspect by reevaluation).
@@ -511,31 +528,102 @@ fn inline_body<'ctx>(
         }
     }
     let result = emit(builder, cache, None);
-    if let (Some(value), Some(layout)) = (result, debug.value_debug_layout(design, operand)) {
-        // SelectionDAG can combine nested arithmetic even at -O0 and erase
-        // a return's machine range. A debug-only result view keeps that source
-        // boundary observable; ordinary builds remain transparent identities.
-        let _location = ValueLocationGuard::new(builder, cache, source.result_span);
-        if let Some(bytes) = inspection_bits(&layout).and_then(|bits| u32::try_from(bits / 8).ok())
-        {
-            let buffer = debug.inspection_buffer(module, "sx.debug.return", bytes);
-            if let Some(value) = fit(builder, value, layout.packed_width().unwrap()) {
-                debug.copy_fields(builder, buffer, value, &layout, &mut 0, &mut 0);
-            }
-        }
+    let result_span = source.result_span;
+    if let Some(value) = result {
+        capture_result(module, builder, design, operand, value, result_span, cache);
     }
     cache.value_frames.pop();
-    let (line, column) = debug
-        .sources
-        .line_col(source.result_span.file, source.result_span.start);
-    builder.set_current_debug_location(debug.builder.create_debug_location(
-        debug.context,
-        line,
-        column,
-        scope.as_debug_info_scope(),
-        None,
-    ));
+    builder.set_current_debug_location(debug.location(scope, result_span, None));
     result
+}
+
+fn capture_result<'ctx>(
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    id: ProcessValueId,
+    value: IntValue<'ctx>,
+    span: Span,
+    cache: &ProcessValueCache<'ctx, '_>,
+) {
+    let Some(debug) = cache.debug else { return };
+    let Some(layout) = debug.value_debug_layout(design, id) else {
+        return;
+    };
+    // A constant/arithmetic return can otherwise have no machine range even
+    // at -O0. These inspection writes never become simulation operands.
+    let _location = ValueLocationGuard::new(builder, cache, span);
+    if let Some(bytes) = inspection_bits(&layout).and_then(|bits| u32::try_from(bits / 8).ok()) {
+        let buffer = debug.inspection_buffer(module, "sx.debug.return", bytes);
+        if let Some(value) = fit(builder, value, layout.packed_width().unwrap()) {
+            debug.copy_fields(builder, buffer, value, &layout, &mut 0, &mut 0);
+        }
+    }
+}
+
+pub(in crate::llvm::process) fn selected_value<'ctx>(
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    selection: ProcessValueId,
+    condition: IntValue<'ctx>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+    mut emit: impl FnMut(
+        &Builder<'ctx>,
+        ProcessValueId,
+        &mut ProcessValueCache<'ctx, '_>,
+    ) -> Option<IntValue<'ctx>>,
+) -> Option<IntValue<'ctx>> {
+    let debug = cache.debug?;
+    let ProcessValueKind::Select {
+        then_value,
+        else_value,
+        ..
+    } = design.process_ir.values.get(selection.0 as usize)?.kind
+    else {
+        return None;
+    };
+    let arms = [then_value, else_value];
+    let spans = cache
+        .value_frames
+        .last()?
+        .branches
+        .iter()
+        .find_map(|(id, spans)| (*id == selection).then_some(*spans))
+        .unwrap_or_else(|| arms.map(|id| design.process_ir.values[id.0 as usize].span));
+    let function = builder.get_insert_block()?.get_parent()?;
+    let then_block = debug
+        .context
+        .append_basic_block(function, "debug.select.then");
+    let else_block = debug
+        .context
+        .append_basic_block(function, "debug.select.else");
+    let join = debug
+        .context
+        .append_basic_block(function, "debug.select.join");
+    builder
+        .build_conditional_branch(condition, then_block, else_block)
+        .ok()?;
+    let dominating = cache.dominating_values();
+    let mut results = Vec::with_capacity(2);
+    for ((block, id), span) in [(then_block, arms[0]), (else_block, arms[1])]
+        .into_iter()
+        .zip(spans)
+    {
+        builder.position_at_end(block);
+        let value = emit(builder, id, cache)?;
+        capture_result(module, builder, design, id, value, span, cache);
+        let exit = builder.get_insert_block()?;
+        builder.build_unconditional_branch(join).ok()?;
+        results.push((value, exit));
+        cache.retain_dominating(&dominating);
+    }
+    builder.position_at_end(join);
+    let result = builder
+        .build_phi(results[0].0.get_type(), "debug.select.result")
+        .ok()?;
+    result.add_incoming(&[(&results[0].0, results[0].1), (&results[1].0, results[1].1)]);
+    Some(result.as_basic_value().into_int_value())
 }
 
 fn value_location<'ctx>(
@@ -554,7 +642,7 @@ fn value_location<'ctx>(
                 debug.context,
                 line,
                 column,
-                frame.scope.as_debug_info_scope(),
+                debug.source_scope(frame.scope, span, None).0,
                 frame.caller,
             )
         })
@@ -568,6 +656,7 @@ pub(in crate::llvm::process) fn capture_value<'ctx>(
     value: IntValue<'ctx>,
 ) {
     let Some(debug) = cache.debug else { return };
+    let mut local_captured = false;
     for frame in &cache.value_frames {
         for binding in &frame.bindings {
             if binding.id != id {
@@ -610,6 +699,27 @@ pub(in crate::llvm::process) fn capture_value<'ctx>(
                 );
             }
             binding.captured.set(Some(capture));
+            local_captured |= !binding.parameter;
+        }
+    }
+    if local_captured {
+        // SelectionDAG can schedule later source arithmetic before these
+        // inspection stores even at -O0. A debug-only block boundary keeps
+        // a completed local visible at the next source statement's stop.
+        let previous = builder.get_insert_block().unwrap();
+        let next = debug
+            .context
+            .append_basic_block(previous.get_parent().unwrap(), "debug.value.available");
+        builder.build_unconditional_branch(next).unwrap();
+        builder.position_at_end(next);
+        for frame in &cache.value_frames {
+            for binding in &frame.bindings {
+                if let Some((value, block)) = binding.captured.get() {
+                    if block == previous {
+                        binding.captured.set(Some((value, next)));
+                    }
+                }
+            }
         }
     }
 }

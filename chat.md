@@ -14345,3 +14345,91 @@ equality ABI 16, regressions and docs plus only the post-f7f8adb owned chat tail
 Preserve AGENTS.md, .codex/ and unrelated chat additions. No push. DWARF remains
 active: hardware provenance, branch scopes/taken-arm stops, predicate-shared
 call counts and literal/zero-storage string return-frame coverage remain open.
+
+### 2026-10-08 — Codex — DWARF expression branch scopes
+
+Local commit 9461942 contains the fully verified aggregate/string batch; its
+stat preserves the unrelated 441 chat additions, AGENTS.md and .codex/.
+Own tests/debug_info.rs for an actual GDB pure-if shadow/fallback regression,
+then ProcessValueBinding scope metadata, source_processes.rs and the shared
+native debug/select emitter for the root fixes. Reuse the existing smallest
+enclosing-local extent pattern and debugger lexical registry, not a new AST
+walk. Verify ordinary/debug native execution and byte-identical VCDs; fail on
+any unselected return stop or incorrect shadowed binding. Full goal remains
+active, including hardware provenance, shared-predicate counts and additional
+literal/zero-storage return-frame coverage. No push.
+
+Probe 1343114 proves ordinary/debug native results and VCD parity but fails at
+the first inner-return stop: GDB resolves the outer local and the inner view is
+unavailable. Add non-executable owning scopes to expression bindings using the
+existing nested-local pattern. Probe 1350304 then found formal parameters
+incorrectly placed in a signature-only file scope; keep formals in the native
+function scope and locals in their owning lexical scopes. Selected-arm emission
+and return-boundary attribution remain due; do not remove assertions.
+
+Probe 1353762 now resolves the proper inner scope and formal argument but
+finds its view unavailable at the return stop. Guarded disassembly probe
+1359593 confirms SelectionDAG schedules return arithmetic at 0x2856 before
+the initializer's inspection stores at 0x2865/0x2873, even at -O0. Add a
+debug-only block boundary after local capture so later source statements
+cannot precede the completed inspection view. Keep ordinary SSA/storage
+unchanged, avoid splitting parameter capture and retain capture deduplication
+across the new boundary. Taken-arm and return-location fixes still remain.
+
+Probe 1364946 now reads the correct shadowed value but stops at the untaken
+fallthrough return during the true call. Add shared debug-only selected-arm
+blocks and branch-specific result markers, and label the merged result with
+its conditional extent. Probe 1372522 passes the new branch regression and
+the two CFG/storage regressions, but its borrowed-string return loses lexical
+locals because the terminator uses the function root instead of its source
+scope. Use the existing location resolver for that terminator. Also keep
+layout selections on their common cache/capture path instead of returning
+early. Literal/alias return provenance still needs broader focused coverage.
+
+Probe 1377482 completed success/0: all four debugger regressions pass in
+default and bitpack, strict Clippy passes and AST graph update completed.
+Continue the owned branch batch with alias-return source-stop coverage:
+returning an existing local must retain the return expression's location,
+not its initializer's. Keep identical ordinary/debug results and VCD parity;
+do not accept a source breakpoint that merely lands on the wrong statement.
+
+Probe 1387378 failed because alias return lines had no executable range.
+Carry return-expression spans separately from their reused value IDs; branch
+metadata references existing selection IDs and is remapped/pruned without
+creating roots. Probe 1389679 passes all four default debugger tests.
+Expanded nested/alias/aggregate/match coverage hit an unrelated initializer
+binding issue: `let local = local + 20` resolves its RHS to the newly declared
+DefId, leaving a non-executable Definition. A temporary preflight trace proved
+this; removed it, and use `value + 30` for this debugger-focused shadow fixture.
+Outer-same-name initializer binding remains a separate resolver/language audit,
+not a claim of DWARF completion or permission to weaken return-stop checks.
+
+Probe 1396310 passes all four debugger tests in default/bitpack, including nine
+exact selected-return/caller stops for nested shadowing, identical argument
+returns, aggregate returns and match arms; DWARF verification and VCD parity
+pass. Strict Clippy rejected a redundant eighth selected_value argument;
+recover its arms from the existing selection node instead. Extend the existing
+SourceValues compaction test so discarded branch-location metadata cannot keep
+an unused foreign-call arm executable. Update architecture/testing/TODO to
+describe proven branch support and retain hardware/shared-predicate/string
+return-frame gaps. No completion claim or push.
+
+Probe 1400131 failed on a misplaced embedded-test insertion (unknown `unused`
+and `unused_selection`); no gate accepted. Corrected the fixture location.
+Probe 1402134 completed SubState=exited / Result=success / ExecMainStatus=0,
+peak 1612869632 bytes: source-binding/branch compaction regression, all four
+native/GDB/VCD/DWARF tests in default/bitpack, strict all-target/all-feature
+Clippy and AST graph update pass. Graph is 5366 nodes/14767 edges; known
+vendored partial-extraction/no-symbol warnings remain visible. Launch the
+complete acceptance gate on this source state and freeze source while live.
+Commit only owned branch files/docs and the Oct-08 owned chat tail after
+terminal success; preserve AGENTS.md, .codex/ and unrelated chat. No push.
+
+Gate 1408863 completed SubState=exited / Result=success / ExecMainStatus=0,
+peak 1612165120 bytes. Fmt, strict Clippy, frontend-only check, complete
+default/bitpack Rust suites, ordinary/default-debug/bitpack-debug corpus runs
+(225/0 each) and final GDB/VCD smoke pass. Commit the owned lexical scopes,
+inspection ordering boundaries, selected-arm/alias-return provenance and
+native regressions/docs; only the Oct-08 owned chat tail enters this commit.
+Hardware source-call provenance, actual shared-predicate call counts and
+literal/empty string return-frame coverage remain open. No push.

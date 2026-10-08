@@ -236,6 +236,11 @@ already evaluates, not by reevaluating expressions. Debug-only return views
 keep return-line breakpoints observable when LLVM combines nested arithmetic
 even at `-O0`; ordinary builds introduce no simulation storage/copies for these
 boundaries. Unselected expression calls must not acquire runtime source stops.
+Pure function-body `if`/`match` branches retain lexical local scopes, including
+nested shadowing. Return breakpoints follow the selected return expression,
+even when both arms return the same existing argument. Debug-only control-flow
+boundaries finish a local's inspection view before a later source statement can
+stop; LLVM instruction scheduling must not expose an uninitialized snapshot.
 Metadata-only arguments do not enter the native call ABI: only the callee's
 executable source operands may be evaluated, even if an unused binding remains
 retained elsewhere in the IR.
@@ -256,8 +261,9 @@ handles and views from inactive tests are empty, without raising runtime errors.
 Snapshots refresh only at Siox source boundaries, as described above.
 
 Remaining inspection work includes hardware expression-call provenance,
-branch-local expression scopes and actual call counts for shared aliases under
-different predicates. Runtime-sized native values currently support Char[]
+actual call counts for shared aliases under different predicates and
+literal/empty-string return frames when a length consumer folds their value.
+Runtime-sized native values currently support Char[]
 handles only; general dynamic arrays are a separate host-service extension,
 not an already-supported representation missing debugger metadata. Debug mode
 is deliberately unoptimized; it is not a simulation performance mode. The
@@ -286,6 +292,10 @@ borrowed-handle returns and caller locations, Unicode/embedded-NUL contents,
 length/index/equality semantics, plus aggregate integer/real/wide field values.
 The backend's shared-call regression also checks that differently selected
 consumers emit one function body per width format, without merging formats.
+A fourth native/GDB regression checks nested shadowing, alias returns (including
+identical operands in both branches), aggregate returns and function-body match
+arms. It requires exact selected-return/caller lines with no extra untaken-arm
+stops, verifies DWARF and compares ordinary/debug VCDs in both packing modes.
 To run the existing native corpus with DWARF enabled:
 
 ```bash

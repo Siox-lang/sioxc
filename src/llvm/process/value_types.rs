@@ -259,6 +259,7 @@ pub(super) fn process_value_at<'ctx>(
                 module,
                 builder,
                 design,
+                id,
                 *condition,
                 *then_value,
                 *else_value,
@@ -300,6 +301,7 @@ pub(super) fn process_select<'ctx>(
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     design: &Design,
+    id: ProcessValueId,
     condition: ProcessValueId,
     then_value: ProcessValueId,
     else_value: ProcessValueId,
@@ -319,6 +321,30 @@ pub(super) fn process_select<'ctx>(
         cache,
     )?;
     let condition = as_condition(builder, condition)?;
+    if cache.debug.is_some() && !cache.value_frames.is_empty() {
+        return debug::selected_value(
+            module,
+            builder,
+            design,
+            id,
+            condition,
+            cache,
+            |builder, id, cache| {
+                process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    id,
+                    width,
+                    true,
+                    active,
+                    index_sites,
+                    cache,
+                )
+            },
+        );
+    }
     let checked_arms = cache.requires_activity(then_value) || cache.requires_activity(else_value);
     let (then_active, else_active) = if !checked_arms {
         (None, None)

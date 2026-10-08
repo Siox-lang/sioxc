@@ -67,6 +67,7 @@ struct LoweringContext<'a> {
     /// Current canonical source call instance while expanding a CFG body.
     inline_scope: Option<u32>,
     inline_value_locals: Vec<Vec<crate::ir::ProcessValueBinding>>,
+    inline_value_branches: Vec<Vec<(ProcessValueId, [crate::diag::Span; 2])>>,
     /// Memoized call reachability in the append-only procedural value arena.
     cfg_call_cache: Vec<bool>,
 }
@@ -1155,6 +1156,7 @@ pub fn lower(
                 inline_functions: std::collections::HashSet::new(),
                 inline_scope: None,
                 inline_value_locals: Vec::new(),
+                inline_value_branches: Vec::new(),
                 cfg_call_cache: Vec::new(),
             };
             let mut block = ProcessBlockId(0);
@@ -1215,6 +1217,7 @@ pub fn lower(
                             inline_functions: std::collections::HashSet::new(),
                             inline_scope: None,
                             inline_value_locals: Vec::new(),
+                            inline_value_branches: Vec::new(),
                             cfg_call_cache: Vec::new(),
                         };
                         lower_process(
@@ -1268,6 +1271,7 @@ pub fn lower(
                             inline_functions: std::collections::HashSet::new(),
                             inline_scope: None,
                             inline_value_locals: Vec::new(),
+                            inline_value_branches: Vec::new(),
                             cfg_call_cache: Vec::new(),
                         };
                         lower_process(
@@ -1337,6 +1341,7 @@ pub fn lower(
                     inline_functions: std::collections::HashSet::new(),
                     inline_scope: None,
                     inline_value_locals: Vec::new(),
+                    inline_value_branches: Vec::new(),
                     cfg_call_cache: Vec::new(),
                 };
                 lower_legacy_process(
@@ -4823,14 +4828,21 @@ fn inline_process_function(
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(return_type);
     context.inline_value_locals.push(Vec::new());
+    context.inline_value_branches.push(Vec::new());
     let result = inline_value_statements(&body.stmts, process, context);
-    let locals = context.inline_value_locals.pop().unwrap();
+    let branches = context.inline_value_branches.pop().unwrap();
+    let mut locals = context.inline_value_locals.pop().unwrap();
+    for local in &mut locals {
+        // Branches fill their smaller scopes before returning, as CFG locals do.
+        local.scope.get_or_insert(body.span);
+    }
     context.inline_return_types.pop();
     context.inline_self_values.pop();
     context.value_bindings.pop();
     context.inline_functions.remove(&function.span);
     // ...and that argument's format: `abs(x)` on a `ufixed<8, 4>` is one.
-    let result = match (result, generic_argument) {
+    let (result, result_span) = result?;
+    let result = match (Some(result), generic_argument) {
         (Some(result), Some(argument)) => Some(inherit_receiver_layout(result, argument, context)),
         (result, _) => result,
     }?;
@@ -4844,6 +4856,7 @@ fn inline_process_function(
                 .as_ref()
                 .map_or_else(|| "self".to_string(), |name| name.text.clone()),
             span: parameter.span,
+            scope: None,
             value: Some(value),
         })
         .collect();
@@ -4866,16 +4879,8 @@ fn inline_process_function(
                 name,
                 function: function.span,
                 call,
-                result_span: body
-                    .stmts
-                    .iter()
-                    .find_map(|stmt| match stmt {
-                        Stmt::Return {
-                            value: Some(value), ..
-                        } => Some(ast::expr_span(value)),
-                        _ => None,
-                    })
-                    .unwrap_or(node.span),
+                result_span,
+                branches,
                 parameters,
                 locals,
             }),
@@ -5438,18 +5443,16 @@ fn inline_value_statements(
     statements: &[Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
-) -> Option<ProcessValueId> {
+) -> Option<(ProcessValueId, crate::diag::Span)> {
     let (statement, rest) = statements.split_first()?;
     match statement {
         Stmt::Return {
             value: Some(value), ..
         } => {
             let return_type = context.inline_return_types.last().cloned().flatten();
-            Some(value_ref_with_type(
-                value,
-                process,
-                context,
-                return_type.as_ref(),
+            Some((
+                value_ref_with_type(value, process, context, return_type.as_ref()),
+                ast::expr_span(value),
             ))
         }
         Stmt::Let(declaration) => {
@@ -5469,6 +5472,7 @@ fn inline_value_statements(
                 locals.push(crate::ir::ProcessValueBinding {
                     name: declaration.name.text.clone(),
                     span: declaration.span,
+                    scope: None,
                     value: Some(value),
                 });
             }
@@ -5484,10 +5488,12 @@ fn inline_value_statements(
 /// continuation so a branch without an early return falls through normally.
 fn inline_value_branch(
     branch: &[Stmt],
+    extent: Option<crate::diag::Span>,
     continuation: &[Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
-) -> Option<ProcessValueId> {
+) -> Option<(ProcessValueId, crate::diag::Span)> {
+    let first_local = context.inline_value_locals.last()?.len();
     let mut statements = Vec::with_capacity(branch.len() + continuation.len());
     statements.extend_from_slice(branch);
     statements.extend_from_slice(continuation);
@@ -5496,6 +5502,18 @@ fn inline_value_branch(
         .push(std::collections::HashMap::new());
     let result = inline_value_statements(&statements, process, context);
     context.value_bindings.pop();
+    if let Some(extent) = extent {
+        for local in &mut context.inline_value_locals.last_mut()?[first_local..] {
+            // The appended continuation belongs to its original enclosing block.
+            if local.scope.is_none()
+                && local.span.file == extent.file
+                && local.span.start >= extent.start
+                && local.span.end <= extent.end
+            {
+                local.scope = Some(extent);
+            }
+        }
+    }
     result
 }
 
@@ -5505,18 +5523,28 @@ fn inline_value_if(
     continuation: &[Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
-) -> Option<ProcessValueId> {
+) -> Option<(ProcessValueId, crate::diag::Span)> {
     let condition = value_ref(&statement.cond, process, context);
-    let then_value = inline_value_branch(&statement.then.stmts, continuation, process, context)?;
+    let then_value = inline_value_branch(
+        &statement.then.stmts,
+        Some(statement.then.span),
+        continuation,
+        process,
+        context,
+    )?;
     let else_value = match statement.else_.as_deref() {
-        Some(ElseBranch::Block(block)) => {
-            inline_value_branch(&block.stmts, continuation, process, context)?
-        }
+        Some(ElseBranch::Block(block)) => inline_value_branch(
+            &block.stmts,
+            Some(block.span),
+            continuation,
+            process,
+            context,
+        )?,
         Some(ElseBranch::If(inner)) => {
             let branch = [Stmt::If(inner.clone())];
-            inline_value_branch(&branch, continuation, process, context)?
+            inline_value_branch(&branch, None, continuation, process, context)?
         }
-        None => inline_value_branch(&[], continuation, process, context)?,
+        None => inline_value_branch(&[], None, continuation, process, context)?,
     };
     inline_select_value(statement.span, condition, then_value, else_value, context)
 }
@@ -5530,11 +5558,17 @@ fn inline_value_match(
     continuation: &[Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
-) -> Option<ProcessValueId> {
+) -> Option<(ProcessValueId, crate::diag::Span)> {
     let scrutinee = value_ref(&statement.scrutinee, process, context);
-    let mut result = inline_value_branch(&[], continuation, process, context);
+    let mut result = inline_value_branch(&[], None, continuation, process, context);
     for arm in statement.arms.iter().rev() {
-        let value = inline_value_branch(&arm.body.stmts, continuation, process, context)?;
+        let value = inline_value_branch(
+            &arm.body.stmts,
+            Some(arm.body.span),
+            continuation,
+            process,
+            context,
+        )?;
         match inline_pattern_condition(&arm.pattern, scrutinee, context)? {
             None => result = Some(value),
             Some(condition) => {
@@ -5641,10 +5675,10 @@ fn push_inline_binary(
 fn inline_select_value(
     span: crate::diag::Span,
     condition: ProcessValueId,
-    then_value: ProcessValueId,
-    else_value: ProcessValueId,
+    (then_value, then_span): (ProcessValueId, crate::diag::Span),
+    (else_value, else_span): (ProcessValueId, crate::diag::Span),
     context: &mut LoweringContext<'_>,
-) -> Option<ProcessValueId> {
+) -> Option<(ProcessValueId, crate::diag::Span)> {
     let then_node = context.process_ir.values.get(then_value.0 as usize)?;
     let else_node = context.process_ir.values.get(else_value.0 as usize)?;
     let ty = then_node.ty.clone().or_else(|| else_node.ty.clone());
@@ -5652,7 +5686,7 @@ fn inline_select_value(
         (Some(left), Some(right)) => Some(left.max(right)),
         (left, right) => left.or(right),
     };
-    Some(push_value(
+    let selection = push_value(
         span,
         ty,
         width,
@@ -5662,7 +5696,12 @@ fn inline_select_value(
             else_value,
         },
         context,
-    ))
+    );
+    context
+        .inline_value_branches
+        .last_mut()?
+        .push((selection, [then_span, else_span]));
+    Some((selection, span))
 }
 
 /// Convert a contextually typed string token into the packed representation of
@@ -7156,6 +7195,7 @@ mod tests {
             inline_functions: Default::default(),
             inline_scope: None,
             inline_value_locals: Vec::new(),
+            inline_value_branches: Vec::new(),
             cfg_call_cache: vec![],
         };
 

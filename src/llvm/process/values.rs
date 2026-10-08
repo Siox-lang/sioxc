@@ -420,54 +420,78 @@ pub(super) fn process_value_in_layout<'ctx>(
                 cache,
             )?;
             let condition = as_condition(builder, condition)?;
-            let checked_arms =
-                cache.requires_activity(*then_value) || cache.requires_activity(*else_value);
-            let (then_active, else_active) = if checked_arms {
-                let then_active = match active {
-                    Some(outer) => builder
-                        .build_and(outer, condition, "pv.aggregate.then.active")
-                        .ok()?,
-                    None => condition,
-                };
-                let not_condition = builder
-                    .build_not(condition, "pv.aggregate.else.condition")
-                    .ok()?;
-                let else_active = match active {
-                    Some(outer) => builder
-                        .build_and(outer, not_condition, "pv.aggregate.else.active")
-                        .ok()?,
-                    None => not_condition,
-                };
-                (Some(then_active), Some(else_active))
+            if cache.debug.is_some() && !cache.value_frames.is_empty() {
+                debug::selected_value(
+                    module,
+                    builder,
+                    design,
+                    id,
+                    condition,
+                    cache,
+                    |builder, id, cache| {
+                        process_value_in_layout(
+                            context,
+                            module,
+                            builder,
+                            design,
+                            id,
+                            layout,
+                            active,
+                            index_sites,
+                            cache,
+                        )
+                    },
+                )?
             } else {
-                (None, None)
-            };
-            let then_value = process_value_in_layout(
-                context,
-                module,
-                builder,
-                design,
-                *then_value,
-                layout,
-                then_active,
-                index_sites,
-                cache,
-            )?;
-            let else_value = process_value_in_layout(
-                context,
-                module,
-                builder,
-                design,
-                *else_value,
-                layout,
-                else_active,
-                index_sites,
-                cache,
-            )?;
-            builder
-                .build_select(condition, then_value, else_value, "pv.aggregate.select")
-                .ok()?
-                .into_int_value()
+                let checked_arms =
+                    cache.requires_activity(*then_value) || cache.requires_activity(*else_value);
+                let (then_active, else_active) = if checked_arms {
+                    let then_active = match active {
+                        Some(outer) => builder
+                            .build_and(outer, condition, "pv.aggregate.then.active")
+                            .ok()?,
+                        None => condition,
+                    };
+                    let not_condition = builder
+                        .build_not(condition, "pv.aggregate.else.condition")
+                        .ok()?;
+                    let else_active = match active {
+                        Some(outer) => builder
+                            .build_and(outer, not_condition, "pv.aggregate.else.active")
+                            .ok()?,
+                        None => not_condition,
+                    };
+                    (Some(then_active), Some(else_active))
+                } else {
+                    (None, None)
+                };
+                let then_value = process_value_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *then_value,
+                    layout,
+                    then_active,
+                    index_sites,
+                    cache,
+                )?;
+                let else_value = process_value_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *else_value,
+                    layout,
+                    else_active,
+                    index_sites,
+                    cache,
+                )?;
+                builder
+                    .build_select(condition, then_value, else_value, "pv.aggregate.select")
+                    .ok()?
+                    .into_int_value()
+            }
         }
         ProcessValueKind::Match { scrutinee, arms } => {
             let scrutinee_value = process_value(
@@ -1370,6 +1394,7 @@ pub(super) fn process_value<'ctx>(
             module,
             builder,
             design,
+            id,
             *condition,
             *then_value,
             *else_value,

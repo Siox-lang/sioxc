@@ -647,6 +647,8 @@ pub struct ProcessValueBinding {
     pub name: String,
     /// Declaration extent.
     pub span: crate::diag::Span,
+    /// Owning lexical extent; omitted for parameters or synthetic bindings.
+    pub scope: Option<crate::diag::Span>,
     /// Existing value, when retained by ordinary reachability.
     pub value: Option<ProcessValueId>,
 }
@@ -662,6 +664,9 @@ pub struct ProcessValueInline {
     pub call: crate::diag::Span,
     /// Return expression extent, even when it aliases an existing argument.
     pub result_span: crate::diag::Span,
+    /// Selected return-expression extents, keyed by existing selection values.
+    /// Inspection metadata only; these IDs must not become executable roots.
+    pub branches: Vec<(ProcessValueId, [crate::diag::Span; 2])>,
     /// Formal parameters in signature order.
     pub parameters: Vec<ProcessValueBinding>,
     /// Source-local aliases, not simulation storage.
@@ -1751,6 +1756,14 @@ impl ProcessIr {
             }
             match &value.kind {
                 ProcessValueKind::InlineCall { source, .. } => {
+                    for (selection, _) in &source.branches {
+                        if selection.0 >= id.0 {
+                            issues.push(format!(
+                                "process value {:?} has invalid source selection {:?}",
+                                id, selection
+                            ));
+                        }
+                    }
                     for binding in source.parameters.iter().chain(&source.locals) {
                         if let Some(child) = binding.value {
                             if child.0 >= id.0 {
@@ -2201,6 +2214,14 @@ pub(crate) fn remap_process_value_bindings(
     mut map: impl FnMut(ProcessValueId) -> Option<ProcessValueId>,
 ) {
     if let ProcessValueKind::InlineCall { source, .. } = value {
+        source.branches.retain_mut(|(selection, _)| {
+            if let Some(mapped) = map(*selection) {
+                *selection = mapped;
+                true
+            } else {
+                false
+            }
+        });
         for binding in source.parameters.iter_mut().chain(&mut source.locals) {
             binding.value = binding.value.and_then(&mut map);
         }

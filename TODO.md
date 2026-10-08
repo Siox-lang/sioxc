@@ -130,9 +130,11 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   across suspension. Procedural expression-shaped calls now preserve repeated,
   same-line and nested source frames, scalar/aggregate bindings, borrowed
   runtime-string arguments/returns, literal/empty string bindings and
-  selected-call stops without ordinary-build copies. Complete expression
-  provenance in hardware SourceValues lowering, branch-local expression scopes
-  and actual call-count checks for aliases consumed under different predicates.
+  selected-call stops without ordinary-build copies. Pure function-body
+  if/match branches retain nested lexical shadowing and selected alias/aggregate
+  return stops. Complete expression provenance in hardware SourceValues lowering,
+  actual call-count checks for aliases consumed under different predicates and
+  literal/empty-string return frames bypassed by folded length consumers.
   The supported runtime-sized native representation is currently Char[] handles;
   general dynamic arrays remain the separate host-service extension below.
   Keep debug-only aggregate inspection buffers faithful at source stops and

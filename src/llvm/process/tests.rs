@@ -14,21 +14,25 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
         function: span,
         call: span,
         result_span: span,
+        branches: Vec::new(),
         parameters: vec![
             siox::ir::ProcessValueBinding {
                 name: "value".into(),
                 span,
+                scope: None,
                 value: Some(ProcessValueId(0)),
             },
             siox::ir::ProcessValueBinding {
                 name: "unused".into(),
                 span,
+                scope: None,
                 value: Some(ProcessValueId(1)),
             },
         ],
         locals: vec![siox::ir::ProcessValueBinding {
             name: "local".into(),
             span,
+            scope: None,
             value: Some(ProcessValueId(3)),
         }],
     };
@@ -476,6 +480,7 @@ fn inactive_inline_debug_call_does_not_emit_its_body_or_frame() {
         function: span(),
         call: span(),
         result_span: span(),
+        branches: Vec::new(),
         parameters: Vec::new(),
         locals: Vec::new(),
     };

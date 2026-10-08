@@ -331,6 +331,13 @@ LLVM uses these for source parameter/return types and formal argument locations;
 it does not reevaluate call arguments or turn language aliases into copies.
 Debug-only reference slots point at existing persistent storage or its read-only
 inspection view, so parameters remain inspectable after writes and suspension.
+Expression-call bindings also retain their smallest owning lexical extent.
+Pure function-body `if`/`match` selections carry the selected return-expression
+spans separately from value IDs: returning an existing local or argument does
+not reuse its initializer's source line. These records are inspection metadata,
+remapped or pruned with existing nodes, never additional executable roots.
+Debug emission uses taken-arm blocks and finishes local inspection writes
+before later source statements; ordinary emission keeps its existing SSA path.
 The multithreading proposal extends these same CFGs and LLVM
 entries; it does not introduce a new compiler track.
 

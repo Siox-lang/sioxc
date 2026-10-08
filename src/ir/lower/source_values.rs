@@ -1123,6 +1123,19 @@ mod tests {
             None,
         );
         let input = arena.import_test_fragment(&Expr::Current(SignalId(0)), span, None);
+        let unused_selection = arena.push_node(
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::Select {
+                    condition: input,
+                    then_value: unused,
+                    else_value: input,
+                },
+            },
+            None,
+        );
         let root = arena.push_node(
             ProcessValue {
                 span,
@@ -1135,15 +1148,18 @@ mod tests {
                         function: span,
                         call: span,
                         result_span: span,
+                        branches: vec![(unused_selection, [span; 2])],
                         parameters: vec![
                             crate::ir::ProcessValueBinding {
                                 name: "unused".into(),
                                 span,
+                                scope: None,
                                 value: Some(unused),
                             },
                             crate::ir::ProcessValueBinding {
                                 name: "used".into(),
                                 span,
+                                scope: None,
                                 value: Some(input),
                             },
                         ],
@@ -1180,6 +1196,10 @@ mod tests {
         assert_eq!(*operand, ProcessValueId(0));
         assert_eq!(source.parameters[0].value, None);
         assert_eq!(source.parameters[1].value, Some(ProcessValueId(0)));
+        assert!(
+            source.branches.is_empty(),
+            "discarded source selections are not roots"
+        );
         assert!(arena.ir.validate(1).is_empty());
         let ProcessValueKind::InlineCall { source, .. } = &mut arena.ir.values[1].kind else {
             unreachable!()

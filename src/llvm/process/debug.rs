@@ -19,7 +19,9 @@ mod inline_values;
 mod logic;
 mod parameters;
 mod strings;
-pub(super) use inline_values::{capture_value, inline_value, ValueFrame, ValueLocationGuard};
+pub(super) use inline_values::{
+    capture_value, inline_value, selected_value, ValueFrame, ValueLocationGuard,
+};
 use logic::{LogicMirror, LogicSource};
 use parameters::ParameterLocation;
 use strings::StringMirror;
@@ -188,6 +190,17 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
         inline: Option<u32>,
     ) -> DILocation<'ctx> {
         let (line, column) = self.sources.line_col(span.file, span.start);
+        let (scope, caller) = self.source_scope(root, span, inline);
+        self.builder
+            .create_debug_location(self.context, line, column, scope, caller)
+    }
+
+    fn source_scope(
+        &self,
+        root: DISubprogram<'ctx>,
+        span: Span,
+        inline: Option<u32>,
+    ) -> (DIScope<'ctx>, Option<DILocation<'ctx>>) {
         let key = (root.as_mut_ptr() as usize, inline);
         let frame = inline.and_then(|id| {
             self.inline_scopes
@@ -217,13 +230,51 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                 .insert((key, span.file), file_scope);
             file_scope
         });
-        self.builder.create_debug_location(
-            self.context,
-            line,
-            column,
-            scope,
-            frame.and_then(|(_, call)| call),
-        )
+        (scope, frame.and_then(|(_, call)| call))
+    }
+
+    fn declare_lexical_scopes(
+        &self,
+        root: DISubprogram<'ctx>,
+        mut extents: Vec<(Option<u32>, Span)>,
+        frames: &[InlineFrame<'ctx>],
+    ) -> Vec<(Option<u32>, Span, DIScope<'ctx>)> {
+        extents.sort_by_key(|(inline, span)| {
+            (
+                *inline,
+                std::cmp::Reverse(span.end - span.start),
+                span.file.0,
+                span.start,
+            )
+        });
+        extents.dedup();
+        let mut scopes = Vec::<(Option<u32>, Span, DIScope<'ctx>)>::new();
+        for (inline, extent) in extents {
+            let base = inline
+                .map_or(root, |id| frames[id as usize].0)
+                .as_debug_info_scope();
+            let parent = scopes
+                .iter()
+                .filter(|(id, span, _)| *id == inline && contains(*span, extent))
+                .min_by_key(|(_, span, _)| span.end - span.start)
+                .map_or(base, |(_, _, scope)| *scope);
+            let (line, column) = self.sources.line_col(extent.file, extent.start);
+            scopes.push((
+                inline,
+                extent,
+                self.builder
+                    .create_lexical_block(parent, self.file(extent.file), line, column)
+                    .as_debug_info_scope(),
+            ));
+        }
+        for (inline, span, lexical) in &scopes {
+            self.lexical_scopes
+                .borrow_mut()
+                .entry((root.as_mut_ptr() as usize, *inline))
+                .or_default()
+                .push((*span, *lexical));
+        }
+        scopes
     }
 
     fn basic(&self, name: &str, width: u32, encoding: u32) -> DIType<'ctx> {
@@ -858,7 +909,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                 .map(|call| call.parent)
                 .collect(),
         );
-        let mut extents = process
+        let extents = process
             .locals
             .iter()
             .filter_map(|local| {
@@ -867,41 +918,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                     .map(|span| (process.local_inline_call(local.id), span))
             })
             .collect::<Vec<_>>();
-        extents.sort_by_key(|(inline, span)| {
-            (
-                *inline,
-                std::cmp::Reverse(span.end - span.start),
-                span.file.0,
-                span.start,
-            )
-        });
-        extents.dedup();
-        let mut scopes = Vec::<(Option<u32>, Span, DIScope<'ctx>)>::new();
-        for (inline, extent) in extents {
-            let base = inline
-                .map_or(scope, |id| frames[id as usize].0)
-                .as_debug_info_scope();
-            let parent = scopes
-                .iter()
-                .filter(|(id, span, _)| *id == inline && contains(*span, extent))
-                .min_by_key(|(_, span, _)| span.end - span.start)
-                .map_or(base, |(_, _, scope)| *scope);
-            let (line, column) = self.sources.line_col(extent.file, extent.start);
-            scopes.push((
-                inline,
-                extent,
-                self.builder
-                    .create_lexical_block(parent, self.file(extent.file), line, column)
-                    .as_debug_info_scope(),
-            ));
-        }
-        for (inline, span, lexical) in &scopes {
-            self.lexical_scopes
-                .borrow_mut()
-                .entry((key, *inline))
-                .or_default()
-                .push((*span, *lexical));
-        }
+        let scopes = self.declare_lexical_scopes(scope, extents, &frames);
         for (id, call) in process.inline_calls.iter().enumerate() {
             let location = self.location(scope, call.call, call.parent);
             self.inline_scopes.borrow_mut().get_mut(&key).unwrap()[id].1 = Some(location);
