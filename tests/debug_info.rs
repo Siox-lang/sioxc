@@ -6,7 +6,8 @@ use std::process::{Command, Output};
 fn success(output: Output) -> Output {
     assert!(
         output.status.success(),
-        "{}\n{}",
+        "{}\n{}\n{}",
+        output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -243,6 +244,7 @@ fn expression_branches_preserve_shadowing_and_selected_source_stops() {
     let source = directory.join("branches.siox");
     let text = r#"module debug_branches;
 struct Pair { pub first: integer, pub second: integer }
+#[inline(never)]
 fn choose(value: integer) -> integer {
     let local: integer = 100;
     if value > 0 {
@@ -255,11 +257,17 @@ fn choose(value: integer) -> integer {
     }
     return local; // branch outer return
 }
+#[inline(never)]
 fn alias(value: integer) -> integer {
     if value > 0 {
         return value; // alias true return
     }
     return value; // alias false return
+}
+#[inline(never)]
+fn typed(value: integer) -> integer {
+    let local: integer = value;
+    return local + 1; // declared integer return
 }
 fn choose_pair(value: integer) -> Pair {
     if value > 0 {
@@ -285,20 +293,254 @@ fn choose_match(value: Logic) -> integer {
 impl T {
     stimulus: process {
         let input: integer = 5;
+        let inner_input: integer = input - 3;
+        let negative_input: integer = 0 - input;
         let selected: integer = choose(input); // branch true call
-        let inner: integer = choose(input - 3); // branch inner call
-        let fallback: integer = choose(0 - input); // branch false call
+        let inner: integer = choose(inner_input); // branch inner call
+        let fallback: integer = choose(negative_input); // branch false call
         let positive: integer = alias(input); // alias true call
-        let negative: integer = alias(0 - input); // alias false call
+        let negative: integer = alias(negative_input); // alias false call
         let first: Pair = choose_pair(input); // pair true call
         let second: Pair = choose_pair(0 - input); // pair false call
         let flag: Logic = '1';
         let matched: integer = choose_match(flag); // match true call
         let unmatched: integer = choose_match(not flag); // match false call
+        let narrow: integer<-8..7> = -3;
+        let narrow_result: integer = typed(narrow); // declared integer call
+        let next_result: integer = typed(0 - narrow); // declared integer second call
         assert!(selected == 35 and inner == 12 and fallback == 100, "branch results");
         assert!(positive == 5 and negative == -5, "same operand returns");
         assert!(first.first == 5 and first.second == 6 and second.first == -5 and second.second == 100, "aggregate selection results");
         assert!(matched == 7 and unmatched == 100, "match results");
+        assert!(narrow_result == -2 and next_result == 4, "shared declared integer results");
+    }
+}"#;
+    std::fs::write(&source, text).unwrap();
+    let debug = directory.join("debug.bin");
+    let ordinary = directory.join("ordinary.bin");
+    for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+        command.args(["--std", "std", "--test"]);
+        if debugging {
+            command.arg("--debug");
+        }
+        success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+        success(
+            Command::new(binary)
+                .arg("-o")
+                .arg(binary.with_extension("vcd"))
+                .output()
+                .unwrap(),
+        );
+    }
+    assert_eq!(
+        std::fs::read(debug.with_extension("vcd")).unwrap(),
+        std::fs::read(ordinary.with_extension("vcd")).unwrap()
+    );
+    if Command::new("llvm-dwarfdump")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        success(
+            Command::new("llvm-dwarfdump")
+                .arg("--verify")
+                .arg(&debug)
+                .output()
+                .unwrap(),
+        );
+    }
+    if Command::new("nm").arg("--version").output().is_ok() {
+        let symbols = success(Command::new("nm").arg(&debug).output().unwrap());
+        let symbols = String::from_utf8_lossy(&symbols.stdout);
+        for function in ["choose", "alias"] {
+            assert_eq!(
+                symbols
+                    .lines()
+                    .filter(|line| {
+                        line.split_whitespace().last().is_some_and(|name| {
+                            name.starts_with("sx.fn.") && name.ends_with(&format!(".{function}"))
+                        })
+                    })
+                    .count(),
+                1,
+                "repeated calls must share one native source body: {symbols}"
+            );
+        }
+    }
+    if Command::new("gdb").arg("--version").output().is_ok() {
+        let line = |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
+        let python = format!(
+            r#"import gdb
+stops = [
+    ('choose', 5, 35, {nested_line}, {true_line}),
+    ('choose', 2, 12, {inner_line}, {inner_call_line}),
+    ('choose', -5, 100, {outer_line}, {false_line}),
+    ('alias', 5, None, {alias_true_return}, {alias_true_call}),
+    ('alias', -5, None, {alias_false_return}, {alias_false_call}),
+    ('choose_pair', 5, (5, 6), {pair_true_return}, {pair_true_call}),
+    ('choose_pair', -5, (-5, 100), {pair_false_return}, {pair_false_call}),
+    ('choose_match', None, 7, {match_true_return}, {match_true_call}),
+    ('choose_match', None, 100, {match_false_return}, {match_false_call}),
+    ('typed', -3, -3, {typed_return}, {typed_call}),
+    ('typed', 3, 3, {typed_return}, {typed_second_call}),
+]
+breakpoints = [gdb.Breakpoint({source:?} + ':' + str(stop[3])) for stop in stops]
+gdb.execute('run')
+for function, expected, local, return_line, call_line in stops:
+    actual = gdb.selected_frame()
+    assert actual.name() == 'debug_branches::' + function, actual.name()
+    assert actual.find_sal().line == return_line, (actual.find_sal().line, return_line)
+    if expected is not None:
+        assert int(gdb.parse_and_eval('value')) == expected, str(gdb.parse_and_eval('value'))
+    if isinstance(local, tuple):
+        assert int(gdb.parse_and_eval('local.first')) == local[0], gdb.execute('info locals', to_string=True)
+        assert int(gdb.parse_and_eval('local.second')) == local[1], gdb.execute('info locals', to_string=True)
+    elif local is not None:
+        assert int(gdb.parse_and_eval('local')) == local, gdb.execute('info locals', to_string=True)
+    if function == 'typed':
+        assert int(gdb.parse_and_eval('sizeof(value)')) == 8, gdb.execute('ptype value', to_string=True)
+        assert int(gdb.parse_and_eval('sizeof(local)')) == 8, gdb.execute('ptype local', to_string=True)
+    assert actual.older().name() == 'T::stimulus'
+    assert actual.older().find_sal().line == call_line
+    gdb.execute('continue')
+assert int(gdb.parse_and_eval('$_exitcode')) == 0, 'unselected branch produced an extra stop'
+"#,
+            source = source.to_string_lossy(),
+            nested_line = line("branch nested return"),
+            inner_line = line("branch inner return"),
+            outer_line = line("branch outer return"),
+            true_line = line("branch true call"),
+            inner_call_line = line("branch inner call"),
+            false_line = line("branch false call"),
+            alias_true_return = line("alias true return"),
+            alias_true_call = line("alias true call"),
+            alias_false_return = line("alias false return"),
+            alias_false_call = line("alias false call"),
+            pair_true_return = line("pair true return"),
+            pair_true_call = line("pair true call"),
+            pair_false_return = line("pair false return"),
+            pair_false_call = line("pair false call"),
+            match_true_return = line("match true return"),
+            match_true_call = line("match true call"),
+            match_false_return = line("match false return"),
+            match_false_call = line("match false call"),
+            typed_return = line("declared integer return"),
+            typed_call = line("declared integer call"),
+            typed_second_call = line("declared integer second call"),
+        );
+        success(
+            Command::new("gdb")
+                .args(["-nx", "-q", "--batch"])
+                .arg(&debug)
+                .args([
+                    "-ex",
+                    "set disable-randomization off",
+                    "-ex",
+                    "set breakpoint pending off",
+                    "-ex",
+                    &format!("python {python}"),
+                ])
+                .output()
+                .unwrap(),
+        );
+    } else {
+        eprintln!("GDB unavailable: branch native execution checked, debugger probe skipped");
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn hardware_expression_calls_keep_source_frames() {
+    let directory =
+        std::env::temp_dir().join(format!("siox_dwarf_hardware_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("hardware.siox");
+    let text = r#"module debug_hardware;
+use std::bits::{unsigned, signed};
+fn bump(value: integer) -> integer {
+    let local: integer = value + 1;
+    return local + 1; // hardware leaf return
+}
+fn outer(value: integer) -> integer {
+    let local: integer = 100;
+    let computed: integer = bump(value); // hardware nested call
+    return computed + local; // hardware outer return
+}
+fn choose(value: integer) -> integer {
+    let local: integer = value + 1;
+    if value > 0 {
+        let local: integer = value + 2;
+        return local; // hardware selected return
+    }
+    return local + 20; // hardware fallback return
+}
+fn inspect(value: unsigned[81], gain: real, negative: signed[81]) -> integer {
+    let wide: unsigned[81] = value;
+    let floating: real = gain;
+    let signed_value: signed[81] = negative;
+    return integer(floating) + if wide == 18446744073709551617 and signed_value == -2 { 0 } else { 100 }; // hardware typed return
+}
+fn sample(value: integer) -> integer {
+    let local: integer = value + 10;
+    return local; // hardware event return
+}
+fn twice(value: integer) -> integer { return value + value; }
+entity Narrow { value: integer<-8..7> in, result: integer out }
+impl Narrow { result = twice(twice(twice(value))); }
+entity Dut {
+    value: integer in,
+    result: integer out,
+    selected: integer out
+}
+impl Dut {
+    result = outer(value); // hardware source assignment
+    selected = choose(value); // hardware selected assignment
+}
+entity Typed {
+    value: unsigned[81] in,
+    gain: real in,
+    negative: signed[81] in,
+    result: integer out
+}
+impl Typed {
+    result = inspect(value, gain, negative); // hardware typed assignment
+}
+entity Register { clk: Bit in, value: integer in, result: integer out }
+impl Register {
+    if clk.rising() {
+        result = sample(value); // hardware event assignment
+    }
+}
+#[test] entity T {}
+impl T {
+    let input: integer = 5;
+    let dut: Dut = { .value = input };
+    let other: Dut = { .value = 10 };
+    let typed: Typed = { .value = 18446744073709551617, .gain = 1.5, .negative = -2 };
+    let small: integer<-8..7> = -3;
+    let narrow: Narrow = { .value = small };
+    let clock: Bit = '0';
+    let reg: Register = { .clk = clock, .value = input };
+    stimulus: process {
+        await 1ns;
+        assert!(dut.result == 107 and dut.selected == 7, "first hardware result");
+        assert!(typed.result == 1 and other.result == 112 and other.selected == 12, "typed and shared helper results");
+        assert!(narrow.result == -24, "nested arguments retain consumer widths and signs");
+        input = 6;
+        small = 3;
+        clock = '1';
+        await 1ns;
+        assert!(dut.result == 108 and dut.selected == 8, "updated hardware result");
+        assert!(narrow.result == 24, "nested formats reevaluate after input changes");
+        assert!(reg.result == 16, "event call result");
+        input = -6;
+        clock = '0';
+        await 1ns;
+        assert!(dut.result == 96 and dut.selected == 15, "fallback hardware result");
+        clock = '1';
+        await 1ns;
+        assert!(reg.result == 4, "updated event call result");
     }
 }"#;
     std::fs::write(&source, text).unwrap();
@@ -340,54 +582,109 @@ impl T {
         let line = |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
         let python = format!(
             r#"import gdb
-stops = [
-    ('choose', 5, 35, {nested_line}, {true_line}),
-    ('choose', 2, 12, {inner_line}, {inner_call_line}),
-    ('choose', -5, 100, {outer_line}, {false_line}),
-    ('alias', 5, None, {alias_true_return}, {alias_true_call}),
-    ('alias', -5, None, {alias_false_return}, {alias_false_call}),
-    ('choose_pair', 5, (5, 6), {pair_true_return}, {pair_true_call}),
-    ('choose_pair', -5, (-5, 100), {pair_false_return}, {pair_false_call}),
-    ('choose_match', None, 7, {match_true_return}, {match_true_call}),
-    ('choose_match', None, 100, {match_false_return}, {match_false_call}),
-]
-breakpoints = [gdb.Breakpoint({source:?} + ':' + str(stop[3])) for stop in stops]
+seen = set()
+owners = set()
+events = set()
+typed_seen = False
+failures = []
+class Check(gdb.Breakpoint):
+    def stop(self):
+        try:
+            self.check()
+        except Exception as error:
+            failures.append(str(error))
+        return False
+class Selection(Check):
+    def check(self):
+        frame = gdb.selected_frame()
+        assert frame.name() == 'debug_hardware::choose', frame.name()
+        value = int(gdb.parse_and_eval('value'))
+        expected_line = {selected_return} if value > 0 else {fallback_return}
+        assert frame.find_sal().line == expected_line, (value, frame.find_sal().line, expected_line)
+        local = int(gdb.parse_and_eval('local'))
+        assert local == value + (2 if value > 0 else 1), (value, local, gdb.execute('ptype local', to_string=True))
+        assert frame.older().find_sal().line == {selected_assignment}
+        owner = frame.older().name().removesuffix('(void)')
+        assert owner in ['T::dut::<hardware:T.dut.selected>', 'T::other::<hardware:T.other.selected>'], owner
+        if value == 10:
+            assert owner == 'T::other::<hardware:T.other.selected>', owner
+        elif value != 0:
+            assert owner == 'T::dut::<hardware:T.dut.selected>', owner
+        owners.add(owner)
+        seen.add(value)
+        return False
+Selection({source:?} + ':{selected_return}')
+Selection({source:?} + ':{fallback_return}')
+class Typed(Check):
+    def check(self):
+        global typed_seen
+        frame = gdb.selected_frame()
+        assert frame.name() == 'debug_hardware::inspect', frame.name()
+        assert str(frame.function().type.target()) == 'integer', frame.function().type
+        assert frame.older().find_sal().line == {typed_assignment}
+        assert frame.older().name().removesuffix('(void)') == 'T::typed::<hardware:T.typed.result>', frame.older().name()
+        value = int(gdb.parse_and_eval('value'))
+        gain = float(gdb.parse_and_eval('gain'))
+        negative = int(gdb.parse_and_eval('negative'))
+        assert value in [0, (1 << 64) + 1], value
+        assert gain in [0, 1.5], gain
+        assert negative in [0, -2], negative
+        assert int(gdb.parse_and_eval('wide')) == value
+        assert float(gdb.parse_and_eval('floating')) == gain
+        assert int(gdb.parse_and_eval('signed_value')) == negative
+        typed_seen |= value == (1 << 64) + 1 and gain == 1.5 and negative == -2
+        return False
+class Event(Check):
+    def check(self):
+        frame = gdb.selected_frame()
+        assert frame.name() == 'debug_hardware::sample', frame.name()
+        assert frame.older().find_sal().line == {event_assignment}
+        assert frame.older().name().removesuffix('(void)') == 'T::reg::<hardware:T.reg.result>', frame.older().name()
+        value = int(gdb.parse_and_eval('value'))
+        assert int(gdb.parse_and_eval('local')) == value + 10
+        events.add(value)
+        return False
+Typed({source:?} + ':{typed_return}')
+Event({source:?} + ':{event_return}')
+leaf = gdb.Breakpoint({source:?} + ':{leaf_return}')
+outer = gdb.Breakpoint({source:?} + ':{outer_return}')
 gdb.execute('run')
-for function, expected, local, return_line, call_line in stops:
-    actual = gdb.selected_frame()
-    assert actual.name() == 'debug_branches::' + function, actual.name()
-    assert actual.find_sal().line == return_line, (actual.find_sal().line, return_line)
-    if expected is not None:
-        assert int(gdb.parse_and_eval('value')) == expected, str(gdb.parse_and_eval('value'))
-    if isinstance(local, tuple):
-        assert int(gdb.parse_and_eval('local.first')) == local[0], gdb.execute('info locals', to_string=True)
-        assert int(gdb.parse_and_eval('local.second')) == local[1], gdb.execute('info locals', to_string=True)
-    elif local is not None:
-        assert int(gdb.parse_and_eval('local')) == local, gdb.execute('info locals', to_string=True)
-    assert actual.older().name() == 'T::stimulus'
-    assert actual.older().find_sal().line == call_line
-    gdb.execute('continue')
-assert int(gdb.parse_and_eval('$_exitcode')) == 0, 'unselected branch produced an extra stop'
+frame = gdb.selected_frame()
+assert frame.name() == 'debug_hardware::bump', frame.name()
+assert frame.find_sal().line == {leaf_return}
+assert int(gdb.parse_and_eval('value')) == 5
+assert int(gdb.parse_and_eval('local')) == 6
+assert frame.older().name() == 'debug_hardware::outer', frame.older().name()
+assert frame.older().find_sal().line == {nested_call}
+leaf.delete()
+gdb.execute('continue')
+frame = gdb.selected_frame()
+assert frame.name() == 'debug_hardware::outer', frame.name()
+assert frame.find_sal().line == {outer_return}
+assert int(gdb.parse_and_eval('computed')) == 7
+assert int(gdb.parse_and_eval('local')) == 100
+assert frame.older().find_sal().line == {assignment}, frame.older().find_sal().line
+outer.delete()
+gdb.execute('continue')
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+assert not failures, failures
+assert owners == {{'T::dut::<hardware:T.dut.selected>', 'T::other::<hardware:T.other.selected>'}}, owners
+assert {{5, 6, -6, 10}} <= seen <= {{0, 5, 6, -6, 10}}, seen
+assert events == {{6, -6}}, events
+assert typed_seen
 "#,
             source = source.to_string_lossy(),
-            nested_line = line("branch nested return"),
-            inner_line = line("branch inner return"),
-            outer_line = line("branch outer return"),
-            true_line = line("branch true call"),
-            inner_call_line = line("branch inner call"),
-            false_line = line("branch false call"),
-            alias_true_return = line("alias true return"),
-            alias_true_call = line("alias true call"),
-            alias_false_return = line("alias false return"),
-            alias_false_call = line("alias false call"),
-            pair_true_return = line("pair true return"),
-            pair_true_call = line("pair true call"),
-            pair_false_return = line("pair false return"),
-            pair_false_call = line("pair false call"),
-            match_true_return = line("match true return"),
-            match_true_call = line("match true call"),
-            match_false_return = line("match false return"),
-            match_false_call = line("match false call"),
+            leaf_return = line("hardware leaf return"),
+            outer_return = line("hardware outer return"),
+            nested_call = line("hardware nested call"),
+            assignment = line("hardware source assignment"),
+            selected_return = line("hardware selected return"),
+            fallback_return = line("hardware fallback return"),
+            selected_assignment = line("hardware selected assignment"),
+            typed_return = line("hardware typed return"),
+            typed_assignment = line("hardware typed assignment"),
+            event_return = line("hardware event return"),
+            event_assignment = line("hardware event assignment"),
         );
         success(
             Command::new("gdb")
@@ -405,7 +702,7 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0, 'unselected branch produced a
                 .unwrap(),
         );
     } else {
-        eprintln!("GDB unavailable: branch native execution checked, debugger probe skipped");
+        eprintln!("GDB unavailable: hardware native execution checked, debugger probe skipped");
     }
     std::fs::remove_dir_all(directory).unwrap();
 }

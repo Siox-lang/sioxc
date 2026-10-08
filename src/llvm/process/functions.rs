@@ -82,12 +82,38 @@ pub(super) fn shared_call<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
-    // Shared native bodies do not yet carry source frames. Keep the existing
-    // source expansion for debugging until those bodies have faithful DWARF.
-    if cache.debug.is_some() || !shared_call_eligible(design, call, cache.meta_free) {
+    if !shared_call_eligible(design, call, cache.meta_free) {
         return None;
     }
     let shared = design.process_ir.functions.get(call.function.0 as usize)?;
+    if cache.debug.is_some() {
+        if let Some(active) = active {
+            let width = design
+                .process_ir
+                .values
+                .get(call.value.0 as usize)?
+                .bit_width?;
+            return debug::active_value(
+                context,
+                builder,
+                width,
+                active,
+                cache,
+                |builder, cache| {
+                    shared_call(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        call,
+                        None,
+                        index_sites,
+                        cache,
+                    )
+                },
+            );
+        }
+    }
     let function = shared_function(context, module, design, shared, index_sites, cache)?;
     // Each argument at its parameter's width, extended as its own type is.
     let mut arguments = Vec::with_capacity(call.arguments.len());
@@ -154,20 +180,64 @@ fn shared_function<'ctx>(
     let builder = context.create_builder();
     builder.position_at_end(context.append_basic_block(function, "entry"));
     let mut body = ProcessValueCache::new(cache.activity_sensitive, cache.meta_free);
+    body.debug = cache.debug;
+    body.debug_root = cache.debug_root;
     for (index, parameter) in shared.parameters.iter().enumerate() {
         let argument = function.get_nth_param(index as u32)?.into_int_value();
         body.parameters.insert(*parameter, argument);
     }
-    let returned = process_value(
-        context,
-        module,
-        &builder,
-        design,
-        shared.result,
-        None,
-        index_sites,
-        &mut body,
-    )
+    let returned = if body.debug.is_some() {
+        if let ProcessValueKind::InlineCall { operand, source } =
+            &design.process_ir.values[shared.result.0 as usize].kind
+        {
+            debug::inline_body(
+                module,
+                &builder,
+                design,
+                function,
+                *operand,
+                source,
+                &mut body,
+                |builder, cache, active| {
+                    process_value(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        *operand,
+                        active,
+                        index_sites,
+                        cache,
+                    )
+                },
+            )
+        } else {
+            // Hand-built IR may have no source-call descriptor. Do not invent
+            // formal names or source statements for a generated native body.
+            body.source_location = body.debug?.generated_location(&builder, shared.span);
+            process_value(
+                context,
+                module,
+                &builder,
+                design,
+                shared.result,
+                None,
+                index_sites,
+                &mut body,
+            )
+        }
+    } else {
+        process_value(
+            context,
+            module,
+            &builder,
+            design,
+            shared.result,
+            None,
+            index_sites,
+            &mut body,
+        )
+    }
     .and_then(|result| builder.build_return(Some(&result)).ok());
     if returned.is_none() {
         // SAFETY: the function was created above and nothing calls it yet.

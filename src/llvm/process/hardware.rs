@@ -153,9 +153,13 @@ impl HardwareValueFacts {
         active: Option<IntValue<'ctx>>,
         index_sites: &HashMap<IndexSite, u32>,
         values: &mut HardwareValueCache<'ctx>,
+        debug: Option<&DebugInfo<'ctx, '_>>,
+        source_location: Option<inkwell::debug_info::DILocation<'ctx>>,
     ) -> Option<IntValue<'ctx>> {
         let mut cache = ProcessValueCache::new(&self.activity_sensitive, &self.supported.meta_free);
         cache.hardware_calls = true;
+        cache.debug = debug;
+        cache.source_location = source_location;
         cache.evaluated_calls = std::mem::take(&mut values.evaluated_calls);
         cache.emitted = std::mem::take(&mut values.emitted);
         cache.contextual = std::mem::take(&mut values.contextual);

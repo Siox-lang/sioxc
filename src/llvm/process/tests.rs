@@ -14,18 +14,21 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
         function: span,
         call: span,
         result_span: span,
+        result_layout: None,
         branches: Vec::new(),
         parameters: vec![
             siox::ir::ProcessValueBinding {
                 name: "value".into(),
                 span,
                 scope: None,
+                layout: None,
                 value: Some(ProcessValueId(0)),
             },
             siox::ir::ProcessValueBinding {
                 name: "unused".into(),
                 span,
                 scope: None,
+                layout: None,
                 value: Some(ProcessValueId(1)),
             },
         ],
@@ -33,6 +36,7 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
             name: "local".into(),
             span,
             scope: None,
+            layout: None,
             value: Some(ProcessValueId(3)),
         }],
     };
@@ -45,9 +49,9 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
     let design = Design {
         process_ir: ProcessIr {
             values: vec![
-                node(ProcessValueKind::Signal {
-                    signals: vec![SignalId(0)],
-                    state: ProcessSignalState::Current,
+                node(ProcessValueKind::Unary {
+                    operation: ProcessUnaryOp::Neg,
+                    operand: ProcessValueId(8),
                 }),
                 node(ProcessValueKind::ForeignCall {
                     name: "must_not_run".into(),
@@ -61,11 +65,26 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
                 node(ProcessValueKind::Binary {
                     operation: ProcessBinaryOp::Add,
                     left: ProcessValueId(0),
-                    right: ProcessValueId(2),
+                    right: ProcessValueId(7),
                 }),
                 node(ProcessValueKind::InlineCall {
                     operand: ProcessValueId(3),
                     source: Box::new(source),
+                }),
+                node(ProcessValueKind::Number(ProcessNumber::Integer(vec![2]))),
+                node(ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::Eq,
+                    left: ProcessValueId(0),
+                    right: ProcessValueId(2),
+                }),
+                node(ProcessValueKind::Select {
+                    condition: ProcessValueId(6),
+                    then_value: ProcessValueId(2),
+                    else_value: ProcessValueId(5),
+                }),
+                node(ProcessValueKind::Signal {
+                    signals: vec![SignalId(0)],
+                    state: ProcessSignalState::Current,
                 }),
             ],
             ..ProcessIr::default()
@@ -95,7 +114,11 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
     let input = function.get_first_param().unwrap().into_int_value();
     let mut cache = ProcessValueCache::new(&[false; 5], &[true; 5]);
     cache.debug = Some(&debug);
-    cache.parameters.insert(ProcessValueId(0), input);
+    cache.emitted.insert((ProcessValueId(8), None, None), input);
+    cache.emitted.insert(
+        (ProcessValueId(0), None, None),
+        builder.build_int_neg(input, "argument").unwrap(),
+    );
     // Different selected consumers must reuse the function definition, never
     // recursively duplicate its body. Width formats remain distinct.
     for width in [64, 128] {
@@ -128,6 +151,22 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
     debug.finish(&module, &design);
     module.verify().unwrap();
     let llvm = module.print_to_string().to_string();
+    let signatures = llvm
+        .lines()
+        .filter(|line| line.starts_with("define internal") && line.contains("@sx.debug.call.4"))
+        .collect::<Vec<_>>();
+    assert!(
+        signatures
+            .iter()
+            .any(|line| line.contains("i64 %") && line.contains("i65 %")),
+        "one body must retain distinct arithmetic/comparison argument formats: {llvm}"
+    );
+    assert!(
+        signatures
+            .iter()
+            .any(|line| line.contains("i128 %") && line.contains("i65 %")),
+        "widened arithmetic must not change the comparison argument format: {llvm}"
+    );
     assert!(
         !llvm.contains("@must_not_run"),
         "metadata must not execute unused arguments: {llvm}"
@@ -480,6 +519,7 @@ fn inactive_inline_debug_call_does_not_emit_its_body_or_frame() {
         function: span(),
         call: span(),
         result_span: span(),
+        result_layout: None,
         branches: Vec::new(),
         parameters: Vec::new(),
         locals: Vec::new(),

@@ -20,6 +20,7 @@ struct ValueBinding<'ctx> {
     reference: PointerValue<'ctx>,
     buffer: GlobalValue<'ctx>,
     inspection: ValueInspection<'ctx>,
+    signed: bool,
     parameter: bool,
     captured: Cell<Option<(IntValue<'ctx>, BasicBlock<'ctx>)>>,
 }
@@ -27,6 +28,102 @@ struct ValueBinding<'ctx> {
 enum ValueInspection<'ctx> {
     Packed(SourceLayout),
     String(u32, FunctionValue<'ctx>),
+}
+
+/// Discover the native ABI from actual consumer requests, not inspection types.
+/// Temporary entry phis are replaced by formal arguments before verification;
+/// they never execute and introduce no argument buffers or simulation copies.
+pub(in crate::llvm::process) struct ValueArguments<'ctx> {
+    ids: std::collections::HashSet<ProcessValueId>,
+    values: Vec<(ValueFunctionKey, IntValue<'ctx>)>,
+}
+
+pub(in crate::llvm::process) fn argument_value<'ctx>(
+    builder: &Builder<'ctx>,
+    design: &Design,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+    mut key: ValueFunctionKey,
+) -> Option<IntValue<'ctx>> {
+    let arguments = cache.debug_arguments.as_mut()?;
+    if !arguments.ids.contains(&key.0) {
+        return None;
+    }
+    let (id, width, signed) = (key.0, key.1, key.2);
+    if key.3.is_none() {
+        if let Some(width) = argument_boundary_width(design, id) {
+            key.1 = width;
+            key.2 = false;
+        }
+    }
+    let existing = arguments
+        .values
+        .iter()
+        .find(|(format, _)| *format == key)
+        .map(|(_, value)| *value);
+    let context = cache.debug?.context;
+    let value = if let Some(value) = existing {
+        value
+    } else {
+        let entry = builder
+            .get_insert_block()?
+            .get_parent()?
+            .get_first_basic_block()?;
+        let argument_builder = context.create_builder();
+        if let Some(first) = entry.get_first_instruction() {
+            argument_builder.position_before(&first);
+        } else {
+            argument_builder.position_at_end(entry);
+        }
+        let ty = context
+            .custom_width_int_type(std::num::NonZeroU32::new(key.1)?)
+            .ok()?;
+        let value = argument_builder
+            .build_phi(ty, "debug.argument.format")
+            .ok()?
+            .as_basic_value()
+            .into_int_value();
+        arguments.values.push((key, value));
+        value
+    };
+    if signed && process_value_is_signed(design, id) {
+        fit_signed(builder, value, width)
+    } else {
+        fit(builder, value, width)
+    }
+}
+
+fn argument_boundary_width(design: &Design, id: ProcessValueId) -> Option<u32> {
+    let mut boundary = id;
+    while let ProcessValueKind::InlineCall { operand, .. } =
+        &design.process_ir.values.get(boundary.0 as usize)?.kind
+    {
+        boundary = *operand;
+    }
+    let node = design.process_ir.values.get(boundary.0 as usize)?;
+    // These operands already have an executable width boundary. The ordinary
+    // emitter reads them once at that width and only fits the resulting bits;
+    // passing a new ABI argument for every consumer needlessly re-expands the
+    // caller. Contextual arithmetic and expected-layout conversions stay exact.
+    if node.bit_width == design.process_ir.values[id.0 as usize].bit_width
+        && process_value_is_signed(design, boundary) == process_value_is_signed(design, id)
+        && matches!(
+            node.kind,
+            ProcessValueKind::Number(_)
+                | ProcessValueKind::BitString { .. }
+                | ProcessValueKind::Char(_)
+                | ProcessValueKind::Signal { .. }
+                | ProcessValueKind::Local { .. }
+                | ProcessValueKind::Storage(_)
+                | ProcessValueKind::Parameter { .. }
+                | ProcessValueKind::RawResize { .. }
+                | ProcessValueKind::BitSlice { .. }
+                | ProcessValueKind::PackedSlice { .. }
+        )
+    {
+        node.bit_width
+    } else {
+        None
+    }
 }
 
 impl DebugInfo<'_, '_> {
@@ -98,98 +195,113 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
     let Some(debug) = cache.debug else {
         return emit(builder, cache, active);
     };
-    if active.is_some_and(|active| active.get_zero_extended_constant() == Some(0)) {
-        return Some(
-            debug
-                .context
-                .custom_width_int_type(std::num::NonZeroU32::new(width)?)
-                .ok()?
-                .const_zero(),
+    if let Some(active) = active {
+        return active_value(
+            debug.context,
+            builder,
+            width,
+            active,
+            cache,
+            |builder, cache| {
+                inline_value(
+                    module,
+                    builder,
+                    design,
+                    id,
+                    operand,
+                    source,
+                    width,
+                    signed,
+                    layout,
+                    None,
+                    index_sites,
+                    cache,
+                    emit,
+                )
+            },
         );
     }
-    let active = active.filter(|active| active.get_zero_extended_constant() != Some(1));
-    if let Some(active) = active {
-        let previous = builder.get_insert_block()?;
-        let function = previous.get_parent()?;
-        let execute = debug
+    let key = (id, width, signed, layout.cloned());
+    let existing = debug.value_functions.borrow().get(&key).cloned();
+    let (function, formats) = if let Some(existing) = existing {
+        existing
+    } else {
+        let ty = debug
             .context
-            .append_basic_block(function, "debug.call.execute");
-        let join = debug
-            .context
-            .append_basic_block(function, "debug.call.join");
-        builder
-            .build_conditional_branch(active, execute, join)
+            .custom_width_int_type(std::num::NonZeroU32::new(width)?)
             .ok()?;
-        let dominating = cache.dominating_values();
-        builder.position_at_end(execute);
-        let returned = inline_value(
+        // Let the common emitter request its real operand formats once. A
+        // source argument can be used at several widths inside this body;
+        // capturing it at its minimum width first changes contextual arithmetic.
+        let draft = module.add_function(
+            &format!("sx.debug.call.{}", id.0),
+            ty.fn_type(&[], false),
+            Some(Linkage::Internal),
+        );
+        let body_builder = debug.context.create_builder();
+        body_builder.position_at_end(debug.context.append_basic_block(draft, "entry"));
+        let mut body_cache = ProcessValueCache::new(cache.activity_sensitive, cache.meta_free);
+        body_cache.debug = Some(debug);
+        body_cache.debug_root = cache.debug_root;
+        body_cache.hardware_calls = cache.hardware_calls;
+        body_cache.debug_arguments = Some(ValueArguments {
+            ids: source
+                .parameters
+                .iter()
+                .filter_map(|parameter| parameter.value)
+                // Literal strings, including zero-storage strings, are still
+                // compile-time operands rather than an unconstrained ABI.
+                .filter(|value| process_string(design, *value).is_none())
+                .collect(),
+            values: Vec::new(),
+        });
+        let returned = inline_body(
             module,
-            builder,
+            &body_builder,
             design,
-            id,
+            draft,
             operand,
             source,
-            width,
-            signed,
-            layout,
-            None,
-            index_sites,
-            cache,
+            &mut body_cache,
             emit,
         )?;
-        let exit = builder.get_insert_block()?;
-        builder.build_unconditional_branch(join).ok()?;
-        builder.position_at_end(join);
-        cache.retain_dominating(&dominating);
-        let result = builder
-            .build_phi(returned.get_type(), "debug.call.result")
-            .ok()?;
-        result.add_incoming(&[
-            (&returned.get_type().const_zero(), previous),
-            (&returned, exit),
-        ]);
-        return Some(result.as_basic_value().into_int_value());
-    }
-    // A binding retained elsewhere in the arena need not be used by this
-    // callee. Metadata must never introduce executable roots. Stop at the
-    // source argument boundaries, not their caller-side subexpressions.
-    let parameters = source
-        .parameters
-        .iter()
-        .filter_map(|parameter| parameter.value)
-        .collect::<std::collections::HashSet<_>>();
-    let mut needed = std::collections::HashSet::new();
-    let mut visited = std::collections::HashSet::new();
-    let mut pending = if parameters.is_empty() {
-        Vec::new()
-    } else {
-        vec![operand]
+        body_builder.build_return(Some(&returned)).ok()?;
+        let values = body_cache.debug_arguments.take()?.values;
+        let types = values
+            .iter()
+            .map(|(_, value)| value.get_type().into())
+            .collect::<Vec<_>>();
+        let name = draft.get_name().to_string_lossy().into_owned();
+        draft.as_global_value().set_name(&format!("{name}.draft"));
+        let function =
+            module.add_function(&name, ty.fn_type(&types, false), Some(Linkage::Internal));
+        function.set_subprogram(draft.get_subprogram()?);
+        for (index, (_, placeholder)) in values.iter().enumerate() {
+            placeholder
+                .replace_all_uses_with(function.get_nth_param(index as u32)?.into_int_value());
+            placeholder.as_instruction()?.erase_from_basic_block();
+        }
+        for block in draft.get_basic_blocks() {
+            block.remove_from_function().ok()?;
+            function.append_existing_basic_block(block);
+        }
+        // No call or executable reference to the draft has been emitted.
+        unsafe { draft.delete() };
+        let formats = values
+            .into_iter()
+            .map(|(format, _)| format)
+            .collect::<Vec<_>>();
+        debug
+            .value_functions
+            .borrow_mut()
+            .insert(key, (function, formats.clone()));
+        (function, formats)
     };
-    while let Some(value) = pending.pop() {
-        if !visited.insert(value) {
-            continue;
-        }
-        if parameters.contains(&value) {
-            needed.insert(value);
-        } else {
-            pending.extend(crate::ir::process_value_dependencies(
-                &design.process_ir.values.get(value.0 as usize)?.kind,
-            ));
-        }
-    }
-    let mut arguments = Vec::new();
-    let mut parameters = Vec::new();
-    for parameter in &source.parameters {
-        let Some(value) = parameter.value else {
-            continue;
-        };
-        // Literal strings remain compile-time operands, including empty
-        // zero-storage values. The body already owns their contents; an
-        // unconstrained source type is not an ABI for their literal bits.
-        if !needed.contains(&value) || process_string(design, value).is_some() {
-            continue;
-        }
-        let argument = if let Some(layout) = debug.value_debug_layout(design, value) {
+    // Metadata never requests arguments. Emit only formats actually consumed
+    // by the body, through exactly the same paths as an ordinary inline call.
+    let mut arguments = Vec::with_capacity(formats.len());
+    for (value, width, signed, layout) in formats {
+        let argument = if let Some(layout) = layout {
             process_value_in_layout(
                 debug.context,
                 module,
@@ -202,61 +314,21 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
                 cache,
             )?
         } else {
-            process_value(
+            process_value_at(
                 debug.context,
                 module,
                 builder,
                 design,
                 value,
+                width,
+                signed,
                 None,
                 index_sites,
                 cache,
             )?
         };
         arguments.push(argument.into());
-        parameters.push((value, argument.get_type().into()));
     }
-    let key = (id, width, signed, layout.cloned());
-    let existing = debug.value_functions.borrow().get(&key).copied();
-    let function = if let Some(function) = existing {
-        function
-    } else {
-        let ty = debug
-            .context
-            .custom_width_int_type(std::num::NonZeroU32::new(width)?)
-            .ok()?;
-        let types = parameters.iter().map(|(_, ty)| *ty).collect::<Vec<_>>();
-        let function = module.add_function(
-            &format!("sx.debug.call.{}", id.0),
-            ty.fn_type(&types, false),
-            Some(Linkage::Internal),
-        );
-        debug.value_functions.borrow_mut().insert(key, function);
-        let body_builder = debug.context.create_builder();
-        body_builder.position_at_end(debug.context.append_basic_block(function, "entry"));
-        let mut body_cache = ProcessValueCache::new(cache.activity_sensitive, cache.meta_free);
-        body_cache.debug = Some(debug);
-        body_cache.debug_root = cache.debug_root;
-        body_cache.hardware_calls = cache.hardware_calls;
-        for (index, (parameter, _)) in parameters.iter().enumerate() {
-            body_cache.parameters.insert(
-                *parameter,
-                function.get_nth_param(index as u32)?.into_int_value(),
-            );
-        }
-        let returned = inline_body(
-            module,
-            &body_builder,
-            design,
-            function,
-            operand,
-            source,
-            &mut body_cache,
-            emit,
-        )?;
-        body_builder.build_return(Some(&returned)).ok()?;
-        function
-    };
     builder
         .build_call(function, &arguments, "debug.call")
         .ok()?
@@ -265,8 +337,54 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
         .map(|value| value.into_int_value())
 }
 
+/// Native source calls execute only on their selected source path. Both
+/// shared Process functions and expression frames use this same guard.
+pub(in crate::llvm::process) fn active_value<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    width: u32,
+    active: IntValue<'ctx>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+    emit: impl FnOnce(&Builder<'ctx>, &mut ProcessValueCache<'ctx, '_>) -> Option<IntValue<'ctx>>,
+) -> Option<IntValue<'ctx>> {
+    match active.get_zero_extended_constant() {
+        Some(0) => {
+            return Some(
+                context
+                    .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+                    .ok()?
+                    .const_zero(),
+            )
+        }
+        Some(1) => return emit(builder, cache),
+        _ => {}
+    }
+    let previous = builder.get_insert_block()?;
+    let function = previous.get_parent()?;
+    let execute = context.append_basic_block(function, "debug.call.execute");
+    let join = context.append_basic_block(function, "debug.call.join");
+    builder
+        .build_conditional_branch(active, execute, join)
+        .ok()?;
+    let dominating = cache.dominating_values();
+    builder.position_at_end(execute);
+    let returned = emit(builder, cache)?;
+    let exit = builder.get_insert_block()?;
+    builder.build_unconditional_branch(join).ok()?;
+    builder.position_at_end(join);
+    cache.retain_dominating(&dominating);
+    let result = builder
+        .build_phi(returned.get_type(), "debug.call.result")
+        .ok()?;
+    result.add_incoming(&[
+        (&returned.get_type().const_zero(), previous),
+        (&returned, exit),
+    ]);
+    Some(result.as_basic_value().into_int_value())
+}
+
 #[allow(clippy::too_many_arguments)]
-fn inline_body<'ctx>(
+pub(in crate::llvm::process) fn inline_body<'ctx>(
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     design: &Design,
@@ -292,12 +410,21 @@ fn inline_body<'ctx>(
         .iter()
         .chain(&source.locals)
         .map(|binding| {
-            binding
-                .value
-                .and_then(|id| debug.value_debug_type(design, id))
+            let id = binding.value?;
+            if dynamic_string_value(design, id) || process_string(design, id).is_some() {
+                return debug.value_debug_type(design, id);
+            }
+            match &binding.layout {
+                Some(layout) => debug.ty(design, layout, needs_mirror(layout)),
+                None => debug.value_debug_type(design, id),
+            }
         })
         .collect::<Vec<_>>();
-    let result_type = debug.value_debug_type(design, operand);
+    let result_type = source
+        .result_layout
+        .as_ref()
+        .and_then(|layout| debug.ty(design, layout, needs_mirror(layout)))
+        .or_else(|| debug.value_debug_type(design, operand));
     let types = binding_types[..source.parameters.len()]
         .iter()
         .flatten()
@@ -354,7 +481,11 @@ fn inline_body<'ctx>(
         let layout = if string {
             None
         } else {
-            debug.value_debug_layout(design, id)
+            binding
+                .layout
+                .as_ref()
+                .map(std::borrow::Cow::Borrowed)
+                .or_else(|| debug.value_debug_layout(design, id))
         };
         if !string && layout.is_none() {
             continue;
@@ -410,16 +541,12 @@ fn inline_body<'ctx>(
             // A CFG-normalized host call can consume the argument before
             // this native frame. Borrow its existing persistent place;
             // inspection never reexecutes the source expression.
-            let place = if cache.parameters.contains_key(&id) {
-                None
-            } else {
-                match design.process_ir.values[id.0 as usize].kind {
-                    ProcessValueKind::Local { process, local } => {
-                        Some(local_state_name(process, local))
-                    }
-                    ProcessValueKind::Storage(storage) => Some(storage_state_name(storage)),
-                    _ => None,
+            let place = match design.process_ir.values[id.0 as usize].kind {
+                ProcessValueKind::Local { process, local } => {
+                    Some(local_state_name(process, local))
                 }
+                ProcessValueKind::Storage(storage) => Some(storage_state_name(storage)),
+                _ => None,
             };
             if let Some(place) = place {
                 let name = debug.string_mirror(module, &place, root);
@@ -493,6 +620,7 @@ fn inline_body<'ctx>(
                 reference,
                 buffer,
                 inspection,
+                signed: process_value_is_signed(design, id),
                 parameter: index < source.parameters.len(),
                 captured: Cell::new(None),
             });
@@ -519,15 +647,45 @@ fn inline_body<'ctx>(
                     }
                 }
             }
-            if let Some(value) = cache.emitted.get(&cache.key(id, None, None)).copied() {
-                capture_value(builder, cache, id, value);
-            }
-            if let Some(value) = cache.parameters.get(&id).copied() {
+            if let Some(value) = cache
+                .parameters
+                .get(&id)
+                .copied()
+                .or_else(|| cache.emitted.get(&cache.key(id, None, None)).copied())
+            {
                 capture_value(builder, cache, id, value);
             }
         }
     }
+    let argument_entry = builder.get_insert_block()?;
+    let argument_anchor = argument_entry.get_last_instruction();
     let result = emit(builder, cache, None);
+    if let Some(arguments) = &cache.debug_arguments {
+        // Native inputs are available at entry, even if their first consumer
+        // follows the instruction where GDB stops. Aliases of these same IDs
+        // need no execution either. Inspection must not create ABI arguments.
+        let argument_builder = debug.context.create_builder();
+        if let Some(first) = argument_anchor
+            .and_then(|anchor| anchor.get_next_instruction())
+            .or_else(|| {
+                argument_anchor
+                    .is_none()
+                    .then(|| argument_entry.get_first_instruction())
+                    .flatten()
+            })
+        {
+            argument_builder.position_before(&first);
+        } else {
+            argument_builder.position_at_end(argument_entry);
+        }
+        argument_builder.set_current_debug_location(debug.location(scope, source.function, None));
+        let mut seen = std::collections::HashSet::new();
+        for ((id, ..), value) in &arguments.values {
+            if seen.insert(*id) {
+                capture_binding(&argument_builder, cache, *id, *value, true);
+            }
+        }
+    }
     let result_span = source.result_span;
     if let Some(value) = result {
         capture_result(module, builder, design, operand, value, result_span, cache);
@@ -655,6 +813,16 @@ pub(in crate::llvm::process) fn capture_value<'ctx>(
     id: ProcessValueId,
     value: IntValue<'ctx>,
 ) {
+    capture_binding(builder, cache, id, value, false);
+}
+
+fn capture_binding<'ctx>(
+    builder: &Builder<'ctx>,
+    cache: &ProcessValueCache<'ctx, '_>,
+    id: ProcessValueId,
+    value: IntValue<'ctx>,
+    at_entry: bool,
+) {
     let Some(debug) = cache.debug else { return };
     let mut local_captured = false;
     for frame in &cache.value_frames {
@@ -670,7 +838,13 @@ pub(in crate::llvm::process) fn capture_value<'ctx>(
             // binding. Describe its declared value, not the carry bits.
             match &binding.inspection {
                 ValueInspection::Packed(layout) => {
-                    let Some(value) = fit(builder, value, layout.packed_width().unwrap()) else {
+                    let width = layout.packed_width().unwrap();
+                    let value = if binding.signed && process_layout_is_signed(layout) {
+                        fit_signed(builder, value, width)
+                    } else {
+                        fit(builder, value, width)
+                    };
+                    let Some(value) = value else {
                         continue;
                     };
                     debug.copy_fields(builder, binding.buffer, value, layout, &mut 0, &mut 0);
@@ -699,7 +873,7 @@ pub(in crate::llvm::process) fn capture_value<'ctx>(
                 );
             }
             binding.captured.set(Some(capture));
-            local_captured |= !binding.parameter;
+            local_captured |= !binding.parameter && !at_entry;
         }
     }
     if local_captured {

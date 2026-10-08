@@ -546,22 +546,32 @@ impl Lowering<'_> {
             Expr::Slice { hi, lo, .. } => hi.checked_sub(*lo)?.checked_add(1),
             Expr::Canonical { value, .. } => {
                 let arena = self.source_values.borrow();
-                let node = &arena.ir.values[value.0 as usize];
-                node.bit_width.or_else(|| match &node.kind {
-                    ProcessValueKind::Signal {
-                        state: ProcessSignalState::Event,
-                        ..
-                    } => Some(1),
-                    ProcessValueKind::Signal { signals, .. } => {
-                        signals.iter().try_fold(0u32, |total, signal| {
-                            total.checked_add(self.out.signal_width(*signal)?)
-                        })
+                let mut value = *value;
+                loop {
+                    let node = &arena.ir.values[value.0 as usize];
+                    if let Some(width) = node.bit_width {
+                        return Some(width);
                     }
-                    ProcessValueKind::BitSlice { high, low, .. } => {
-                        high.checked_sub(*low)?.checked_add(1)
+                    if let ProcessValueKind::InlineCall { operand, .. } = node.kind {
+                        value = operand;
+                        continue;
                     }
-                    _ => None,
-                })
+                    return match &node.kind {
+                        ProcessValueKind::Signal {
+                            state: ProcessSignalState::Event,
+                            ..
+                        } => Some(1),
+                        ProcessValueKind::Signal { signals, .. } => {
+                            signals.iter().try_fold(0u32, |total, signal| {
+                                total.checked_add(self.out.signal_width(*signal)?)
+                            })
+                        }
+                        ProcessValueKind::BitSlice { high, low, .. } => {
+                            high.checked_sub(*low)?.checked_add(1)
+                        }
+                        _ => None,
+                    };
+                }
             }
             _ => None,
         }
@@ -1178,18 +1188,21 @@ mod tests {
                         function: span,
                         call: span,
                         result_span: span,
+                        result_layout: None,
                         branches: vec![(unused_selection, [span; 2])],
                         parameters: vec![
                             crate::ir::ProcessValueBinding {
                                 name: "unused".into(),
                                 span,
                                 scope: None,
+                                layout: None,
                                 value: Some(unused),
                             },
                             crate::ir::ProcessValueBinding {
                                 name: "used".into(),
                                 span,
                                 scope: None,
+                                layout: None,
                                 value: Some(input),
                             },
                         ],

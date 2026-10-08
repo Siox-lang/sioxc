@@ -81,7 +81,7 @@ impl<'a> Lowering<'a> {
                     .and_then(|ty| self.free_fns.type_head_key(ty))
             }) == Some(source.clone())
         })?;
-        let body = f.body.as_ref()?;
+        f.body.as_ref()?;
         let (left, right) = match index.as_ref() {
             ast::Expr::Range { lo, hi, .. } => (
                 self.eval_const(lo, &self.cur_env)?,
@@ -141,7 +141,7 @@ impl<'a> Lowering<'a> {
                 .as_ref()
                 .map(|ty| self.source_layout(ty, &self.cur_env)),
         );
-        let out = self.inline_block(&body.stmts, &fenv);
+        let out = self.inline_source_function(f, ast::expr_span(callee), &mut fenv);
         drop(shapes);
         match saved_width {
             Some(previous) => self
@@ -195,7 +195,7 @@ impl<'a> Lowering<'a> {
             Some(c) => c,
             None => return self.derived_conversion(target, src.as_deref(), arg, env),
         };
-        let body = f.body.as_ref()?;
+        f.body.as_ref()?;
         let mut fenv: HashMap<String, Val> = HashMap::new();
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
@@ -216,7 +216,7 @@ impl<'a> Lowering<'a> {
                 .as_ref()
                 .map(|ty| self.source_layout(ty, &self.cur_env)),
         );
-        self.inline_block(&body.stmts, &fenv)
+        self.inline_source_function(f, ast::expr_span(arg), &mut fenv)
     }
 
     /// `T()` / `T[N]()` — the nullary constructor: the structural `new()`
@@ -471,10 +471,7 @@ impl<'a> Lowering<'a> {
         }
         let return_layout = self.source_function_return_layout(f, &shapes);
         let _shapes = self.source_shape_scope(shapes, return_layout);
-        let out = f
-            .body
-            .as_ref()
-            .and_then(|b| self.inline_block(&b.stmts, &fenv));
+        let out = self.inline_source_function(f, ast::expr_span(callee), &mut fenv);
         // The result is a value of the declared return type, so it wraps to
         // that width. Assigning it to a signal masked it anyway, which hid
         // this — but used in place (`neg(x) < 0`) the extra bits survived and
@@ -634,7 +631,7 @@ impl<'a> Lowering<'a> {
             _ => self.operand_type_name(arg),
         });
         let f = self.find_method(&ty, &field.text, input.as_deref())?;
-        let body = f.body.as_ref()?;
+        f.body.as_ref()?;
         if self.inline_depth.get() > 16 {
             self.depth_exceeded
                 .borrow_mut()
@@ -750,7 +747,7 @@ impl<'a> Lowering<'a> {
         }
         let return_layout = self.source_function_return_layout(f, &shapes);
         let _shapes = self.source_shape_scope(shapes, return_layout);
-        let out = self.inline_block(&body.stmts, &fenv);
+        let out = self.inline_source_function(f, ast::expr_span(callee), &mut fenv);
         for (name, prev) in saved.into_iter().rev() {
             match prev {
                 Some(v) => self.param_types.borrow_mut().insert(name, v),
@@ -1125,8 +1122,13 @@ impl<'a> Lowering<'a> {
         &self,
         mut stmts: &[ast::Stmt],
         env: &HashMap<String, Val>,
-    ) -> Option<Val> {
-        let _scope = self.source_lexical_scope();
+    ) -> Option<(Val, crate::diag::Span)> {
+        let extent = stmts.first().zip(stmts.last()).map(|(first, last)| {
+            let first = ast::stmt_span(first);
+            let last = ast::stmt_span(last);
+            crate::diag::Span::new(first.file, first.start..last.end)
+        });
+        let _scope = self.source_lexical_scope(extent);
         // A long straight-line let chain is not recursion. Clone the lexical
         // environment at most once, then update its compact value bindings.
         let mut scoped = std::borrow::Cow::Borrowed(env);
@@ -1147,11 +1149,12 @@ impl<'a> Lowering<'a> {
                 }
                 _ => self.lower_val_env(value, scoped.as_ref()),
             };
-            let lowered = self.bind_source_value(
+            let mut lowered = self.bind_source_value(
                 value_ir,
                 l.span,
                 self.expr_types.get(&ast::expr_span(value)).cloned(),
             );
+            self.source_inline_local(&l.name.text, l.span, layout.clone(), &mut lowered);
             let mut attrs = HashMap::new();
             self.bind_range_attrs(&mut attrs, &l.name.text, value, scoped.as_ref());
             if let Some(layout) = layout {
@@ -1180,7 +1183,10 @@ impl<'a> Lowering<'a> {
                     }
                     _ => self.lower_val_env(v, env),
                 };
-                Some(self.bind_source_value(value, ast::expr_span(v), None))
+                Some((
+                    self.bind_source_value(value, ast::expr_span(v), None),
+                    ast::expr_span(v),
+                ))
             }
             [ast::Stmt::If(iff), rest @ ..] => {
                 let cond = self.bind_source_expression(
@@ -1199,11 +1205,7 @@ impl<'a> Lowering<'a> {
                     },
                     None => self.inline_block(rest, env)?,
                 };
-                Some(self.bind_source_value(
-                    self.source_select_value(cond, then, els, iff.span),
-                    iff.span,
-                    None,
-                ))
+                Some(self.source_inline_select(cond, then, els, iff.span))
             }
             // A `match` whose arms return is the same shape as an `if`
             // chain, and only the `if` form was handled — the two share
@@ -1216,7 +1218,7 @@ impl<'a> Lowering<'a> {
                 );
                 // What the body yields when no arm returns.
                 let after = self.inline_block(rest, env);
-                let mut acc: Option<Val> = after.clone();
+                let mut acc = after.clone();
                 for arm in m.arms.iter().rev() {
                     let value = match self.inline_block(&arm.body.stmts, env) {
                         Some(value) => value,
@@ -1224,7 +1226,7 @@ impl<'a> Lowering<'a> {
                         // through to the statements after the match.
                         None => after.clone()?,
                     };
-                    acc = Some(self.bind_source_value(
+                    acc = Some(
                         match (
                             self.arm_match_cond(&arm.pattern, &m.scrutinee, &scrut, env),
                             acc,
@@ -1235,12 +1237,10 @@ impl<'a> Lowering<'a> {
                             // this arm is the fallback.
                             (Some(_), None) => value,
                             (Some(cond), Some(otherwise)) => {
-                                self.source_select_value(cond, value, otherwise, arm.span)
+                                self.source_inline_select(cond, value, otherwise, arm.span)
                             }
                         },
-                        arm.span,
-                        None,
-                    ));
+                    );
                 }
                 acc
             }

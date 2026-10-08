@@ -20,7 +20,8 @@ mod logic;
 mod parameters;
 mod strings;
 pub(super) use inline_values::{
-    capture_value, inline_value, selected_value, ValueFrame, ValueLocationGuard,
+    active_value, argument_value, capture_value, inline_body, inline_value, selected_value,
+    ValueArguments, ValueFrame, ValueLocationGuard,
 };
 use logic::{LogicMirror, LogicSource};
 use parameters::ParameterLocation;
@@ -43,7 +44,8 @@ type ScopeKey = (usize, Option<u32>);
 type LexicalScopes<'ctx> = Vec<(Span, DIScope<'ctx>)>;
 type InlineFrame<'ctx> = (DISubprogram<'ctx>, Option<DILocation<'ctx>>);
 type ParameterLocations<'ctx> = Vec<Vec<ParameterLocation<'ctx>>>;
-type ValueFunctionKey = (ProcessValueId, u32, bool, Option<SourceLayout>);
+pub(super) type ValueFunctionKey = (ProcessValueId, u32, bool, Option<SourceLayout>);
+type ValueFunction<'ctx> = (FunctionValue<'ctx>, Vec<ValueFunctionKey>);
 
 pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     context: &'ctx Context,
@@ -64,7 +66,9 @@ pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     refresh: Cell<Option<FunctionValue<'ctx>>>,
     /// Calls in otherwise-pure selections still need taken-path source ranges.
     value_activity: Vec<bool>,
-    value_functions: RefCell<HashMap<ValueFunctionKey, FunctionValue<'ctx>>>,
+    value_functions: RefCell<HashMap<ValueFunctionKey, ValueFunction<'ctx>>>,
+    hardware_processes: HashMap<u32, siox::ir::ProcessId>,
+    hardware_frames: RefCell<HashMap<(usize, siox::ir::ProcessId), DISubprogram<'ctx>>>,
 }
 
 struct Mirror<'ctx> {
@@ -149,6 +153,34 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             refresh: Cell::new(None),
             value_activity,
             value_functions: RefCell::new(HashMap::new()),
+            hardware_processes: design
+                .process_ir
+                .processes
+                .iter()
+                .filter(|process| process.region != siox::ir::ProcessRegion::Procedural)
+                .flat_map(|process| {
+                    let event = match process.region {
+                        siox::ir::ProcessRegion::Event { driver_context, .. } => {
+                            Some((driver_context, process.id))
+                        }
+                        _ => None,
+                    };
+                    event
+                        .into_iter()
+                        .chain(process.blocks.iter().flat_map(move |block| {
+                            block.instructions.iter().filter_map(move |instruction| {
+                                match instruction {
+                                    ProcessInstruction::Assign {
+                                        driver_context: Some(context),
+                                        ..
+                                    } => Some((*context, process.id)),
+                                    _ => None,
+                                }
+                            })
+                        }))
+                })
+                .collect(),
+            hardware_frames: RefCell::new(HashMap::new()),
         };
         debug.globals(module, design);
         Ok(debug)
@@ -181,6 +213,98 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             .as_debug_info_scope();
         self.namespaces.borrow_mut().insert(path.into(), scope);
         scope
+    }
+
+    /// A bounded native helper can contain several source hardware processes.
+    /// Generated scheduler instructions have a real native scope, but no
+    /// source statement. Declare it before emitting any calls in that body.
+    pub fn generated_location(
+        &self,
+        builder: &Builder<'ctx>,
+        span: Span,
+    ) -> Option<DILocation<'ctx>> {
+        let function = builder.get_insert_block()?.get_parent()?;
+        let file = self.file(span.file);
+        let root = function.get_subprogram().unwrap_or_else(|| {
+            let root = self.builder.create_function(
+                self.unit.as_debug_info_scope(),
+                &function.get_name().to_string_lossy(),
+                Some(""),
+                file,
+                0,
+                self.builder
+                    .create_subroutine_type(file, None, &[], DIFlags::ZERO),
+                true,
+                true,
+                0,
+                DIFlags::ZERO,
+                false,
+            );
+            function.set_subprogram(root);
+            root
+        });
+        Some(self.builder.create_debug_location(
+            self.context,
+            0,
+            0,
+            root.as_debug_info_scope(),
+            None,
+        ))
+    }
+
+    /// Keep each process as its own logical frame, not the helper's first owner.
+    pub fn hardware_location(
+        &self,
+        builder: &Builder<'ctx>,
+        design: &Design,
+        context: u32,
+        span: Option<Span>,
+    ) -> Option<DILocation<'ctx>> {
+        let process = design
+            .process_ir
+            .processes
+            .get(self.hardware_processes.get(&context)?.0 as usize)?;
+        let caller = self.generated_location(builder, process.span)?;
+        let root = builder.get_insert_block()?.get_parent()?.get_subprogram()?;
+        let file = self.file(process.span.file);
+        let line = self
+            .sources
+            .line_col(process.span.file, process.span.start)
+            .0;
+        let key = (root.as_mut_ptr() as usize, process.id);
+        let scope = self.hardware_frames.borrow().get(&key).copied();
+        let scope = scope.unwrap_or_else(|| {
+            let label = process
+                .label
+                .clone()
+                .unwrap_or_else(|| format!("process {}", process.id.0));
+            let (owner, name) = label.rsplit_once("::").unwrap_or(("", &label));
+            let scope = self.builder.create_function(
+                self.namespace(owner),
+                name,
+                Some(""),
+                file,
+                line,
+                self.builder
+                    .create_subroutine_type(file, None, &[], DIFlags::ZERO),
+                true,
+                true,
+                line,
+                DIFlags::ZERO,
+                false,
+            );
+            self.hardware_frames.borrow_mut().insert(key, scope);
+            scope
+        });
+        let span = span.unwrap_or(process.span);
+        let (line, column) = self.sources.line_col(span.file, span.start);
+        Some(self.builder.create_debug_location(
+            self.context,
+            line,
+            column,
+            scope.as_debug_info_scope(),
+            Some(caller),
+        ))
     }
 
     pub fn location(

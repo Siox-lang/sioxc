@@ -38,6 +38,8 @@ pub(super) struct ProcessValueCache<'ctx, 'checks> {
     pub(super) source_location: Option<inkwell::debug_info::DILocation<'ctx>>,
     /// A shared function's `Parameter` values, bound to its LLVM arguments.
     pub(super) parameters: HashMap<ProcessValueId, IntValue<'ctx>>,
+    /// Native debug parameters retain each actual consumer format as SSA.
+    pub(super) debug_arguments: Option<debug::ValueArguments<'ctx>>,
 }
 
 impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
@@ -57,6 +59,7 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
             value_frames: Vec::new(),
             source_location: None,
             parameters: HashMap::new(),
+            debug_arguments: None,
         }
     }
 
@@ -156,37 +159,42 @@ pub(super) fn process_value_at<'ctx>(
     let value = design.process_ir.values.get(id.0 as usize)?;
     let _location = debug::ValueLocationGuard::new(builder, cache, value.span);
     if let Some(parameter) = cache.parameters.get(&id).copied() {
+        debug::capture_value(builder, cache, id, parameter);
         return if signed && process_value_is_signed(design, id) {
             fit_signed(builder, parameter, width)
         } else {
             fit(builder, parameter, width)
         };
     }
+    if let Some(parameter) =
+        debug::argument_value(builder, design, cache, (id, width, signed, None))
+    {
+        debug::capture_value(builder, cache, id, parameter);
+        return Some(parameter);
+    }
     let natural_width = value.bit_width?;
-    // The ordinary source wrapper is transparent to shared-function lowering.
-    // Debug builds keep its actual source frame until shared bodies have DWARF.
-    if cache.debug.is_none() {
-        if let Some(call) = design.process_ir.call_of(id) {
-            let narrow_integer = width > natural_width
-                && natural_width < 64
-                && matches!(value.ty, Some(siox::types::Ty::Integer));
-            if !narrow_integer && shared_call_eligible(design, call, cache.meta_free) {
-                let result = process_value(
-                    context,
-                    module,
-                    builder,
-                    design,
-                    id,
-                    active,
-                    index_sites,
-                    cache,
-                )?;
-                return if signed {
-                    fit_signed(builder, result, width)
-                } else {
-                    fit(builder, result, width)
-                };
-            }
+    // The source wrapper is transparent to shared-function lowering; debug
+    // metadata is attached directly to that same shared native body.
+    if let Some(call) = design.process_ir.call_of(id) {
+        let narrow_integer = width > natural_width
+            && natural_width < 64
+            && matches!(value.ty, Some(siox::types::Ty::Integer));
+        if !narrow_integer && shared_call_eligible(design, call, cache.meta_free) {
+            let result = process_value(
+                context,
+                module,
+                builder,
+                design,
+                id,
+                active,
+                index_sites,
+                cache,
+            )?;
+            return if signed && process_value_is_signed(design, id) {
+                fit_signed(builder, result, width)
+            } else {
+                fit(builder, result, width)
+            };
         }
     }
     if let ProcessValueKind::InlineCall { operand, source } = &value.kind {

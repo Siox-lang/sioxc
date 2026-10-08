@@ -689,6 +689,8 @@ pub struct ProcessValueBinding {
     pub span: crate::diag::Span,
     /// Owning lexical extent; omitted for parameters or synthetic bindings.
     pub scope: Option<crate::diag::Span>,
+    /// Declaration-owned inspection shape. Never changes the operand format.
+    pub layout: Option<SourceLayout>,
     /// Existing value, when retained by ordinary reachability.
     pub value: Option<ProcessValueId>,
 }
@@ -704,6 +706,8 @@ pub struct ProcessValueInline {
     pub call: crate::diag::Span,
     /// Return expression extent, even when it aliases an existing argument.
     pub result_span: crate::diag::Span,
+    /// Declared return shape for inspection; not an executable conversion.
+    pub result_layout: Option<SourceLayout>,
     /// Selected return-expression extents, keyed by existing selection values.
     /// Inspection metadata only; these IDs must not become executable roots.
     pub branches: Vec<(ProcessValueId, [crate::diag::Span; 2])>,

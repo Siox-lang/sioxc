@@ -4975,6 +4975,32 @@ fn operand_source_layout(
     }
 }
 
+/// Inspection belongs to the source declaration, not the caller's narrower
+/// storage or the executable consumer format. Generic/unsized declarations
+/// retain their instantiated operand layout without changing value lowering.
+fn process_binding_layout(
+    declared: Option<&ast::Type>,
+    span: crate::diag::Span,
+    value: ProcessValueId,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> Option<SourceLayout> {
+    declared
+        .and_then(|ty| process_declared_type(ty, context))
+        .filter(|ty| is_concrete_type(ty, context))
+        .and_then(|ty| {
+            let mut layout = process_layout_for_type(&ty, span, context)?;
+            apply_process_declared_ranges(
+                &mut layout,
+                declared?,
+                context,
+                &mut std::collections::HashSet::new(),
+            )?;
+            (layout.packed_width()? > 0).then_some(layout)
+        })
+        .or_else(|| operand_source_layout(value, process, context))
+}
+
 /// Whether the values built from `first` on (one function body over its
 /// parameters, with any bodies it shares in turn) compute `result` from
 /// those values alone, without state, effects or run-time checks.
@@ -5109,6 +5135,13 @@ fn expand_process_function(
                 .map_or_else(|| "self".to_string(), |name| name.text.clone()),
             span: parameter.span,
             scope: None,
+            layout: process_binding_layout(
+                parameter.ty.as_ref(),
+                parameter.span,
+                value,
+                process,
+                context,
+            ),
             value: Some(value),
         })
         .collect();
@@ -5132,6 +5165,13 @@ fn expand_process_function(
                 function: function.span,
                 call,
                 result_span,
+                result_layout: process_binding_layout(
+                    function.ret.as_ref(),
+                    function.span,
+                    result,
+                    process,
+                    context,
+                ),
                 branches,
                 parameters,
                 locals,
@@ -5753,11 +5793,19 @@ fn inline_value_statements(
             );
             let definition = context.resolved.declared(declaration.name.span)?;
             context.value_bindings.last_mut()?.insert(definition, value);
+            let layout = process_binding_layout(
+                declaration.ty.as_ref(),
+                declaration.span,
+                value,
+                process,
+                context,
+            );
             if let Some(locals) = context.inline_value_locals.last_mut() {
                 locals.push(crate::ir::ProcessValueBinding {
                     name: declaration.name.text.clone(),
                     span: declaration.span,
                     scope: None,
+                    layout,
                     value: Some(value),
                 });
             }

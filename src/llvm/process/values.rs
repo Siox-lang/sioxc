@@ -19,7 +19,17 @@ pub(super) fn process_value_in_layout<'ctx>(
 ) -> Option<IntValue<'ctx>> {
     let width = process_value_width_in_layout(design, id, layout)?;
     if let Some(parameter) = cache.parameters.get(&id).copied() {
+        debug::capture_value(builder, cache, id, parameter);
         return fit(builder, parameter, width);
+    }
+    if let Some(parameter) = debug::argument_value(
+        builder,
+        design,
+        cache,
+        (id, width, false, Some(layout.clone())),
+    ) {
+        debug::capture_value(builder, cache, id, parameter);
+        return Some(parameter);
     }
     let cache_key = cache.key(id, active, Some(width));
     if let Some(value) = cache.emitted_value(cache_key) {
@@ -29,8 +39,7 @@ pub(super) fn process_value_in_layout<'ctx>(
     let value = design.process_ir.values.get(id.0 as usize)?;
     let _location = debug::ValueLocationGuard::new(builder, cache, value.span);
     // A shared call already has the layout's representation at its width.
-    if cache.debug.is_none()
-        && value.bit_width == Some(width)
+    if value.bit_width == Some(width)
         && design
             .process_ir
             .call_of(id)
@@ -597,12 +606,19 @@ pub(super) fn process_value<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<IntValue<'ctx>> {
-    if let Some(parameter) = cache.parameters.get(&id).copied() {
-        return fit(
-            builder,
-            parameter,
+    if let Some(parameter) = debug::argument_value(
+        builder,
+        design,
+        cache,
+        (
+            id,
             design.process_ir.values.get(id.0 as usize)?.bit_width?,
-        );
+            false,
+            None,
+        ),
+    ) {
+        debug::capture_value(builder, cache, id, parameter);
+        return Some(parameter);
     }
     let cache_key = cache.key(id, active, None);
     if let Some(value) = cache.emitted_value(cache_key) {
@@ -631,6 +647,7 @@ pub(super) fn process_value<'ctx>(
             cache,
         ) {
             cache.emitted.insert(cache_key, result);
+            debug::capture_value(builder, cache, id, result);
             return Some(result);
         }
     }

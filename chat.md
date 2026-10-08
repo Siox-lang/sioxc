@@ -14602,3 +14602,275 @@ native corpus 225/0 pass. AST graph refresh is 5155 nodes/14562 edges/246
 communities with the same known vendored warnings. Finalize this second merge
 through e51edbc; retain the draft stash, backup branch and unrelated unstaged
 AGENTS/441 chat lines/.codex. No push and no DWARF completion claim.
+
+### 2026-10-08 — Codex — DWARF hardware expression calls
+
+Local commit ef222df contains the fully accepted branch batch (gate 1408863),
+and preserves unrelated chat/AGENTS/.codex changes. Own the next embedded
+native/GDB regression and hardware SourceValues call provenance, source binding
+metadata, and shared LLVM metadata/emission ordering. Hardware already delegates
+canonical values to the common Process emitter; reuse it. Preserve four-process
+bounded helpers, active predicates, scalar formats and unused aggregate-leaf
+laziness. First demonstrate the missing nested hardware call frames with actual
+debug/ordinary native results and VCD parity; no alternate pipeline or fake
+source stack, no push and no full-goal completion claim.
+
+Probe 1490330 completed failed/101 (not an accepted gate), peak 232173568
+bytes. Ordinary/debug hardware simulations, exact VCD parity and DWARF
+verification pass; GDB has no compiled code for either nested source return
+line and exits without a frame. Keep the failing regression while implementing
+the real fix: function-aware SourceValues provenance plus metadata available
+before hardware bodies, fed into the same canonical emitter. Current HEAD
+ef222df remains the fully accepted branch batch; this new regression is local
+and uncommitted. Hardware caller attribution must use owning source-process
+metadata across bounded helpers, not assign all writes one fabricated process.
+
+Probe 1504203 completed success/0, peak 932777984 bytes: scalar nested
+hardware source frames, locals, actual native results, exact VCD parity and
+DWARF verification pass. Continue the same owned hardware batch with an
+actual selected-return/shadowing regression, then reuse branch metadata already
+consumed by the shared canonical emitter. Aggregate hardware bindings and
+shared-predicate call counts remain incomplete; no completion claim or push.
+
+Probe 1515328 failed/101, peak 125071360 bytes. Native/VCD/DWARF checks pass
+but positive inputs stop at the untaken hardware fallback return. Return the
+source expression span alongside each hardware inlined value and record
+per-selection arm spans using the existing ProcessValueInline metadata.
+Stop lexical binding ownership at the nearest function boundary, including
+effectful frames with no expression provenance, and clear builder locations
+on entry to the separate settle function. Keep the failing GDB assertions.
+
+Probes 1516927/1519051 failed/101: selected locations now work, but the
+negative fallback local prints 18446744073709551611 with type bits instead
+of integer -5. Preserve declaration-owned inspection layouts on existing
+ProcessValueBinding metadata rather than overriding executable canonical
+formats or adding runtime casts to silence the debugger. Own the metadata
+field/constructor defaults in process.rs, source_processes.rs, source_values.rs
+and LLVM tests, with shared inline inspection consuming that layout.
+
+Probe 1520712 passed the selected positive/negative return and signed-local
+regression, success/0, peak 803950592 bytes. Expanding to shared helper owners,
+81-bit signed/unsigned, real bindings and clocked calls found a verifier error
+in probe 1523233: settle helper calls emitted before its later event-root
+metadata lacked !dbg. Declare generated native scheduler scopes at entry,
+use line zero for generated work and reuse them as actual parents of source
+hardware scopes. Ensure typed inspection fixture values are genuinely consumed;
+debug metadata must not execute otherwise-unused locals to make them visible.
+
+Probe 1525002 passes native/VCD/DWARF but its overly fixed inspection fixture
+fails on valid initial-delta zero arguments before port propagation. Compare
+locals with the actual captured formals on every stop and require observing
+the eventual 81-bit/real/negative values. Collect callback failures explicitly
+(GDB Python callback exceptions otherwise do not reliably fail its exit status).
+Probe 1527151 completed success/0: shared-helper owners, selected positive and
+negative returns, wide/real formal/local views and both clocked calls pass,
+alongside native assertions, byte-identical VCD and DWARF verification. Retain
+event-condition ownership from ProcessRegion even when it has no assignments.
+The hardware aggregate/call-count/string audit remains open; no push.
+
+Gate 1528507 failed/101 after four debugger regressions passed: the existing
+direct storage/string fixture's debug binary crashed. Probe 1530968 confirms
+SIGSEGV, not a hung job or memory kill. Retained-binary GDB probes
+1531464/1532197 locate the fault in sx_process_commit: movaps reads cur+122,
+an unaligned field of the packed state struct. Codegen::load/store leave ABI
+alignment defaults on packed member accesses. Fix those shared accessors to
+declare byte alignment (all slot_ptr callers use them), and add a structural
+wide-packed-alignment regression. Do not accept the hardware batch yet.
+
+Probe 1534296 failed at compilation (incorrect Inkwell trait method), not a
+test pass; use the existing inherent IntValue::as_instruction accessor.
+Probe 1534854 completed success/0, peak 1167323136 bytes: all five debugger
+regressions in default/bitpack, strict all-target/all-feature Clippy and
+frontend-only check pass. The debug native crash is fixed by byte-aligned
+packed state accessors. Add the structural odd-offset i129 regression,
+retain declared function-return layouts separately from executable formats,
+and forward hardware source width queries through provenance-only InlineCall
+nodes. Update docs/TODO with proven scalar hardware support and explicit
+remaining aggregate/call-count/literal-return gaps. Full acceptance still due.
+
+Probe 1540988 passed the new packed-alignment unit and four debugger fixtures
+but rejected the extra owner-name assertions: real GDB names include the
+elaborated namespace and a `(void)` signature suffix. Keep exact distinct
+instance/event-owner checks using those authoritative names, normalizing only
+the signature suffix; do not collapse the checks to shared assignment lines.
+Declared integer return type checks did not fail. This is not an accepted gate.
+
+Probe 1547008 completed success/0, peak 961839104 bytes: all five native/GDB
+regressions in default/bitpack, exact distinct instance/event-owner assertions,
+declared return type, strict Clippy and frontend-only check pass. AST-only
+graph refresh 1550025 completed success/0, peak 177213440 bytes: 5379 nodes,
+14815 edges, 262 communities. Known vendored partial-extraction/no-symbol
+warnings remain; visualization uses aggregated communities above 5000 nodes.
+Start the complete acceptance gate and freeze source. Only after terminal
+success may this owned scalar hardware batch be committed, preserving unrelated
+AGENTS.md/.codex and 441 chat additions; no push. Remaining full-goal audit:
+aggregate hardware parameter/local/return boundaries, source operator and
+synthetic Resolve formal types, actual shared-predicate call counts, and
+literal/zero-storage string returns bypassed by folded consumers. Scalar
+hardware coverage is evidence of progress, not DWARF completion.
+
+Gate 1551746 completed failed/1, peak 1536274432 bytes: full default/bitpack
+Rust suites and ordinary corpus (225/0) pass, but default debug corpus fails
+hardware_float_conformance_test, hardware_local_values_test,
+saturating_accumulator_test and signed_differential_test (221/4). Later bitpack
+debug corpus/GDB smoke commands did not run. Resume ownership of the shared
+source expression frame/argument emitter and canonical format queries to trace
+debug-only arithmetic differences; preserve the corpus assertions and normal
+evaluation boundaries. No commit or push until the complete gate passes.
+
+Probe 1617631 passed shared function-definition/format reuse but rejected two
+GDB fixtures after changing argument capture. Probes 1626136/1629101 exposed
+and corrected zero-instruction entry insertion, unique per-native-frame view
+names, and remaining unavailable aliases. Direct GDB probe 1632816 confirms
+native formals are correct while same-ID alias locals are unavailable at return
+stops; all four original failing debug corpus binaries now pass (success/0,
+peak 861962240 bytes). The root fix discovers exact consumer width/sign/layout
+requests through the existing emitter and replaces temporary SSA placeholders
+with typed formals, never minimum-width inspection casts or runtime buffers.
+Capture already-passed same-ID aliases at entry without late-statement block
+splits; add narrow signed triple-call native/VCD coverage before full acceptance.
+
+Probe 1640043 passed all five GDB/native/DWARF/VCD fixtures in default/bitpack,
+function reuse, strict Clippy and frontend-only checks (success/0, peak
+1611010048 bytes). Remove the obsolete single-format parameter map rather than
+keeping two competing parameter contracts. Probe 1649259 caught borrowed string
+views incorrectly treated as new snapshots merely because their IDs were
+potential formals; reuse their existing persistent borrowed view instead.
+Probe 1655020 completed success/0, peak 1610915840 bytes: all ten debugger runs,
+strict checks and the enhanced shared-call unit pass. That unit proves one
+body receives separate arithmetic/comparison native formats, and the hardware
+fixture asserts narrow signed triple-call results before/after input changes.
+Refresh the AST graph and rerun the complete acceptance gate with source frozen.
+Aggregate hardware frames, shared-predicate call counts and folded literal
+string-return frames remain open; no push or full-goal completion claim.
+
+Acceptance gate 1662062 was kernel OOM-killed (Result=oom-kill, status 9,
+peak 1633267712 bytes) during debug float_conformance_test compilation after
+both full Rust suites and ordinary corpus (225/0) passed. No accepted gate or
+commit. Resume source-emitter ownership to measure module emission separately
+from object lowering and identify argument-format instruction/metadata growth.
+Keep the standard 2 GiB guard, exact formats and all original assertions;
+do not hide the failure by raising limits or weakening debugger/native tests.
+
+Probe 1708243 completed success/0 but is not a meaningful float test profile:
+CLI --emit llvm-ir does not enable test-process lowering, so its 246-line
+module omits this test body. Temporarily own llvm/aot.rs to retain the actual
+debug test module and count emitted functions/instructions immediately before
+object emission. Remove the instrumentation after identifying the root cause.
+
+Stopped probe 1710562 deliberately to improve diagnostic granularity, not due
+to an expired observation: it grew to about 1.63 GiB and entered sustained
+memory.high pressure before reaching the module-dump marker. Its live cgroup
+showed high=156317, max=0, oom=0 and 13.76% pressure. The failure is during
+module emission, not proven machine-code lowering; add earlier native-function
+format counters under the same temporary trace flag. This probe is not a pass.
+
+Stopped trace probe 1717590 after observing 20600 completed native debug bodies
+at source value ID 115199; sustained emission pressure is not an accepted gate.
+Exact formats are still needed for contextual arithmetic, but atomic reads,
+explicit resizes and slices already own their executable widths. Normalize
+only their no-layout ABI requests to that boundary and use existing fit/sign
+helpers inside the callee. Keep distinct formats for contextual arithmetic
+and layout conversions; extend entry inspection with source-aware signed fits
+and make the multi-format unit use an actually contextual negated argument.
+
+Probe 1737339 passed the multi-format unit and all five default GDB fixtures,
+but still generated over 20600 native source functions and remained around
+1.63 GiB under memory.high pressure. Stopped deliberately after revalidating
+the live service; not an acceptance pass. Following provenance-only calls to
+fixed argument boundaries does not fix the remaining growth. Continue owning
+the shared expression emitter: test definition reuse for parameter-only
+primitive source bodies with identical execution/inspection contracts. Keep
+actual calls, exact consumer formats, source declarations and argument alias
+patterns distinct; do not merge arbitrary graphs or raise the memory guard.
+
+Probe 1765867 passed the multi-format unit and all five debugger fixtures but
+still reached 20300 bodies around value 113336 at 1.61 GiB. Stopped the live
+probe deliberately; the parameter-only primitive cache does not materially
+reduce this workload. Remove that unproven extra cache rather than retain its
+complexity. Expand temporary profiling with source function/parameter/local
+counts and a partial module dump before memory.high pressure, then identify
+the actual dominating body shapes. No acceptance or commit.
+
+### 2026-10-08 — Codex — user-requested main integration
+
+Fetched origin/main at f272bac (shared value functions/inline directives,
+dead-code/copy reductions, fixed-point operations and docs moved to siox-paper).
+Stopped live diagnostic probe 1771893 before changing its source snapshot;
+its partial module contains 5023 functions and 1418037 instructions, with
+add_words bodies around 39445 instructions. It is not an accepted gate.
+Protect the twelve local commits with a backup branch and tracked work with
+a retained stash before merging origin/main. Preserve unrelated AGENTS.md,
+441 chat additions and .codex. Resolve overlaps without discarding DWARF or
+reintroducing removed reference documents; no push is authorized.
+
+### 2026-10-08 — Codex — DWARF on shared Process functions
+
+Resume the full debugging goal after main integration. Restore hardware/source
+metadata and exact-format work from stash 200e6f6, preserving upstream borrowing,
+fixed-point conversions and typed-local reads. Keep removed reference docs in
+the retained stash for migration to siox-paper, not back in this repository.
+Own shared Process-function/debug emission and native regressions: reuse the
+existing source-body/inspection emitter directly on shared bodies, with typed
+Parameter SSA distinct from inline consumer-format discovery. Remove temporary
+profiling hooks before acceptance. Preserve unrelated AGENTS/441 chat lines and
+.codex; no commit until the complete gates pass, no push or completion claim.
+
+Probe 1878425 passed strict Clippy, the exact-consumer-format unit and all five
+default native/GDB fixtures, then failed with status 127 because /usr/bin/time
+is absent. Its float compilation never ran; this is not an accepted float or
+full gate. User-requested main pull is already up to date at origin e51edbc,
+with all local changes preserved. Continue the shared-function DWARF ownership:
+use Bash builtin time under the unchanged guard for the actual float build/run,
+then add native shared-body/frame regressions before complete acceptance.
+
+Float probe 1888927 completed exited/success/0: the real --test --debug native
+float build took 57.838 seconds, the simulation passed, and the service peaked
+at 909742080 bytes under the standard guard. The previous expanded debug body
+failed this workload with OOM; sharing now uses the existing canonical Process
+function body rather than a second fingerprint/cache scheme. This is focused
+evidence, not full acceptance. Extend branch/typed-formal/native-body reuse
+checks and preserve declaration-owned inspection types independently of ABI
+widths before default/bitpack corpus and debugger gates.
+
+Probe 1893588 completed exited/success/0 (peak 1387245568 bytes): strict Clippy,
+all ten default/bitpack debugger fixtures and exact-format unit pass. Repeated
+branch/shadowing and alias helpers now explicitly use #[inline(never)]; narrow
+integer arguments and aliases must inspect as their declared 64-bit integer,
+not the caller's constrained storage. Add native symbol-count coverage for
+shared definitions. Migrate the preserved DWARF architecture/testing reference
+sections to the clean sibling siox-paper checkout, respecting the docs move;
+do not recreate reference documents here. Then freeze source for full gates.
+
+Gate 1948134 failed/101 (peak 1427251200 bytes) at the new native symbol-count
+assertion, after strict/frontend checks and the 533-unit default suite passed.
+The fixture mixed declaration-backed operands with layout-free arithmetic:
+these are distinct existing shared-function signatures, so two bodies are
+valid. Bind the positive/negative inputs as declared integer locals, requiring
+one native body for repeated calls with the same executable/layout signature.
+Keep all branch/native/VCD/GDB expectations and the separate narrow-input
+formal-type checks. Later bitpack/corpus stages did not run; no acceptance.
+
+Probe 1955241 passed exited/success/0 (peak 136077312 bytes): corrected
+same-signature native body counts and all branch/formal/local/caller checks
+pass in default and bitpack. Reference sections are now in siox-paper; update
+the remaining multiprocess proposal's debugger link to their new location.
+Freeze source and rerun the complete default/bitpack/debug-corpus gate.
+
+Acceptance gate 1957374 completed SubState=exited / Result=success /
+ExecMainStatus=0, MemoryPeak=1610874880 bytes under the standard guard. Strict
+Clippy, frontend-only check, full default/bitpack Rust suites (533/512 unit
+tests plus integrations), all ten native GDB/DWARF/VCD fixtures, ordinary and
+default/bitpack-debug corpora (225/0 each), and all four final FIFO/wide GDB
+smoke runs pass. Graph AST refresh completes at 5177 nodes, 14662 edges and
+250 communities; the four vendored partial-parse/six no-symbol warnings remain.
+The focused float debug build/run separately passed in 57.838 seconds with
+909742080-byte service peak. Source definitions now share canonical Process
+bodies under debugging, rather than recreating the earlier OOM expansion.
+Reference architecture/testing documentation is migrated to siox-paper; no
+reference documents are recreated in the compiler checkout. Commit only owned
+source/TODO/proposal/coordination changes, leaving AGENTS, 441 historical chat
+lines and .codex unstaged. Keep the full DWARF goal active: aggregate hardware
+boundaries, actual shared-predicate call counts, folded literal/empty return
+frames, operator/constrained signature type audits, packed expression companions
+and real/string finish-ABI checks remain. No push is authorized.

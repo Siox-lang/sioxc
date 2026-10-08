@@ -1,6 +1,6 @@
 //! The inkwell emitter.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use inkwell::attributes::{Attribute, AttributeLoc};
@@ -344,8 +344,8 @@ pub(crate) fn build_module_with_debug<'ctx>(
         }
     }
     super::process::declare_state(ctx, &cg.module, design);
-    cg.build();
-    let debug_info = if debug {
+    cg.declare();
+    *cg.debug.borrow_mut() = if debug {
         Some(super::process::DebugInfo::new(
             ctx,
             &cg.module,
@@ -355,6 +355,8 @@ pub(crate) fn build_module_with_debug<'ctx>(
     } else {
         None
     };
+    cg.build();
+    let debug_info = cg.debug.borrow();
     super::process::emit_metadata(
         ctx,
         &cg.module,
@@ -363,7 +365,7 @@ pub(crate) fn build_module_with_debug<'ctx>(
         &cg.canonical,
         debug_info.as_ref(),
     );
-    if let Some(debug) = &debug_info {
+    if let Some(debug) = debug_info.as_ref() {
         debug.finish(&cg.module, design);
     }
     // LLVM's own verifier — a well-formedness net beyond textual checks.
@@ -374,6 +376,7 @@ pub(crate) fn build_module_with_debug<'ctx>(
             cg.module.print_to_string()
         ));
     }
+    drop(debug_info);
     Ok(cg.module)
 }
 
@@ -404,6 +407,8 @@ struct Codegen<'ctx, 'd> {
     /// entries, including captured calls.
     canonical_values: RefCell<Option<super::process::HardwareValueCache<'ctx>>>,
     canonical: super::process::HardwareValueFacts,
+    debug: RefCell<Option<super::process::DebugInfo<'ctx, 'd>>>,
+    source_location: Cell<Option<inkwell::debug_info::DILocation<'ctx>>>,
     /// The signal-state layout: one field per signal, each an integer sized to
     /// the signal's width (`i8`/`i16`/`i32`/`i64`), packed. A `Bit` or `Logic`
     /// takes one byte, not eight. The `cur`/`old`/`event`/`snap` globals all use
@@ -536,6 +541,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             comb_values: RefCell::new(None),
             canonical_values: RefCell::new(None),
             canonical: super::process::HardwareValueFacts::new(design),
+            debug: RefCell::new(None),
+            source_location: Cell::new(None),
             #[cfg(not(feature = "bitpack"))]
             state_ty,
             #[cfg(feature = "bitpack")]
@@ -578,7 +585,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
 
     /// Emit the whole module: state globals, accessors, the settle function and
     /// its combinational helpers.
-    fn build(&self) {
+    fn declare(&self) {
         let range_error = self
             .module
             .add_global(self.ctx.i32_type(), None, "range_error");
@@ -617,6 +624,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.process_staging_globals();
         self.canonical
             .declare_calls(self.ctx, &self.module, self.design);
+    }
+
+    fn build(&self) {
         self.accessors();
         self.process_staging();
         let comb_helpers = self.comb_helpers();
@@ -954,11 +964,18 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             return value;
         }
         let ty = self.slot_ty(id);
-        let v = self
+        // Packed fields need not have their integer type's ABI alignment.
+        // Otherwise LLVM may emit an aligned SIMD access to an odd offset.
+        let load = self
             .builder
             .build_load(ty, self.slot_ptr(arr, id), "v")
+            .unwrap();
+        load.into_int_value()
+            .as_instruction()
             .unwrap()
-            .into_int_value();
+            .set_alignment(1)
+            .unwrap();
+        let v = load.into_int_value();
         let value = self.fit(v, self.value_ty(self.signal_width(id)));
         self.remember_load(arr, id, value);
         value
@@ -996,7 +1013,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.invalidate_load(arr, id);
         let ty = self.slot_ty(id);
         let v = self.fit(v, ty);
-        self.builder.build_store(self.slot_ptr(arr, id), v).unwrap();
+        self.builder
+            .build_store(self.slot_ptr(arr, id), v)
+            .unwrap()
+            .set_alignment(1)
+            .unwrap();
     }
 
     // --- bit-packed state layout (feature `bitpack`) ----------------------
@@ -2066,6 +2087,18 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         // entry: a delta counter for the oscillation cap; run the body at least
         // once (so combinational logic always settles even with no events).
         self.builder.position_at_end(entry);
+        self.builder.unset_current_debug_location();
+        self.source_location.set(None);
+        if let Some((debug, process)) = self
+            .debug
+            .borrow()
+            .as_ref()
+            .zip(self.design.process_ir.processes.first())
+        {
+            if let Some(location) = debug.generated_location(&self.builder, process.span) {
+                self.builder.set_current_debug_location(location);
+            }
+        }
         let dcount = self.builder.build_alloca(i64, "dcount").unwrap();
         self.builder.build_store(dcount, i64.const_zero()).unwrap();
         self.builder.build_unconditional_branch(body).unwrap();
@@ -2100,9 +2133,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .replace(Some(super::process::HardwareValueCache::default()));
         debug_assert!(previous.is_none());
         for eb in &self.design.event_blocks {
+            self.hardware_location(eb.ctx, eb.updates.first().and_then(|write| write.span));
             self.record_index_checks(&eb.condition, None);
             let fired = self.as_i1(&eb.condition);
             for (i, u) in eb.updates.iter().enumerate() {
+                self.hardware_location(eb.ctx, u.span);
                 // Same reasoning as `emit_comb`: an update that a later
                 // unconditional one in this block overwrites never reaches the
                 // signal. Both are guarded by this block's `fired`, so wherever
@@ -2216,6 +2251,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 helper.add_attribute(AttributeLoc::Function, noinline);
                 let entry = self.ctx.append_basic_block(helper, "entry");
                 self.builder.position_at_end(entry);
+                self.builder.unset_current_debug_location();
+                self.source_location.set(None);
                 let previous = self.comb_values.replace(Some(CombValueCache::default()));
                 debug_assert!(previous.is_none());
                 let previous = self
@@ -2614,6 +2651,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .unwrap_or(0);
         for (index, &di) in drivers.iter().enumerate() {
             let d = &self.design.drivers[di];
+            self.hardware_location(d.ctx, d.span);
             let cond = d.cond.as_ref().map(|condition| {
                 self.record_index_checks(condition, None);
                 self.as_i1(condition)
@@ -2639,6 +2677,18 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     }
 
     // --- expressions ------------------------------------------------------
+
+    fn hardware_location(&self, context: u32, span: Option<siox::diag::Span>) {
+        let debug = self.debug.borrow();
+        if let Some(debug) = debug.as_ref() {
+            debug.sync(&self.builder);
+            let location = debug.hardware_location(&self.builder, self.design, context, span);
+            self.source_location.set(location);
+            if let Some(location) = location {
+                self.builder.set_current_debug_location(location);
+            }
+        }
+    }
 
     /// Dead signal writes do not require destination range checks, but their
     /// selected host/foreign effects remain observable in source order.
@@ -2682,6 +2732,8 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 active,
                 &self.index_sites,
                 &mut values,
+                self.debug.borrow().as_ref(),
+                self.source_location.get(),
             )
             .expect("canonical hardware value passed direct-emitter preflight");
         if self.canonical.has_effects(value) {
@@ -3380,6 +3432,34 @@ mod tests {
             init: vec![0],
             enum_type: None,
         }
+    }
+
+    #[test]
+    #[cfg(not(feature = "bitpack"))]
+    fn packed_wide_state_accesses_declare_byte_alignment() {
+        // i129 follows an i8: neither its address nor a later packed field
+        // is guaranteed to satisfy an integer/SIMD ABI alignment.
+        let design = Design {
+            signals: vec![sig("E.padding", 1), sig("E.wide", 129)],
+            ..Design::default()
+        };
+        let llvm = emit_module_ir(&design).unwrap();
+        let commit = llvm
+            .split("define i8 @sx_process_commit()")
+            .nth(1)
+            .unwrap()
+            .split("\n}")
+            .next()
+            .unwrap();
+        let accesses = commit
+            .lines()
+            .filter(|line| line.contains("load i129") || line.contains("store i129"))
+            .collect::<Vec<_>>();
+        assert!(accesses.len() >= 4, "missing wide state accesses: {commit}");
+        assert!(
+            accesses.iter().all(|line| line.contains(", align 1")),
+            "packed wide accesses assume ABI alignment: {accesses:?}"
+        );
     }
 
     #[test]

@@ -100,10 +100,11 @@ impl Lowering<'_> {
     pub(super) fn inline_source_operator(
         &self,
         function: &ast::FnDecl,
+        call: crate::diag::Span,
         lhs: OperatorOperand,
         rhs: Option<OperatorOperand>,
     ) -> Option<Val> {
-        let body = function.body.as_ref()?;
+        function.body.as_ref()?;
         let mut env = HashMap::new();
         let mut shapes = HashMap::new();
         let mut return_shapes = HashMap::new();
@@ -158,7 +159,7 @@ impl Lowering<'_> {
             shapes,
             self.source_function_return_layout(function, &return_shapes),
         );
-        let result = self.inline_block(&body.stmts, &env);
+        let result = self.inline_source_function(function, call, &mut env);
         for (name, family, width) in saved {
             if let Some(family) = family {
                 self.param_types.borrow_mut().insert(name.clone(), family);

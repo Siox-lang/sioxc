@@ -132,12 +132,22 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   runtime-string arguments/returns, literal/empty string bindings and
   selected-call stops without ordinary-build copies. Pure function-body
   if/match branches retain nested lexical shadowing and selected alias/aggregate
-  return stops. Complete expression provenance in hardware SourceValues lowering,
+  return stops. Scalar hardware SourceValues calls now retain nested frames,
+  selected return scopes, declaration-owned types and shared-helper/event owners.
+  Native expression arguments retain the actual consumer width/sign/layout
+  requests independently of inspection types, including narrow signed nested
+  arithmetic and multiple formats used inside one callee.
+  Complete aggregate hardware bindings and faithful aggregate-return call boundaries,
   actual call-count checks for aliases consumed under different predicates and
   literal/empty-string return frames bypassed by folded length consumers.
-  Attach faithful source frames to shared Process functions before enabling
-  shared-call optimization under `--debug`; debug builds currently retain the
-  source expansion rather than discard existing debugger frames.
+  Shared Process functions now retain their source frames directly on the
+  canonical native body, including selected branches, lexical locals and
+  declaration-owned scalar inspection types. Keep native body-count, actual
+  call-count and memory regressions as coverage expands; LLVM ABI types must
+  not be inferred from the debugger's read-only inspection representation.
+  Audit formal declaration types for hardware operators/suffixes/conversions
+  and constrained/generic signatures. Add packed unknown-state expression
+  companion checks and verify GDB `finish` for real/string return ABIs.
   The supported runtime-sized native representation is currently Char[] handles;
   general dynamic arrays remain the separate host-service extension below.
   Keep debug-only aggregate inspection buffers faithful at source stops and

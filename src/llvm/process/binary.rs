@@ -23,9 +23,11 @@ pub(super) fn process_bitwise_chain<'ctx>(
         let node = design.process_ir.values.get(id.0 as usize)?;
         let key = cache.key(id, active, None);
         if phase == 0 {
-            if let Some(value) = cache.parameters.get(&id).copied() {
+            if let Some(value) =
+                debug::argument_value(builder, design, cache, (id, width, false, None))
+            {
                 debug::capture_value(builder, cache, id, value);
-                operands.push(fit(builder, value, width)?);
+                operands.push(value);
                 continue;
             }
             if let Some(value) = cache.emitted_value(key) {

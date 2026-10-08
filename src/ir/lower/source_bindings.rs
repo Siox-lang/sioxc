@@ -7,6 +7,8 @@ pub(super) struct SourceShapeFrame {
     pub(super) values: HashMap<String, SourceLayout>,
     pub(super) return_layout: Option<SourceLayout>,
     pub(super) function: bool,
+    pub(super) source: Option<crate::ir::ProcessValueInline>,
+    pub(super) extent: Option<crate::diag::Span>,
 }
 
 pub(super) struct SourceShapeGuard<'a>(&'a std::cell::RefCell<Vec<SourceShapeFrame>>);
@@ -27,15 +29,167 @@ impl Lowering<'_> {
             values,
             return_layout,
             function: true,
+            source: None,
+            extent: None,
         });
         SourceShapeGuard(&self.source_shapes)
     }
 
-    pub(super) fn source_lexical_scope(&self) -> SourceShapeGuard<'_> {
-        self.source_shapes
-            .borrow_mut()
-            .push(SourceShapeFrame::default());
+    pub(super) fn source_lexical_scope(
+        &self,
+        extent: Option<crate::diag::Span>,
+    ) -> SourceShapeGuard<'_> {
+        self.source_shapes.borrow_mut().push(SourceShapeFrame {
+            extent,
+            ..SourceShapeFrame::default()
+        });
         SourceShapeGuard(&self.source_shapes)
+    }
+
+    /// Retain source identity over the same canonical operands as hardware.
+    pub(super) fn inline_source_function(
+        &self,
+        function: &ast::FnDecl,
+        call: crate::diag::Span,
+        env: &mut HashMap<String, Val>,
+    ) -> Option<Val> {
+        let body = function.body.as_ref()?;
+        let mut parameters = Vec::new();
+        for parameter in &function.params {
+            let name = parameter
+                .name
+                .as_ref()
+                .map_or("self", |name| name.text.as_str());
+            let value = env.get_mut(name)?;
+            let id = match value {
+                Val::Scalar(expression) => {
+                    let mut arena = self.source_values.borrow_mut();
+                    let id = arena.append(expression, parameter.span, None);
+                    *expression = arena.reference(id);
+                    Some(id)
+                }
+                Val::Fields(_) => None,
+            };
+            parameters.push(crate::ir::ProcessValueBinding {
+                name: name.to_owned(),
+                span: parameter.span,
+                scope: None,
+                layout: self.source_bound_layout(name),
+                value: id,
+            });
+        }
+        let name = self
+            .resolved
+            .declared(function.name.span)
+            .and_then(|id| self.resolved.qualified_name(id))
+            .unwrap_or_else(|| function.name.text.clone());
+        let source = crate::ir::ProcessValueInline {
+            name,
+            function: function.span,
+            call,
+            result_span: body.span,
+            result_layout: self.source_return_layout(),
+            branches: Vec::new(),
+            parameters,
+            locals: Vec::new(),
+        };
+        self.source_shapes.borrow_mut().last_mut()?.source = Some(source);
+        let result = self.inline_block(&body.stmts, env);
+        let mut source = self.source_shapes.borrow_mut().last_mut()?.source.take()?;
+        let (result, result_span) = result?;
+        source.result_span = result_span;
+        let mut arena = self.source_values.borrow_mut();
+        let mut wrap = |expression: Expr| {
+            let operand = arena.append(&expression, source.result_span, None);
+            let node = &arena.ir.values[operand.0 as usize];
+            let value = ProcessValue {
+                span: call,
+                ty: node.ty.clone(),
+                bit_width: node.bit_width,
+                kind: ProcessValueKind::InlineCall {
+                    operand,
+                    source: Box::new(source.clone()),
+                },
+            };
+            let layout = arena.ir.value_layouts[operand.0 as usize].clone();
+            let id = arena.push_node(value, layout);
+            arena.reference(id)
+        };
+        Some(match result {
+            Val::Scalar(expression) => Val::Scalar(wrap(expression)),
+            Val::Fields(fields) => Val::Fields(
+                fields
+                    .into_iter()
+                    .map(|(name, value)| (name, wrap(value)))
+                    .collect(),
+            ),
+        })
+    }
+
+    pub(super) fn source_inline_local(
+        &self,
+        name: &str,
+        span: crate::diag::Span,
+        layout: Option<SourceLayout>,
+        value: &mut Val,
+    ) {
+        let mut frames = self.source_shapes.borrow_mut();
+        let scope = frames.last().and_then(|frame| frame.extent);
+        let Some(source) = frames
+            .iter_mut()
+            .rev()
+            .find(|frame| frame.function)
+            .and_then(|frame| frame.source.as_mut())
+        else {
+            return;
+        };
+        let Val::Scalar(expression) = value else {
+            return;
+        };
+        let mut arena = self.source_values.borrow_mut();
+        let id = arena.append(expression, span, None);
+        *expression = arena.reference(id);
+        source.locals.push(crate::ir::ProcessValueBinding {
+            name: name.to_owned(),
+            span,
+            scope,
+            layout,
+            value: Some(id),
+        });
+    }
+
+    /// Return locations belong to the selected arm, not its reused value ID.
+    pub(super) fn source_inline_select(
+        &self,
+        condition: Expr,
+        (then_value, then_span): (Val, crate::diag::Span),
+        (else_value, else_span): (Val, crate::diag::Span),
+        span: crate::diag::Span,
+    ) -> (Val, crate::diag::Span) {
+        let value = self.source_select_value(condition, then_value, else_value, span);
+        if let Some(source) = self
+            .source_shapes
+            .borrow_mut()
+            .iter_mut()
+            .rev()
+            .find(|frame| frame.function)
+            .and_then(|frame| frame.source.as_mut())
+        {
+            let mut record = |expression: &Expr| {
+                if let Expr::Canonical { value, .. } = expression {
+                    source.branches.push((*value, [then_span, else_span]));
+                }
+            };
+            match &value {
+                Val::Scalar(expression) => record(expression),
+                Val::Fields(fields) => {
+                    for (_, expression) in fields {
+                        record(expression);
+                    }
+                }
+            }
+        }
+        (value, span)
     }
 
     pub(super) fn source_return_layout(&self) -> Option<SourceLayout> {

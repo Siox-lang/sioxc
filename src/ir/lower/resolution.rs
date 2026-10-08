@@ -427,7 +427,7 @@ impl<'a> Lowering<'a> {
     pub(super) fn inline_resolve(&self, ty: &str, a: Expr, b: Expr) -> Option<Expr> {
         let fns = self.op_impls.get("Resolve", ty)?;
         let (f, _) = fns.first()?;
-        let body = f.body.as_ref()?;
+        f.body.as_ref()?;
         let mut env: HashMap<String, Val> = HashMap::new();
         env.insert("self".to_string(), Val::Scalar(a));
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
@@ -435,7 +435,13 @@ impl<'a> Lowering<'a> {
                 env.insert(n.text.clone(), Val::Scalar(b));
             }
         }
-        match self.inline_block(&body.stmts, &env)? {
+        let _shapes = self.source_shape_scope(
+            HashMap::new(),
+            f.ret
+                .as_ref()
+                .map(|ty| self.source_layout(ty, &self.cur_env)),
+        );
+        match self.inline_source_function(f, self.cur_span.unwrap_or(f.span), &mut env)? {
             Val::Scalar(e) => Some(e),
             _ => None,
         }
