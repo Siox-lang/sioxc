@@ -13559,3 +13559,19 @@ retained data). Changes, all borrowing instead of copying:
 each std function body per call site (float_conformance's test process is 200k
 lines of IR); emitting shared functions there would overlap your inline-frame
 DWARF work, so it is left for coordination.
+
+### 2026-10-08 — Claude — dead instructions in emitted LLVM
+
+Owner asked whether the compiler emits dead instructions. Pre-optimization
+LLVM IR of seven corpus programs, counted transitively (pure instructions and
+signal reads whose results are never used): at most 0.6% dead, from two
+sources, both fixed on chore/dead-check:
+- `sx_set_word` built a first-word comparison for every signal; only a
+  ranged signal uses it (`record_range_value` returns early otherwise).
+- Storage reset and commit read every observed binding although a later
+  binding covering the same bits overwrites it; such a binding is now
+  skipped (`observation_overwritten` in llvm/process/flags.rs). fixed_test
+  had five full-width observations per storage.
+After: 0 dead in fixed_test, packed_partial_write, engine_differential; 4 in
+hardware_aggregate_writes (select arm-activity flags built for an arm whose
+value is already cached; left, LLVM -O1 removes them).
