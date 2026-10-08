@@ -12,6 +12,7 @@ module core::macros;
 //   warn!(cond, "message")          the non-fatal sibling: reported and
 //                                   counted while the test still passes
 //   print!("fmt {}", args)          print one formatted line
+//   write!(f, "fmt {}", args)       append to the output, in Display::fmt
 //   error!("message")               fail unconditionally, like Rust's panic!
 //
 // This module also carries the severity ladder for when assertions grow a
@@ -22,6 +23,9 @@ pub macro assert($cond: expr, $rest: expr...) { builtin # assert($cond, $rest) }
 pub macro warn($cond: expr, $rest: expr...) { builtin # warn($cond, $rest) }
 
 pub macro print($args: expr...) { builtin # print($args) }
+
+// `write!(f, "fmt {}", args)` appends to the output inside a `Display::fmt`.
+pub macro write($f: expr, $rest: expr...) { builtin # write($f, $rest) }
 
 pub macro error($rest: expr...) { builtin # assert(false, $rest) }
 

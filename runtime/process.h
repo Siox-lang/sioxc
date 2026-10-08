@@ -53,6 +53,15 @@ void sx_runtime_format_signed(const uint64_t *words, uint32_t word_count,
                               uint32_t width);
 void sx_runtime_format_real(uint64_t bits);
 void sx_runtime_format_char(uint32_t value);
+/* How the next number is written: form 0 decimal, 1/2 scientific (e/E),
+ * 3/4 hex (x/X), 5 binary, 6 octal; precision -1 for none; flags bit 0 `+`,
+ * bit 1 `#` (radix prefix). Reset once a number consumes it. */
+void sx_runtime_format_notation(uint32_t form, int32_t precision, uint32_t flags);
+/* Pad everything written until the matching close to `width` characters
+ * with `fill` (a Unicode scalar), align 0 left, 1 center, 2 right; `zero`
+ * pads a number with zeros after its sign and radix prefix instead. */
+void sx_runtime_format_open(uint32_t fill, uint32_t align, uint32_t width, uint32_t zero);
+void sx_runtime_format_close(void);
 const char *sx_runtime_format_end(void);
 uint32_t sx_runtime_warning_count(void);
 

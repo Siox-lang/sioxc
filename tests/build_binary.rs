@@ -2772,8 +2772,8 @@ fn native_formatting_preserves_wide_unicode_and_long_messages() {
         "real locals or fields were not formatted as floating-point values:\n{stdout}"
     );
     assert!(
-        stdout.contains("real comparison 1"),
-        "a real comparison result was incorrectly formatted as a real:\n{stdout}"
+        stdout.contains("real comparison true"),
+        "a real comparison result is a `Bool` and prints as one:\n{stdout}"
     );
     assert!(
         stdout.contains("signed integer -8"),

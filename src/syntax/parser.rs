@@ -2761,7 +2761,7 @@ impl<'a> Parser<'a> {
     /// Whether `callee` names one of the compiler's built-in macros.
     fn is_builtin_macro(callee: &Expr) -> bool {
         matches!(callee, Expr::Path(p) if p.segments.len() == 1
-            && matches!(p.segments[0].text.as_str(), "assert" | "print" | "warn"))
+            && matches!(p.segments[0].text.as_str(), "assert" | "print" | "warn" | "write"))
     }
 
     /// Read a macro call's delimited arguments, from the opening delimiter

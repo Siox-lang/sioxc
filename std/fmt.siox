@@ -1,0 +1,4 @@
+module std::fmt;
+
+// Formatting: rustc's `std::fmt` re-exports `core::fmt`, and so does this.
+pub use core::fmt::{Display, Formatter};

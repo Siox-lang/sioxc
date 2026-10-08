@@ -14874,3 +14874,41 @@ lines and .codex unstaged. Keep the full DWARF goal active: aggregate hardware
 boundaries, actual shared-predicate call counts, folded literal/empty return
 frames, operator/constrained signature type audits, packed expression companions
 and real/string finish-ABI checks remain. No push is authorized.
+
+### 2026-10-08 — Claude — print formatting: specs, built-in forms, Display
+
+Owner-requested (choices made by the owner: Rust-style specs, Rust `Debug`
+struct form, a `Display` trait now).
+- `syntax/format.rs`: placeholders carry a `FormatSpec`
+  (`{:[[fill]align][+][#][0][width][.precision][e|E|x|X|b|o]}`); malformed or
+  type-mismatched specs are type-check errors.
+- Process IR: `ProcessFormatPart::Value` carries the numeric spec;
+  `Open`/`Close` parts pad a placeholder's whole output;
+  `ProcessDisplayKind::Symbol` prints an enum symbol unquoted.
+- Runtime ABI (fixed runtime, `runtime/process.c`): new
+  `sx_runtime_format_notation`, `sx_runtime_format_open`,
+  `sx_runtime_format_close`; existing value calls honour a pending notation.
+- Lowering expands structs/views (`Name { f: v }`), arrays (`[a, b]`) and
+  logic vectors (`10XZ`) into parts, and inlines a `Display::fmt` body
+  (`write!` + `let`) with plain `{}` inheriting the caller's numeric spec.
+- `core::fmt::{Display, Formatter}` + `write!` (core prelude), `std::fmt`
+  re-export; std impls for `float`, `ufixed`, `sfixed`, `Complex`.
+**Codex:** touches `lower_process_format` and helpers in
+`source_processes.rs`, `llvm/process/instructions.rs` format emission,
+`llvm/process/support.rs`, and the runtime format functions.
+
+### 2026-10-08 — Codex — pull main print-format updates
+
+User requested integration of origin/main at 18f3e83. Preserve local main
+commits on backup/before-main-print-format-20261008 and tracked unfinished
+DWARF/shared changes in retained stash eaa23f1; leave .codex untouched.
+Only chat.md conflicted: retain both agents' entries. Compiler/runtime code
+merged automatically. Run the required guarded Rust/native/corpus gates before
+the merge commit, then restore the retained local edits. No push authorized.
+
+The initial gate 2057167 was deliberately stopped after stale corpus assertion
+messages failed the new brace syntax. The clean sibling siox-tests checkout
+fast-forwarded to 05278a8, including Claude's already-committed migrations.
+Gate 2072731 completed exited/success/0, peak 491655168 bytes: all default Rust
+tests (534 units plus integrations) and 228/0 native corpus simulations pass.
+Finalize the main merge without including the saved unfinished edits.

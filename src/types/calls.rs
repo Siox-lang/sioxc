@@ -220,20 +220,29 @@ impl<'a> Checker<'a> {
     /// argument was silently dropped — in a testbench that is exactly where a
     /// wrong value costs you debugging time. Checking the shared source
     /// contract here keeps every Process IR consumer consistent.
-    pub(super) fn check_format_arity(&mut self, callee: &Expr, args: &[Expr]) {
+    pub(super) fn check_format_arity(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        sym: &HashMap<String, Ty>,
+    ) {
         let name = match callee {
             Expr::Path(p) if p.segments.len() == 1 => p.segments[0].text.as_str(),
             _ => return,
         };
-        // `assert!`/`warn!(cond, "msg", args..)` put the format string second.
+        // `assert!`/`warn!(cond, "msg", args..)` and `write!(f, "msg", args..)`
+        // put the format string second.
         let fmt_at = match name {
             "print" => 0,
-            "assert" | "warn" => 1,
+            "assert" | "warn" | "write" => 1,
             _ => return,
         };
         let Some(Expr::StrLit { text, span }) = args.get(fmt_at) else {
             return;
         };
+        for message in crate::syntax::format::errors(text) {
+            self.error(codes::TYPE_MISMATCH, *span, message);
+        }
         let want = crate::syntax::format::arity(text);
         let have = args.len().saturating_sub(fmt_at + 1);
         if want != have {
@@ -241,6 +250,53 @@ impl<'a> Checker<'a> {
                 codes::TYPE_MISMATCH,
                 *span,
                 format!("format string takes {want} argument(s) but {have} were given"),
+            );
+            return;
+        }
+        let specs = crate::syntax::format::parts(text)
+            .into_iter()
+            .filter_map(|part| match part {
+                crate::syntax::format::FormatPart::Placeholder(spec) => Some(spec),
+                crate::syntax::format::FormatPart::Text(_) => None,
+            });
+        for (spec, argument) in specs.zip(&args[fmt_at + 1..]) {
+            self.check_format_spec(&spec, argument, sym);
+        }
+    }
+
+    /// A spec asks for a notation the argument's type cannot have: hex of a
+    /// real, or a precision on text or an enum. Numbers, vectors, and types
+    /// with their own `Display` take every spec.
+    fn check_format_spec(
+        &mut self,
+        spec: &crate::syntax::format::FormatSpec,
+        argument: &Expr,
+        sym: &HashMap<String, Ty>,
+    ) {
+        let ty = self.type_of(argument, sym);
+        let text = match &ty {
+            Ty::Char => true,
+            Ty::Array {
+                elem, family: None, ..
+            } => matches!(elem.as_ref(), Ty::Char),
+            _ => false,
+        };
+        let enumeration = matches!(&ty, Ty::Named(id)
+            if self.resolved.kind_of(*id) == Some(crate::resolve::DefKind::Enum));
+        let message = if spec.kind.is_radix() && matches!(ty, Ty::Real) {
+            Some("a radix form (`x`, `X`, `b`, `o`) writes integers; this argument is a `real`")
+        } else if (text || enumeration)
+            && (spec.precision.is_some() || spec.kind != crate::syntax::format::FormatKind::Display)
+        {
+            Some("a precision or number notation applies to numbers; this argument is not one")
+        } else {
+            None
+        };
+        if let Some(message) = message {
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(argument),
+                message.to_string(),
             );
         }
     }
@@ -325,8 +381,8 @@ impl<'a> Checker<'a> {
             "rand" | "randint" => Ty::Integer,
             "uniform" => Ty::Real,
             "exists" => self.ty_from_head("Bool"),
-            "seed" | "print" | "assert" | "warn" | "await" | "wait" | "tick" | "clock" | "stop"
-            | "finish" => Ty::Void,
+            "seed" | "print" | "assert" | "warn" | "write" | "await" | "wait" | "tick"
+            | "clock" | "stop" | "finish" => Ty::Void,
             "read" | "resize" => Ty::Error,
             _ => Ty::Error,
         }
@@ -558,7 +614,7 @@ impl<'a> Checker<'a> {
                 );
                 return;
             }
-        } else if matches!(function, "print" | "assert" | "warn") && args.is_empty() {
+        } else if matches!(function, "print" | "assert" | "warn" | "write") && args.is_empty() {
             self.error(
                 codes::TYPE_MISMATCH,
                 expr_span(callee),
@@ -570,6 +626,7 @@ impl<'a> Checker<'a> {
             "print"
                 | "assert"
                 | "warn"
+                | "write"
                 | "rand"
                 | "uniform"
                 | "stop"
@@ -584,7 +641,7 @@ impl<'a> Checker<'a> {
             return;
         }
 
-        if matches!(function, "print" | "assert" | "warn") && !bang {
+        if matches!(function, "print" | "assert" | "warn" | "write") && !bang {
             self.error_with_help(
                 codes::TYPE_MISMATCH,
                 expr_span(callee),
@@ -624,6 +681,29 @@ impl<'a> Checker<'a> {
                         codes::TYPE_MISMATCH,
                         expr_span(format),
                         "`print!` needs a string-literal format".to_string(),
+                    );
+                }
+            }
+            "write" => {
+                // `write!(f, "fmt", ..)` appends to a `Display::fmt` output.
+                let formatter = self.type_of(&args[0], sym);
+                let is_formatter = matches!(&formatter, Ty::Named(id)
+                    if self.resolved.def(*id).is_some_and(|d| d.name == "Formatter"));
+                if !is_formatter {
+                    self.error_with_help(
+                        codes::TYPE_MISMATCH,
+                        expr_span(&args[0]),
+                        "`write!` writes to a `Formatter`".to_string(),
+                        "use it in `impl Display for T { fn fmt(self, f: Formatter) { write!(f, ..); } }`, \
+                         or print with `print!`"
+                            .to_string(),
+                    );
+                }
+                if !matches!(args.get(1), Some(Expr::StrLit { .. })) {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        expr_span(args.get(1).unwrap_or(&args[0])),
+                        "`write!` needs a string-literal format after the formatter".to_string(),
                     );
                 }
             }
@@ -667,6 +747,7 @@ impl<'a> Checker<'a> {
             "print"
                 | "assert"
                 | "warn"
+                | "write"
                 | "await"
                 | "wait"
                 | "tick"

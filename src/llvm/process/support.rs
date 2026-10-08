@@ -28,10 +28,13 @@ pub(super) fn runtime_instruction_supported(
 ) -> bool {
     let format_supported = |parts: &[ProcessFormatPart]| {
         parts.iter().all(|part| match part {
-            ProcessFormatPart::Text(_) => true,
+            ProcessFormatPart::Text(_)
+            | ProcessFormatPart::Open { .. }
+            | ProcessFormatPart::Close => true,
             ProcessFormatPart::Value {
                 value,
                 kind: ProcessDisplayKind::String,
+                ..
             } => {
                 process_string(design, *value).is_some()
                     || process_empty_string(design, *value)
@@ -40,7 +43,7 @@ pub(super) fn runtime_instruction_supported(
                             .and_then(process_fixed_string_layout)
                             .is_some()
             }
-            ProcessFormatPart::Value { value, kind } => {
+            ProcessFormatPart::Value { value, kind, .. } => {
                 values.get(value.0 as usize).copied().unwrap_or(false)
                     && design
                         .process_ir
@@ -53,7 +56,8 @@ pub(super) fn runtime_instruction_supported(
                                 && match kind {
                                     ProcessDisplayKind::Real => width == 64,
                                     ProcessDisplayKind::Character => width <= 32,
-                                    ProcessDisplayKind::Enum(name) => {
+                                    ProcessDisplayKind::Enum(name)
+                                    | ProcessDisplayKind::Symbol(name) => {
                                         width <= 64 && design.enum_syms.contains_key(name)
                                     }
                                     ProcessDisplayKind::Unsigned | ProcessDisplayKind::Signed => {
