@@ -1876,11 +1876,15 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         for (id, (_, bb)) in cases.iter().enumerate() {
             self.builder.position_at_end(*bb);
             let w = self.signal_width(SignalId(id as u32));
-            let first_word = self
-                .builder
-                .build_int_compare(IntPredicate::EQ, word, i32.const_zero(), "word0")
-                .unwrap();
-            self.record_range_value(SignalId(id as u32), val, Some(first_word), 0);
+            // Only a ranged signal checks its first word; building the
+            // comparison for every signal left a dead instruction in each case.
+            if self.design.signals[id].range.is_some() {
+                let first_word = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, word, i32.const_zero(), "word0")
+                    .unwrap();
+                self.record_range_value(SignalId(id as u32), val, Some(first_word), 0);
+            }
             let cty = self.value_ty(w);
             // shift = word * ABI_WORD_BITS, in the compute type.
             let shift = self
