@@ -3078,7 +3078,10 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
     #[cfg(test)]
     fn emit_binary(&self, op: BinOp, lhs: &Expr, rhs: &Expr, result_width: u32) -> IntValue<'ctx> {
         // Float ops reinterpret the i64 words as f64.
-        if matches!(op, BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv) {
+        if matches!(
+            op,
+            BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv | BinOp::FRem
+        ) {
             let f = self.ctx.f64_type();
             let a = self
                 .builder
@@ -3094,6 +3097,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 BinOp::FAdd => self.builder.build_float_add(a, b, "fadd").unwrap(),
                 BinOp::FSub => self.builder.build_float_sub(a, b, "fsub").unwrap(),
                 BinOp::FMul => self.builder.build_float_mul(a, b, "fmul").unwrap(),
+                BinOp::FRem => self.builder.build_float_rem(a, b, "frem").unwrap(),
                 _ => self.builder.build_float_div(a, b, "fdiv").unwrap(),
             };
             return self
@@ -3135,7 +3139,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         let signed = signed_comparison
             || matches!(
                 op,
-                BinOp::SAdd | BinOp::SSub | BinOp::SMul | BinOp::SDiv | BinOp::AShr
+                BinOp::SAdd | BinOp::SSub | BinOp::SMul | BinOp::SDiv | BinOp::SRem | BinOp::AShr
             );
         let comparison = matches!(
             op,
@@ -3298,6 +3302,38 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     .unwrap()
                     .into_int_value()
             }
+            BinOp::Rem | BinOp::SRem => {
+                let zero = self.c_at(0, operand_width);
+                let one = self.c_at(1, operand_width);
+                let neg_one = self.value_ty(operand_width).const_all_ones();
+                let is0 = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, b, zero, "r0")
+                    .unwrap();
+                let bad = if op == BinOp::SRem {
+                    let is_neg_one = self
+                        .builder
+                        .build_int_compare(IntPredicate::EQ, b, neg_one, "rneg1")
+                        .unwrap();
+                    self.builder.build_or(is0, is_neg_one, "rbad").unwrap()
+                } else {
+                    is0
+                };
+                let safe = self
+                    .builder
+                    .build_select(bad, one, b, "rden")
+                    .unwrap()
+                    .into_int_value();
+                if op == BinOp::SRem {
+                    self.builder.build_int_signed_rem(a, safe, "srem").unwrap()
+                } else {
+                    let r = self.builder.build_int_unsigned_rem(a, safe, "rem").unwrap();
+                    self.builder
+                        .build_select(is0, zero, r, "remz")
+                        .unwrap()
+                        .into_int_value()
+                }
+            }
             BinOp::Shl | BinOp::Shr | BinOp::AShr => unreachable!("shifts return above"),
             // Core logical operators; for boolean 0/1 operands these match
             // their scalar reading, and vectors apply them per bit.
@@ -3315,7 +3351,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             BinOp::SLe => cmp(IntPredicate::SLE, "sle"),
             BinOp::SGt => cmp(IntPredicate::SGT, "sgt"),
             BinOp::SGe => cmp(IntPredicate::SGE, "sge"),
-            BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv => unreachable!(),
+            BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv | BinOp::FRem => unreachable!(),
             BinOp::FEq | BinOp::FNe | BinOp::FLt | BinOp::FLe | BinOp::FGt | BinOp::FGe => {
                 unreachable!()
             }

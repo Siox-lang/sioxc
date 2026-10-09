@@ -436,10 +436,12 @@ pub(super) fn process_packed_meta_supported(
             | ProcessBinaryOp::Sub
             | ProcessBinaryOp::Mul
             | ProcessBinaryOp::Div
+            | ProcessBinaryOp::Rem
             | ProcessBinaryOp::SignedAdd
             | ProcessBinaryOp::SignedSub
             | ProcessBinaryOp::SignedMul
-            | ProcessBinaryOp::SignedDiv => {
+            | ProcessBinaryOp::SignedDiv
+            | ProcessBinaryOp::SignedRem => {
                 packed_arithmetic_operand_layout(design, layout, *left).is_some_and(|left_layout| {
                     process_packed_meta_supported(design, *left, &left_layout, supported)
                 }) && packed_arithmetic_operand_layout(design, layout, *right).is_some_and(

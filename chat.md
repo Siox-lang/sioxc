@@ -13676,3 +13676,24 @@ skips the `Display` impl and quotes strings/characters; the runtime's
 `sx_runtime_format_notation` flags gain bit 2 (a Debug real keeps `.0`).
 **Codex:** touches `lower_format_value`, `llvm/process/instructions.rs`
 format notation flags, `runtime/process.c` real formatting.
+
+### 2026-10-09 — Claude — `%` (core `Rem`), unsized vector returns
+
+Owner-requested, branch `feat/rem-operator`.
+- `%` is a core operator: `core::ops::Rem` (lang `rem`), `TokenKind::Percent`
+  / `PercentEq`, `ast::BinOp::Rem` at precedence 90; IR ops
+  `ProcessBinaryOp::{Rem, SignedRem, FloatRem}` and `BinOp::{Rem, SRem, FRem}`
+  lowered to urem/srem/frem (total: zero divisor and `MIN % -1` yield 0).
+  `unsigned`/`signed` impls in `std::bits`. `%` alone no longer lexes as a
+  custom-operator symbol (runs like `%%` still do).
+- Functions returning `Logic[]`/`unsigned` take their size from the body
+  (`source_bindings::returned_shapes`), in both lowering paths; hardware
+  element/slice writes into array locals; testbench constant-range slice
+  writes to array locals become element assignments.
+- Logic vector `==`/`!=` against a string literal or vector: element-wise
+  in hardware (`array_comparison`), literal context-typed in the Process path.
+- Fixed a #40 bug: CFG normalization re-mapped `print!` format parts to
+  arguments by position, which broke whenever a composite printed as its
+  parts in a block that needed normalization (any call).
+**Codex:** touches syntax lexer/parser/ast, both IR BinOp enums, llvm
+`process/binary.rs`, `cfg_calls.rs` Runtime normalization, `calls.rs`.

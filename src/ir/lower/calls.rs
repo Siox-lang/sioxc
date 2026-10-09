@@ -1173,10 +1173,15 @@ impl<'a> Lowering<'a> {
                         return None;
                     };
                     let name = &segment.text;
+                    let layout = self.source_bound_layout(name)?;
+                    if let Some(Val::Fields(fields)) = env.get(name).cloned() {
+                        let updated = self.write_elements(fields, &layout, index, value, env)?;
+                        env.insert(name.clone(), Val::Fields(updated));
+                        continue;
+                    }
                     let Some(Val::Scalar(current)) = env.get(name).cloned() else {
                         return None;
                     };
-                    let layout = self.source_bound_layout(name)?;
                     if !matches!(layout.kind, LayoutKind::Packed { .. }) {
                         return None;
                     }
@@ -1230,6 +1235,56 @@ impl<'a> Lowering<'a> {
             }
         }
         Some(())
+    }
+
+    /// `r[k] = v` or `r[hi..lo] = v` on an array local, at constant indices:
+    /// its elements with those replaced, the right-hand side's paired in
+    /// written order.
+    fn write_elements(
+        &self,
+        mut fields: Vec<(String, Expr)>,
+        layout: &SourceLayout,
+        index: &ast::Expr,
+        value: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Vec<(String, Expr)>> {
+        let LayoutKind::Array {
+            range: Some(range), ..
+        } = &layout.kind
+        else {
+            return None;
+        };
+        let (low, high) = (range.left.min(range.right), range.left.max(range.right));
+        let constant = |bound: &ast::Expr| {
+            self.constant_expr(&self.lower_scalar_env(bound, env))
+                .filter(|label| (low..=high).contains(label))
+        };
+        let mut set = |label: i64, element: Expr| {
+            let key = format!("[{label}]");
+            let slot = fields.iter_mut().find(|(name, _)| *name == key)?;
+            slot.1 = element;
+            Some(())
+        };
+        if let ast::Expr::Range { lo, hi, .. } = index {
+            let targets = loop_range(constant(lo)?, constant(hi)?);
+            let Val::Fields(source) = self.lower_val_env(value, env) else {
+                return None;
+            };
+            let source_layout = self.source_operand_layout(value, env)?;
+            let source_range = source_layout.index_range()?;
+            let sources = loop_range(source_range.left, source_range.right);
+            if sources.len() != targets.len() {
+                return None;
+            }
+            let source = source.into_iter().collect::<HashMap<_, _>>();
+            for (target, from) in targets.into_iter().zip(sources) {
+                set(target, source.get(&format!("[{from}]"))?.clone())?;
+            }
+        } else {
+            let element = self.lower_scalar_env(value, env);
+            set(constant(index)?, element)?;
+        }
+        Some(fields)
     }
 
     /// A block in its own scope: its `let`s end with it, its assignments to

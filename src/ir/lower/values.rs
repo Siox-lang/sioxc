@@ -284,6 +284,9 @@ impl<'a> Lowering<'a> {
                 {
                     return Val::Scalar(native);
                 }
+                if let Some(compared) = self.array_comparison(op, lhs, rhs, env) {
+                    return Val::Scalar(compared);
+                }
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(v) = self.inline_op(op_str, lhs, rhs, env) {
                         return v;

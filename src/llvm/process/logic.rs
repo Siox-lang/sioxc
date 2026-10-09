@@ -482,10 +482,12 @@ fn process_packed_meta_uncached<'ctx>(
             | ProcessBinaryOp::Sub
             | ProcessBinaryOp::Mul
             | ProcessBinaryOp::Div
+            | ProcessBinaryOp::Rem
             | ProcessBinaryOp::SignedAdd
             | ProcessBinaryOp::SignedSub
             | ProcessBinaryOp::SignedMul
-            | ProcessBinaryOp::SignedDiv => {
+            | ProcessBinaryOp::SignedDiv
+            | ProcessBinaryOp::SignedRem => {
                 let left_layout = packed_arithmetic_operand_layout(design, layout, *left)?;
                 let right_layout = packed_arithmetic_operand_layout(design, layout, *right)?;
                 let (left_width, left_encoding) = packed_logic_layout(design, &left_layout)?;

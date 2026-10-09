@@ -686,6 +686,10 @@ pub enum ProcessBinaryOp {
     SignedMul,
     /// Signed kernel-integer division.
     SignedDiv,
+    /// Unsigned remainder.
+    Rem,
+    /// Signed kernel-integer remainder, with the dividend's sign.
+    SignedRem,
     /// Type-directed conjunction.
     And,
     /// Type-directed disjunction.
@@ -729,6 +733,8 @@ pub enum ProcessBinaryOp {
     FloatMul,
     /// IEEE-754 division.
     FloatDiv,
+    /// IEEE-754 remainder, C's `fmod`.
+    FloatRem,
     /// Ordered IEEE-754 equality.
     FloatEq,
     /// Ordered IEEE-754 inequality.
@@ -1038,6 +1044,7 @@ fn process_binary_is_signed(operation: &ProcessBinaryOp) -> bool {
             | ProcessBinaryOp::SignedSub
             | ProcessBinaryOp::SignedMul
             | ProcessBinaryOp::SignedDiv
+            | ProcessBinaryOp::SignedRem
             | ProcessBinaryOp::SignedLt
             | ProcessBinaryOp::SignedLe
             | ProcessBinaryOp::SignedGt
@@ -1089,6 +1096,7 @@ pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]
                 ProcessBinaryOp::Sub | ProcessBinaryOp::SignedSub => left.checked_sub(right),
                 ProcessBinaryOp::Mul | ProcessBinaryOp::SignedMul => left.checked_mul(right),
                 ProcessBinaryOp::Div | ProcessBinaryOp::SignedDiv => left.checked_div(right),
+                ProcessBinaryOp::Rem | ProcessBinaryOp::SignedRem => left.checked_rem(right),
                 ProcessBinaryOp::Shl => left.checked_shl(right.try_into().ok()?),
                 ProcessBinaryOp::Shr | ProcessBinaryOp::ArithmeticShr => {
                     left.checked_shr(right.try_into().ok()?)
@@ -1106,6 +1114,7 @@ pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]
                 | ProcessBinaryOp::FloatSub
                 | ProcessBinaryOp::FloatMul
                 | ProcessBinaryOp::FloatDiv
+                | ProcessBinaryOp::FloatRem
                 | ProcessBinaryOp::FloatEq
                 | ProcessBinaryOp::FloatNe
                 | ProcessBinaryOp::FloatLt
@@ -2390,10 +2399,12 @@ pub(crate) fn process_binary_from_digital(operation: BinOp) -> ProcessBinaryOp {
         BinOp::Sub => ProcessBinaryOp::Sub,
         BinOp::Mul => ProcessBinaryOp::Mul,
         BinOp::Div => ProcessBinaryOp::Div,
+        BinOp::Rem => ProcessBinaryOp::Rem,
         BinOp::SAdd => ProcessBinaryOp::SignedAdd,
         BinOp::SSub => ProcessBinaryOp::SignedSub,
         BinOp::SMul => ProcessBinaryOp::SignedMul,
         BinOp::SDiv => ProcessBinaryOp::SignedDiv,
+        BinOp::SRem => ProcessBinaryOp::SignedRem,
         BinOp::And => ProcessBinaryOp::And,
         BinOp::Or => ProcessBinaryOp::Or,
         BinOp::Xor => ProcessBinaryOp::Xor,
@@ -2414,6 +2425,7 @@ pub(crate) fn process_binary_from_digital(operation: BinOp) -> ProcessBinaryOp {
         BinOp::FSub => ProcessBinaryOp::FloatSub,
         BinOp::FMul => ProcessBinaryOp::FloatMul,
         BinOp::FDiv => ProcessBinaryOp::FloatDiv,
+        BinOp::FRem => ProcessBinaryOp::FloatRem,
         BinOp::FEq => ProcessBinaryOp::FloatEq,
         BinOp::FNe => ProcessBinaryOp::FloatNe,
         BinOp::FLt => ProcessBinaryOp::FloatLt,

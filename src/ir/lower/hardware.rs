@@ -450,7 +450,8 @@ fn normalized_value_width(
             ProcessBinaryOp::FloatAdd
             | ProcessBinaryOp::FloatSub
             | ProcessBinaryOp::FloatMul
-            | ProcessBinaryOp::FloatDiv => Some(64),
+            | ProcessBinaryOp::FloatDiv
+            | ProcessBinaryOp::FloatRem => Some(64),
             // Raw kernel multiplication is evaluated before a consuming
             // slice, shift, or assignment selects the result's bits. Keeping
             // only max(lhs, rhs) here would drop fixed-point fraction bits

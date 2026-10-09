@@ -47,6 +47,7 @@ impl<'a> Checker<'a> {
                     BinOp::Sub => a.checked_sub(b)?,
                     BinOp::Mul => a.checked_mul(b)?,
                     BinOp::Div if b != 0 => a / b,
+                    BinOp::Rem if b != 0 => a % b,
                     _ => return None,
                 })
             }

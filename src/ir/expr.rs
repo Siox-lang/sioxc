@@ -194,6 +194,8 @@ pub enum BinOp {
     Mul,
     /// Unsigned division.
     Div,
+    /// Unsigned remainder.
+    Rem,
     /// Signed kernel-`integer` arithmetic. Add/subtract/multiply use the same
     /// bit operation as their unsigned counterparts, but retain signedness so
     /// a wider enclosing expression sign-extends their operands/results.
@@ -204,6 +206,8 @@ pub enum BinOp {
     SMul,
     /// Signed division.
     SDiv,
+    /// Signed remainder, with the dividend's sign.
+    SRem,
     /// Bitwise conjunction.
     And,
     /// Bitwise disjunction.
@@ -248,6 +252,8 @@ pub enum BinOp {
     FMul,
     /// Float division.
     FDiv,
+    /// Float remainder, C's `fmod`.
+    FRem,
     /// Float comparison on f64-bit values (`real` operands); the result is a
     /// `Bool` (0/1), computed with ordered IEEE-754 semantics — integer compare
     /// on the raw bits would misorder negatives and `±0.0`.

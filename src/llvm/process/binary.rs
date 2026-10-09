@@ -27,6 +27,7 @@ pub(super) fn process_binary<'ctx>(
             | ProcessBinaryOp::FloatSub
             | ProcessBinaryOp::FloatMul
             | ProcessBinaryOp::FloatDiv
+            | ProcessBinaryOp::FloatRem
     ) {
         let float = context.f64_type();
         let left = process_value_at(
@@ -66,6 +67,7 @@ pub(super) fn process_binary<'ctx>(
             ProcessBinaryOp::FloatSub => builder.build_float_sub(left, right, "pv.fsub").ok()?,
             ProcessBinaryOp::FloatMul => builder.build_float_mul(left, right, "pv.fmul").ok()?,
             ProcessBinaryOp::FloatDiv => builder.build_float_div(left, right, "pv.fdiv").ok()?,
+            ProcessBinaryOp::FloatRem => builder.build_float_rem(left, right, "pv.frem").ok()?,
             _ => return None,
         };
         let bits = builder
@@ -151,6 +153,7 @@ pub(super) fn process_binary<'ctx>(
             | ProcessBinaryOp::SignedSub
             | ProcessBinaryOp::SignedMul
             | ProcessBinaryOp::SignedDiv
+            | ProcessBinaryOp::SignedRem
             | ProcessBinaryOp::SignedLt
             | ProcessBinaryOp::SignedLe
             | ProcessBinaryOp::SignedGt
@@ -335,6 +338,51 @@ pub(super) fn process_binary<'ctx>(
                 .ok()?
                 .into_int_value()
         }
+        // Remainder is total like `/`: a zero divisor yields 0, and so does
+        // `MIN % -1`, where LLVM's `srem` would be poison.
+        ProcessBinaryOp::Rem => {
+            let zero = left.get_type().const_zero();
+            let one = left.get_type().const_int(1, false);
+            let is_zero = builder
+                .build_int_compare(IntPredicate::EQ, right, zero, "pv.rem.zero")
+                .ok()?;
+            let safe = builder
+                .build_select(is_zero, one, right, "pv.rem.denominator")
+                .ok()?
+                .into_int_value();
+            let remainder = builder.build_int_unsigned_rem(left, safe, "pv.rem").ok()?;
+            builder
+                .build_select(is_zero, zero, remainder, "pv.rem.result")
+                .ok()?
+                .into_int_value()
+        }
+        ProcessBinaryOp::SignedRem => {
+            let ty = left.get_type();
+            let zero = ty.const_zero();
+            let one = ty.const_int(1, false);
+            let negative_one = ty.const_all_ones();
+            let is_zero = builder
+                .build_int_compare(IntPredicate::EQ, right, zero, "pv.srem.zero")
+                .ok()?;
+            let is_negative_one = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    right,
+                    negative_one,
+                    "pv.srem.negative_one",
+                )
+                .ok()?;
+            // `x % 1` and `x % -1` are both 0, so a divisor of 1 stands in
+            // for -1 (dodging `MIN % -1`) and for zero.
+            let unsafe_divisor = builder
+                .build_or(is_zero, is_negative_one, "pv.srem.unsafe")
+                .ok()?;
+            let safe = builder
+                .build_select(unsafe_divisor, one, right, "pv.srem.denominator")
+                .ok()?
+                .into_int_value();
+            builder.build_int_signed_rem(left, safe, "pv.srem").ok()?
+        }
         ProcessBinaryOp::SignedDiv => {
             let ty = left.get_type();
             let zero = ty.const_zero();
@@ -399,6 +447,7 @@ pub(super) fn process_binary<'ctx>(
         | ProcessBinaryOp::FloatSub
         | ProcessBinaryOp::FloatMul
         | ProcessBinaryOp::FloatDiv
+        | ProcessBinaryOp::FloatRem
         | ProcessBinaryOp::FloatEq
         | ProcessBinaryOp::FloatNe
         | ProcessBinaryOp::FloatLt

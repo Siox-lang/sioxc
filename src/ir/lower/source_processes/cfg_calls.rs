@@ -158,11 +158,9 @@ fn normalize_contents(
                 }
             }
             ProcessInstruction::Runtime {
-                operation,
-                arguments,
-                format,
-                ..
+                arguments, format, ..
             } => {
+                let originals = arguments.clone();
                 for index in 0..arguments.len() {
                     let old = arguments[index];
                     let mut value =
@@ -175,15 +173,25 @@ fn normalize_contents(
                     }
                     arguments[index] = value;
                 }
-                let first_formatted = match operation {
-                    ProcessRuntimeOp::Print => 1,
-                    ProcessRuntimeOp::Assert | ProcessRuntimeOp::Warn => 2,
-                    _ => arguments.len(),
-                };
-                let mut formatted = arguments.iter().skip(first_formatted);
+                // A part is an argument, matched in order so a value read
+                // twice keeps each read's snapshot, or a projection of one (a
+                // struct field, an array element) when a composite prints as
+                // its parts; those normalize through the same memo, so a call
+                // they read is the one already inlined.
+                let mut cursor = 0;
                 for part in format.iter_mut().flatten() {
                     if let ProcessFormatPart::Value { value, .. } = part {
-                        *value = *formatted.next()?;
+                        if let Some(offset) = originals[cursor..]
+                            .iter()
+                            .position(|argument| argument == value)
+                        {
+                            *value = arguments[cursor + offset];
+                            cursor += offset + 1;
+                        } else {
+                            *value = normalize_value(
+                                *value, false, &mut block, process, context, &mut memo,
+                            )?;
+                        }
                     }
                 }
             }
@@ -547,7 +555,8 @@ fn inline_call(
     let body_end = process.blocks.len();
     let mut supported = tail.is_none();
     for index in first_body_block..body_end {
-        supported &= normalize_block(ProcessBlockId(index as u32), process, context);
+        let ok = normalize_block(ProcessBlockId(index as u32), process, context);
+        supported &= ok;
         supported &= !process.blocks[index]
             .instructions
             .iter()
