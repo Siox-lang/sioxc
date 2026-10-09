@@ -283,3 +283,39 @@ impl T {
         );
     }
 }
+
+/// A `Logic` vector compared with a string literal or another vector, in
+/// hardware (one signal per element) and testbenches: identity per element,
+/// as VHDL's predefined `=` on `std_logic_vector`. Compared as text, the
+/// literal was never equal; in hardware the vector had no scalar form.
+#[cfg(feature = "llvm")]
+#[test]
+fn logic_vectors_compare_with_literals_and_vectors() {
+    let stdout = run(
+        "vector_compare",
+        r#"
+module vector_compare;
+entity Pass { a: Logic[3..0] in, b: Logic[3..0] in, e: Bool out, n: Bool out, s: Bool out }
+impl Pass { e = a == "1010"; n = a != b; s = a == b; }
+#[test] entity T {}
+impl T {
+    let a: Logic[3..0] = "1010"; let b: Logic[3..0] = "10X0";
+    let e: Bool; let n: Bool; let s: Bool;
+    let d: Pass = { .a = a, .b = b, .e = e, .n = n, .s = s };
+    check: process {
+        await 1ns;
+        let q: Logic[3..0] = "10XZ";
+        let text: string = "1010";
+        print!("hw {} {} {}", e, n, s);
+        print!("tb {} {} {} {} {}", q == "10XZ", "10XZ" == q, q != "10XZ", q == "1010", text == "1010");
+    }
+}
+"#,
+    );
+    for line in ["hw true true false", "tb true true false false true"] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}

@@ -2300,6 +2300,42 @@ fn array_slice_elements(
     )
 }
 
+/// `v == "10XZ"`: a string literal beside a vector of non-`Char` elements
+/// (`Logic`, `Bit`, `unsigned`) is that vector's literal, as on assignment,
+/// not a `Char` string; compared as text it was never equal. `None` leaves
+/// the operands to the other rules.
+fn logic_string_comparison(
+    lhs: &ast::Expr,
+    rhs: &ast::Expr,
+    left_type: Option<&crate::types::Ty>,
+    right_type: Option<&crate::types::Ty>,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<(ProcessValueId, ProcessValueId)> {
+    let vector = |ty: Option<&crate::types::Ty>| {
+        matches!(ty, Some(crate::types::Ty::Array { elem, .. })
+            if !matches!(elem.as_ref(), crate::types::Ty::Char))
+    };
+    let string = |expression: &ast::Expr| matches!(expression, ast::Expr::StrLit { .. });
+    if string(rhs) && !string(lhs) && vector(left_type) {
+        let left = value_ref_with_type(lhs, process, context, None);
+        let ty = process_value_type(left, context).or_else(|| left_type.cloned());
+        return Some((
+            left,
+            value_ref_with_type(rhs, process, context, ty.as_ref()),
+        ));
+    }
+    if string(lhs) && !string(rhs) && vector(right_type) {
+        let right = value_ref_with_type(rhs, process, context, None);
+        let ty = process_value_type(right, context).or_else(|| right_type.cloned());
+        return Some((
+            value_ref_with_type(lhs, process, context, ty.as_ref()),
+            right,
+        ));
+    }
+    None
+}
+
 /// Give an unsized call result (`-> Logic[]`) the layout of the value its
 /// body returns, which is where the size is set.
 fn adopt_returned_layout(
@@ -6949,6 +6985,15 @@ fn value_ref_with_type_inner(
                     value_ref_with_type(lhs, process, context, Some(&real)),
                     value_ref_with_type(rhs, process, context, Some(&real)),
                 )
+            } else if let Some((left, right)) = logic_string_comparison(
+                lhs,
+                rhs,
+                left_type.as_ref(),
+                right_type.as_ref(),
+                process,
+                context,
+            ) {
+                (left, right)
             } else if matches!(rhs.as_ref(), ast::Expr::CharLit { .. }) {
                 let left = value_ref_with_type(lhs, process, context, None);
                 left_type = left_type.or_else(|| process_value_type(left, context));

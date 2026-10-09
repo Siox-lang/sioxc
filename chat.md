@@ -13690,6 +13690,8 @@ Owner-requested, branch `feat/rem-operator`.
   (`source_bindings::returned_shapes`), in both lowering paths; hardware
   element/slice writes into array locals; testbench constant-range slice
   writes to array locals become element assignments.
+- Logic vector `==`/`!=` against a string literal or vector: element-wise
+  in hardware (`array_comparison`), literal context-typed in the Process path.
 - Fixed a #40 bug: CFG normalization re-mapped `print!` format parts to
   arguments by position, which broke whenever a composite printed as its
   parts in a block that needed normalization (any call).
