@@ -2,33 +2,31 @@
 
 use super::*;
 
-/// The base name of a type (`Counter<W>` -> `Counter`, `out S::Source` -> `S`).
-/// Append the value ranges a numeric pattern covers. Returns false when the
-/// pattern's coverage is not expressible as intervals — a bit pattern's
-/// don't-care bits scatter across the domain — so the caller can step aside
-/// instead of reporting a hole it cannot see.
-pub(super) fn collect_pattern_ranges(p: &Pattern, out: &mut Vec<(i128, i128)>) -> bool {
-    match p {
-        Pattern::Wildcard => {
-            out.push((i128::MIN, i128::MAX));
-            true
+/// Whether the union of `intervals` contains every value of `lo..hi`.
+pub(super) fn covered_by(lo: i128, hi: i128, intervals: &[(i128, i128)]) -> bool {
+    let mut sorted = intervals.to_vec();
+    sorted.sort_unstable();
+    let mut frontier = lo;
+    for (a, b) in sorted {
+        if a > frontier {
+            return false;
         }
-        Pattern::Range { lo, hi, .. } => {
-            let (lo, hi) = (i128::from(*lo), i128::from(*hi));
-            // `3..0` is written descending in some sources; a range covers the
-            // same values either way.
-            out.push((lo.min(hi), lo.max(hi)));
-            true
+        if b >= hi {
+            return true;
         }
-        Pattern::Or { alts, .. } => alts.iter().all(|a| collect_pattern_ranges(a, out)),
-        // An enum path against a numeric scrutinee is a type error reported
-        // elsewhere; a bit pattern is not an interval.
-        // Expression bounds are folded nowhere here, so their coverage is
-        // unknown and the check steps aside.
-        Pattern::Path(_)
-        | Pattern::BitPattern { .. }
-        | Pattern::CharLit { .. }
-        | Pattern::Bounds { .. } => false,
+        frontier = frontier.max(b + 1);
+    }
+    false
+}
+
+/// An interval as a pattern: `3`, `0..7`, or an open end (`..7`, `8..`).
+pub(super) fn show_interval(lo: i128, hi: i128) -> String {
+    match (lo == i128::MIN, hi == i128::MAX) {
+        _ if lo == hi => format!("`{lo}`"),
+        (true, true) => "`_`".to_string(),
+        (true, false) => format!("`..{hi}`"),
+        (false, true) => format!("`{lo}..`"),
+        (false, false) => format!("`{lo}..{hi}`"),
     }
 }
 

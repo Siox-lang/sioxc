@@ -94,6 +94,10 @@ pub const LINTS: &[(&str, &str)] = &[
         codes::INCOMPLETE_STRUCT_LITERAL,
     ),
     ("unknown_lints", codes::UNKNOWN_LINT),
+    (
+        "overlapping_range_endpoints",
+        codes::OVERLAPPING_RANGE_ENDPOINTS,
+    ),
 ];
 
 /// The lint a warning code belongs to.

@@ -13731,3 +13731,18 @@ Owner-approved. Branch `feat/match-patterns`.
 **Codex:** touches parser patterns, `types/patterns.rs`, `resolve.rs`,
 `ir/lower/{calls,control,values,operators,source_bindings}.rs`,
 `source_values/reconstruct.rs`, `source_processes.rs` match lowering.
+
+### 2026-10-09 — Claude — match arm analysis
+
+Owner-requested (TODO item). Branch `feat/match-arm-analysis`.
+- `types`: `const_values` (DefId -> initializer) and `Checker::const_int`, a
+  small integer folder (literals, named constants, `+ - * / % << >>`).
+  `pattern_intervals` replaces the free `collect_pattern_ranges` and folds
+  `Pattern::Bounds`; open ends run to the edge of `i128`.
+- `unreachable_match_arm` now checks an arm against the union of earlier
+  ranges (`covered_by`), Or-patterns and folded bounds included.
+- New lint `overlapping_range_endpoints` (W-P018).
+- Parser: a pattern bound may start with a constant and an operator
+  (`DEPTH + 1..`).
+**Codex:** touches `types/{patterns,helpers,statements,collect,mod}.rs`,
+`diag.rs`/`diag/lints.rs` (new code), `syntax/parser.rs` pattern atom.

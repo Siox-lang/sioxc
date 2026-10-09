@@ -517,6 +517,9 @@ pub mod codes {
     pub const INCOMPLETE_STRUCT_LITERAL: &str = "W-P016";
     /// A lint directive or `-A`/`-W`/`-D`/`-F` flag names no lint.
     pub const UNKNOWN_LINT: &str = "W-P017";
+    /// Two match ranges that share exactly one endpoint (`0..10`, `10..20`),
+    /// usually an off-by-one: siox ranges include both ends.
+    pub const OVERLAPPING_RANGE_ENDPOINTS: &str = "W-P018";
 }
 
 #[cfg(test)]
