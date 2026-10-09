@@ -348,11 +348,11 @@ impl<'a> Lowering<'a> {
                     if let Some(Val::Scalar(inlined)) =
                         self.inline_op(op_str, lhs, rhs, &HashMap::new())
                     {
-                        return self.mark_vector_compare(op, lhs, rhs, inlined);
+                        return self.mark_vector_compare(op, lhs, rhs, inlined, &HashMap::new());
                     }
                 }
                 if let Some(derived) = self.inline_cmp(op_str, lhs, rhs, &HashMap::new()) {
-                    return self.mark_vector_compare(op, lhs, rhs, derived);
+                    return self.mark_vector_compare(op, lhs, rhs, derived, &HashMap::new());
                 }
                 let (mut l, mut r) = (self.lower_expr(lhs), self.lower_expr(rhs));
                 // A character literal's identity comes from its counterpart's
@@ -375,7 +375,7 @@ impl<'a> Lowering<'a> {
                     self.declares_kernel_integer(lhs) || self.declares_kernel_integer(rhs),
                     ast::expr_span(e),
                 );
-                self.mark_vector_compare(op, lhs, rhs, built)
+                self.mark_vector_compare(op, lhs, rhs, built, &HashMap::new())
             }
             // `{a, b, c}`: fold into `(((0 << w_a) or a) << w_b) or b ...`.
             // First part is the MSBs.

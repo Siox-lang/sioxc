@@ -827,6 +827,19 @@ pub enum Pattern {
         /// The pattern's extent.
         span: Span,
     },
+    /// A range whose bounds are not both integer literals: constants
+    /// (`0..DEPTH - 1`), typed literals (`10ns..20ns`, `-1.5..1.5`), or an
+    /// open end (`..7`, `8..`). Matches through the scrutinee's `Ord`; a
+    /// single expression (`(N - 1)`) is `lo == hi`. Either order is the same
+    /// set of values.
+    Bounds {
+        /// Inclusive bound written first, or none for `..hi`.
+        lo: Option<Box<Expr>>,
+        /// Inclusive bound written second, or none for `lo..`.
+        hi: Option<Box<Expr>>,
+        /// The pattern's extent.
+        span: Span,
+    },
     /// A character literal (`'0'`, `'Z'`) naming a variant of a char-valued
     /// enum — `Logic` above all. Like the expression form it has no intrinsic
     /// value: the variant it selects comes from the scrutinee's type.

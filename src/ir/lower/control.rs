@@ -544,8 +544,89 @@ impl<'a> Lowering<'a> {
             }
             ast::Pattern::BitPattern { text, span } => {
                 let (mask, value) = crate::syntax::bit_pattern_mask(text)?;
+                // An element type that says how it matches (`Match`,
+                // `std_match` for `Logic`) decides each position the pattern
+                // fixes: `scrutinee[k].matches('1')`, all of them together. A
+                // `-` position matches anything and adds nothing.
+                let element_matches = self
+                    .operand_type_name(scrutinee)
+                    .and_then(|family| self.array_element_enum(&family))
+                    .and_then(|element| self.find_method(&element, "matches", None))
+                    .is_some();
+                if element_matches {
+                    let (left, right) = self.operand_range(scrutinee, env)?;
+                    let low = left.min(right);
+                    let width = left.abs_diff(right) as u32 + 1;
+                    let bit = |words: &[u64], index: u32| {
+                        words
+                            .get(index as usize / 64)
+                            .is_some_and(|word| word >> (index % 64) & 1 == 1)
+                    };
+                    let mut all: Option<Expr> = None;
+                    for position in (0..width).filter(|position| bit(&mask, *position)) {
+                        let symbol = if bit(&value, position) { '1' } else { '0' };
+                        let call = ast::Expr::Call {
+                            callee: Box::new(ast::Expr::Field {
+                                base: Box::new(ast::Expr::Index {
+                                    base: Box::new(scrutinee.clone()),
+                                    index: Box::new(ast::Expr::Int {
+                                        text: (low + i64::from(position)).to_string(),
+                                        span: *span,
+                                    }),
+                                    span: *span,
+                                }),
+                                field: ast::Ident {
+                                    text: "matches".to_string(),
+                                    span: *span,
+                                },
+                                span: *span,
+                            }),
+                            type_args: Vec::new(),
+                            args: vec![ast::Expr::CharLit {
+                                ch: symbol,
+                                span: *span,
+                            }],
+                            bang: false,
+                            span: *span,
+                        };
+                        let condition = self.lower_scalar_env(&call, env);
+                        all = Some(match all {
+                            Some(all) => self.source_binary(BinOp::And, &all, &condition, *span),
+                            None => condition,
+                        });
+                    }
+                    return Some(all.unwrap_or(Expr::Const(1)));
+                }
                 let masked = self.source_binary(BinOp::And, scrut, &words_const(mask), *span);
                 Some(self.source_binary(BinOp::Eq, &masked, &words_const(value), *span))
+            }
+            // Expression bounds (`0..DEPTH - 1`, `10ns..20ns`, `..7`) compare
+            // through the scrutinee's `Ord`; either order is one set.
+            ast::Pattern::Bounds { lo, hi, span } => {
+                let (mut low, mut high) = (lo.as_deref(), hi.as_deref());
+                if let (Some(l), Some(h)) = (low, high) {
+                    if let (Some(l), Some(h)) = (
+                        self.eval_const(l, &self.cur_env),
+                        self.eval_const(h, &self.cur_env),
+                    ) {
+                        if l > h {
+                            std::mem::swap(&mut low, &mut high);
+                        }
+                    }
+                }
+                let ge = low.map(|bound| {
+                    self.pattern_bound_compare(ast::BinOp::Ge, scrutinee, scrut, bound, env, *span)
+                });
+                let le = high.map(|bound| {
+                    self.pattern_bound_compare(ast::BinOp::Le, scrutinee, scrut, bound, env, *span)
+                });
+                Some(match (ge, le) {
+                    (Some(ge), le) => {
+                        self.source_and(Some(ge), le.unwrap_or(Expr::Const(1)), *span)
+                    }
+                    (None, Some(le)) => le,
+                    (None, None) => Expr::Const(1),
+                })
             }
             // `A | B`: matches if any alternative matches (their conditions
             // OR-ed; a wildcard alternative makes the whole arm unconditional).
@@ -616,6 +697,31 @@ impl<'a> Lowering<'a> {
             // A wildcard matches anything.
             _ => None,
         }
+    }
+
+    /// `scrutinee op bound` for a range pattern: the scrutinee's `Ord`, else
+    /// the built-in comparison, as the expression form would.
+    fn pattern_bound_compare(
+        &self,
+        op: ast::BinOp,
+        scrutinee: &ast::Expr,
+        scrut: &Expr,
+        bound: &ast::Expr,
+        env: &HashMap<String, Val>,
+        span: crate::diag::Span,
+    ) -> Expr {
+        let spelling = crate::syntax::pretty::bin_op(&op);
+        if let Some(derived) = self.inline_cmp(spelling, scrutinee, bound, env) {
+            return derived;
+        }
+        self.make_binary(
+            op,
+            scrut.clone(),
+            self.lower_scalar_env(bound, env),
+            self.binary_uses_kernel_integer(scrutinee, bound),
+            self.declares_kernel_integer(scrutinee),
+            span,
+        )
     }
 
     /// Lower the `else` side of a combinational `if`.

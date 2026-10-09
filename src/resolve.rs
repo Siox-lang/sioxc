@@ -2075,6 +2075,11 @@ impl<'a> Resolver<'a> {
                     self.resolve_pattern(a);
                 }
             }
+            Pattern::Bounds { lo, hi, .. } => {
+                for bound in [lo, hi].into_iter().flatten() {
+                    self.resolve_expr(bound);
+                }
+            }
             _ => {}
         }
     }

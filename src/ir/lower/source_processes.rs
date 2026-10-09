@@ -3868,6 +3868,9 @@ fn lower_match(
         .typed
         .expr_type(ast::expr_span(&statement.scrutinee))
         .cloned();
+    if match_needs_guards(&statement.arms, scrutinee_type.as_ref(), context) {
+        return lower_guarded_match(statement, scrutinee_type.as_ref(), context, process, block);
+    }
     let mut arms = Vec::with_capacity(statement.arms.len());
     for arm in &statement.arms {
         arms.push(ProcessMatchArm {
@@ -3947,7 +3950,543 @@ fn lower_pattern(
         },
         ast::Pattern::CharLit { ch, .. } => character_number(*ch, scrutinee_type, context)
             .map_or(ProcessPattern::Char(*ch), ProcessPattern::Number),
+        // Expression bounds lower as guards (`lower_guarded_match`); reaching
+        // here is a fail-closed unsupported pattern.
+        ast::Pattern::Bounds { .. } => ProcessPattern::Path {
+            definition: None,
+            segments: Vec::new(),
+        },
     }
+}
+
+/// Whether a match needs its arms as conditions rather than decoded
+/// patterns: an expression range (through `Ord`), or a bit pattern on a type
+/// that says how it matches (`Match`).
+fn match_needs_guards(
+    arms: &[ast::MatchArm],
+    scrutinee_type: Option<&crate::types::Ty>,
+    context: &LoweringContext<'_>,
+) -> bool {
+    fn guarded(pattern: &ast::Pattern, matches: bool) -> bool {
+        match pattern {
+            ast::Pattern::Bounds { .. } => true,
+            ast::Pattern::BitPattern { .. } => matches,
+            ast::Pattern::Or { alts, .. } => alts.iter().any(|pattern| guarded(pattern, matches)),
+            _ => false,
+        }
+    }
+    let matches = scrutinee_type
+        .and_then(|ty| match ty {
+            crate::types::Ty::Array { elem, .. } => process_type_key(elem, context),
+            _ => None,
+        })
+        .and_then(|owner| context.functions.get_associated(&owner, "matches"))
+        .is_some();
+    arms.iter().any(|arm| guarded(&arm.pattern, matches))
+}
+
+/// A packed vector's element layout, its element type's `Match::matches`
+/// (`std_match` for `Logic`), and its lowest label: what a bit pattern
+/// matches position by position.
+fn element_match<'a>(
+    scrutinee: ProcessValueId,
+    process: &ProcessCfg,
+    context: &LoweringContext<'a>,
+) -> Option<(crate::ir::SourceLayout, &'a ast::FnDecl, i64)> {
+    let layout = operand_source_layout(scrutinee, process, context)?;
+    let LayoutKind::Packed {
+        range: Some(range),
+        element_enum: Some(element),
+        ..
+    } = &layout.kind
+    else {
+        return None;
+    };
+    let element_type = nominal_type_from_name(element, context.resolved)?;
+    let owner = process_type_key(&element_type, context)?;
+    let function = context.functions.get_associated(&owner, "matches")?;
+    // An element read is the element type's whole value (a `Logic`
+    // discriminant), not the vector's one value bit.
+    let element_layout = process_layout_for_type(&element_type, layout.span, context)?;
+    Some((element_layout, function, range.left.min(range.right)))
+}
+
+fn bool_value(
+    value: bool,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    push_value(
+        span,
+        bool_type(context.resolved),
+        Some(1),
+        ProcessValueKind::Number(ProcessNumber::Integer(vec![u64::from(value)])),
+        context,
+    )
+}
+
+fn bool_binary(
+    operation: ProcessBinaryOp,
+    left: ProcessValueId,
+    right: ProcessValueId,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    push_value(
+        span,
+        bool_type(context.resolved),
+        Some(1),
+        ProcessValueKind::Binary {
+            operation,
+            left,
+            right,
+        },
+        context,
+    )
+}
+
+/// `left op right` over lowered values: the left type's `Eq`/`Ord` impl,
+/// else the built-in comparison.
+fn compare_values(
+    operator: ast::BinOp,
+    left: ProcessValueId,
+    right: ProcessValueId,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let left_type = process_value_type(left, context);
+    let right_type = process_value_type(right, context);
+    let symbol = crate::syntax::pretty::bin_op(&operator);
+    if let Some(owner) = left_type
+        .as_ref()
+        .and_then(|ty| process_type_key(ty, context))
+    {
+        let input = right_type
+            .as_ref()
+            .and_then(|ty| process_type_key(ty, context));
+        if let Some(function) = context
+            .functions
+            .get_binary_operator(symbol, &owner, input.as_deref())
+            .filter(|function| !context.inline_functions.contains(&function.span))
+        {
+            let result = bool_type(context.resolved);
+            if let Some(value) = inline_process_function(
+                function,
+                Some(left),
+                &[right],
+                process,
+                context,
+                result.as_ref(),
+            ) {
+                return Some(value);
+            }
+        }
+    }
+    let operation = lower_binary_operator(&operator, left_type.as_ref(), right_type.as_ref());
+    Some(bool_binary(operation, left, right, span, context))
+}
+
+/// Whether two lowered constants are written high-to-low, so a range of them
+/// is the same set swapped. `None` when either is not a known number.
+fn bounds_descend(
+    low: ProcessValueId,
+    high: ProcessValueId,
+    context: &LoweringContext<'_>,
+) -> Option<bool> {
+    let number =
+        |value: ProcessValueId| match &context.process_ir.values.get(value.0 as usize)?.kind {
+            ProcessValueKind::Number(ProcessNumber::Real(bits)) => Some(f64::from_bits(*bits)),
+            _ => constant_integer(value, context).map(|value| value as f64),
+        };
+    Some(number(low)? > number(high)?)
+}
+
+/// The condition one pattern puts on a lowered scrutinee.
+fn pattern_condition(
+    pattern: &ast::Pattern,
+    scrutinee: ProcessValueId,
+    scrutinee_type: Option<&crate::types::Ty>,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    match pattern {
+        ast::Pattern::Wildcard => Some(bool_value(true, span, context)),
+        ast::Pattern::Or { alts, .. } => {
+            let mut any = None;
+            for alternative in alts {
+                let condition = pattern_condition(
+                    alternative,
+                    scrutinee,
+                    scrutinee_type,
+                    span,
+                    process,
+                    context,
+                )?;
+                any = Some(match any {
+                    Some(any) => bool_binary(ProcessBinaryOp::Or, any, condition, span, context),
+                    None => condition,
+                });
+            }
+            any
+        }
+        ast::Pattern::Bounds { lo, hi, .. } => {
+            let mut low = lo
+                .as_deref()
+                .map(|bound| value_ref_with_type(bound, process, context, scrutinee_type));
+            let mut high = hi
+                .as_deref()
+                .map(|bound| value_ref_with_type(bound, process, context, scrutinee_type));
+            if let (Some(l), Some(h)) = (low, high) {
+                if bounds_descend(l, h, context) == Some(true) {
+                    std::mem::swap(&mut low, &mut high);
+                }
+            }
+            let above = match low {
+                Some(low) => Some(compare_values(
+                    ast::BinOp::Le,
+                    low,
+                    scrutinee,
+                    span,
+                    process,
+                    context,
+                )?),
+                None => None,
+            };
+            let below = match high {
+                Some(high) => Some(compare_values(
+                    ast::BinOp::Le,
+                    scrutinee,
+                    high,
+                    span,
+                    process,
+                    context,
+                )?),
+                None => None,
+            };
+            Some(match (above, below) {
+                (Some(above), Some(below)) => {
+                    bool_binary(ProcessBinaryOp::And, above, below, span, context)
+                }
+                (Some(condition), None) | (None, Some(condition)) => condition,
+                (None, None) => bool_value(true, span, context),
+            })
+        }
+        ast::Pattern::BitPattern { text, .. } => {
+            let (mask, value) = crate::syntax::bit_pattern_mask(text)?;
+            let width = context
+                .process_ir
+                .values
+                .get(scrutinee.0 as usize)?
+                .bit_width?;
+            if let Some((element, function, low)) = element_match(scrutinee, process, context) {
+                // Each position the pattern fixes, by the element type's
+                // `matches` (`std_match` for `Logic`): `scrutinee[k]
+                // .matches('1')`, all together. A `-` adds nothing.
+                let bit = |words: &[u64], index: u32| {
+                    words
+                        .get(index as usize / 64)
+                        .is_some_and(|word| word >> (index % 64) & 1 == 1)
+                };
+                let mut all = None;
+                for position in (0..width).filter(|position| bit(&mask, *position)) {
+                    let symbol = if bit(&value, position) { '1' } else { '0' };
+                    let member = push_element(
+                        span,
+                        scrutinee,
+                        low + i64::from(position),
+                        &element,
+                        process,
+                        context,
+                    );
+                    let member_type = context.process_ir.values[member.0 as usize].ty.clone();
+                    let member_width = context.process_ir.values[member.0 as usize].bit_width;
+                    let number = character_number(symbol, member_type.as_ref(), context)?;
+                    let character = push_value(
+                        span,
+                        member_type,
+                        member_width,
+                        ProcessValueKind::Number(number),
+                        context,
+                    );
+                    let result = bool_type(context.resolved);
+                    let matched = inline_process_function(
+                        function,
+                        Some(member),
+                        &[character],
+                        process,
+                        context,
+                        result.as_ref(),
+                    )?;
+                    all = Some(match all {
+                        Some(all) => bool_binary(ProcessBinaryOp::And, all, matched, span, context),
+                        None => matched,
+                    });
+                }
+                return Some(all.unwrap_or_else(|| bool_value(true, span, context)));
+            }
+            let number = |words: Vec<u64>, context: &mut LoweringContext<'_>| {
+                push_value(
+                    span,
+                    None,
+                    Some(width),
+                    ProcessValueKind::Number(ProcessNumber::Integer(words)),
+                    context,
+                )
+            };
+            let (mask, value) = (number(mask, context), number(value, context));
+            let selected = push_value(
+                span,
+                None,
+                Some(width),
+                ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::And,
+                    left: scrutinee,
+                    right: mask,
+                },
+                context,
+            );
+            Some(bool_binary(
+                ProcessBinaryOp::Eq,
+                selected,
+                value,
+                span,
+                context,
+            ))
+        }
+        ast::Pattern::Range { lo, hi, .. } => {
+            let (low, high) = ((*lo).min(*hi), (*lo).max(*hi));
+            let number = |n: i64, context: &mut LoweringContext<'_>| {
+                let literal = ast::Expr::Int {
+                    text: n.unsigned_abs().to_string(),
+                    span,
+                };
+                let magnitude = value_ref_with_type(&literal, process, context, scrutinee_type);
+                if n >= 0 {
+                    return magnitude;
+                }
+                let zero = value_ref_with_type(
+                    &ast::Expr::Int {
+                        text: "0".to_string(),
+                        span,
+                    },
+                    process,
+                    context,
+                    scrutinee_type,
+                );
+                let kind = ProcessValueKind::Binary {
+                    operation: lower_binary_operator(
+                        &ast::BinOp::Sub,
+                        scrutinee_type,
+                        scrutinee_type,
+                    ),
+                    left: zero,
+                    right: magnitude,
+                };
+                let width = source_value_width(&kind, scrutinee_type, process, context);
+                push_value(span, scrutinee_type.cloned(), width, kind, context)
+            };
+            let (low, high) = (number(low, context), number(high, context));
+            let above = compare_values(ast::BinOp::Le, low, scrutinee, span, process, context)?;
+            let below = compare_values(ast::BinOp::Le, scrutinee, high, span, process, context)?;
+            Some(bool_binary(
+                ProcessBinaryOp::And,
+                above,
+                below,
+                span,
+                context,
+            ))
+        }
+        // An enum variant, a constant or a character: equality with the
+        // value the decoded pattern names.
+        ast::Pattern::Path(path) => {
+            let value = match lower_pattern(pattern, scrutinee_type, context) {
+                ProcessPattern::Number(number) => push_value(
+                    span,
+                    scrutinee_type.cloned(),
+                    None,
+                    ProcessValueKind::Number(number),
+                    context,
+                ),
+                _ => value_ref_with_type(
+                    &ast::Expr::Path(path.clone()),
+                    process,
+                    context,
+                    scrutinee_type,
+                ),
+            };
+            compare_values(ast::BinOp::Eq, scrutinee, value, span, process, context)
+        }
+        ast::Pattern::CharLit { .. } => {
+            let ProcessPattern::Number(number) = lower_pattern(pattern, scrutinee_type, context)
+            else {
+                return None;
+            };
+            let width = context
+                .process_ir
+                .values
+                .get(scrutinee.0 as usize)?
+                .bit_width;
+            let value = push_value(
+                span,
+                scrutinee_type.cloned(),
+                width,
+                ProcessValueKind::Number(number),
+                context,
+            );
+            Some(bool_binary(
+                ProcessBinaryOp::Eq,
+                scrutinee,
+                value,
+                span,
+                context,
+            ))
+        }
+    }
+}
+
+/// The metavalue warning for a guarded match in a testbench: a scrutinee the
+/// type's `Match::unknown` flags cannot match a bit pattern (as VHDL's
+/// `std_match` reports). `None` when the type has no such check.
+fn match_metavalue_warning(
+    scrutinee: ProcessValueId,
+    scrutinee_type: Option<&crate::types::Ty>,
+    span: crate::diag::Span,
+    process: &mut ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    block: ProcessBlockId,
+) -> Option<()> {
+    if !matches!(process.activation, ProcessActivation::TimeZero) {
+        return None;
+    }
+    let _ = scrutinee_type;
+    let layout = operand_source_layout(scrutinee, process, context)?;
+    let LayoutKind::Packed {
+        range: Some(range),
+        element_enum: Some(element),
+        ..
+    } = &layout.kind
+    else {
+        return None;
+    };
+    let element_type = nominal_type_from_name(element, context.resolved)?;
+    let owner = process_type_key(&element_type, context)?;
+    let check = context.functions.get_associated(&owner, "unknown")?;
+    // An element read is the element type's whole value (a `Logic`
+    // discriminant), not the vector's one value bit.
+    let element_layout = process_layout_for_type(&element_type, layout.span, context)?;
+    let result = bool_type(context.resolved);
+    let mut unknown = None;
+    for label in layout_labels(*range)? {
+        let member = push_element(span, scrutinee, label, &element_layout, process, context);
+        let flagged =
+            inline_process_function(check, Some(member), &[], process, context, result.as_ref())?;
+        unknown = Some(match unknown {
+            Some(any) => bool_binary(ProcessBinaryOp::Or, any, flagged, span, context),
+            None => flagged,
+        });
+    }
+    let unknown = unknown?;
+    let known = push_value(
+        span,
+        bool_type(context.resolved),
+        Some(1),
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::Not,
+            operand: unknown,
+        },
+        context,
+    );
+    let message = "match on a value holding a metavalue: its bit-pattern arms cannot match";
+    let text = push_value(
+        span,
+        None,
+        Some(u32::try_from(message.len() * 8).ok()?),
+        ProcessValueKind::String(message.to_string()),
+        context,
+    );
+    process.blocks[block.0 as usize]
+        .instructions
+        .push(ProcessInstruction::Runtime {
+            operation: ProcessRuntimeOp::Warn,
+            arguments: vec![known, text],
+            format: None,
+            span,
+        });
+    Some(())
+}
+
+/// A match whose arms are conditions (`match_needs_guards`): a first-match
+/// chain of branches, one block testing each arm. The scrutinee is evaluated
+/// once, before the chain.
+fn lower_guarded_match(
+    statement: &ast::MatchStmt,
+    scrutinee_type: Option<&crate::types::Ty>,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
+    let scrutinee = value_ref(&statement.scrutinee, process, context);
+    let scrutinee = capture_process_operand(scrutinee, context, process, block);
+    if statement.arms.iter().any(|arm| {
+        matches!(
+            arm.pattern,
+            ast::Pattern::BitPattern { .. } | ast::Pattern::Or { .. }
+        )
+    }) {
+        match_metavalue_warning(
+            scrutinee,
+            scrutinee_type,
+            statement.span,
+            process,
+            context,
+            block,
+        );
+    }
+    let mut test = block;
+    let mut tails = Vec::new();
+    let mut fell_through = true;
+    for arm in &statement.arms {
+        let body = process.push_block();
+        if pattern_has_wildcard(&arm.pattern) {
+            process.blocks[test.0 as usize].terminator = ProcessTerminator::Goto(body);
+            fell_through = false;
+        } else {
+            let condition = pattern_condition(
+                &arm.pattern,
+                scrutinee,
+                scrutinee_type,
+                arm.span,
+                process,
+                context,
+            )?;
+            let next = process.push_block();
+            process.blocks[test.0 as usize].terminator = ProcessTerminator::Branch {
+                condition,
+                then_block: body,
+                else_block: next,
+            };
+            test = next;
+        }
+        if let Some(tail) = lower_statements(&arm.body.stmts, context, process, body) {
+            tails.push(tail);
+        }
+        if !fell_through {
+            break;
+        }
+    }
+    if fell_through {
+        tails.push(test);
+    }
+    if tails.is_empty() {
+        return None;
+    }
+    let join = process.push_block();
+    for tail in tails {
+        process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(join);
+    }
+    Some(join)
 }
 
 /// Whether a pattern matches everything, so a match needs no fall-through
@@ -6382,7 +6921,9 @@ fn inline_pattern_condition(
             }
             return Some(condition);
         }
-        ast::Pattern::BitPattern { .. } | ast::Pattern::Range { .. } => return None,
+        ast::Pattern::BitPattern { .. }
+        | ast::Pattern::Range { .. }
+        | ast::Pattern::Bounds { .. } => return None,
     };
     let scrutinee_node = context.process_ir.values.get(scrutinee.0 as usize)?;
     let candidate = push_value(
@@ -7086,6 +7627,41 @@ fn value_ref_with_type_inner(
         } => {
             let scrutinee_type = context.typed.expr_type(ast::expr_span(scrutinee)).cloned();
             let scrutinee = value_ref(scrutinee, process, context);
+            // Arms that are conditions (`match_needs_guards`) fold into a
+            // first-match chain of selects, last arm innermost.
+            if match_needs_guards(arms, scrutinee_type.as_ref(), context) {
+                // Without a `_`, the arms are taken to cover the scrutinee
+                // (the checker says when they do not): the last one is the
+                // fallback rather than a value no arm produces.
+                let mut result = missing_value(span, context);
+                let covered = !arms.iter().any(|arm| pattern_has_wildcard(&arm.pattern));
+                for (position, arm) in arms.iter().enumerate().rev() {
+                    let last = covered && position + 1 == arms.len();
+                    let value = match arm.value_expr() {
+                        Some(value) => value_ref_with_type(value, process, context, ty.as_ref()),
+                        None => missing_value(arm.span, context),
+                    };
+                    result = if last || pattern_has_wildcard(&arm.pattern) {
+                        value
+                    } else {
+                        let Some(condition) = pattern_condition(
+                            &arm.pattern,
+                            scrutinee,
+                            scrutinee_type.as_ref(),
+                            arm.span,
+                            process,
+                            context,
+                        ) else {
+                            return unsupported_process_value(span, ty.as_ref(), context);
+                        };
+                        inline_select_value(arm.span, condition, value, result, context)
+                            .unwrap_or_else(|| {
+                                unsupported_process_value(span, ty.as_ref(), context)
+                            })
+                    };
+                }
+                return result;
+            }
             let arms = arms
                 .iter()
                 .map(|arm| {

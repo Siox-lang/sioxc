@@ -1081,6 +1081,11 @@ impl Rewriter<'_> {
                     self.pattern(alt, env, sink);
                 }
             }
+            Pattern::Bounds { lo, hi, .. } => {
+                for bound in [lo, hi].into_iter().flatten() {
+                    self.expr(bound, env, sink);
+                }
+            }
             Pattern::Wildcard
             | Pattern::BitPattern { .. }
             | Pattern::Range { .. }

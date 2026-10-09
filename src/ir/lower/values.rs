@@ -287,26 +287,46 @@ impl<'a> Lowering<'a> {
                 if let Some(compared) = self.array_comparison(op, lhs, rhs, env) {
                     return Val::Scalar(compared);
                 }
+                // As `lower_expr`: comparisons are marked for the metavalue
+                // rule, and a character literal reads as its counterpart's
+                // type. Without these, `v[2] == 'X'` inside a function never
+                // saw the `X` its caller passed.
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(v) = self.inline_op(op_str, lhs, rhs, env) {
-                        return v;
+                        return match v {
+                            Val::Scalar(inlined) => {
+                                Val::Scalar(self.mark_vector_compare(op, lhs, rhs, inlined, env))
+                            }
+                            fields => fields,
+                        };
                     }
                 }
                 if let Some(derived) = self.inline_cmp(op_str, lhs, rhs, env) {
-                    return Val::Scalar(derived);
+                    return Val::Scalar(self.mark_vector_compare(op, lhs, rhs, derived, env));
                 }
-                let (l, r) = (
+                let (mut l, mut r) = (
                     self.lower_scalar_env(lhs, env),
                     self.lower_scalar_env(rhs, env),
                 );
-                Val::Scalar(self.make_binary(
+                if let ast::Expr::CharLit { ch, .. } = lhs.as_ref() {
+                    if let Some(v) = self.typed_char_literal(*ch, rhs) {
+                        l = v;
+                    }
+                }
+                if let ast::Expr::CharLit { ch, .. } = rhs.as_ref() {
+                    if let Some(v) = self.typed_char_literal(*ch, lhs) {
+                        r = v;
+                    }
+                }
+                let built = self.make_binary(
                     op.clone(),
                     l,
                     r,
                     self.binary_uses_kernel_integer(lhs, rhs),
                     self.declares_kernel_integer(lhs) || self.declares_kernel_integer(rhs),
                     ast::expr_span(e),
-                ))
+                );
+                Val::Scalar(self.mark_vector_compare(op, lhs, rhs, built, env))
             }
             ast::Expr::Unary { op, rhs, .. } => {
                 // `not x` on an enum operand inlines its impl, as it does in

@@ -373,6 +373,7 @@ impl<'a> Lowering<'a> {
         lhs: &ast::Expr,
         rhs: &ast::Expr,
         built: Expr,
+        env: &HashMap<String, Val>,
     ) -> Expr {
         use ast::BinOp as A;
         if !matches!(op, A::Eq | A::Ne | A::Lt | A::Le | A::Gt | A::Ge) {
@@ -385,8 +386,8 @@ impl<'a> Lowering<'a> {
         if !vector(lhs) && !vector(rhs) {
             return built;
         }
-        let left = self.lower_expr(lhs);
-        let right = self.lower_expr(rhs);
+        let left = self.lower_scalar_env(lhs, env);
+        let right = self.lower_scalar_env(rhs, env);
         let mut arena = self.source_values.borrow_mut();
         let left = arena.append(&left, ast::expr_span(lhs), None);
         let right = arena.append(&right, ast::expr_span(rhs), None);

@@ -27,6 +27,20 @@ pub trait Ord<Rhs> {
     fn ge(self, rhs: Rhs) -> Bool { return rhs.le(self); }
 }
 
+// How a bit-string pattern's character matches an element: `"01--" =>` in
+// a `match` tests every position the pattern fixes with
+// `element.matches('0')` / `('1')`, and `-` positions match anything. This
+// is VHDL-2008's matching equality `?=` (and `std_match`), separate from
+// `==`: an element type decides what its weak values and metavalues mean.
+// Ranges match through `Ord` instead, and enum variants, `_` and character
+// literals match structurally.
+pub trait Match<Pattern> {
+    fn matches(self, pattern: Pattern) -> Bool;
+    // Whether `self` holds a value no pattern can match (a metavalue). A
+    // testbench `match` on one warns, as `std_match` reports it.
+    fn unknown(self) -> Bool;
+}
+
 // A three-way answer, for code that wants one. The compiler gives it no
 // meaning: comparisons go through `Eq` and `Ord`.
 pub enum Ordering {

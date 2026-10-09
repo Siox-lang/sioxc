@@ -2289,45 +2289,89 @@ impl<'a> Parser<'a> {
                     span: t.span,
                 }
             }
-            // An integer literal (`5`) or inclusive range (`0..9`, `-1..1`).
-            TokenKind::Int | TokenKind::Minus => {
+            // A value or inclusive range: `5`, `0..9`, `-1..1`, and with
+            // expression bounds `0..DEPTH - 1`, `10ns..20ns`, `..7`, `8..`.
+            TokenKind::Int
+            | TokenKind::Minus
+            | TokenKind::Float
+            | TokenKind::LParen
+            | TokenKind::DotDot => {
                 let start = self.span();
-                let lo = self.parse_pattern_int();
-                let hi = if self.eat(TokenKind::DotDot) {
-                    self.parse_pattern_int()
+                let lo = (!self.at(TokenKind::DotDot)).then(|| self.parse_pattern_bound());
+                self.finish_range_pattern(start, lo)
+            }
+            _ => {
+                let start = self.span();
+                let path = self.parse_path();
+                if self.at(TokenKind::DotDot) {
+                    // `MIN..MAX`: a constant bound.
+                    self.finish_range_pattern(start, Some(Expr::Path(path)))
                 } else {
-                    lo
-                };
-                Pattern::Range {
-                    lo,
-                    hi,
-                    span: start.to(self.prev_span()),
+                    Pattern::Path(path)
                 }
             }
-            _ => Pattern::Path(self.parse_path()),
         }
     }
 
-    /// A (possibly negative, hex/binary/decimal) integer literal in a pattern.
-    fn parse_pattern_int(&mut self) -> i64 {
-        let neg = self.eat(TokenKind::Minus);
-        let t = self.bump();
-        let txt = self.text_of(t.span).replace('_', "");
-        let magnitude = if let Some(h) = txt.strip_prefix("0x").or_else(|| txt.strip_prefix("0X")) {
-            i128::from_str_radix(h, 16)
-        } else if let Some(b) = txt.strip_prefix("0b").or_else(|| txt.strip_prefix("0B")) {
-            i128::from_str_radix(b, 2)
+    /// One range-pattern bound: an expression binding tighter than any
+    /// comparison, so `..`, `|` and `=>` end it.
+    fn parse_pattern_bound(&mut self) -> Expr {
+        self.parse_bin(70, true)
+    }
+
+    /// The rest of a value or range pattern after its first bound: two
+    /// integer literals stay a [`Pattern::Range`]; anything else is a
+    /// [`Pattern::Bounds`], matched through the scrutinee's `Ord`.
+    fn finish_range_pattern(&mut self, start: crate::diag::Span, lo: Option<Expr>) -> Pattern {
+        let ranged = self.eat(TokenKind::DotDot);
+        let hi = if !ranged {
+            lo.clone()
+        } else if matches!(
+            self.kind(),
+            TokenKind::FatArrow | TokenKind::Pipe | TokenKind::Comma | TokenKind::RBrace
+        ) {
+            None
         } else {
-            txt.parse()
+            Some(self.parse_pattern_bound())
         };
-        let value = magnitude.map(|value| if neg { -value } else { value });
-        match value.ok().and_then(|value| i64::try_from(value).ok()) {
-            Some(value) => value,
-            None => {
-                self.error_at(t.span, "integer pattern is outside the supported i64 range");
-                0
-            }
+        let span = start.to(self.prev_span());
+        match (
+            lo.as_ref().and_then(|bound| self.pattern_int(bound)),
+            hi.as_ref().and_then(|bound| self.pattern_int(bound)),
+        ) {
+            (Some(lo), Some(hi)) => Pattern::Range { lo, hi, span },
+            _ => Pattern::Bounds {
+                lo: lo.map(Box::new),
+                hi: hi.map(Box::new),
+                span,
+            },
         }
+    }
+
+    /// An integer literal bound (`5`, `-1`, `0xFF`) as a value, or `None` for
+    /// any other expression (a suffix, a constant, arithmetic).
+    fn pattern_int(&self, bound: &Expr) -> Option<i64> {
+        let (text, negative) = match bound {
+            Expr::Int { text, .. } => (text, false),
+            Expr::Unary {
+                op: UnOp::Neg, rhs, ..
+            } => match rhs.as_ref() {
+                Expr::Int { text, .. } => (text, true),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let text = text.replace('_', "");
+        let magnitude =
+            if let Some(h) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+                i128::from_str_radix(h, 16)
+            } else if let Some(b) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+                i128::from_str_radix(b, 2)
+            } else {
+                text.parse()
+            }
+            .ok()?;
+        i64::try_from(if negative { -magnitude } else { magnitude }).ok()
     }
 
     // --- expressions (Pratt) ------------------------------------------------
@@ -4659,12 +4703,29 @@ mod tests {
     /// An integer pattern too large for `i64` is reported rather than silently
     /// wrapping to zero.
     fn overflowing_integer_pattern_is_not_silently_zero() {
-        let (_, errors) = parse(
+        // Wider than i64, it is an expression bound, compared at the
+        // scrutinee's own width (an `unsigned[128]` can hold it).
+        let module = parse_ok(
             "module m;\nimpl M {\n\
              match value { 18446744073709551616 => y = 1, _ => y = 0 }\n\
              }\n",
         );
-        assert_eq!(errors, 1);
+        let Item::Impl(im) = &module.items[0] else {
+            panic!("expected impl")
+        };
+        let ImplItem::Stmt(Stmt::Match(statement)) = &im.items[0] else {
+            panic!("expected match")
+        };
+        let Pattern::Bounds {
+            lo: Some(lo),
+            hi: Some(hi),
+            ..
+        } = &statement.arms[0].pattern
+        else {
+            panic!("expected an expression bound")
+        };
+        assert!(matches!(lo.as_ref(), Expr::Int { text, .. } if text == "18446744073709551616"));
+        assert!(matches!(hi.as_ref(), Expr::Int { text, .. } if text == "18446744073709551616"));
     }
 
     #[test]
