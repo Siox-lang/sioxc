@@ -1119,6 +1119,160 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Statements that only bind and assign, applied to `env` in order: a
+    /// loop body, a return-free branch, or one such statement of a body.
+    fn inline_effects(&self, stmts: &[ast::Stmt], env: &mut HashMap<String, Val>) -> Option<()> {
+        // ponytail: a fixed unroll cap; a longer loop leaves the call unlowered.
+        const MAX_ITERATIONS: u64 = 4096;
+        for stmt in stmts {
+            match stmt {
+                ast::Stmt::Use(_) => {}
+                ast::Stmt::Let(l) => {
+                    let value = l.value.as_ref()?;
+                    let lowered = self.bind_source_value(
+                        self.lower_val_env(value, env),
+                        l.span,
+                        self.expr_types.get(&ast::expr_span(value)).cloned(),
+                    );
+                    env.insert(l.name.text.clone(), lowered);
+                }
+                ast::Stmt::Assign {
+                    target: ast::Expr::Path(path),
+                    value,
+                    after: None,
+                    span,
+                    ..
+                } if path.segments.len() == 1 => {
+                    let name = &path.segments[0].text;
+                    // Only the function's own bindings: anything else is a
+                    // signal, which a function cannot drive.
+                    if !env.contains_key(name) {
+                        return None;
+                    }
+                    let lowered = self.bind_source_value(
+                        self.lower_val_env(value, env),
+                        *span,
+                        self.expr_types.get(&ast::expr_span(value)).cloned(),
+                    );
+                    env.insert(name.clone(), lowered);
+                }
+                ast::Stmt::For {
+                    var,
+                    range: ast::Expr::Range { lo, hi, .. },
+                    body,
+                    ..
+                } => {
+                    let first = self.constant_expr(&self.lower_scalar_env(lo, env))?;
+                    let last = self.constant_expr(&self.lower_scalar_env(hi, env))?;
+                    if first.abs_diff(last) >= MAX_ITERATIONS {
+                        return None;
+                    }
+                    let step = if first <= last { 1 } else { -1 };
+                    let shadowed = env.get(&var.text).cloned();
+                    let mut index = first;
+                    loop {
+                        env.insert(var.text.clone(), Val::Scalar(Expr::Const(index as u64)));
+                        self.inline_scoped(&body.stmts, env)?;
+                        if index == last {
+                            break;
+                        }
+                        index += step;
+                    }
+                    match shadowed {
+                        Some(value) => env.insert(var.text.clone(), value),
+                        None => env.remove(&var.text),
+                    };
+                }
+                ast::Stmt::If(iff) if !if_returns(iff) => {
+                    self.inline_merged_if(iff, env)?;
+                }
+                _ => return None,
+            }
+        }
+        Some(())
+    }
+
+    /// A block in its own scope: its `let`s end with it, its assignments to
+    /// outer bindings stay.
+    fn inline_scoped(&self, stmts: &[ast::Stmt], env: &mut HashMap<String, Val>) -> Option<()> {
+        let mut inner = env.clone();
+        self.inline_effects(stmts, &mut inner)?;
+        let declared = stmts
+            .iter()
+            .filter_map(|stmt| match stmt {
+                ast::Stmt::Let(l) => Some(l.name.text.as_str()),
+                _ => None,
+            })
+            .collect::<std::collections::HashSet<_>>();
+        for (name, value) in env.iter_mut() {
+            if !declared.contains(name.as_str()) {
+                if let Some(updated) = inner.remove(name) {
+                    *value = updated;
+                }
+            }
+        }
+        Some(())
+    }
+
+    /// An `if` without a `return`: each binding a branch changed becomes one
+    /// select on the condition.
+    fn inline_merged_if(&self, iff: &ast::IfStmt, env: &mut HashMap<String, Val>) -> Option<()> {
+        let cond = self.bind_source_expression(
+            self.lower_scalar_env(&iff.cond, env),
+            ast::expr_span(&iff.cond),
+        );
+        let mut then_env = env.clone();
+        self.inline_scoped(&iff.then.stmts, &mut then_env)?;
+        let mut else_env = env.clone();
+        match iff.else_.as_deref() {
+            Some(ast::ElseBranch::Block(block)) => {
+                self.inline_scoped(&block.stmts, &mut else_env)?
+            }
+            Some(ast::ElseBranch::If(inner)) => self.inline_merged_if(inner, &mut else_env)?,
+            None => {}
+        }
+        let same = |a: &Val, b: &Val| match (a, b) {
+            (
+                Val::Scalar(Expr::Canonical { value: a, .. }),
+                Val::Scalar(Expr::Canonical { value: b, .. }),
+            ) => a == b,
+            (Val::Scalar(Expr::Const(a)), Val::Scalar(Expr::Const(b))) => a == b,
+            _ => false,
+        };
+        for (name, value) in env.iter_mut() {
+            let (then_value, else_value) = (then_env.remove(name)?, else_env.remove(name)?);
+            *value = if same(&then_value, &else_value) {
+                then_value
+            } else {
+                self.bind_source_value(
+                    self.source_select_value(cond.clone(), then_value, else_value, iff.span),
+                    iff.span,
+                    None,
+                )
+            };
+        }
+        Some(())
+    }
+
+    /// The integer a lowered expression always has: constants and arithmetic
+    /// over them, through the value arena.
+    pub(super) fn constant_expr(&self, expression: &Expr) -> Option<i64> {
+        match expression {
+            Expr::Const(value) => Some(*value as i64),
+            Expr::Canonical { value, .. } => self.constant_expr(&self.source_node(*value)),
+            Expr::Binary { op, lhs, rhs } => {
+                let (left, right) = (self.constant_expr(lhs)?, self.constant_expr(rhs)?);
+                match op {
+                    BinOp::Add | BinOp::SAdd => left.checked_add(right),
+                    BinOp::Sub | BinOp::SSub => left.checked_sub(right),
+                    BinOp::Mul | BinOp::SMul => left.checked_mul(right),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// The value a straight-line `return`/`if-else` block produces, or `None`
     /// if the block has statements the inliner cannot express as a value.
     pub(super) fn inline_block(
@@ -1130,41 +1284,57 @@ impl<'a> Lowering<'a> {
         // A long straight-line let chain is not recursion. Clone the lexical
         // environment at most once, then update its compact value bindings.
         let mut scoped = std::borrow::Cow::Borrowed(env);
-        while let [ast::Stmt::Let(l), rest @ ..] = stmts {
-            let value = l.value.as_ref()?;
-            let layout =
-                l.ty.as_ref()
-                    .map(|ty| self.source_layout(ty, &self.cur_env))
-                    .or_else(|| self.source_operand_layout(value, scoped.as_ref()));
-            let value_ir = match &layout {
-                Some(layout)
-                    if matches!(
-                        layout.kind,
-                        LayoutKind::Array { .. } | LayoutKind::Struct { .. }
-                    ) =>
-                {
-                    self.lower_shaped_source(value, scoped.as_ref(), layout)
+        loop {
+            while let [ast::Stmt::Let(l), rest @ ..] = stmts {
+                let value = l.value.as_ref()?;
+                let layout =
+                    l.ty.as_ref()
+                        .map(|ty| self.source_layout(ty, &self.cur_env))
+                        .or_else(|| self.source_operand_layout(value, scoped.as_ref()));
+                let value_ir = match &layout {
+                    Some(layout)
+                        if matches!(
+                            layout.kind,
+                            LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+                        ) =>
+                    {
+                        self.lower_shaped_source(value, scoped.as_ref(), layout)
+                    }
+                    _ => self.lower_val_env(value, scoped.as_ref()),
+                };
+                let lowered = self.bind_source_value(
+                    value_ir,
+                    l.span,
+                    self.expr_types.get(&ast::expr_span(value)).cloned(),
+                );
+                let mut attrs = HashMap::new();
+                self.bind_range_attrs(&mut attrs, &l.name.text, value, scoped.as_ref());
+                if let Some(layout) = layout {
+                    self.bind_source_shape(l.name.text.clone(), layout);
                 }
-                _ => self.lower_val_env(value, scoped.as_ref()),
-            };
-            let lowered = self.bind_source_value(
-                value_ir,
-                l.span,
-                self.expr_types.get(&ast::expr_span(value)).cloned(),
-            );
-            let mut attrs = HashMap::new();
-            self.bind_range_attrs(&mut attrs, &l.name.text, value, scoped.as_ref());
-            if let Some(layout) = layout {
-                self.bind_source_shape(l.name.text.clone(), layout);
+                let scoped = scoped.to_mut();
+                scoped.insert(l.name.text.clone(), lowered);
+                scoped.insert(
+                    format!("{}::length", l.name.text),
+                    Val::Scalar(Expr::Const(self.ast_width(value) as u64)),
+                );
+                scoped.extend(attrs);
+                stmts = rest;
             }
-            let scoped = scoped.to_mut();
-            scoped.insert(l.name.text.clone(), lowered);
-            scoped.insert(
-                format!("{}::length", l.name.text),
-                Val::Scalar(Expr::Const(self.ast_width(value) as u64)),
-            );
-            scoped.extend(attrs);
-            stmts = rest;
+            // Assignments, constant-bound loops and return-free `if`s update the
+            // bindings, as a VHDL function's variables do.
+            match stmts {
+                [statement @ (ast::Stmt::Assign { after: None, .. } | ast::Stmt::For { .. }), rest @ ..] =>
+                {
+                    self.inline_effects(std::slice::from_ref(statement), scoped.to_mut())?;
+                    stmts = rest;
+                }
+                [ast::Stmt::If(iff), rest @ ..] if !if_returns(iff) => {
+                    self.inline_merged_if(iff, scoped.to_mut())?;
+                    stmts = rest;
+                }
+                _ => break,
+            }
         }
         let env = scoped.as_ref();
         match stmts {
@@ -1247,4 +1417,23 @@ impl<'a> Lowering<'a> {
             _ => None,
         }
     }
+}
+
+/// Whether a `return` sits anywhere inside this `if`.
+fn if_returns(statement: &ast::IfStmt) -> bool {
+    fn any(statements: &[ast::Stmt]) -> bool {
+        statements.iter().any(|statement| match statement {
+            ast::Stmt::Return { .. } => true,
+            ast::Stmt::If(statement) => if_returns(statement),
+            ast::Stmt::Match(statement) => statement.arms.iter().any(|arm| any(&arm.body.stmts)),
+            ast::Stmt::For { body, .. } => any(&body.stmts),
+            _ => false,
+        })
+    }
+    any(&statement.then.stmts)
+        || match statement.else_.as_deref() {
+            Some(ast::ElseBranch::Block(block)) => any(&block.stmts),
+            Some(ast::ElseBranch::If(inner)) => if_returns(inner),
+            None => false,
+        }
 }

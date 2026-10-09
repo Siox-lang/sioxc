@@ -1,5 +1,6 @@
 module std::math;
 
+use std::cmp::Ordering;
 use std::convert::From;
 
 // Complex value over the reals (modelled on ieee.math_complex). Components
@@ -74,6 +75,21 @@ pub fn min<T: Ord<T>>(a: T, b: T) -> T {
 pub fn max<T: Ord<T>>(a: T, b: T) -> T {
     if a > b { return a; }
     return b;
+}
+
+// `v` limited to `lo..hi` (Rust's `Ord::clamp`): `lo` below it, `hi` above.
+pub fn clamp<T: Ord<T>>(v: T, lo: T, hi: T) -> T {
+    if v < lo { return lo; }
+    if v > hi { return hi; }
+    return v;
+}
+
+// How `a` orders against `b` (Rust's `Ord::cmp`). Values with no order, such
+// as a NaN, compare `Equal`.
+pub fn cmp<T: Ord<T>>(a: T, b: T) -> Ordering {
+    if a < b { return Ordering::Less; }
+    if b < a { return Ordering::Greater; }
+    return Ordering::Equal;
 }
 
 // The remainder with the dividend's sign (VHDL `rem`, Rust `%`): `/`

@@ -13626,3 +13626,31 @@ struct form, a `Display` trait now).
 **Codex:** touches `lower_process_format` and helpers in
 `source_processes.rs`, `llvm/process/instructions.rs` format emission,
 `llvm/process/support.rs`, and the runtime format functions.
+
+### 2026-10-09 — Claude — bit methods; function bodies with loops in hardware
+
+Owner-requested: Rust's integer methods on `unsigned`/`signed` (`count_ones`,
+`leading_zeros`, `rotate_left`, `reverse_bits`, `pow`, `saturating_*`, ..)
+in `std::bits`, and `std::math::{cmp, clamp}`. Branch `feat/num-methods`.
+They needed function bodies with loops to lower in hardware, which surfaced
+pre-existing bugs, fixed here:
+- Both value inliners (`inline_value_statements` in `source_processes.rs`,
+  `inline_block` in `ir/lower/calls.rs`) now take reassignment of a
+  function's own locals, `for` over constant bounds (unrolled), and
+  return-free `if` (one select per changed variable).
+- Shape attributes (`'length`/`'left`/`'right`/`'high`/`'low`) of a value with
+  a known layout fold to numbers in Process lowering.
+- `process_value_is_real` walked the value DAG without a visited set
+  (exponential on select chains).
+- A literal operand/argument of a width-generic `signed` parameter took its
+  own minimum width: `fn dec(x: signed) -> signed { return x - 1; }` returned
+  `x + 1`, and `f(u, 100)` read `100` as -28. Now it takes the sized
+  operand's type.
+- `let u: signed[8] = 0 - 100;` typed the local as `integer` (initializer type
+  won over the declaration).
+- A width-generic local (`let r: unsigned = v;`) and a width-generic free
+  function's result now take their shape from the initializer / argument.
+- `dead_assignment` no longer fires in function bodies (sequential).
+**Codex:** touches `source_processes.rs` (push_local, Let lowering, attribute
+lowering, inline_process_call args, binary-operator literal typing),
+`cfg_calls.rs` (result layout), `ir/lower/calls.rs`, `source_bindings.rs`.

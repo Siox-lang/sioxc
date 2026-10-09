@@ -227,3 +227,234 @@ impl Ord<signed> for signed {
     }
     fn le(self, rhs: signed) -> Bool { return not rhs.lt(self); }
 }
+
+// --- bit methods (Rust's integer methods) ------------------------------------
+
+// Bit `k` is `k` places above the LSB, `self'low + k`, whichever way the
+// range runs: `'high` is the MSB. Metavalues count as neither `'0'` nor
+// `'1'`: `count_ones` skips an `'X'`, and `leading_zeros` stops at one.
+
+impl unsigned {
+    // The number of `'1'` bits (population count).
+    pub fn count_ones(self) -> integer {
+        let n: integer = 0;
+        for i in self'low..self'high { if self[i] == '1' { n = n + 1; } }
+        return n;
+    }
+
+    // The number of `'0'` bits.
+    pub fn count_zeros(self) -> integer {
+        return self'length - self.count_ones();
+    }
+
+    // `'0'` bits above the highest `'1'`: the length when there is none.
+    pub fn leading_zeros(self) -> integer {
+        let n: integer = 0;
+        let done: Bool = false;
+        for k in self'length - 1..0 {
+            if self[self'low + k] == '1' { done = true; } else if not done { n = n + 1; }
+        }
+        return n;
+    }
+
+    // `'0'` bits below the lowest `'1'`: the length when there is none.
+    pub fn trailing_zeros(self) -> integer {
+        let n: integer = 0;
+        let done: Bool = false;
+        for k in 0..self'length - 1 {
+            if self[self'low + k] == '1' { done = true; } else if not done { n = n + 1; }
+        }
+        return n;
+    }
+
+    // `'1'` bits from the MSB down to the first `'0'`.
+    pub fn leading_ones(self) -> integer {
+        let n: integer = 0;
+        let done: Bool = false;
+        for k in self'length - 1..0 {
+            if self[self'low + k] != '1' { done = true; } else if not done { n = n + 1; }
+        }
+        return n;
+    }
+
+    // `'1'` bits from the LSB up to the first `'0'`.
+    pub fn trailing_ones(self) -> integer {
+        let n: integer = 0;
+        let done: Bool = false;
+        for k in 0..self'length - 1 {
+            if self[self'low + k] != '1' { done = true; } else if not done { n = n + 1; }
+        }
+        return n;
+    }
+
+    // The bits in the opposite order: the MSB becomes the LSB. A slice's
+    // left index is its MSB, so `low..high` reads the bits reversed.
+    pub fn reverse_bits(self) -> unsigned {
+        return self[self'low..self'high];
+    }
+
+    // `self` multiplied by itself `exp` times, wrapping like `*`.
+    pub fn pow(self, exp: integer) -> unsigned {
+        let result: unsigned = self;
+        result = 1;
+        if exp == 0 { return result; }
+        for k in 1..exp { result = result * self; }
+        return result;
+    }
+
+    // Shifted left by `n` places, the bits off the top coming back in at the
+    // bottom.
+    pub fn rotate_left(self, n: integer) -> unsigned {
+        let s: integer = n - (n / self'length) * self'length;
+        if s < 0 { s = s + self'length; }
+        return resize(self << s, self'length) + (self >> (self'length - s));
+    }
+
+    // Shifted right by `n` places, the bits off the bottom coming in at the top.
+    pub fn rotate_right(self, n: integer) -> unsigned {
+        return self.rotate_left(0 - n);
+    }
+
+    // Exactly one bit set.
+    pub fn is_power_of_two(self) -> Bool {
+        return self.count_ones() == 1;
+    }
+
+    // The smallest power of two not below `self`: 1 for zero, and zero when
+    // it does not fit (Rust's `wrapping_next_power_of_two`).
+    pub fn next_power_of_two(self) -> unsigned {
+        let one: unsigned = self;
+        one = 1;
+        let result: unsigned = self;
+        result = 0;
+        let done: Bool = false;
+        for k in 0..self'length - 1 {
+            if not done and (one << k) >= self {
+                result = one << k;
+                done = true;
+            }
+        }
+        return result;
+    }
+
+    // `|self - rhs|`, which cannot overflow.
+    pub fn abs_diff(self, rhs: unsigned) -> unsigned {
+        if self < rhs { return rhs - self; }
+        return self - rhs;
+    }
+
+    // `self + rhs`, or the largest value when that overflows.
+    pub fn saturating_add(self, rhs: unsigned) -> unsigned {
+        let sum: unsigned = self;
+        sum = self + rhs;
+        if sum < self {
+            let max: unsigned = self;
+            max = 0;
+            max = max - 1;
+            return max;
+        }
+        return sum;
+    }
+
+    // `self - rhs`, or zero when that would go below it.
+    pub fn saturating_sub(self, rhs: unsigned) -> unsigned {
+        let zero: unsigned = self;
+        zero = 0;
+        if rhs > self { return zero; }
+        return self - rhs;
+    }
+}
+
+impl signed {
+    // The number of `'1'` bits (population count).
+    pub fn count_ones(self) -> integer {
+        let n: integer = 0;
+        for i in self'low..self'high { if self[i] == '1' { n = n + 1; } }
+        return n;
+    }
+
+    // The number of `'0'` bits.
+    pub fn count_zeros(self) -> integer {
+        return self'length - self.count_ones();
+    }
+
+    // `'0'` bits above the highest `'1'`: the length when there is none.
+    pub fn leading_zeros(self) -> integer {
+        let n: integer = 0;
+        let done: Bool = false;
+        for k in self'length - 1..0 {
+            if self[self'low + k] == '1' { done = true; } else if not done { n = n + 1; }
+        }
+        return n;
+    }
+
+    // `'0'` bits below the lowest `'1'`: the length when there is none.
+    pub fn trailing_zeros(self) -> integer {
+        let n: integer = 0;
+        let done: Bool = false;
+        for k in 0..self'length - 1 {
+            if self[self'low + k] == '1' { done = true; } else if not done { n = n + 1; }
+        }
+        return n;
+    }
+
+    // `'1'` bits from the MSB down to the first `'0'`.
+    pub fn leading_ones(self) -> integer {
+        let n: integer = 0;
+        let done: Bool = false;
+        for k in self'length - 1..0 {
+            if self[self'low + k] != '1' { done = true; } else if not done { n = n + 1; }
+        }
+        return n;
+    }
+
+    // `'1'` bits from the LSB up to the first `'0'`.
+    pub fn trailing_ones(self) -> integer {
+        let n: integer = 0;
+        let done: Bool = false;
+        for k in 0..self'length - 1 {
+            if self[self'low + k] != '1' { done = true; } else if not done { n = n + 1; }
+        }
+        return n;
+    }
+
+    // The bits in the opposite order: the MSB becomes the LSB. A slice's
+    // left index is its MSB, so `low..high` reads the bits reversed.
+    pub fn reverse_bits(self) -> signed {
+        return self[self'low..self'high];
+    }
+
+    // `self` multiplied by itself `exp` times, wrapping like `*`.
+    pub fn pow(self, exp: integer) -> signed {
+        let result: signed = self;
+        result = 1;
+        if exp == 0 { return result; }
+        for k in 1..exp { result = result * self; }
+        return result;
+    }
+
+    // `self + rhs`, or the nearest bound when that overflows: past `max`
+    // only when `rhs` is positive, past `min` only when it is negative.
+    pub fn saturating_add(self, rhs: signed) -> signed {
+        let min: signed = self;
+        min = 1;
+        min = min << (self'length - 1);
+        let max: signed = self;
+        max = min - 1;
+        if rhs > 0 and self > max - rhs { return max; }
+        if rhs < 0 and self < min - rhs { return min; }
+        return self + rhs;
+    }
+
+    // `self - rhs`, or the nearest bound when that overflows.
+    pub fn saturating_sub(self, rhs: signed) -> signed {
+        let min: signed = self;
+        min = 1;
+        min = min << (self'length - 1);
+        let max: signed = self;
+        max = min - 1;
+        if rhs < 0 and self > max + rhs { return max; }
+        if rhs > 0 and self < min + rhs { return min; }
+        return self - rhs;
+    }
+}
