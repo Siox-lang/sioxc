@@ -183,9 +183,13 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   consumers, including nested if/match return branches, independent field
   conditions and aliased values. Matching field selectors use one whole
   selected-return SSA join, with return scopes and lexical shadowing preserved.
-  Complete demand-preserving grouping for effectful/checked/nested-call and
-  partial aggregate returns; no debug boundary may force an unconsumed field
-  or invent an available zero for a pruned member.
+  Complete pure nested-call aggregates now share a return only when every
+  executable use first crosses a value that demands every retained field.
+  Whole-value conditionals and provably valid constant array selectors preserve
+  that proof; separate field uses and unknown/invalid selectors cannot justify
+  eager grouping. Complete demand-preserving grouping for effectful/checked,
+  independently selected nested-call and partial aggregate returns; no debug
+  boundary may force an unconsumed field or invent a zero for a pruned member.
   Shared Process functions now retain their source frames directly on the
   canonical native body, including selected branches, lexical locals and
   declaration-owned scalar inspection types. Keep native body-count, actual
@@ -233,9 +237,27 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   Boundary units verify canonical i32/i64/i193 payloads, handle-only metadata
   queries, caller decoding and LLVM validity. This does not imply general
   dynamic-array support or source-string eligibility for shared Process bodies.
-  Extend the ABI transport to subword, small unaligned, wide scalar and partial
-  layouts without forcing discarded fields or reading inspection buffers as
-  executable values.
+  Complete small byte-aligned aggregates now also support 8/16/32-bit integer
+  leaves beside real fields; adjacent integer leaves share their SysV eightbyte.
+  The codec retains the actual slot widths instead of assuming every slot is
+  64 bits. Naturally unaligned source members reuse the memory carrier even
+  below 16 bytes, including nested 12-byte Char/real and normalized 9-byte
+  unsigned[3]/real results with an unchanged i67 execution payload. Actual GDB
+  finish checks both Char/real field orders, nested alignment, Char[2] tails,
+  byte fields and shared byte slots, including every transient input and settled
+  negative/signed-zero cases under both inline hints and packing modes. Shared
+  units check i67/i72/i80/i96/i112 carriers and mixed i8/i16/i32/i48 slots.
+  Naturally aligned complete sub-byte aggregates now use reversible SSA
+  packing between canonical field offsets and byte-normalized register slots.
+  Signed leaves sign-extend their padding; executable callers decode the exact
+  original packed widths. GDB finish checks unsigned[3]/signed[3] pairs,
+  real/sub-byte tails, nested structs and three-element unsigned[3] arrays
+  (including opposite element orders on selected branches), under both inline
+  hints and packing modes. Shared units retain canonical i6/i70 results across
+  i16 and mixed double/i16 native signatures without an extra execution wrapper.
+  Extend the remaining odd-sized basic scalar, wide scalar and partial-layout
+  transports without forcing discarded fields or reading inspection buffers
+  as executable values.
   The supported runtime-sized native representation is currently Char[] handles;
   general dynamic arrays remain the separate host-service extension below.
   Keep debug-only aggregate inspection buffers faithful at source stops and

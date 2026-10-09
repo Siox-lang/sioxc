@@ -15682,6 +15682,57 @@ historical chat lines, .codex and backups. Full DWARF remains active at 97%,
 with subword/unaligned/partial/wide-basic ABI and formal/plane/grouping gaps
 still open. Next, run the isolated 12-byte Char/real diagnostic prepared under
 the disk-backed cache, not another concurrent verification job. No push.
+
+### 2026-10-09 — Codex — DWARF small aggregate return ABI
+
+String-return acceptance 3197327 passes; compiler commit 4638017 and sibling
+docs commit a8d7c02 are local, not pushed. Preserve unowned AGENTS/historical
+chat/.codex and the newly dirty sibling docs/language.md and docs/std.md. Own
+src/llvm/process/debug/inline_values.rs, src/llvm/process/tests.rs and
+tests/debug_info.rs for small aggregate native returns. First reproduce actual
+GDB finish for 12-byte Char/real structs in both field orders, independently
+of native results/VCD/DWARF validity. The isolated probe is under the disk-backed
+cache and job 3320655; reuse the existing return boundary and normalized copy
+helpers if evidence confirms the classifier/transport gap. Keep declaration
+types, consumer demand and canonical execution bits intact. Other full DWARF
+ABI/formal/plane/grouping requirements and independent IR defects stay open.
+Completion estimate remains 97%; no push.
+
+Probe 3320655 is terminal failed/1, peak 614154240 bytes. Ordinary/debug native
+assertions, VCD parity and DWARF verification pass, then GDB finish for Head
+tries to read 0x3bb (the Char code point) as a memory-return pointer. Tail finish
+returns gain=956.5/marker=0 instead of the captured gain=1.5/marker=955. The
+common classifier misses both small unaligned memory and mixed subword slots.
+Reuse the memory carrier for naturally unaligned source members, coalesce
+adjacent byte-aligned integer leaves into eightbytes, and make the common
+encoder/decoder advance by actual slot widths. Source types and canonical
+execution bits stay unchanged; normalized subword register/odd-basic/partial
+layouts remain separate open work.
+
+Probe 3330826 is terminal exited/success/0, peak 896786432 bytes: actual shared
+ABI unit, the isolated ordinary/debug native/GDB probe and strict Clippy pass.
+Head and Tail finish return every Char/real field correctly, including negative
+zero. Expanded focused job 3338044 passes the shared unit, permanent mixed
+native/GDB fixture and strict Clippy in default/bitpack (peak 905814016 bytes).
+Final focused job 3347329 is terminal exited/success/0, peak 1121513472 bytes:
+the fixture additionally checks normalized unsigned[3]/real memory returns
+with a 9-byte source prefix/i67 payload, nested Char/real alignment, Char[2]
+tails and adjacent byte fields under both inline hints and packing modes. All
+transient returns and required settled negative/signed-zero cases remain
+mandatory. Unit coverage includes 8/16/32-bit leaves, coalesced i16/i48 slots,
+small memory signatures and exact canonical widths. Update TODO and sibling
+architecture/testing notes, then freeze Rust for full acceptance before commit.
+The sibling documentation work has since advanced to 0d180aa and its tracked
+files are clean; preserve that agent's changes. No push by this agent.
+
+Full acceptance runs in siox-job-3000-1791537618095772700-3360896.service,
+with retained stage logs under dwarf-small-return-acceptance-3360902. Rust is
+frozen at c7a8507a3ab3bfc08417939f5183fb27dbde0054. The service is confirmed
+running; formatting/artifacts/frontend-only checks, both complete suites and
+strict Clippy have passed. All four corpora, native GDB/VCD smokes and AST-only
+graph refresh still need terminal success before commit. Do not restart this
+live handle or edit Rust while the gate is running. Full DWARF remains active;
+preserve remaining ABI/formal/plane/grouping gaps and unrelated work. No push.
 ### 2026-10-09 — Claude — bit methods; function bodies with loops in hardware
 
 Owner-requested: Rust's integer methods on `unsigned`/`signed` (`count_ones`,
@@ -15829,6 +15880,44 @@ Restore the six saved unfinished DWARF/TODO files byte-for-byte afterward;
 their new complete-array finish regression remains failing and uncommitted.
 Keep foreign AGENTS, historical chat and .codex untouched, refresh the AST-only
 graph, and retain backup refs. Full DWARF goal remains active. No push.
+
+Pull result / DWARF handoff: local merge d13932e has parents 4638017 and
+802d1e3; only upstream PRs #41/#42, their debug-aware conflict resolution,
+shared unknown-width fix and this merge log were committed. The six saved
+DWARF/TODO files match their named backup blobs exactly after restoration;
+492 earlier uncommitted chat lines and foreign AGENTS/.codex remain unstaged.
+AST-only graph gate 3677450 is terminal exited/success/0, peak 177651712 bytes,
+with 5322 nodes / 15148 edges / 242 communities. No LLM naming or dependency
+changes. Separately, origin/main advanced via another fetch to c3ffa01 while
+acceptance was running: PR #43 Debug formatting and PR #44 std::mem are not
+yet merged locally. Review/integrate that newer snapshot before touching
+overlapping lowering work; do not claim main is fully current. Full DWARF
+remains roughly 97%, with the preserved packed-array finish regression and
+formal/plane/grouping/remaining ABI tasks still open. No push.
+
+### 2026-10-09 — Codex — DWARF complete-array return continuation
+
+Previous goal turn made progress: merge d13932e and guarded full acceptance
+3569194 are complete, and all saved unfinished return work was restored exactly.
+Continue the full DWARF goal, not just the passing ABI subset. First integrate
+the newer known main snapshot (PRs #43/#44) while preserving foreign chat and
+AGENTS plus the unfinished debug source/tests. Own any overlapping lowerer
+merge and debug/inline_values aggregate grouping/boundary work. Trace why the
+new SubArray finish fixture creates three native returns before choosing the
+shared fix. No assertion relaxation, fabricated pruned fields, eager checked
+effects, extra execution wrapper or inspection-buffer reads. Preserve remaining
+formal/plane/wide/partial requirements and run guarded native tests. No push.
+
+Array probe 3687478 is terminal exited/success/0, peak 861675520 bytes:
+native simulation and DWARF validation pass, while the three retained array
+fields contain two nested std::bits::add boundaries. The purity gate excludes
+all InlineCall nodes, so those fields never share a complete native return.
+Extend pure nested grouping only after proving every use crosses a joint-demand
+value; independently selected fields and separate execution roots must reject
+the group. Reuse the existing Process instruction/terminator operand walkers
+(crate-private visibility only in ir/process.rs), not a second root catalogue.
+Checked/effectful bodies and partial layouts remain excluded. Keep source call
+frames and exact canonical bits; add a small joint-demand proof regression.
 ### 2026-10-09 — Claude — `{:?}` Debug placeholders
 
 Branch `feat/debug-format`: `FormatKind::Debug` (`?`). `lower_format_value`
@@ -15836,6 +15925,66 @@ skips the `Display` impl and quotes strings/characters; the runtime's
 `sx_runtime_format_notation` flags gain bit 2 (a Debug real keeps `.0`).
 **Codex:** touches `lower_format_value`, `llvm/process/instructions.rs`
 format notation flags, `runtime/process.c` real formatting.
+
+### 2026-10-09 — Codex — DWARF selector proof review
+
+Previous goal turn was a verified wait: focused gate 3789957 is now terminal
+exited/success/0, peak 1603293184 bytes. Joint-demand units and actual mixed/
+sub-byte array GDB finish pass in default and bitpack; upstream Debug/mem
+integrations and strict all-feature Clippy pass. Own the existing debug return
+batch and crate-private operand walker visibility in ir/process.rs. Keep the
+constant selector proof local to debug code instead of broadening mathematical
+IR constant evaluation for this feature. Add dynamic whole-value versus split
+field demand, invalid checks and wrapping-selector rejection coverage, then
+freeze the combined pending merge/return tree for full acceptance. Preserve
+foreign AGENTS/chat/.codex changes and the remaining formal/plane/partial ABI
+requirements. No push.
+
+Return review gate 3822665 is terminal exited/success/0, peak 1610870784
+bytes. The selector proof is now debug-local; no new mathematical IR folding
+behavior remains. Joint-demand units cover valid/invalid checks, unknown runtime
+conditions, split fields, separate function roots and unsupported signed/
+arithmetic selectors. Actual native/GDB finish passes complete sub-byte arrays
+consumed in opposite orders on selected branches in both packing modes and
+both inline hints. Strict Clippy passes. TODO and current sibling documentation
+now distinguish this support from the remaining effectful/checked/partial,
+formal-type, plane and basic-scalar ABI work. Freeze Rust for full acceptance
+of the pending c3ffa01 merge plus owned return batch. origin/main has since
+advanced to 52d7c49 (PR #45); that later snapshot is not part of this frozen
+gate and is not claimed merged. No push.
+
+Full gate 3836471 is live; stage logs are retained under
+/home/max/.cache/siox-jobs/tmp/dwarf-register-return-acceptance.LenW0R.
+Frozen source/runtime/std/test/script hash is
+2c5575e045066f9cbcd32d63bb25c529bae306e1bafb5d6114bf07a990fb8613.
+It runs CI-local, both debug corpora, native FIFO/wide GDB/VCD smokes and an
+AST-only graph refresh. Re-poll this exact service after an interruption;
+do not restart it or edit Rust before it is terminal. The pending merge and
+owned return changes are not yet committed; all foreign changes remain intact.
+
+Read-only next-gap audit: inline_source_operator deliberately keeps scalar
+operands out of executable SourceShapeFrame.values to avoid recursive operator
+dispatch. It retains their shapes only in return_shapes, while
+inline_source_function takes formal inspection layouts from source_bound_layout.
+The retained array probe's LLVM confirms std::bits::add self/rhs appear as
+anonymous bits[3]/bits[1]/bits[2], not the declared Self specialization. Next
+verify this on current emitted metadata/GDB and transport declaration-owned
+formal layouts separately from executable shape lookup. Do not put packed
+operator operands into execution shape frames as a debugger fix. Suffix/From/
+generic signatures and other planes still require their own audits.
+
+Continuation audit: 3836471 remains live with both full test suites, strict
+Clippy and the 228-program ordinary corpus passing. The staged c3ffa01 merge
+matches a fresh merge-tree result for every non-chat file; only the expected
+chat union differs. Sibling siox-paper commit fea7bb0, made concurrently by
+another agent, already includes the owned architecture/testing DWARF updates
+alongside its language change. Its worktree is clean; preserve that history
+and do not create a duplicate documentation commit. Clarification for the
+formal audit: bits.siox declares `rhs: unsigned` (an unsized family), not
+literally Self. The next inspection must distinguish explicit Self, an unsized
+family's actual argument width, and concrete declaration types. All seven
+inline_source_function call sites (including suffix, From and Resolve) need
+review before changing its metadata fallback. No Rust edits during the gate.
 
 ### 2026-10-09 — Codex — Debug and mem merge acceptance
 
@@ -15853,3 +16002,18 @@ commits. AST-only refresh succeeds: 5334 nodes, 15174 edges, 245 communities;
 known vendored C extraction warnings remain. Full DWARF remains active with
 formal types, companion planes, checked/effectful/partial returns and remaining
 basic/mixed ABI layouts still open. No push.
+
+### 2026-10-09 — Codex — normalized aggregate return acceptance
+
+Merge b705a5e records only upstream PRs #43/#44 and its acceptance log.
+Commit the separately owned small/sub-byte return ABI and complete pure nested
+aggregate grouping now, under the same successful frozen gate 3836471. The
+source codec preserves exact canonical payloads, while signed byte padding and
+SysV slots describe the native source return. Joint-demand analysis reuses
+Process execution-root walkers and does not alter general IR constant folding.
+The eleven native DWARF fixtures in both packing modes include the expanded
+GDB finish cases, selected array order, signed fields and signed zero. Keep
+the full goal active: the next probes cover declaration-owned operator/suffix/
+conversion formals and small arrays with struct strides not divisible by their
+natural alignment, alongside remaining checked/effectful/partial and plane
+work. The docs are already included in sibling fea7bb0. No push.

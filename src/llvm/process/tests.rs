@@ -102,7 +102,7 @@ fn string_return_boundary_preserves_array_types_and_payload_widths() {
             assert_eq!(storage.get_field_type_at_index(1).unwrap(), bits.into());
         }
         let native = module.add_function("echo", result.fn_type(&context, &[bits.into()]), None);
-        result.declare(&context, native);
+        result.declare(&context, native, Some(&debug));
         builder.position_at_end(context.append_basic_block(native, "entry"));
         let value = native.get_last_param().unwrap().into_int_value();
         result.emit_return(Some(&debug), &builder, value).unwrap();
@@ -114,6 +114,7 @@ fn string_return_boundary_preserves_array_types_and_payload_widths() {
             native,
             &[caller.get_first_param().unwrap().into()],
             "returned",
+            Some(&debug),
         )
         .unwrap();
         assert_eq!(value.get_type(), bits);
@@ -141,6 +142,18 @@ fn shared_return_boundary_preserves_canonical_bits() {
 
     for (fields, signature) in [
         (
+            vec![(ScalarDomain::Integer, 3), (ScalarDomain::Integer, 3)],
+            Some("i16"),
+        ),
+        (
+            vec![
+                (ScalarDomain::Real, 64),
+                (ScalarDomain::Integer, 3),
+                (ScalarDomain::Integer, 3),
+            ],
+            Some("{ double, i16 }"),
+        ),
+        (
             vec![(ScalarDomain::Real, 64), (ScalarDomain::Integer, 64)],
             Some("{ double, i64 }"),
         ),
@@ -151,6 +164,50 @@ fn shared_return_boundary_preserves_canonical_bits() {
         (
             vec![(ScalarDomain::Real, 64), (ScalarDomain::Real, 64)],
             Some("{ double, double }"),
+        ),
+        (
+            vec![(ScalarDomain::Character, 32), (ScalarDomain::Real, 64)],
+            None,
+        ),
+        (
+            vec![(ScalarDomain::Real, 64), (ScalarDomain::Character, 32)],
+            Some("{ double, i32 }"),
+        ),
+        (
+            vec![(ScalarDomain::Real, 64), (ScalarDomain::Integer, 8)],
+            Some("{ double, i8 }"),
+        ),
+        (
+            vec![(ScalarDomain::Integer, 8), (ScalarDomain::Real, 64)],
+            None,
+        ),
+        (
+            vec![(ScalarDomain::Real, 64), (ScalarDomain::Integer, 16)],
+            Some("{ double, i16 }"),
+        ),
+        (
+            vec![(ScalarDomain::Integer, 16), (ScalarDomain::Real, 64)],
+            None,
+        ),
+        (
+            vec![(ScalarDomain::Integer, 3), (ScalarDomain::Real, 64)],
+            None,
+        ),
+        (
+            vec![
+                (ScalarDomain::Real, 64),
+                (ScalarDomain::Integer, 32),
+                (ScalarDomain::Integer, 16),
+            ],
+            Some("{ double, i48 }"),
+        ),
+        (
+            vec![
+                (ScalarDomain::Real, 64),
+                (ScalarDomain::Integer, 8),
+                (ScalarDomain::Integer, 8),
+            ],
+            Some("{ double, i16 }"),
         ),
         (
             vec![

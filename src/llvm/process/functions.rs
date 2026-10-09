@@ -148,7 +148,14 @@ pub(super) fn shared_call<'ctx>(
                 )?;
                 arguments.push(value.into());
             }
-            debug::call_return(context, builder, function, &arguments, "pv.shared")
+            debug::call_return(
+                context,
+                builder,
+                function,
+                &arguments,
+                "pv.shared",
+                cache.debug,
+            )
         },
     )
 }
@@ -199,7 +206,7 @@ fn shared_function<'ctx>(
         result.fn_type(context, &parameters),
         Some(Linkage::Internal),
     );
-    result.declare(context, function);
+    result.declare(context, function, cache.debug);
     let builder = context.create_builder();
     builder.position_at_end(context.append_basic_block(function, "entry"));
     let mut body = ProcessValueCache::new(cache.activity_sensitive, cache.meta_free);

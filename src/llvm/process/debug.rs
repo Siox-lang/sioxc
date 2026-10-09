@@ -83,6 +83,8 @@ pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     aggregate_returns: HashMap<ProcessValueId, AggregateReturn>,
     aggregate_members: HashMap<ProcessValueId, (ProcessValueId, u32, u32)>,
     value_functions: RefCell<HashMap<ValueFunctionKey, ValueFunction<'ctx>>>,
+    /// Reversible native register packing, never executable inspection storage.
+    register_returns: RefCell<HashMap<FunctionValue<'ctx>, SourceLayout>>,
     hardware_processes: HashMap<u32, siox::ir::ProcessId>,
     hardware_frames: RefCell<HashMap<(usize, siox::ir::ProcessId), DISubprogram<'ctx>>>,
 }
@@ -190,6 +192,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             aggregate_returns,
             aggregate_members,
             value_functions: RefCell::new(HashMap::new()),
+            register_returns: RefCell::new(HashMap::new()),
             hardware_processes: design
                 .process_ir
                 .processes

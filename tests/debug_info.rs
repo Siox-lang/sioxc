@@ -879,11 +879,23 @@ fn mixed_aggregate_returns_match_the_debugger_finish_abi() {
     std::fs::create_dir_all(&directory).unwrap();
     let source = directory.join("mixed.siox");
     let text = r#"module debug_mixed_returns;
+use std::bits::unsigned;
 struct Pair { pub gain: real, pub tag: integer }
 struct Reverse { pub tag: integer, pub gain: real }
 struct Nested { pub pair: Pair }
 struct Reals { pub values: real[2] }
 struct Gain { pub gain: real }
+struct Head { pub marker: Char, pub gain: real }
+struct Tail { pub gain: real, pub marker: Char }
+struct NestedHead { pub marker: Char, pub inner: Gain }
+struct CharTail { pub gain: real, pub markers: Char[2] }
+struct SmallHead { pub tag: unsigned[8], pub gain: real }
+struct TinyHead { pub tag: unsigned[3], pub gain: real }
+struct SmallTail { pub gain: real, pub first: unsigned[8], pub second: unsigned[8] }
+struct SubPair { pub first: unsigned[3], pub second: signed[3] }
+struct SubTail { pub gain: real, pub first: unsigned[3], pub second: signed[3] }
+struct SubNested { pub gain: real, pub pair: SubPair }
+struct SubArray { pub values: unsigned[3][3] }
 fn make_pair(tag: integer, gain: real) -> Pair {
     return Pair { .gain = gain, .tag = tag }; // mixed pair return stop
 }
@@ -898,6 +910,39 @@ fn make_reals(gain: real) -> Reals {
 }
 fn make_gain(gain: real) -> Gain {
     return Gain { .gain = gain }; // real wrapper return stop
+}
+fn make_head(marker: Char, gain: real) -> Head {
+    return Head { .marker = marker, .gain = gain }; // char head return stop
+}
+fn make_tail(marker: Char, gain: real) -> Tail {
+    return Tail { .gain = gain, .marker = marker }; // char tail return stop
+}
+fn make_nested_head(marker: Char, gain: real) -> NestedHead {
+    return NestedHead { .marker = marker, .inner = Gain { .gain = gain } }; // nested char head return stop
+}
+fn make_chars(marker: Char, gain: real) -> CharTail {
+    return CharTail { .gain = gain, .markers = [marker, marker] }; // char array tail return stop
+}
+fn make_small_head(tag: unsigned[8], gain: real) -> SmallHead {
+    return SmallHead { .tag = tag, .gain = gain }; // small head return stop
+}
+fn make_tiny_head(tag: unsigned[3], gain: real) -> TinyHead {
+    return TinyHead { .tag = tag, .gain = gain }; // tiny head return stop
+}
+fn make_small_tail(first: unsigned[8], second: unsigned[8], gain: real) -> SmallTail {
+    return SmallTail { .gain = gain, .first = first, .second = second }; // small tail return stop
+}
+fn make_subpair(first: unsigned[3], second: signed[3]) -> SubPair {
+    return SubPair { .first = first, .second = second }; // subbyte pair return stop
+}
+fn make_subtail(first: unsigned[3], second: signed[3], gain: real) -> SubTail {
+    return SubTail { .gain = gain, .first = first, .second = second }; // subbyte tail return stop
+}
+fn make_subnested(first: unsigned[3], second: signed[3], gain: real) -> SubNested {
+    return SubNested { .gain = gain, .pair = SubPair { .first = first, .second = second } }; // subbyte nested return stop
+}
+fn make_subarray(first: unsigned[3]) -> SubArray {
+    return SubArray { .values = [first, first + 1, first + 2] }; // subbyte array return stop
 }
 fn consume_pair(tag: integer, gain: real) -> real {
     let pair: Pair = make_pair(tag, gain);
@@ -919,33 +964,106 @@ fn consume_gain(gain: real) -> real {
     let single: Gain = make_gain(gain);
     return single.gain;
 }
-entity Probe { tag: integer in, gain: real in, pair: real out, reverse: real out, nested: real out, reals: real out, single: real out }
+fn consume_head(marker: Char, gain: real) -> real {
+    let value: Head = make_head(marker, gain);
+    return value.gain + real(integer(value.marker));
+}
+fn consume_tail(marker: Char, gain: real) -> real {
+    let value: Tail = make_tail(marker, gain);
+    return value.gain + real(integer(value.marker));
+}
+fn consume_nested_head(marker: Char, gain: real) -> real {
+    let value: NestedHead = make_nested_head(marker, gain);
+    return value.inner.gain + real(integer(value.marker));
+}
+fn consume_chars(marker: Char, gain: real) -> real {
+    let value: CharTail = make_chars(marker, gain);
+    return value.gain + real(integer(value.markers[0])) + real(integer(value.markers[1]));
+}
+fn consume_small_head(tag: integer, gain: real) -> real {
+    let value: SmallHead = make_small_head(unsigned[8](tag), gain);
+    return value.gain + real(integer(value.tag));
+}
+fn consume_tiny_head(tag: integer, gain: real) -> real {
+    let value: TinyHead = make_tiny_head(unsigned[3](tag), gain);
+    return value.gain + real(integer(value.tag));
+}
+fn consume_small_tail(tag: integer, gain: real) -> real {
+    let value: SmallTail = make_small_tail(unsigned[8](tag), unsigned[8](tag + 1), gain);
+    return value.gain + real(integer(value.first)) + real(integer(value.second));
+}
+fn consume_subpair(tag: integer) -> integer {
+    let value: SubPair = make_subpair(unsigned[3](tag), signed[3](tag));
+    return integer(value.first) + integer(value.second);
+}
+fn consume_subtail(tag: integer, gain: real) -> real {
+    let value: SubTail = make_subtail(unsigned[3](tag), signed[3](tag), gain);
+    return value.gain + real(integer(value.first)) + real(integer(value.second));
+}
+fn consume_subnested(tag: integer, gain: real) -> real {
+    let value: SubNested = make_subnested(unsigned[3](tag), signed[3](tag), gain);
+    return value.gain + real(integer(value.pair.first)) + real(integer(value.pair.second));
+}
+fn consume_subarray(tag: integer) -> integer {
+    let value: SubArray = make_subarray(unsigned[3](tag));
+    return if tag > 0 {
+        integer(value.values[0]) + integer(value.values[1]) + integer(value.values[2])
+    } else {
+        integer(value.values[2]) + integer(value.values[1]) + integer(value.values[0])
+    };
+}
+entity Probe { tag: integer in, gain: real in, marker: Char in, pair: real out, reverse: real out, nested: real out, reals: real out, single: real out, head: real out, tail: real out, nested_head: real out, chars: real out, small_head: real out, small_tail: real out, tiny_head: real out, subpair: integer out, subtail: real out, subnested: real out, subarray: integer out }
 impl Probe {
     pair = consume_pair(tag, gain);
     reverse = consume_reverse(tag, gain);
     nested = consume_nested(tag, gain);
     reals = consume_reals(gain);
     single = consume_gain(gain);
+    head = consume_head(marker, gain);
+    tail = consume_tail(marker, gain);
+    nested_head = consume_nested_head(marker, gain);
+    chars = consume_chars(marker, gain);
+    small_head = consume_small_head(tag, gain);
+    tiny_head = consume_tiny_head(tag, gain);
+    small_tail = consume_small_tail(tag, gain);
+    subpair = consume_subpair(tag);
+    subtail = consume_subtail(tag, gain);
+    subnested = consume_subnested(tag, gain);
+    subarray = consume_subarray(tag);
 }
 #[test] entity T {}
 impl T {
     let tag: integer = 5;
     let gain: real = 1.5;
-    let probe: Probe = { .tag = tag, .gain = gain };
+    let marker: Char = 'λ';
+    let probe: Probe = { .tag = tag, .gain = gain, .marker = marker };
     stimulus: process {
         await 1ns;
         assert!(probe.pair == 6.5 and probe.reverse == 6.5 and probe.nested == 6.5, "positive mixed result");
         assert!(probe.reals == 0.0 and probe.single == 1.5, "positive real aggregate");
+        assert!(probe.head == 956.5 and probe.tail == 956.5 and probe.nested_head == 956.5 and probe.chars == 1911.5, "positive char aggregate");
+        assert!(probe.small_head == 6.5 and probe.small_tail == 12.5, "positive subword aggregate");
+        assert!(probe.tiny_head == 6.5, "positive normalized subword aggregate");
+        assert!(probe.subpair == 2 and probe.subtail == 3.5 and probe.subnested == 3.5 and probe.subarray == 18, "positive subbyte register aggregates");
         tag = -7;
         gain = -2.5;
+        marker = 'β';
         await 1ns;
         assert!(probe.pair == -9.5 and probe.reverse == -9.5 and probe.nested == -9.5, "negative mixed result");
         assert!(probe.reals == 0.0 and probe.single == -2.5, "negative real aggregate");
+        assert!(probe.head == 943.5 and probe.tail == 943.5 and probe.nested_head == 943.5 and probe.chars == 1889.5, "negative char aggregate");
+        assert!(probe.small_head == 246.5 and probe.small_tail == 496.5, "negative subword aggregate");
+        assert!(probe.tiny_head == -1.5, "negative normalized subword aggregate");
+        assert!(probe.subpair == 2 and probe.subtail == -0.5 and probe.subnested == -0.5 and probe.subarray == 6, "negative subbyte register aggregates");
         tag = 0;
         gain = -0.0;
         await 1ns;
         assert!(probe.pair == 0.0 and probe.reverse == 0.0 and probe.nested == 0.0, "zero mixed result");
         assert!(probe.reals == 0.0 and probe.single == 0.0, "zero real aggregate");
+        assert!(probe.head == 946.0 and probe.tail == 946.0 and probe.nested_head == 946.0 and probe.chars == 1892.0, "zero char aggregate");
+        assert!(probe.small_head == 0.0 and probe.small_tail == 1.0, "zero subword aggregate");
+        assert!(probe.tiny_head == 0.0, "zero normalized subword aggregate");
+        assert!(probe.subpair == 0 and probe.subtail == 0.0 and probe.subnested == 0.0 and probe.subarray == 3, "zero subbyte register aggregates");
     }
 }
 "#;
@@ -990,25 +1108,40 @@ impl T {
             let line = |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
             let python = format!(
                 r#"import gdb, math
-stops = [gdb.Breakpoint({source:?} + ':' + str(line)) for line in [{pair_line}, {reverse_line}, {nested_line}, {reals_line}, {gain_line}]]
-seen = {{name: set() for name in ['make_pair', 'make_reverse', 'make_nested', 'make_reals', 'make_gain']}}
+stops = [gdb.Breakpoint({source:?} + ':' + str(line)) for line in [{pair_line}, {reverse_line}, {nested_line}, {reals_line}, {gain_line}, {head_line}, {tail_line}, {nested_head_line}, {chars_line}, {small_head_line}, {small_tail_line}, {tiny_head_line}, {subpair_line}, {subtail_line}, {subnested_line}, {subarray_line}]]
+seen = {{name: set() for name in ['make_pair', 'make_reverse', 'make_nested', 'make_reals', 'make_gain', 'make_head', 'make_tail', 'make_nested_head', 'make_chars', 'make_small_head', 'make_small_tail', 'make_tiny_head', 'make_subpair', 'make_subtail', 'make_subnested', 'make_subarray']}}
 gdb.execute('run')
 while True:
     frame = gdb.selected_frame()
     name = frame.name().split('::')[-1]
     assert name in seen, frame.name()
-    gain = float(frame.read_var('gain'))
-    sign = math.copysign(1.0, gain)
+    gain = None if name in ['make_subpair', 'make_subarray'] else float(frame.read_var('gain'))
+    sign = None if gain is None else math.copysign(1.0, gain)
     mixed = name in ['make_pair', 'make_reverse', 'make_nested']
     tag = int(frame.read_var('tag')) if mixed else None
+    if name in ['make_head', 'make_tail', 'make_nested_head', 'make_chars']: tag = int(frame.read_var('marker'))
+    if name in ['make_small_head', 'make_tiny_head']: tag = int(frame.read_var('tag'))
+    if name == 'make_small_tail': tag = (int(frame.read_var('first')), int(frame.read_var('second')))
+    if name in ['make_subpair', 'make_subtail', 'make_subnested']: tag = (int(frame.read_var('first')), int(frame.read_var('second')))
+    if name == 'make_subarray': tag = int(frame.read_var('first'))
     seen[name].add((tag, gain, sign))
     gdb.execute('finish')
     result = gdb.history(0)
-    assert result.type.sizeof == (8 if name == 'make_gain' else 16), str(result.type)
+    sizes = {{'make_gain': 8, 'make_head': 12, 'make_tail': 12, 'make_nested_head': 12, 'make_small_head': 9, 'make_small_tail': 10, 'make_tiny_head': 9, 'make_subpair': 2, 'make_subtail': 10, 'make_subnested': 10, 'make_subarray': 3}}
+    assert result.type.sizeof == sizes.get(name, 16), str(result.type)
     if name == 'make_nested': result = result['pair']
     if mixed: assert int(result['tag']) == tag, (name, str(result), tag)
-    gains = [float(result['values'][i]) for i in range(2)] if name == 'make_reals' else [float(result['gain'])]
-    expected_gains = [gain, -gain] if name == 'make_reals' else [gain]
+    if name in ['make_head', 'make_tail', 'make_nested_head']: assert int(result['marker']) == tag, (name, str(result), tag)
+    if name == 'make_nested_head': result = result['inner']
+    if name == 'make_chars': assert [int(result['markers'][i]) for i in range(2)] == [tag, tag], (name, str(result), tag)
+    if name in ['make_small_head', 'make_tiny_head']: assert int(result['tag']) == tag, (name, str(result), tag)
+    if name == 'make_small_tail': assert (int(result['first']), int(result['second'])) == tag, (name, str(result), tag)
+    if name in ['make_subpair', 'make_subtail', 'make_subnested']:
+        pair = result['pair'] if name == 'make_subnested' else result
+        assert (int(pair['first']), int(pair['second'])) == tag, (name, str(result), tag)
+    if name == 'make_subarray': assert [int(result['values'][i]) for i in range(3)] == [(tag + i) & 7 for i in range(3)], (name, str(result), tag)
+    gains = [] if gain is None else [float(result['values'][i]) for i in range(2)] if name == 'make_reals' else [float(result['gain'])]
+    expected_gains = [] if gain is None else [gain, -gain] if name == 'make_reals' else [gain]
     for actual_gain, expected_gain in zip(gains, expected_gains):
         assert actual_gain == expected_gain and math.copysign(1.0, actual_gain) == math.copysign(1.0, expected_gain), (name, str(result), expected_gain)
     gdb.execute('continue')
@@ -1019,6 +1152,13 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
 for name, calls in seen.items():
     expected = [(5, 1.5, 1.0), (-7, -2.5, -1.0), (0, -0.0, -1.0)]
     if name in ['make_reals', 'make_gain']: expected = [(None, gain, sign) for _, gain, sign in expected]
+    if name in ['make_head', 'make_tail', 'make_nested_head', 'make_chars']: expected = [(955, 1.5, 1.0), (946, -2.5, -1.0), (946, -0.0, -1.0)]
+    if name == 'make_small_head': expected = [(5, 1.5, 1.0), (249, -2.5, -1.0), (0, -0.0, -1.0)]
+    if name == 'make_tiny_head': expected = [(5, 1.5, 1.0), (1, -2.5, -1.0), (0, -0.0, -1.0)]
+    if name == 'make_small_tail': expected = [((5, 6), 1.5, 1.0), ((249, 250), -2.5, -1.0), ((0, 1), -0.0, -1.0)]
+    if name in ['make_subpair', 'make_subtail', 'make_subnested']: expected = [((5, -3), 1.5, 1.0), ((1, 1), -2.5, -1.0), ((0, 0), -0.0, -1.0)]
+    if name == 'make_subpair': expected = [(tag, None, None) for tag, _, _ in expected]
+    if name == 'make_subarray': expected = [(5, None, None), (1, None, None), (0, None, None)]
     assert set(expected).issubset(calls), (name, calls)
 "#,
                 source = source.to_string_lossy(),
@@ -1026,7 +1166,18 @@ for name, calls in seen.items():
                 reverse_line = line("reversed pair return stop"),
                 nested_line = line("nested pair return stop"),
                 reals_line = line("real array return stop"),
-                gain_line = line("real wrapper return stop")
+                gain_line = line("real wrapper return stop"),
+                head_line = line("// char head return stop"),
+                tail_line = line("char tail return stop"),
+                nested_head_line = line("nested char head return stop"),
+                chars_line = line("char array tail return stop"),
+                small_head_line = line("small head return stop"),
+                small_tail_line = line("small tail return stop"),
+                tiny_head_line = line("tiny head return stop"),
+                subpair_line = line("subbyte pair return stop"),
+                subtail_line = line("subbyte tail return stop"),
+                subnested_line = line("subbyte nested return stop"),
+                subarray_line = line("subbyte array return stop")
             );
             success(
                 Command::new("gdb")

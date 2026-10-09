@@ -9,12 +9,17 @@ use inkwell::types::{
 };
 use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, StructValue};
 use siox::ir::ProcessValueInline;
+use std::collections::HashSet;
 
 type AggregateMembers = HashMap<ProcessValueId, (ProcessValueId, u32, u32)>;
 
 /// Executable return ABI, separate from the declaration's DWARF type.
 pub(in crate::llvm::process) enum SourceReturn<'ctx> {
     Direct(BasicTypeEnum<'ctx>),
+    Register {
+        native: BasicTypeEnum<'ctx>,
+        layout: SourceLayout,
+    },
     Memory {
         storage: StructType<'ctx>,
         view: SourceReturnView<'ctx>,
@@ -59,7 +64,7 @@ impl<'ctx> SourceReturn<'ctx> {
         parameters: &[BasicMetadataTypeEnum<'ctx>],
     ) -> FunctionType<'ctx> {
         match self {
-            Self::Direct(ty) => ty.fn_type(parameters, false),
+            Self::Direct(ty) | Self::Register { native: ty, .. } => ty.fn_type(parameters, false),
             Self::Memory { .. } => {
                 let parameters = std::iter::once(context.ptr_type(AddressSpace::default()).into())
                     .chain(parameters.iter().copied())
@@ -77,7 +82,14 @@ impl<'ctx> SourceReturn<'ctx> {
         &self,
         context: &'ctx Context,
         function: FunctionValue<'ctx>,
+        debug: Option<&DebugInfo<'ctx, '_>>,
     ) {
+        if let (Self::Register { layout, .. }, Some(debug)) = (self, debug) {
+            debug
+                .register_returns
+                .borrow_mut()
+                .insert(function, layout.clone());
+        }
         if let Self::Memory { storage, .. } = self {
             function.add_attribute(
                 AttributeLoc::Param(0),
@@ -97,6 +109,11 @@ impl<'ctx> SourceReturn<'ctx> {
     ) -> Option<()> {
         match self {
             Self::Direct(_) => {
+                let returned = return_value(builder, value)?;
+                builder.build_return(Some(&returned)).ok()?;
+            }
+            Self::Register { layout, .. } => {
+                let value = register_bits(builder, value, layout, true)?;
                 let returned = return_value(builder, value)?;
                 builder.build_return(Some(&returned)).ok()?;
             }
@@ -155,6 +172,7 @@ pub(in crate::llvm::process) fn call_return<'ctx>(
     function: FunctionValue<'ctx>,
     arguments: &[BasicMetadataValueEnum<'ctx>],
     name: &str,
+    debug: Option<&DebugInfo<'ctx, '_>>,
 ) -> Option<IntValue<'ctx>> {
     if let Some(attribute) = function.get_enum_attribute(
         AttributeLoc::Param(0),
@@ -201,12 +219,19 @@ pub(in crate::llvm::process) fn call_return<'ctx>(
         value.as_instruction_value()?.set_alignment(1).ok()?;
         Some(value.into_int_value())
     } else {
-        builder
+        let value = builder
             .build_call(function, arguments, name)
             .ok()?
             .try_as_basic_value()
             .basic()
-            .and_then(|value| return_bits(builder, value))
+            .and_then(|value| return_bits(builder, value))?;
+        if let Some(layout) =
+            debug.and_then(|debug| debug.register_returns.borrow().get(&function).cloned())
+        {
+            register_bits(builder, value, &layout, false)
+        } else {
+            Some(value)
+        }
     }
 }
 
@@ -216,10 +241,11 @@ pub(super) fn aggregate_returns(
     design: &Design,
 ) -> (HashMap<ProcessValueId, AggregateReturn>, AggregateMembers) {
     let mut pure = Vec::with_capacity(design.process_ir.values.len());
+    let mut nested_pure = Vec::with_capacity(design.process_ir.values.len());
     let mut groups: HashMap<_, Vec<_>> = HashMap::new();
     for (index, value) in design.process_ir.values.iter().enumerate() {
-        // ponytail: effectful/checked/nested-call leaves need demand-preserving
-        // grouping; eager packing must not introduce effects or source stops.
+        // ponytail: checked/effectful leaves still require demand-preserving
+        // transport; grouping must not introduce effects or source stops.
         let safe = matches!(
             value.kind,
             ProcessValueKind::Number(_)
@@ -244,6 +270,12 @@ pub(super) fn aggregate_returns(
             safe && !siox::ir::any_process_value_dependency(&value.kind, |id| {
                 !pure.get(id.0 as usize).copied().unwrap_or(false)
             }),
+        );
+        nested_pure.push(
+            (safe || matches!(value.kind, ProcessValueKind::InlineCall { .. }))
+                && !siox::ir::any_process_value_dependency(&value.kind, |id| {
+                    !nested_pure.get(id.0 as usize).copied().unwrap_or(false)
+                }),
         );
         if let ProcessValueKind::InlineCall { source, .. } = &value.kind {
             if let Some((expansion, _)) = &source.aggregate {
@@ -281,7 +313,7 @@ pub(super) fn aggregate_returns(
                     format!(".{path}")
                 };
                 let selected = projection_slice(layout, &projection)?;
-                (pure[operand.0 as usize]
+                (nested_pure[operand.0 as usize]
                     && design.process_ir.values[operand.0 as usize].bit_width
                         == Some(selected.width))
                 .then(|| (*operand, selected.offset, selected.layout.clone()))
@@ -301,6 +333,13 @@ pub(super) fn aggregate_returns(
         if covered != layout_width(layout) {
             continue;
         }
+        if pieces
+            .iter()
+            .any(|(operand, _, _)| !pure[operand.0 as usize])
+            && !joint_aggregate_demand(design, &group)
+        {
+            continue;
+        }
         for (id, (_, offset, layout)) in group.into_iter().zip(&pieces) {
             members.insert(id, (leader, *offset, layout_width(layout).unwrap()));
         }
@@ -313,6 +352,178 @@ pub(super) fn aggregate_returns(
         );
     }
     (returns, members)
+}
+
+/// Fold only the unsigned, non-overflowing selector subset whose native bits
+/// equal the shared mathematical constant evaluator. Dynamic/signed values
+/// and arithmetic wrapping are not a proof that a branch is taken.
+fn constant_selector(design: &Design, id: ProcessValueId) -> Option<i128> {
+    let value = design.process_ir.values.get(id.0 as usize)?;
+    if process_value_is_signed(design, id)
+        || process_value_is_real(design, id)
+        || process_value_packed_width(design, id).is_some()
+    {
+        return None;
+    }
+    let folded = match &value.kind {
+        ProcessValueKind::Number(ProcessNumber::Integer(_)) => {
+            siox::ir::arena_constant_integer(id, &design.process_ir.values)?
+        }
+        ProcessValueKind::CheckedIndex { index, valid, .. }
+            if constant_selector(design, *valid)? != 0 =>
+        {
+            constant_selector(design, *index)?
+        }
+        ProcessValueKind::Binary {
+            operation,
+            left,
+            right,
+        } => {
+            let left = constant_selector(design, *left)?;
+            let right = constant_selector(design, *right)?;
+            match operation {
+                ProcessBinaryOp::Eq => i128::from(left == right),
+                ProcessBinaryOp::Ne => i128::from(left != right),
+                ProcessBinaryOp::And => left & right,
+                ProcessBinaryOp::Or => left | right,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    let width = value.bit_width?;
+    (folded >= 0 && (1..=64).contains(&width) && folded < 1i128.checked_shl(width)?)
+        .then_some(folded)
+}
+
+/// Every path to a field must first cross a value demanding all fields. This
+/// allows whole-value selections, not independently guarded nested calls.
+fn joint_aggregate_demand(design: &Design, group: &[ProcessValueId]) -> bool {
+    // ponytail: one DAG pass per nested-call aggregate; share demand facts if
+    // many such groups become a measured compilation bottleneck.
+    let group = group.iter().copied().collect::<HashSet<_>>();
+    let values = &design.process_ir.values;
+    let selected = values
+        .iter()
+        .map(|value| {
+            if let ProcessValueKind::Select {
+                condition,
+                then_value,
+                else_value,
+            } = value.kind
+            {
+                constant_selector(design, condition).map(|condition| {
+                    if condition != 0 {
+                        then_value
+                    } else {
+                        else_value
+                    }
+                })
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut used = vec![false; values.len()];
+    for (index, value) in values.iter().enumerate() {
+        if let Some(arm) = selected[index] {
+            let ProcessValueKind::Select { condition, .. } = value.kind else {
+                unreachable!()
+            };
+            used[condition.0 as usize] = true;
+            used[arm.0 as usize] = true;
+        } else {
+            siox::ir::for_each_process_value_dependency(&value.kind, |id| {
+                used[id.0 as usize] = true
+            });
+        }
+    }
+    let mut unprotected = Vec::with_capacity(values.len());
+    let mut required: HashMap<ProcessValueId, HashSet<ProcessValueId>> = HashMap::new();
+    for (index, value) in values.iter().enumerate() {
+        let id = ProcessValueId(index as u32);
+        let touches = group.contains(&id)
+            || selected[index].map_or_else(
+                || {
+                    siox::ir::any_process_value_dependency(&value.kind, |child| {
+                        unprotected[child.0 as usize]
+                    })
+                },
+                |arm| unprotected[arm.0 as usize],
+            );
+        let mut demand = HashSet::new();
+        if group.contains(&id) {
+            demand.insert(id);
+        }
+        if touches {
+            match &value.kind {
+                ProcessValueKind::Select {
+                    condition,
+                    then_value,
+                    else_value,
+                } => {
+                    if let Some(condition) = required.get(condition) {
+                        demand.extend(condition);
+                    }
+                    if let Some(arm) = selected[index] {
+                        if let Some(arm) = required.get(&arm) {
+                            demand.extend(arm);
+                        }
+                    } else if let (Some(then), Some(els)) =
+                        (required.get(then_value), required.get(else_value))
+                    {
+                        demand.extend(then.intersection(els));
+                    }
+                }
+                ProcessValueKind::InlineCall { .. }
+                | ProcessValueKind::RawResize { .. }
+                | ProcessValueKind::BitSlice { .. }
+                | ProcessValueKind::PackedSlice { .. }
+                | ProcessValueKind::Unary { .. }
+                | ProcessValueKind::Binary { .. } => {
+                    siox::ir::for_each_process_value_dependency(&value.kind, |child| {
+                        if let Some(child) = required.get(&child) {
+                            demand.extend(child);
+                        }
+                    });
+                }
+                _ => {}
+            }
+        }
+        let escaping = touches && demand.len() != group.len();
+        unprotected.push(escaping);
+        if escaping {
+            if !used[index] {
+                return false;
+            }
+            required.insert(id, demand);
+        }
+    }
+    let protected = |id: ProcessValueId| !unprotected[id.0 as usize];
+    design
+        .process_ir
+        .functions
+        .iter()
+        .all(|function| protected(function.result))
+        && design
+            .process_ir
+            .storages
+            .iter()
+            .all(|storage| storage.initializer.is_none_or(protected))
+        && design
+            .process_ir
+            .processes
+            .iter()
+            .flat_map(|process| &process.blocks)
+            .all(|block| {
+                block.instructions.iter().all(|instruction| {
+                    siox::ir::process::process_instruction_values(instruction)
+                        .into_iter()
+                        .all(protected)
+                }) && siox::ir::process::process_terminator_values(&block.terminator)
+                    .into_iter()
+                    .all(protected)
+            })
 }
 
 /// Use the source ABI only at the native boundary. The common emitter
@@ -372,8 +583,8 @@ pub(in crate::llvm::process) fn source_return_type<'ctx>(
         Some(SourceReturn::Direct(debug.context.f64_type().into()))
     } else {
         if let Some(layout) = layout.as_deref() {
-            // ponytail: SysV word-register and >16-byte memory classes;
-            // small unaligned/subword layouts still need explicit classification.
+            // ponytail: SysV integer/double slots and memory classes;
+            // odd-sized basic leaves and partial layouts remain separate work.
             // The native backend targets this host, not a cross-target triple.
             if cfg!(all(target_arch = "x86_64", not(target_os = "windows")))
                 && matches!(
@@ -383,7 +594,8 @@ pub(in crate::llvm::process) fn source_return_type<'ctx>(
                 && layout_width(layout) == Some(width)
             {
                 if let Some(inspection) = inspection_bits(layout).filter(|bits| {
-                    *bits > 128 && debug.ty(design, layout, needs_mirror(layout)).is_some()
+                    (*bits > 128 || return_unaligned(layout) == Some(true))
+                        && debug.ty(design, layout, needs_mirror(layout)).is_some()
                 }) {
                     let bytes = u32::try_from(inspection / 8).ok()?;
                     // Leading source view, then a private execution payload.
@@ -397,13 +609,30 @@ pub(in crate::llvm::process) fn source_return_type<'ctx>(
                     );
                 }
                 let mut fields = Vec::new();
-                if width <= 128
-                    && return_fields(debug.context, layout, &mut fields).is_some()
-                    && fields.iter().any(|field| field.is_float_type())
-                {
-                    return Some(SourceReturn::Direct(
-                        debug.context.struct_type(&fields, false).into(),
-                    ));
+                if let Some(inspection) = inspection_bits(layout).filter(|bits| *bits <= 128) {
+                    if return_unaligned(layout) == Some(false)
+                        && return_fields(debug.context, layout, &mut fields).is_some()
+                    {
+                        let native = if fields.iter().any(|field| field.is_float_type()) {
+                            debug.context.struct_type(&fields, false).into()
+                        } else {
+                            debug
+                                .context
+                                .custom_width_int_type(std::num::NonZeroU32::new(
+                                    u32::try_from(inspection).ok()?,
+                                )?)
+                                .ok()?
+                                .into()
+                        };
+                        return Some(if inspection == u64::from(width) {
+                            SourceReturn::Direct(native)
+                        } else {
+                            SourceReturn::Register {
+                                native,
+                                layout: layout.clone(),
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -415,8 +644,44 @@ pub(in crate::llvm::process) fn source_return_type<'ctx>(
     }
 }
 
-/// Flatten complete 64-bit storage leaves in declaration order, matching
-/// SysV's INTEGER/SSE eightbytes without inventing padding or missing fields.
+/// The natural alignment GDB assigns to our byte-normalized source types.
+/// Odd-sized basic integers remain an unsupported debugger ABI, not a guessed
+/// alignment. A struct/array inherits its members' maximum/element alignment.
+fn return_alignment(layout: &SourceLayout) -> Option<u64> {
+    match &layout.kind {
+        LayoutKind::Struct { fields, .. } => fields.iter().try_fold(1, |alignment, field| {
+            Some(alignment.max(return_alignment(&field.layout)?))
+        }),
+        LayoutKind::Array { element, .. } => return_alignment(element),
+        _ => {
+            let bytes = inspection_bits(layout)? / 8;
+            bytes.is_power_of_two().then_some(bytes)
+        }
+    }
+}
+
+/// SysV puts even small aggregates with naturally unaligned members in memory.
+fn return_unaligned(layout: &SourceLayout) -> Option<bool> {
+    match &layout.kind {
+        LayoutKind::Struct { fields, .. } => {
+            let mut offset = 0u64;
+            for field in fields {
+                if !offset.is_multiple_of(return_alignment(&field.layout)?)
+                    || return_unaligned(&field.layout)?
+                {
+                    return Some(true);
+                }
+                offset = offset.checked_add(inspection_bits(&field.layout)? / 8)?;
+            }
+            Some(false)
+        }
+        LayoutKind::Array { element, .. } => return_unaligned(element),
+        _ => Some(false),
+    }
+}
+
+/// Flatten complete byte-normalized leaves into SysV INTEGER/SSE eightbytes.
+/// Adjacent subword integers share one slot, not one register per field.
 fn return_fields<'ctx>(
     context: &'ctx Context,
     layout: &SourceLayout,
@@ -445,12 +710,123 @@ fn return_fields<'ctx>(
         } => {
             fields.push(context.f64_type().into());
         }
-        LayoutKind::Scalar { width: 64, .. } | LayoutKind::Packed { width: 64, .. } => {
-            fields.push(context.i64_type().into());
+        LayoutKind::Scalar { width, .. } | LayoutKind::Packed { width, .. }
+            if *width != 0 && matches!(width.div_ceil(8) * 8, 8 | 16 | 32 | 64) =>
+        {
+            let mut width = width.div_ceil(8) * 8;
+            if let Some(BasicTypeEnum::IntType(last)) = fields.last() {
+                if last.get_bit_width() < 64 {
+                    width = width
+                        .checked_add(last.get_bit_width())
+                        .filter(|width| *width <= 64)?;
+                    fields.pop();
+                }
+            }
+            fields.push(
+                context
+                    .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+                    .ok()?
+                    .into(),
+            );
         }
         _ => return None,
     }
     Some(())
+}
+
+fn return_field_width(field: BasicTypeEnum<'_>) -> Option<u32> {
+    match field {
+        BasicTypeEnum::IntType(ty) => Some(ty.get_bit_width()),
+        BasicTypeEnum::FloatType(ty) if ty == ty.get_context().f64_type() => Some(64),
+        _ => None,
+    }
+}
+
+/// Reversible SSA-only packing between canonical bit offsets and byte-sized
+/// native register fields. Signed padding is source data, not debugger storage.
+fn register_bits<'ctx>(
+    builder: &Builder<'ctx>,
+    value: IntValue<'ctx>,
+    layout: &SourceLayout,
+    normalize: bool,
+) -> Option<IntValue<'ctx>> {
+    fn fields<'ctx>(
+        builder: &Builder<'ctx>,
+        value: IntValue<'ctx>,
+        layout: &SourceLayout,
+        normalize: bool,
+        offsets: &mut (u32, u32),
+        result: &mut IntValue<'ctx>,
+    ) -> Option<()> {
+        match &layout.kind {
+            LayoutKind::Struct {
+                fields: members, ..
+            } => {
+                for member in members {
+                    fields(builder, value, &member.layout, normalize, offsets, result)?;
+                }
+            }
+            LayoutKind::Array {
+                range: Some(range),
+                element,
+            } => {
+                for _ in 0..range.len()? {
+                    fields(builder, value, element, normalize, offsets, result)?;
+                }
+            }
+            _ => {
+                let logical = layout_width(layout)?;
+                let native = logical.div_ceil(8).checked_mul(8)?;
+                let (source, source_width, target, target_width) = if normalize {
+                    (offsets.0, logical, offsets.1, native)
+                } else {
+                    (offsets.1, native, offsets.0, logical)
+                };
+                let part = extract_region(builder, value, source, source_width)?;
+                let part =
+                    if normalize && source_width < target_width && process_layout_is_signed(layout)
+                    {
+                        let ty = value
+                            .get_type()
+                            .get_context()
+                            .custom_width_int_type(std::num::NonZeroU32::new(target_width)?)
+                            .ok()?;
+                        builder
+                            .build_int_s_extend(part, ty, "debug.return.signed")
+                            .ok()?
+                    } else {
+                        fit(builder, part, target_width)?
+                    };
+                let part = fit(builder, part, result.get_type().get_bit_width())?;
+                let part = builder
+                    .build_left_shift(
+                        part,
+                        part.get_type().const_int(u64::from(target), false),
+                        "debug.return.normalized.shift",
+                    )
+                    .ok()?;
+                *result = builder
+                    .build_or(*result, part, "debug.return.normalized")
+                    .ok()?;
+                offsets.0 = offsets.0.checked_add(logical)?;
+                offsets.1 = offsets.1.checked_add(native)?;
+            }
+        }
+        Some(())
+    }
+    let width = if normalize {
+        u32::try_from(inspection_bits(layout)?).ok()?
+    } else {
+        layout_width(layout)?
+    };
+    let ty = value
+        .get_type()
+        .get_context()
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    let mut result = ty.const_zero();
+    fields(builder, value, layout, normalize, &mut (0, 0), &mut result)?;
+    Some(result)
 }
 
 pub(in crate::llvm::process) fn return_value<'ctx>(
@@ -476,13 +852,8 @@ pub(in crate::llvm::process) fn return_value<'ctx>(
                     "debug.return.field",
                 )
                 .ok()?;
-            let bits = builder
-                .build_int_truncate(
-                    shifted,
-                    value.get_type().get_context().i64_type(),
-                    "debug.return.word",
-                )
-                .ok()?;
+            let width = return_field_width(field)?;
+            let bits = fit(builder, shifted, width)?;
             let field_value = if field.is_float_type() {
                 builder
                     .build_bit_cast(bits, field, "debug.return.real")
@@ -494,7 +865,7 @@ pub(in crate::llvm::process) fn return_value<'ctx>(
                 .build_insert_value(result, field_value, index as u32, "debug.return.aggregate")
                 .ok()?
                 .into_struct_value();
-            offset += 64;
+            offset += u64::from(width);
         }
         Some(result.into())
     } else {
@@ -519,26 +890,32 @@ pub(in crate::llvm::process) fn return_bits<'ctx>(
         BasicValueEnum::StructValue(value) => {
             let count = value.get_type().count_fields();
             let context = value.get_type().get_context();
+            let width = value
+                .get_type()
+                .get_field_types()
+                .into_iter()
+                .try_fold(0u32, |total, field| {
+                    total.checked_add(return_field_width(field)?)
+                })?;
             let ty = context
-                .custom_width_int_type(std::num::NonZeroU32::new(count.checked_mul(64)?)?)
+                .custom_width_int_type(std::num::NonZeroU32::new(width)?)
                 .ok()?;
             let mut bits = ty.const_zero();
+            let mut offset = 0u64;
             for index in 0..count {
                 let field = builder
                     .build_extract_value(value, index, "debug.return.field")
                     .ok()?;
                 let field = return_bits(builder, field)?;
+                let field_width = field.get_type().get_bit_width();
                 let field = builder
                     .build_int_z_extend(field, ty, "debug.return.word")
                     .ok()?;
                 let field = builder
-                    .build_left_shift(
-                        field,
-                        ty.const_int(u64::from(index) * 64, false),
-                        "debug.return.shift",
-                    )
+                    .build_left_shift(field, ty.const_int(offset, false), "debug.return.shift")
                     .ok()?;
                 bits = builder.build_or(bits, field, "debug.return.bits").ok()?;
+                offset += u64::from(field_width);
             }
             Some(bits)
         }
@@ -892,7 +1269,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
             ty.fn_type(debug.context, &[]),
             Some(Linkage::Internal),
         );
-        ty.declare(debug.context, draft);
+        ty.declare(debug.context, draft, None);
         let body_builder = debug.context.create_builder();
         body_builder.position_at_end(debug.context.append_basic_block(draft, "entry"));
         let mut body_cache = ProcessValueCache::new(cache.activity_sensitive, cache.meta_free);
@@ -925,7 +1302,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
             ty.fn_type(debug.context, &types),
             Some(Linkage::Internal),
         );
-        ty.declare(debug.context, function);
+        ty.declare(debug.context, function, Some(debug));
         function.set_subprogram(draft.get_subprogram()?);
         if ty.parameter_offset() != 0 {
             draft
@@ -993,7 +1370,14 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
             };
             arguments.push(argument.into());
         }
-        call_return(debug.context, builder, function, &arguments, "debug.call")
+        call_return(
+            debug.context,
+            builder,
+            function,
+            &arguments,
+            "debug.call",
+            Some(debug),
+        )
     })
 }
 
@@ -2123,5 +2507,126 @@ fn capture_binding<'ctx>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod demand_tests {
+    use super::*;
+
+    #[test]
+    fn nested_aggregate_calls_require_joint_demand_on_every_use() {
+        let span = Span::new(FileId(0), 0..1);
+        let node = |kind| siox::ir::ProcessValue {
+            span,
+            ty: None,
+            bit_width: Some(8),
+            kind,
+        };
+        let mut design = Design {
+            process_ir: siox::ir::ProcessIr {
+                values: vec![
+                    node(ProcessValueKind::Number(siox::ir::ProcessNumber::Integer(
+                        vec![0],
+                    ))),
+                    node(ProcessValueKind::Number(siox::ir::ProcessNumber::Integer(
+                        vec![1],
+                    ))),
+                    node(ProcessValueKind::Number(siox::ir::ProcessNumber::Integer(
+                        vec![2],
+                    ))),
+                    node(ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::Add,
+                        left: ProcessValueId(1),
+                        right: ProcessValueId(2),
+                    }),
+                ],
+                ..siox::ir::ProcessIr::default()
+            },
+            ..Design::default()
+        };
+        let fields = [ProcessValueId(1), ProcessValueId(2)];
+        assert!(joint_aggregate_demand(&design, &fields));
+        assert_eq!(constant_selector(&design, ProcessValueId(0)), Some(0));
+        // A known-valid checked index remains its value; a failed check is
+        // never evidence for choosing a branch or dropping an execution root.
+        design
+            .process_ir
+            .values
+            .push(node(ProcessValueKind::CheckedIndex {
+                index: ProcessValueId(2),
+                valid: ProcessValueId(1),
+                left: 0,
+                right: 2,
+                span,
+            }));
+        assert_eq!(constant_selector(&design, ProcessValueId(4)), Some(2));
+        design
+            .process_ir
+            .values
+            .push(node(ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Eq,
+                left: ProcessValueId(4),
+                right: ProcessValueId(2),
+            }));
+        assert_eq!(constant_selector(&design, ProcessValueId(5)), Some(1));
+        design.process_ir.values[4] = node(ProcessValueKind::CheckedIndex {
+            index: ProcessValueId(2),
+            valid: ProcessValueId(0),
+            left: 0,
+            right: 2,
+            span,
+        });
+        assert_eq!(constant_selector(&design, ProcessValueId(4)), None);
+        assert_eq!(constant_selector(&design, ProcessValueId(5)), None);
+        design.process_ir.values.pop();
+        design.process_ir.values.pop();
+        assert_eq!(constant_selector(&design, ProcessValueId(3)), None);
+        design.process_ir.values[0].bit_width = Some(0);
+        assert_eq!(constant_selector(&design, ProcessValueId(0)), None);
+        design.process_ir.values[0].bit_width = Some(8);
+        design.process_ir.values[1].ty = Some(siox::types::Ty::Integer);
+        assert_eq!(constant_selector(&design, ProcessValueId(1)), None);
+        design.process_ir.values[1].ty = None;
+        // A whole selected value demands both fields only in its taken arm.
+        design
+            .process_ir
+            .values
+            .push(node(ProcessValueKind::Select {
+                condition: ProcessValueId(0),
+                then_value: ProcessValueId(3),
+                else_value: ProcessValueId(0),
+            }));
+        assert!(joint_aggregate_demand(&design, &fields));
+        // The same proof holds with an unknown runtime condition, not just a
+        // constant-false branch. It must not demand the untaken whole value.
+        design.process_ir.values[0] = node(ProcessValueKind::Local {
+            process: siox::ir::ProcessId(0),
+            local: siox::ir::ProcessLocalId(0),
+        });
+        assert_eq!(constant_selector(&design, ProcessValueId(0)), None);
+        assert!(joint_aggregate_demand(&design, &fields));
+        // An independent use cannot hide behind an otherwise complete consumer.
+        design.process_ir.values.push(node(ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::Not,
+            operand: ProcessValueId(1),
+        }));
+        assert!(!joint_aggregate_demand(&design, &fields));
+        design.process_ir.values.pop();
+        design.process_ir.functions.push(siox::ir::ProcessFunction {
+            id: siox::ir::ProcessFunctionId(0),
+            name: "independent".into(),
+            span,
+            parameters: Vec::new(),
+            result: ProcessValueId(1),
+        });
+        assert!(!joint_aggregate_demand(&design, &fields));
+        design.process_ir.functions.clear();
+        design.process_ir.values[3] = node(ProcessValueKind::Select {
+            condition: ProcessValueId(0),
+            then_value: ProcessValueId(1),
+            else_value: ProcessValueId(2),
+        });
+        assert!(!joint_aggregate_demand(&design, &fields));
     }
 }

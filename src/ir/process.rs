@@ -2210,7 +2210,7 @@ fn process_terminator_targets(terminator: &ProcessTerminator) -> Vec<ProcessBloc
 }
 
 /// The operand ids an instruction reads.
-fn process_instruction_values(instruction: &ProcessInstruction) -> Vec<ProcessValueId> {
+pub(crate) fn process_instruction_values(instruction: &ProcessInstruction) -> Vec<ProcessValueId> {
     match instruction {
         ProcessInstruction::Declare { initializer, .. } => initializer.iter().copied().collect(),
         ProcessInstruction::Assign { target, value, .. } => vec![*target, *value],
@@ -2236,7 +2236,7 @@ fn process_instruction_values(instruction: &ProcessInstruction) -> Vec<ProcessVa
 }
 
 /// The operand ids a terminator reads.
-fn process_terminator_values(terminator: &ProcessTerminator) -> Vec<ProcessValueId> {
+pub(crate) fn process_terminator_values(terminator: &ProcessTerminator) -> Vec<ProcessValueId> {
     match terminator {
         ProcessTerminator::Return { value, .. } => value.iter().copied().collect(),
         ProcessTerminator::Branch { condition, .. } => vec![*condition],
