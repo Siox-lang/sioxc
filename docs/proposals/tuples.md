@@ -24,7 +24,7 @@ fn divmod(a: unsigned, b: unsigned) -> (unsigned, unsigned) {
     return (a / b, a % b);
 }
 
-let q, r = divmod(x, 7);            // destructuring, no parentheses
+let (q, r) = divmod(x, 7);          // tuple extraction
 let pair: (Bit, unsigned[4]) = ('1', 9);
 let low: unsigned[4] = pair.1;      // positional field access
 
@@ -45,11 +45,16 @@ match (state, start, count) {
   field accesses rather than reading `0.1` as a real.
 - **Patterns:** `(p1, p2, ..)` where each position is any pattern (`_`, an
   enum variant, a character, a bit pattern, a range, or a nested tuple).
-- **Destructuring** needs no parentheses: `let q, r = divmod(a, b);`, with
-  per-name types when wanted (`let q: unsigned[4], r: unsigned[4] = ..;`).
-  Parentheses appear only for nesting (`let (hi, lo), carry = ..;`). The
-  same form assigns existing signals or locals, in a process or as a
-  concurrent assignment: `q, r = divmod(a, b);`.
+- **Destructuring** is parenthesized: `let (q, r) = divmod(a, b);`, with
+  per-name types when wanted (`let (q: unsigned[4], r: unsigned[4]) = ..;`)
+  and nesting (`let ((hi, lo), carry) = ..;`). The same form assigns
+  existing signals or locals, in a process or as a concurrent assignment:
+  `(q, r) = divmod(a, b);`.
+- **A bare comma is not a tuple.** `let a, b: Bit = '0';` is reserved for
+  group declaration, VHDL's `signal a, b : bit := '0';`: two names, one
+  type, one initial value. Parentheses mark extraction, so the two never
+  share a spelling. Group declaration is separate work, not part of this
+  proposal.
 
 ### Meaning
 
@@ -62,11 +67,8 @@ form), and waveforms (`t.0`, `t.1`).
 - **Equality** is element-wise, through each element's `Eq`.
 - **Assignment** is by position; element types must match exactly, as struct
   fields do (no implicit width changes).
-- **Destructuring** `let a, b = e;` evaluates `e` once and binds each
-  position; `_` skips one. The right side must be a tuple of that arity. In
-  VHDL `signal a, b : bit := '0';` declares two signals with one initial
-  value; siox has no such form, so `let a, b: Bit = '0';` is a type error
-  (a `Bit` is not a pair), never a silent second meaning.
+- **Destructuring** `let (a, b) = e;` evaluates `e` once and binds each
+  position; `_` skips one. The right side must be a tuple of that arity.
 - **A tuple pattern** in `match` is the conjunction of its positions'
   conditions, so it inherits everything single patterns do: `Match` for bit
   patterns, `Ord` for ranges, structural enum variants. First match wins, as
