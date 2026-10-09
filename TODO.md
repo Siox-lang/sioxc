@@ -56,6 +56,16 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
 - 🔴 **Incremental/query interface.** Add demand-driven caching only when the
   LSP or future project tool needs incremental multi-file recomputation; keep
   the current explicit phase products as the public boundary.
+- 🔴 **Tuples.** Anonymous product types, `let` destructuring and
+  multi-signal `match`. See [the proposal](docs/proposals/tuples.md).
+- 🔴 **Payload enums.** Tagged-union variants, binding patterns,
+  `Option`/`Result` and `checked_*`; builds on tuples. See
+  [the proposal](docs/proposals/payload-enums.md).
+- 🔴 **Match arm analysis.** Arms overlap with first-match-wins priority.
+  Warn when an arm is covered by the earlier arms together (today only by a
+  single earlier range) and when two ranges share one endpoint, as rustc's
+  `unreachable_patterns`/`overlapping_range_endpoints` do. Fold constant
+  bounds (`0..DEPTH - 1`) so they take part in this and in coverage.
 - 🟡 **Public entity receiver methods.** Static public entity functions work.
   Lower `instance.method()` accessors and effectful methods to stable generated
   ports, first with one caller per method/instance, then define arbitration
@@ -188,10 +198,12 @@ Owns user-visible types, traits, operators, attributes, simulation helpers,
 math/text/file services, and small technology-independent helpers. Code: `std/`.
 
 - 🟡 **Library build-out.** Synchronizers, fixed-point families and initial
-  floating-point operators exist. Remaining: fixed-point division/configurable
-  resize, floating-point division/square root/subnormals/rounding modes and
-  fixed-point conversions; optionally generic vectors/matrices. Each needs
-  executable conformance tests. See
+  floating-point operators exist. Remaining: floating-point division/square
+  root/subnormals/rounding modes and fixed-point conversions; optionally
+  generic vectors/matrices. Each needs
+  executable conformance tests. Fixed-point division and the
+  nearest/saturating resize are done; wrap and truncate resize styles remain.
+  See
   [the remaining proposal](docs/proposals/std-buildout.md). Memories, FIFOs and
   stream adapters are IP for vendor packages and libraries, not std.
 - 🟡 **API reference.** Keep [`siox-paper/docs/std.md`](https://github.com/Siox-lang/siox-paper/blob/main/docs/std.md) synchronized with each
