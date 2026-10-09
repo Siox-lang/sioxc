@@ -53,7 +53,7 @@ impl Lowering<'_> {
         }
     }
 
-    fn source_bound_layout(&self, name: &str) -> Option<SourceLayout> {
+    pub(super) fn source_bound_layout(&self, name: &str) -> Option<SourceLayout> {
         for frame in self.source_shapes.borrow().iter().rev() {
             if let Some(layout) = frame.values.get(name) {
                 return Some(layout.clone());
@@ -144,6 +144,18 @@ impl Lowering<'_> {
             ast::Expr::Call { callee, args, .. } => {
                 if let Some(argument) = self.generic_return_argument(callee, args) {
                     return self.source_operand_layout(argument, env);
+                }
+                // `unsigned(v)`: the argument's shape under the new family.
+                if let ast::Expr::Path(path) = callee.as_ref() {
+                    if let ([argument], [segment]) = (args.as_slice(), path.segments.as_slice()) {
+                        if self.array_families.contains(&segment.text) {
+                            let mut layout = self.source_operand_layout(argument, env)?;
+                            if let LayoutKind::Packed { family, .. } = &mut layout.kind {
+                                family.clone_from(&segment.text);
+                            }
+                            return Some(layout);
+                        }
+                    }
                 }
                 if let ast::Expr::Field { base, field, .. } = callee.as_ref() {
                     let family = self.operand_type_name(base)?;
@@ -344,7 +356,7 @@ impl Lowering<'_> {
     }
 
     /// The storage bit a constant, in-range index selects.
-    fn constant_packed_index(
+    pub(super) fn constant_packed_index(
         &self,
         layout: &SourceLayout,
         index: &ast::Expr,

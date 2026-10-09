@@ -4327,8 +4327,26 @@ fn lower_process_named_conversion(
     }
 
     if target == source || process_enum_conversion_is_total(context.design, &target, &source) {
+        // A width-generic target (`unsigned(v)` for a `v: signed`) keeps the
+        // operand's width: only the family changes.
+        let target_type = match (&target_type, &source_type) {
+            (
+                crate::types::Ty::Array {
+                    len: 0,
+                    elem,
+                    family,
+                },
+                crate::types::Ty::Array { len, .. },
+            ) => crate::types::Ty::Array {
+                elem: elem.clone(),
+                len: *len,
+                family: family.clone(),
+            },
+            _ => target_type,
+        };
         let kind = ProcessValueKind::RawResize { operand };
-        let width = source_value_width(&kind, Some(&target_type), process, context)?;
+        let width = source_value_width(&kind, Some(&target_type), process, context)
+            .or(context.process_ir.values[operand.0 as usize].bit_width)?;
         return Some(push_value(
             *span,
             Some(target_type),
@@ -4461,6 +4479,40 @@ fn lower_process_raw_resize(
             let definition = context.resolved.resolved(path.span)?;
             if context.resolved.def(definition)?.kind != crate::resolve::DefKind::Struct {
                 return None;
+            }
+            // `unsigned(v)` on a `signed`: a packed family without a width
+            // changes the family and keeps the operand's width.
+            let family = context.resolved.qualified_name(definition)?;
+            let packed = context.design.array_element_of_family.contains_key(&family)
+                || family
+                    .rsplit("::")
+                    .next()
+                    .is_some_and(|leaf| context.design.array_element_of_family.contains_key(leaf));
+            if packed {
+                let operand_type = context
+                    .typed
+                    .expr_type(ast::expr_span(&args[0]))
+                    .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                    .cloned();
+                let operand =
+                    value_ref_with_type(&args[0], process, context, operand_type.as_ref());
+                let width = context.process_ir.values[operand.0 as usize].bit_width?;
+                let (elem, len) = match process_value_type(operand, context) {
+                    Some(crate::types::Ty::Array { elem, len, .. }) if len > 0 => (elem, len),
+                    _ => (Box::new(crate::types::Ty::Error), width),
+                };
+                let target = crate::types::Ty::Array {
+                    elem,
+                    family: Some(family),
+                    len,
+                };
+                return Some(push_value(
+                    *span,
+                    Some(target),
+                    Some(width),
+                    ProcessValueKind::RawResize { operand },
+                    context,
+                ));
             }
             match target {
                 Some(crate::types::Ty::Named(target_definition))

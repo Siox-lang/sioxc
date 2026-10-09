@@ -13654,3 +13654,17 @@ pre-existing bugs, fixed here:
 **Codex:** touches `source_processes.rs` (push_local, Let lowering, attribute
 lowering, inline_process_call args, binary-operator literal typing),
 `cfg_calls.rs` (result layout), `ir/lower/calls.rs`, `source_bindings.rs`.
+
+### 2026-10-09 — Claude — hardware function-body gaps
+
+Branch `fix/fn-body-gaps`, owner-directed follow-up to #41. In the hardware
+inliner (`ir/lower/calls.rs`): a function's `let`s now register family,
+width and kernel-integer-ness like parameters (`m < 0` on a reassigned
+`let m: signed` compared unsigned — silent wrong result); constant-index
+element writes to a packed local (`r[k] = v[j]`) via `merge_slice`
+(metavalue literals rejected, copies keep their companion). Width-generic
+conversions (`unsigned(v)`) now keep the operand's width/range in both the
+hardware (`ast_width`, `operand_range`, `source_operand_layout`) and the
+Process path (`lower_process_raw_resize`, named conversion).
+**Codex:** touches `inline_block` (now a wrapper over `inline_block_body`),
+`inline_effects`, `source_bindings.rs`, `expressions.rs`.
