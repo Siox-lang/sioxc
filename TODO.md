@@ -199,8 +199,8 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   consumed value/metadata planes, with 9/81-bit, selected-branch, negative-array
   label and partial-hardware-field checks. Unconsumed or pruned planes remain
   unavailable, not fabricated binary values. Audit other argument/return-plane
-  transports and verify GDB `finish` for runtime/nonempty-literal strings,
-  normalized wide scalars and mixed-layout/partial aggregate return ABIs.
+  transports and verify GDB `finish` for normalized wide scalars and remaining
+  mixed-layout/partial aggregate return ABIs.
   GDB 18.1 on AMD64 does not classify arbitrary-width basic integer returns:
   an 81-bit signed return reports zero and a 129-bit return triggers an internal
   assertion, even with return printing disabled. Do not change source types to
@@ -224,6 +224,15 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   modes. Shared-body units verify void/sret signatures, canonical i192/i145
   results, entry-owned storage and no second execution wrapper. The caller reads
   only a separate canonical payload, never normalized inspection bytes.
+  Runtime and nonempty-literal Char[] returns now use the same caller-owned
+  transport: a borrowed 32-byte Unicode/UTF-8 view followed by the unchanged
+  canonical handle or packed literal bits. Actual GDB finish checks embedded
+  NULs, UTF-8, reuse after await and distinct test roots under both inline hints
+  and packing modes. Empty specializations remain void without a new debugger
+  history value; declared fixed Char[N] results retain their array type.
+  Boundary units verify canonical i32/i64/i193 payloads, handle-only metadata
+  queries, caller decoding and LLVM validity. This does not imply general
+  dynamic-array support or source-string eligibility for shared Process bodies.
   Extend the ABI transport to subword, small unaligned, wide scalar and partial
   layouts without forcing discarded fields or reading inspection buffers as
   executable values.

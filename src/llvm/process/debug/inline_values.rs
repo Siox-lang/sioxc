@@ -7,7 +7,7 @@ use inkwell::debug_info::DILocalVariable;
 use inkwell::types::{
     AnyType, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType,
 };
-use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum};
+use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, StructValue};
 use siox::ir::ProcessValueInline;
 
 type AggregateMembers = HashMap<ProcessValueId, (ProcessValueId, u32, u32)>;
@@ -17,11 +17,42 @@ pub(in crate::llvm::process) enum SourceReturn<'ctx> {
     Direct(BasicTypeEnum<'ctx>),
     Memory {
         storage: StructType<'ctx>,
-        layout: SourceLayout,
+        view: SourceReturnView<'ctx>,
+    },
+}
+
+pub(in crate::llvm::process) enum SourceReturnView<'ctx> {
+    Packed(SourceLayout),
+    Literal(StructValue<'ctx>),
+    String {
+        query: FunctionValue<'ctx>,
+        root: u32,
     },
 }
 
 impl<'ctx> SourceReturn<'ctx> {
+    fn memory(
+        debug: &DebugInfo<'ctx, '_>,
+        width: u32,
+        bytes: u32,
+        view: SourceReturnView<'ctx>,
+    ) -> Option<Self> {
+        let bits = debug
+            .context
+            .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+            .ok()?;
+        Some(Self::Memory {
+            storage: debug.context.struct_type(
+                &[
+                    debug.context.i8_type().array_type(bytes).into(),
+                    bits.into(),
+                ],
+                false,
+            ),
+            view,
+        })
+    }
+
     pub(in crate::llvm::process) fn fn_type(
         &self,
         context: &'ctx Context,
@@ -69,7 +100,7 @@ impl<'ctx> SourceReturn<'ctx> {
                 let returned = return_value(builder, value)?;
                 builder.build_return(Some(&returned)).ok()?;
             }
-            Self::Memory { storage, layout } => {
+            Self::Memory { storage, view } => {
                 if value.get_type().as_basic_type_enum() != storage.get_field_type_at_index(1)? {
                     return None;
                 }
@@ -78,9 +109,29 @@ impl<'ctx> SourceReturn<'ctx> {
                     .get_parent()?
                     .get_first_param()?
                     .into_pointer_value();
-                // All source fields are present. Copy only the already-emitted
-                // bits into the same normalized view used by local inspection.
-                debug?.copy_fields(builder, output, value, layout, &mut 0, &mut 0);
+                // Source views are written from the already-emitted value;
+                // only the separate canonical payload is executable data.
+                match view {
+                    SourceReturnView::Packed(layout) => {
+                        debug?.copy_fields(builder, output, value, layout, &mut 0, &mut 0);
+                    }
+                    SourceReturnView::Literal(view) => {
+                        builder
+                            .build_store(output, *view)
+                            .ok()?
+                            .set_alignment(1)
+                            .ok()?;
+                    }
+                    SourceReturnView::String { query, root } => {
+                        debug?.capture_string(
+                            builder,
+                            *query,
+                            *root,
+                            fit(builder, value, 64)?,
+                            output,
+                        );
+                    }
+                }
                 let payload = builder
                     .build_struct_gep(*storage, output, 1, "debug.return.payload")
                     .ok()?;
@@ -268,11 +319,40 @@ pub(super) fn aggregate_returns(
 /// and its exact consumer formats continue to exchange the same integer bits.
 pub(in crate::llvm::process) fn source_return_type<'ctx>(
     debug: &DebugInfo<'ctx, '_>,
+    module: &Module<'ctx>,
     design: &Design,
     source: &ProcessValueInline,
     operand: ProcessValueId,
     width: u32,
+    root: Option<u32>,
 ) -> Option<SourceReturn<'ctx>> {
+    // Unbounded strings use the existing borrowed view. A declared Char[N]
+    // result remains its array type, not a retagged dynamic string.
+    if cfg!(all(target_arch = "x86_64", not(target_os = "windows")))
+        && source
+            .result_layout
+            .as_ref()
+            .is_none_or(|layout| runtime_handle_layout(Some(layout)) == Some(64))
+    {
+        let literal = process_string(design, operand);
+        if literal.is_some_and(|text| !text.is_empty()) || dynamic_string_value(design, operand) {
+            let view = if let Some(text) = literal {
+                SourceReturnView::Literal(debug.string_constant_view(
+                    module,
+                    &format!("sx.debug.return.string.{}.{}", operand.0, width),
+                    text,
+                ))
+            } else {
+                SourceReturnView::String {
+                    query: debug.string_query(module),
+                    root: root?,
+                }
+            };
+            let bytes =
+                u32::try_from(debug.target.get_store_size(&debug.string_view_type())).ok()?;
+            return SourceReturn::memory(debug, width, bytes, view);
+        }
+    }
     let layout = source
         .result_layout
         .as_ref()
@@ -305,25 +385,16 @@ pub(in crate::llvm::process) fn source_return_type<'ctx>(
                 if let Some(inspection) = inspection_bits(layout).filter(|bits| {
                     *bits > 128 && debug.ty(design, layout, needs_mirror(layout)).is_some()
                 }) {
-                    let bits = debug
-                        .context
-                        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
-                        .ok()?;
                     let bytes = u32::try_from(inspection / 8).ok()?;
                     // Leading source view, then a private execution payload.
                     // A caller cannot reconstruct packed offsets/signs merely
                     // by concatenating the normalized inspection bytes.
-                    let storage = debug.context.struct_type(
-                        &[
-                            debug.context.i8_type().array_type(bytes).into(),
-                            bits.into(),
-                        ],
-                        false,
+                    return SourceReturn::memory(
+                        debug,
+                        width,
+                        bytes,
+                        SourceReturnView::Packed(layout.clone()),
                     );
-                    return Some(SourceReturn::Memory {
-                        storage,
-                        layout: layout.clone(),
-                    });
                 }
                 let mut fields = Vec::new();
                 if width <= 128
@@ -804,7 +875,15 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
     let (function, formats, literals) = if let Some(existing) = existing {
         existing
     } else {
-        let ty = source_return_type(debug, design, source, operand, width)?;
+        let ty = source_return_type(
+            debug,
+            module,
+            design,
+            source,
+            operand,
+            width,
+            cache.debug_root,
+        )?;
         // Let the common emitter request its real operand formats once. A
         // source argument can be used at several widths inside this body;
         // capturing it at its minimum width first changes contextual arithmetic.
@@ -1980,7 +2059,13 @@ fn capture_binding<'ctx>(
                     };
                     // The module owns this global and the runtime query.
                     // Keep borrowed content behind the existing inspection ABI.
-                    debug.capture_string(builder, *query, *root, value, binding.buffer);
+                    debug.capture_string(
+                        builder,
+                        *query,
+                        *root,
+                        value,
+                        binding.buffer.as_pointer_value(),
+                    );
                 }
                 ValueInspection::Logic(layout) => {
                     let Some(value) = fit(builder, value, layout.packed_width().unwrap()) else {

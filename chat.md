@@ -15597,3 +15597,88 @@ commit sibling architecture/testing notes separately. Preserve unowned AGENTS,
 97%; subword/unaligned/partial/string/wide-basic return ABIs and formal/plane/
 grouping audits still need work. Do not count the independently recorded IR
 negative-label/widening defects as fixed. No push.
+
+### 2026-10-09 — Codex — DWARF native string return ABI
+
+Memory-return acceptance 3090184 passes and commits d96c196/07067b5 are local,
+not pushed. Own the common source return boundary and string inspection helpers
+plus tests/debug_info.rs. Reproduce actual GDB finish for a borrowed runtime
+Char[] return and nonempty literal return before changing transport. Reuse the
+existing read-only string view/query, not another runtime string service or
+new evaluation roots. Keep native handles/packed literal bits separate from
+inspection, preserve empty void specialization and source types, and check
+multi-root/call/cleanup ownership as the transport grows. The temporary probe
+is under the disk-backed cache. Preserve unrelated AGENTS/441 chat lines/.codex
+and backups. Full DWARF remains active at 97%; other ABI/formal/plane/grouping
+work stays open. No push.
+
+Probe 3174848 is terminal failed/1, peak 38535168 bytes. Ordinary/debug native
+assertions, VCD parity and llvm-dwarfdump verification pass. The runtime echo
+formal exposes the correct borrowed Char[] view (3 code points, 7 UTF-8 bytes),
+then GDB finish attempts to read address 0x1: the executable returns a runtime
+handle while its source return type describes a 32-byte borrowed view. This
+establishes the string return boundary defect, not a runtime read/content
+failure. Reproduce the nonempty literal specialization separately before
+extending the common caller-owned memory transport. No string fix claimed yet.
+
+Literal probe 3176056 is terminal failed/1, peak 35950592 bytes. Ignoring the
+runtime invocation reaches the nonempty literal echo; its formal has the
+correct 3-code-point/7-byte view, then finish reads address 0x3bc (the first
+packed Unicode code point). Both runtime-handle and packed-literal returns
+therefore need the same source-view/canonical-payload separation. Extend the
+existing SourceReturn carrier and existing strings.rs helpers, preserve literal
+empty void specialization, and verify actual return views plus native use and
+multi-root cleanup. Do not infer executable handles from the borrowed view or
+reexecute read/format operations. Compiler memory batch is committed; only
+this string ownership/probe tail and unrelated work are dirty. No push.
+
+Probe 3178699 is terminal exited/success/0, peak 801177600 bytes: the first
+shared-carrier implementation builds and returns actual runtime/literal Char[]
+views through GDB finish without changing native assertions, VCD bytes or
+DWARF validity. Add mandatory content/UTF-8/NUL checks, two roots with different
+runtime strings, reuse across await and exact call counts for both inline hints
+and packing modes. Empty literal specializations must stay void without a new
+history value. Fixed Char[N] declarations stay arrays. Reuse pointer-capable
+capture_string and constant views; no runtime service/allocator changes.
+
+Resume 2026-10-09: origin/main is already contained in local main; pull leaves
+the uncommitted string changes untouched. Own src/llvm/process/tests.rs for a
+small structural check: literal/runtime string carriers keep exact canonical
+payload widths, while explicitly declared Char[1] stays a fixed array. Focused
+native/GDB string regressions and strict Clippy passed in job 3179248; full
+acceptance for this batch remains required before committing. No push.
+
+Structural probe 3190586 exits successfully but selected the binary's zero-test
+target; count only its strict Clippy stage. Corrected probe 3191215 is terminal
+exited/success/0, peak 1182429184 bytes, and actually runs the new library unit
+in default and bitpack. The unit checks fixed Char[1] classification, 32-byte
+borrowed-view prefixes, i32/i64/i193 payload widths, metadata-only i64 handle
+narrowing and valid caller/callee LLVM. Extend the native/GDB regression with
+one-character literal returns to exercise its i32 carrier's alignment at run
+time; exact call counts and empty-return history checks remain mandatory.
+Update sibling architecture/testing and compiler TODO without closing the
+remaining formal/plane/grouping/ABI work or claiming shared-string eligibility.
+
+Probe 3194855 is terminal exited/success/0, peak 796844032 bytes. The actual
+library boundary unit and expanded native/GDB string fixture pass in default
+and bitpack, including one-character i32 literal returns, embedded NUL/UTF-8,
+two roots, post-await reuse, exact stop counts and empty history behavior.
+Freeze Rust now and run complete CI-local, both debug corpora, native GDB/VCD
+smokes and AST-only graph refresh before committing. Full DWARF remains active
+at an estimated 97%; independent IR defects and remaining ABI/formal/plane/
+grouping requirements remain open. No push.
+
+Acceptance 3197327 is terminal exited/success/0, peak 1057255424 bytes.
+Formatting, Phase 1 artifacts, frontend-only checks/Clippy, strict all-feature
+Clippy and complete default/bitpack suites pass (536/515 units plus integrations,
+all eleven DWARF fixtures in each mode). All four ordinary/debug default/bitpack
+corpora pass 228/0, and four FIFO/wide native GDB/VCD smokes pass. Frozen Rust
+hash remains 1d71cc5a26b64e78e6b89d0a49823b426cba859e. AST-only graph refresh
+finishes with 5297 nodes, 15034 edges and 263 communities; known vendor partial
+parses/no-symbol warnings remain, no API/LLM extraction. Commit only the owned
+string transport, boundary/native tests, TODO and this string log tail, with
+sibling architecture/testing notes separately. Preserve unowned AGENTS, 441
+historical chat lines, .codex and backups. Full DWARF remains active at 97%,
+with subword/unaligned/partial/wide-basic ABI and formal/plane/grouping gaps
+still open. Next, run the isolated 12-byte Char/real diagnostic prepared under
+the disk-backed cache, not another concurrent verification job. No push.

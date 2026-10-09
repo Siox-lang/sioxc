@@ -9,7 +9,7 @@ pub(super) struct StringMirror<'ctx> {
 }
 
 impl<'ctx> DebugInfo<'ctx, '_> {
-    fn string_view_type(&self) -> inkwell::types::StructType<'ctx> {
+    pub(super) fn string_view_type(&self) -> inkwell::types::StructType<'ctx> {
         let integer = self.context.i64_type();
         let pointer = self.context.ptr_type(AddressSpace::default());
         self.context.struct_type(
@@ -114,7 +114,18 @@ impl<'ctx> DebugInfo<'ctx, '_> {
         buffer
     }
 
-    pub(super) fn string_constant_view(&self, module: &Module<'ctx>, name: &str, text: &str) {
+    pub(super) fn string_constant_view(
+        &self,
+        module: &Module<'ctx>,
+        name: &str,
+        text: &str,
+    ) -> inkwell::values::StructValue<'ctx> {
+        if let Some(view) = module
+            .get_global(name)
+            .and_then(|global| global.get_initializer())
+        {
+            return view.into_struct_value();
+        }
         let pointer = self.context.ptr_type(AddressSpace::default());
         let (characters, utf8) = if text.is_empty() {
             (pointer.const_null(), pointer.const_null())
@@ -148,6 +159,7 @@ impl<'ctx> DebugInfo<'ctx, '_> {
         global.set_initializer(&view);
         global.set_constant(true);
         global.set_linkage(Linkage::Private);
+        view
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -194,7 +206,7 @@ impl<'ctx> DebugInfo<'ctx, '_> {
         query: FunctionValue<'ctx>,
         root: u32,
         handle: IntValue<'ctx>,
-        view: GlobalValue<'ctx>,
+        view: PointerValue<'ctx>,
     ) {
         let view_type = self.string_view_type();
         let mut arguments = vec![
@@ -207,12 +219,7 @@ impl<'ctx> DebugInfo<'ctx, '_> {
         for index in 0..4 {
             arguments.push(
                 builder
-                    .build_struct_gep(
-                        view_type,
-                        view.as_pointer_value(),
-                        index,
-                        "debug.string.field",
-                    )
+                    .build_struct_gep(view_type, view, index, "debug.string.field")
                     .unwrap()
                     .into(),
             );
@@ -238,7 +245,7 @@ impl<'ctx> DebugInfo<'ctx, '_> {
                 query,
                 mirror.root,
                 handle.into_int_value(),
-                mirror.view,
+                mirror.view.as_pointer_value(),
             );
         }
     }

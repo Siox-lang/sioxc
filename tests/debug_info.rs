@@ -1227,6 +1227,151 @@ assert set([(5, 1.5, 1.0), (-7, -2.5, -1.0), (0, -0.0, -1.0)]).issubset(seen['ma
 }
 
 #[test]
+fn source_string_returns_match_the_debugger_finish_abi() {
+    let directory =
+        std::env::temp_dir().join(format!("siox_dwarf_string_return_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("strings.siox");
+    std::fs::write(directory.join("a.txt"), "β\0🙂").unwrap();
+    std::fs::write(directory.join("b.txt"), "λ\0🙂").unwrap();
+    let text = r#"module debug_string_returns;
+use std::primitive::string;
+#[inline(__INLINE__)]
+fn echo_text(value: string) -> string {
+    let copy: string = value;
+    return copy; // source string return stop
+}
+#[test] entity A {}
+impl A {
+    stimulus: process {
+        let runtime: string = read<string>("a.txt");
+        let first: string = echo_text(runtime);
+        await 1ns;
+        let second: string = echo_text(first);
+        let literal: integer = echo_text("μ\0🙂")'length;
+        let single: integer = echo_text("μ")'length;
+        let empty: integer = echo_text("")'length;
+        assert!(first == runtime and second == runtime and second'length == 3, "runtime string return after await");
+        assert!(literal == 3 and single == 1 and empty == 0, "literal/empty string returns");
+    }
+}
+#[test] entity B {}
+impl B {
+    stimulus: process {
+        let runtime: string = read<string>("b.txt");
+        let borrowed: string = echo_text(runtime);
+        let literal: integer = echo_text("μ\0🙂")'length;
+        let single: integer = echo_text("μ")'length;
+        let empty: integer = echo_text("")'length;
+        assert!(borrowed == runtime and borrowed'length == 3, "next root string return");
+        assert!(literal == 3 and single == 1 and empty == 0, "next root literal/empty returns");
+    }
+}
+"#;
+    for inline in ["never", "always"] {
+        let text = text.replace("__INLINE__", inline);
+        std::fs::write(&source, &text).unwrap();
+        let debug = directory.join("debug.bin");
+        let ordinary = directory.join("ordinary.bin");
+        for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+            success(
+                Command::new(binary)
+                    .current_dir(&directory)
+                    .arg("-o")
+                    .arg(binary.with_extension("vcd"))
+                    .output()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            std::fs::read(debug.with_extension("vcd")).unwrap(),
+            std::fs::read(ordinary.with_extension("vcd")).unwrap()
+        );
+        if Command::new("llvm-dwarfdump")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            success(
+                Command::new("llvm-dwarfdump")
+                    .arg("--verify")
+                    .arg(&debug)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        if Command::new("gdb").arg("--version").output().is_ok() {
+            let line = text
+                .lines()
+                .position(|line| line.contains("source string return stop"))
+                .unwrap()
+                + 1;
+            let python = format!(
+                r#"import gdb
+stop = gdb.Breakpoint({source:?} + ':{line}')
+seen = {{(0x3b2, 0, 0x1f642): 0, (0x3bb, 0, 0x1f642): 0, (0x3bc, 0, 0x1f642): 0, (0x3bc,): 0, (): 0}}
+def contents(view):
+    length = int(view['length'])
+    byte_length = int(view['byte_length'])
+    assert length in (0, 1, 3) and byte_length == {{0: 0, 1: 2, 3: 7}}[length], str(view)
+    points = tuple(int(view['data'][i]) for i in range(length))
+    if length:
+        if length == 3: assert int(view['utf8'][2]) == 0, str(view)
+        actual = bytes(int(view['utf8'][i]) for i in range(byte_length))
+        assert actual == ''.join(chr(point) for point in points).encode('utf-8'), actual
+    return points
+def last():
+    try: return str(gdb.history(0))
+    except gdb.error: return None
+gdb.execute('run')
+while True:
+    frame = gdb.selected_frame()
+    assert frame.name() == 'debug_string_returns::echo_text', frame.name()
+    expected = contents(frame.read_var('value'))
+    assert contents(frame.read_var('copy')) == expected
+    seen[expected] += 1
+    previous = last()
+    gdb.execute('finish')
+    if expected:
+        result = gdb.history(0)
+        assert result.type.sizeof == 32 and contents(result) == expected, str(result)
+    else:
+        assert last() == previous, 'empty specialization fabricated a return value'
+    gdb.execute('continue')
+    if gdb.selected_thread() is None: break
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+assert seen == {{(0x3b2, 0, 0x1f642): 2, (0x3bb, 0, 0x1f642): 1, (0x3bc, 0, 0x1f642): 2, (0x3bc,): 2, (): 2}}, seen
+"#,
+                source = source.to_string_lossy()
+            );
+            success(
+                Command::new("gdb")
+                    .current_dir(&directory)
+                    .args(["-nx", "-q", "--batch"])
+                    .arg(&debug)
+                    .args([
+                        "-ex",
+                        "set disable-randomization off",
+                        "-ex",
+                        &format!("python {python}"),
+                    ])
+                    .output()
+                    .unwrap(),
+            );
+        } else {
+            eprintln!("GDB unavailable: native string returns checked, finish probe skipped");
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn packed_expression_bindings_expose_logic_companions() {
     let directory = std::env::temp_dir().join(format!(
         "siox_dwarf_expression_logic_{}",

@@ -184,10 +184,12 @@ fn shared_function<'ctx>(
     ) {
         debug::source_return_type(
             debug,
+            module,
             design,
             source,
             *operand,
             int(shared.result)?.get_bit_width(),
+            cache.debug_root,
         )?
     } else {
         debug::SourceReturn::Direct(int(shared.result)?.into())

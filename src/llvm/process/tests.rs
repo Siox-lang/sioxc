@@ -2,6 +2,136 @@ use super::*;
 
 #[test]
 #[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
+fn string_return_boundary_preserves_array_types_and_payload_widths() {
+    use siox::ir::{ProcessValueInline, ScalarDomain};
+
+    for (literal, fixed, width) in [
+        (true, false, 32),
+        (true, true, 32),
+        (false, false, 64),
+        (false, false, 193),
+    ] {
+        let context = Context::create();
+        let module = context.create_module("string_return");
+        let builder = context.create_builder();
+        let mut sources = siox::diag::SourceMap::new();
+        let text = if fixed {
+            "fn echo(value: Char[1]) -> Char[1] { return value; }"
+        } else {
+            "fn echo(value: string) -> string { return value; }"
+        };
+        let file = sources.add("string_return.siox", text);
+        let span = Span::new(file, 0..text.len() as u32);
+        let layout = SourceLayout {
+            span,
+            kind: LayoutKind::Array {
+                range: fixed.then_some(LayoutRange { left: 0, right: 0 }),
+                element: Box::new(SourceLayout {
+                    span,
+                    kind: LayoutKind::Scalar {
+                        width: 32,
+                        domain: ScalarDomain::Character,
+                        nominal: Some("Char".into()),
+                        value_range: None,
+                    },
+                }),
+            },
+        };
+        let source = ProcessValueInline {
+            name: "echo".into(),
+            function: span,
+            call: span,
+            result_span: span,
+            result_layout: (fixed || !literal).then(|| layout.clone()),
+            aggregate: None,
+            branches: Vec::new(),
+            parameters: Vec::new(),
+            locals: Vec::new(),
+        };
+        let design = Design {
+            process_ir: ProcessIr {
+                values: vec![ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(if literal { 32 } else { 64 }),
+                    kind: if literal {
+                        ProcessValueKind::String("μ".into())
+                    } else {
+                        ProcessValueKind::Parameter {
+                            function: siox::ir::ProcessFunctionId(0),
+                            index: 0,
+                        }
+                    },
+                }],
+                value_layouts: vec![Some(layout)],
+                ..ProcessIr::default()
+            },
+            ..Design::default()
+        };
+        let debug = DebugInfo::new(&context, &module, &sources, &design).unwrap();
+        let result = debug::source_return_type(
+            &debug,
+            &module,
+            &design,
+            &source,
+            ProcessValueId(0),
+            width,
+            Some(7),
+        )
+        .unwrap();
+        let bits = context
+            .custom_width_int_type(std::num::NonZeroU32::new(width).unwrap())
+            .unwrap();
+        if fixed {
+            let debug::SourceReturn::Direct(ty) = &result else {
+                panic!("fixed Char[1] must not acquire a dynamic string view");
+            };
+            assert_eq!(*ty, bits.into());
+        } else {
+            let debug::SourceReturn::Memory { storage, .. } = &result else {
+                panic!("unbounded string return needs its borrowed source view");
+            };
+            assert_eq!(
+                storage
+                    .get_field_type_at_index(0)
+                    .unwrap()
+                    .into_array_type()
+                    .len(),
+                32
+            );
+            assert_eq!(storage.get_field_type_at_index(1).unwrap(), bits.into());
+        }
+        let native = module.add_function("echo", result.fn_type(&context, &[bits.into()]), None);
+        result.declare(&context, native);
+        builder.position_at_end(context.append_basic_block(native, "entry"));
+        let value = native.get_last_param().unwrap().into_int_value();
+        result.emit_return(Some(&debug), &builder, value).unwrap();
+        let caller = module.add_function("caller", bits.fn_type(&[bits.into()], false), None);
+        builder.position_at_end(context.append_basic_block(caller, "entry"));
+        let value = debug::call_return(
+            &context,
+            &builder,
+            native,
+            &[caller.get_first_param().unwrap().into()],
+            "returned",
+        )
+        .unwrap();
+        assert_eq!(value.get_type(), bits);
+        builder.build_return(Some(&value)).unwrap();
+        assert_eq!(
+            module.get_function("sx_runtime_debug_string").is_some(),
+            !literal
+        );
+        if width == 193 {
+            assert!(module.print_to_string().to_string().contains("trunc i193"));
+        }
+        debug.finish(&module, &design);
+        module.verify().unwrap();
+    }
+}
+
+#[test]
+#[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
 fn shared_return_boundary_preserves_canonical_bits() {
     use inkwell::attributes::{Attribute, AttributeLoc};
     use siox::ir::{
