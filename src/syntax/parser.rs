@@ -2302,8 +2302,23 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 let start = self.span();
+                let saved = self.pos;
                 let path = self.parse_path();
-                if self.at(TokenKind::DotDot) {
+                if matches!(
+                    self.kind(),
+                    TokenKind::Plus
+                        | TokenKind::Minus
+                        | TokenKind::Star
+                        | TokenKind::Slash
+                        | TokenKind::Percent
+                        | TokenKind::Shl
+                        | TokenKind::Shr
+                ) {
+                    // `DEPTH + 1..`: a bound computed from a constant.
+                    self.pos = saved;
+                    let lo = self.parse_pattern_bound();
+                    self.finish_range_pattern(start, Some(lo))
+                } else if self.at(TokenKind::DotDot) {
                     // `MIN..MAX`: a constant bound.
                     self.finish_range_pattern(start, Some(Expr::Path(path)))
                 } else {

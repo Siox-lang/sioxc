@@ -61,11 +61,6 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
 - 🔴 **Payload enums.** Tagged-union variants, binding patterns,
   `Option`/`Result` and `checked_*`; builds on tuples. See
   [the proposal](docs/proposals/payload-enums.md).
-- 🔴 **Match arm analysis.** Arms overlap with first-match-wins priority.
-  Warn when an arm is covered by the earlier arms together (today only by a
-  single earlier range) and when two ranges share one endpoint, as rustc's
-  `unreachable_patterns`/`overlapping_range_endpoints` do. Fold constant
-  bounds (`0..DEPTH - 1`) so they take part in this and in coverage.
 - 🟡 **Public entity receiver methods.** Static public entity functions work.
   Lower `instance.method()` accessors and effectful methods to stable generated
   ports, first with one caller per method/instance, then define arbitration

@@ -222,23 +222,9 @@ impl<'a> Checker<'a> {
             return false;
         };
         let mut covered = Vec::new();
-        for arm in arms {
-            if !collect_pattern_ranges(&arm.pattern, &mut covered) {
-                return false;
-            }
-        }
-        covered.sort_unstable();
-        let mut frontier = lo;
-        for (start, end) in covered {
-            if start > frontier {
-                return false;
-            }
-            frontier = frontier.max(end.saturating_add(1));
-            if frontier > hi {
-                return true;
-            }
-        }
-        frontier > hi
+        arms.iter()
+            .all(|arm| self.pattern_intervals(&arm.pattern, &mut covered))
+            && covered_by(lo, hi, &covered)
     }
 
     /// A method body whose `self` carries directions — an impl on a view

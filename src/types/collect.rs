@@ -126,6 +126,7 @@ impl<'a> Checker<'a> {
             fn_param_types: HashMap::new(),
             fn_return_types: HashMap::new(),
             const_types: HashMap::new(),
+            const_values: HashMap::new(),
             suffix_types: HashMap::new(),
             prefix_types: HashMap::new(),
             aliases: HashMap::new(),
@@ -625,6 +626,7 @@ impl<'a> Checker<'a> {
             Item::Const(constant) => {
                 if let Some(id) = self.resolved.declared(constant.name.span) {
                     self.const_types.insert(id, constant.ty.clone());
+                    self.const_values.insert(id, constant.value.clone());
                 }
             }
             Item::Fn(f) if !f.generics.params.is_empty() => {

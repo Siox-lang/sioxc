@@ -343,6 +343,9 @@ struct Checker<'a> {
     /// are values, not nominal types; retaining the declaration identity lets
     /// equal leaves in different modules keep distinct contracts.
     const_types: HashMap<DefId, Type>,
+    /// Constant definition -> its initializer, folded on demand where a
+    /// static analysis needs a value (match-arm ranges).
+    const_values: HashMap<DefId, Expr>,
     /// Literal suffix -> the type names defining it via `impl Suffix<sym, _>
     /// for T` (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
