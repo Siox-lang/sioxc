@@ -13668,3 +13668,11 @@ hardware (`ast_width`, `operand_range`, `source_operand_layout`) and the
 Process path (`lower_process_raw_resize`, named conversion).
 **Codex:** touches `inline_block` (now a wrapper over `inline_block_body`),
 `inline_effects`, `source_bindings.rs`, `expressions.rs`.
+
+### 2026-10-09 — Claude — `{:?}` Debug placeholders
+
+Branch `feat/debug-format`: `FormatKind::Debug` (`?`). `lower_format_value`
+skips the `Display` impl and quotes strings/characters; the runtime's
+`sx_runtime_format_notation` flags gain bit 2 (a Debug real keeps `.0`).
+**Codex:** touches `lower_format_value`, `llvm/process/instructions.rs`
+format notation flags, `runtime/process.c` real formatting.

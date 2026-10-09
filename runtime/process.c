@@ -484,7 +484,8 @@ enum {
     SX_FORM_BINARY = 5,
     SX_FORM_OCTAL = 6,
 };
-enum { SX_NOTATION_PLUS = 1u, SX_NOTATION_ALTERNATE = 2u };
+/* `+`, `#`, and `?`: a Debug real keeps its point (`2.0`). */
+enum { SX_NOTATION_PLUS = 1u, SX_NOTATION_ALTERNATE = 2u, SX_NOTATION_DEBUG = 4u };
 static uint32_t sx_notation_form;
 static int32_t sx_notation_precision = -1;
 static uint32_t sx_notation_flags;
@@ -788,6 +789,8 @@ void sx_runtime_format_real(uint64_t bits) {
         else
             snprintf(rendered, sizeof rendered, "%g", real.value);
         sx_runtime_format_text(rendered);
+        if ((flags & SX_NOTATION_DEBUG) && isfinite(real.value) && !strpbrk(rendered, ".e"))
+            sx_runtime_format_text(".0");
         return;
     }
     /* Scientific: the requested digits, or the fewest that read back as the
