@@ -319,3 +319,65 @@ impl T {
         );
     }
 }
+
+/// A vector element holds whatever value of its enum is written, metavalues
+/// included, as in VHDL: only a resolver gives `'X'` meaning. Packed
+/// `unsigned` (value plane plus companion), and array `Logic`, `Bit` and user
+/// enum vectors, written in hardware functions and testbenches alike; an
+/// element also reads back into a scalar.
+#[cfg(feature = "llvm")]
+#[test]
+fn enum_vector_elements_take_any_value() {
+    let stdout = run(
+        "element_values",
+        r#"
+module element_values;
+enum State { Idle, Run, Done }
+fn marks(v: unsigned) -> unsigned {
+    let r: unsigned = v;
+    r[v'low] = 'X'; r[v'low + 1] = 'Z'; r[v'low + 2] = 'H'; r[v'low + 3] = 'U';
+    return r;
+}
+fn copies(v: unsigned) -> unsigned {
+    let r: unsigned = v;
+    r[v'low] = v[v'high]; r[v'low + 1] = v[v'high - 1];
+    return r;
+}
+fn states(v: State[]) -> State[] { let r: State[3..0] = v; r[0] = State::Done; r[3] = State::Run; return r; }
+fn logics(v: Logic[]) -> Logic[] { let r: Logic[3..0] = v; r[2] = 'W'; r[0] = '-'; return r; }
+entity Dut { a: unsigned[8] in, z: unsigned[8] in, st: State[3..0] in, lg: Logic[3..0] in,
+    m: unsigned[8] out, c: unsigned[8] out, so: State[3..0] out, lo: Logic[3..0] out }
+impl Dut { m = marks(a); c = copies(z); so = states(st); lo = logics(lg); }
+#[test] entity T {}
+impl T {
+    let a: unsigned[8] = 0; let z: unsigned[8] = "ZH000000";
+    let st: State[3..0] = [State::Idle, State::Idle, State::Idle, State::Idle];
+    let lg: Logic[3..0] = "1010";
+    let m: unsigned[8]; let c: unsigned[8]; let so: State[3..0]; let lo: Logic[3..0];
+    let d: Dut = { .a = a, .z = z, .st = st, .lg = lg, .m = m, .c = c, .so = so, .lo = lo };
+    check: process {
+        await 1ns;
+        print!("hw {}{}{}{} {}{} {} {}", m[3], m[2], m[1], m[0], c[1], c[0], so, lo);
+        let x: unsigned[8] = 0; let y: unsigned[8] = "ZH000000";
+        let s: State[3..0] = [State::Idle, State::Idle, State::Idle, State::Idle];
+        let g: Logic[3..0] = "1010";
+        let mm: unsigned[8] = marks(x); let cc: unsigned[8] = copies(y);
+        print!("tb {}{}{}{} {}{} {} {}", mm[3], mm[2], mm[1], mm[0], cc[1], cc[0], states(s), logics(g));
+        let e: Logic = mm[0];
+        print!("read {}", e);
+    }
+}
+"#,
+    );
+    let row = "'U''H''Z''X' 'H''Z' [Run, Idle, Idle, Done] 1W1-";
+    for line in [
+        format!("hw {row}"),
+        format!("tb {row}"),
+        "read 'X'".to_string(),
+    ] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}

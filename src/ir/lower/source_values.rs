@@ -10,6 +10,24 @@ mod build;
 mod metadata;
 mod reconstruct;
 
+/// One element written into a packed vector inside a hardware function
+/// (`r[k] = 'X'`). The value plane is the ordinary bit merge; the companion
+/// is the base's with element `bit`'s nibble replaced, so the element holds
+/// the written value whatever it is, as an enum vector element does.
+#[derive(Clone)]
+pub(super) struct MetaMerge {
+    /// The vector before the write.
+    pub(super) base: Expr,
+    /// The written element's value, whose companion a copy carries.
+    pub(super) element: Expr,
+    /// A literal's discriminant, the element's whole companion nibble.
+    pub(super) literal: Option<u64>,
+    /// Whether that literal is a metavalue, so the result has a companion.
+    pub(super) metavalue: bool,
+    /// The element's storage position.
+    pub(super) bit: u32,
+}
+
 #[derive(Default)]
 pub(super) struct SourceValues {
     pub(super) ir: ProcessIr,
@@ -23,6 +41,8 @@ pub(super) struct SourceValues {
     /// Explicit literal planes survive a captured argument without retaining
     /// its syntax. Computed planes still follow arena dependencies normally.
     pub(super) explicit_meta: HashMap<ProcessValueId, Expr>,
+    /// Element writes whose companion is the base's with one nibble replaced.
+    pub(super) merge_meta: HashMap<ProcessValueId, MetaMerge>,
     /// Physical bit projections used to compute companion planes, not source
     /// element reads. Keep this intent until read reconstruction has finished.
     raw_bits: HashSet<ProcessValueId>,
@@ -35,6 +55,10 @@ impl SourceValues {
         let span = self.ir.values[value.0 as usize].span;
         let meta = self.append(&meta, span, None);
         self.explicit_meta.insert(value, self.reference(meta));
+        self.meta_presence.clear();
+    }
+    pub(super) fn set_merge_meta(&mut self, value: ProcessValueId, merge: MetaMerge) {
+        self.merge_meta.insert(value, merge);
         self.meta_presence.clear();
     }
     pub(super) fn reference(&self, id: ProcessValueId) -> Expr {
@@ -77,19 +101,23 @@ impl SourceValues {
             .enumerate()
             .skip(self.meta_presence.len())
         {
-            let has_meta =
-                self.explicit_meta
-                    .contains_key(&ProcessValueId(index as u32))
-                    || match &node.kind {
-                        ProcessValueKind::Signal { signals, state } => {
-                            !matches!(state, ProcessSignalState::Event)
-                                && signals.iter().any(|signal| meta_of.contains_key(&signal.0))
-                        }
-                        kind => super::super::process::any_process_value_dependency(
-                            kind,
-                            |dependency| self.meta_presence[dependency.0 as usize],
-                        ),
-                    };
+            let id = ProcessValueId(index as u32);
+            let has_meta = self.explicit_meta.contains_key(&id)
+                || self
+                    .merge_meta
+                    .get(&id)
+                    .is_some_and(|merge| merge.metavalue)
+                || match &node.kind {
+                    ProcessValueKind::Signal { signals, state } => {
+                        !matches!(state, ProcessSignalState::Event)
+                            && signals.iter().any(|signal| meta_of.contains_key(&signal.0))
+                    }
+                    kind => {
+                        super::super::process::any_process_value_dependency(kind, |dependency| {
+                            self.meta_presence[dependency.0 as usize]
+                        })
+                    }
+                };
             self.meta_presence.push(has_meta);
         }
         self.meta_presence[id.0 as usize]
@@ -436,6 +464,14 @@ impl SourceValues {
                         self.reference(id)
                     });
                 }
+                if let Some(merge) = self.merge_meta.get(&id) {
+                    for expression in [&merge.base, &merge.element] {
+                        visit_references(&mut expression.clone(), &mut |id| {
+                            pending.push(id);
+                            self.reference(id)
+                        });
+                    }
+                }
                 super::super::process::for_each_process_value_dependency(
                     &self.ir.values[id.0 as usize].kind,
                     |id| pending.push(id),
@@ -467,6 +503,13 @@ impl SourceValues {
                 let mut meta = meta;
                 self.remap_expression(&mut meta, &mapped);
                 self.set_explicit_meta(mapped[value.0 as usize], meta);
+            }
+        }
+        for (value, mut merge) in old.merge_meta {
+            if live.contains(&value) {
+                self.remap_expression(&mut merge.base, &mapped);
+                self.remap_expression(&mut merge.element, &mapped);
+                self.set_merge_meta(mapped[value.0 as usize], merge);
             }
         }
     }

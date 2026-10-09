@@ -217,6 +217,18 @@ pub(super) fn process_value_supported_in_layout(
             let Some(base_layout) = process_value_layout(design, *base) else {
                 return false;
             };
+            // One element of a packed enum vector (`let e: Logic = u[0];`):
+            // the general read already yields its whole discriminant.
+            if matches!(
+                base_layout.kind,
+                LayoutKind::Packed {
+                    element_enum: Some(_),
+                    ..
+                }
+            ) && matches!(layout.kind, LayoutKind::Scalar { .. })
+            {
+                return value.bit_width == Some(width) && has(id);
+            }
             let selected = match process_constant_i64(design, *index) {
                 Some(index) => array_slice(base_layout, index),
                 None => match &base_layout.kind {

@@ -1186,20 +1186,51 @@ impl<'a> Lowering<'a> {
                         return None;
                     }
                     let bit = self.constant_packed_index(&layout, index, env)?;
-                    // ponytail: the merge carries only the value plane, so a
-                    // metavalue literal (`'X'`) would land as a plain bit; it
-                    // has no hardware form here until the merge also writes
-                    // the companion plane. Copied elements keep theirs.
-                    if matches!(value, ast::Expr::CharLit { ch, .. } if !matches!(ch, '0' | '1')) {
-                        return None;
-                    }
-                    let element = self.lower_scalar_env(value, env);
-                    let merged =
-                        self.merge_slice(current, bit, bit, element, layout.packed_width()?, *span);
-                    env.insert(
-                        name.clone(),
-                        Val::Scalar(self.bind_source_expression(merged, *span)),
+                    // The element holds whatever value is written, `'X'` as
+                    // much as `'1'`: the value plane takes its bit, and the
+                    // companion its discriminant (`merge_meta`).
+                    let literal = match value {
+                        ast::Expr::CharLit { ch, .. } => {
+                            Some(self.char_disc(*ch, DEFAULT_LOGIC_TYPE)?)
+                        }
+                        _ => None,
+                    };
+                    let encoding = self.logic_encoding(DEFAULT_LOGIC_TYPE);
+                    let element = match (literal, encoding) {
+                        (Some(discriminant), Some(encoding)) => Expr::Const(u64::from(
+                            encoding
+                                .value_bits
+                                .get(&discriminant)
+                                .copied()
+                                .unwrap_or(false),
+                        )),
+                        _ => self.lower_scalar_env(value, env),
+                    };
+                    let metavalue = literal.is_some_and(|discriminant| {
+                        encoding.is_some_and(|encoding| !encoding.binary.contains(&discriminant))
+                    });
+                    let merged = self.merge_slice(
+                        current.clone(),
+                        bit,
+                        bit,
+                        element.clone(),
+                        layout.packed_width()?,
+                        *span,
                     );
+                    let merged = self.bind_source_expression(merged, *span);
+                    if let Expr::Canonical { value: id, .. } = &merged {
+                        self.source_values.borrow_mut().set_merge_meta(
+                            *id,
+                            source_values::MetaMerge {
+                                base: current,
+                                element,
+                                literal,
+                                metavalue,
+                                bit,
+                            },
+                        );
+                    }
+                    env.insert(name.clone(), Val::Scalar(merged));
                 }
                 ast::Stmt::For {
                     var,

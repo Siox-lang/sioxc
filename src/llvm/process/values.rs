@@ -169,6 +169,28 @@ pub(super) fn process_value_in_layout<'ctx>(
         }
         ProcessValueKind::Index { base, index } => {
             let base_layout = process_value_layout(design, *base)?;
+            // One element of a packed enum vector: the general read yields
+            // its whole discriminant, value plane and companion together.
+            if matches!(
+                base_layout.kind,
+                LayoutKind::Packed {
+                    element_enum: Some(_),
+                    ..
+                }
+            ) && matches!(layout.kind, LayoutKind::Scalar { .. })
+            {
+                let element = process_value(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    id,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                return (element.get_type().get_bit_width() == width).then_some(element);
+            }
             if let Some(index) = process_constant_i64(design, *index) {
                 let selected = array_slice(base_layout, index)?;
                 if selected.width != width {
