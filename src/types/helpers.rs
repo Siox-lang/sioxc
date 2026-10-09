@@ -23,7 +23,12 @@ pub(super) fn collect_pattern_ranges(p: &Pattern, out: &mut Vec<(i128, i128)>) -
         Pattern::Or { alts, .. } => alts.iter().all(|a| collect_pattern_ranges(a, out)),
         // An enum path against a numeric scrutinee is a type error reported
         // elsewhere; a bit pattern is not an interval.
-        Pattern::Path(_) | Pattern::BitPattern { .. } | Pattern::CharLit { .. } => false,
+        // Expression bounds are folded nowhere here, so their coverage is
+        // unknown and the check steps aside.
+        Pattern::Path(_)
+        | Pattern::BitPattern { .. }
+        | Pattern::CharLit { .. }
+        | Pattern::Bounds { .. } => false,
     }
 }
 

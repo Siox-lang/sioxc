@@ -110,6 +110,35 @@ impl<'a> Checker<'a> {
         );
     }
 
+    /// A range pattern's bounds are values of the matched type: `10ns` for a
+    /// `time`, a constant for an `unsigned`.
+    fn check_pattern_bounds(&mut self, ty: &Ty, pattern: &Pattern, sym: &HashMap<String, Ty>) {
+        match pattern {
+            Pattern::Bounds { lo, hi, .. } => {
+                for bound in [lo, hi].into_iter().flatten() {
+                    self.check_expr(bound, sym);
+                    if !matches!(ty, Ty::Error) && !self.assignable(ty, bound, sym) {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            expr_span(bound),
+                            format!(
+                                "range bound `{}` is not a {} value",
+                                crate::syntax::pretty::expr_string(bound),
+                                self.ty_display(ty)
+                            ),
+                        );
+                    }
+                }
+            }
+            Pattern::Or { alts, .. } => {
+                for alternative in alts {
+                    self.check_pattern_bounds(ty, alternative, sym);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Check every arm's pattern against the scrutinee's type.
     pub(super) fn check_pattern_domains(&mut self, ty: &Ty, arms: &[MatchArm]) {
         for arm in arms {
@@ -179,6 +208,31 @@ impl<'a> Checker<'a> {
                         *span,
                         format!(
                             "an integer pattern cannot match a {} value",
+                            self.ty_display(ty)
+                        ),
+                    );
+                }
+            }
+            // Expression bounds compare through the type's order: a number,
+            // or a type with an `Ord` impl (`time`, the fixed formats).
+            Pattern::Bounds { span, .. } => {
+                let ordered = matches!(ty, Ty::Integer | Ty::Real)
+                    || matches!(
+                        ty,
+                        Ty::Array {
+                            family: Some(_),
+                            ..
+                        }
+                    )
+                    || self
+                        .type_kind_name(ty)
+                        .is_some_and(|name| self.has_impl("Ord", &name));
+                if !ordered {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        *span,
+                        format!(
+                            "a range pattern needs an ordered value; {} has no `Ord`",
                             self.ty_display(ty)
                         ),
                     );
@@ -259,6 +313,9 @@ impl<'a> Checker<'a> {
     ) {
         let ty = self.type_of(scrutinee, sym);
         self.check_pattern_domains(&ty, arms);
+        for arm in arms {
+            self.check_pattern_bounds(&ty, &arm.pattern, sym);
+        }
         self.check_char_patterns(&ty, arms);
         let Ty::Named(id) = ty else {
             // A numeric scrutinee has a domain rather than a variant list.

@@ -10,6 +10,7 @@ impl SourceValues {
         meta_of: &HashMap<u32, u32>,
         elems: &HashMap<u32, u32>,
         encodings: &HashMap<u32, LogicEncoding>,
+        default_encoding: Option<&LogicEncoding>,
     ) -> Vec<ProcessValueId> {
         let SourceValues {
             ir: mut old,
@@ -18,7 +19,19 @@ impl SourceValues {
             ..
         } = std::mem::take(self);
         let mut mapped = Vec::with_capacity(old.values.len());
+        // Element reads now carrying their whole value (discriminant).
+        let mut elements = HashSet::new();
         for (index, mut value) in old.values.into_iter().enumerate() {
+            // An element of a value with a literal's companion (`"01--"[0]`
+            // inside a function) reads it, as an element of a signal reads
+            // the signal's companion.
+            let explicit_base = match &value.kind {
+                ProcessValueKind::BitSlice { base, .. } => match explicit_meta.get(base) {
+                    Some(Expr::Canonical { value: meta, .. }) => Some(mapped[meta.0 as usize]),
+                    _ => None,
+                },
+                _ => None,
+            };
             crate::ir::process::remap_process_value_dependencies(&mut value.kind, |child| {
                 assert!(
                     (child.0 as usize) < index,
@@ -59,6 +72,23 @@ impl SourceValues {
             if raw_bit {
                 self.raw_bits.insert(original);
             }
+            // A one-bit resize of an element read (a function's argument or
+            // return passing it through) was a no-op on the value bit; on the
+            // whole value it would cut the metavalue back off.
+            if let ProcessValueKind::RawResize { operand } =
+                self.ir.values[original.0 as usize].kind
+            {
+                if elements.contains(&operand)
+                    && self.ir.values[original.0 as usize].bit_width == Some(1)
+                {
+                    mapped.push(operand);
+                    continue;
+                }
+            }
+            let element_read = matches!(
+                self.ir.values[original.0 as usize].kind,
+                ProcessValueKind::BitSlice { high, low, .. } if high == low
+            );
             let replacement = match self.ir.values[original.0 as usize].kind {
                 ProcessValueKind::Binary {
                     operation:
@@ -96,8 +126,11 @@ impl SourceValues {
                         _ => (base, None),
                     };
                     self.meta_companion(signal, span, meta_of)
-                        .and_then(|(companion, mut meta)| {
-                            let encoding = encodings.get(&companion)?;
+                        .and_then(|(companion, meta)| {
+                            encodings.get(&companion).map(|encoding| (encoding, meta))
+                        })
+                        .or_else(|| Some((default_encoding?, explicit_base?)))
+                        .map(|(encoding, mut meta)| {
                             if let Some(offset) = offset {
                                 let stride = self.meta_number(4, span);
                                 let offset =
@@ -120,11 +153,11 @@ impl SourceValues {
                                 },
                                 span,
                             );
-                            Some(ProcessValueKind::Select {
+                            ProcessValueKind::Select {
                                 condition,
                                 then_value: nibble,
                                 else_value: binary_value,
-                            })
+                            }
                         })
                 }
                 _ => None,
@@ -138,7 +171,11 @@ impl SourceValues {
                     kind,
                 };
                 let layout = self.ir.value_layouts[original.0 as usize].clone();
-                self.push_node(value, layout)
+                let replaced = self.push_node(value, layout);
+                if element_read {
+                    elements.insert(replaced);
+                }
+                replaced
             } else {
                 original
             };
@@ -357,6 +394,7 @@ mod tests {
                 &[(0, 1)].into(),
                 &[(1, 2)].into(),
                 &[(1, encoding.clone())].into(),
+                None,
             );
             for driver in &mut draft.drivers {
                 arena.remap_expression(&mut driver.expr, &mapped);
@@ -482,6 +520,7 @@ mod tests {
                 &[(0, 1)].into(),
                 &[(1, 2)].into(),
                 &[(1, encoding.clone())].into(),
+                None,
             );
             let actual = crate::ir::derive::materialize_digital_expression(
                 &arena.ir,
@@ -583,7 +622,7 @@ mod tests {
             .iter()
             .map(|expression| arena.import_test_fragment(expression, span, None))
             .collect::<Vec<_>>();
-        let mapped = arena.reconstruct_metavalues(&meta_of, &elems, &encodings);
+        let mapped = arena.reconstruct_metavalues(&meta_of, &elems, &encodings, None);
         assert!(
             arena.ir.validate(3).is_empty(),
             "{:?}",
@@ -648,7 +687,7 @@ mod tests {
         let root = arena.push_node(value.clone(), Some(layout.clone()));
         let before = arena.ir.values.clone();
         let mapped =
-            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new());
+            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new(), None);
         assert_eq!(arena.ir.values, before);
         assert_eq!(mapped[root.0 as usize], root);
         assert_eq!(arena.ir.value_layouts[root.0 as usize], Some(layout));
@@ -726,6 +765,7 @@ mod tests {
             &[(0, 1)].into(),
             &[(1, 8)].into(),
             &[(1, encoding)].into(),
+            None,
         );
         for root in [first, second] {
             let root = mapped[root.0 as usize];

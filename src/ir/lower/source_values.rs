@@ -1110,7 +1110,7 @@ mod tests {
         let scalar = arena.bind_scalar(local, Some(crate::types::Ty::Integer), span);
         assert_eq!(arena.ir.value_layouts.len(), arena.ir.values.len());
         let mapped =
-            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new());
+            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new(), None);
         let mut draft = HardwareDraft::default();
         draft.drivers.push(Driver {
             target: SignalId(1),
@@ -1182,7 +1182,7 @@ mod tests {
         arena.set_explicit_meta(value, arena.reference(metadata));
         assert!(arena.may_have_meta(value, &HashMap::new()));
         let mapped =
-            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new());
+            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new(), None);
         let value = mapped[value.0 as usize];
         assert!(arena.may_have_meta(value, &HashMap::new()));
         let mut draft = HardwareDraft::default();

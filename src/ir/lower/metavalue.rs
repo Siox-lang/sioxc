@@ -957,8 +957,10 @@ impl<'a> Lowering<'a> {
                     .map(|encoding| (companion, encoding))
             })
             .collect();
+        let default_encoding = self.logic_encodings.get(DEFAULT_LOGIC_TYPE).cloned();
         let arena = self.source_values.get_mut();
-        let mapped = arena.reconstruct_metavalues(&meta_of, &elems, &encodings);
+        let mapped =
+            arena.reconstruct_metavalues(&meta_of, &elems, &encodings, default_encoding.as_ref());
         for expression in self.hardware.expressions_mut() {
             arena.remap_expression(expression, &mapped);
         }

@@ -13712,3 +13712,22 @@ how vhdl does it", for any enum vector. Branch `fix/element-metavalues`.
   `process_value_supported_in_layout` / `process_value_in_layout`.
 **Codex:** touches `metavalue.rs` (Canonical arm), `source_values.rs`
 (compaction carries `merge_meta`), `llvm/process/{support,values}.rs` Index arms.
+
+### 2026-10-09 — Claude — `Match` for bit patterns, expression range patterns
+
+Owner-approved. Branch `feat/match-patterns`.
+- `core::cmp::Match` (element level: `matches`, `unknown`); `Logic` implements
+  `std_match` in `std::logic`. A bit-pattern arm tests each fixed position
+  with `scrutinee[k].matches('0'|'1')`; a testbench match on a metavalue warns.
+- New `ast::Pattern::Bounds { lo, hi }` (constant/typed/open bounds, set
+  semantics) next to the literal `Pattern::Range`; matches through `Ord`.
+- Testbench path: guarded matches lower as a branch chain / select chain
+  (`lower_guarded_match`, `pattern_condition`); hardware: `arm_match_cond`.
+- Fixed on the way: element reads of a parameter inside a hardware function
+  lost their metavalue (a 1-bit RawResize after reconstruction); literal
+  method arguments now take the parameter's declared family; vector literals
+  in `let`s keep their companion; `lower_val_env` comparisons are marked like
+  `lower_expr`'s.
+**Codex:** touches parser patterns, `types/patterns.rs`, `resolve.rs`,
+`ir/lower/{calls,control,values,operators,source_bindings}.rs`,
+`source_values/reconstruct.rs`, `source_processes.rs` match lowering.

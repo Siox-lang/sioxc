@@ -432,7 +432,14 @@ impl<'a> Lowering<'a> {
                 self.bind_range_attrs(&mut fenv, &n.text, a, env);
                 // Propagate the argument's family so the body dispatches
                 // operators on the caller's concrete type.
-                if let Some(fam) = self.operand_type_name(a) {
+                // A literal argument (`'1'`, `"01--"`) has no family of its
+                // own: the parameter's declared type names it.
+                let declared =
+                    p.ty.as_ref()
+                        .and_then(type_head_name)
+                        .filter(|head| !f.generics.params.iter().any(|g| g.name.text == *head))
+                        .map(str::to_owned);
+                if let Some(fam) = self.operand_type_name(a).or(declared) {
                     let prev = self.param_types.borrow_mut().insert(n.text.clone(), fam);
                     saved.push((n.text.clone(), prev));
                 }
@@ -631,6 +638,11 @@ impl<'a> Lowering<'a> {
             ast::Expr::Construct { ty: Some(ty), .. } if type_head_name(ty) == Some("Range") => {
                 Some("Range".to_string())
             }
+            // A literal takes its type from the parameter, as on assignment,
+            // so it names no impl: `v.matches("01--")`, `l.matches('1')`.
+            ast::Expr::StrLit { .. } | ast::Expr::BitStrLit { .. } | ast::Expr::CharLit { .. } => {
+                None
+            }
             _ => self.operand_type_name(arg),
         });
         let f = self.find_method(&ty, &field.text, input.as_deref())?;
@@ -685,7 +697,21 @@ impl<'a> Lowering<'a> {
                 // ...and a character literal for a `Char` parameter is its
                 // code point, not the logic-literal placeholder, which would
                 // otherwise resolve to `Logic` and read 0 for `'A'`.
-                let (argument, layout) = self.lower_source_argument(a, p.ty.as_ref(), env);
+                // A vector literal given to an unsized parameter (`pattern:
+                // unsigned` given `"01--"`) takes the receiver's shape, as it
+                // would take its target's on assignment.
+                let width_generic = p
+                    .ty
+                    .as_ref()
+                    .is_none_or(|ty| self.source_layout(ty, &self.cur_env).bit_width().is_none());
+                let receiver = shapes.get("self").cloned().filter(|_| {
+                    width_generic
+                        && matches!(a, ast::Expr::StrLit { .. } | ast::Expr::BitStrLit { .. })
+                });
+                let (argument, layout) = match receiver {
+                    Some(receiver) => (self.lower_shaped_source(a, env, &receiver), Some(receiver)),
+                    None => self.lower_source_argument(a, p.ty.as_ref(), env),
+                };
                 if let Some(layout) = layout {
                     shapes.insert(n.text.clone(), layout);
                 }
@@ -710,7 +736,16 @@ impl<'a> Lowering<'a> {
                 // adopts the receiver's type, as an operator's right operand
                 // does: `x >= -4` on `signed` reaches `Ord::ge`'s default
                 // `rhs.le(self)` with `rhs` a `signed`.
-                if let Some(mut fam) = self.operand_type_name(a) {
+                // A literal argument (`'1'`) has no family of its own: the
+                // parameter's declared type names it, or `Self` the receiver's.
+                let declared = p.ty.as_ref().and_then(type_head_name).map(|head| {
+                    if head == "Self" {
+                        ty.clone()
+                    } else {
+                        head.to_owned()
+                    }
+                });
+                if let Some(mut fam) = self.operand_type_name(a).or(declared) {
                     if fam == "integer" && p.ty.as_ref().and_then(type_head_name) != Some("integer")
                     {
                         fam = ty.clone();
@@ -1490,12 +1525,18 @@ impl<'a> Lowering<'a> {
                         .map(|ty| self.source_layout(ty, &self.cur_env))
                         .filter(|layout| layout.bit_width().is_some())
                         .or_else(|| self.source_operand_layout(value, scoped.as_ref()));
+                // A vector literal is shaped too, which keeps its metavalue
+                // companion: `let p: unsigned[4] = "00--";` holds `'-'`s.
+                let literal = matches!(
+                    value,
+                    ast::Expr::StrLit { .. } | ast::Expr::BitStrLit { .. }
+                );
                 let value_ir = match &layout {
                     Some(layout)
                         if matches!(
                             layout.kind,
                             LayoutKind::Array { .. } | LayoutKind::Struct { .. }
-                        ) =>
+                        ) || literal && matches!(layout.kind, LayoutKind::Packed { .. }) =>
                     {
                         self.lower_shaped_source(value, scoped.as_ref(), layout)
                     }

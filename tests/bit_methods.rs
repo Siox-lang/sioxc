@@ -381,3 +381,76 @@ impl T {
         );
     }
 }
+
+/// Bit patterns match through the element type's `Match` (`std_match` for
+/// `Logic`: `'H'`/`'L'` read as `'1'`/`'0'`, a metavalue matches only a
+/// `-`), and ranges take any constant bounds of the scrutinee's type, open
+/// ends and either order, through its `Ord`, in hardware (also inside a
+/// function) and testbenches.
+#[cfg(feature = "llvm")]
+#[test]
+fn bit_patterns_match_like_std_match_and_ranges_take_expressions() {
+    let stdout = run(
+        "match_patterns",
+        r#"
+module match_patterns;
+const DEPTH: integer = 8;
+fn decode(op: unsigned[4]) -> integer {
+    match op {
+        "00--" => { return 1; }
+        "01-1" => { return 2; }
+        _ => { return 0; }
+    }
+}
+fn bucket(n: integer) -> integer {
+    match n {
+        ..-1 => { return 0; }
+        0..DEPTH - 1 => { return 1; }
+        DEPTH.. => { return 2; }
+    }
+    return 9;
+}
+entity Dut { op: unsigned[4] in, n: integer in, d: integer out, b: integer out, e: integer out,
+    w: integer out }
+impl Dut {
+    d = decode(op);
+    b = bucket(n);
+    e = match n { 9..3 => 7, _ => 0 };
+    w = match op { "01-1" => 2, _ => 0 };
+}
+#[test] entity T {}
+impl T {
+    let op: unsigned[4] = 0; let n: integer = 0;
+    let d: integer; let b: integer; let e: integer; let w: integer;
+    let dut: Dut = { .op = op, .n = n, .d = d, .b = b, .e = e, .w = w };
+    check: process {
+        op = "0011"; n = 0 - 5; await 1ns; print!("hw {} {} {} {}", d, b, e, w);
+        op = "0H11"; n = 5; await 1ns; print!("hw {} {} {} {}", d, b, e, w);
+        op = "0X11"; n = 12; await 1ns; print!("hw {} {} {} {}", d, b, e, w);
+        op = "0LH1"; n = 8; await 1ns; print!("hw {} {} {} {}", d, b, e, w);
+        let a: unsigned[4] = "0011"; let h: unsigned[4] = "0H11"; let x: unsigned[4] = "0X11";
+        print!("tb {} {} {} {} {} {} {}", decode(a), decode(h), decode(x), bucket(0 - 5),
+            bucket(5), bucket(12), bucket(8));
+        let t: time = 15ns;
+        let slot: integer = match t { 0ns..9ns => 1, 10ns..19ns => 2, _ => 3 };
+        let r: real = 2.5;
+        let k: integer = match r { ..0.0 => 0, 0.0..1.0 => 1, 1.0.. => 2 };
+        print!("typed {} {}", slot, k);
+    }
+}
+"#,
+    );
+    for line in [
+        "hw 1 0 0 0",
+        "hw 2 1 7 2",
+        "hw 0 2 0 0",
+        "hw 1 2 7 0",
+        "tb 1 2 0 0 1 2 2",
+        "typed 2 2",
+    ] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}

@@ -873,6 +873,14 @@ fn pattern(p: &Pattern) -> String {
         Pattern::Or { alts, .. } => alts.iter().map(pattern).collect::<Vec<_>>().join(" | "),
         Pattern::Range { lo, hi, .. } if lo == hi => lo.to_string(),
         Pattern::Range { lo, hi, .. } => format!("{lo}..{hi}"),
+        Pattern::Bounds { lo, hi, .. } => match (lo, hi) {
+            (Some(lo), Some(hi)) if expr_string(lo) == expr_string(hi) => expr_string(lo),
+            (lo, hi) => format!(
+                "{}..{}",
+                lo.as_deref().map(expr_string).unwrap_or_default(),
+                hi.as_deref().map(expr_string).unwrap_or_default()
+            ),
+        },
         Pattern::CharLit { ch, .. } => format!("'{ch}'"),
     }
 }
