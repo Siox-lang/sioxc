@@ -1,0 +1,19 @@
+module std::mem;
+
+// Moving values between places, as Rust's `core::mem`. A testbench function's
+// parameters are its caller's places, so these write the arguments
+// themselves: `swap(a, b)` exchanges two variables or signals.
+
+// Exchange the values of `a` and `b`.
+pub fn swap<T>(a: T, b: T) {
+    let held: T = a;
+    a = b;
+    b = held;
+}
+
+// Store `value` in `dest` and return what was there.
+pub fn replace<T>(dest: T, value: T) -> T {
+    let old: T = dest;
+    dest = value;
+    return old;
+}
