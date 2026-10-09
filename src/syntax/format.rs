@@ -193,7 +193,7 @@ fn parse_spec(spec: &str) -> Result<FormatSpec, String> {
     let malformed = || {
         format!(
             "`{{:{spec}}}` is not a format spec; it is `[[fill]align][+][#][0][width][.precision][type]`, \
-             with align `<` `^` `>` and type `e` `E` `x` `X` `b` `o`"
+             with align `<` `^` `>` and type `e` `E` `x` `X` `b` `o` `?`"
         )
     };
     let chars: Vec<char> = spec.chars().collect();
