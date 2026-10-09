@@ -253,6 +253,25 @@ impl Lowering<'_> {
         })
     }
 
+    /// A constant slice bound, including one over a function receiver's
+    /// shape (`self[self'low..self'high]`), which the source-level folder
+    /// cannot see.
+    fn slice_bound(&self, bound: &ast::Expr) -> Option<i64> {
+        fn shape_arithmetic(expression: &ast::Expr) -> bool {
+            match expression {
+                ast::Expr::Int { .. } | ast::Expr::SysAttr { .. } => true,
+                ast::Expr::Binary { lhs, rhs, .. } => {
+                    shape_arithmetic(lhs) && shape_arithmetic(rhs)
+                }
+                _ => false,
+            }
+        }
+        self.eval_const(bound, &self.cur_env).or_else(|| {
+            shape_arithmetic(bound)
+                .then(|| self.constant_expr(&self.lower_scalar_env(bound, &HashMap::new())))?
+        })
+    }
+
     pub(super) fn source_packed_slice_bounds(
         &self,
         layout: &SourceLayout,
@@ -260,10 +279,7 @@ impl Lowering<'_> {
     ) -> Option<(u32, u32)> {
         let range = layout.index_range()?;
         let (left, right) = match index {
-            ast::Expr::Range { lo, hi, .. } => (
-                self.eval_const(lo, &self.cur_env)?,
-                self.eval_const(hi, &self.cur_env)?,
-            ),
+            ast::Expr::Range { lo, hi, .. } => (self.slice_bound(lo)?, self.slice_bound(hi)?),
             ast::Expr::PartialRange { lo, hi, .. } => (
                 lo.as_deref()
                     .map(|lo| self.eval_const(lo, &self.cur_env))
@@ -327,6 +343,21 @@ impl Lowering<'_> {
         })
     }
 
+    /// The storage bit a constant, in-range index selects.
+    fn constant_packed_index(
+        &self,
+        layout: &SourceLayout,
+        index: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<u32> {
+        let range = layout.index_range()?;
+        let low = range.left.min(range.right);
+        let label = self.constant_expr(&self.lower_scalar_env(index, env))?;
+        (low..=range.left.max(range.right))
+            .contains(&label)
+            .then(|| u32::try_from(label - low).ok())?
+    }
+
     fn source_packed_access(
         &self,
         value: Expr,
@@ -358,6 +389,10 @@ impl Lowering<'_> {
                 }
                 result
             }
+        } else if let Some(bit) = self.constant_packed_index(layout, index, env) {
+            // A constant index (`v[v'low + k]` in an unrolled loop) is one
+            // bit; only a runtime one needs the checked mux.
+            self.source_slice(&value, bit, bit, span)
         } else {
             let range = layout.index_range()?;
             let low = range.left.min(range.right);

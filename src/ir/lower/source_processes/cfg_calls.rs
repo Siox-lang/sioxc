@@ -521,6 +521,7 @@ fn inline_call(
     let inherited_layout = receiver
         .filter(|receiver| returns_receiver_type(function, *receiver, context))
         .or(generic_argument)
+        .or_else(|| same_type_argument(function, arguments, context))
         .and_then(|receiver| process_value_source_layout(receiver, context.process_ir).cloned());
     if let Some(layout) = inherited_layout.or(declared_layout) {
         let ProcessValueKind::Local { local, .. } =

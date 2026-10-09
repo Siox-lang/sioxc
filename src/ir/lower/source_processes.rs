@@ -2069,6 +2069,21 @@ fn lower_statement(
                 .value
                 .as_ref()
                 .map(|value| value_ref_with_type(value, process, context, target.as_ref()));
+            // A width-generic declaration (`let r: unsigned = v;` in a
+            // function over `unsigned`) takes its shape from the initializer.
+            if process.locals[local.0 as usize]
+                .layout
+                .as_ref()
+                .and_then(SourceLayout::packed_width)
+                .is_none()
+            {
+                if let Some(layout) = initializer
+                    .and_then(|value| operand_source_layout(value, process, context))
+                    .filter(|layout| layout.packed_width().is_some())
+                {
+                    process.locals[local.0 as usize].layout = Some(layout);
+                }
+            }
             process.blocks[block.0 as usize]
                 .instructions
                 .push(ProcessInstruction::Declare {
@@ -3914,18 +3929,27 @@ fn push_local(
     context: &LoweringContext<'_>,
 ) -> ProcessLocalId {
     let id = ProcessLocalId(process.locals.len() as u32);
-    let ty = declaration
-        .value
+    let declared = declaration
+        .ty
         .as_ref()
-        .and_then(|value| context.typed.expr_type(ast::expr_span(value)))
-        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
-        .cloned()
+        .and_then(|ty| process_declared_type(ty, context));
+    // A sized declaration is the local's type: `let u: signed[8] = 0 - 100;`
+    // is a `signed[8]`, not the `integer` its initializer computes in. A
+    // width-generic one (`let r: unsigned = v;`) takes the initializer's.
+    let ty = declared
+        .clone()
+        .filter(|ty| {
+            !matches!(ty, crate::types::Ty::Array { len: 0, .. }) && is_concrete_type(ty, context)
+        })
         .or_else(|| {
             declaration
-                .ty
+                .value
                 .as_ref()
-                .and_then(|ty| process_declared_type(ty, context))
-        });
+                .and_then(|value| context.typed.expr_type(ast::expr_span(value)))
+                .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                .cloned()
+        })
+        .or(declared);
     let layout = process_local_layout(declaration, ty.as_ref(), context);
     process.locals.push(ProcessLocal {
         id,
@@ -4055,8 +4079,14 @@ fn process_value_is_real(id: ProcessValueId, context: &LoweringContext<'_>) -> b
             }
         )
     };
+    // The graph is a DAG: an unrolled loop's selects share their operands,
+    // so a walk without `seen` revisits them exponentially.
     let mut pending = vec![id];
+    let mut seen = std::collections::HashSet::new();
     while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
         let Some(value) = context.process_ir.values.get(id.0 as usize) else {
             continue;
         };
@@ -4937,13 +4967,7 @@ fn inline_process_call(
     if args.len() != parameter_types.len() {
         return None;
     }
-    let arguments = args
-        .iter()
-        .zip(&parameter_types)
-        .map(|(argument, parameter)| {
-            value_ref_with_type(argument, process, context, parameter.as_ref())
-        })
-        .collect::<Vec<_>>();
+    let arguments = lower_call_arguments(args, &parameter_types, receiver, process, context);
     let result = inline_process_function(
         function,
         receiver,
@@ -4974,6 +4998,45 @@ fn inline_process_call(
     result
 }
 
+/// Lower a call's arguments. A width-generic one (`rhs: signed`) takes the
+/// width of a sized value of its family already in hand, the receiver's or
+/// an earlier argument's: at its own minimum width, `u.saturating_sub(100)`
+/// read `100` as a 7-bit signed, which is -28.
+fn lower_call_arguments(
+    args: &[ast::Expr],
+    declared: &[Option<crate::types::Ty>],
+    receiver: Option<ProcessValueId>,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Vec<ProcessValueId> {
+    let mut sized = receiver
+        .and_then(|receiver| process_value_type(receiver, context))
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut arguments = Vec::with_capacity(args.len());
+    for (argument, declared) in args.iter().zip(declared) {
+        let ty = match declared {
+            Some(family @ crate::types::Ty::Array { len: 0, .. }) => {
+                let key = process_type_key(family, context);
+                sized
+                    .iter()
+                    .find(|ty| {
+                        matches!(ty, crate::types::Ty::Array { len, .. } if *len > 0)
+                            && key.is_some()
+                            && process_type_key(ty, context) == key
+                    })
+                    .cloned()
+                    .or_else(|| declared.clone())
+            }
+            declared => declared.clone(),
+        };
+        let value = value_ref_with_type(argument, process, context, ty.as_ref());
+        sized.extend(process_value_type(value, context));
+        arguments.push(value);
+    }
+    arguments
+}
+
 /// Whether `function` is declared to return the type of `receiver`.
 fn returns_receiver_type(
     function: &ast::FnDecl,
@@ -4992,6 +5055,27 @@ fn returns_receiver_type(
         .and_then(|value| value.ty.as_ref())
         .and_then(|ty| process_type_key(ty, context));
     declared.is_some() && declared == receiver
+}
+
+/// A width-generic function (`fn f(v: unsigned) -> unsigned`) returns the
+/// shape of its first argument of the return type, as a method returns its
+/// receiver's: the declared type alone has no width.
+fn same_type_argument(
+    function: &ast::FnDecl,
+    arguments: &[ProcessValueId],
+    context: &LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let key = |ty: &ast::Type| {
+        declared_process_type(ty, context.resolved).and_then(|ty| process_type_key(&ty, context))
+    };
+    let declared = key(function.ret.as_ref()?)?;
+    function
+        .params
+        .iter()
+        .filter(|parameter| !parameter.is_self)
+        .zip(arguments)
+        .find(|(parameter, _)| parameter.ty.as_ref().and_then(key).as_ref() == Some(&declared))
+        .map(|(_, argument)| *argument)
 }
 
 /// Inline one already-selected Siox function over already-lowered operands,
@@ -5616,6 +5700,16 @@ fn inline_process_binary_operator(
 
     let first_value = context.process_ir.values.len();
     let left = value_ref_with_type(lhs, process, context, Some(&left_type));
+    // A width-generic operand (`x: signed` in a function) has its argument's
+    // width. A literal on the other side takes that one: typed as the bare
+    // family, `x - 1` read `1` as a one-bit signed, which is -1.
+    let left_type = match (&left_type, process_value_type(left, context)) {
+        (
+            crate::types::Ty::Array { len: 0, .. },
+            Some(concrete @ crate::types::Ty::Array { len, .. }),
+        ) if len > 0 => concrete,
+        _ => left_type,
+    };
     // Operator selection lets a kernel integer adopt the receiver family.
     // Bind the value under that same contextual type: source implementations
     // legitimately inspect `rhs'length`, and keeping a literal/expression as
@@ -5889,6 +5983,35 @@ fn inline_value_statements(
         Stmt::Match(statement) => inline_value_match(statement, rest, process, context),
         _ => None,
     }
+}
+
+/// A shape attribute (`'length`, `'high`, ..) of a value whose layout is
+/// known, which is a constant.
+fn shape_attribute(
+    base: ProcessValueId,
+    attribute: &str,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> Option<i64> {
+    let range = operand_source_layout(base, process, context)?.index_range()?;
+    match attribute {
+        "length" => i64::try_from(range.len()?).ok(),
+        "left" => Some(range.left),
+        "right" => Some(range.right),
+        "high" => Some(range.left.max(range.right)),
+        "low" => Some(range.left.min(range.right)),
+        _ => None,
+    }
+}
+
+/// The integer a value always has, when lowering can tell. A 64-bit number
+/// is a kernel integer, so its top bit is the sign.
+fn constant_integer(value: ProcessValueId, context: &LoweringContext<'_>) -> Option<i64> {
+    let folded = crate::ir::arena_constant_integer(value, &context.process_ir.values)?;
+    if context.process_ir.values.get(value.0 as usize)?.bit_width == Some(64) {
+        return Some(folded as u64 as i64);
+    }
+    i64::try_from(folded).ok()
 }
 
 /// Inline one branch in a fresh lexical binding scope, appending the source
@@ -6447,6 +6570,14 @@ fn value_ref_with_type_inner(
                         operation: ProcessHostValueOp::StringLength,
                         arguments: vec![base],
                     }
+                } else if let Some(number) = shape_attribute(base, &attr.text, process, context) {
+                    return push_value(
+                        span,
+                        Some(crate::types::Ty::Integer),
+                        Some(64),
+                        ProcessValueKind::Number(ProcessNumber::Integer(vec![number as u64])),
+                        context,
+                    );
                 } else {
                     ProcessValueKind::Attribute {
                         base,
@@ -6494,10 +6625,25 @@ fn value_ref_with_type_inner(
                         (*owner == process.id)
                             .then(|| process.locals.get(local.0 as usize)?.layout.clone())?
                     });
-                if let Some((left, right)) = base_layout
+                let bounds = base_layout
                     .as_ref()
-                    .and_then(|layout| packed_slice_bounds(index, layout, context))
-                {
+                    .and_then(|layout| packed_slice_bounds(index, layout, context));
+                // `self[self'right..self'left]` in a function: attribute
+                // bounds fold once the receiver's layout is known.
+                let bounds = match (bounds, index.as_ref()) {
+                    (None, ast::Expr::Range { lo, hi, .. })
+                        if base_layout.as_ref().is_some_and(|layout| {
+                            matches!(&layout.kind, LayoutKind::Packed { range: Some(_), .. })
+                        }) =>
+                    {
+                        let integer = Some(&crate::types::Ty::Integer);
+                        let left = value_ref_with_type(lo, process, context, integer);
+                        let right = value_ref_with_type(hi, process, context, integer);
+                        constant_integer(left, context).zip(constant_integer(right, context))
+                    }
+                    (bounds, _) => bounds,
+                };
+                if let Some((left, right)) = bounds {
                     if left == right {
                         let index_span = ast::expr_span(index);
                         let index = push_value(
@@ -6708,11 +6854,43 @@ fn value_ref_with_type_inner(
             bang,
             ..
         } => {
+            let callee_expression = callee.as_ref();
             let callee = value_ref(callee, process, context);
-            let arguments = args
-                .iter()
-                .map(|argument| value_ref(argument, process, context))
-                .collect();
+            let receiver = match context.process_ir.values[callee.0 as usize].kind {
+                ProcessValueKind::Field { base, .. } => Some(base),
+                _ => None,
+            };
+            // The callee's declared parameters type the arguments, as when
+            // the call inlines as a value: a literal has no checked type.
+            let function = match callee_expression {
+                ast::Expr::Field { field, .. } => receiver
+                    .and_then(|receiver| process_value_type(receiver, context))
+                    .and_then(|ty| process_type_key(&ty, context))
+                    .and_then(|owner| context.functions.get_associated(&owner, &field.text)),
+                callee => context.functions.get(callee),
+            };
+            let declared = match function {
+                Some(function)
+                    if function.params.iter().filter(|p| !p.is_self).count() == args.len() =>
+                {
+                    function
+                        .params
+                        .iter()
+                        .filter(|parameter| !parameter.is_self)
+                        .map(|parameter| {
+                            parameter
+                                .ty
+                                .as_ref()
+                                .and_then(|ty| process_declared_type(ty, context))
+                        })
+                        .collect::<Vec<_>>()
+                }
+                _ => args
+                    .iter()
+                    .map(|argument| context.typed.expr_type(ast::expr_span(argument)).cloned())
+                    .collect(),
+            };
+            let arguments = lower_call_arguments(args, &declared, receiver, process, context);
             let type_arguments = if type_args.is_empty() {
                 Vec::new()
             } else {
