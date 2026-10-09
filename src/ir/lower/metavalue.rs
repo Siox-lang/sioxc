@@ -373,8 +373,14 @@ impl<'a> Lowering<'a> {
                 if let Some(result) = temps.source_meta.get(&key) {
                     return result.clone();
                 }
-                let node = self.source_node(*value);
-                let meta = self.lower_meta_ir(&node, width, temps);
+                let merge = self.source_values.borrow().merge_meta.get(value).cloned();
+                let meta = match merge {
+                    Some(merge) => Some(self.merged_meta(&merge, width, temps)),
+                    None => {
+                        let node = self.source_node(*value);
+                        self.lower_meta_ir(&node, width, temps)
+                    }
+                };
                 let meta = meta.map(|expression| {
                     match self.bind_source_value(Val::Scalar(expression), temps.anchor, None) {
                         Val::Scalar(expression) => expression,
@@ -513,6 +519,41 @@ impl<'a> Lowering<'a> {
             }
             _ => None,
         }
+    }
+
+    /// The companion of an element write: the base's, with the element's
+    /// nibble replaced by the written value's discriminant (a literal's own,
+    /// or a copied element's companion). A known element's nibble is its
+    /// binary discriminant, which defers to the value plane.
+    fn merged_meta(
+        &self,
+        merge: &super::source_values::MetaMerge,
+        width: u32,
+        temps: &mut MetaTemps,
+    ) -> Expr {
+        let anchor = temps.anchor;
+        let base = self
+            .lower_meta_ir(&merge.base, width, temps)
+            .unwrap_or(Expr::Const(0));
+        let nibble = match merge.literal {
+            Some(discriminant) => Expr::Const(discriminant),
+            None => self
+                .lower_meta_ir(&merge.element, 1, temps)
+                .unwrap_or(Expr::Const(0)),
+        };
+        let mut keep = vec![0u64; (width as usize * 4).div_ceil(64)];
+        for element in (0..width).filter(|element| *element != merge.bit) {
+            keep[element as usize / 16] |= 0xF << (4 * (element % 16));
+        }
+        let kept = self.source_binary(BinOp::And, &base, &words_const(keep), anchor);
+        let nibble = self.source_binary(BinOp::And, &nibble, &Expr::Const(0xF), anchor);
+        let placed = self.source_binary(
+            BinOp::Shl,
+            &nibble,
+            &Expr::Const(u64::from(merge.bit) * 4),
+            anchor,
+        );
+        self.source_binary(BinOp::Or, &kept, &placed, anchor)
     }
 
     /// Best available element width for a lowered value expression. Constants

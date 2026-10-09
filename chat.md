@@ -13697,3 +13697,18 @@ Owner-requested, branch `feat/rem-operator`.
   parts in a block that needed normalization (any call).
 **Codex:** touches syntax lexer/parser/ast, both IR BinOp enums, llvm
 `process/binary.rs`, `cfg_calls.rs` Runtime normalization, `calls.rs`.
+
+### 2026-10-09 — Claude — enum vector elements take any value
+
+Owner: "we don't care if something is 'X' unless the resolver says so — that's
+how vhdl does it", for any enum vector. Branch `fix/element-metavalues`.
+- Hardware function element writes into packed vectors record a
+  `source_values::MetaMerge`; `lower_meta_ir` builds the merged companion
+  (base's, with the element's nibble replaced), so `r[k] = 'X'` and copies
+  of 'Z'/'H' keep their value (previously rejected / passed through the
+  std_logic and/or tables).
+- LLVM: an element of a packed enum vector read into a scalar layout
+  (`let e: Logic = u[0];`, and print snapshots) was unsupported in
+  `process_value_supported_in_layout` / `process_value_in_layout`.
+**Codex:** touches `metavalue.rs` (Canonical arm), `source_values.rs`
+(compaction carries `merge_meta`), `llvm/process/{support,values}.rs` Index arms.
