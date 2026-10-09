@@ -395,7 +395,12 @@ fn normalize_value(
                     .copied()
                     .or_else(|| (!has_call(child, context)).then_some(child))
             });
-            let result = push_value(node.span, node.ty, node.bit_width, kind, context);
+            // A deferred call can acquire its concrete width during CFG
+            // expansion. Its enclosing value must not retain an unknown width.
+            let width = node
+                .bit_width
+                .or_else(|| source_value_width(&kind, node.ty.as_ref(), process, context));
+            let result = push_value(node.span, node.ty, width, kind, context);
             context.process_ir.value_layouts[result.0 as usize] =
                 context.process_ir.value_layouts[value.0 as usize].clone();
             // Host/foreign effects belong at this source evaluation boundary,
@@ -577,6 +582,7 @@ fn inline_call(
     let inherited_layout = receiver
         .filter(|receiver| returns_receiver_type(function, *receiver, context))
         .or(generic_argument)
+        .or_else(|| same_type_argument(function, arguments, context))
         .and_then(|receiver| process_value_source_layout(receiver, context.process_ir).cloned());
     if let Some(layout) = inherited_layout.or(declared_layout) {
         let ProcessValueKind::Local { local, .. } =

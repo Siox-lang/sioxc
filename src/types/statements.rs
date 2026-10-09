@@ -15,7 +15,9 @@ impl<'a> Checker<'a> {
         // write, so even adjacent `clk = '1'; clk = '0';` assignments can be
         // observed by an edge-triggered process. Applying the hardware
         // source-order override rule here is therefore a false positive.
-        if self.in_testbench.get() {
+        // A function body is sequential too: `n = 0; n = n + 1;` reads the
+        // first value.
+        if self.in_testbench.get() || self.in_fn_body.get() {
             return;
         }
         let mut seen: HashMap<String, Span> = HashMap::new();

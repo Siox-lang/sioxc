@@ -385,6 +385,11 @@ struct Lowering<'a> {
     /// `self'length` inside them fell back to 1, so the sign-bit test shifted
     /// by 0 and `abs(-5)` returned 251.
     param_widths: std::cell::RefCell<HashMap<String, u32>>,
+    /// What a function's `let`s registered in `param_types`, `param_widths`
+    /// and `param_integers`, undone when their block ends. A local is typed
+    /// like a parameter: without it `m < 0` on a `let m: signed` compared
+    /// unsigned, in hardware only.
+    local_type_saves: std::cell::RefCell<Vec<LocalTypeSave>>,
     /// Lexical aggregate shapes beside canonical leaf bindings. These are
     /// source normalization context, not a second executable representation.
     source_shapes: std::cell::RefCell<Vec<source_bindings::SourceShapeFrame>>,
@@ -496,6 +501,10 @@ struct Lowering<'a> {
     /// (kernel `integer`/`real` keep builtin operators; unsigned/signed live in std).
     local_numeric: HashMap<String, String>,
 }
+
+/// One local's earlier entries in the parameter type tables: its name, family,
+/// width and kernel-integer flag before its `let` replaced them.
+type LocalTypeSave = (String, Option<String>, Option<u32>, bool);
 
 /// A lowered value: a scalar expression, or one expression per struct field
 /// (a struct-typed value has no single-signal representation).

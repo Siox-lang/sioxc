@@ -15682,3 +15682,150 @@ historical chat lines, .codex and backups. Full DWARF remains active at 97%,
 with subword/unaligned/partial/wide-basic ABI and formal/plane/grouping gaps
 still open. Next, run the isolated 12-byte Char/real diagnostic prepared under
 the disk-backed cache, not another concurrent verification job. No push.
+### 2026-10-09 — Claude — bit methods; function bodies with loops in hardware
+
+Owner-requested: Rust's integer methods on `unsigned`/`signed` (`count_ones`,
+`leading_zeros`, `rotate_left`, `reverse_bits`, `pow`, `saturating_*`, ..)
+in `std::bits`, and `std::math::{cmp, clamp}`. Branch `feat/num-methods`.
+They needed function bodies with loops to lower in hardware, which surfaced
+pre-existing bugs, fixed here:
+- Both value inliners (`inline_value_statements` in `source_processes.rs`,
+  `inline_block` in `ir/lower/calls.rs`) now take reassignment of a
+  function's own locals, `for` over constant bounds (unrolled), and
+  return-free `if` (one select per changed variable).
+- Shape attributes (`'length`/`'left`/`'right`/`'high`/`'low`) of a value with
+  a known layout fold to numbers in Process lowering.
+- `process_value_is_real` walked the value DAG without a visited set
+  (exponential on select chains).
+- A literal operand/argument of a width-generic `signed` parameter took its
+  own minimum width: `fn dec(x: signed) -> signed { return x - 1; }` returned
+  `x + 1`, and `f(u, 100)` read `100` as -28. Now it takes the sized
+  operand's type.
+- `let u: signed[8] = 0 - 100;` typed the local as `integer` (initializer type
+  won over the declaration).
+- A width-generic local (`let r: unsigned = v;`) and a width-generic free
+  function's result now take their shape from the initializer / argument.
+- `dead_assignment` no longer fires in function bodies (sequential).
+**Codex:** touches `source_processes.rs` (push_local, Let lowering, attribute
+lowering, inline_process_call args, binary-operator literal typing),
+`cfg_calls.rs` (result layout), `ir/lower/calls.rs`, `source_bindings.rs`.
+
+### 2026-10-09 — Claude — hardware function-body gaps
+
+Branch `fix/fn-body-gaps`, owner-directed follow-up to #41. In the hardware
+inliner (`ir/lower/calls.rs`): a function's `let`s now register family,
+width and kernel-integer-ness like parameters (`m < 0` on a reassigned
+`let m: signed` compared unsigned — silent wrong result); constant-index
+element writes to a packed local (`r[k] = v[j]`) via `merge_slice`
+(metavalue literals rejected, copies keep their companion). Width-generic
+conversions (`unsigned(v)`) now keep the operand's width/range in both the
+hardware (`ast_width`, `operand_range`, `source_operand_layout`) and the
+Process path (`lower_process_raw_resize`, named conversion).
+**Codex:** touches `inline_block` (now a wrapper over `inline_block_body`),
+`inline_effects`, `source_bindings.rs`, `expressions.rs`.
+
+### 2026-10-09 — Codex — merge main integer-method updates
+
+Owner requested pulling main. Merge origin/main ad5e9d6 (PR #41) into local
+main without rebasing or discarding the existing DWARF commits. Own the merge
+conflict in src/ir/lower/calls.rs: preserve source-local debug capture alongside
+Claude's function-local reassignment, constant loops and return-free branches.
+Retain both agents' coordination entries. Shared uncommitted chat is saved in
+a named stash and will be restored after the merge; AGENTS, TODO, unfinished
+LLVM/debug tests and .codex remain untouched. Verify the combined worktree
+through the guarded runner before committing only the merge. No push.
+
+Pull verification 3443382: formatting, frontend checks, build and strict Clippy
+pass. Default 536 units and bitpack 515 units pass, but both integration suites
+stop at bit_methods_agree_in_hardware_and_testbench: hardware output is correct;
+the native testbench fails with "direct Process IR lowering is incomplete for
+process 1 block 5". Ordinary corpora are still running. The merge is resolved
+but intentionally uncommitted: the house-rule acceptance gate is not green.
+All 492 pre-existing uncommitted chat lines have been restored without staging
+them; a named backup ref retains the chat stash. Unfinished LLVM/debug Rust
+diff remains c7a8507a3ab3bfc08417939f5183fb27dbde0054. No push. Asked the owner
+whether to investigate/fix this additional integration failure or leave the
+merge pending; no unrelated fixes or goal-status changes made.
+
+Goal continuation: merge gate 3443382 is now terminal failed/1, peak
+1612636160 bytes. Both ordinary corpora pass 228/0; both integration suites
+stop at the new integer-method fixture. The debug corpora/GDB smokes were
+not run because CI-local failed. Keep the full implement-DWARF goal active,
+not blocked by this first compatibility failure. Run the isolated ordinary/
+debug native probe and inspect the failing Process block before choosing any
+fix; no feature deletion or relaxed native assertions. Preserve pending
+merge staging and all other agents' unstaged work. No push.
+
+Probe 3488295 is terminal failed/1, peak 1113874432 bytes: the new methods'
+native ordinary/debug behavior fails identically, with valid DWARF. Sequential
+calls isolate rotate_right after rotate_left succeeds. Inspection 3495801 and
+3499019 shows CFG normalization correctly replaces the deferred rotate_left
+call by a concrete i8 local, but rebuilds the enclosing InlineCall with its
+old unknown width. LLVM consequently rejects the print block. Own the shared
+normalization rebuild in source_processes/cfg_calls.rs; reuse source_value_width
+only for a previously unknown native width, preserving known consumer widths.
+The existing integer-method fixture is the regression. This is merge
+compatibility work, not a new loop interpreter or relaxed support check.
+
+The same terminal probe 3499019 reproduces the next DWARF return-ABI gap:
+ordinary/debug native assertions, VCD parity and DWARF validity pass, while
+GDB finish on Pair { unsigned[3], unsigned[3] } returns 29/84 for 5/3, and
+Mixed { real, unsigned[3], unsigned[3] } returns zero fields. Those complete
+sub-byte layouts need normalized register packing without changing canonical
+execution bits or declaration types. Retain remaining formal/plane/grouping/
+wide/partial work and independent IR defects. Full DWARF stays active; no push.
+
+Focused merge-compatibility gate 3501893 is terminal exited/success/0, peak
+1409806336 bytes: both new integer-method tests pass in default and bitpack,
+with strict all-target/all-feature Clippy. Full acceptance is still required
+before finalizing the merge. Own src/llvm/process/debug.rs, debug/inline_values.rs,
+functions.rs and the existing boundary/native tests for normalized sub-byte
+register returns. Reuse the common return classifier/codecs and signed-layout
+metadata; register the exact source-layout packing plan only on final native
+functions, not deleted drafts. Encode/decode fields in SSA while preserving
+canonical payload widths and declared DI types. No executable inspection-buffer
+reads, additional runtime services, dependencies or wrapper pipeline. Keep the
+previous small-return changes separate from the upstream merge's staging.
+
+Pull handoff: focused return gate 3526398 is terminal failed/101, peak
+94760960 bytes. Signed sub-byte pairs, real tails and nested structs pass GDB
+finish; the new array fixture creates three source-return locations and fails
+the complete-array finish assertion. Preserve that assertion and investigate
+demand-preserving aggregate grouping separately; do not claim complete array
+support. To finish the owner's main pull, temporarily save only the unfinished
+DWARF source/tests and TODO changes, verify the resolved upstream merge plus
+its shared width-propagation fix against the committed DWARF baseline, then
+restore every saved edit. Foreign AGENTS/chat/.codex and sibling docs remain
+untouched. Full DWARF goal remains active. No push.
+
+Merge audit: compare the staged tree with a fresh git merge-tree result,
+not just the previously resolved index. That audit found additional upstream
+local-type scope, packed-local element assignment, generic-conversion/range
+inference and regression-test hunks absent from the prior resolution. Explicitly
+stop gate 3534787 before changing Rust; its partial successes are not full
+acceptance. Own restoring those incoming hunks in ir/lower.rs, collect.rs,
+calls.rs, expressions.rs, source_bindings.rs, source_processes.rs and
+tests/bit_methods.rs, keeping the existing tuple return/debug local capture.
+Re-run the complete frozen merge gate. Preserve all unrelated saved work.
+
+Audit clarification: origin/main advanced concurrently via fetch -q at 12:26
+local time to 802d1e3, PR #42 (4fe0b2c), while the original MERGE_HEAD still
+named PR #41's ad5e9d6. The apparent omissions were the newly landed follow-up,
+not deleted hunks from the original PR. The fresh merge-tree comparison now
+covers both upstream PRs. Advance MERGE_HEAD conditionally from ad5e9d6 to
+802d1e3 (a verified descendant) so the merge records the complete incoming
+history. Frozen source hash is 06b45be85f9314a505fbdb3f3d8908d4a3cf72a07919e06324b57322ebcd934d.
+Guarded acceptance 3569194 verifies this complete tree. No Rust edits while it
+runs, no foreign work staged, and no push.
+
+Complete pull acceptance 3569194 is terminal exited/success/0, peak
+1612779520 bytes. Formatting/artifacts/frontend checks, 536 default and 515
+bitpack units plus complete integrations (three upstream bit-method tests and
+eleven committed DWARF fixtures in each mode), strict all-feature Clippy,
+four 228-program corpora and four native FIFO/wide GDB/VCD smokes pass.
+Commit only the merge of origin/main 802d1e3 (PRs #41/#42), preserving the
+existing source debug tuple/local capture and shared unknown-width inference.
+Restore the six saved unfinished DWARF/TODO files byte-for-byte afterward;
+their new complete-array finish regression remains failing and uncommitted.
+Keep foreign AGENTS, historical chat and .codex untouched, refresh the AST-only
+graph, and retain backup refs. Full DWARF goal remains active. No push.
