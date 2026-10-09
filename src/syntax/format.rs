@@ -99,6 +99,9 @@ pub enum FormatKind {
     Binary,
     /// `o`: octal.
     Octal,
+    /// `?`: the built-in structural form even when the type implements
+    /// `Display`, with strings and characters quoted (Rust's `Debug`).
+    Debug,
 }
 
 impl FormatKind {
@@ -242,6 +245,7 @@ fn parse_spec(spec: &str) -> Result<FormatSpec, String> {
         Some('X') => FormatKind::UpperHex,
         Some('b') => FormatKind::Binary,
         Some('o') => FormatKind::Octal,
+        Some('?') => FormatKind::Debug,
         Some(_) => return Err(malformed()),
     };
     if out.kind != FormatKind::Display {
@@ -280,6 +284,8 @@ mod tests {
             (scientific.precision, scientific.kind),
             (Some(2), FormatKind::LowerExp)
         );
+        assert_eq!(spec("{:?}").kind, FormatKind::Debug);
+        assert_eq!(spec("{:>12?}").width, Some(12));
         let padded = spec("{:*^10}");
         assert_eq!(
             (padded.fill, padded.align, padded.width),

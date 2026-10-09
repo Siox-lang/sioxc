@@ -2764,7 +2764,9 @@ fn lower_format_value(
     context: &mut LoweringContext<'_>,
 ) -> Option<()> {
     let layout = operand_source_layout(value, process, context);
-    let display = display_function(value, context);
+    let debug = spec.kind == crate::syntax::format::FormatKind::Debug;
+    // `{:?}` is the built-in form, whatever `Display` says.
+    let display = (!debug).then(|| display_function(value, context)).flatten();
     let composite = display.is_some() || layout.as_ref().is_some_and(is_composite_layout);
     let kind = if composite {
         None
@@ -2801,11 +2803,21 @@ fn lower_format_value(
         _ if display.is_some() => {
             lower_format_display(value, display?, &spec.numeric(), parts, process, context)?
         }
-        (Some(kind), _) => parts.push(ProcessFormatPart::Value {
-            value,
-            kind,
-            spec: spec.numeric(),
-        }),
+        (Some(kind), _) => {
+            // Rust's `Debug` quotes text: `"hi"`, `'a'`.
+            let quote = match kind {
+                ProcessDisplayKind::String if debug => Some("\""),
+                ProcessDisplayKind::Character if debug => Some("'"),
+                _ => None,
+            };
+            parts.extend(quote.map(|quote| ProcessFormatPart::Text(quote.to_owned())));
+            parts.push(ProcessFormatPart::Value {
+                value,
+                kind,
+                spec: spec.numeric(),
+            });
+            parts.extend(quote.map(|quote| ProcessFormatPart::Text(quote.to_owned())));
+        }
         (None, Some(layout)) => {
             lower_format_composite(value, &layout, &spec.numeric(), parts, process, context)?
         }
