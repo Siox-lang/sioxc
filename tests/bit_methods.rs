@@ -149,3 +149,56 @@ impl T {
         "{stdout}"
     );
 }
+
+/// Hardware function bodies agree with the testbench on the shapes that used
+/// to differ or fail: a comparison on a reassigned `let` (it compared
+/// unsigned), element writes to a local, and width-generic conversions,
+/// including a method on one.
+#[cfg(feature = "llvm")]
+#[test]
+fn hardware_function_locals_match_the_testbench() {
+    let stdout = run(
+        "function_locals",
+        r#"
+module function_locals;
+fn below(x: signed) -> integer { let m: signed = x; m = x - 1; if m < 0 { return 1; } return 0; }
+fn wrap(x: integer) -> integer { let m: integer = x; m = m - 300; if m < 0 { return 1; } return 0; }
+fn set_low(v: unsigned) -> unsigned { let r: unsigned = v; r[v'low] = '1'; return r; }
+fn reversed(v: unsigned) -> unsigned {
+    let r: unsigned = v;
+    for k in 0..v'length - 1 { r[v'low + k] = v[v'high - k]; }
+    return r;
+}
+fn as_unsigned(v: signed) -> unsigned { return unsigned(v); }
+fn ones(v: signed) -> integer { return unsigned(v).count_ones(); }
+entity Dut { s: signed[8] in, a: unsigned[8] in,
+    b: integer out, w: integer out, l: unsigned[8] out, r: unsigned[8] out,
+    c: unsigned[8] out, o: integer out }
+impl Dut {
+    b = below(s); w = wrap(integer(a)); l = set_low(a); r = reversed(a);
+    c = as_unsigned(s); o = ones(s);
+}
+#[test] entity T {}
+impl T {
+    let s: signed[8] = 0; let a: unsigned[8] = 0;
+    let b: integer; let w: integer; let l: unsigned[8]; let r: unsigned[8];
+    let c: unsigned[8]; let o: integer;
+    let d: Dut = { .s = s, .a = a, .b = b, .w = w, .l = l, .r = r, .c = c, .o = o };
+    check: process {
+        s = 0 - 100; a = 200;
+        await 1ns;
+        let u: signed[8] = 0 - 100; let x: unsigned[8] = 200;
+        print!("hw {} {} {} {} {} {}", b, w, l, r, c, o);
+        print!("tb {} {} {} {} {} {}", below(u), wrap(integer(x)), set_low(x), reversed(x),
+            as_unsigned(u), ones(u));
+    }
+}
+"#,
+    );
+    for line in ["hw 1 1 201 19 156 4", "tb 1 1 201 19 156 4"] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}

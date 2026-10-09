@@ -1129,6 +1129,7 @@ impl<'a> Lowering<'a> {
                 ast::Stmt::Use(_) => {}
                 ast::Stmt::Let(l) => {
                     let value = l.value.as_ref()?;
+                    self.register_local_type(l, value);
                     let lowered = self.bind_source_value(
                         self.lower_val_env(value, env),
                         l.span,
@@ -1155,6 +1156,45 @@ impl<'a> Lowering<'a> {
                         self.expr_types.get(&ast::expr_span(value)).cloned(),
                     );
                     env.insert(name.clone(), lowered);
+                }
+                // `r[k] = v` with a constant `k` on a packed local: the vector
+                // with that one bit replaced.
+                ast::Stmt::Assign {
+                    target: ast::Expr::Index { base, index, .. },
+                    value,
+                    after: None,
+                    span,
+                    ..
+                } => {
+                    let ast::Expr::Path(path) = base.as_ref() else {
+                        return None;
+                    };
+                    let [segment] = path.segments.as_slice() else {
+                        return None;
+                    };
+                    let name = &segment.text;
+                    let Some(Val::Scalar(current)) = env.get(name).cloned() else {
+                        return None;
+                    };
+                    let layout = self.source_bound_layout(name)?;
+                    if !matches!(layout.kind, LayoutKind::Packed { .. }) {
+                        return None;
+                    }
+                    let bit = self.constant_packed_index(&layout, index, env)?;
+                    // ponytail: the merge carries only the value plane, so a
+                    // metavalue literal (`'X'`) would land as a plain bit; it
+                    // has no hardware form here until the merge also writes
+                    // the companion plane. Copied elements keep theirs.
+                    if matches!(value, ast::Expr::CharLit { ch, .. } if !matches!(ch, '0' | '1')) {
+                        return None;
+                    }
+                    let element = self.lower_scalar_env(value, env);
+                    let merged =
+                        self.merge_slice(current, bit, bit, element, layout.packed_width()?, *span);
+                    env.insert(
+                        name.clone(),
+                        Val::Scalar(self.bind_source_expression(merged, *span)),
+                    );
                 }
                 ast::Stmt::For {
                     var,
@@ -1196,7 +1236,10 @@ impl<'a> Lowering<'a> {
     /// outer bindings stay.
     fn inline_scoped(&self, stmts: &[ast::Stmt], env: &mut HashMap<String, Val>) -> Option<()> {
         let mut inner = env.clone();
-        self.inline_effects(stmts, &mut inner)?;
+        let mark = self.local_type_saves.borrow().len();
+        let done = self.inline_effects(stmts, &mut inner);
+        self.restore_local_types(mark);
+        done?;
         let declared = stmts
             .iter()
             .filter_map(|stmt| match stmt {
@@ -1273,9 +1316,75 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Type a function's `let` like a parameter: its family and width for
+    /// operator dispatch, and whether it is a kernel integer (signed ops).
+    fn register_local_type(&self, l: &ast::LetDecl, value: &ast::Expr) {
+        let name = l.name.text.clone();
+        let head = l.ty.as_ref().and_then(type_head_name);
+        let family = self.operand_type_name(value).or_else(|| {
+            head.filter(|head| !matches!(*head, "integer" | "real" | "Char"))
+                .map(str::to_owned)
+        });
+        let width = Some(self.ast_width(value)).filter(|width| *width > 0);
+        let integer = head == Some("integer")
+            || self.declares_kernel_integer(value)
+            || matches!(
+                self.expr_types.get(&ast::expr_span(value)),
+                Some(crate::types::Ty::Integer)
+            );
+        let family = match family {
+            Some(family) => self.param_types.borrow_mut().insert(name.clone(), family),
+            None => self.param_types.borrow_mut().remove(&name),
+        };
+        let width = match width {
+            Some(width) => self.param_widths.borrow_mut().insert(name.clone(), width),
+            None => self.param_widths.borrow_mut().remove(&name),
+        };
+        let was_integer = if integer {
+            !self.param_integers.borrow_mut().insert(name.clone())
+        } else {
+            self.param_integers.borrow_mut().remove(&name)
+        };
+        self.local_type_saves
+            .borrow_mut()
+            .push((name, family, width, was_integer));
+    }
+
+    /// Undo the `let` typings made since `mark`.
+    fn restore_local_types(&self, mark: usize) {
+        let mut saves = self.local_type_saves.borrow_mut();
+        while saves.len() > mark {
+            let (name, family, width, integer) = saves.pop().expect("above the mark");
+            match family {
+                Some(family) => self.param_types.borrow_mut().insert(name.clone(), family),
+                None => self.param_types.borrow_mut().remove(&name),
+            };
+            match width {
+                Some(width) => self.param_widths.borrow_mut().insert(name.clone(), width),
+                None => self.param_widths.borrow_mut().remove(&name),
+            };
+            if integer {
+                self.param_integers.borrow_mut().insert(name);
+            } else {
+                self.param_integers.borrow_mut().remove(&name);
+            }
+        }
+    }
+
     /// The value a straight-line `return`/`if-else` block produces, or `None`
     /// if the block has statements the inliner cannot express as a value.
     pub(super) fn inline_block(
+        &self,
+        stmts: &[ast::Stmt],
+        env: &HashMap<String, Val>,
+    ) -> Option<Val> {
+        let mark = self.local_type_saves.borrow().len();
+        let value = self.inline_block_body(stmts, env);
+        self.restore_local_types(mark);
+        value
+    }
+
+    fn inline_block_body(
         &self,
         mut stmts: &[ast::Stmt],
         env: &HashMap<String, Val>,
@@ -1287,9 +1396,13 @@ impl<'a> Lowering<'a> {
         loop {
             while let [ast::Stmt::Let(l), rest @ ..] = stmts {
                 let value = l.value.as_ref()?;
+                self.register_local_type(l, value);
+                // A width-generic declaration (`let r: unsigned = v;`) has the
+                // initializer's shape: its own has no width.
                 let layout =
                     l.ty.as_ref()
                         .map(|ty| self.source_layout(ty, &self.cur_env))
+                        .filter(|layout| layout.bit_width().is_some())
                         .or_else(|| self.source_operand_layout(value, scoped.as_ref()));
                 let value_ir = match &layout {
                     Some(layout)

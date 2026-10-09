@@ -578,6 +578,15 @@ impl<'a> Lowering<'a> {
                             .unwrap_or(64),
                     }
                 }
+                // `unsigned(v)`: a packed family without a width keeps its
+                // argument's.
+                ast::Expr::Path(p)
+                    if args.len() == 1
+                        && p.segments.len() == 1
+                        && self.array_families.contains(&p.segments[0].text) =>
+                {
+                    self.ast_width(&args[0])
+                }
                 ast::Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == "resize" => {
                     args.get(1)
                         .and_then(|n| self.eval_const(n, &self.cur_env))
@@ -781,14 +790,23 @@ impl<'a> Lowering<'a> {
             ast::Expr::Unary { rhs, .. } => self.operand_range(rhs, env),
             // A constructor builds its written format: `sfixed[7..-8](x)`,
             // the expansion of `sfixed<16, 8>(x)`.
-            ast::Expr::Call { callee, .. } => match callee.as_ref() {
+            // A width-only one (`unsigned[8](x)`) is ascending from 0, and a
+            // bare family (`unsigned(v)`) keeps its argument's range.
+            ast::Expr::Call { callee, args, .. } => match callee.as_ref() {
                 ast::Expr::Index { index, .. } => match index.as_ref() {
                     ast::Expr::Range { lo, hi, .. } => Some((
                         self.eval_const(lo, &self.cur_env)?,
                         self.eval_const(hi, &self.cur_env)?,
                     )),
-                    _ => None,
+                    width => Some((0, self.eval_const(width, &self.cur_env)? - 1)),
                 },
+                ast::Expr::Path(path)
+                    if args.len() == 1
+                        && path.segments.len() == 1
+                        && self.array_families.contains(&path.segments[0].text) =>
+                {
+                    self.operand_range(&args[0], env)
+                }
                 _ => None,
             },
             _ => None,
