@@ -15829,3 +15829,27 @@ Restore the six saved unfinished DWARF/TODO files byte-for-byte afterward;
 their new complete-array finish regression remains failing and uncommitted.
 Keep foreign AGENTS, historical chat and .codex untouched, refresh the AST-only
 graph, and retain backup refs. Full DWARF goal remains active. No push.
+### 2026-10-09 — Claude — `{:?}` Debug placeholders
+
+Branch `feat/debug-format`: `FormatKind::Debug` (`?`). `lower_format_value`
+skips the `Display` impl and quotes strings/characters; the runtime's
+`sx_runtime_format_notation` flags gain bit 2 (a Debug real keeps `.0`).
+**Codex:** touches `lower_format_value`, `llvm/process/instructions.rs`
+format notation flags, `runtime/process.c` real formatting.
+
+### 2026-10-09 — Codex — Debug and mem merge acceptance
+
+Guarded acceptance 3836471 is terminal exited/success/0, peak 1612554240
+bytes. The frozen tree passes formatting/artifact/frontend checks, 537 default
+and 516 bitpack units, all integrations including eleven DWARF fixtures in
+each mode, strict Clippy, four 228-program corpora and four FIFO/wide native
+GDB/VCD smokes. Its source hash remains
+2c5575e045066f9cbcd32d63bb25c529bae306e1bafb5d6114bf07a990fb8613.
+The staged upstream c3ffa01 merge matches merge-tree outside the expected chat
+union. Commit PRs #43/#44 first, then the separately owned normalized-return
+and pure nested-call grouping batch. Keep the 441 historical chat insertions,
+foreign AGENTS/.codex changes and later origin/main 52d7c49 outside these
+commits. AST-only refresh succeeds: 5334 nodes, 15174 edges, 245 communities;
+known vendored C extraction warnings remain. Full DWARF remains active with
+formal types, companion planes, checked/effectful/partial returns and remaining
+basic/mixed ABI layouts still open. No push.

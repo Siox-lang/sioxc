@@ -201,7 +201,8 @@ pub(super) fn emit_process_format<'ctx>(
                     &[i32.into(), i32.into(), i32.into()],
                 );
                 let form = match spec.kind {
-                    siox::syntax::format::FormatKind::Display => 0,
+                    siox::syntax::format::FormatKind::Display
+                    | siox::syntax::format::FormatKind::Debug => 0,
                     siox::syntax::format::FormatKind::LowerExp => 1,
                     siox::syntax::format::FormatKind::UpperExp => 2,
                     siox::syntax::format::FormatKind::LowerHex => 3,
@@ -210,7 +211,9 @@ pub(super) fn emit_process_format<'ctx>(
                     siox::syntax::format::FormatKind::Octal => 6,
                 };
                 let precision = spec.precision.map_or(-1i64, i64::from);
-                let flags = u64::from(spec.plus) | (u64::from(spec.alternate) << 1);
+                let flags = u64::from(spec.plus)
+                    | (u64::from(spec.alternate) << 1)
+                    | (u64::from(spec.kind == siox::syntax::format::FormatKind::Debug) << 2);
                 let arguments = [form, precision as u64, flags]
                     .map(|argument| i32.const_int(argument, true).into());
                 builder.build_call(notation, &arguments, "").ok()?;

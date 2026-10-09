@@ -136,3 +136,63 @@ impl T {
         "{diagnostics}"
     );
 }
+
+/// `{:?}` is the built-in form even for a type with a `Display` impl, and
+/// quotes text the way Rust's `Debug` does; a real keeps its point.
+#[cfg(feature = "llvm")]
+#[test]
+fn debug_placeholders_print_the_structural_form() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let dir = std::env::temp_dir().join(format!("siox_print_debug_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let binary = dir.join("debug");
+    let source = r#"
+module debug;
+use std::math::Complex;
+enum Kind { Idle, Data }
+struct Tag { pub name: string[2], pub c: Char, pub k: Kind }
+struct Pair { pub a: integer, pub b: integer }
+impl Display for Pair {
+    fn fmt(self, f: Formatter) { write!(f, "<{} {}>", self.a, self.b); }
+}
+#[test] entity T {}
+impl T {
+    check: process {
+        let p: Pair = Pair { .a = 1, .b = 2 };
+        let t: Tag = Tag { .name = "hi", .c = 'z', .k = Kind::Data };
+        let z: Complex = Complex { .re = 1.5, .im = 2.0 };
+        print!("{} | {:?}", p, p);
+        print!("{:?}", t);
+        print!("{:?} {:?} {:?} {:?} [{:>21?}]", "hey", 'q', 42, z, p);
+    }
+}
+"#;
+    let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+        CompileRequest::new(
+            SourceInput::memory(dir.join("debug.siox"), source),
+            Emit::TestExecutable,
+        )
+        .with_output(&binary),
+    );
+    assert!(
+        compilation.succeeded(),
+        "{} {:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    let output = Command::new(&binary)
+        .output()
+        .expect("test executable runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in [
+        "<1 2> | Pair { a: 1, b: 2 }",
+        "Tag { name: \"hi\", c: 'z', k: Data }",
+        "\"hey\" 'q' 42 Complex { re: 1.5, im: 2.0 } [  Pair { a: 1, b: 2 }]",
+    ] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}

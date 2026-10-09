@@ -286,7 +286,12 @@ impl<'a> Checker<'a> {
         let message = if spec.kind.is_radix() && matches!(ty, Ty::Real) {
             Some("a radix form (`x`, `X`, `b`, `o`) writes integers; this argument is a `real`")
         } else if (text || enumeration)
-            && (spec.precision.is_some() || spec.kind != crate::syntax::format::FormatKind::Display)
+            && (spec.precision.is_some()
+                || !matches!(
+                    spec.kind,
+                    crate::syntax::format::FormatKind::Display
+                        | crate::syntax::format::FormatKind::Debug
+                ))
         {
             Some("a precision or number notation applies to numbers; this argument is not one")
         } else {

@@ -55,7 +55,8 @@ void sx_runtime_format_real(uint64_t bits);
 void sx_runtime_format_char(uint32_t value);
 /* How the next number is written: form 0 decimal, 1/2 scientific (e/E),
  * 3/4 hex (x/X), 5 binary, 6 octal; precision -1 for none; flags bit 0 `+`,
- * bit 1 `#` (radix prefix). Reset once a number consumes it. */
+ * bit 1 `#` (radix prefix), bit 2 `?` (a real keeps its point). Reset once a
+ * number consumes it. */
 void sx_runtime_format_notation(uint32_t form, int32_t precision, uint32_t flags);
 /* Pad everything written until the matching close to `width` characters
  * with `fill` (a Unicode scalar), align 0 left, 1 center, 2 right; `zero`
