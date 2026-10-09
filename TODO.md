@@ -78,6 +78,25 @@ listed under LLVM and Output below.
   the failure; the same procedural call is correct. Preserve the source enum
   and companion-plane dependency through SourceValues field/index expansion,
   then verify native results and waveform parity in both packing modes.
+- 🔴 **Hardware returned-array negative-label consumers.** In a pure hardware
+  function, reading `value.gains[-1]`, `[-2]` and `[-3]` from a returned nested
+  struct with `real[-1..-3]` loses the real values: adding them to a retained
+  real field yields just that field in both ordinary and debug native builds.
+  Actual GDB `finish` exposes all three returned array values correctly; the
+  source return ABI is not the failure. Trace field/index selection and signed
+  labels through SourceValues, preserve the declared real leaf format, and
+  verify native arithmetic and waveform parity rather than inspection alone.
+- 🔴 **Hardware signed widening/aggregate-field equality.** Comparing a returned
+  nested `signed[81]` field with the same negative source argument (`-7`)
+  selects the unequal branch in both ordinary and DWARF native builds, even though actual
+  GDB formals and `finish` show `-7` in both places. The argument is formed by
+  hardware `signed[81](left)` from a 64-bit integer port; a full-width unsigned
+  comparison of both operands also fails. Procedural `signed[81](-7)` also
+  zero-extends the integer pattern to `18446744073709551609` instead of `-7`;
+  constructing the complete 81-bit two's-complement literal avoids that path.
+  Audit sign extension and contextual widths for typed field comparisons;
+  verify full-width native comparisons as well as source inspection before
+  claiming a fix.
 
 ## LLVM
 
@@ -197,9 +216,17 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   Complete small native SysV aggregates with one or two 64-bit scalar leaves
   now use integer/double return slots, with actual finish checks for both
   mixed field orders, nested wrappers, real arrays and one-real wrappers under
-  both inline hints and packing modes. Extend the ABI transport to subword,
-  unaligned, larger, normalized-wide and partial layouts without forcing
-  discarded fields or reading inspection buffers as executable values.
+  both inline hints and packing modes. Complete aggregates whose normalized
+  source size exceeds 16 bytes now use a caller-owned memory return, including
+  24-byte integer/real structs, 19-byte unsigned[81]/real structs and nested
+  43-byte signed[81]/real/descending-array values. Actual GDB finish checks
+  all fields, signed values and signed zero under both inline hints and packing
+  modes. Shared-body units verify void/sret signatures, canonical i192/i145
+  results, entry-owned storage and no second execution wrapper. The caller reads
+  only a separate canonical payload, never normalized inspection bytes.
+  Extend the ABI transport to subword, small unaligned, wide scalar and partial
+  layouts without forcing discarded fields or reading inspection buffers as
+  executable values.
   The supported runtime-sized native representation is currently Char[] handles;
   general dynamic arrays remain the separate host-service extension below.
   Keep debug-only aggregate inspection buffers faithful at source stops and

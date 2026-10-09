@@ -262,7 +262,14 @@ impl<'ctx> DebugInfo<'ctx, '_> {
                         index_sites,
                         &mut cache,
                     ) {
-                        self.copy_fields(builder, *buffer, value, layout, &mut 0, &mut 0);
+                        self.copy_fields(
+                            builder,
+                            buffer.as_pointer_value(),
+                            value,
+                            layout,
+                            &mut 0,
+                            &mut 0,
+                        );
                     }
                 }
             }

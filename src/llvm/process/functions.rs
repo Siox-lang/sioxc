@@ -2,7 +2,7 @@
 //! function, called wherever a recorded call can replace its inlined copy.
 
 use super::*;
-use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum};
+use inkwell::types::BasicMetadataTypeEnum;
 
 /// Whether `call` may be emitted as a call of its shared function. Its
 /// value must have no metavalues, and an argument may carry metavalues only
@@ -148,14 +148,7 @@ pub(super) fn shared_call<'ctx>(
                 )?;
                 arguments.push(value.into());
             }
-            match builder
-                .build_call(function, &arguments, "pv.shared")
-                .ok()?
-                .try_as_basic_value()
-            {
-                inkwell::values::ValueKind::Basic(value) => debug::return_bits(builder, value),
-                _ => None,
-            }
+            debug::call_return(context, builder, function, &arguments, "pv.shared")
         },
     )
 }
@@ -185,33 +178,35 @@ fn shared_function<'ctx>(
         .iter()
         .map(|parameter| int(*parameter).map(BasicMetadataTypeEnum::from))
         .collect::<Option<Vec<_>>>()?;
-    let result: BasicTypeEnum =
-        if let (Some(debug), ProcessValueKind::InlineCall { operand, source }) = (
-            cache.debug,
-            &design.process_ir.values[shared.result.0 as usize].kind,
-        ) {
-            debug::source_return_type(
-                debug,
-                design,
-                source,
-                *operand,
-                int(shared.result)?.get_bit_width(),
-            )?
-        } else {
-            int(shared.result)?.into()
-        };
+    let result = if let (Some(debug), ProcessValueKind::InlineCall { operand, source }) = (
+        cache.debug,
+        &design.process_ir.values[shared.result.0 as usize].kind,
+    ) {
+        debug::source_return_type(
+            debug,
+            design,
+            source,
+            *operand,
+            int(shared.result)?.get_bit_width(),
+        )?
+    } else {
+        debug::SourceReturn::Direct(int(shared.result)?.into())
+    };
     let function = module.add_function(
         &name,
-        result.fn_type(&parameters, false),
+        result.fn_type(context, &parameters),
         Some(Linkage::Internal),
     );
+    result.declare(context, function);
     let builder = context.create_builder();
     builder.position_at_end(context.append_basic_block(function, "entry"));
     let mut body = ProcessValueCache::new(cache.activity_sensitive, cache.meta_free);
     body.debug = cache.debug;
     body.debug_root = cache.debug_root;
     for (index, parameter) in shared.parameters.iter().enumerate() {
-        let argument = function.get_nth_param(index as u32)?.into_int_value();
+        let argument = function
+            .get_nth_param(index as u32 + result.parameter_offset())?
+            .into_int_value();
         body.parameters.insert(*parameter, argument);
     }
     let returned = if body.debug.is_some() {
@@ -266,8 +261,7 @@ fn shared_function<'ctx>(
             &mut body,
         )
     }
-    .and_then(|result| debug::return_value(&builder, result))
-    .and_then(|result| builder.build_return(Some(&result)).ok());
+    .and_then(|value| result.emit_return(body.debug, &builder, value));
     if returned.is_none() {
         // SAFETY: the function was created above and nothing calls it yet.
         unsafe { function.delete() };

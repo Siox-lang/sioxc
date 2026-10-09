@@ -15497,3 +15497,103 @@ AGENTS/441 historical chat lines/.codex and backups. Completion estimate stays
 97%: larger/subword/unaligned/normalized/partial and string/wide return ABIs,
 demand-preserving aggregate grouping and formal/plane audits remain open.
 Full DWARF stays active; no push.
+
+### 2026-10-09 — Codex — DWARF memory-class aggregate returns
+
+Acceptance 2984800 completed and mixed-return commits e63ea3a/491e829 are local.
+Continue ownership of common native return transport and tests/debug_info.rs.
+Reproduce actual GDB finish for a three-word real/integer aggregate and a
+complete unsigned[81]/real struct whose declared inspection layout is
+byte-normalized. Check all source fields against captured formals, including
+intermediate hardware delta inputs, and require settled positive/negative/zero
+cases. First verify ordinary/debug execution and waveform parity; do not infer
+memory ABI correctness from local snapshots or silently retype source values.
+Reuse existing packed emission and inspection copying only after the failing
+probe establishes the boundary defect. Preserve unconsumed-field/effect rules,
+all remaining formal/plane/grouping and string/wide/partial work, unrelated
+AGENTS/441 historical chat lines/.codex and backups. Full DWARF active; no push.
+
+Probe 3031648 fails/101 during parsing: std registers x/o bit-string prefixes,
+not b. Probe 3032066 removes that prefix but fails in the debug native runner
+with incomplete Process lowering before ordinary execution/GDB; no compiler
+ABI conclusion follows from that fixture path. Use the same numeric 0b
+constructor pattern already covered by the wide-call regression. Corrected
+probe 3032495 is terminal failed/101, peak 74309632 bytes: ordinary/debug native
+assertions, VCD parity and DWARF verification pass, then GDB finish of the
+24-byte Triple attempts to read address 0x5 (its first integer value). The
+declared aggregate is memory-class while its native boundary still returns
+canonical integer bits in registers. The normalized Wide finish probe has
+not yet been reached and is not claimed as verified. Next implement a common
+caller-owned indirect return transport, preserving packed execution bits and
+reusing existing normalized inspection copying; keep source types and all
+operand-demand/effect rules intact. Larger ABI work remains active, not fixed.
+
+Probe 3033978 is terminal exited/success/0, peak 713768960 bytes. The common
+caller-owned sret transport passes actual GDB finish for Triple (24 bytes) and
+normalized unsigned[81]/real Wide (19 bytes), both inline hints, with native
+ordinary/debug results, VCD parity and DWARF verification. Own a shared-body
+ABI regression plus nested/signed/descending-array memory-return coverage in
+the same fixture, and the matching TODO/architecture/testing notes. Preserve
+the broad return/formal/plane/grouping gaps and unrelated work; no push.
+
+Expanded probe 3035254 fails/101 in a native nested-result assertion. Its
+first command targeted the binary rather than the library and ran zero unit
+tests; it is not counted as shared-boundary coverage. Probe 3035943 actually
+runs the library ABI unit successfully, then the ordinary native fixture fails
+the same assertion as debug. Probe 3036365 is terminal exited/success/0: the
+failed ordinary/debug VCD bytes match (nested=1.5, expected=3.0), and actual
+GDB finish returns every Nested field correctly, including descending negative
+array labels and opposite real signs. This is a hardware consumer indexing
+defect, not evidence against the memory-return transport. Keep that evidence
+and a separate IR TODO; use descending nonnegative array labels for the passing
+native acceptance fixture, without claiming negative-label consumer coverage.
+
+Probe 3036495 passes the actual shared ABI unit and positive nested native
+case, then fails the negative nested assertion. Diagnostic 3036752 records the
+same ordinary/debug failure and matching VCD; GDB finish returns data=-7 and
+all real fields correctly. The signed field/argument equality drives the
+negative multiplier despite matching returned bits. Isolate that existing
+signed-projection comparison defect; the fixture compares full 81-bit unsigned
+bit patterns to verify payload transport without claiming signed comparison
+coverage. Signed source GDB field checks remain unchanged and mandatory.
+
+Probe 3036870 still fails the negative case after unsigned comparison. The
+ordinary diagnostic 3037168 uses an explicit -100.0 unequal sentinel, proving
+the comparison takes the unequal branch (rather than a real-arithmetic sign
+error). Preserve the hardware integer-to-signed[81] constructor path in the
+separate TODO. Supply the ABI fixture's signed data through a declared 81-bit
+port and procedural stimulus, and restore direct signed field equality; this
+checks transport with a concrete operand format, not that constructor path.
+
+Probe 3037275 passes ordinary/debug native assertions, VCD and DWARF checks,
+then fails only the required settled negative signed tuple: procedural
+signed[81](-7) zero-extends the 64-bit pattern (GDB sees 18446744073709551609
+in both formal and returned field). This supplies stronger evidence for the
+existing widening defect, now recorded in TODO. Initialize the ABI fixture with
+the complete 81-bit two's-complement literal so the negative signed return is
+actually exercised; do not relax its required -7 source-field/formal checks.
+
+Probe 3085529 is terminal exited/success/0, peak 1101336576 bytes: the shared
+return ABI unit, expanded memory-return native/GDB fixture in default/bitpack
+and strict all-target/all-feature Clippy pass. The fixture checks 24/19/43-byte
+whole returns, nested signed[81] data, descending real arrays and signed zeros
+under both inline hints; all -7 settled source values remain required. Update
+TODO and sibling architecture/testing coverage, then freeze Rust for the full
+acceptance gate. Remaining subword/unaligned/partial/string/wide-basic ABI,
+formal/plane/grouping work and unrelated baseline IR defects remain open.
+Completion estimate remains 97%; full DWARF active, no push.
+
+Acceptance 3090184 is terminal exited/success/0, peak 1612025856 bytes.
+Formatting, Phase 1 artifacts, frontend-only checks/Clippy, strict all-feature
+Clippy, full default/bitpack suites (535/514 units plus integrations), all ten
+DWARF fixtures and four ordinary/debug default/bitpack corpora pass (228/0
+each). All four FIFO/wide native GDB/VCD smokes pass. The frozen Rust diff hash
+is unchanged at 19503d57d76478dba310e0592f710305dfc84d19. AST-only graph refresh
+completes at 5282 nodes, 15006 edges and 261 communities; known vendor partial
+parse/no-symbol warnings remain, no API/LLM work. Commit only the common
+memory-return helpers, their ABI/native regressions, TODO and this owned tail;
+commit sibling architecture/testing notes separately. Preserve unowned AGENTS,
+441 historical chat lines, .codex and backups. Full DWARF remains active at
+97%; subword/unaligned/partial/string/wide-basic return ABIs and formal/plane/
+grouping audits still need work. Do not count the independently recorded IR
+negative-label/widening defects as fixed. No push.

@@ -2,24 +2,37 @@ use super::*;
 
 #[test]
 #[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
-fn shared_mixed_return_boundary_preserves_canonical_bits() {
+fn shared_return_boundary_preserves_canonical_bits() {
+    use inkwell::attributes::{Attribute, AttributeLoc};
     use siox::ir::{
         LayoutField, ProcessCall, ProcessFunction, ProcessFunctionId, ProcessValueInline,
         ScalarDomain,
     };
 
-    for (domains, signature) in [
+    for (fields, signature) in [
         (
-            [ScalarDomain::Real, ScalarDomain::Integer],
-            "{ double, i64 }",
+            vec![(ScalarDomain::Real, 64), (ScalarDomain::Integer, 64)],
+            Some("{ double, i64 }"),
         ),
         (
-            [ScalarDomain::Integer, ScalarDomain::Real],
-            "{ i64, double }",
+            vec![(ScalarDomain::Integer, 64), (ScalarDomain::Real, 64)],
+            Some("{ i64, double }"),
         ),
         (
-            [ScalarDomain::Real, ScalarDomain::Real],
-            "{ double, double }",
+            vec![(ScalarDomain::Real, 64), (ScalarDomain::Real, 64)],
+            Some("{ double, double }"),
+        ),
+        (
+            vec![
+                (ScalarDomain::Integer, 64),
+                (ScalarDomain::Real, 64),
+                (ScalarDomain::Integer, 64),
+            ],
+            None,
+        ),
+        (
+            vec![(ScalarDomain::Integer, 81), (ScalarDomain::Real, 64)],
+            None,
         ),
     ] {
         let context = Context::create();
@@ -29,21 +42,26 @@ fn shared_mixed_return_boundary_preserves_canonical_bits() {
         let text = "fn identity(value: Pair) -> Pair { return value; }";
         let file = sources.add("shared_return.siox", text);
         let span = Span::new(file, 0..text.len() as u32);
+        let width = fields.iter().map(|(_, width)| width).sum::<u32>();
+        let bytes = fields
+            .iter()
+            .map(|(_, width)| width.div_ceil(8))
+            .sum::<u32>();
         let layout = SourceLayout {
             span,
             kind: LayoutKind::Struct {
                 name: "Pair".into(),
                 view: None,
-                fields: domains
+                fields: fields
                     .into_iter()
                     .enumerate()
-                    .map(|(index, domain)| LayoutField {
+                    .map(|(index, (domain, width))| LayoutField {
                         name: format!("field{index}"),
                         direction: None,
                         layout: SourceLayout {
                             span,
                             kind: LayoutKind::Scalar {
-                                width: 64,
+                                width,
                                 domain,
                                 nominal: None,
                                 value_range: None,
@@ -67,7 +85,7 @@ fn shared_mixed_return_boundary_preserves_canonical_bits() {
         let node = |kind| ProcessValue {
             span,
             ty: None,
-            bit_width: Some(128),
+            bit_width: Some(width),
             kind,
         };
         let call = ProcessCall {
@@ -99,7 +117,9 @@ fn shared_mixed_return_boundary_preserves_canonical_bits() {
             ..Design::default()
         };
         let debug = DebugInfo::new(&context, &module, &sources, &design).unwrap();
-        let bits = context.i128_type();
+        let bits = context
+            .custom_width_int_type(std::num::NonZeroU32::new(width).unwrap())
+            .unwrap();
         let probe = module.add_function("probe", bits.fn_type(&[bits.into()], false), None);
         builder.position_at_end(context.append_basic_block(probe, "entry"));
         let mut cache = ProcessValueCache::new(&[false; 2], &[true; 2]);
@@ -124,16 +144,54 @@ fn shared_mixed_return_boundary_preserves_canonical_bits() {
         debug.finish(&module, &design);
         module.verify().unwrap();
         let native = module.get_function("sx.fn.0.identity").unwrap();
-        assert_eq!(
-            native
-                .get_type()
-                .get_return_type()
-                .unwrap()
-                .print_to_string()
-                .to_string(),
-            signature
-        );
-        assert_eq!(native.count_params(), 1);
+        if let Some(signature) = signature {
+            assert_eq!(
+                native
+                    .get_type()
+                    .get_return_type()
+                    .unwrap()
+                    .print_to_string()
+                    .to_string(),
+                signature
+            );
+            assert_eq!(native.count_params(), 1);
+        } else {
+            assert!(native.get_type().get_return_type().is_none());
+            assert_eq!(native.count_params(), 2);
+            let attribute = native
+                .get_enum_attribute(
+                    AttributeLoc::Param(0),
+                    Attribute::get_named_enum_kind_id("sret"),
+                )
+                .unwrap();
+            let storage = attribute.get_type_value().into_struct_type();
+            assert_eq!(
+                storage
+                    .get_field_type_at_index(0)
+                    .unwrap()
+                    .into_array_type()
+                    .len(),
+                bytes
+            );
+            assert_eq!(
+                storage
+                    .get_field_type_at_index(1)
+                    .unwrap()
+                    .into_int_type()
+                    .get_bit_width(),
+                width
+            );
+            let entry = probe.get_first_basic_block().unwrap();
+            assert_eq!(
+                entry.get_first_instruction().unwrap().get_opcode(),
+                inkwell::values::InstructionOpcode::Alloca
+            );
+            let text = module.print_to_string().to_string();
+            assert!(
+                text.contains("call void @sx.fn.0.identity(ptr sret("),
+                "{text}"
+            );
+        }
         assert_eq!(
             module
                 .get_functions()

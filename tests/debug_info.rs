@@ -1049,6 +1049,184 @@ for name, calls in seen.items():
 }
 
 #[test]
+fn large_aggregate_returns_match_the_debugger_finish_abi() {
+    let directory =
+        std::env::temp_dir().join(format!("siox_dwarf_memory_return_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("memory.siox");
+    let first = (1u128 << 80) + 13;
+    let second = (1u128 << 79) + 9;
+    let text = r#"module debug_memory_returns;
+use std::bits::{unsigned, signed};
+struct Triple { pub left: integer, pub gain: real, pub right: integer }
+struct Wide { pub data: unsigned[81], pub gain: real }
+struct Signed { pub data: signed[81], pub gain: real }
+struct Nested { pub body: Signed, pub gains: real[2..0] }
+#[inline(__INLINE__)]
+fn make_triple(left: integer, gain: real, right: integer) -> Triple {
+    return Triple { .left = left, .gain = gain, .right = right }; // three word return stop
+}
+#[inline(__INLINE__)]
+fn make_wide(data: unsigned[81], gain: real) -> Wide {
+    return Wide { .data = data, .gain = gain }; // normalized wide return stop
+}
+#[inline(__INLINE__)]
+fn make_nested(data: signed[81], gain: real) -> Nested {
+    return Nested { .body = Signed { .data = data, .gain = gain }, .gains = [gain, -gain, gain] }; // nested memory return stop
+}
+fn consume_triple(left: integer, gain: real, right: integer) -> real {
+    let value: Triple = make_triple(left, gain, right);
+    return real(value.left) + value.gain + real(value.right);
+}
+fn consume_wide(data: unsigned[81], gain: real) -> real {
+    let value: Wide = make_wide(data, gain);
+    return (if value.data == data { 1.0 } else { -1.0 }) * value.gain;
+}
+fn consume_nested(data: signed[81], gain: real) -> real {
+    let value: Nested = make_nested(data, gain);
+    return (if value.body.data == data { 1.0 } else { -1.0 }) * (value.body.gain + value.gains[2] + value.gains[1] + value.gains[0]);
+}
+entity Probe { left: integer in, gain: real in, right: integer in, data: unsigned[81] in, signed_data: signed[81] in, triple: real out, wide: real out, nested: real out }
+impl Probe {
+    triple = consume_triple(left, gain, right);
+    wide = consume_wide(data, gain);
+    nested = consume_nested(signed_data, gain);
+}
+#[test] entity T {}
+impl T {
+    let left: integer = 5;
+    let gain: real = 1.5;
+    let right: integer = 13;
+    let data: unsigned[81] = unsigned[81](0b__FIRST__);
+    let signed_data: signed[81] = signed[81](5);
+    let probe: Probe = { .left = left, .gain = gain, .right = right, .data = data, .signed_data = signed_data };
+    stimulus: process {
+        await 1ns;
+        assert!(probe.triple == 19.5 and probe.wide == 1.5 and probe.nested == 3.0, "positive memory result");
+        left = -7;
+        gain = -2.5;
+        right = 9;
+        data = unsigned[81](0b__SECOND__);
+        signed_data = signed[81](0b__SIGNED__);
+        await 1ns;
+        assert!(probe.triple == -0.5 and probe.wide == -2.5 and probe.nested == -5.0, "negative memory result");
+        left = 0;
+        gain = -0.0;
+        right = 0;
+        data = unsigned[81](0);
+        signed_data = signed[81](0);
+        await 1ns;
+        assert!(probe.triple == 0.0 and probe.wide == 0.0 and probe.nested == 0.0, "zero memory result");
+    }
+}
+"#;
+    for inline in ["never", "always"] {
+        let text = text
+            .replace("__INLINE__", inline)
+            .replace("__FIRST__", &format!("{first:081b}"))
+            .replace("__SECOND__", &format!("{second:081b}"))
+            .replace("__SIGNED__", &format!("{:081b}", (1u128 << 81) - 7));
+        std::fs::write(&source, &text).unwrap();
+        let debug = directory.join("debug.bin");
+        let ordinary = directory.join("ordinary.bin");
+        for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+            success(
+                Command::new(binary)
+                    .arg("-o")
+                    .arg(binary.with_extension("vcd"))
+                    .output()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            std::fs::read(debug.with_extension("vcd")).unwrap(),
+            std::fs::read(ordinary.with_extension("vcd")).unwrap()
+        );
+        if Command::new("llvm-dwarfdump")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            success(
+                Command::new("llvm-dwarfdump")
+                    .arg("--verify")
+                    .arg(&debug)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        if Command::new("gdb").arg("--version").output().is_ok() {
+            let line = |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
+            let python = format!(
+                r#"import gdb, math
+stops = [gdb.Breakpoint({source:?} + ':' + str(line)) for line in [{triple_line}, {wide_line}, {nested_line}]]
+seen = {{'make_triple': set(), 'make_wide': set(), 'make_nested': set()}}
+gdb.execute('run')
+while True:
+    frame = gdb.selected_frame()
+    name = frame.name().split('::')[-1]
+    assert name in seen, frame.name()
+    gain = float(frame.read_var('gain'))
+    sign = math.copysign(1.0, gain)
+    if name == 'make_triple':
+        left, right = int(frame.read_var('left')), int(frame.read_var('right'))
+        seen[name].add((left, right, gain, sign))
+    else:
+        data = int(frame.read_var('data'))
+        seen[name].add((data, gain, sign))
+    gdb.execute('finish')
+    result = gdb.history(0)
+    assert result.type.sizeof == {{'make_triple': 24, 'make_wide': 19, 'make_nested': 43}}[name], str(result.type)
+    if name == 'make_triple':
+        assert int(result['left']) == left and int(result['right']) == right, (name, str(result), left, right)
+    elif name == 'make_wide':
+        assert int(result['data']) == data, (name, str(result), data)
+    else:
+        assert int(result['body']['data']) == data, (name, str(result), data)
+        for index, expected in [(2, gain), (1, -gain), (0, gain)]:
+            actual = float(result['gains']['[' + str(index) + ']'])
+            assert actual == expected and math.copysign(1.0, actual) == math.copysign(1.0, expected), (index, actual, expected)
+    actual_gain = float(result['body']['gain'] if name == 'make_nested' else result['gain'])
+    assert actual_gain == gain and math.copysign(1.0, actual_gain) == sign, (name, str(result), gain, sign)
+    gdb.execute('continue')
+    if gdb.selected_thread() is None: break
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+assert set([(5, 13, 1.5, 1.0), (-7, 9, -2.5, -1.0), (0, 0, -0.0, -1.0)]).issubset(seen['make_triple']), seen
+assert set([({first}, 1.5, 1.0), ({second}, -2.5, -1.0), (0, -0.0, -1.0)]).issubset(seen['make_wide']), seen
+assert set([(5, 1.5, 1.0), (-7, -2.5, -1.0), (0, -0.0, -1.0)]).issubset(seen['make_nested']), seen
+"#,
+                source = source.to_string_lossy(),
+                triple_line = line("three word return stop"),
+                wide_line = line("normalized wide return stop"),
+                nested_line = line("nested memory return stop"),
+            );
+            success(
+                Command::new("gdb")
+                    .args(["-nx", "-q", "--batch"])
+                    .arg(&debug)
+                    .args([
+                        "-ex",
+                        "set disable-randomization off",
+                        "-ex",
+                        &format!("python {python}"),
+                    ])
+                    .output()
+                    .unwrap(),
+            );
+        } else {
+            eprintln!("GDB unavailable: native memory returns checked, finish probe skipped");
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn packed_expression_bindings_expose_logic_companions() {
     let directory = std::env::temp_dir().join(format!(
         "siox_dwarf_expression_logic_{}",

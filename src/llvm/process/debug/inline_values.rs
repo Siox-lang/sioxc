@@ -1,13 +1,163 @@
 //! Native source frames over the same canonical expressions as ordinary builds.
 
 use super::*;
+use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::basic_block::BasicBlock;
 use inkwell::debug_info::DILocalVariable;
-use inkwell::types::{BasicType, BasicTypeEnum};
-use inkwell::values::BasicValueEnum;
+use inkwell::types::{
+    AnyType, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType,
+};
+use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum};
 use siox::ir::ProcessValueInline;
 
 type AggregateMembers = HashMap<ProcessValueId, (ProcessValueId, u32, u32)>;
+
+/// Executable return ABI, separate from the declaration's DWARF type.
+pub(in crate::llvm::process) enum SourceReturn<'ctx> {
+    Direct(BasicTypeEnum<'ctx>),
+    Memory {
+        storage: StructType<'ctx>,
+        layout: SourceLayout,
+    },
+}
+
+impl<'ctx> SourceReturn<'ctx> {
+    pub(in crate::llvm::process) fn fn_type(
+        &self,
+        context: &'ctx Context,
+        parameters: &[BasicMetadataTypeEnum<'ctx>],
+    ) -> FunctionType<'ctx> {
+        match self {
+            Self::Direct(ty) => ty.fn_type(parameters, false),
+            Self::Memory { .. } => {
+                let parameters = std::iter::once(context.ptr_type(AddressSpace::default()).into())
+                    .chain(parameters.iter().copied())
+                    .collect::<Vec<_>>();
+                context.void_type().fn_type(&parameters, false)
+            }
+        }
+    }
+
+    pub(in crate::llvm::process) fn parameter_offset(&self) -> u32 {
+        u32::from(matches!(self, Self::Memory { .. }))
+    }
+
+    pub(in crate::llvm::process) fn declare(
+        &self,
+        context: &'ctx Context,
+        function: FunctionValue<'ctx>,
+    ) {
+        if let Self::Memory { storage, .. } = self {
+            function.add_attribute(
+                AttributeLoc::Param(0),
+                context.create_type_attribute(
+                    Attribute::get_named_enum_kind_id("sret"),
+                    storage.as_any_type_enum(),
+                ),
+            );
+        }
+    }
+
+    pub(in crate::llvm::process) fn emit_return(
+        &self,
+        debug: Option<&DebugInfo<'ctx, '_>>,
+        builder: &Builder<'ctx>,
+        value: IntValue<'ctx>,
+    ) -> Option<()> {
+        match self {
+            Self::Direct(_) => {
+                let returned = return_value(builder, value)?;
+                builder.build_return(Some(&returned)).ok()?;
+            }
+            Self::Memory { storage, layout } => {
+                if value.get_type().as_basic_type_enum() != storage.get_field_type_at_index(1)? {
+                    return None;
+                }
+                let output = builder
+                    .get_insert_block()?
+                    .get_parent()?
+                    .get_first_param()?
+                    .into_pointer_value();
+                // All source fields are present. Copy only the already-emitted
+                // bits into the same normalized view used by local inspection.
+                debug?.copy_fields(builder, output, value, layout, &mut 0, &mut 0);
+                let payload = builder
+                    .build_struct_gep(*storage, output, 1, "debug.return.payload")
+                    .ok()?;
+                builder
+                    .build_store(payload, value)
+                    .ok()?
+                    .set_alignment(1)
+                    .ok()?;
+                builder.build_return(None).ok()?;
+            }
+        }
+        Some(())
+    }
+}
+
+/// Both inline and shared callers consume canonical bits, never inspection
+/// bytes. The sret attribute describes our native carrier's actual layout.
+pub(in crate::llvm::process) fn call_return<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    function: FunctionValue<'ctx>,
+    arguments: &[BasicMetadataValueEnum<'ctx>],
+    name: &str,
+) -> Option<IntValue<'ctx>> {
+    if let Some(attribute) = function.get_enum_attribute(
+        AttributeLoc::Param(0),
+        Attribute::get_named_enum_kind_id("sret"),
+    ) {
+        let ty = attribute.get_type_value().into_struct_type();
+        let bytes = ty.get_field_type_at_index(0)?.into_array_type().len();
+        let width = ty
+            .get_field_type_at_index(1)?
+            .into_int_type()
+            .get_bit_width();
+        // Rebuild in this context: Attribute's type accessor has a short Rust
+        // borrow lifetime, while the LLVM type belongs to the whole context.
+        let bits = context
+            .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+            .ok()?;
+        let storage = context.struct_type(
+            &[context.i8_type().array_type(bytes).into(), bits.into()],
+            false,
+        );
+        let entry = builder
+            .get_insert_block()?
+            .get_parent()?
+            .get_first_basic_block()?;
+        let allocation = context.create_builder();
+        if let Some(first) = entry.get_first_instruction() {
+            allocation.position_before(&first);
+        } else {
+            allocation.position_at_end(entry);
+        }
+        // One slot per static call site, not one alloca per runtime loop turn.
+        let output = allocation
+            .build_alloca(storage, "debug.return.storage")
+            .ok()?;
+        let arguments = std::iter::once(output.into())
+            .chain(arguments.iter().copied())
+            .collect::<Vec<_>>();
+        let call = builder.build_call(function, &arguments, "").ok()?;
+        call.add_attribute(AttributeLoc::Param(0), attribute);
+        let payload = builder
+            .build_struct_gep(storage, output, 1, "debug.return.payload")
+            .ok()?;
+        let value = builder.build_load(bits, payload, name).ok()?;
+        value.as_instruction_value()?.set_alignment(1).ok()?;
+        Some(value.into_int_value())
+    } else {
+        builder
+            .build_call(function, arguments, name)
+            .ok()?
+            .try_as_basic_value()
+            .basic()
+            .and_then(|value| return_bits(builder, value))
+    }
+}
 
 /// Retain one native source boundary for jointly evaluable aggregate leaves.
 /// No binding metadata or discarded field is made an executable dependency.
@@ -122,7 +272,7 @@ pub(in crate::llvm::process) fn source_return_type<'ctx>(
     source: &ProcessValueInline,
     operand: ProcessValueId,
     width: u32,
-) -> Option<BasicTypeEnum<'ctx>> {
+) -> Option<SourceReturn<'ctx>> {
     let layout = source
         .result_layout
         .as_ref()
@@ -139,11 +289,11 @@ pub(in crate::llvm::process) fn source_return_type<'ctx>(
             )
         })
     {
-        Some(debug.context.f64_type().into())
+        Some(SourceReturn::Direct(debug.context.f64_type().into()))
     } else {
         if let Some(layout) = layout.as_deref() {
-            // ponytail: small word-aligned SysV aggregates only; larger or
-            // normalized layouts need a caller-owned sret memory transport.
+            // ponytail: SysV word-register and >16-byte memory classes;
+            // small unaligned/subword layouts still need explicit classification.
             // The native backend targets this host, not a cross-target triple.
             if cfg!(all(target_arch = "x86_64", not(target_os = "windows")))
                 && matches!(
@@ -151,13 +301,38 @@ pub(in crate::llvm::process) fn source_return_type<'ctx>(
                     LayoutKind::Struct { .. } | LayoutKind::Array { .. }
                 )
                 && layout_width(layout) == Some(width)
-                && width <= 128
             {
+                if let Some(inspection) = inspection_bits(layout).filter(|bits| {
+                    *bits > 128 && debug.ty(design, layout, needs_mirror(layout)).is_some()
+                }) {
+                    let bits = debug
+                        .context
+                        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+                        .ok()?;
+                    let bytes = u32::try_from(inspection / 8).ok()?;
+                    // Leading source view, then a private execution payload.
+                    // A caller cannot reconstruct packed offsets/signs merely
+                    // by concatenating the normalized inspection bytes.
+                    let storage = debug.context.struct_type(
+                        &[
+                            debug.context.i8_type().array_type(bytes).into(),
+                            bits.into(),
+                        ],
+                        false,
+                    );
+                    return Some(SourceReturn::Memory {
+                        storage,
+                        layout: layout.clone(),
+                    });
+                }
                 let mut fields = Vec::new();
-                if return_fields(debug.context, layout, &mut fields).is_some()
+                if width <= 128
+                    && return_fields(debug.context, layout, &mut fields).is_some()
                     && fields.iter().any(|field| field.is_float_type())
                 {
-                    return Some(debug.context.struct_type(&fields, false).into());
+                    return Some(SourceReturn::Direct(
+                        debug.context.struct_type(&fields, false).into(),
+                    ));
                 }
             }
         }
@@ -165,7 +340,7 @@ pub(in crate::llvm::process) fn source_return_type<'ctx>(
             .context
             .custom_width_int_type(std::num::NonZeroU32::new(width)?)
             .ok()
-            .map(Into::into)
+            .map(|ty| SourceReturn::Direct(ty.into()))
     }
 }
 
@@ -635,9 +810,10 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
         // capturing it at its minimum width first changes contextual arithmetic.
         let draft = module.add_function(
             &format!("sx.debug.call.{}", id.0),
-            ty.fn_type(&[], false),
+            ty.fn_type(debug.context, &[]),
             Some(Linkage::Internal),
         );
+        ty.declare(debug.context, draft);
         let body_builder = debug.context.create_builder();
         body_builder.position_at_end(debug.context.append_basic_block(draft, "entry"));
         let mut body_cache = ProcessValueCache::new(cache.activity_sensitive, cache.meta_free);
@@ -655,8 +831,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
             &mut body_cache,
             |builder, cache, active| emit(builder, cache, active, operand),
         )?;
-        let returned = return_value(&body_builder, returned)?;
-        body_builder.build_return(Some(&returned)).ok()?;
+        ty.emit_return(Some(debug), &body_builder, returned)?;
         let arguments = body_cache.debug_arguments.take()?;
         let values = arguments.values;
         let literals = arguments.literals;
@@ -666,12 +841,25 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
             .collect::<Vec<_>>();
         let name = draft.get_name().to_string_lossy().into_owned();
         draft.as_global_value().set_name(&format!("{name}.draft"));
-        let function =
-            module.add_function(&name, ty.fn_type(&types, false), Some(Linkage::Internal));
+        let function = module.add_function(
+            &name,
+            ty.fn_type(debug.context, &types),
+            Some(Linkage::Internal),
+        );
+        ty.declare(debug.context, function);
         function.set_subprogram(draft.get_subprogram()?);
+        if ty.parameter_offset() != 0 {
+            draft
+                .get_first_param()?
+                .into_pointer_value()
+                .replace_all_uses_with(function.get_first_param()?.into_pointer_value());
+        }
         for (index, (_, placeholder)) in values.iter().enumerate() {
-            placeholder
-                .replace_all_uses_with(function.get_nth_param(index as u32)?.into_int_value());
+            placeholder.replace_all_uses_with(
+                function
+                    .get_nth_param(index as u32 + ty.parameter_offset())?
+                    .into_int_value(),
+            );
             placeholder.as_instruction()?.erase_from_basic_block();
         }
         for block in draft.get_basic_blocks() {
@@ -726,12 +914,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
             };
             arguments.push(argument.into());
         }
-        builder
-            .build_call(function, &arguments, "debug.call")
-            .ok()?
-            .try_as_basic_value()
-            .basic()
-            .and_then(|value| return_bits(builder, value))
+        call_return(debug.context, builder, function, &arguments, "debug.call")
     })
 }
 
@@ -1536,7 +1719,14 @@ fn capture_result<'ctx>(
     if let Some(bytes) = inspection_bits(&layout).and_then(|bits| u32::try_from(bits / 8).ok()) {
         let buffer = debug.inspection_buffer(module, "sx.debug.return", bytes);
         if let Some(value) = fit(builder, value, layout.packed_width().unwrap()) {
-            debug.copy_fields(builder, buffer, value, &layout, &mut 0, &mut 0);
+            debug.copy_fields(
+                builder,
+                buffer.as_pointer_value(),
+                value,
+                &layout,
+                &mut 0,
+                &mut 0,
+            );
         }
     }
 }
@@ -1775,7 +1965,14 @@ fn capture_binding<'ctx>(
                     let Some(value) = value else {
                         continue;
                     };
-                    debug.copy_fields(builder, binding.buffer, value, layout, &mut 0, &mut 0);
+                    debug.copy_fields(
+                        builder,
+                        binding.buffer.as_pointer_value(),
+                        value,
+                        layout,
+                        &mut 0,
+                        &mut 0,
+                    );
                 }
                 ValueInspection::String(root, query) => {
                     let Some(value) = fit(builder, value, 64) else {

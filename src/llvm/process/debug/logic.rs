@@ -229,7 +229,14 @@ impl<'ctx> DebugInfo<'ctx, '_> {
                     );
                 }
             }
-            _ => self.copy_fields(builder, buffer, value, layout, logical, byte),
+            _ => self.copy_fields(
+                builder,
+                buffer.as_pointer_value(),
+                value,
+                layout,
+                logical,
+                byte,
+            ),
         }
     }
 }

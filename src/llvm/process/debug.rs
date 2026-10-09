@@ -20,8 +20,8 @@ mod logic;
 mod parameters;
 mod strings;
 pub(super) use inline_values::{
-    active_value, argument_value, call_value, capture_metadata, capture_value, inline_body,
-    inline_value, literal_value, return_bits, return_value, selected_value, source_return_type,
+    active_value, argument_value, call_return, call_value, capture_metadata, capture_value,
+    inline_body, inline_value, literal_value, selected_value, source_return_type, SourceReturn,
     ValueArguments, ValueFrame, ValueLocationGuard,
 };
 use logic::{LogicMirror, LogicSource};
@@ -854,7 +854,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
     fn copy_fields(
         &self,
         builder: &Builder<'ctx>,
-        buffer: GlobalValue<'ctx>,
+        buffer: PointerValue<'ctx>,
         value: IntValue<'ctx>,
         layout: &SourceLayout,
         logical: &mut u32,
@@ -898,7 +898,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                     builder
                         .build_in_bounds_gep(
                             self.context.i8_type(),
-                            buffer.as_pointer_value(),
+                            buffer,
                             &[self.context.i64_type().const_int(u64::from(*byte), false)],
                             "debug.field",
                         )
@@ -1215,7 +1215,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
                 let value = load.into_int_value();
                 self.copy_fields(
                     &builder,
-                    mirror.buffer,
+                    mirror.buffer.as_pointer_value(),
                     value,
                     &mirror.layout,
                     &mut 0,
