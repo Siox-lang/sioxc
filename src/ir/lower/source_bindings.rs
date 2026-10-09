@@ -94,7 +94,29 @@ impl Lowering<'_> {
                 }
             }
         }
-        Some(self.source_layout(ty, &self.cur_env))
+        let declared = self.source_layout(ty, &self.cur_env);
+        if declared.bit_width().is_some() {
+            return Some(declared);
+        }
+        self.body_result_layout(function, |name| shapes.get(name).cloned())
+            .or(Some(declared))
+    }
+
+    /// The shape a function with an unsized result (`-> Logic[]`) returns,
+    /// read from its body (see [`returned_shapes`]): a returned `let`'s
+    /// declared type, or a returned parameter's argument (`parameter`).
+    pub(super) fn body_result_layout(
+        &self,
+        function: &ast::FnDecl,
+        parameter: impl Fn(&str) -> Option<SourceLayout>,
+    ) -> Option<SourceLayout> {
+        returned_shapes(function)
+            .into_iter()
+            .find_map(|(name, declared)| match declared {
+                Some(ty) => Some(self.source_layout(ty, &self.cur_env))
+                    .filter(|layout| layout.bit_width().is_some()),
+                None => parameter(name),
+            })
     }
 
     /// Recover a concrete shape without copying an operand AST into its users.
@@ -168,11 +190,25 @@ impl Lowering<'_> {
                         .as_ref()
                         .map(|ty| self.source_layout(ty, &self.cur_env));
                 }
-                self.free_fns
-                    .get(callee)?
-                    .ret
-                    .as_ref()
-                    .map(|ty| self.source_layout(ty, &self.cur_env))
+                let function = self.free_fns.get(callee)?;
+                let declared = self.source_layout(function.ret.as_ref()?, &self.cur_env);
+                if declared.bit_width().is_some() {
+                    return Some(declared);
+                }
+                // `-> Logic[]`: the size is the body's.
+                let parameters = function
+                    .params
+                    .iter()
+                    .filter(|parameter| !parameter.is_self)
+                    .zip(args)
+                    .collect::<Vec<_>>();
+                self.body_result_layout(function, |name| {
+                    let (_, argument) = parameters.iter().find(|(parameter, _)| {
+                        parameter.name.as_ref().is_some_and(|n| n.text == name)
+                    })?;
+                    self.source_operand_layout(argument, env)
+                })
+                .or(Some(declared))
             }
             ast::Expr::Binary { lhs, .. } => self.source_operand_layout(lhs, env),
             ast::Expr::Unary { rhs, .. } => self.source_operand_layout(rhs, env),
@@ -639,4 +675,60 @@ impl Lowering<'_> {
         }
         Some(value)
     }
+}
+
+/// What a function's body returns by name, with the type a returned `let`
+/// declares: where an unsized result (`-> Logic[]`) gets its size. A name
+/// without a type is a parameter (or an untyped local, which says nothing).
+pub(super) fn returned_shapes(function: &ast::FnDecl) -> Vec<(&str, Option<&ast::Type>)> {
+    fn returned<'s>(statements: &'s [ast::Stmt], out: &mut Vec<&'s ast::Expr>) {
+        for statement in statements {
+            match statement {
+                ast::Stmt::Return {
+                    value: Some(value), ..
+                } => out.push(value),
+                ast::Stmt::If(branch) => {
+                    returned(&branch.then.stmts, out);
+                    let mut rest = branch.else_.as_deref();
+                    while let Some(next) = rest {
+                        match next {
+                            ast::ElseBranch::Block(block) => {
+                                returned(&block.stmts, out);
+                                rest = None;
+                            }
+                            ast::ElseBranch::If(inner) => {
+                                returned(&inner.then.stmts, out);
+                                rest = inner.else_.as_deref();
+                            }
+                        }
+                    }
+                }
+                ast::Stmt::Match(m) => m.arms.iter().for_each(|arm| returned(&arm.body.stmts, out)),
+                ast::Stmt::For { body, .. } => returned(&body.stmts, out),
+                _ => {}
+            }
+        }
+    }
+    let Some(body) = function.body.as_ref() else {
+        return Vec::new();
+    };
+    let mut values = Vec::new();
+    returned(&body.stmts, &mut values);
+    values
+        .into_iter()
+        .filter_map(|value| {
+            let ast::Expr::Path(path) = value else {
+                return None;
+            };
+            let [segment] = path.segments.as_slice() else {
+                return None;
+            };
+            let name = segment.text.as_str();
+            let declared = body.stmts.iter().find_map(|statement| match statement {
+                ast::Stmt::Let(l) if l.name.text == name => l.ty.as_ref(),
+                _ => None,
+            });
+            Some((name, declared))
+        })
+        .collect()
 }

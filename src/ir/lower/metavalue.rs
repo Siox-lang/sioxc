@@ -391,7 +391,7 @@ impl<'a> Lowering<'a> {
                 .map(|&c| Expr::Current(SignalId(c))),
             Expr::Old(id) => self.out.meta_of.get(&id.0).map(|&c| Expr::Old(SignalId(c))),
             Expr::Binary {
-                op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div,
+                op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem,
                 lhs,
                 rhs,
             } => {
@@ -676,6 +676,7 @@ impl<'a> Lowering<'a> {
                     | BinOp::Sub
                     | BinOp::Mul
                     | BinOp::Div
+                    | BinOp::Rem
                     | BinOp::And
                     | BinOp::Or
                     | BinOp::Xor,

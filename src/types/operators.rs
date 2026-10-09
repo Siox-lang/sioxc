@@ -281,7 +281,13 @@ impl<'a> Checker<'a> {
     ) {
         if !matches!(
             op,
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Shl | BinOp::Shr
+            BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Rem
+                | BinOp::Shl
+                | BinOp::Shr
         ) {
             return;
         }
@@ -310,7 +316,7 @@ impl<'a> Checker<'a> {
             )
         };
         let valid = match op {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
                 matches!(
                     (&left, &right),
                     (Ty::Integer, Ty::Integer)

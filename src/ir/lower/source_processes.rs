@@ -867,6 +867,7 @@ fn eval_suffix_expr(expression: &ast::Expr, suffix: &ConstantSuffix, input: u64)
                 ast::BinOp::Sub => left.checked_sub(right),
                 ast::BinOp::Mul => left.checked_mul(right),
                 ast::BinOp::Div => left.checked_div(right),
+                ast::BinOp::Rem => left.checked_rem(right),
                 ast::BinOp::Shl => u32::try_from(right)
                     .ok()
                     .and_then(|shift| left.checked_shl(shift)),
@@ -965,6 +966,7 @@ fn eval_real_suffix_expr(
                 ast::BinOp::Sub => Some(left - right),
                 ast::BinOp::Mul => Some(left * right),
                 ast::BinOp::Div => Some(left / right),
+                ast::BinOp::Rem => Some(left % right),
                 ast::BinOp::Eq => Some(f64::from(u8::from(left == right))),
                 ast::BinOp::Ne => Some(f64::from(u8::from(left != right))),
                 ast::BinOp::Lt => Some(f64::from(u8::from(left < right))),
@@ -2100,6 +2102,16 @@ fn lower_statement(
             span,
             ..
         } => {
+            if after.is_none() {
+                if let Some(elements) = array_slice_elements(target, value, *span, process, context)
+                {
+                    let mut block = block;
+                    for element in &elements {
+                        block = lower_statement(element, context, process, block)?;
+                    }
+                    return Some(block);
+                }
+            }
             let source_semantics = assignment_semantics(target, process, context);
             let target_type = context.typed.expr_type(ast::expr_span(target)).cloned();
             let source_target = target;
@@ -2183,6 +2195,8 @@ fn lower_statement(
                 if let (Some(target), Some(value)) = (target, value) {
                     let ty = context.inline_return_types.last().cloned().flatten();
                     let value = value_ref_with_type(value, process, context, ty.as_ref());
+                    // `-> Logic[]`: the result has the shape the body returns.
+                    adopt_returned_layout(target, value, process, context);
                     process.blocks[block.0 as usize].instructions.push(
                         ProcessInstruction::Assign {
                             semantics: ProcessAssignment::ImmediateLocal,
@@ -2205,6 +2219,114 @@ fn lower_statement(
             None
         }
     }
+}
+
+/// `r[3..0] = v` on an array local, at constant bounds and from a named
+/// array: one element assignment per index, paired in written order. A
+/// range place has no single storage width, so it is written element-wise.
+fn array_slice_elements(
+    target: &ast::Expr,
+    value: &ast::Expr,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<Vec<Stmt>> {
+    let ast::Expr::Index {
+        base,
+        index,
+        span: target_span,
+    } = target
+    else {
+        return None;
+    };
+    let (ast::Expr::Range { lo, hi, .. }, ast::Expr::Path(source)) = (index.as_ref(), value) else {
+        return None;
+    };
+    let base_value = value_ref(base, process, context);
+    if !matches!(
+        operand_source_layout(base_value, process, context)?.kind,
+        LayoutKind::Array { .. }
+    ) {
+        return None;
+    }
+    let integer = Some(&crate::types::Ty::Integer);
+    let left = value_ref_with_type(lo, process, context, integer);
+    let right = value_ref_with_type(hi, process, context, integer);
+    let (left, right) = (
+        constant_integer(left, context)?,
+        constant_integer(right, context)?,
+    );
+    let source_value = value_ref(value, process, context);
+    let source = operand_source_layout(source_value, process, context)?
+        .index_range()
+        .filter(|_| !source.segments.is_empty())?;
+    let targets = crate::ir::loop_range(left, right);
+    let sources = crate::ir::loop_range(source.left, source.right);
+    if targets.len() != sources.len() || targets.iter().chain(&sources).any(|label| *label < 0) {
+        return None;
+    }
+    let label = |n: i64, span| ast::Expr::Int {
+        text: n.to_string(),
+        span,
+    };
+    // The checker typed these spans as the whole slice and array; empty
+    // spans at their ends carry no checked type, so each element is typed
+    // from its value.
+    let empty = |span: crate::diag::Span| crate::diag::Span {
+        start: span.end,
+        ..span
+    };
+    let (target_span, value_span) = (empty(*target_span), empty(ast::expr_span(value)));
+    Some(
+        targets
+            .into_iter()
+            .zip(sources)
+            .map(|(to, from)| Stmt::Assign {
+                label: None,
+                target: ast::Expr::Index {
+                    base: base.clone(),
+                    index: Box::new(label(to, target_span)),
+                    span: target_span,
+                },
+                value: ast::Expr::Index {
+                    base: Box::new(value.clone()),
+                    index: Box::new(label(from, value_span)),
+                    span: value_span,
+                },
+                after: None,
+                span,
+            })
+            .collect(),
+    )
+}
+
+/// Give an unsized call result (`-> Logic[]`) the layout of the value its
+/// body returns, which is where the size is set.
+fn adopt_returned_layout(
+    target: ProcessValueId,
+    value: ProcessValueId,
+    process: &mut ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) {
+    let ProcessValueKind::Local { local, .. } = context.process_ir.values[target.0 as usize].kind
+    else {
+        return;
+    };
+    let sized =
+        |layout: &Option<SourceLayout>| layout.as_ref().and_then(SourceLayout::bit_width).is_some();
+    if sized(&process.locals[local.0 as usize].layout) {
+        return;
+    }
+    let Some(layout) = operand_source_layout(value, process, context) else {
+        return;
+    };
+    if layout.bit_width().is_none() {
+        return;
+    }
+    let width = layout.packed_width();
+    process.locals[local.0 as usize].layout = Some(layout.clone());
+    context.process_ir.values[target.0 as usize].bit_width = width;
+    context.process_ir.value_layouts[target.0 as usize] = Some(layout);
 }
 
 /// Whether a write updates a process local immediately or stages a signal
@@ -3427,7 +3549,8 @@ fn process_display_kind_from_value(
             ProcessBinaryOp::FloatAdd
             | ProcessBinaryOp::FloatSub
             | ProcessBinaryOp::FloatMul
-            | ProcessBinaryOp::FloatDiv => Some(ProcessDisplayKind::Real),
+            | ProcessBinaryOp::FloatDiv
+            | ProcessBinaryOp::FloatRem => Some(ProcessDisplayKind::Real),
             ProcessBinaryOp::Eq
             | ProcessBinaryOp::Ne
             | ProcessBinaryOp::Lt
@@ -3448,6 +3571,7 @@ fn process_display_kind_from_value(
             | ProcessBinaryOp::SignedSub
             | ProcessBinaryOp::SignedMul
             | ProcessBinaryOp::SignedDiv
+            | ProcessBinaryOp::SignedRem
             | ProcessBinaryOp::ArithmeticShr => Some(ProcessDisplayKind::Signed),
             _ => Some(ProcessDisplayKind::Unsigned),
         },
@@ -4153,7 +4277,8 @@ fn process_value_is_real(id: ProcessValueId, context: &LoweringContext<'_>) -> b
                     ProcessBinaryOp::FloatAdd
                     | ProcessBinaryOp::FloatSub
                     | ProcessBinaryOp::FloatMul
-                    | ProcessBinaryOp::FloatDiv,
+                    | ProcessBinaryOp::FloatDiv
+                    | ProcessBinaryOp::FloatRem,
                 ..
             } => return true,
             ProcessValueKind::Select {
@@ -5042,6 +5167,27 @@ fn inline_process_call(
     );
     if result.is_none() {
         truncate_process_values(context, first_value);
+    }
+    // `-> Logic[]`: the result has the shape the body sets.
+    if let Some(result) = result {
+        if process_value_source_layout(result, context.process_ir).is_none() {
+            if let Some(layout) = unsized_call_layout(
+                function,
+                ast::expr_span(expression),
+                &arguments,
+                process,
+                context,
+            ) {
+                if context.process_ir.values[result.0 as usize].bit_width == layout.packed_width()
+                    || context.process_ir.values[result.0 as usize]
+                        .bit_width
+                        .is_none()
+                {
+                    context.process_ir.values[result.0 as usize].bit_width = layout.packed_width();
+                    context.process_ir.value_layouts[result.0 as usize] = Some(layout);
+                }
+            }
+        }
     }
     // `y.negate().to_real()`: a method returning its receiver's type keeps
     // the receiver's format, as an operator does.
@@ -7107,13 +7253,62 @@ fn value_ref_with_type_inner(
             .locals
             .get(local.0 as usize)
             .and_then(|local| local.layout.clone()),
+        ProcessValueKind::Call { arguments, .. } => match expression {
+            ast::Expr::Call { callee, .. } => context.functions.get(callee).and_then(|function| {
+                unsized_call_layout(
+                    function,
+                    ast::expr_span(expression),
+                    arguments,
+                    process,
+                    context,
+                )
+            }),
+            _ => None,
+        },
         _ => None,
     };
+    let width = width.or_else(|| local_layout.as_ref().and_then(SourceLayout::packed_width));
     let id = push_value(span, ty, width, kind, context);
     if local_layout.is_some() {
         context.process_ir.value_layouts[id.0 as usize] = local_layout;
     }
     id
+}
+
+/// The shape of a call to a function with an unsized result (`-> Logic[]`),
+/// which its body sets: a returned `let`'s declared type, or a returned
+/// parameter's argument.
+fn unsized_call_layout(
+    function: &ast::FnDecl,
+    span: crate::diag::Span,
+    arguments: &[ProcessValueId],
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> Option<SourceLayout> {
+    let declared = process_declared_type(function.ret.as_ref()?, context)?;
+    if !matches!(declared, crate::types::Ty::Array { len: 0, .. }) {
+        return None;
+    }
+    let parameters = function
+        .params
+        .iter()
+        .filter(|parameter| !parameter.is_self);
+    super::source_bindings::returned_shapes(function)
+        .into_iter()
+        .find_map(|(name, ty)| match ty {
+            Some(ty) => {
+                let declared = process_declared_type(ty, context)?;
+                let mut layout = process_layout_for_type(&declared, span, context)?;
+                apply_process_declared_ranges(&mut layout, ty, context, &mut Default::default())?;
+                layout.bit_width().is_some().then_some(layout)
+            }
+            None => {
+                let index = parameters.clone().position(|parameter| {
+                    parameter.name.as_ref().is_some_and(|n| n.text == name)
+                })?;
+                operand_source_layout(*arguments.get(index)?, process, context)
+            }
+        })
 }
 
 /// Insert one already-lowered value node.
@@ -7322,10 +7517,12 @@ fn source_value_width(
                         | ProcessBinaryOp::Sub
                         | ProcessBinaryOp::Mul
                         | ProcessBinaryOp::Div
+                        | ProcessBinaryOp::Rem
                         | ProcessBinaryOp::SignedAdd
                         | ProcessBinaryOp::SignedSub
                         | ProcessBinaryOp::SignedMul
                         | ProcessBinaryOp::SignedDiv
+                        | ProcessBinaryOp::SignedRem
                         | ProcessBinaryOp::Shr
                         | ProcessBinaryOp::ArithmeticShr,
                     left,
@@ -7415,7 +7612,8 @@ fn source_value_width(
             ProcessBinaryOp::FloatAdd
             | ProcessBinaryOp::FloatSub
             | ProcessBinaryOp::FloatMul
-            | ProcessBinaryOp::FloatDiv => Some(64),
+            | ProcessBinaryOp::FloatDiv
+            | ProcessBinaryOp::FloatRem => Some(64),
             ProcessBinaryOp::Shl => shifted_width(value_width(left)?, *right, context),
             _ => Some(value_width(left)?.max(value_width(right)?)),
         },
@@ -7623,6 +7821,7 @@ fn is_float_operation(operation: &ProcessBinaryOp) -> bool {
             | ProcessBinaryOp::FloatSub
             | ProcessBinaryOp::FloatMul
             | ProcessBinaryOp::FloatDiv
+            | ProcessBinaryOp::FloatRem
             | ProcessBinaryOp::FloatEq
             | ProcessBinaryOp::FloatNe
             | ProcessBinaryOp::FloatLt
@@ -7661,6 +7860,7 @@ fn lower_binary_operator(
         ast::BinOp::Sub if real => ProcessBinaryOp::FloatSub,
         ast::BinOp::Mul if real => ProcessBinaryOp::FloatMul,
         ast::BinOp::Div if real => ProcessBinaryOp::FloatDiv,
+        ast::BinOp::Rem if real => ProcessBinaryOp::FloatRem,
         ast::BinOp::Eq if real => ProcessBinaryOp::FloatEq,
         ast::BinOp::Ne if real => ProcessBinaryOp::FloatNe,
         ast::BinOp::Lt if real => ProcessBinaryOp::FloatLt,
@@ -7671,6 +7871,7 @@ fn lower_binary_operator(
         ast::BinOp::Sub if signed => ProcessBinaryOp::SignedSub,
         ast::BinOp::Mul if signed => ProcessBinaryOp::SignedMul,
         ast::BinOp::Div if signed => ProcessBinaryOp::SignedDiv,
+        ast::BinOp::Rem if signed => ProcessBinaryOp::SignedRem,
         ast::BinOp::Shr if signed => ProcessBinaryOp::ArithmeticShr,
         ast::BinOp::Lt if signed => ProcessBinaryOp::SignedLt,
         ast::BinOp::Le if signed => ProcessBinaryOp::SignedLe,
@@ -7680,6 +7881,7 @@ fn lower_binary_operator(
         ast::BinOp::Sub => ProcessBinaryOp::Sub,
         ast::BinOp::Mul => ProcessBinaryOp::Mul,
         ast::BinOp::Div => ProcessBinaryOp::Div,
+        ast::BinOp::Rem => ProcessBinaryOp::Rem,
         ast::BinOp::And => ProcessBinaryOp::And,
         ast::BinOp::Or => ProcessBinaryOp::Or,
         ast::BinOp::Custom { symbol, .. } => ProcessBinaryOp::Custom(symbol.clone()),

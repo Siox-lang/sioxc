@@ -347,6 +347,7 @@ pub(super) fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bo
                 | ProcessBinaryOp::SignedSub
                 | ProcessBinaryOp::SignedMul
                 | ProcessBinaryOp::SignedDiv
+                | ProcessBinaryOp::SignedRem
                 | ProcessBinaryOp::ArithmeticShr
         ),
         ProcessValueKind::Select {
@@ -395,6 +396,7 @@ pub(super) fn process_value_is_real(design: &Design, id: ProcessValueId) -> bool
                 | ProcessBinaryOp::FloatSub
                 | ProcessBinaryOp::FloatMul
                 | ProcessBinaryOp::FloatDiv
+                | ProcessBinaryOp::FloatRem
         ),
         ProcessValueKind::Select {
             then_value,
