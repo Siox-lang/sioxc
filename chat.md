@@ -13809,3 +13809,16 @@ Owner-requested (TODO std item). Branch `feat/float-div-conversions`.
   operator bodies fail (hardware: unresolved caller locals; testbench:
   shifted kernel integers widen past 64 bits).
 **Codex:** touches `ir/lower/source_processes.rs` (binary operator return type).
+
+### 2026-10-10 — Claude — loops in functions called from operator bodies
+
+Owner-requested (TODO, from the float-division work). Branch `fix/loops-in-operator-bodies`.
+- Hardware: `constant_expr` folds a unary negation, so a loop bound read off
+  a negative `'low` (`0..(0 - format'low) + 1`) unrolls.
+- Testbench: `source_value_width` widens a kernel-integer `<<` only for a
+  constant left operand (`1 << 100` stays multiword); a runtime one keeps
+  its width, so `rest = rest << 1` fits its 64-bit local.
+- TODO: user newtypes (`struct W(Logic[7..0])`) as testbench locals fail;
+  a non-constant hardware loop bound reports the caller's locals as unknown.
+**Codex:** touches `ir/lower/calls.rs` (`constant_expr`), `source_processes.rs`
+(`source_value_width` Shl).
