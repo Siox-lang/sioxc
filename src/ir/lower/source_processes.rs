@@ -8041,21 +8041,48 @@ fn value_ref_with_type_inner(
             .locals
             .get(local.0 as usize)
             .and_then(|local| local.layout.clone()),
-        ProcessValueKind::Call { arguments, .. } => match expression {
-            ast::Expr::Call { callee, .. } => context.functions.get(callee).and_then(|function| {
-                unsized_call_layout(
-                    function,
-                    ast::expr_span(expression),
-                    arguments,
-                    process,
-                    context,
-                )
-            }),
+        ProcessValueKind::Call {
+            callee: callee_value,
+            arguments,
+            ..
+        } => match expression {
+            // A deferred method call returning its receiver's type has the
+            // receiver's format, as an inlined one does (`x.sqrt().to_real()`
+            // reads the result's `self'high`).
+            ast::Expr::Call { callee, .. } => match (
+                callee.as_ref(),
+                &context.process_ir.values[callee_value.0 as usize].kind,
+            ) {
+                (ast::Expr::Field { field, .. }, ProcessValueKind::Field { base, .. }) => {
+                    let receiver = *base;
+                    process_value_type(receiver, context)
+                        .and_then(|ty| process_type_key(&ty, context))
+                        .and_then(|owner| context.functions.get_associated(&owner, &field.text))
+                        .filter(|function| returns_receiver_type(function, receiver, context))
+                        .and_then(|_| {
+                            process_value_source_layout(receiver, context.process_ir).cloned()
+                        })
+                }
+                _ => context.functions.get(callee).and_then(|function| {
+                    unsized_call_layout(
+                        function,
+                        ast::expr_span(expression),
+                        arguments,
+                        process,
+                        context,
+                    )
+                }),
+            },
             _ => None,
         },
         _ => None,
     };
-    let width = width.or_else(|| local_layout.as_ref().and_then(SourceLayout::packed_width));
+    let width = match (&kind, &local_layout) {
+        (ProcessValueKind::Call { .. }, Some(layout)) if layout.packed_width().is_some() => {
+            layout.packed_width()
+        }
+        _ => width.or_else(|| local_layout.as_ref().and_then(SourceLayout::packed_width)),
+    };
     let id = push_value(span, ty, width, kind, context);
     if local_layout.is_some() {
         context.process_ir.value_layouts[id.0 as usize] = local_layout;

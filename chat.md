@@ -13832,3 +13832,16 @@ Owner-requested. Branch `fix/newtype-testbench-locals`.
   in a testbench has width 8 and range 7..0 (it was a zero-width layout and
   the block failed at run time). Signals of `W` already worked.
 **Codex:** touches `ir/lower/source_processes.rs` (declared type/range of locals).
+### 2026-10-10 — Claude — float square root
+
+Owner-requested. Branch `feat/float-sqrt`.
+- std::float: `x.sqrt()` (IEEE squareRoot, nearest even) with a
+  digit-by-digit `root_with_sticky` loop whose bound comes from the format.
+- Testbench lowering, so a looped call's result works as a receiver
+  (`x.sqrt().to_real()`, `print!("{}", x.sqrt())`): a deferred method call
+  that returns its receiver's type takes the receiver's layout
+  (`value_ref_with_type_inner`); `cfg_calls::result_local` takes a select's
+  arms' layout, or plain bits of the node's width when the type is an
+  unsized family.
+**Codex:** touches `ir/lower/source_processes.rs` (deferred call layout),
+`source_processes/cfg_calls.rs` (`result_local`).

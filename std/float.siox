@@ -197,6 +197,26 @@ impl Div<float, float> for float {
     }
 }
 
+// `isqrt(r) * 2 + sticky` for a radicand below `2^(2f + 6)`, `format`'s
+// `f` fraction bits: the digit-by-digit square root, one result bit per step
+// over `f + 3` steps (the bound comes from `format`'s shape, so hardware
+// unrolls it), then a sticky bit for a nonzero remainder.
+fn root_with_sticky<T>(r: integer, format: T) -> integer {
+    let rest: integer = r;
+    let root: integer = 0;
+    let one: integer = 1 << (2 * (0 - format'low) + 4);
+    for k in 0..(0 - format'low) + 2 {
+        if rest >= root + one {
+            rest = rest - (root + one);
+            root = (root >> 1) + one;
+        } else {
+            root = root >> 1;
+        }
+        one = one >> 2;
+    }
+    return (root << 1) + (if rest != 0 { 1 } else { 0 });
+}
+
 // The sum of two words of the format: the smaller magnitude is aligned to the
 // larger with three guard bits, the last of them sticky, then encoded.
 fn add_words(a: integer, b: integer, e: integer, f: integer) -> integer {
@@ -309,6 +329,33 @@ impl float {
     pub fn is_zero(self) -> Bool {
         let f: integer = 0 - self'low;
         return low_bits(integer(self) >> f, self'high) == 0;
+    }
+
+    // The square root, rounded to nearest even (IEEE `squareRoot`): NaN for a
+    // NaN or a negative number, and zero, `-0` and infinity are their own
+    // roots. The radicand needs `2f + 6` bits of the 64-bit kernel word, so
+    // it holds up to 28 mantissa bits (binary16, binary32), as `*` and `/` do.
+    pub fn sqrt(self) -> float {
+        let e: integer = self'high;
+        let f: integer = 0 - self'low;
+        let a: integer = integer(self);
+        let sign: integer = low_bits(a >> (e + f), 1);
+        let exponent: integer = low_bits(a >> f, e);
+        let fraction: integer = low_bits(a, f);
+        let full: integer = (1 << e) - 1;
+        if exponent == full and fraction != 0 { return nan_word(e, f); }
+        if exponent == 0 { return pack(sign, 0, 0, e, f); }
+        if sign == 1 { return nan_word(e, f); }
+        if exponent == full { return infinity_word(0, e, f); }
+        // `x = m * 2^k` with `k` made even, so the root is `sqrt(m) * 2^(k/2)`;
+        // the radicand is scaled so its integer root has `f + 2` fraction bits.
+        let bias: integer = (1 << (e - 1)) - 1;
+        let k: integer = exponent - bias;
+        let odd: integer = low_bits(k, 1);
+        let radicand: integer = ((1 << f) + fraction) << (f + 4 + odd);
+        return encode(
+            0, (k - odd) / 2 + bias, root_with_sticky(radicand, self), f + 3, e, f
+        );
     }
 
     // The number this holds, as a `real`.
