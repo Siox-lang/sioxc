@@ -84,9 +84,6 @@ listed under LLVM and Output below.
 Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
-- 🔴 **User newtypes as testbench values.** A testbench local of a user
-  struct over a sized vector (`struct W(Logic[7..0]); let w: W;`) fails with
-  "direct Process IR lowering is incomplete"; the std families work.
 - 🔴 **Non-constant loop bounds in hardware.** A hardware loop whose bound is
   not constant once the arguments' shapes are known reports the caller's
   locals as unknown names instead of naming the bound.

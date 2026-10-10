@@ -717,3 +717,45 @@ impl T {
         "{stdout}"
     );
 }
+
+/// A testbench local of a user struct over a sized vector (`struct
+/// W(Logic[7..0])`) has that vector's width and range, as a signal does.
+#[cfg(feature = "llvm")]
+#[test]
+fn newtype_testbench_locals_take_the_wrapped_range() {
+    let stdout = run(
+        "newtype_locals",
+        r#"
+module newtype_locals;
+struct W(Logic[7..0]);
+struct H(Logic[8]);
+struct Word(unsigned[16]);
+fn top(v: W) -> Logic { return v[7]; }
+entity Dut { a: W in, y: W out }
+impl Dut { y = a; }
+#[test] entity T {}
+impl T {
+    let a: W; let y: W;
+    let dut: Dut = { .a = a, .y = y };
+    check: process {
+        let w: W;
+        let h: H;
+        let x: Word;
+        w = W(165);
+        h = H(3);
+        x = Word(1000);
+        a = w;
+        await 1ns;
+        print!("nt {} {} {} {} {} {} {}", integer(w), w'high, w'low, w'length, w[7], w[1], top(w));
+        print!("nt2 {} {} {} {}", integer(h), h'length, integer(x), integer(y));
+    }
+}
+"#,
+    );
+    for line in ["nt 165 7 0 8 '1' '0' '1'", "nt2 3 8 1000 165"] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}
