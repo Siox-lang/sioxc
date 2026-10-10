@@ -68,6 +68,11 @@ impl Display for sfixed {
 }
 
 impl ufixed {
+    // The format: `x'integers` bits above the binary point, `x'fractions`
+    // below it (4 and 4 for `ufixed<8, 4>`).
+    pub attr integers: integer = self'high + 1;
+    pub attr fractions: integer = 0 - self'low;
+
     // The number this holds.
     pub fn to_real(self) -> real {
         return real(word(self)) / real(1 << (0 - self'low));
@@ -124,6 +129,11 @@ impl Ord<sfixed> for sfixed {
 }
 
 impl sfixed {
+    // The format: `x'integers` bits above the binary point, the sign
+    // included, and `x'fractions` below it.
+    pub attr integers: integer = self'high + 1;
+    pub attr fractions: integer = 0 - self'low;
+
     // The number this holds.
     pub fn to_real(self) -> real {
         return real(sext_word(word(self), self'length)) / real(1 << (0 - self'low));

@@ -850,6 +850,11 @@ impl Expander<'_> {
                 ImplItem::Process(p) => self.block(&mut p.body, true, depth),
                 ImplItem::Stmt(s) => self.stmt(s, false, depth),
                 ImplItem::AttrBinding(b) => self.expr(&mut b.value, depth),
+                ImplItem::Attr(a) => {
+                    if let Some(value) = &mut a.default {
+                        self.expr(value, depth);
+                    }
+                }
                 ImplItem::ModeField { .. } => {}
             }
             out.push(member);

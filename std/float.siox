@@ -253,6 +253,12 @@ impl Neg<float> for float {
 // --- inspection and conversion -------------------------------------------------
 
 impl float {
+    // The format: `x'exponent` and `x'mantissa` bits (8 and 23 for
+    // `float<32, 23>`), and the exponent bias (127).
+    pub attr exponent: integer = self'high;
+    pub attr mantissa: integer = 0 - self'low;
+    pub attr bias: integer = (1 << (self'exponent - 1)) - 1;
+
     pub fn is_nan(self) -> Bool {
         let e: integer = self'high;
         let f: integer = 0 - self'low;

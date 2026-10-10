@@ -423,6 +423,7 @@ impl Printer {
             }
             ImplItem::Stmt(s) => self.stmt(s),
             ImplItem::AttrBinding(b) => self.attr_binding(b),
+            ImplItem::Attr(a) => self.attr_decl(a),
         }
     }
 
@@ -456,8 +457,13 @@ impl Printer {
             .as_ref()
             .map(|d| format!(" = {}", expr(d)))
             .unwrap_or_default();
+        let targets = if targets.is_empty() {
+            String::new()
+        } else {
+            format!(" for {targets}")
+        };
         self.line(&format!(
-            "{kw}attr {}: {} for {targets}{default};",
+            "{kw}attr {}: {}{targets}{default};",
             a.name.text,
             type_str(&a.ty)
         ));
@@ -774,6 +780,7 @@ fn impl_item_span(item: &ImplItem) -> crate::diag::Span {
         ImplItem::Process(p) => p.span,
         ImplItem::Stmt(s) => stmt_span(s),
         ImplItem::AttrBinding(b) => b.span,
+        ImplItem::Attr(a) => a.span,
     }
 }
 

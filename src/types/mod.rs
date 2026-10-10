@@ -25,6 +25,7 @@ mod assignments;
 mod ast_types;
 mod calls;
 mod collect;
+mod expand;
 mod expressions;
 mod helpers;
 mod impls;
@@ -99,6 +100,10 @@ impl Ty {
 pub struct Typed {
     /// Checked type of each expression, keyed by its span.
     expr_types: HashMap<Span, Ty>,
+    /// Each read of a type attribute (`x'integers`), keyed by the read's
+    /// span, to the attribute's declared value in terms of `self`. See
+    /// [`expand_type_attrs`].
+    type_attr_reads: HashMap<Span, Expr>,
 }
 
 impl Typed {
@@ -112,6 +117,8 @@ impl Typed {
         &self.expr_types
     }
 }
+
+pub use expand::expand_type_attrs;
 
 /// Type-check resolved modules.
 ///
@@ -405,6 +412,12 @@ struct Checker<'a> {
     /// Every entity name, so a type that is not an entity is not mistaken
     /// for an instantiation.
     entity_names: HashSet<String>,
+    /// (type key, name) -> a type attribute its implementation declares
+    /// (`pub attr integers: integer = self'high + 1;`).
+    type_attrs: HashMap<(String, String), AttrDecl>,
+    /// Each type attribute read, by span, to the declared value it expands
+    /// to; handed on in [`Typed`].
+    type_attr_reads: HashMap<Span, Expr>,
 }
 
 #[cfg(test)]

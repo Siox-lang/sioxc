@@ -401,7 +401,9 @@ impl Reads<'_> {
                                 self.fold_block(&mut process.body, scope, sink)
                             }
                             ImplItem::Stmt(statement) => self.fold_stmt(statement, scope, sink),
-                            ImplItem::ModeField { .. } | ImplItem::AttrBinding(_) => {}
+                            ImplItem::ModeField { .. }
+                            | ImplItem::AttrBinding(_)
+                            | ImplItem::Attr(_) => {}
                         }
                     }
                 }

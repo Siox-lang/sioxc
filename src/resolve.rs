@@ -404,7 +404,7 @@ fn impl_member(item: &ImplItem) -> Option<(&String, Span, &'static str)> {
         ImplItem::Let(declaration) => (&declaration.name.text, declaration.name.span, "state"),
         ImplItem::Const(constant) => (&constant.name.text, constant.name.span, "constant"),
         ImplItem::Fn(function) => (&function.name.text, function.name.span, "method"),
-        ImplItem::AttrBinding(_) => return None,
+        ImplItem::AttrBinding(_) | ImplItem::Attr(_) => return None,
         ImplItem::ModeField { name, .. } => (&name.text, name.span, "mode field"),
         ImplItem::Process(process) => {
             let label = process.label.as_ref()?;
@@ -1452,7 +1452,7 @@ impl<'a> Resolver<'a> {
                 ImplItem::Fn(f) => self.bind_local(&f.name.text, f.name.span),
                 ImplItem::ModeField { name, .. } => self.bind_local(&name.text, name.span),
                 ImplItem::Process(_) => {}
-                ImplItem::Stmt(_) | ImplItem::AttrBinding(_) => {}
+                ImplItem::Stmt(_) | ImplItem::AttrBinding(_) | ImplItem::Attr(_) => {}
             }
         }
         self.resolve_type(&im.target);
@@ -1685,6 +1685,17 @@ impl<'a> Resolver<'a> {
             }
             ImplItem::Stmt(s) => self.resolve_stmt(s),
             ImplItem::AttrBinding(_) => {}
+            // A type attribute's value reads `self`'s shape, as a method
+            // body reads its receiver.
+            ImplItem::Attr(declaration) => {
+                self.resolve_type(&declaration.ty);
+                self.enter();
+                self.bind_synthetic_local("self");
+                if let Some(value) = &declaration.default {
+                    self.resolve_expr(value);
+                }
+                self.exit();
+            }
         }
     }
 
