@@ -182,6 +182,9 @@ pub struct Parser<'a> {
     last: usize,
     /// The argument tokens of every `name!(…)` read so far.
     macro_args: MacroArgTable,
+    /// The declarations after the first of a group `let a, b: T = v;`,
+    /// waiting for the loop collecting items or statements to take them.
+    grouped_lets: Vec<LetDecl>,
 }
 
 impl<'a> Parser<'a> {
@@ -218,6 +221,7 @@ impl<'a> Parser<'a> {
             texts: None,
             last: 0,
             macro_args: HashMap::new(),
+            grouped_lets: Vec::new(),
         }
     }
 
@@ -274,6 +278,7 @@ impl<'a> Parser<'a> {
                 );
             }
             stmts.push(self.parse_stmt());
+            stmts.extend(self.grouped_lets.drain(..).map(Stmt::Let));
             self.close_lint_scope(statement_start);
             if self.pos == before {
                 self.bump();
@@ -291,6 +296,7 @@ impl<'a> Parser<'a> {
             if let Some(item) = self.parse_impl_item() {
                 items.push(item);
             }
+            items.extend(self.grouped_lets.drain(..).map(ImplItem::Let));
             self.close_lint_scope(item_start);
             if self.pos == before {
                 self.bump();
@@ -347,6 +353,7 @@ impl<'a> Parser<'a> {
                     TokenKind::If | TokenKind::Match | TokenKind::For
                 ) {
                     self.parse_stmt();
+                    self.grouped_lets.clear();
                 } else {
                     self.parse_expr(false);
                     if self.eat(TokenKind::Eq) {
@@ -1467,6 +1474,7 @@ impl<'a> Parser<'a> {
             if let Some(it) = self.parse_impl_item() {
                 items.push(it);
             }
+            items.extend(self.grouped_lets.drain(..).map(ImplItem::Let));
             self.close_lint_scope(item_start);
             if self.pos == before {
                 self.bump();
@@ -1645,7 +1653,16 @@ impl<'a> Parser<'a> {
 
     /// Parse a `let`'s optional type, optional initializer and terminator, with
     /// any attributes already collected.
+    ///
+    /// `let a, b: T = v;` declares each name with the type and initializer,
+    /// as VHDL's `signal a, b : T := v;` does: the first is returned, the
+    /// rest wait in `grouped_lets`. A tuple is extracted with parentheses,
+    /// `let (q, r) = ..;`, so the two never share a spelling.
     fn parse_let_rest(&mut self, attrs: Vec<Attr>, start: Span, name: Ident) -> LetDecl {
+        let mut others = Vec::new();
+        while self.eat(TokenKind::Comma) {
+            others.push(self.parse_ident());
+        }
         let ty = if self.eat(TokenKind::Colon) {
             Some(self.parse_type())
         } else {
@@ -1657,13 +1674,21 @@ impl<'a> Parser<'a> {
             None
         };
         self.expect(TokenKind::Semi, "after a `let`");
-        LetDecl {
+        let declaration = LetDecl {
             attrs,
             name,
             ty,
             value,
             span: start.to(self.prev_span()),
-        }
+        };
+        // Each further name's diagnostics point at it, not at the `let`.
+        self.grouped_lets
+            .extend(others.into_iter().map(|name| LetDecl {
+                span: name.span.to(declaration.span),
+                name,
+                ..declaration.clone()
+            }));
+        declaration
     }
 
     /// Parse the rest of a function once its name has been consumed.
@@ -1971,6 +1996,7 @@ impl<'a> Parser<'a> {
                 );
             }
             stmts.push(self.parse_stmt());
+            stmts.extend(self.grouped_lets.drain(..).map(Stmt::Let));
             self.close_lint_scope(statement_start);
             if self.pos == before {
                 self.bump();
@@ -4797,6 +4823,44 @@ mod tests {
         };
         assert!(matches!(lo.as_ref(), Expr::Int { text, .. } if text == "18446744073709551616"));
         assert!(matches!(hi.as_ref(), Expr::Int { text, .. } if text == "18446744073709551616"));
+    }
+
+    #[test]
+    /// `let a, b: T = v;` declares each name with the type and initializer,
+    /// in an implementation and in a block.
+    fn group_declaration_declares_each_name() {
+        let module = parse_ok(
+            "module m;\nimpl M {\n  let a, b, c: Bit = '0';\n  \
+             tick: process { let x, y: integer = 5; }\n}\n",
+        );
+        let Item::Impl(im) = &module.items[0] else {
+            panic!("expected impl")
+        };
+        let names: Vec<&str> = im
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ImplItem::Let(declaration) => {
+                    assert!(declaration.ty.is_some() && declaration.value.is_some());
+                    Some(declaration.name.text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["a", "b", "c"]);
+        let Some(ImplItem::Process(process)) = im.items.last() else {
+            panic!("expected process")
+        };
+        let locals: Vec<&str> = process
+            .body
+            .stmts
+            .iter()
+            .filter_map(|statement| match statement {
+                Stmt::Let(declaration) => Some(declaration.name.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(locals, ["x", "y"]);
     }
 
     #[test]

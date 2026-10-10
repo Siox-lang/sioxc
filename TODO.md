@@ -65,6 +65,9 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
   Lower `instance.method()` accessors and effectful methods to stable generated
   ports, first with one caller per method/instance, then define arbitration
   before allowing multiple callers. Struct/view methods already work.
+  **Deferred** (2026-10-10): a struct method is marked by its `self`
+  parameter, while an entity's implementation has no `self`, so entity
+  methods would look unlike struct methods. Settle the syntax first.
 
 ## IR
 

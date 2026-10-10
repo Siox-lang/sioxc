@@ -13783,3 +13783,13 @@ Owner-approved. Branch `feat/type-attributes`.
 **Codex:** touches `syntax/{ast,parser,pretty,imports,macros,attributes}.rs`,
 `resolve.rs`, `elab.rs`, `types/{mod,collect,inference,expressions,impls,expand}.rs`,
 `ir/lower/{calls,source_processes}.rs`, `compiler.rs`, `diag.rs`.
+
+### 2026-10-10 — Claude — group declaration
+
+Owner-requested. Branch `feat/group-declaration`.
+- `let a, b: T = v;` (VHDL's `signal a, b : T := v;`): `parse_let_rest`
+  returns the first `LetDecl` and queues the rest in `Parser::grouped_lets`;
+  the impl-item and statement collection loops append them. Each name gets
+  its own copy of the type and initializer; later stages see single lets.
+- TODO: public entity receiver methods marked deferred (owner decision).
+**Codex:** touches `syntax/parser.rs` (let parsing, collection loops).
