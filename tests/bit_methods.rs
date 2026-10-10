@@ -656,3 +656,64 @@ impl T {
         );
     }
 }
+
+/// A function with a loop, called from an operator body: its bound may read
+/// a negative `'low` (hardware unrolls it), and shifting a kernel integer in
+/// it keeps one word (a testbench stores it in its 64-bit local).
+#[cfg(feature = "llvm")]
+#[test]
+fn loops_in_functions_called_from_operator_bodies() {
+    let stdout = run(
+        "loops_in_operators",
+        r#"
+module loops_in_operators;
+struct G<W: integer, M: integer>(Logic[W - M - 1 .. 0 - M]);
+
+// Restoring division with a bound read off a negative `'low`.
+fn loopdiv<T>(a: integer, b: integer, format: T) -> integer {
+    let rest: integer = a;
+    let q: integer = 0;
+    for k in 0..(0 - format'low) + 1 {
+        if rest >= b {
+            q = (q << 1) + 1;
+            rest = (rest - b) << 1;
+        } else {
+            q = q << 1;
+            rest = rest << 1;
+        }
+    }
+    return q;
+}
+
+impl From<integer> for G {
+    fn from(value: integer) -> G { return value; }
+}
+
+impl Div<G, G> for G {
+    fn div(self, rhs: G) -> G {
+        let f: integer = 0 - self'low;
+        return loopdiv((1 << f) + integer(self), (1 << f) + integer(rhs), self);
+    }
+}
+
+entity Dut { a: G<8, 4> in, b: G<8, 4> in, y: G<8, 4> out }
+impl Dut { y = a / b; }
+
+#[test] entity T {}
+impl T {
+    let a: G<8, 4>; let b: G<8, 4>; let y: G<8, 4>;
+    let dut: Dut = { .a = a, .b = b, .y = y };
+    check: process {
+        a = G<8, 4>(3); b = G<8, 4>(9);
+        await 1ns;
+        let t: G<8, 4> = a / b;
+        print!("loops {} {}", integer(y), integer(t));
+    }
+}
+"#,
+    );
+    assert!(
+        stdout.lines().any(|printed| printed == "loops 24 24"),
+        "{stdout}"
+    );
+}

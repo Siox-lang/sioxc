@@ -8271,11 +8271,22 @@ fn source_value_width(
                     left,
                     right,
                 } => Some(value_width(left)?.max(value_width(right)?)),
+                // A constant shifted by a constant keeps every bit (`1 << 100`
+                // is multiword); any other kernel integer keeps its width, so
+                // `(1 << f) + x` stays the word its local is declared as.
                 ProcessValueKind::Binary {
                     operation: ProcessBinaryOp::Shl,
                     left,
                     right,
-                } => shifted_width(value_width(left)?, *right, context),
+                } => match crate::ir::process::arena_constant_integer(
+                    *left,
+                    &context.process_ir.values,
+                ) {
+                    Some(constant) if constant >= 0 => {
+                        shifted_width((128 - constant.leading_zeros()).max(1), *right, context)
+                    }
+                    _ => value_width(left),
+                },
                 ProcessValueKind::Select {
                     then_value,
                     else_value,

@@ -84,11 +84,12 @@ listed under LLVM and Output below.
 Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
-- 🔴 **Loops in nested function bodies.** A function with a `for` loop called
-  from an operator body (`impl Div for float`) fails hardware lowering with
-  "no value named …" for the caller's locals, and in a testbench a loop that
-  shifts a kernel integer (`rest = rest << 1`) widens its inferred width past
-  64 bits. Free functions calling looped functions work.
+- 🔴 **User newtypes as testbench values.** A testbench local of a user
+  struct over a sized vector (`struct W(Logic[7..0]); let w: W;`) fails with
+  "direct Process IR lowering is incomplete"; the std families work.
+- 🔴 **Non-constant loop bounds in hardware.** A hardware loop whose bound is
+  not constant once the arguments' shapes are known reports the caller's
+  locals as unknown names instead of naming the bound.
 - 🔴 **Runtime recursion and non-packed conversions.** Extend the currently
   supported inline-call and packed-value contract only with explicit frame,
   ownership, conversion and suspension semantics. Recursive runtime calls are

@@ -1493,6 +1493,9 @@ impl<'a> Lowering<'a> {
         match expression {
             Expr::Const(value) => Some(*value as i64),
             Expr::Canonical { value, .. } => self.constant_expr(&self.source_node(*value)),
+            // A negative bound (`format'low` of `float<32, 23>`) is bound as
+            // its negation.
+            Expr::Unary { op: UnOp::Neg, rhs } => self.constant_expr(rhs)?.checked_neg(),
             Expr::Binary { op, lhs, rhs } => {
                 let (left, right) = (self.constant_expr(lhs)?, self.constant_expr(rhs)?);
                 match op {
