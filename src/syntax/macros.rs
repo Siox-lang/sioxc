@@ -1119,12 +1119,9 @@ fn split_args(tokens: &[MacroToken]) -> Vec<Vec<MacroToken>> {
                 K::Gt | K::Shr => {
                     level = level.saturating_sub(if token.kind == K::Gt { 1 } else { 2 });
                     if level == 0 {
-                        if tokens
-                            .get(close + 1)
-                            .is_some_and(|next| {
-                                matches!(next.kind, K::LParen | K::LBrace | K::ColonColon)
-                            })
-                        {
+                        if tokens.get(close + 1).is_some_and(|next| {
+                            matches!(next.kind, K::LParen | K::LBrace | K::ColonColon)
+                        }) {
                             generic_open.insert(open);
                             generic_close.insert(close);
                         }
