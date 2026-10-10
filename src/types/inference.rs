@@ -176,8 +176,10 @@ impl<'a> Checker<'a> {
                 // integer/real arithmetic to f64. This applies only to
                 // arithmetic: a real shift count (or logical/custom operator)
                 // does not turn the whole expression into a real value.
-                if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
-                    && (matches!(lhs_ty, Ty::Real) || matches!(rhs_ty, Ty::Real))
+                if matches!(
+                    op,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem
+                ) && (matches!(lhs_ty, Ty::Real) || matches!(rhs_ty, Ty::Real))
                 {
                     return Ty::Real;
                 }

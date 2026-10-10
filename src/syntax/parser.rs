@@ -2096,6 +2096,7 @@ impl<'a> Parser<'a> {
             TokenKind::MinusEq => BinOp::Sub,
             TokenKind::StarEq => BinOp::Mul,
             TokenKind::SlashEq => BinOp::Div,
+            TokenKind::PercentEq => BinOp::Rem,
             TokenKind::AmpEq => BinOp::And,
             TokenKind::PipeEq => BinOp::Or,
             _ => return None,
@@ -2415,6 +2416,7 @@ impl<'a> Parser<'a> {
             let (op, lbp, rbp, consumed) = match self.kind() {
                 TokenKind::Star => (BinOp::Mul, 90, 91, 1),
                 TokenKind::Slash => (BinOp::Div, 90, 91, 1),
+                TokenKind::Percent => (BinOp::Rem, 90, 91, 1),
                 TokenKind::Plus => (BinOp::Add, 80, 81, 1),
                 TokenKind::Minus => (BinOp::Sub, 80, 81, 1),
                 TokenKind::Shl => (BinOp::Shl, 70, 71, 1),
@@ -3337,6 +3339,7 @@ impl<'a> Parser<'a> {
             TokenKind::Minus => "-",
             TokenKind::Star => "*",
             TokenKind::Slash => "/",
+            TokenKind::Percent => "%",
             TokenKind::Shl => "<<",
             // `>>` is deliberately absent: `close_generic` splits it into two
             // closing brackets so a bound like `struct Wrap<T: Meter<8>>`
@@ -4046,13 +4049,13 @@ mod tests {
     /// punctuation error. Eleven diagnostics for one unknown symbol.
     #[test]
     fn an_undeclared_operator_is_named() {
-        let diags = diagnostics("module m;\nimpl E { let a: integer = 1 % 2; }\n");
+        let diags = diagnostics("module m;\nimpl E { let a: integer = 1 ^ 2; }\n");
         assert_eq!(diags.len(), 1, "got {diags:#?}");
-        assert!(diags[0].message.contains("no operator `%` is declared"));
+        assert!(diags[0].message.contains("no operator `^` is declared"));
         assert!(diags[0]
             .help
             .as_ref()
-            .is_some_and(|h| h.contains("impl CustomOperator<\"%\", ")));
+            .is_some_and(|h| h.contains("impl CustomOperator<\"^\", ")));
     }
 
     /// A stray statement in an entity body used to be retried as a fresh port

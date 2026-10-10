@@ -344,6 +344,7 @@ impl<'a> Lexer<'a> {
             (Some(b'-'), Some(b'=')) => Some(TokenKind::MinusEq),
             (Some(b'*'), Some(b'=')) => Some(TokenKind::StarEq),
             (Some(b'/'), Some(b'=')) => Some(TokenKind::SlashEq),
+            (Some(b'%'), Some(b'=')) => Some(TokenKind::PercentEq),
             (Some(b'&'), Some(b'=')) => Some(TokenKind::AmpEq),
             (Some(b'|'), Some(b'=')) => Some(TokenKind::PipeEq),
             _ => None,
@@ -377,6 +378,14 @@ impl<'a> Lexer<'a> {
             b'!' => TokenKind::Bang,
             b'#' => TokenKind::Pound,
             b'$' => TokenKind::Dollar,
+            // `%` alone is the remainder; in a run of operator punctuation
+            // it is part of a custom operator.
+            b'%' if !self
+                .peek()
+                .is_some_and(|c| matches!(c, b'%' | b'^' | b'~' | b'?' | b'`')) =>
+            {
+                TokenKind::Percent
+            }
             b'%' | b'^' | b'~' | b'?' | b'`' => {
                 while self
                     .peek()

@@ -921,6 +921,7 @@ pub fn bin_op(op: &BinOp) -> &str {
         BinOp::Sub => "-",
         BinOp::Mul => "*",
         BinOp::Div => "/",
+        BinOp::Rem => "%",
         BinOp::And => "and",
         BinOp::Or => "or",
         BinOp::Custom { symbol, .. } => symbol,
@@ -939,7 +940,7 @@ pub fn bin_op(op: &BinOp) -> &str {
 /// required. Higher binds tighter; atoms/postfix are effectively infinite.
 fn bin_prec(op: &BinOp) -> u8 {
     match op {
-        BinOp::Mul | BinOp::Div => 90,
+        BinOp::Mul | BinOp::Div | BinOp::Rem => 90,
         BinOp::Add | BinOp::Sub => 80,
         BinOp::Shl | BinOp::Shr => 70,
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 60,

@@ -146,6 +146,8 @@ pub enum TokenKind {
     Star,
     /// `/`
     Slash,
+    /// `%`
+    Percent,
     /// `+=`
     PlusEq,
     /// `-=`
@@ -154,6 +156,8 @@ pub enum TokenKind {
     StarEq,
     /// `/=`
     SlashEq,
+    /// `%=`
+    PercentEq,
     /// `&=`
     AmpEq,
     /// `|=`
@@ -259,10 +263,12 @@ impl TokenKind {
             TokenKind::Minus => "`-`",
             TokenKind::Star => "`*`",
             TokenKind::Slash => "`/`",
+            TokenKind::Percent => "`%`",
             TokenKind::PlusEq => "`+=`",
             TokenKind::MinusEq => "`-=`",
             TokenKind::StarEq => "`*=`",
             TokenKind::SlashEq => "`/=`",
+            TokenKind::PercentEq => "`%=`",
             TokenKind::AmpEq => "`&=`",
             TokenKind::PipeEq => "`|=`",
             TokenKind::Shl => "`<<`",

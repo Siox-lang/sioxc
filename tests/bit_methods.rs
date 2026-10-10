@@ -202,3 +202,120 @@ impl T {
         );
     }
 }
+
+/// `%` is the remainder with the dividend's sign (Rust's and Verilog's `%`,
+/// VHDL's `rem`), the same in hardware and testbenches, on kernel integers,
+/// reals, `unsigned` and `signed`; `%=` desugars like `/=`.
+#[cfg(feature = "llvm")]
+#[test]
+fn remainder_takes_the_dividends_sign() {
+    let stdout = run(
+        "remainder",
+        r#"
+module remainder;
+entity Dut { a: unsigned[8] in, b: unsigned[8] in, s: signed[8] in, t: signed[8] in,
+    i: integer in, ur: unsigned[8] out, sr: signed[8] out, ir: integer out }
+impl Dut { ur = a % b; sr = s % t; ir = i % 4 + 1; }
+#[test] entity T {}
+impl T {
+    let a: unsigned[8] = 0; let b: unsigned[8] = 1; let s: signed[8] = 0; let t: signed[8] = 1;
+    let i: integer = 0;
+    let ur: unsigned[8]; let sr: signed[8]; let ir: integer;
+    let d: Dut = { .a = a, .b = b, .s = s, .t = t, .i = i, .ur = ur, .sr = sr, .ir = ir };
+    check: process {
+        a = 200; b = 7; s = 0 - 7; t = 2; i = 0 - 9;
+        await 1ns;
+        print!("hw {} {} {}", ur, sr, ir);
+        s = 7; t = 0 - 2; await 1ns; let p: signed[8] = sr;
+        s = 0 - 128; t = 0 - 1; await 1ns; let q: signed[8] = sr;
+        print!("hw signs {} {}", p, q);
+        let x: unsigned[8] = 200; let u: signed[8] = 0 - 7; let v: signed[8] = 2;
+        let n: integer = 0 - 9;
+        let w: signed[8] = 7; let m: signed[8] = 0 - 2;
+        let k: integer = 17;
+        k %= 5;
+        print!("tb {} {} {} {} {} {} {}", x % 7, u % v, n % 4 + 1, w % m, 7.5 % 2.0,
+            0.0 - 7.5 % 2.0, k);
+    }
+}
+"#,
+    );
+    for line in ["hw 4 -1 0", "hw signs 1 0", "tb 4 -1 0 1 1.5 -1.5 2"] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}
+
+/// A function returning `Logic[]` returns a vector of the size its body sets:
+/// a returned sized `let`, or a returned argument. Hardware and testbenches
+/// agree, including a slice written into the local.
+#[cfg(feature = "llvm")]
+#[test]
+fn logic_vector_results_take_their_size_from_the_body() {
+    let stdout = run(
+        "vector_results",
+        r#"
+module vector_results;
+fn same(v: Logic[]) -> Logic[] { return v; }
+fn make() -> Logic[] { let r: Logic[3..0] = "10XZ"; return r; }
+fn widen(v: Logic[]) -> Logic[] { let r: Logic[5..0] = "000000"; r[3..0] = v; return r; }
+entity Dut { a: Logic[3..0] in, x: Logic[3..0] out, y: Logic[3..0] out, z: Logic[5..0] out }
+impl Dut { x = same(a); y = make(); z = widen(a); }
+#[test] entity T {}
+impl T {
+    let a: Logic[3..0] = "1010"; let x: Logic[3..0]; let y: Logic[3..0]; let z: Logic[5..0];
+    let d: Dut = { .a = a, .x = x, .y = y, .z = z };
+    check: process {
+        await 1ns;
+        let b: Logic[3..0] = "1010";
+        print!("hw {} {} {}", x, y, z);
+        print!("tb {} {} {}", same(b), make(), widen(b));
+    }
+}
+"#,
+    );
+    for line in ["hw 1010 10XZ 001010", "tb 1010 10XZ 001010"] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}
+
+/// A `Logic` vector compared with a string literal or another vector, in
+/// hardware (one signal per element) and testbenches: identity per element,
+/// as VHDL's predefined `=` on `std_logic_vector`. Compared as text, the
+/// literal was never equal; in hardware the vector had no scalar form.
+#[cfg(feature = "llvm")]
+#[test]
+fn logic_vectors_compare_with_literals_and_vectors() {
+    let stdout = run(
+        "vector_compare",
+        r#"
+module vector_compare;
+entity Pass { a: Logic[3..0] in, b: Logic[3..0] in, e: Bool out, n: Bool out, s: Bool out }
+impl Pass { e = a == "1010"; n = a != b; s = a == b; }
+#[test] entity T {}
+impl T {
+    let a: Logic[3..0] = "1010"; let b: Logic[3..0] = "10X0";
+    let e: Bool; let n: Bool; let s: Bool;
+    let d: Pass = { .a = a, .b = b, .e = e, .n = n, .s = s };
+    check: process {
+        await 1ns;
+        let q: Logic[3..0] = "10XZ";
+        let text: string = "1010";
+        print!("hw {} {} {}", e, n, s);
+        print!("tb {} {} {} {} {}", q == "10XZ", "10XZ" == q, q != "10XZ", q == "1010", text == "1010");
+    }
+}
+"#,
+    );
+    for line in ["hw true true false", "tb true true false false true"] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}

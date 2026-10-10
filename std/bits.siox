@@ -48,6 +48,11 @@ impl Div<unsigned, unsigned> for unsigned {
     fn div(self, rhs: unsigned) -> unsigned { return self / rhs; }
 }
 
+// `%`: the kernel's unsigned remainder.
+impl Rem<unsigned, unsigned> for unsigned {
+    fn rem(self, rhs: unsigned) -> unsigned { return self % rhs; }
+}
+
 impl Shl<unsigned, unsigned> for unsigned {
     fn shl(self, rhs: unsigned) -> unsigned { return self << rhs; }
 }
@@ -186,6 +191,25 @@ impl Div<signed, signed> for signed {
             return 0 - (self / resize(0 - rhs, rhs'length));
         }
         return self / rhs;
+    }
+}
+
+// `%`, with the dividend's sign (`-7 % 2` is -1): the remainder of the
+// magnitudes, negated for a negative dividend. As in `/`, operands read as
+// raw words, so the sign is the top bit tested by hand (`!= 0`, which also
+// holds at 64 bits, where the kernel shift leaves -1).
+impl Rem<signed, signed> for signed {
+    fn rem(self, rhs: signed) -> signed {
+        if (integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) != 0 {
+            if (integer(resize(self, self'length)) >> (self'length - 1)) != 0 {
+                return 0 - (resize(0 - self, self'length) % resize(0 - rhs, rhs'length));
+            }
+            return self % resize(0 - rhs, rhs'length);
+        }
+        if (integer(resize(self, self'length)) >> (self'length - 1)) != 0 {
+            return 0 - (resize(0 - self, self'length) % rhs);
+        }
+        return self % rhs;
     }
 }
 

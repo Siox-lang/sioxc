@@ -16,6 +16,9 @@ pub trait Add<Rhs, Out> { fn add(self, rhs: Rhs) -> Out; }   // a + b
 pub trait Sub<Rhs, Out> { fn sub(self, rhs: Rhs) -> Out; }   // a - b
 pub trait Mul<Rhs, Out> { fn mul(self, rhs: Rhs) -> Out; }   // a * b
 pub trait Div<Rhs, Out> { fn div(self, rhs: Rhs) -> Out; }   // a / b
+// The remainder, with the dividend's sign: `-7 % 2 == -1`, as Rust's and
+// Verilog's `%` and VHDL's `rem`. The divisor-signed one is `std::math::mod`.
+pub trait Rem<Rhs, Out> { fn rem(self, rhs: Rhs) -> Out; }   // a % b
 pub trait Shl<Rhs, Out> { fn shl(self, rhs: Rhs) -> Out; }   // a << b
 pub trait Shr<Rhs, Out> { fn shr(self, rhs: Rhs) -> Out; }   // a >> b
 // `and`/`or`/`not` are one boolean-per-bit family, not rustc's bitwise and
@@ -235,6 +238,7 @@ attr lang for Add = "add";
 attr lang for Sub = "sub";
 attr lang for Mul = "mul";
 attr lang for Div = "div";
+attr lang for Rem = "rem";
 attr lang for Shl = "shl";
 attr lang for Shr = "shr";
 attr lang for And = "and";

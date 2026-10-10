@@ -16017,3 +16017,38 @@ the full goal active: the next probes cover declaration-owned operator/suffix/
 conversion formals and small arrays with struct strides not divisible by their
 natural alignment, alongside remaining checked/effectful/partial and plane
 work. The docs are already included in sibling fea7bb0. No push.
+
+### 2026-10-09 — Claude — `%` (core `Rem`), unsized vector returns
+
+Owner-requested, branch `feat/rem-operator`.
+- `%` is a core operator: `core::ops::Rem` (lang `rem`), `TokenKind::Percent`
+  / `PercentEq`, `ast::BinOp::Rem` at precedence 90; IR ops
+  `ProcessBinaryOp::{Rem, SignedRem, FloatRem}` and `BinOp::{Rem, SRem, FRem}`
+  lowered to urem/srem/frem (total: zero divisor and `MIN % -1` yield 0).
+  `unsigned`/`signed` impls in `std::bits`. `%` alone no longer lexes as a
+  custom-operator symbol (runs like `%%` still do).
+- Functions returning `Logic[]`/`unsigned` take their size from the body
+  (`source_bindings::returned_shapes`), in both lowering paths; hardware
+  element/slice writes into array locals; testbench constant-range slice
+  writes to array locals become element assignments.
+- Logic vector `==`/`!=` against a string literal or vector: element-wise
+  in hardware (`array_comparison`), literal context-typed in the Process path.
+- Fixed a #40 bug: CFG normalization re-mapped `print!` format parts to
+  arguments by position, which broke whenever a composite printed as its
+  parts in a block that needed normalization (any call).
+**Codex:** touches syntax lexer/parser/ast, both IR BinOp enums, llvm
+`process/binary.rs`, `cfg_calls.rs` Runtime normalization, `calls.rs`.
+
+### 2026-10-10 — Codex — PR 45 merge acceptance
+
+Guarded acceptance 4093523 is terminal exited/success/0, peak 1612705792
+bytes. Frozen source hash 3f9659c19c30c90c66c423a49c80507ede69bb34f46996b0221239f8ac9374ca
+is unchanged. Formatting, artifact/frontend checks, 537/516 default/bitpack
+units, all integrations (eleven native DWARF fixtures per mode), strict Clippy,
+four 228-program corpora and four native FIFO/wide GDB/VCD smokes pass.
+AST-only refresh succeeds with 5355 nodes, 15255 edges and 249 communities;
+known vendored C/header partial extraction warnings remain. Staged PR #45
+snapshot 52d7c49 matches merge-tree outside chat. Commit that captured merge
+first, then the separately owned declaration-formal batch. Keep later main
+updates, foreign AGENTS/.codex and 441 historical chat insertions outside these
+commits. Full DWARF remains active; no push.

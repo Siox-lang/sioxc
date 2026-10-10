@@ -1587,6 +1587,7 @@ fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
                 BinOp::Sub => a.checked_sub(b).map(Int).unwrap_or(Unknown),
                 BinOp::Mul => a.checked_mul(b).map(Int).unwrap_or(Unknown),
                 BinOp::Div => a.checked_div(b).map(Int).unwrap_or(Unknown),
+                BinOp::Rem => a.checked_rem(b).map(Int).unwrap_or(Unknown),
                 BinOp::Shl => u32::try_from(b)
                     .ok()
                     .and_then(|shift| a.checked_shl(shift))

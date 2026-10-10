@@ -1080,6 +1080,9 @@ pub enum BinOp {
     Mul,
     /// Division, `/`.
     Div,
+    /// Remainder, `%`: the dividend's sign, as Rust's and Verilog's `%` and
+    /// VHDL's `rem`.
+    Rem,
     /// Conjunction, `and` — scalar boolean or per-element, by operand type.
     /// One of the two core textual binary operators.
     And,
@@ -1129,6 +1132,7 @@ impl BinOp {
                 | BinOp::Sub
                 | BinOp::Mul
                 | BinOp::Div
+                | BinOp::Rem
                 | BinOp::Shl
                 | BinOp::Shr
                 | BinOp::And
@@ -1291,6 +1295,7 @@ pub const OPERATOR_TRAITS: &[(&str, &str, &str)] = &[
     ("Sub", "-", "sub"),
     ("Mul", "*", "mul"),
     ("Div", "/", "div"),
+    ("Rem", "%", "rem"),
     ("Shl", "<<", "shl"),
     ("Shr", ">>", "shr"),
     ("And", "and", "and"),

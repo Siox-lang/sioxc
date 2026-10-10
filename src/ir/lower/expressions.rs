@@ -338,6 +338,9 @@ impl<'a> Lowering<'a> {
                 {
                     return native;
                 }
+                if let Some(compared) = self.array_comparison(op, lhs, rhs, &HashMap::new()) {
+                    return compared;
+                }
                 // Every route to a comparison is marked, because they all owe
                 // the same answer: an operator impl, an `Eq`/`Ord` method,
                 // and the built-in below.
@@ -712,6 +715,78 @@ impl<'a> Lowering<'a> {
             &operand(rhs),
             ast::expr_span(lhs).to(ast::expr_span(rhs)),
         )
+    }
+
+    /// `a == b` and `a != b` on arrays (`Logic[3..0]` is one signal per
+    /// element in hardware): element by element, identity on each element as
+    /// VHDL's predefined `=` on `std_logic_vector`. A string literal beside an
+    /// enum-element array is its symbols (`a == "10XZ"`).
+    pub(super) fn array_comparison(
+        &self,
+        op: &ast::BinOp,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Expr> {
+        if !matches!(op, ast::BinOp::Eq | ast::BinOp::Ne) {
+            return None;
+        }
+        let array = |expression: &ast::Expr| {
+            let layout = self.source_operand_layout(expression, env)?;
+            let LayoutKind::Array {
+                range: Some(range),
+                element,
+            } = &layout.kind
+            else {
+                return None;
+            };
+            let Val::Fields(fields) = self.lower_val_env(expression, env) else {
+                return None;
+            };
+            let fields = fields.into_iter().collect::<HashMap<_, _>>();
+            let elements = loop_range(range.left, range.right)
+                .into_iter()
+                .map(|label| fields.get(&format!("[{label}]")).cloned())
+                .collect::<Option<Vec<_>>>()?;
+            let symbols = matches!(
+                element.kind,
+                LayoutKind::Scalar {
+                    domain: crate::ir::ScalarDomain::Enum(_),
+                    ..
+                }
+            );
+            Some((elements, symbols))
+        };
+        let literal = |expression: &ast::Expr| match expression {
+            ast::Expr::StrLit { text, .. } => {
+                Some(text.chars().map(Expr::Logic).collect::<Vec<_>>())
+            }
+            _ => None,
+        };
+        let (left, right) = match (literal(lhs), literal(rhs)) {
+            (None, None) => (array(lhs)?.0, array(rhs)?.0),
+            (None, Some(right)) => {
+                let (left, symbols) = array(lhs)?;
+                symbols.then_some((left, right))?
+            }
+            (Some(left), None) => {
+                let (right, symbols) = array(rhs)?;
+                symbols.then_some((left, right))?
+            }
+            (Some(_), Some(_)) => return None,
+        };
+        if left.len() != right.len() {
+            return None;
+        }
+        let span = ast::expr_span(lhs).to(ast::expr_span(rhs));
+        let (element, join) = match op {
+            ast::BinOp::Eq => (BinOp::Eq, BinOp::And),
+            _ => (BinOp::Ne, BinOp::Or),
+        };
+        left.iter()
+            .zip(&right)
+            .map(|(left, right)| self.source_binary(element, left, right, span))
+            .reduce(|all, next| self.source_binary(join, &all, &next, span))
     }
 
     /// Inline an operator impl's body at the call site, since hardware has no

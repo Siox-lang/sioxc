@@ -230,7 +230,10 @@ impl<'a> Lowering<'a> {
             Expr::Real(_) => true,
             Expr::Current(id) | Expr::Old(id) => self.out.signals[id.0 as usize].real,
             Expr::Binary { op, .. } => {
-                matches!(op, BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv)
+                matches!(
+                    op,
+                    BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv | BinOp::FRem
+                )
             }
             Expr::Select { then, els, .. } => self.is_real_expr(then) || self.is_real_expr(els),
             Expr::CCall { f64_ret, .. } => *f64_ret,
@@ -276,7 +279,9 @@ impl<'a> Lowering<'a> {
                             | BinOp::Mul
                             | BinOp::SMul
                             | BinOp::Div
-                            | BinOp::SDiv,
+                            | BinOp::Rem
+                            | BinOp::SDiv
+                            | BinOp::SRem,
                         ..
                     } => self.coerce_real(node, span),
                     // An integer call/read/conversion/bit operation is already
@@ -319,6 +324,7 @@ impl<'a> Lowering<'a> {
                     BinOp::Sub | BinOp::SSub => Some(BinOp::FSub),
                     BinOp::Mul | BinOp::SMul => Some(BinOp::FMul),
                     BinOp::Div | BinOp::SDiv => Some(BinOp::FDiv),
+                    BinOp::Rem | BinOp::SRem => Some(BinOp::FRem),
                     _ => None,
                 };
                 match fop {
@@ -420,6 +426,7 @@ impl<'a> Lowering<'a> {
                 ast::BinOp::Sub => BinOp::FSub,
                 ast::BinOp::Mul => BinOp::FMul,
                 ast::BinOp::Div => BinOp::FDiv,
+                ast::BinOp::Rem => BinOp::FRem,
                 // Comparisons need ordered float semantics, not integer compare
                 // on the bit patterns (which misorders negatives / `±0.0`).
                 ast::BinOp::Eq => BinOp::FEq,
@@ -453,6 +460,7 @@ impl<'a> Lowering<'a> {
                         BinOp::Sub => BinOp::SSub,
                         BinOp::Mul => BinOp::SMul,
                         BinOp::Div => BinOp::SDiv,
+                        BinOp::Rem => BinOp::SRem,
                         BinOp::Shr => BinOp::AShr,
                         BinOp::Lt => BinOp::SLt,
                         BinOp::Le => BinOp::SLe,
