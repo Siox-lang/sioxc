@@ -84,6 +84,11 @@ listed under LLVM and Output below.
 Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
+- 🔴 **Loops in nested function bodies.** A function with a `for` loop called
+  from an operator body (`impl Div for float`) fails hardware lowering with
+  "no value named …" for the caller's locals, and in a testbench a loop that
+  shifts a kernel integer (`rest = rest << 1`) widens its inferred width past
+  64 bits. Free functions calling looped functions work.
 - 🔴 **Runtime recursion and non-packed conversions.** Extend the currently
   supported inline-call and packed-value contract only with explicit frame,
   ownership, conversion and suspension semantics. Recursive runtime calls are
@@ -196,8 +201,9 @@ Owns user-visible types, traits, operators, attributes, simulation helpers,
 math/text/file services, and small technology-independent helpers. Code: `std/`.
 
 - 🟡 **Library build-out.** Synchronizers, fixed-point families and initial
-  floating-point operators exist. Remaining: floating-point division/square
-  root/subnormals/rounding modes and fixed-point conversions; optionally
+  floating-point operators exist. Remaining: floating-point square
+  root/subnormals/rounding modes, and binary64 `*`/`/` (their significand
+  product and dividend need more than the 64-bit kernel word); optionally
   generic vectors/matrices. Each needs
   executable conformance tests. Fixed point is complete, `resize` styles
   included. See

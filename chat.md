@@ -13793,3 +13793,19 @@ Owner-requested. Branch `feat/group-declaration`.
   its own copy of the type and initializer; later stages see single lets.
 - TODO: public entity receiver methods marked deferred (owner decision).
 **Codex:** touches `syntax/parser.rs` (let parsing, collection loops).
+
+### 2026-10-10 — Claude — float division, fixed <-> float conversions
+
+Owner-requested (TODO std item). Branch `feat/float-div-conversions`.
+- std::float: `impl Div<float, float>` (IEEE, nearest even; one kernel
+  division with a sticky bit, valid up to 29 mantissa bits),
+  `From<ufixed|sfixed> for float`, `From<float> for ufixed|sfixed`.
+- `inline_process_binary_operator`: an operator declared `-> Self`/its
+  family returns the left operand's type when the checker recorded none
+  (a conversion's argument); `float`'s kernel-word result used to make
+  `sfixed<8, 4>(a - b)` pick `From<integer>`.
+- TODO: binary64 `*`/`/` need wider kernel arithmetic (binary64 `*` is
+  already wrong on main: 1.5 * 3.0 = inf); loops in functions called from
+  operator bodies fail (hardware: unresolved caller locals; testbench:
+  shifted kernel integers widen past 64 bits).
+**Codex:** touches `ir/lower/source_processes.rs` (binary operator return type).

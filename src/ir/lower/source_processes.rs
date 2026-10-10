@@ -6616,6 +6616,16 @@ fn inline_process_binary_operator(
         right_type.as_ref().or(Some(&left_type))
     };
     let right = value_ref_with_type(rhs, process, context, right_context);
+    // An operator declared to return its own type (`-> float`, `-> Self`)
+    // returns the left operand's, also where the checker recorded none (an
+    // argument of a conversion): `float`'s bodies compute in kernel words,
+    // and that word's type must not stand in for the format.
+    let own_type = function
+        .ret
+        .as_ref()
+        .and_then(crate::ir::lower_helpers::type_head_name)
+        .is_some_and(|head| head == "Self" || owner.rsplit("::").next() == Some(head));
+    let return_type = return_type.or(own_type.then_some(&left_type));
     let result = inline_process_function(
         function,
         Some(left),
