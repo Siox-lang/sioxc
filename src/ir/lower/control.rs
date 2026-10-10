@@ -582,6 +582,7 @@ impl<'a> Lowering<'a> {
                                 span: *span,
                             }),
                             type_args: Vec::new(),
+                            qualifier: None,
                             args: vec![ast::Expr::CharLit {
                                 ch: symbol,
                                 span: *span,

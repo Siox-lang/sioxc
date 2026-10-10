@@ -1150,10 +1150,14 @@ impl Rewriter<'_> {
             Expr::Call {
                 callee,
                 type_args,
+                qualifier,
                 args,
                 span,
                 ..
             } => {
+                if let Some(qualifier) = qualifier {
+                    self.ty(qualifier, env, sink);
+                }
                 if let Expr::Index { base, .. } = callee.as_ref() {
                     if let Expr::Path(p) = base.as_ref() {
                         self.reject_format_range(p, env, sink);

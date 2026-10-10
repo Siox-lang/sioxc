@@ -13746,3 +13746,21 @@ Owner-requested (TODO item). Branch `feat/match-arm-analysis`.
   (`DEPTH + 1..`).
 **Codex:** touches `types/{patterns,helpers,statements,collect,mod}.rs`,
 `diag.rs`/`diag/lints.rs` (new code), `syntax/parser.rs` pattern atom.
+
+### 2026-10-10 — Claude — `T<args>::f(x)`, fixed/float resize styles
+
+Owner-requested (TODO std item). Branch `feat/fixed-resize-styles`.
+- `ast::Expr::Call` gains `qualifier: Option<Box<Type>>`: the `Self` of an
+  associated call on an applied type, `ufixed<6, 2>::resize(x)` (callee stays
+  the path `ufixed::resize`). Parser postfix arm; import pass expands it
+  (`ufixed[1..-2]`); resolve walks it; the checker types the result as it.
+- Lowering: hardware `lower_family_from`'s body is now `inline_in_format`
+  (binds every parameter), shared with `lower_qualified_call`; Process path
+  `lower_process_family_from` likewise shares `inline_with_self_format` with
+  `lower_process_qualified_call`.
+- Macro `split_args` nests a `<...>` followed by `::` like one followed by `(`.
+- std: `std::numeric::{Overflow, Rounding}`; `ufixed`/`sfixed::resize`,
+  `float::resize`, `From<float> for float`, `encode_styled` (roundTowardZero).
+**Codex:** touches `syntax/{ast,parser,pretty,imports,macros}.rs`,
+`resolve.rs`, `types/{inference,expressions}.rs`, `ir/lower/{calls,expressions,values}.rs`,
+`source_processes.rs` (family-from helpers), `lower_helpers/substitute.rs`.

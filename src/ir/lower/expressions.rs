@@ -9,7 +9,17 @@ impl<'a> Lowering<'a> {
             return value;
         }
         match e {
-            ast::Expr::Call { callee, args, .. } => {
+            ast::Expr::Call {
+                callee,
+                args,
+                qualifier,
+                ..
+            } => {
+                if let Some(value) = qualifier.as_deref().and_then(|qualifier| {
+                    self.lower_qualified_call(qualifier, callee, args, &HashMap::new())
+                }) {
+                    return value;
+                }
                 // `T()` — the nullary constructor — resolves to the type's
                 // default before any free-fn/conversion lookup (scalar context).
                 if let Some(Val::Scalar(v)) = self.lower_new(callee, args) {

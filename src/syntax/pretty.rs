@@ -1081,10 +1081,19 @@ fn expr_inner(e: &Expr) -> (String, u8) {
         Expr::Call {
             callee,
             type_args,
+            qualifier,
             args,
             bang,
             span,
         } => {
+            if let (Some(qualifier), Expr::Path(path)) = (qualifier, callee.as_ref()) {
+                let a = args.iter().map(expr).collect::<Vec<_>>().join(", ");
+                let name = path.segments.last().map_or("", |s| s.text.as_str());
+                return (
+                    format!("{}::{name}({a})", type_str(qualifier)),
+                    POSTFIX_PREC,
+                );
+            }
             if *bang {
                 if let Some(args) = macro_call_args(*span) {
                     return (

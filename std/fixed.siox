@@ -1,5 +1,7 @@
 module std::fixed;
 
+use std::numeric::{Overflow, Rounding};
+
 
 // Fixed-point numbers, after VHDL-2008's `fixed_pkg`. The parameters are the
 // format: W bits in all, F of them fraction.
@@ -165,6 +167,52 @@ impl From<sfixed> for sfixed {
             sext_word(word(value), value'length), 0 - value'low, Self'high, Self'low, true
         );
     }
+}
+
+// `ufixed<6, 2>::resize(x, Overflow::Wrap, Rounding::Truncate)`: `x` in the
+// format `Self` names, with VHDL's resize styles chosen explicitly. Wrap with
+// truncate is a plain bit selection; the constructor `ufixed<6, 2>(x)` is
+// saturate with round to nearest.
+impl ufixed {
+    pub fn resize(value: ufixed, overflow: Overflow, rounding: Rounding) -> ufixed {
+        return restyle(
+            word(value), 0 - value'low, Self'high, Self'low, false, overflow, rounding
+        );
+    }
+}
+
+impl sfixed {
+    pub fn resize(value: sfixed, overflow: Overflow, rounding: Rounding) -> sfixed {
+        return restyle(
+            sext_word(word(value), value'length), 0 - value'low, Self'high, Self'low, true,
+            overflow, rounding
+        );
+    }
+}
+
+// `rescale` with explicit styles. A wrapped value keeps the low bits of the
+// format, as a two's-complement word.
+fn restyle(
+    n: integer, fraction: integer, left: integer, right: integer, is_signed: Bool,
+    overflow: Overflow, rounding: Rounding
+) -> integer {
+    let scaled: integer = if rounding == Rounding::Truncate {
+        floor_scale(n, fraction, right)
+    } else {
+        scale(n, fraction, right)
+    };
+    if overflow == Overflow::Wrap {
+        let width: integer = left - right + 1;
+        return scaled - ((scaled >> width) << width);
+    }
+    return clamp(scaled, smallest(left, right, is_signed), largest(left, right, is_signed));
+}
+
+// `n` with `fraction` fraction bits, as steps of `2^right`, rounded toward
+// minus infinity.
+fn floor_scale(n: integer, fraction: integer, right: integer) -> integer {
+    if 0 - right >= fraction { return n << (0 - right - fraction); }
+    return floor_div(n, 1 << (fraction + right));
 }
 
 // The number `n`, with `fraction` fraction bits, in the format

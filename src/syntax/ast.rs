@@ -1005,6 +1005,11 @@ pub enum Expr {
         /// and a parameterized type's constructor `float<32, 23>(x)`.
         /// Ordinary generic functions infer their parameters from values.
         type_args: Vec<GenericArg>,
+        /// The `Self` type of an associated call written with type
+        /// arguments, `ufixed<6, 2>::resize(x)`: `ufixed<6, 2>`, while
+        /// `callee` names the function (`ufixed::resize`). Inside the
+        /// function `Self'high`/`'low` describe this type.
+        qualifier: Option<Box<Type>>,
         /// The value arguments, in order.
         args: Vec<Expr>,
         /// Whether the call was written with `!`, as in `assert!(...)`.

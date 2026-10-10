@@ -2021,6 +2021,7 @@ impl<'a> Parser<'a> {
                 Stmt::Expr(Expr::Call {
                     callee: Box::new(callee),
                     type_args: Vec::new(),
+                    qualifier: None,
                     args: vec![arg],
                     bang: false,
                     span,
@@ -2726,6 +2727,42 @@ impl<'a> Parser<'a> {
                     e = Expr::Call {
                         callee: Box::new(e),
                         type_args: Vec::new(),
+                        qualifier: None,
+                        args,
+                        bang: false,
+                        span: start.to(self.prev_span()),
+                    };
+                }
+                // `ufixed<6, 2>::resize(x)`: an associated function of an
+                // applied type, which is the call's `Self`.
+                TokenKind::Lt
+                    if matches!(e, Expr::Path(_))
+                        && self.matched_angle_end(self.pos).is_some_and(|end| {
+                            self.kind_at(end) == &TokenKind::ColonColon
+                                && self.kind_at(end + 1) == &TokenKind::Ident
+                        }) =>
+                {
+                    let Expr::Path(mut path) = e else {
+                        unreachable!()
+                    };
+                    let args = self.parse_generic_args();
+                    let qualifier = Type::Generic {
+                        base: Box::new(Type::Path(path.clone())),
+                        args,
+                        span: start.to(self.prev_span()),
+                    };
+                    while self.eat(TokenKind::ColonColon) {
+                        path.segments.push(self.parse_ident());
+                    }
+                    path.span = start.to(self.prev_span());
+                    if !self.at(TokenKind::LParen) {
+                        self.error_here("expected `(`: a type with arguments heads a call");
+                    }
+                    let args = self.parse_call_args();
+                    e = Expr::Call {
+                        callee: Box::new(Expr::Path(path)),
+                        type_args: Vec::new(),
+                        qualifier: Some(Box::new(qualifier)),
                         args,
                         bang: false,
                         span: start.to(self.prev_span()),
@@ -2749,6 +2786,7 @@ impl<'a> Parser<'a> {
                     e = Expr::Call {
                         callee: Box::new(e),
                         type_args,
+                        qualifier: None,
                         args,
                         bang: false,
                         span: start.to(self.prev_span()),
@@ -2787,6 +2825,7 @@ impl<'a> Parser<'a> {
                     e = Expr::Call {
                         callee: Box::new(e),
                         type_args: Vec::new(),
+                        qualifier: None,
                         args,
                         bang: true,
                         span,
@@ -3045,6 +3084,7 @@ impl<'a> Parser<'a> {
                 Expr::Call {
                     callee: Box::new(callee),
                     type_args: Vec::new(),
+                    qualifier: None,
                     args,
                     bang: true,
                     span: start.to(self.prev_span()),

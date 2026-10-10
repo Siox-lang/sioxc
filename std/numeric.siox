@@ -21,3 +21,19 @@ pub fn clog2(n: integer) -> integer {
     if n <= 1 { return 0; }
     return 1 + clog2((n + 1) / 2);
 }
+
+// How a value that does not fit a narrower format is brought into it, for the
+// `resize` of `ufixed`/`sfixed` (VHDL's `fixed_overflow_style_type`).
+pub enum Overflow {
+    Saturate,   // the nearest value the format holds
+    Wrap,       // drop the bits above the format (no hardware at all)
+}
+
+// How bits below a format's last step are dropped, for the `resize` of
+// `ufixed`/`sfixed`/`float` (VHDL's `fixed_round_style_type`).
+pub enum Rounding {
+    Nearest,    // to the nearest step: ties away from zero for fixed point,
+                // to even for floating point
+    Truncate,   // fixed point: toward minus infinity (drop the bits);
+                // floating point: toward zero
+}

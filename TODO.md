@@ -196,9 +196,8 @@ math/text/file services, and small technology-independent helpers. Code: `std/`.
   floating-point operators exist. Remaining: floating-point division/square
   root/subnormals/rounding modes and fixed-point conversions; optionally
   generic vectors/matrices. Each needs
-  executable conformance tests. Fixed-point division and the
-  nearest/saturating resize are done; wrap and truncate resize styles remain.
-  See
+  executable conformance tests. Fixed point is complete, `resize` styles
+  included. See
   [the remaining proposal](docs/proposals/std-buildout.md). Memories, FIFOs and
   stream adapters are IP for vendor packages and libraries, not std.
 - 🟡 **API reference.** Keep [`siox-paper/docs/std.md`](https://github.com/Siox-lang/siox-paper/blob/main/docs/std.md) synchronized with each

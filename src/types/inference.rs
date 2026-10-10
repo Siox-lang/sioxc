@@ -316,7 +316,12 @@ impl<'a> Checker<'a> {
             }
             // Conversion expressions type as their target (spec 3.17):
             // `unsigned[16](x)`, `signed[8](x)`, `integer(x)`, `resize(x, n)`.
-            Expr::Call { callee, args, .. } => match callee.as_ref() {
+            Expr::Call {
+                callee,
+                args,
+                qualifier,
+                ..
+            } => match callee.as_ref() {
                 Expr::Index { base, index, .. } => {
                     let head = match base.as_ref() {
                         Expr::Path(path) => self.path_key(path),
@@ -371,6 +376,20 @@ impl<'a> Checker<'a> {
                         .unwrap_or_else(|| owner_segment.text.clone());
                     let name = &path.segments[path.segments.len() - 1].text;
                     match self.methods.get(&(owner.clone(), name.clone())) {
+                        // `ufixed<6, 2>::resize(x)`: the applied type is
+                        // `Self`, and so is a result of the bare family.
+                        Some(Some(ret)) if qualifier.is_some() => {
+                            let applied = qualifier
+                                .as_deref()
+                                .map_or(Ty::Error, |qualifier| self.ast_ty(qualifier));
+                            if matches!(ret, Type::Path(_))
+                                && self.type_key(ret).as_deref() == Some(owner.as_str())
+                            {
+                                applied
+                            } else {
+                                self.ast_ty_for_owner(ret, &applied)
+                            }
+                        }
                         Some(Some(ret)) => self.ast_ty_for_owner(ret, &self.ty_from_head(&owner)),
                         Some(None) => Ty::Void,
                         None if name == "new" && self.is_conversion_name(&owner) => {

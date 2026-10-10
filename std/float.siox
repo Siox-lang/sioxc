@@ -1,6 +1,7 @@
 module std::float;
 
 use std::bits::unsigned;
+use std::numeric::Rounding;
 
 // Floating point, after VHDL-2008's `float_pkg`. The parameters are the
 // format: W bits in all, M of them the mantissa (fraction).
@@ -70,12 +71,28 @@ fn nan_word(e: integer, f: integer) -> integer {
 // format: normalized to `f + 1` significant bits, rounded to nearest even,
 // infinite above the range and zero below it.
 fn encode(sign: integer, exponent: integer, m: integer, point: integer, e: integer, f: integer) -> integer {
+    return encode_styled(sign, exponent, m, point, e, f, false);
+}
+
+// `encode`, or with `truncate` rounded toward zero instead (IEEE
+// roundTowardZero): beyond the range it is then the largest finite number.
+fn encode_styled(
+    sign: integer, exponent: integer, m: integer, point: integer, e: integer, f: integer,
+    truncate: Bool
+) -> integer {
     let top: integer = msb(m);
-    let scaled: integer = if top > f { round_shift(m, top - f) } else { m << (f - top) };
+    let scaled: integer = if top <= f {
+        m << (f - top)
+    } else if truncate {
+        m >> (top - f)
+    } else {
+        round_shift(m, top - f)
+    };
     let carry: integer = scaled >> (f + 1);
     let significand: integer = scaled >> carry;
     let biased: integer = exponent + (top - point) + carry;
     if m == 0 { return pack(sign, 0, 0, e, f); }
+    if biased >= (1 << e) - 1 and truncate { return pack(sign, (1 << e) - 2, (1 << f) - 1, e, f); }
     if biased >= (1 << e) - 1 { return infinity_word(sign, e, f); }
     if biased <= 0 { return pack(sign, 0, 0, e, f); }
     return pack(sign, biased, significand - (1 << f), e, f);
@@ -291,6 +308,41 @@ impl From<integer> for float {
     fn from(value: integer) -> float {
         return float_word(real(value), Self'high, 0 - Self'low);
     }
+}
+
+// `float<16, 10>(x)` from another format: rounded to nearest even, infinite
+// beyond the range and zero below it.
+impl From<float> for float {
+    fn from(value: float) -> float {
+        return refloat(integer(value), value'high, 0 - value'low, Self'high, 0 - Self'low, false);
+    }
+}
+
+// `float<16, 10>::resize(x, Rounding::Truncate)`: `x` in the format `Self`
+// names, rounded as chosen. Overflow follows IEEE-754 for the rounding: to
+// nearest it is infinite, truncated it is the largest finite number.
+impl float {
+    pub fn resize(value: float, rounding: Rounding) -> float {
+        return refloat(
+            integer(value), value'high, 0 - value'low, Self'high, 0 - Self'low,
+            rounding == Rounding::Truncate
+        );
+    }
+}
+
+// The word `a`, with `ea` exponent and `fa` fraction bits, in the format with
+// `e` and `f`. NaN, infinity and zero carry over; a subnormal is zero.
+fn refloat(a: integer, ea: integer, fa: integer, e: integer, f: integer, truncate: Bool) -> integer {
+    let sign: integer = low_bits(a >> (ea + fa), 1);
+    let exponent: integer = low_bits(a >> fa, ea);
+    let fraction: integer = low_bits(a, fa);
+    if exponent == (1 << ea) - 1 {
+        return if fraction == 0 { infinity_word(sign, e, f) } else { nan_word(e, f) };
+    }
+    if exponent == 0 { return pack(sign, 0, 0, e, f); }
+    let bias: integer = (1 << (e - 1)) - 1;
+    let bias_in: integer = (1 << (ea - 1)) - 1;
+    return encode_styled(sign, exponent - bias_in + bias, (1 << fa) + fraction, fa, e, f, truncate);
 }
 
 // The word of `value` with `e` exponent and `f` fraction bits.

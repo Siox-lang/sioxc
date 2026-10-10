@@ -1099,9 +1099,10 @@ impl Expander<'_> {
 
 /// A call's arguments, split at top-level commas. A trailing comma is
 /// allowed; no tokens are no arguments. A generic argument list in call or
-/// construction position (`float<32, 23>(x)`) nests like a bracket, by the
-/// parser's own rule: a `<` after a name whose matching `>` is followed by
-/// `(` or `{`. Any other `<` is a comparison.
+/// construction position (`float<32, 23>(x)`, `ufixed<6, 2>::resize(x)`)
+/// nests like a bracket, by the parser's own rule: a `<` after a name whose
+/// matching `>` is followed by `(`, `{` or `::`. Any other `<` is a
+/// comparison.
 fn split_args(tokens: &[MacroToken]) -> Vec<Vec<MacroToken>> {
     use TokenKind as K;
     let mut generic_close = HashSet::new();
@@ -1120,7 +1121,9 @@ fn split_args(tokens: &[MacroToken]) -> Vec<Vec<MacroToken>> {
                     if level == 0 {
                         if tokens
                             .get(close + 1)
-                            .is_some_and(|next| matches!(next.kind, K::LParen | K::LBrace))
+                            .is_some_and(|next| {
+                                matches!(next.kind, K::LParen | K::LBrace | K::ColonColon)
+                            })
                         {
                             generic_open.insert(open);
                             generic_close.insert(close);
