@@ -441,7 +441,7 @@ impl<'a> Lowering<'a> {
                 .as_ref()
                 .map(|ty| self.source_layout(ty, &self.cur_env)),
         );
-        match self.inline_source_function(f, self.cur_span.unwrap_or(f.span), &mut env)? {
+        match self.inline_source_function(f, self.cur_span.unwrap_or(f.span), &mut env, None)? {
             Val::Scalar(e) => Some(e),
             _ => None,
         }

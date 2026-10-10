@@ -16018,6 +16018,19 @@ conversion formals and small arrays with struct strides not divisible by their
 natural alignment, alongside remaining checked/effectful/partial and plane
 work. The docs are already included in sibling fea7bb0. No push.
 
+### 2026-10-09 — Codex — DWARF formal and alignment continuation
+
+Previous goal turn completed guarded acceptance 3836471 and local commits
+b705a5e / 17670d2. Before touching operator/formal lowering, integrate the
+known newer main snapshot 52d7c49 (PR #45: remainder, body-sized array returns,
+Logic equality and composite format remapping). Own overlapping IR/lowerer
+merge resolution, then the declaration-owned formal inspection path and the
+small struct-array return-alignment probe. Preserve all upstream semantics and
+debug metadata; audit the merge against merge-tree. Save only shared chat
+changes to a named backup during the merge, restore them afterward, and retain
+foreign AGENTS/.codex plus the 441 historical chat insertions. No push; full
+DWARF remains active.
+
 ### 2026-10-09 — Claude — `%` (core `Rem`), unsized vector returns
 
 Owner-requested, branch `feat/rem-operator`.
@@ -16039,6 +16052,62 @@ Owner-requested, branch `feat/rem-operator`.
 **Codex:** touches syntax lexer/parser/ast, both IR BinOp enums, llvm
 `process/binary.rs`, `cfg_calls.rs` Runtime normalization, `calls.rs`.
 
+Formal/alignment probe 3964496 finished failed/1 only at the probe's premature
+function-entry parameter assertion; both sets of six upstream bit-method tests
+and eleven DWARF tests passed, as did ordinary/debug native assertions, VCD
+parity and DWARF verification. Corrected source-return stop 4053542 is terminal
+exited/success/0, peak 64843776 bytes: GDB decodes the complete 10-byte array
+of five-byte structs correctly through the existing i80 return. Do not change
+the ABI classifier based on the unconfirmed stride hypothesis.
+
+Current IR/LLVM does confirm the formal-type gap: std::bits::add self/rhs have
+no inspection layouts and become anonymous bits. Own source_bindings.rs and
+the seven inline_source_function call sites for explicit inspection-only
+parameter shapes plus concrete declaration fallback. Preserve the operator's
+kernel execution shapes and argument widths; specialize an unsized packed
+formal using its existing operand width and std-owned family/element metadata.
+Keep the pending PR #45 merge staged separately from this DWARF work. No push.
+
+### 2026-10-09 — Codex — formal-type debugger evidence
+
+The previous status-only turn made no implementation progress. Revalidated
+failed job 4067539, then probes 4077036 and 4077433 both exited/success/0.
+The live IR and DWARF already retain Packed unsigned[8] for both add formals;
+GDB's C++ type-name canonicalization displays unsigned int [8], still an
+integer type of one byte, not an array. The RHS literal is context-sized to
+the LHS width by literal_aware_width, independently of its canonical i1 node.
+Correct the test's spelling/width assumptions rather than alter sound metadata.
+Continue owning source_bindings/source_operators and their call sites for
+declaration-owned parameter coverage, including suffix and conversion probes.
+Preserve the separately staged PR #45 merge and foreign edits; no push.
+
+### 2026-10-09 — Codex — declaration-owned formal coverage
+
+Guarded 4078429 exited/success/0 (peak 996810752 bytes): all eleven DWARF
+fixtures and six upstream bit-method fixtures pass in default and bitpack,
+strict all-target/all-feature Clippy passes, and the separate struct-array
+probe passes native assertions, ordinary/debug VCD parity, DWARF verification
+and real GDB finish. Expanded hardware formal checks also pass in both modes
+under 4085857 and 4091082: integer/real suffixes, integer conversion formals,
+signed constrained/generic parameters and a custom packed rhs declared Self.
+Preserve contextual packed widths separately from kernel execution shapes;
+resolve the packed Self family using the receiver. GDB's C++ display inserts
+spaces/canonicalizes unsigned, so assert integer type codes and byte sizes as
+well as normalized names. Own docs/architecture.md and docs/testing.md in
+the sibling siox-paper checkout for this metadata rule and tested coverage.
+Full acceptance and the pending PR #45 merge commit remain to be completed.
+
+Frozen acceptance is now running as
+siox-job-3000-1791569541440237695-4093523.service; poll this exact unit rather
+than relaunching it. Log: /home/max/.cache/siox-jobs/siox-job-3000-1791569541440237695-4093523.log;
+per-stage evidence: /home/max/.cache/siox-jobs/tmp/dwarf-formal-acceptance.w61rHz.
+Source hash: 3f9659c19c30c90c66c423a49c80507ede69bb34f46996b0221239f8ac9374ca;
+corpus HEAD remains 05278a8d5f31a626ef393ff5a435f12519d6c818 (clean).
+The gate runs CI-local, both debug corpora, native GDB/VCD smoke and AST-only
+graph refresh. Do not edit Rust while it is live. Staged PR #45 still matches
+merge-tree e0f8f03f outside chat; own DWARF edits remain unstaged. Preserve the
+441 foreign historical chat insertions and foreign AGENTS/.codex changes.
+
 ### 2026-10-10 — Codex — PR 45 merge acceptance
 
 Guarded acceptance 4093523 is terminal exited/success/0, peak 1612705792
@@ -16052,3 +16121,17 @@ snapshot 52d7c49 matches merge-tree outside chat. Commit that captured merge
 first, then the separately owned declaration-formal batch. Keep later main
 updates, foreign AGENTS/.codex and 441 historical chat insertions outside these
 commits. Full DWARF remains active; no push.
+
+### 2026-10-10 — Codex — formal inspection acceptance
+
+Merge 5d68493 contains only captured PR #45 and its acceptance record.
+Commit the declaration-owned formal inspection changes under the same frozen
+successful gate 4093523. Native parameter formats are unchanged; packed
+operators carry contextual inspection widths/families independently from
+kernel-word dispatch. GDB checks actual constrained/generic, suffix/conversion
+and custom packed Self parameter values, alongside the mixed-return operator
+type regression. Sibling architecture/testing docs describe this separation
+and the remaining Resolve/composite-conversion audit. Next: retain known
+receiver/source/target layouts in Resolve and From without changing execution
+shapes, and verify actual native values/return boundaries. Full goal stays
+active with companion-plane, demand and remaining ABI requirements. No push.

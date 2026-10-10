@@ -195,8 +195,14 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   declaration-owned scalar inspection types. Keep native body-count, actual
   call-count and memory regressions as coverage expands; LLVM ABI types must
   not be inferred from the debugger's read-only inspection representation.
-  Audit formal declaration types for hardware operators/suffixes/conversions
-  and constrained/generic signatures. Procedural 81/129-bit constructor and
+  Hardware expression formals now prefer concrete declaration layouts, with
+  inspection-only packed operator specializations (including rhs `Self`) kept
+  separate from kernel execution shapes. Native GDB checks cover contextual
+  unsigned widths, custom packed Self operands, integer/real suffixes, integer
+  conversions and signed constrained/generic parameters in both packing modes.
+  Finish formal-type auditing for Resolve and remaining composite/generic
+  conversion specializations; these scalar cases do not prove every signature.
+  Procedural 81/129-bit constructor and
   generic bindings now retain their checked signed/unsigned target type even
   without stored layouts, including narrow/wider consumer tests. Expression
   parameters/locals now expose recursive `$logic` companions over already

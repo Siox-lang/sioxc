@@ -141,7 +141,7 @@ impl<'a> Lowering<'a> {
                 .as_ref()
                 .map(|ty| self.source_layout(ty, &self.cur_env)),
         );
-        let out = self.inline_source_function(f, ast::expr_span(callee), &mut fenv);
+        let out = self.inline_source_function(f, ast::expr_span(callee), &mut fenv, None);
         drop(shapes);
         match saved_width {
             Some(previous) => self
@@ -216,7 +216,7 @@ impl<'a> Lowering<'a> {
                 .as_ref()
                 .map(|ty| self.source_layout(ty, &self.cur_env)),
         );
-        self.inline_source_function(f, ast::expr_span(arg), &mut fenv)
+        self.inline_source_function(f, ast::expr_span(arg), &mut fenv, None)
     }
 
     /// `T()` / `T[N]()` — the nullary constructor: the structural `new()`
@@ -471,7 +471,7 @@ impl<'a> Lowering<'a> {
         }
         let return_layout = self.source_function_return_layout(f, &shapes);
         let _shapes = self.source_shape_scope(shapes, return_layout);
-        let out = self.inline_source_function(f, ast::expr_span(callee), &mut fenv);
+        let out = self.inline_source_function(f, ast::expr_span(callee), &mut fenv, None);
         // The result is a value of the declared return type, so it wraps to
         // that width. Assigning it to a signal masked it anyway, which hid
         // this — but used in place (`neg(x) < 0`) the extra bits survived and
@@ -747,7 +747,7 @@ impl<'a> Lowering<'a> {
         }
         let return_layout = self.source_function_return_layout(f, &shapes);
         let _shapes = self.source_shape_scope(shapes, return_layout);
-        let out = self.inline_source_function(f, ast::expr_span(callee), &mut fenv);
+        let out = self.inline_source_function(f, ast::expr_span(callee), &mut fenv, None);
         for (name, prev) in saved.into_iter().rev() {
             match prev {
                 Some(v) => self.param_types.borrow_mut().insert(name, v),

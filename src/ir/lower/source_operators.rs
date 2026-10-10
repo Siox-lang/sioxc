@@ -109,11 +109,53 @@ impl Lowering<'_> {
         let mut shapes = HashMap::new();
         let mut return_shapes = HashMap::new();
         let mut hidden = Vec::new();
-        let mut bind = |name: &str, operand: OperatorOperand| {
-            if let Some(layout) = operand.layout {
+        let receiver_family = lhs.family.clone();
+        let mut bind = |name: &str, operand: OperatorOperand, declared: Option<&ast::Type>| {
+            if let Some(layout) = operand.layout.as_ref() {
                 if matches!(layout.kind, LayoutKind::Struct { .. }) {
                     shapes.insert(name.to_owned(), layout.clone());
                 }
+            }
+            // Unsized packed formals keep the operand's contextual width,
+            // not a literal's minimum storage width. This map describes
+            // inspection, not the operator body's kernel-word environment.
+            let family = declared
+                .and_then(|ty| self.free_fns.type_head_key(ty))
+                .and_then(|family| {
+                    if family == "Self" {
+                        receiver_family.clone()
+                    } else {
+                        Some(family)
+                    }
+                })
+                .filter(|family| self.array_families.contains(family))
+                .or_else(|| {
+                    operand
+                        .family
+                        .as_ref()
+                        .filter(|family| self.array_families.contains(*family))
+                        .cloned()
+                });
+            let layout = family
+                .filter(|_| operand.width != 0)
+                .map(|family| {
+                    if let Some(layout) = operand.layout.as_ref().filter(|layout| {
+                        matches!(&layout.kind, LayoutKind::Packed { family: actual, .. } if actual == &family)
+                    }) {
+                        return layout.clone();
+                    }
+                    SourceLayout {
+                        span: operand.layout.as_ref().map_or(function.span, |layout| layout.span),
+                        kind: LayoutKind::Packed {
+                            width: operand.width,
+                            range: operand.range.map(|(left, right)| LayoutRange { left, right }),
+                            element_enum: self.array_element_enum(&family),
+                            family,
+                        },
+                    }
+                })
+                .or(operand.layout);
+            if let Some(layout) = layout {
                 return_shapes.insert(name.to_owned(), layout);
             }
             env.insert(name.to_owned(), operand.value);
@@ -126,16 +168,14 @@ impl Lowering<'_> {
             }
             hidden.push((name.to_owned(), operand.width));
         };
-        bind("self", lhs);
+        bind("self", lhs, None);
         if let Some(rhs) = rhs {
-            let name = &function
+            let parameter = function
                 .params
                 .iter()
-                .find(|parameter| !parameter.is_self)?
-                .name
-                .as_ref()?
-                .text;
-            bind(name, rhs);
+                .find(|parameter| !parameter.is_self)?;
+            let name = &parameter.name.as_ref()?.text;
+            bind(name, rhs, parameter.ty.as_ref());
         }
         // The body reads its operands as kernel words, so `self - rhs` in it
         // is the built-in operator, not this impl again; their widths are the
@@ -159,7 +199,7 @@ impl Lowering<'_> {
             shapes,
             self.source_function_return_layout(function, &return_shapes),
         );
-        let result = self.inline_source_function(function, call, &mut env);
+        let result = self.inline_source_function(function, call, &mut env, Some(&return_shapes));
         for (name, family, width) in saved {
             if let Some(family) = family {
                 self.param_types.borrow_mut().insert(name.clone(), family);

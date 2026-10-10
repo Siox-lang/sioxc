@@ -52,6 +52,7 @@ impl Lowering<'_> {
         function: &ast::FnDecl,
         call: crate::diag::Span,
         env: &mut HashMap<String, Val>,
+        inspection: Option<&HashMap<String, SourceLayout>>,
     ) -> Option<Val> {
         let body = function.body.as_ref()?;
         let mut parameters = Vec::new();
@@ -83,7 +84,16 @@ impl Lowering<'_> {
                 name: name.to_owned(),
                 span: parameter.span,
                 scope: None,
-                layout: self.source_bound_layout(name),
+                // A concrete formal owns its inspection type. Operator bodies
+                // deliberately hide packed execution shapes; retain their
+                // source types separately without changing body dispatch.
+                layout: parameter
+                    .ty
+                    .as_ref()
+                    .map(|ty| self.source_layout(ty, &self.cur_env))
+                    .filter(|layout| layout.bit_width().is_some())
+                    .or_else(|| inspection.and_then(|layouts| layouts.get(name)).cloned())
+                    .or_else(|| self.source_bound_layout(name)),
                 value: id,
                 fields,
             });

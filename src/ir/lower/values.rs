@@ -375,7 +375,7 @@ impl<'a> Lowering<'a> {
                 .as_ref()
                 .map(|ty| self.source_layout(ty, &self.cur_env)),
         );
-        self.inline_source_function(f, ast::expr_span(e), &mut env)
+        self.inline_source_function(f, ast::expr_span(e), &mut env, None)
     }
 
     /// Lower an expression to a single scalar in `env`.

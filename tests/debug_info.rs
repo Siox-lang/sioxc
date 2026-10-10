@@ -1108,6 +1108,20 @@ impl T {
             let line = |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
             let python = format!(
                 r#"import gdb, math
+operator_types = set()
+operator_failures = []
+class OperatorTypes(gdb.Breakpoint):
+    def stop(self):
+        try:
+            frame = gdb.newest_frame()
+            types = [frame.read_var(name).type for name in ['self', 'rhs']]
+            assert all(ty.code == gdb.TYPE_CODE_INT and ty.sizeof == 1 for ty in types), types
+            # GDB canonicalizes the C++ spelling of the DWARF base name unsigned[N].
+            operator_types.add(tuple(ty.name.replace('unsigned int [', 'unsigned[') for ty in types))
+        except Exception as error:
+            operator_failures.append(str(error))
+        return False
+operator_stop = OperatorTypes('std::bits::add')
 stops = [gdb.Breakpoint({source:?} + ':' + str(line)) for line in [{pair_line}, {reverse_line}, {nested_line}, {reals_line}, {gain_line}, {head_line}, {tail_line}, {nested_head_line}, {chars_line}, {small_head_line}, {small_tail_line}, {tiny_head_line}, {subpair_line}, {subtail_line}, {subnested_line}, {subarray_line}]]
 seen = {{name: set() for name in ['make_pair', 'make_reverse', 'make_nested', 'make_reals', 'make_gain', 'make_head', 'make_tail', 'make_nested_head', 'make_chars', 'make_small_head', 'make_small_tail', 'make_tiny_head', 'make_subpair', 'make_subtail', 'make_subnested', 'make_subarray']}}
 gdb.execute('run')
@@ -1147,6 +1161,8 @@ while True:
     gdb.execute('continue')
     if gdb.selected_thread() is None: break
 assert int(gdb.parse_and_eval('$_exitcode')) == 0
+assert operator_types == {{('unsigned[3]', 'unsigned[3]')}}, operator_types
+assert not operator_failures, operator_failures
 # Independent signal writes can expose intermediate delta-cycle inputs.
 # Check every actual invocation above, and require all settled cases below.
 for name, calls in seen.items():
@@ -1873,6 +1889,51 @@ fn sample(value: integer) -> integer {
     return local; // hardware event return
 }
 fn twice(value: integer) -> integer { return value + value; }
+struct Count { pub value: integer }
+impl From<integer> for Count {
+    fn from(value: integer) -> Self {
+        let incremented: integer = value + 1;
+        return Count { .value = incremented }; // conversion formal stop
+    }
+}
+struct Ticks(integer);
+impl Suffix<"ticks", integer> for Ticks {
+    fn suffix(value: integer) -> Ticks {
+        let scaled: integer = value * 3;
+        return Ticks(scaled); // integer suffix formal stop
+    }
+}
+struct Scale(real);
+impl Suffix<"scale", real> for Scale {
+    fn suffix(value: real) -> Scale {
+        let scaled: real = value * 2.0;
+        return Scale(scaled); // real suffix formal stop
+    }
+}
+fn bounded(value: integer<-8..7>) -> integer {
+    let doubled: integer = value + value;
+    return doubled; // constrained formal stop
+}
+fn generic<T>(value: T) -> T {
+    let copy: T = value;
+    return copy; // hardware generic formal stop
+}
+fn formal_result(value: integer<-8..7>) -> integer {
+    let converted: Count = Count(value);
+    return converted.value + bounded(generic(value)) + integer(2ticks) + integer(real(1.5scale));
+}
+struct Word(Logic[]);
+impl Add<Word, Word> for Word {
+    fn add(self, rhs: Self) -> Self {
+        let sum: integer = self + rhs;
+        return sum; // packed Self formal stop
+    }
+}
+entity Formals { value: integer<-8..7> in, result: integer out, packed: integer out }
+impl Formals {
+    result = formal_result(value);
+    packed = integer(Word[5](value) + 1);
+}
 entity Narrow { value: integer<-8..7> in, result: integer out }
 impl Narrow { result = twice(twice(twice(value))); }
 entity Dut {
@@ -1920,6 +1981,7 @@ impl T {
     let bundled: Bundled = { .value = bundle };
     let small: integer<-8..7> = -3;
     let narrow: Narrow = { .value = small };
+    let formals: Formals = { .value = small };
     let clock: Bit = '0';
     let reg: Register = { .clk = clock, .value = input };
     stimulus: process {
@@ -1933,6 +1995,8 @@ impl T {
         assert!(matched.total == 31, "default positive match return");
         assert!(masked.total == 13 and risky.total == 6, "selected aggregate consumers and untaken foreign leaf");
         assert!(narrow.result == -24, "nested arguments retain consumer widths and signs");
+        assert!(formals.result == 1, "negative declaration-owned formal values");
+        assert!(formals.packed == 30, "negative input to packed Self formal");
         input = 6;
         small = 3;
         clock = '1';
@@ -1944,6 +2008,8 @@ impl T {
         assert!(matched.total == 53, "selected match return");
         assert!(masked.total == 7 and risky.total == 7, "first-only aggregate consumer");
         assert!(narrow.result == 24, "nested formats reevaluate after input changes");
+        assert!(formals.result == 19, "positive declaration-owned formal values");
+        assert!(formals.packed == 4, "positive input to packed Self formal");
         assert!(reg.result == 16, "event call result");
         input = -6;
         clock = '0';
@@ -2044,6 +2110,37 @@ class Selection(Check):
         return False
 Selection({source:?} + ':{selected_return}')
 Selection({source:?} + ':{fallback_return}')
+formal_cases = {{
+    {conversion_formal}: ('integer', 8, 'incremented', lambda value: value + 1, {{-3, 3}}),
+    {integer_suffix_formal}: ('integer', 8, 'scaled', lambda value: value * 3, {{2}}),
+    {real_suffix_formal}: ('real', 8, 'scaled', lambda value: value * 2, {{1.5}}),
+    {constrained_formal}: ('integer', 1, 'doubled', lambda value: value * 2, {{-3, 3}}),
+    {generic_formal}: ('integer', 1, 'copy', lambda value: value, {{-3, 3}}),
+}}
+formal_seen = {{line: set() for line in formal_cases}}
+class Formal(Check):
+    def check(self):
+        frame = gdb.selected_frame()
+        line = frame.find_sal().line
+        name, size, local, operation, expected = formal_cases[line]
+        value = frame.read_var('value')
+        assert value.type.name == name and value.type.sizeof == size, (line, str(value.type), value.type.sizeof)
+        cast = float if name == 'real' else int
+        actual = cast(value)
+        assert cast(frame.read_var(local)) == operation(actual), (line, actual, str(frame.read_var(local)))
+        formal_seen[line].add(actual)
+for line in formal_cases:
+    Formal({source:?} + ':' + str(line))
+packed_formals = set()
+class PackedFormal(Check):
+    def check(self):
+        frame = gdb.selected_frame()
+        lhs, rhs = [frame.read_var(name) for name in ['self', 'rhs']]
+        assert all(value.type.name.replace(' ', '') == 'Word[5]' and value.type.sizeof == 1 and value.type.code == gdb.TYPE_CODE_INT for value in [lhs, rhs]), (str(lhs.type), str(rhs.type))
+        assert int(rhs) == 1, rhs
+        assert int(frame.read_var('sum')) == int(lhs) + 1
+        packed_formals.add(int(lhs))
+PackedFormal({source:?} + ':{packed_formal}')
 class Typed(Check):
     def check(self):
         global typed_seen
@@ -2204,6 +2301,9 @@ outer.delete()
 gdb.execute('continue')
 assert int(gdb.parse_and_eval('$_exitcode')) == 0
 assert not failures, failures
+for line, (_, _, _, _, expected) in formal_cases.items():
+    assert expected <= formal_seen[line] <= expected | {{0}}, (line, formal_seen[line])
+assert {{29, 3}} <= packed_formals <= {{0, 29, 3}}, packed_formals
 assert owners == {{'T::dut::<hardware:T.dut.selected>', 'T::other::<hardware:T.other.selected>'}}, owners
 assert {{5, 6, -6, 10}} <= seen <= {{0, 5, 6, -6, 10}}, seen
 assert events == {{6, -6}}, events
@@ -2246,6 +2346,12 @@ assert sorted(match_calls) == [-6, 0, 5, 6], match_calls
             matched_assignment = line("matched pair assignment"),
             matched_return = line("matched pair return"),
             default_return = line("default pair return"),
+            conversion_formal = line("conversion formal stop"),
+            integer_suffix_formal = line("integer suffix formal stop"),
+            real_suffix_formal = line("real suffix formal stop"),
+            constrained_formal = line("constrained formal stop"),
+            generic_formal = line("hardware generic formal stop"),
+            packed_formal = line("packed Self formal stop"),
         );
         success(
             Command::new("gdb")
