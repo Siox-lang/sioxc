@@ -230,12 +230,14 @@ pub fn subst_expr_paths(e: &ast::Expr, map: &HashMap<String, ast::Expr>) -> ast:
         Expr::Call {
             callee,
             type_args,
+            qualifier,
             args,
             bang,
             span,
         } => Expr::Call {
             callee: sub(callee),
             type_args: type_args.clone(),
+            qualifier: qualifier.clone(),
             args: args.iter().map(|a| subst_expr_paths(a, map)).collect(),
             bang: *bang,
             span: *span,
@@ -427,12 +429,14 @@ pub(in crate::ir) fn subst_expr(e: &ast::Expr, var: &str, val: i64) -> ast::Expr
         Expr::Call {
             callee,
             type_args,
+            qualifier,
             args,
             bang,
             span,
         } => Expr::Call {
             callee: sub(callee),
             type_args: type_args.clone(),
+            qualifier: qualifier.clone(),
             args: args.iter().map(|a| subst_expr(a, var, val)).collect(),
             bang: *bang,
             span: *span,

@@ -4890,6 +4890,7 @@ fn lower_process_kernel_conversion(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -4986,6 +4987,7 @@ fn lower_process_named_conversion(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -5086,6 +5088,7 @@ fn lower_process_raw_resize(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -5271,6 +5274,7 @@ fn lower_process_family_from(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -5309,10 +5313,39 @@ fn lower_process_family_from(
         truncate_process_values(context, first_value);
         return None;
     };
+    inline_with_self_format(
+        function,
+        family,
+        index,
+        &[operand],
+        *span,
+        first_value,
+        process,
+        context,
+        return_type,
+    )
+}
+
+/// Inline `function` with `Self` standing for the format `family[index]`, as
+/// a `From` conversion to that format and an associated call on it
+/// (`ufixed<6, 2>::resize(x)`) both need. Values pushed from `first_value`
+/// on are dropped when the format or the inlining fails.
+#[allow(clippy::too_many_arguments)]
+fn inline_with_self_format(
+    function: &ast::FnDecl,
+    family: String,
+    index: &ast::Expr,
+    operands: &[ProcessValueId],
+    span: crate::diag::Span,
+    first_value: usize,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
     let eval = |bound: &ast::Expr| {
         crate::ir::eval_const_fns(bound, context.constant_integers, context.functions, 0)
     };
-    let Some((left, right)) = (match index.as_ref() {
+    let Some((left, right)) = (match index {
         ast::Expr::Range { lo, hi, .. } => eval(lo).zip(eval(hi)),
         width => eval(width).map(|width| (width - 1, 0)),
     }) else {
@@ -5332,7 +5365,7 @@ fn lower_process_family_from(
         family: Some(family),
         len,
     };
-    let Some(mut layout) = process_layout_for_type(&target_type, *span, context) else {
+    let Some(mut layout) = process_layout_for_type(&target_type, span, context) else {
         truncate_process_values(context, first_value);
         return None;
     };
@@ -5341,7 +5374,7 @@ fn lower_process_family_from(
         *range = Some(crate::ir::LayoutRange { left, right });
     }
     let format = push_value(
-        *span,
+        span,
         Some(target_type.clone()),
         Some(len),
         ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
@@ -5352,7 +5385,7 @@ fn lower_process_family_from(
     let result = inline_process_function(
         function,
         None,
-        &[operand],
+        operands,
         process,
         context,
         Some(&target_type),
@@ -5365,6 +5398,60 @@ fn lower_process_family_from(
             None
         }
     }
+}
+
+/// `ufixed<6, 2>::resize(x, ..)`: an associated function called on an
+/// applied type, inlined with `Self` standing for that type's format.
+fn lower_process_qualified_call(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let ast::Expr::Call {
+        callee,
+        qualifier: Some(qualifier),
+        args,
+        bang: false,
+        span,
+        ..
+    } = expression
+    else {
+        return None;
+    };
+    let ast::Type::Indexed {
+        base,
+        index: Some(index),
+        ..
+    } = qualifier.as_ref()
+    else {
+        return None;
+    };
+    let ast::Type::Path(path) = base.as_ref() else {
+        return None;
+    };
+    let function = context.functions.get(callee)?;
+    let definition = context.resolved.resolved(path.span)?;
+    let family = context.resolved.qualified_name(definition)?;
+    let first_value = context.process_ir.values.len();
+    let operands: Vec<ProcessValueId> = args
+        .iter()
+        .map(|argument| {
+            let checked = operand_type(argument, process, context);
+            value_ref_with_type(argument, process, context, checked.as_ref())
+        })
+        .collect();
+    inline_with_self_format(
+        function,
+        family,
+        index,
+        &operands,
+        *span,
+        first_value,
+        process,
+        context,
+        return_type,
+    )
 }
 
 /// Lower zero-argument type construction to the type's retained recursive
@@ -5380,6 +5467,7 @@ fn lower_process_default(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -5440,6 +5528,7 @@ fn lower_process_foreign_call(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -5514,6 +5603,7 @@ fn lower_process_host_call(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -5584,6 +5674,7 @@ fn lower_process_file_call(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -7210,6 +7301,10 @@ fn value_ref_with_type_inner(
             return value;
         }
         if let Some(value) = lower_process_family_from(expression, process, context, ty.as_ref()) {
+            return value;
+        }
+        if let Some(value) = lower_process_qualified_call(expression, process, context, ty.as_ref())
+        {
             return value;
         }
         if let Some(value) = lower_process_raw_resize(expression, process, context, ty.as_ref()) {

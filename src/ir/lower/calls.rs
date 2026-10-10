@@ -81,8 +81,24 @@ impl<'a> Lowering<'a> {
                     .and_then(|ty| self.free_fns.type_head_key(ty))
             }) == Some(source.clone())
         })?;
+        self.inline_in_format(f, index, callee, args, env)
+    }
+
+    /// Inline `f` with `Self'left`/`'right`/`'high`/`'low`/`'length`
+    /// describing the format `index` gives, each parameter bound to its
+    /// argument with that argument's own format (`value'low`): a `From`
+    /// conversion to the format, or an associated call on it
+    /// (`ufixed<6, 2>::resize(x, ..)`).
+    pub(super) fn inline_in_format(
+        &self,
+        f: &ast::FnDecl,
+        index: &ast::Expr,
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+        env: &HashMap<String, Val>,
+    ) -> Option<Expr> {
         let body = f.body.as_ref()?;
-        let (left, right) = match index.as_ref() {
+        let (left, right) = match index {
             ast::Expr::Range { lo, hi, .. } => (
                 self.eval_const(lo, &self.cur_env)?,
                 self.eval_const(hi, &self.cur_env)?,
@@ -118,23 +134,36 @@ impl<'a> Lowering<'a> {
             "Self::length".to_string(),
             Val::Scalar(Expr::Const(left.abs_diff(right) + 1)),
         );
-        let param = f.params.iter().find(|p| !p.is_self)?.name.as_ref()?;
-        fenv.insert(
-            param.text.clone(),
-            self.bind_source_value(self.lower_val_env(arg, env), ast::expr_span(arg), None),
-        );
-        // A resize reads the source format too: `value'low`, and its width
-        // travels to the calls in the body (`word(value)`).
-        self.bind_range_attrs(&mut fenv, &param.text, arg, env);
-        let width = self.ast_width(arg);
-        fenv.insert(
-            format!("{}::length", param.text),
-            Val::Scalar(Expr::Const(width as u64)),
-        );
-        let saved_width = self
-            .param_widths
-            .borrow_mut()
-            .insert(param.text.clone(), width);
+        let params: Vec<&ast::Ident> = f
+            .params
+            .iter()
+            .filter(|p| !p.is_self)
+            .map(|p| p.name.as_ref())
+            .collect::<Option<_>>()?;
+        if params.len() != args.len() {
+            return None;
+        }
+        let mut saved_widths = Vec::new();
+        for (param, arg) in params.iter().zip(args) {
+            fenv.insert(
+                param.text.clone(),
+                self.bind_source_value(self.lower_val_env(arg, env), ast::expr_span(arg), None),
+            );
+            // A resize reads the source format too: `value'low`, and its
+            // width travels to the calls in the body (`word(value)`).
+            self.bind_range_attrs(&mut fenv, &param.text, arg, env);
+            let width = self.ast_width(arg);
+            fenv.insert(
+                format!("{}::length", param.text),
+                Val::Scalar(Expr::Const(width as u64)),
+            );
+            saved_widths.push((
+                param.text.clone(),
+                self.param_widths
+                    .borrow_mut()
+                    .insert(param.text.clone(), width),
+            ));
+        }
         let shapes = self.source_shape_scope(
             HashMap::new(),
             f.ret
@@ -143,23 +172,41 @@ impl<'a> Lowering<'a> {
         );
         let out = self.inline_block(&body.stmts, &fenv);
         drop(shapes);
-        match saved_width {
-            Some(previous) => self
-                .param_widths
-                .borrow_mut()
-                .insert(param.text.clone(), previous),
-            None => self.param_widths.borrow_mut().remove(&param.text),
-        };
+        for (name, saved) in saved_widths {
+            match saved {
+                Some(previous) => self.param_widths.borrow_mut().insert(name, previous),
+                None => self.param_widths.borrow_mut().remove(&name),
+            };
+        }
         // The value is a word of the format, as a stored one is: operator
         // bodies read its sign bit at `'length - 1`.
         let length = u32::try_from(left.abs_diff(right) + 1).ok()?;
         match out? {
             Val::Scalar(value) if length < 64 => {
-                Some(self.source_slice(&value, length - 1, 0, ast::expr_span(arg)))
+                Some(self.source_slice(&value, length - 1, 0, ast::expr_span(callee)))
             }
             Val::Scalar(value) => Some(value),
             _ => None,
         }
+    }
+
+    /// `ufixed<6, 2>::resize(x, ..)`: an associated function called on an
+    /// applied type, inlined with `Self` describing that type's format.
+    pub(super) fn lower_qualified_call(
+        &self,
+        qualifier: &ast::Type,
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+        env: &HashMap<String, Val>,
+    ) -> Option<Expr> {
+        let ast::Type::Indexed {
+            index: Some(index), ..
+        } = qualifier
+        else {
+            return None;
+        };
+        let f = self.free_fns.get(callee)?;
+        self.inline_in_format(f, index, callee, args, env)
     }
 
     /// Inline a `From` conversion's body for the target type.

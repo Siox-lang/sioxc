@@ -431,6 +431,7 @@ impl<'a> Checker<'a> {
                 args,
                 bang,
                 span,
+                ..
             } => {
                 // A method callee is a `Field` node, but its name is a method,
                 // not a field — check the receiver and let `check_method_exists`

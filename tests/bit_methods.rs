@@ -454,3 +454,79 @@ impl T {
         );
     }
 }
+
+/// `T<args>::f(x)` calls an associated function with `T<args>` as `Self`:
+/// fixed-point `resize` with VHDL's overflow and rounding styles, and float
+/// `resize`/`From<float>` between formats, in hardware and a testbench.
+#[cfg(feature = "llvm")]
+#[test]
+fn fixed_and_float_resize_take_the_qualifier_as_self() {
+    let stdout = run(
+        "resize_styles",
+        r#"
+module resize_styles;
+use std::fixed::{ufixed, sfixed};
+use std::float::float;
+use std::numeric::{Overflow, Rounding};
+
+entity Dut {
+    x: ufixed<8, 4> in, y: sfixed<8, 4> in, z: float<32, 23> in,
+    a: ufixed<6, 2> out, b: ufixed<6, 2> out, c: ufixed<5, 2> out, d: ufixed<5, 2> out,
+    e: sfixed<6, 2> out, f: sfixed<6, 2> out, g: sfixed<5, 2> out, h: sfixed<5, 2> out,
+    p: float<16, 10> out, q: float<16, 10> out, r: float<16, 10> out,
+}
+impl Dut {
+    a = ufixed<6, 2>::resize(x, Overflow::Saturate, Rounding::Nearest);
+    b = ufixed<6, 2>::resize(x, Overflow::Wrap, Rounding::Truncate);
+    c = ufixed<5, 2>::resize(x, Overflow::Saturate, Rounding::Nearest);
+    d = ufixed<5, 2>::resize(x, Overflow::Wrap, Rounding::Truncate);
+    e = sfixed<6, 2>::resize(y, Overflow::Saturate, Rounding::Nearest);
+    f = sfixed<6, 2>::resize(y, Overflow::Saturate, Rounding::Truncate);
+    g = sfixed<5, 2>::resize(y, Overflow::Saturate, Rounding::Nearest);
+    h = sfixed<5, 2>::resize(y, Overflow::Wrap, Rounding::Truncate);
+    p = float<16, 10>::resize(z, Rounding::Nearest);
+    q = float<16, 10>::resize(z, Rounding::Truncate);
+    r = float<16, 10>(z);
+}
+
+#[test] entity T {}
+impl T {
+    let x: ufixed<8, 4>; let y: sfixed<8, 4>; let z: float<32, 23>;
+    let a: ufixed<6, 2>; let b: ufixed<6, 2>; let c: ufixed<5, 2>; let d: ufixed<5, 2>;
+    let e: sfixed<6, 2>; let f: sfixed<6, 2>; let g: sfixed<5, 2>; let h: sfixed<5, 2>;
+    let p: float<16, 10>; let q: float<16, 10>; let r: float<16, 10>;
+    let dut: Dut = { .x = x, .y = y, .z = z, .a = a, .b = b, .c = c, .d = d, .e = e, .f = f,
+        .g = g, .h = h, .p = p, .q = q, .r = r };
+    check: process {
+        x = ufixed<8, 4>(2.6875); y = sfixed<8, 4>(0.0 - 2.5625); z = float<32, 23>(1.000732421875);
+        await 1ns;
+        print!("hw1 {} {} {} {} | {} {} {} {} | {} {} {}", a, b, c, d, e, f, g, h, p, q, r);
+        x = ufixed<8, 4>(13.5); y = sfixed<8, 4>(0.0 - 7.0); z = float<32, 23>(70000.0);
+        await 1ns;
+        print!("hw2 {} {} {} {} | {} {} {} {} | {} {} {}", a, b, c, d, e, f, g, h, p, q, r);
+        let tx: ufixed<8, 4> = ufixed<8, 4>(13.5);
+        let ty: sfixed<8, 4> = sfixed<8, 4>(0.0 - 2.5625);
+        let tz: float<32, 23> = float<32, 23>(0.0 - 70000.0);
+        let t1: ufixed<5, 2> = ufixed<5, 2>::resize(tx, Overflow::Saturate, Rounding::Nearest);
+        let t2: ufixed<5, 2> = ufixed<5, 2>::resize(tx, Overflow::Wrap, Rounding::Truncate);
+        let t3: sfixed<6, 2> = sfixed<6, 2>::resize(ty, Overflow::Saturate, Rounding::Nearest);
+        let t4: sfixed<6, 2> = sfixed<6, 2>::resize(ty, Overflow::Wrap, Rounding::Truncate);
+        let t5: float<16, 10> = float<16, 10>::resize(tz, Rounding::Nearest);
+        let t6: float<16, 10> = float<16, 10>::resize(tz, Rounding::Truncate);
+        print!("tb {} {} {} {} {} {} {}", t1, t2, t3, t4, t5, t6,
+            ufixed<6, 2>::resize(tx, Overflow::Wrap, Rounding::Nearest));
+    }
+}
+"#,
+    );
+    for line in [
+        "hw1 2.75 2.5 2.75 2.5 | -2.5 -2.75 -2.5 -2.75 | 1.00098 1 1.00098",
+        "hw2 13.5 13.5 7.75 5.5 | -7 -7 -4 1 | inf 65504 inf",
+        "tb 7.75 5.5 -2.5 -2.75 -inf -65504 13.5",
+    ] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}

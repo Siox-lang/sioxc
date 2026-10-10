@@ -18,10 +18,8 @@ reference, not in a completed migration plan.
 
 ## Remaining numeric capabilities
 
-1. **Fixed point.** Division and the resizing constructor are implemented
-   (std.md): same-format quotients rounding toward minus infinity, zero for a
-   quotient by zero, and a nearest/saturating resize. Remaining: wrap and
-   truncate resize styles. Keep
+1. **Fixed point.** Done: division, the nearest/saturating resizing
+   constructor and `resize` with explicit wrap/truncate styles (std.md). Keep
    `ufixed<W, F>`/`sfixed<W, F>` semantics source-owned.
 2. **Floating point.** Add division, square root, subnormal support, additional
    rounding modes and conversions to/from fixed point. Specify exceptional

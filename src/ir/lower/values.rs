@@ -118,7 +118,18 @@ impl<'a> Lowering<'a> {
             ast::Expr::Match {
                 scrutinee, arms, ..
             } => self.lower_match_val(scrutinee, arms, env),
-            ast::Expr::Call { callee, args, .. } => {
+            ast::Expr::Call {
+                callee,
+                args,
+                qualifier,
+                ..
+            } => {
+                if let Some(value) = qualifier
+                    .as_deref()
+                    .and_then(|qualifier| self.lower_qualified_call(qualifier, callee, args, env))
+                {
+                    return Val::Scalar(value);
+                }
                 // `T()` — the nullary constructor — resolves to the type's
                 // default (a struct yields per-field values) before any
                 // free-fn/conversion lookup.

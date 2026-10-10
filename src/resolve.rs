@@ -2016,10 +2016,14 @@ impl<'a> Resolver<'a> {
             Expr::Call {
                 callee,
                 type_args,
+                qualifier,
                 args,
                 ..
             } => {
                 self.resolve_expr(callee);
+                if let Some(qualifier) = qualifier {
+                    self.resolve_type(qualifier);
+                }
                 for arg in type_args {
                     match arg {
                         GenericArg::Positional(e) | GenericArg::Named { value: e, .. } => {
