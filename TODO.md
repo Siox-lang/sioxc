@@ -97,6 +97,13 @@ listed under LLVM and Output below.
   Audit sign extension and contextual widths for typed field comparisons;
   verify full-width native comparisons as well as source inspection before
   claiming a fix.
+- 🔴 **Narrow enum-to-integer arithmetic in hardware.** A custom Resolve body
+  with `let sum: integer = integer(self) + integer(rhs)` on a two-value enum
+  interprets two High inputs as negative (`sum > 0` selects false). An ordinary
+  native executable reproduces this without DWARF. Audit contextual signed
+  widths/carry bits for kernel arithmetic on narrow nonnegative inputs; the
+  declared integer must represent `1 + 1` as positive two. Keep this separate
+  from faithful debugger inspection of the emitted narrow computation.
 
 ## LLVM
 
@@ -200,8 +207,16 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   separate from kernel execution shapes. Native GDB checks cover contextual
   unsigned widths, custom packed Self operands, integer/real suffixes, integer
   conversions and signed constrained/generic parameters in both packing modes.
-  Finish formal-type auditing for Resolve and remaining composite/generic
-  conversion specializations; these scalar cases do not prove every signature.
+  Resolve now retains the resolved signal/element's known receiver layout and
+  concrete Self return type. Conversion inspection retains its known nominal
+  target or sized packed family independently of the executable return shape.
+  Native GDB checks custom-enum Resolve inputs/results, one-field From returns
+  and 8-to-7-bit fixed-family arguments/returns, including actual finish values.
+  Reference setup/native-input inspection has line-zero locations, so function-
+  name breakpoints observe initialized inputs instead of stack-slot garbage.
+  Finish auditing remaining composite/generic conversions, non-enum Resolve
+  signatures and companion planes for packed operands with no declared range;
+  these cases do not prove every signature or every argument's availability.
   Procedural 81/129-bit constructor and
   generic bindings now retain their checked signed/unsigned target type even
   without stored layouts, including narrow/wider consumer tests. Expression

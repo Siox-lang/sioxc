@@ -1829,7 +1829,13 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
         scope.as_debug_info_scope(),
         None,
     ));
-    builder.set_current_debug_location(cache.source_location.unwrap());
+    // Function-name breakpoints must skip reference-slot initialization. The
+    // first visible source instruction follows native-input inspection below.
+    let entry_location =
+        debug
+            .builder
+            .create_debug_location(debug.context, 0, 0, scope.as_debug_info_scope(), None);
+    builder.set_current_debug_location(entry_location);
     let mut bindings = Vec::new();
     for (index, (binding, ty)) in source
         .parameters
@@ -2128,7 +2134,7 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
         } else {
             argument_builder.position_at_end(argument_entry);
         }
-        argument_builder.set_current_debug_location(debug.location(scope, source.function, None));
+        argument_builder.set_current_debug_location(entry_location);
         let mut seen = std::collections::HashSet::new();
         for ((id, ..), value) in &arguments.values {
             if seen.insert(*id) {

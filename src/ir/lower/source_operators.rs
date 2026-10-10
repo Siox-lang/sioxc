@@ -199,7 +199,11 @@ impl Lowering<'_> {
             shapes,
             self.source_function_return_layout(function, &return_shapes),
         );
-        let result = self.inline_source_function(function, call, &mut env, Some(&return_shapes));
+        let inspection = super::source_bindings::SourceCallInspection {
+            parameters: return_shapes,
+            result: None,
+        };
+        let result = self.inline_source_function(function, call, &mut env, Some(&inspection));
         for (name, family, width) in saved {
             if let Some(family) = family {
                 self.param_types.borrow_mut().insert(name.clone(), family);

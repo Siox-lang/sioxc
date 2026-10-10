@@ -16135,3 +16135,70 @@ and the remaining Resolve/composite-conversion audit. Next: retain known
 receiver/source/target layouts in Resolve and From without changing execution
 shapes, and verify actual native values/return boundaries. Full goal stays
 active with companion-plane, demand and remaining ABI requirements. No push.
+
+### 2026-10-10 — Codex — Resolve and conversion signatures
+
+The completed acceptance is recorded in 5d68493/be27dc2 and sibling docs
+6b07786; no verification job remains live. Own source_bindings.rs, layout.rs,
+calls.rs, resolution.rs and source_operators.rs for receiver/source/target
+inspection metadata. SourceShapeFrame.return_layout also governs return
+lowering, so a debugger-only concrete return must not replace it. Extend the
+existing inspection override with a result layout, reuse stored nominal layouts
+and enum representation tables, and pass known resolved signal layouts at
+Resolve boundaries. Keep executable kernel shapes and source dependencies
+unchanged. Test actual custom Resolve formals and From return values/ABI;
+unsized fixed-family conversions retain their caller-known formats. Preserve
+foreign edits and leave later upstream snapshots for a separate merge. No push.
+
+Resolve/From metadata builds and the prior hardware fixture pass (459).
+Expanded probe 7280 exposed sum=-2 for two enum High=1 inputs. Isolated ordinary
+native probe 8920 also fails sum>0 without DWARF; record that independent
+kernel-width/carry defect under IR rather than change execution for debugging.
+Use direct enum equality for the Resolve type/value regression. Also own
+llvm/process/debug/inline_values.rs: earlier function-entry evidence shows
+reference setup advertised as a source stop before parameter initialization.
+Mark inspection-only entry instructions line zero and assert live values at
+function-name breakpoints, not just their types. Keep body/source locations.
+
+### 2026-10-10 — Codex — signature and entry-stop probe acceptance
+
+Guarded 15426 exited/success/0 (peak 1085063168 bytes): all eleven DWARF
+fixtures pass in default and bitpack, strict all-target/all-feature Clippy
+passes. Hardware native/GDB coverage now exercises every custom-enum Resolve
+input pair, Count's Self return as a real struct, and ufixed source/target
+formats through actual finish values. Function-name stops read live std/custom
+operator and fixed-family parameters after line-zero reference/native-input
+setup. SourceCallInspection is metadata-only; executable return shaping remains
+on SourceShapeFrame. Update owned sibling architecture/testing docs and freeze
+the batch for full acceptance. Remaining audits include non-enum Resolve and
+composite/generic conversions, plus packed formal companions whose range is
+unknown: the current logic view cannot decode source-labelled elements without
+that range and must not advertise an ordinary binary value as an enum view.
+
+Frozen full acceptance is running as
+siox-job-3000-1791627693396275021-26023.service; re-poll this exact handle.
+Log: /home/max/.cache/siox-jobs/siox-job-3000-1791627693396275021-26023.log;
+stages: /home/max/.cache/siox-jobs/tmp/dwarf-signature-entry-acceptance.6H6M4p.
+Source hash: af23eb84dad8c29eac292c7bc93d573be9b8bfd7019580591e4653fda86bab4d.
+Corpus checkout is still clean at 05278a8d5f31a626ef393ff5a435f12519d6c818.
+The source/entry batch and its sibling docs are uncommitted pending this gate;
+do not edit Rust while it runs. Previous committed baseline is be27dc2, with
+captured upstream merge 5d68493 and sibling docs 6b07786. Keep the 441 foreign
+historical chat lines plus AGENTS/.codex outside any commit. No push; full
+DWARF goal remains active.
+
+### 2026-10-10 — Codex — signature and entry-stop full acceptance
+
+Guarded 26023 is terminal exited/success/0 (peak 1612611584 bytes).
+Frozen source hash af23eb84dad8c29eac292c7bc93d573be9b8bfd7019580591e4653fda86bab4d
+is unchanged. Default/bitpack full tests (eleven native DWARF fixtures each),
+frontend/artifact checks, strict Clippy, four 228-program corpus runs and four
+FIFO/wide GDB/VCD smokes pass. AST-only refresh completes with 5357 nodes,
+15262 edges and 243 communities; existing vendored C extraction warnings remain.
+Commit only the owned signature/entry batch and sibling architecture/testing
+documentation. Keep foreign AGENTS/.codex and 441 historical chat lines out.
+Next own llvm/process/debug/logic.rs, inline_values.rs and tests/debug_info.rs
+for range-less packed companion inspection: retain declared source ranges,
+distinguish physical bit positions when no range is known, and only normalize
+fully known literals, never manufacture discarded values or metadata planes.
+Full DWARF remains active; no push.

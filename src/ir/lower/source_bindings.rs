@@ -2,6 +2,13 @@
 
 use super::*;
 
+/// Source signature specialization that must not change body lowering.
+#[derive(Default)]
+pub(super) struct SourceCallInspection {
+    pub(super) parameters: HashMap<String, SourceLayout>,
+    pub(super) result: Option<SourceLayout>,
+}
+
 #[derive(Default)]
 pub(super) struct SourceShapeFrame {
     pub(super) values: HashMap<String, SourceLayout>,
@@ -52,7 +59,7 @@ impl Lowering<'_> {
         function: &ast::FnDecl,
         call: crate::diag::Span,
         env: &mut HashMap<String, Val>,
-        inspection: Option<&HashMap<String, SourceLayout>>,
+        inspection: Option<&SourceCallInspection>,
     ) -> Option<Val> {
         let body = function.body.as_ref()?;
         let mut parameters = Vec::new();
@@ -92,7 +99,11 @@ impl Lowering<'_> {
                     .as_ref()
                     .map(|ty| self.source_layout(ty, &self.cur_env))
                     .filter(|layout| layout.bit_width().is_some())
-                    .or_else(|| inspection.and_then(|layouts| layouts.get(name)).cloned())
+                    .or_else(|| {
+                        inspection
+                            .and_then(|types| types.parameters.get(name))
+                            .cloned()
+                    })
                     .or_else(|| self.source_bound_layout(name)),
                 value: id,
                 fields,
@@ -108,7 +119,9 @@ impl Lowering<'_> {
             function: function.span,
             call,
             result_span: body.span,
-            result_layout: self.source_return_layout(),
+            result_layout: inspection
+                .and_then(|types| types.result.clone())
+                .or_else(|| self.source_return_layout()),
             aggregate: None,
             branches: Vec::new(),
             parameters,

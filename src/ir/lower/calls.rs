@@ -119,6 +119,24 @@ impl<'a> Lowering<'a> {
             Val::Scalar(Expr::Const(left.abs_diff(right) + 1)),
         );
         let param = f.params.iter().find(|p| !p.is_self)?.name.as_ref()?;
+        let inspection = super::source_bindings::SourceCallInspection {
+            parameters: self
+                .source_operand_layout(arg, env)
+                .map(|layout| (param.text.clone(), layout))
+                .into_iter()
+                .collect(),
+            result: u32::try_from(left.abs_diff(right) + 1)
+                .ok()
+                .map(|width| SourceLayout {
+                    span: ast::expr_span(callee),
+                    kind: LayoutKind::Packed {
+                        width,
+                        family: target.clone(),
+                        range: Some(LayoutRange { left, right }),
+                        element_enum: self.array_element_enum(&target),
+                    },
+                }),
+        };
         fenv.insert(
             param.text.clone(),
             self.bind_source_value(self.lower_val_env(arg, env), ast::expr_span(arg), None),
@@ -141,7 +159,8 @@ impl<'a> Lowering<'a> {
                 .as_ref()
                 .map(|ty| self.source_layout(ty, &self.cur_env)),
         );
-        let out = self.inline_source_function(f, ast::expr_span(callee), &mut fenv, None);
+        let out =
+            self.inline_source_function(f, ast::expr_span(callee), &mut fenv, Some(&inspection));
         drop(shapes);
         match saved_width {
             Some(previous) => self
@@ -196,9 +215,16 @@ impl<'a> Lowering<'a> {
             None => return self.derived_conversion(target, src.as_deref(), arg, env),
         };
         f.body.as_ref()?;
+        let mut inspection = super::source_bindings::SourceCallInspection {
+            result: self.named_source_layout(target, ast::expr_span(arg)),
+            ..Default::default()
+        };
         let mut fenv: HashMap<String, Val> = HashMap::new();
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
+                if let Some(layout) = self.source_operand_layout(arg, env) {
+                    inspection.parameters.insert(n.text.clone(), layout);
+                }
                 self.bind_range_attrs(&mut fenv, &n.text, arg, env);
                 fenv.insert(
                     n.text.clone(),
@@ -216,7 +242,7 @@ impl<'a> Lowering<'a> {
                 .as_ref()
                 .map(|ty| self.source_layout(ty, &self.cur_env)),
         );
-        self.inline_source_function(f, ast::expr_span(arg), &mut fenv, None)
+        self.inline_source_function(f, ast::expr_span(arg), &mut fenv, Some(&inspection))
     }
 
     /// `T()` / `T[N]()` — the nullary constructor: the structural `new()`

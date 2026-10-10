@@ -1116,6 +1116,8 @@ class OperatorTypes(gdb.Breakpoint):
             frame = gdb.newest_frame()
             types = [frame.read_var(name).type for name in ['self', 'rhs']]
             assert all(ty.code == gdb.TYPE_CODE_INT and ty.sizeof == 1 for ty in types), types
+            assert int(frame.read_var('rhs')) in [1, 2]
+            assert int(frame.read_var('self')) == int(frame.older().read_var('first'))
             # GDB canonicalizes the C++ spelling of the DWARF base name unsigned[N].
             operator_types.add(tuple(ty.name.replace('unsigned int [', 'unsigned[') for ty in types))
         except Exception as error:
@@ -1754,6 +1756,7 @@ fn hardware_expression_calls_keep_source_frames() {
     let source = directory.join("hardware.siox");
     let text = r#"module debug_hardware;
 use std::bits::{unsigned, signed};
+use std::fixed::ufixed;
 struct Nested { pub flags: unsigned[3], pub negative: signed[81] }
 struct Wrapper { pub word: integer }
 struct Pair { pub left: integer, pub right: integer }
@@ -1929,11 +1932,23 @@ impl Add<Word, Word> for Word {
         return sum; // packed Self formal stop
     }
 }
-entity Formals { value: integer<-8..7> in, result: integer out, packed: integer out }
+entity Formals { value: integer<-8..7> in, fixed: ufixed<8, 4> in, result: integer out, packed: integer out, resized: integer out }
 impl Formals {
     result = formal_result(value);
     packed = integer(Word[5](value) + 1);
+    resized = integer(ufixed<7, 2>(fixed));
 }
+enum Level { Low, High }
+impl Resolve for Level {
+    fn resolve(self, rhs: Self) -> Self {
+        let first: Level = self;
+        let second: Level = rhs;
+        return if first == Level::High or second == Level::High { Level::High } else { Level::Low }; // resolve formal stop
+    }
+}
+entity Resolved { first: Level in, second: Level in, result: Level out }
+impl Resolved { result = first; }
+impl Resolved { result = second; }
 entity Narrow { value: integer<-8..7> in, result: integer out }
 impl Narrow { result = twice(twice(twice(value))); }
 entity Dut {
@@ -1981,7 +1996,11 @@ impl T {
     let bundled: Bundled = { .value = bundle };
     let small: integer<-8..7> = -3;
     let narrow: Narrow = { .value = small };
-    let formals: Formals = { .value = small };
+    let fixed: ufixed<8, 4> = ufixed<8, 4>(1.5);
+    let formals: Formals = { .value = small, .fixed = fixed };
+    let first: Level = Level::Low;
+    let second: Level = Level::High;
+    let resolved: Resolved = { .first = first, .second = second };
     let clock: Bit = '0';
     let reg: Register = { .clk = clock, .value = input };
     stimulus: process {
@@ -1997,8 +2016,13 @@ impl T {
         assert!(narrow.result == -24, "nested arguments retain consumer widths and signs");
         assert!(formals.result == 1, "negative declaration-owned formal values");
         assert!(formals.packed == 30, "negative input to packed Self formal");
+        assert!(formals.resized == 6, "fixed conversion retains the target format");
+        assert!(resolved.result == Level::High, "second Resolve input drives High");
         input = 6;
         small = 3;
+        first = Level::High;
+        second = Level::Low;
+        fixed = ufixed<8, 4>(2.5);
         clock = '1';
         await 1ns;
         assert!(dut.result == 108 and dut.selected == 8, "updated hardware result");
@@ -2010,7 +2034,12 @@ impl T {
         assert!(narrow.result == 24, "nested formats reevaluate after input changes");
         assert!(formals.result == 19, "positive declaration-owned formal values");
         assert!(formals.packed == 4, "positive input to packed Self formal");
+        assert!(formals.resized == 10, "fixed conversion follows the source value");
+        assert!(resolved.result == Level::High, "first Resolve input drives High");
         assert!(reg.result == 16, "event call result");
+        second = Level::High;
+        await 1ns;
+        assert!(resolved.result == Level::High, "both Resolve inputs drive High");
         input = -6;
         clock = '0';
         await 1ns;
@@ -2024,8 +2053,11 @@ impl T {
         await 1ns;
         assert!(reg.result == 4, "updated event call result");
         input = 0;
+        first = Level::Low;
+        second = Level::Low;
         await 1ns;
         assert!(masked.total == 0, "untaken aggregate call");
+        assert!(resolved.result == Level::Low, "both Resolve inputs drive Low");
         assert!(chosen.total == 12, "zero aggregate return branch");
         assert!(independent.total == 0 and aliased.total == 11, "independent and aliased zero fields");
         assert!(matched.total == 21, "default zero match return");
@@ -2087,7 +2119,7 @@ class Check(gdb.Breakpoint):
         try:
             self.check()
         except Exception as error:
-            failures.append(str(error))
+            failures.append((type(self).__name__, str(error), gdb.selected_frame().name(), gdb.selected_frame().find_sal().line))
         return False
 class Selection(Check):
     def check(self):
@@ -2141,6 +2173,28 @@ class PackedFormal(Check):
         assert int(frame.read_var('sum')) == int(lhs) + 1
         packed_formals.add(int(lhs))
 PackedFormal({source:?} + ':{packed_formal}')
+resolve_calls = set()
+class ResolveFormal(Check):
+    def check(self):
+        frame = gdb.selected_frame()
+        lhs, rhs = [frame.read_var(name) for name in ['self', 'rhs']]
+        assert all(value.type.name == 'Level' and value.type.code == gdb.TYPE_CODE_ENUM for value in [lhs, rhs]), (str(lhs.type), str(rhs.type))
+        assert frame.function().type.target().name == 'Level', str(frame.function().type)
+        assert int(frame.read_var('first')) == int(lhs)
+        assert int(frame.read_var('second')) == int(rhs)
+        resolve_calls.add((int(lhs), int(rhs)))
+ResolveFormal({source:?} + ':{resolve_formal}')
+fixed_types = set()
+fixed_inputs = set()
+class FixedFormal(Check):
+    def check(self):
+        frame = gdb.selected_frame()
+        argument = frame.read_var('value').type
+        result = frame.function().type.target()
+        fixed_types.add((argument.name.replace(' ', ''), result.name.replace(' ', '')))
+        if argument.name.replace(' ', '') == 'ufixed[8]':
+            fixed_inputs.add(int(frame.read_var('value')))
+FixedFormal('std::fixed::from')
 class Typed(Check):
     def check(self):
         global typed_seen
@@ -2304,6 +2358,9 @@ assert not failures, failures
 for line, (_, _, _, _, expected) in formal_cases.items():
     assert expected <= formal_seen[line] <= expected | {{0}}, (line, formal_seen[line])
 assert {{29, 3}} <= packed_formals <= {{0, 29, 3}}, packed_formals
+assert {{(0, 0), (0, 1), (1, 0)}} <= resolve_calls, resolve_calls
+assert ('ufixed[8]', 'ufixed[7]') in fixed_types, fixed_types
+assert {{24, 40}} <= fixed_inputs <= {{0, 24, 40}}, fixed_inputs
 assert owners == {{'T::dut::<hardware:T.dut.selected>', 'T::other::<hardware:T.other.selected>'}}, owners
 assert {{5, 6, -6, 10}} <= seen <= {{0, 5, 6, -6, 10}}, seen
 assert events == {{6, -6}}, events
@@ -2352,6 +2409,7 @@ assert sorted(match_calls) == [-6, 0, 5, 6], match_calls
             constrained_formal = line("constrained formal stop"),
             generic_formal = line("hardware generic formal stop"),
             packed_formal = line("packed Self formal stop"),
+            resolve_formal = line("resolve formal stop"),
         );
         success(
             Command::new("gdb")
@@ -2438,6 +2496,68 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
                     .unwrap(),
             );
         }
+        let finish = format!(
+            r#"import gdb
+gdb.Breakpoint({source:?} + ':{conversion}')
+gdb.Breakpoint({source:?} + ':{resolve}')
+gdb.Breakpoint('std::fixed::from')
+conversions, resolutions, fixed = set(), set(), set()
+gdb.execute('run')
+while gdb.selected_thread() is not None:
+    frame = gdb.selected_frame()
+    name = frame.name()
+    if name == 'std::fixed::from':
+        argument = frame.read_var('value')
+        if argument.type.name.replace(' ', '') != 'ufixed[8]':
+            gdb.execute('continue')
+            continue
+        value = int(argument)
+        fixed.add(value)
+        expected = value >> 2
+    elif name == 'debug_hardware::from':
+        value = int(frame.read_var('value'))
+        conversions.add(value)
+        expected = value + 1
+    else:
+        assert name == 'debug_hardware::resolve', name
+        values = tuple(int(frame.read_var(parameter)) for parameter in ['self', 'rhs'])
+        resolutions.add(values)
+        expected = int(any(values))
+    gdb.execute('finish')
+    returned = gdb.history(0)
+    if name == 'debug_hardware::from':
+        assert returned.type.name == 'Count', str(returned.type)
+        actual = int(returned['value'])
+    else:
+        actual = int(returned)
+    assert actual == expected, (name, actual, expected)
+    gdb.execute('continue')
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+assert {{-3, 3}} <= conversions <= {{-3, 0, 3}}, conversions
+assert {{(0, 0), (0, 1), (1, 0), (1, 1)}} <= resolutions, resolutions
+assert {{24, 40}} <= fixed <= {{0, 24, 40}}, fixed
+"#,
+            source = source.to_string_lossy(),
+            conversion = line("conversion formal stop"),
+            resolve = line("resolve formal stop"),
+        );
+        success(
+            Command::new("gdb")
+                .args(["-nx", "-q", "--batch"])
+                .arg(&debug)
+                .args([
+                    "-ex",
+                    "set debuginfod enabled off",
+                    "-ex",
+                    "set disable-randomization off",
+                    "-ex",
+                    "set breakpoint pending off",
+                    "-ex",
+                    &format!("python {finish}"),
+                ])
+                .output()
+                .unwrap(),
+        );
     } else {
         eprintln!("GDB unavailable: hardware native execution checked, debugger probe skipped");
     }
