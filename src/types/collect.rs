@@ -143,6 +143,8 @@ impl<'a> Checker<'a> {
             current_impl_owner: std::cell::RefCell::new(None),
             file_modules,
             entity_names,
+            type_attrs: HashMap::new(),
+            type_attr_reads: HashMap::new(),
         }
     }
 
@@ -150,6 +152,7 @@ impl<'a> Checker<'a> {
     pub(super) fn finish(self) -> Typed {
         Typed {
             expr_types: self.expr_types.into_inner(),
+            type_attr_reads: self.type_attr_reads,
         }
     }
 
@@ -305,6 +308,12 @@ impl<'a> Checker<'a> {
                             ImplItem::ModeField { name, .. } if self.entity_names.contains(&ty) => {
                                 self.private_entity_members
                                     .insert((ty.clone(), name.text.clone()), name.span);
+                            }
+                            ImplItem::Attr(declaration) => {
+                                self.type_attrs.insert(
+                                    (ty.clone(), declaration.name.text.clone()),
+                                    declaration.clone(),
+                                );
                             }
                             _ => {}
                         }

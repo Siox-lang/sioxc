@@ -26,9 +26,19 @@ impl<'a> Checker<'a> {
                 // Silently lowering it produced an `Unknown` that only failed
                 // at codegen, naming a driver index rather than the attribute.
                 let a = attr.text.as_str();
+                let type_attr = if SYS_ATTRS.contains(&a) {
+                    None
+                } else {
+                    self.type_attr(base, a, sym)
+                        .map(|(owner, declaration)| (owner, declaration.clone()))
+                };
+                if let Some((owner, declaration)) = &type_attr {
+                    self.check_type_attr_read(owner, declaration, *span);
+                }
                 // A declared attribute's read was folded into its value before
                 // resolution; one left here already failed with its reason.
-                if !PHASE2_ATTRS.contains(&a)
+                if type_attr.is_none()
+                    && !PHASE2_ATTRS.contains(&a)
                     && !SYS_ATTRS.contains(&a)
                     && !self.attr_value_kinds.contains_key(a)
                 {

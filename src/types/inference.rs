@@ -135,7 +135,9 @@ impl<'a> Checker<'a> {
                 "old" => self.type_of(base, sym),
                 "length" | "high" | "low" | "left" | "right" => Ty::Integer,
                 "ascending" => self.ty_from_head("Bool"),
-                _ => Ty::Error,
+                name => self
+                    .type_attr(base, name, sym)
+                    .map_or(Ty::Error, |(_, declaration)| self.ast_ty(&declaration.ty)),
             },
             Expr::Binary { op, lhs, rhs, .. } => {
                 if is_comparison(op) {

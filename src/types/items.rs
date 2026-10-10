@@ -420,7 +420,8 @@ impl<'a> Checker<'a> {
                         ImplItem::ModeField { .. }
                         | ImplItem::Process(_)
                         | ImplItem::Stmt(_)
-                        | ImplItem::AttrBinding(_) => {}
+                        | ImplItem::AttrBinding(_)
+                        | ImplItem::Attr(_) => {}
                     }
                 }
             }

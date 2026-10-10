@@ -1307,7 +1307,8 @@ pub fn lower(
                 | ImplItem::Fn(_)
                 | ImplItem::ModeField { .. }
                 | ImplItem::Let(_)
-                | ImplItem::AttrBinding(_) => {}
+                | ImplItem::AttrBinding(_)
+                | ImplItem::Attr(_) => {}
             }
         }
 
@@ -5382,17 +5383,33 @@ fn inline_with_self_format(
     );
     context.process_ir.value_layouts[format.0 as usize] = Some(layout);
     context.self_formats.push(format);
+    // Only a result of the type itself (`-> ufixed`, `-> Self`) is a word of
+    // the format; `-> integer` keeps its own width.
+    let in_format = function
+        .ret
+        .as_ref()
+        .and_then(crate::ir::lower_helpers::type_head_name)
+        .is_some_and(|head| {
+            head == "Self"
+                || matches!(&target_type, crate::types::Ty::Array { family: Some(family), .. }
+                    if family.rsplit("::").next() == Some(head))
+        });
     let result = inline_process_function(
         function,
         None,
         operands,
         process,
         context,
-        Some(&target_type),
+        if in_format {
+            Some(&target_type)
+        } else {
+            return_type
+        },
     );
     context.self_formats.pop();
     match result {
-        Some(result) => Some(inherit_receiver_layout(result, format, context)),
+        Some(result) if in_format => Some(inherit_receiver_layout(result, format, context)),
+        Some(result) => Some(result),
         None => {
             truncate_process_values(context, first_value);
             None

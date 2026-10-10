@@ -178,8 +178,30 @@ impl<'a> Lowering<'a> {
                 None => self.param_widths.borrow_mut().remove(&name),
             };
         }
-        // The value is a word of the format, as a stored one is: operator
-        // bodies read its sign bit at `'length - 1`.
+        // A result of the type itself (`-> ufixed`, `-> Self`) is a word of
+        // the format, as a stored one is: operator bodies read its sign bit
+        // at `'length - 1`. Any other result (`-> integer`) keeps its width.
+        let family = match callee {
+            ast::Expr::Index { base, .. } => expr_path(base),
+            ast::Expr::Path(path) => path
+                .segments
+                .len()
+                .checked_sub(2)
+                .map(|owner| path.segments[owner].text.clone()),
+            _ => None,
+        };
+        let in_format = f.ret.as_ref().and_then(type_head_name).is_some_and(|head| {
+            head == "Self"
+                || family
+                    .as_deref()
+                    .is_some_and(|family| family.rsplit("::").next() == Some(head))
+        });
+        if !in_format {
+            return match out? {
+                Val::Scalar(value) => Some(value),
+                _ => None,
+            };
+        }
         let length = u32::try_from(left.abs_diff(right) + 1).ok()?;
         match out? {
             Val::Scalar(value) if length < 64 => {

@@ -151,3 +151,45 @@ fn attributes_with_no_effect_are_flagged() {
         "`test` is acted on"
     );
 }
+
+#[test]
+/// A type attribute answers for every value of its type and for `Self`; it
+/// must be a shape fact, may not take a system or metadata attribute's
+/// name, and a private one is read only inside its type's implementation.
+fn type_attributes_are_shape_facts() {
+    let base = "module m;\nstruct Q(Logic[7..0]);\n\
+                impl Q {\n  pub attr ints: integer = self'high + 1;\n  ATTR\n  \
+                pub fn get(v: Q) -> integer { return Self'ints + v'ints; }\n}\n\
+                entity E { q: Q in, y: integer out, }\nimpl E {\n  y = READ;\n}\n";
+    let codes =
+        |attr: &str, read: &str| diag_codes(&base.replace("ATTR", attr).replace("READ", read));
+    let fine = codes(
+        "pub attr twice: integer = self'ints * 2;",
+        "q'ints + q'twice",
+    );
+    assert!(fine.iter().all(|c| c == "None"), "{fine:?}");
+    // The value, not its shape.
+    let value = codes("attr bad: integer = integer(self) + 1;", "q'ints");
+    assert!(
+        value.contains(&format!("{:?}", Some(codes::INVALID_TYPE_ATTR))),
+        "{value:?}"
+    );
+    // A system attribute's name, and a metadata attribute's.
+    let system = codes("attr high: integer = 1;", "q'ints");
+    assert!(
+        system.contains(&format!("{:?}", Some(codes::INVALID_TYPE_ATTR))),
+        "{system:?}"
+    );
+    // Private outside the type's implementation.
+    let private = codes("attr hidden: integer = self'low;", "q'hidden");
+    assert!(
+        private.contains(&format!("{:?}", Some(codes::PRIVATE_MEMBER))),
+        "{private:?}"
+    );
+    // An unknown one is still unknown.
+    let unknown = codes("", "q'nothing");
+    assert!(
+        unknown.contains(&format!("{:?}", Some(codes::UNKNOWN_NAME))),
+        "{unknown:?}"
+    );
+}

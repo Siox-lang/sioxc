@@ -516,6 +516,11 @@ pub enum ImplItem {
     /// `attr precedence = 40;` binds the enclosing implementation (or, for an
     /// attribute declared `for entity`, the entity it implements).
     AttrBinding(AttrBinding),
+    /// `pub attr integers: integer = self'high + 1;` — a type attribute: a
+    /// shape fact every value of the implemented type answers (`x'integers`,
+    /// `Self'integers`). It has no targets, and its `default` is the value,
+    /// written in terms of `self`'s shape only, so a read is a constant.
+    Attr(AttrDecl),
 }
 
 /// A `process { ... }` block: concurrent with other processes, sequential

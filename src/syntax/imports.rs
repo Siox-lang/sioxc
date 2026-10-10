@@ -824,6 +824,12 @@ impl Rewriter<'_> {
                                 self.stmt(s, &mut scope, sink);
                             }
                             ImplItem::AttrBinding(b) => self.expr(&mut b.value, &env, sink),
+                            ImplItem::Attr(a) => {
+                                self.ty(&mut a.ty, &env, sink);
+                                if let Some(value) = &mut a.default {
+                                    self.expr(value, &env, sink);
+                                }
+                            }
                             ImplItem::ModeField { .. } => {}
                         }
                     }

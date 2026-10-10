@@ -623,6 +623,14 @@ impl<'a> Parser<'a> {
                 Item::MacroCall { path, span }
             }
             TokenKind::Attr => match self.parse_attr(is_pub) {
+                AttrItem::Decl(declaration) if declaration.targets.is_empty() => {
+                    self.error_at(
+                        declaration.span,
+                        "a module-level attribute names its targets (`for let, port`); \
+                         a type attribute is declared inside the type's implementation",
+                    );
+                    Item::AttrDecl(declaration)
+                }
                 AttrItem::Decl(declaration) => Item::AttrDecl(declaration),
                 AttrItem::Binding(binding) => Item::AttrBinding(binding),
             },
@@ -1488,10 +1496,10 @@ impl<'a> Parser<'a> {
             self.error_here("attributes on impl items are only allowed on `let` declarations");
         }
         let is_pub = self.eat(TokenKind::Pub);
-        if is_pub && !self.at(TokenKind::Fn) {
+        if is_pub && !self.at(TokenKind::Fn) && !self.at(TokenKind::Attr) {
             self.error_at(
                 self.prev_span(),
-                "only functions may be `pub` inside an implementation",
+                "only functions and attributes may be `pub` inside an implementation",
             );
         }
         // `update: process { ... }`, `stages: for ...`, `tap: if ...` — a
@@ -1504,12 +1512,16 @@ impl<'a> Parser<'a> {
             }
         }
         match self.kind() {
-            TokenKind::Attr => match self.parse_attr(false) {
+            TokenKind::Attr => match self.parse_attr(is_pub) {
                 AttrItem::Binding(binding) => Some(ImplItem::AttrBinding(binding)),
+                AttrItem::Decl(declaration) if declaration.targets.is_empty() => {
+                    Some(ImplItem::Attr(declaration))
+                }
                 AttrItem::Decl(declaration) => {
                     self.error_at(
                         declaration.span,
-                        "an attribute is declared at module level, not inside an implementation",
+                        "a metadata attribute is declared at module level; inside an \
+                         implementation `attr name: T = value;` declares a type attribute",
                     );
                     None
                 }
@@ -1897,15 +1909,19 @@ impl<'a> Parser<'a> {
     /// target kinds it allows, and an optional default.
     fn parse_attr_decl_rest(&mut self, start: Span, is_pub: bool, name: Ident) -> AttrDecl {
         let ty = self.parse_type();
-        self.expect(TokenKind::For, "before attribute targets");
         // Targets are a fixed vocabulary that includes keywords (`entity`,
         // `let`, `port`, `instance`, ...), so accept any name-like token.
+        // None is a type attribute, which only an implementation declares.
         let mut targets = Vec::new();
-        loop {
-            targets.push(self.parse_word());
-            if !self.eat(TokenKind::Comma) {
-                break;
+        if self.eat(TokenKind::For) {
+            loop {
+                targets.push(self.parse_word());
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
             }
+        } else if !self.at(TokenKind::Eq) {
+            self.expect(TokenKind::For, "before attribute targets");
         }
         let default = if self.eat(TokenKind::Eq) {
             Some(self.parse_expr(false))

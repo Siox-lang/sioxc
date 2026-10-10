@@ -530,3 +530,56 @@ impl T {
         );
     }
 }
+
+/// A type attribute (`pub attr integers: integer = self'high + 1;` in an
+/// implementation) answers for every value of the type and for `Self`, in
+/// hardware and a testbench, nested ones included; a qualified call that
+/// returns `integer` keeps its width rather than the format's.
+#[cfg(feature = "llvm")]
+#[test]
+fn type_attributes_answer_for_values_and_self() {
+    let stdout = run(
+        "type_attrs",
+        r#"
+module type_attrs;
+use std::fixed::{ufixed, sfixed};
+use std::float::float;
+
+struct Q<W: integer, F: integer>(Logic[W - F - 1 .. 0 - F]);
+impl Q {
+    pub attr ints: integer = self'high + 1;
+    attr double: integer = self'ints * 2;
+    pub fn probe(v: Q) -> integer { return Self'ints * 100 + v'ints * 10 + v'double; }
+}
+
+entity Dut { x: ufixed<8, 4> in, z: float<32, 23> in, q: Q<10, 3> in,
+    i: integer out, f: integer out, b: integer out, p: integer out }
+impl Dut {
+    i = x'integers;
+    f = x'fractions;
+    b = z'bias;
+    p = Q<6, 2>::probe(q);
+}
+
+#[test] entity T {}
+impl T {
+    let x: ufixed<8, 4>; let z: float<32, 23>; let q: Q<10, 3>;
+    let i: integer; let f: integer; let b: integer; let p: integer;
+    let dut: Dut = { .x = x, .z = z, .q = q, .i = i, .f = f, .b = b, .p = p };
+    check: process {
+        await 1ns;
+        let s: sfixed<12, 5> = sfixed<12, 5>(1.0);
+        let d: float<64, 52> = float<64, 52>(1.0);
+        print!("hw {} {} {} {}", i, f, b, p);
+        print!("tb {} {} {} {} {}", s'integers, s'fractions, d'exponent, d'bias, Q<6, 2>::probe(q));
+    }
+}
+"#,
+    );
+    for line in ["hw 4 4 127 484", "tb 7 5 11 1023 484"] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}

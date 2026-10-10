@@ -13764,3 +13764,22 @@ Owner-requested (TODO std item). Branch `feat/fixed-resize-styles`.
 **Codex:** touches `syntax/{ast,parser,pretty,imports,macros}.rs`,
 `resolve.rs`, `types/{inference,expressions}.rs`, `ir/lower/{calls,expressions,values}.rs`,
 `source_processes.rs` (family-from helpers), `lower_helpers/substitute.rs`.
+
+### 2026-10-10 — Claude — type attributes
+
+Owner-approved. Branch `feat/type-attributes`.
+- `ImplItem::Attr(AttrDecl)` (no targets): `pub attr integers: integer =
+  self'high + 1;` inside an implementation; a module-level declaration
+  still needs `for` targets.
+- `types/expand.rs`: the checker records each read (`x'integers`,
+  `Self'integers`) in `Typed::type_attr_reads`, validates declarations
+  (shape facts only, `E-P037`), and `expand_type_attrs` (called from
+  `compiler.rs` after checking) rewrites reads to the declared value with
+  `self` -> base, so lowering sees only system attributes.
+- Fixed from #53: a qualified call returning something other than its type
+  (`-> integer`) took the format's width (both lowering paths).
+- std: `'integers`/`'fractions` on `ufixed`/`sfixed`, `'exponent`/
+  `'mantissa`/`'bias` on `float`.
+**Codex:** touches `syntax/{ast,parser,pretty,imports,macros,attributes}.rs`,
+`resolve.rs`, `elab.rs`, `types/{mod,collect,inference,expressions,impls,expand}.rs`,
+`ir/lower/{calls,source_processes}.rs`, `compiler.rs`, `diag.rs`.
