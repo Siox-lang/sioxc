@@ -293,6 +293,29 @@ fn declared_process_type(ty: &ast::Type, resolved: &Resolved) -> Option<crate::t
 /// not persist a type for every contextual aggregate literal, so call
 /// arguments such as `[1, 2]` and `{ .a = 1 }` must inherit the signature's
 /// recursive shape before that signature disappears from Process IR.
+/// The sized vector a field-less struct wraps (`struct W(Logic[7..0])`):
+/// written without an index, `W` is that width and range, as a signal of it
+/// already is.
+fn sized_struct_base<'a>(
+    definition: crate::resolve::DefId,
+    context: &LoweringContext<'a>,
+) -> Option<&'a ast::Type> {
+    context
+        .modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .find_map(|item| {
+            let ast::Item::Struct(declaration) = item else {
+                return None;
+            };
+            (declaration.fields.is_empty()
+                && context.resolved.declared(declaration.name.span) == Some(definition))
+            .then_some(declaration.base.as_ref())
+            .flatten()
+            .filter(|base| matches!(base, ast::Type::Indexed { index: Some(_), .. }))
+        })
+}
+
 fn process_declared_type(
     ty: &ast::Type,
     context: &LoweringContext<'_>,
@@ -343,6 +366,17 @@ fn process_declared_type_inner(
                 let first = candidates.next()?.clone();
                 candidates.next().is_none().then_some(first)
             });
+            // A struct over a sized vector has that vector's length.
+            let len = context
+                .resolved
+                .resolved(path.span)
+                .and_then(|definition| sized_struct_base(definition, context))
+                .and_then(|base| process_declared_type_inner(base, context, aliases))
+                .and_then(|base| match base {
+                    crate::types::Ty::Array { len, .. } => Some(len),
+                    _ => None,
+                })
+                .unwrap_or(0);
             family.map(|family| {
                 let element = context
                     .design
@@ -352,7 +386,7 @@ fn process_declared_type_inner(
                     .unwrap_or(crate::types::Ty::Error);
                 crate::types::Ty::Array {
                     elem: Box::new(element),
-                    len: 0,
+                    len,
                     family: Some(family),
                 }
             })
@@ -4602,6 +4636,17 @@ fn apply_process_declared_ranges(
                     return None;
                 }
                 apply_process_declared_ranges(layout, aliased, context, aliases)?;
+                aliases.remove(&definition);
+            } else if let Some((definition, base)) =
+                context.resolved.resolved(path.span).and_then(|definition| {
+                    sized_struct_base(definition, context).map(|base| (definition, base))
+                })
+            {
+                // `W` for `struct W(Logic[7..0])` takes the wrapped range.
+                if !aliases.insert(definition) {
+                    return None;
+                }
+                apply_process_declared_ranges(layout, base, context, aliases)?;
                 aliases.remove(&definition);
             }
         }

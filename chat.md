@@ -13822,3 +13822,13 @@ Owner-requested (TODO, from the float-division work). Branch `fix/loops-in-opera
   a non-constant hardware loop bound reports the caller's locals as unknown.
 **Codex:** touches `ir/lower/calls.rs` (`constant_expr`), `source_processes.rs`
 (`source_value_width` Shl).
+
+### 2026-10-10 — Claude — user newtypes as testbench locals
+
+Owner-requested. Branch `fix/newtype-testbench-locals`.
+- `source_processes.rs`: `sized_struct_base` finds a field-less struct's
+  sized base (`struct W(Logic[7..0])`); `process_declared_type` gives `W`
+  that length and `apply_process_declared_ranges` its range, so `let w: W;`
+  in a testbench has width 8 and range 7..0 (it was a zero-width layout and
+  the block failed at run time). Signals of `W` already worked.
+**Codex:** touches `ir/lower/source_processes.rs` (declared type/range of locals).
