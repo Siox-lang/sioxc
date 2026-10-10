@@ -583,3 +583,76 @@ impl T {
         );
     }
 }
+
+/// Float division is IEEE-754 (correctly rounded words, infinities, NaN),
+/// and fixed and float convert both ways, in hardware and a testbench; a
+/// float operator's result keeps its format as a conversion's argument.
+#[cfg(feature = "llvm")]
+#[test]
+fn float_division_and_fixed_conversions() {
+    let stdout = run(
+        "float_division",
+        r#"
+module float_division;
+use std::fixed::{ufixed, sfixed};
+use std::float::float;
+
+entity Dut { a: float<32, 23> in, b: float<32, 23> in, x: ufixed<8, 4> in, q: float<32, 23> out,
+    xf: float<32, 23> out, back: sfixed<8, 4> out }
+impl Dut {
+    q = a / b;
+    xf = float<32, 23>(x);
+    back = sfixed<8, 4>(a);
+}
+
+#[test] entity T {}
+impl T {
+    let a: float<32, 23>; let b: float<32, 23>; let x: ufixed<8, 4>;
+    let q: float<32, 23>; let xf: float<32, 23>; let back: sfixed<8, 4>;
+    let dut: Dut = { .a = a, .b = b, .x = x, .q = q, .xf = xf, .back = back };
+    check: process {
+        a = float<32, 23>(1.0); b = float<32, 23>(3.0); x = ufixed<8, 4>(2.6875);
+        await 1ns;
+        print!("hw1 {} {} {}", integer(q), xf, back);
+        a = float<32, 23>(0.0 - 3.14159); b = float<32, 23>(0.0);
+        await 1ns;
+        print!("hw2 {} {}", q, back);
+        let one: float<32, 23> = float<32, 23>(1.0);
+        let two: float<32, 23> = float<32, 23>(2.0);
+        let three: float<32, 23> = float<32, 23>(3.0);
+        let zero: float<32, 23> = float<32, 23>(0.0);
+        let inf: float<32, 23> = one / zero;
+        let r1: float<32, 23> = two / three;
+        let r2: float<32, 23> = float<32, 23>(7.5) / float<32, 23>(2.5);
+        let r3: float<32, 23> = zero / zero;
+        let r4: float<32, 23> = inf / inf;
+        let r5: float<32, 23> = float<32, 23>(5.0) / inf;
+        let r6: float<32, 23> = (zero - one) / zero;
+        print!("tb32 {} {} {} {} {} {}", integer(r1), r2, r3.is_nan(), r4.is_nan(), r5, r6);
+        let s: sfixed<8, 4> = sfixed<8, 4>(0.0 - 2.5625);
+        let sf: float<32, 23> = float<32, 23>(s);
+        let big: float<32, 23> = float<32, 23>(100.0);
+        let tie: float<32, 23> = float<32, 23>(0.03125);
+        let u1: ufixed<8, 4> = ufixed<8, 4>(float<32, 23>(3.14159));
+        let u2: ufixed<8, 4> = ufixed<8, 4>(big);
+        let u3: ufixed<8, 4> = ufixed<8, 4>(tie);
+        let s1: sfixed<8, 4> = sfixed<8, 4>(big);
+        let s2: sfixed<8, 4> = sfixed<8, 4>(zero - big);
+        let s3: sfixed<8, 4> = sfixed<8, 4>(r3);
+        print!("conv {} {} {} {} {} {} {}", sf, u1, u2, u3, s1, s2, s3);
+    }
+}
+"#,
+    );
+    for line in [
+        "hw1 1051372203 2.6875 1",
+        "hw2 -inf -3.125",
+        "tb32 1059760811 3 true true 0 -inf",
+        "conv -2.5625 3.125 15.9375 0.0625 7.9375 -8 0",
+    ] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}

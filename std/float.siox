@@ -1,6 +1,7 @@
 module std::float;
 
 use std::bits::unsigned;
+use std::fixed::{ufixed, sfixed};
 use std::numeric::Rounding;
 
 // Floating point, after VHDL-2008's `float_pkg`. The parameters are the
@@ -160,6 +161,39 @@ impl Sub<float, float> for float {
         // a - b is a + (-b): flip the sign bit.
         let flipped: integer = b + ((1 - 2 * low_bits(b >> (e + f), 1)) << (e + f));
         return add_words(integer(self), flipped, e, f);
+    }
+}
+
+// IEEE-754 division, rounded to nearest even. `x / 0` is infinite, `0 / 0`
+// and `inf / inf` are NaN, and `x / inf` is zero.
+impl Div<float, float> for float {
+    fn div(self, rhs: float) -> float {
+        let e: integer = self'high;
+        let f: integer = 0 - self'low;
+        let a: integer = integer(self);
+        let b: integer = integer(rhs);
+        let sign: integer = low_bits((a >> (e + f)) + (b >> (e + f)), 1);
+        let ea: integer = low_bits(a >> f, e);
+        let eb: integer = low_bits(b >> f, e);
+        let fa: integer = low_bits(a, f);
+        let fb: integer = low_bits(b, f);
+        let full: integer = (1 << e) - 1;
+        let nan: Bool = (ea == full and fa != 0) or (eb == full and fb != 0);
+        if nan or (ea == full and eb == full) or (ea == 0 and eb == 0) {
+            return nan_word(e, f);
+        }
+        if ea == full or eb == 0 { return infinity_word(sign, e, f); }
+        if ea == 0 or eb == full { return pack(sign, 0, 0, e, f); }
+        // The significand quotient with `f + 2` fraction bits and a sticky
+        // bit for the remainder: enough to round to nearest even. The
+        // dividend needs `2f + 3` bits of the 64-bit kernel word, as `*`'s
+        // product needs `2f + 2`, so both stop short of binary64.
+        let ma: integer = (1 << f) + fa;
+        let mb: integer = (1 << f) + fb;
+        let q: integer = (ma << (f + 2)) / mb;
+        let sticky: integer = if (ma << (f + 2)) != q * mb { 1 } else { 0 };
+        let bias: integer = (1 << (e - 1)) - 1;
+        return encode(sign, ea - eb + bias, (q << 1) + sticky, f + 3, e, f);
     }
 }
 
@@ -349,6 +383,88 @@ fn refloat(a: integer, ea: integer, fa: integer, e: integer, f: integer, truncat
     let bias: integer = (1 << (e - 1)) - 1;
     let bias_in: integer = (1 << (ea - 1)) - 1;
     return encode_styled(sign, exponent - bias_in + bias, (1 << fa) + fraction, fa, e, f, truncate);
+}
+
+// `float<32, 23>(x)` from a fixed-point number: rounded to nearest even.
+impl From<ufixed> for float {
+    fn from(value: ufixed) -> float {
+        return fixed_to_float(fixed_word(value, false), 0 - value'low, Self'high, 0 - Self'low);
+    }
+}
+
+impl From<sfixed> for float {
+    fn from(value: sfixed) -> float {
+        return fixed_to_float(fixed_word(value, true), 0 - value'low, Self'high, 0 - Self'low);
+    }
+}
+
+// `ufixed<8, 4>(x)` from a float: rounded to the nearest step (ties away from
+// zero) and saturated, as fixed point's other constructors are. A NaN is
+// zero; an infinity saturates.
+impl From<float> for ufixed {
+    fn from(value: float) -> ufixed {
+        return float_to_fixed(
+            integer(value), value'high, 0 - value'low, Self'high, Self'low, false
+        );
+    }
+}
+
+impl From<float> for sfixed {
+    fn from(value: float) -> sfixed {
+        return float_to_fixed(
+            integer(value), value'high, 0 - value'low, Self'high, Self'low, true
+        );
+    }
+}
+
+// A fixed-point value's number of steps, sign-extended when `is_signed`.
+fn fixed_word<T>(value: T, is_signed: Bool) -> integer {
+    let w: integer = integer(value) - ((integer(value) >> value'length) << value'length);
+    if is_signed and (w >> (value'length - 1)) == 1 { return w - (1 << value'length); }
+    return w;
+}
+
+// The number `n / 2^fraction` with `e` exponent and `f` fraction bits.
+fn fixed_to_float(n: integer, fraction: integer, e: integer, f: integer) -> integer {
+    let sign: integer = if n < 0 { 1 } else { 0 };
+    let magnitude: integer = if n < 0 { 0 - n } else { n };
+    if magnitude == 0 { return pack(0, 0, 0, e, f); }
+    let bias: integer = (1 << (e - 1)) - 1;
+    return encode(sign, bias, magnitude, fraction, e, f);
+}
+
+// The float word `a` (`ea` exponent, `fa` fraction bits) as steps of
+// `2^right` in the format `[left..right]`.
+fn float_to_fixed(
+    a: integer, ea: integer, fa: integer, left: integer, right: integer, is_signed: Bool
+) -> integer {
+    let negative: Bool = low_bits(a >> (ea + fa), 1) == 1;
+    let exponent: integer = low_bits(a >> fa, ea);
+    let fraction: integer = low_bits(a, fa);
+    let top: integer = if is_signed { (1 << (left - right)) - 1 } else { (1 << (left - right + 1)) - 1 };
+    let bottom: integer = if is_signed { 0 - (1 << (left - right)) } else { 0 };
+    let full: integer = (1 << ea) - 1;
+    if exponent == full and fraction != 0 { return 0; }
+    if exponent == full { return if negative { bottom } else { top }; }
+    if exponent == 0 { return 0; }
+    // The number is `m * 2^shift` steps.
+    let m: integer = (1 << fa) + fraction;
+    let shift: integer = exponent - ((1 << (ea - 1)) - 1) - fa - right;
+    let magnitude_bits: integer = if is_signed { left - right } else { left - right + 1 };
+    if shift >= 0 and fa + shift >= magnitude_bits {
+        return if negative { bottom } else { top };
+    }
+    let steps: integer = if shift >= 0 {
+        m << shift
+    } else if 0 - shift > 62 {
+        0
+    } else {
+        (m + (1 << (0 - shift - 1))) >> (0 - shift)
+    };
+    let signed_steps: integer = if negative { 0 - steps } else { steps };
+    if signed_steps > top { return top; }
+    if signed_steps < bottom { return bottom; }
+    return signed_steps;
 }
 
 // The word of `value` with `e` exponent and `f` fraction bits.
