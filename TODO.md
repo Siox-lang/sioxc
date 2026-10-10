@@ -214,8 +214,13 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   and 8-to-7-bit fixed-family arguments/returns, including actual finish values.
   Reference setup/native-input inspection has line-zero locations, so function-
   name breakpoints observe initialized inputs instead of stack-slot garbage.
+  Packed operands with no recorded source range now expose explicit physical
+  LSB-first `$logic.bits` positions, while declared ranges keep their labels.
+  Fully known literals retain arbitrary-width bits; omitted nonconstant bits
+  and unconsumed metadata remain unavailable. Function-entry GDB checks cover
+  contextual operator literals without changing the native argument payload.
   Finish auditing remaining composite/generic conversions, non-enum Resolve
-  signatures and companion planes for packed operands with no declared range;
+  signatures and other companion-plane transports;
   these cases do not prove every signature or every argument's availability.
   Procedural 81/129-bit constructor and
   generic bindings now retain their checked signed/unsigned target type even

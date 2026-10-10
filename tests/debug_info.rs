@@ -1118,6 +1118,15 @@ class OperatorTypes(gdb.Breakpoint):
             assert all(ty.code == gdb.TYPE_CODE_INT and ty.sizeof == 1 for ty in types), types
             assert int(frame.read_var('rhs')) in [1, 2]
             assert int(frame.read_var('self')) == int(frame.older().read_var('first'))
+            # Contextual literal operands have a width but no source labels.
+            # Their companion exposes physical LSB-first positions explicitly.
+            rhs = frame.read_var('rhs$logic')
+            assert rhs.type.code == gdb.TYPE_CODE_STRUCT and rhs.type.sizeof == 3, str(rhs.type)
+            assert 'bit positions' in rhs.type.name, rhs.type.name
+            bits = rhs['bits']
+            assert bits.type.range() == (0, 2), str(bits.type)
+            number = int(frame.read_var('rhs'))
+            assert ''.join(str(bits[i]).strip("'") for i in range(3)) == ''.join(str((number >> i) & 1) for i in range(3)), str(rhs)
             # GDB canonicalizes the C++ spelling of the DWARF base name unsigned[N].
             operator_types.add(tuple(ty.name.replace('unsigned int [', 'unsigned[') for ty in types))
         except Exception as error:

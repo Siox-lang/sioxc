@@ -16202,3 +16202,81 @@ for range-less packed companion inspection: retain declared source ranges,
 distinguish physical bit positions when no range is known, and only normalize
 fully known literals, never manufacture discarded values or metadata planes.
 Full DWARF remains active; no push.
+
+### 2026-10-10 — Codex — range-less logic companions
+
+Compiler signature/entry batch is committed as 1b5cc55; sibling docs as 3fac992.
+Guarded 334521 passed the native mixed-aggregate regression with range-less
+operator rhs companions checked at function entry. Physical LSB-first positions
+are exposed under $logic.bits, distinct from declared source index labels.
+Inspection constants now use LLVM arbitrary-width integers instead of the
+64-bit host helper. Full default/bitpack debugger fixtures and Clippy are
+running under 339513; its first --bin filter selected zero tests, so explicitly
+run the new constant unit through --lib before counting it as covered.
+Also own sibling architecture/testing docs and the TODO update for this batch.
+No change to runtime value dependencies or additional metadata-plane requests.
+
+Guarded 339513 is terminal exited/success/0 (peak 1195716608 bytes): eleven
+DWARF fixtures per packing mode and strict all-target/all-feature Clippy pass.
+The corrected library unit invocation 349086 also exited/success/0, actually
+running inspection_constants_preserve_full_words_and_negation (one passed,
+537 filtered). Freeze this batch for full acceptance. Source hash:
+6a8dbcba4d40b26f379ea76c1d408fa02e5398087533a619616d7dde8d02fe03.
+
+Full acceptance is live as siox-job-3000-1791647432524728332-351631.service;
+poll that exact unit, do not restart it or edit Rust while it runs.
+Log: /home/max/.cache/siox-jobs/siox-job-3000-1791647432524728332-351631.log.
+The gate runs CI-local, both debug corpora, native GDB/VCD smokes and AST-only
+graph refresh. Owned pending files are logic.rs, inline_values.rs, debug_info.rs,
+TODO and this chat tail; sibling architecture/testing docs are also pending.
+Keep foreign AGENTS/.codex and 441 historical chat lines outside commits.
+After acceptance commit this batch, then continue the remaining full DWARF
+requirements: non-enum Resolve/composite conversions, demand-preserving
+checked/effectful/partial aggregate boundaries, companion transports and ABI
+edge cases. No push or completion claim.
+
+### 2026-10-10 — Codex — next partial-return audit (read-only)
+
+351631 remains live; source edits are frozen. Traced the next concrete ABI
+gap: aggregate_returns deliberately leaves incomplete groups leaf-backed;
+source_return_type falls back to a direct leaf integer when the full declared
+layout width differs, but inline_body still describes the full result_layout
+in its subroutine type. Thus a partial native boundary can advertise a full
+aggregate ABI it does not implement. Existing risky_pair coverage proves the
+untaken abort leaf is not evaluated, but does not call GDB finish there.
+After the current gate, add a native/GDB partial-return probe to establish
+the actual failure, then preserve missing-field unavailability without making
+the pruned/effectful fields executable dependencies. This is source evidence,
+not yet a reproduced GDB result or a completed fix.
+
+For that audit, distinguish a real native whole-result boundary from a source
+inline frame over partial evaluation. GDB's current primary documentation
+states that inline frames support arguments/locals/step/finish, but finish
+cannot locate their return values:
+https://sourceware.org/gdb/current/onlinedocs/gdb.html/Inline-Functions.html
+Existing CFG debug frames already use inlined-at metadata in debug.rs. This
+is a possible metadata-only route for genuinely partial evaluations, not a
+decision to retag their source return type or add an execution wrapper. First
+reproduce the current leaf/full-result mismatch and test actual stepping,
+call counts and unavailable fields before selecting a representation.
+
+Prepared (not executed) the isolated reproduction in
+/home/max/.cache/siox-jobs/tmp/dwarf-partial-return-20261010/partial.siox
+and inspect.py. Its native assertions exercise retained positive/negative
+integer fields; the pruned right field calls abort. GDB checks the retained
+finish value and requires the discarded field to be unavailable. These scratch
+diagnostic files do not change the frozen compiler or corpus source. Run them
+under the next guarded job only after 351631 is terminal; do not overlap jobs.
+
+### 2026-10-10 — Codex — physical logic inspection acceptance
+
+351631 is terminal exited/success/0, peak 1610874880 bytes. The frozen source
+hash 6a8dbcba4d40b26f379ea76c1d408fa02e5398087533a619616d7dde8d02fe03
+is unchanged. Full default/bitpack tests, all eleven debugger fixtures each,
+strict Clippy/frontend/artifact checks, four 228-program corpora and four native
+FIFO/wide GDB/VCD smokes pass. Graph refresh: 5360 nodes, 15273 edges, 244
+communities; known vendored extraction warnings remain. Commit only the owned
+logic-view/constant changes, tests, TODO and this tail; sibling docs separately.
+No push. Next own inline_values.rs and debug_info.rs for the partial-return
+native/GDB reproduction and demand-preserving fix. The scratch probe now tests
+both left-only and right-only returns with an abort in the discarded field.

@@ -2076,19 +2076,13 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
     // their ordinary SSA value is actually emitted (never inspect by reevaluation).
     for binding in source.parameters.iter().chain(&source.locals) {
         for id in binding.values() {
-            if let Some(number) = process_constant_i64(design, id) {
-                let width = design.process_ir.values[id.0 as usize]
-                    .bit_width
-                    .unwrap_or(64);
-                if let Some(width) = std::num::NonZeroU32::new(width) {
-                    if let Ok(ty) = debug.context.custom_width_int_type(width) {
-                        capture_value(
-                            builder,
-                            design,
-                            cache,
-                            id,
-                            ty.const_int(number as u64, true),
-                        );
+            let width = design.process_ir.values[id.0 as usize]
+                .bit_width
+                .unwrap_or(64);
+            if let Some(width) = std::num::NonZeroU32::new(width) {
+                if let Ok(ty) = debug.context.custom_width_int_type(width) {
+                    if let Some(value) = constant_integer(design, id, ty) {
+                        capture_value(builder, design, cache, id, value);
                     }
                 }
             }
@@ -2374,6 +2368,25 @@ pub(in crate::llvm::process) fn capture_metadata<'ctx>(
     }
 }
 
+/// Recover literal bits without host-integer truncation or executing a value.
+fn constant_integer<'ctx>(
+    design: &Design,
+    id: ProcessValueId,
+    ty: inkwell::types::IntType<'ctx>,
+) -> Option<IntValue<'ctx>> {
+    match &design.process_ir.values.get(id.0 as usize)?.kind {
+        ProcessValueKind::Number(ProcessNumber::Integer(words)) => {
+            Some(ty.const_int_arbitrary_precision(words))
+        }
+        ProcessValueKind::InlineCall { operand, .. } => constant_integer(design, *operand, ty),
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::Neg,
+            operand,
+        } => Some(constant_integer(design, *operand, ty)?.const_neg()),
+        _ => None,
+    }
+}
+
 fn capture_binding<'ctx>(
     builder: &Builder<'ctx>,
     design: &Design,
@@ -2389,28 +2402,42 @@ fn capture_binding<'ctx>(
             if binding.id != id {
                 continue;
             }
+            let mut value = value;
             let metadata = if let ValueInspection::Logic(layout) = &binding.inspection {
                 // Body-local plane values do not dominate the entry insertion
-                // point. Keep that companion unavailable until normal emission.
-                if at_entry {
+                // point. A proven binary value needs no such plane.
+                let meta_free = cache.meta_free.get(id.0 as usize).copied().unwrap_or(false);
+                if at_entry && !meta_free {
                     continue;
                 }
                 // A narrow consumer cannot establish the binding's omitted
-                // numeric bits, even if its complete metadata plane is known.
-                if value.get_type().get_bit_width() < layout.packed_width().unwrap() {
-                    continue;
+                // numeric bits. A fully known literal is the exception: use its
+                // actual number, not zero/sign padding of a truncated consumer.
+                let width = layout.packed_width().unwrap();
+                if value.get_type().get_bit_width() < width {
+                    let Some(width) = std::num::NonZeroU32::new(width) else {
+                        continue;
+                    };
+                    let Ok(ty) = debug.context.custom_width_int_type(width) else {
+                        continue;
+                    };
+                    let Some(constant) = constant_integer(design, id, ty) else {
+                        continue;
+                    };
+                    value = constant;
                 }
-                let metadata =
+                let metadata = if at_entry {
+                    None
+                } else {
                     cache
                         .metadata
                         .iter()
                         .find_map(|((value_id, active, source), value)| {
                             (*value_id == id && active.is_none() && source.kind == layout.kind)
                                 .then_some(*value)
-                        });
-                if metadata.is_none()
-                    && !cache.meta_free.get(id.0 as usize).copied().unwrap_or(false)
-                {
+                        })
+                };
+                if metadata.is_none() && !meta_free {
                     continue;
                 }
                 metadata
@@ -2519,6 +2546,45 @@ fn capture_binding<'ctx>(
 #[cfg(test)]
 mod demand_tests {
     use super::*;
+
+    #[test]
+    fn inspection_constants_preserve_full_words_and_negation() {
+        let mut design = Design::default();
+        let span = Span::new(FileId(0), 0..1);
+        for kind in [
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![u64::MAX])),
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![7, 1])),
+            ProcessValueKind::Unary {
+                operation: ProcessUnaryOp::Neg,
+                operand: ProcessValueId(1),
+            },
+        ] {
+            design.process_ir.values.push(siox::ir::ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(81),
+                kind,
+            });
+        }
+        let context = Context::create();
+        let ty = context
+            .custom_width_int_type(std::num::NonZeroU32::new(81).unwrap())
+            .unwrap();
+        assert_eq!(
+            constant_integer(&design, ProcessValueId(0), ty),
+            Some(ty.const_int(u64::MAX, false))
+        );
+        let wide = ty.const_int_arbitrary_precision(&[7, 1]);
+        assert_eq!(constant_integer(&design, ProcessValueId(1), ty), Some(wide));
+        assert_eq!(
+            constant_integer(&design, ProcessValueId(2), ty),
+            Some(wide.const_neg())
+        );
+        assert_eq!(
+            constant_integer(&design, ProcessValueId(1), context.i8_type()),
+            Some(context.i8_type().const_int(7, false))
+        );
+    }
 
     #[test]
     fn nested_aggregate_calls_require_joint_demand_on_every_use() {

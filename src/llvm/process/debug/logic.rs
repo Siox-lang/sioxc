@@ -45,12 +45,16 @@ pub(super) fn inspection_layout(design: &Design, layout: &SourceLayout) -> Optio
     let mut result = layout.clone();
     match &mut result.kind {
         LayoutKind::Packed {
+            width,
             element_enum: Some(name),
-            range: Some(range),
+            range,
             ..
         } if design.logic_encodings.contains_key(name) => {
-            result.kind = LayoutKind::Array {
-                range: Some(*range),
+            let elements = LayoutKind::Array {
+                range: Some(range.unwrap_or(siox::ir::LayoutRange {
+                    left: 0,
+                    right: i64::from(width.checked_sub(1)?),
+                })),
                 element: Box::new(SourceLayout {
                     span: layout.span,
                     kind: LayoutKind::Scalar {
@@ -60,6 +64,24 @@ pub(super) fn inspection_layout(design: &Design, layout: &SourceLayout) -> Optio
                         value_range: None,
                     },
                 }),
+            };
+            result.kind = if range.is_some() {
+                elements
+            } else {
+                // No source labels are known. Explicitly distinguish physical
+                // LSB-first positions from a fabricated source index range.
+                LayoutKind::Struct {
+                    name: format!("{name} bit positions"),
+                    view: None,
+                    fields: vec![siox::ir::LayoutField {
+                        name: "bits".into(),
+                        direction: None,
+                        layout: SourceLayout {
+                            span: layout.span,
+                            kind: elements,
+                        },
+                    }],
+                }
             };
         }
         LayoutKind::Struct { fields, .. } => {
@@ -168,19 +190,22 @@ impl<'ctx> DebugInfo<'ctx, '_> {
         byte: &mut u32,
     ) {
         match &layout.kind {
-            LayoutKind::Packed {
-                width,
-                range: Some(range),
-                ..
-            } if packed_logic_layout(design, layout).is_some() => {
+            LayoutKind::Packed { width, range, .. }
+                if packed_logic_layout(design, layout).is_some() =>
+            {
                 let (_, encoding) = packed_logic_layout(design, layout).unwrap();
                 for ordinal in 0..*width {
-                    let label = if range.ascending() {
-                        range.left + i64::from(ordinal)
+                    let position = if let Some(range) = range {
+                        let label = if range.ascending() {
+                            range.left + i64::from(ordinal)
+                        } else {
+                            range.left - i64::from(ordinal)
+                        };
+                        packed_label_position(*range, label).unwrap()
                     } else {
-                        range.left - i64::from(ordinal)
+                        ordinal
                     };
-                    let position = *logical + packed_label_position(*range, label).unwrap();
+                    let position = *logical + position;
                     let bit = extract_region(builder, value, position, 1).unwrap();
                     let meta = metadata
                         .map(|value| extract_region(builder, value, position * 4, 4).unwrap());
