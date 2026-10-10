@@ -84,6 +84,10 @@ listed under LLVM and Output below.
 Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
+- 🔴 **Integer locals returned as a family.** In a testbench, a method
+  declared `-> float` that returns an `integer` local (`return a;`) on one
+  path fails to lower when its result is then used as a receiver; returning
+  the word as an expression works.
 - 🔴 **Non-constant loop bounds in hardware.** A hardware loop whose bound is
   not constant once the arguments' shapes are known reports the caller's
   locals as unknown names instead of naming the bound.
@@ -199,9 +203,10 @@ Owns user-visible types, traits, operators, attributes, simulation helpers,
 math/text/file services, and small technology-independent helpers. Code: `std/`.
 
 - 🟡 **Library build-out.** Synchronizers, fixed-point families and initial
-  floating-point operators exist. Remaining: floating-point square
-  root/subnormals/rounding modes, and binary64 `*`/`/` (their significand
-  product and dividend need more than the 64-bit kernel word); optionally
+  floating-point operators exist. Remaining: floating-point
+  subnormals/rounding modes, and binary64 `*`/`/`/`sqrt` (their significand
+  product, dividend and radicand need more than the 64-bit kernel word);
+  optionally
   generic vectors/matrices. Each needs
   executable conformance tests. Fixed point is complete, `resize` styles
   included. See

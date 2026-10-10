@@ -759,3 +759,59 @@ impl T {
         );
     }
 }
+
+/// `x.sqrt()` is IEEE `squareRoot` (correctly rounded words in binary32 and
+/// binary16, NaN, -0, infinity) in hardware and a testbench, and its result
+/// works directly as a receiver or `print!` argument.
+#[cfg(feature = "llvm")]
+#[test]
+fn float_square_root() {
+    let stdout = run(
+        "float_sqrt",
+        r#"
+module float_sqrt;
+use std::float::float;
+entity Dut { a: float<32, 23> in, r: float<32, 23> out }
+impl Dut { r = a.sqrt(); }
+#[test] entity T {}
+impl T {
+    let a: float<32, 23>; let r: float<32, 23>;
+    let dut: Dut = { .a = a, .r = r };
+    check: process {
+        a = float<32, 23>(2.0); await 1ns;
+        print!("hw {}", integer(r));
+        let x2: float<32, 23> = float<32, 23>(2.0);
+        let x3: float<32, 23> = float<32, 23>(3.0);
+        let x9: float<32, 23> = float<32, 23>(9.0);
+        let xq: float<32, 23> = float<32, 23>(0.25);
+        let xt: float<32, 23> = float<32, 23>(0.00000000000000000001);
+        let xb: float<32, 23> = float<32, 23>(12345.678);
+        print!("tb32 {} {} {} {} {} {}", integer(x2.sqrt()), integer(x3.sqrt()), integer(x9.sqrt()),
+            integer(xq.sqrt()), integer(xt.sqrt()), integer(xb.sqrt()));
+        let h2: float<16, 10> = float<16, 10>(2.0);
+        let h3: float<16, 10> = float<16, 10>(3.0);
+        let h1: float<16, 10> = float<16, 10>(0.1);
+        print!("tb16 {} {} {}", integer(h2.sqrt()), integer(h3.sqrt()), integer(h1.sqrt()));
+        let zero: float<32, 23> = float<32, 23>(0.0);
+        let one: float<32, 23> = float<32, 23>(1.0);
+        let neg: float<32, 23> = zero - one;
+        let inf: float<32, 23> = one / zero;
+        let mz: float<32, 23> = -zero;
+        print!("special {} {} {} {} {}", neg.sqrt().is_nan(), integer(mz.sqrt()), inf.sqrt(), zero.sqrt(),
+            one.sqrt().to_real());
+    }
+}
+"#,
+    );
+    for line in [
+        "hw 1068827891",
+        "tb32 1068827891 1071494103 1077936128 1056964608 786163455 1121859811",
+        "tb16 15784 16110 13583",
+        "special true 2147483648 inf 0 1",
+    ] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}

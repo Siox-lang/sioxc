@@ -375,16 +375,49 @@ fn result_local(
     context: &mut LoweringContext<'_>,
 ) -> ProcessValueId {
     let local = ProcessLocalId(process.locals.len() as u32);
+    // A selection without a layout of its own has its arms' (an early
+    // `return` inside a call that returns its receiver's format).
+    let arms = match node.kind {
+        ProcessValueKind::Select {
+            then_value,
+            else_value,
+            ..
+        } => vec![then_value, else_value],
+        ProcessValueKind::Match { ref arms, .. } => arms.iter().map(|arm| arm.value).collect(),
+        _ => Vec::new(),
+    };
     let layout = process_value_source_layout(source, context.process_ir)
         .cloned()
+        .or_else(|| {
+            arms.iter().find_map(|arm| {
+                process_value_source_layout(*arm, context.process_ir)
+                    .filter(|layout| layout.packed_width().is_some())
+                    .cloned()
+            })
+        })
         .or_else(|| {
             node.ty
                 .as_ref()
                 .and_then(|ty| process_layout_for_type(ty, node.span, context))
+        })
+        // An unsized family (`-> float` before its format is known) has no
+        // width; the value's own word is what the local holds.
+        .filter(|layout| layout.packed_width().is_some() || node.bit_width.is_none())
+        .or_else(|| {
+            node.bit_width.map(|width| SourceLayout {
+                span: node.span,
+                kind: LayoutKind::Scalar {
+                    width,
+                    domain: crate::ir::ScalarDomain::Bits,
+                    nominal: None,
+                    value_range: None,
+                },
+            })
         });
-    let width = node
-        .bit_width
-        .or_else(|| layout.as_ref().and_then(SourceLayout::packed_width));
+    let width = layout
+        .as_ref()
+        .and_then(SourceLayout::packed_width)
+        .or(node.bit_width);
     process.locals.push(ProcessLocal {
         id: local,
         name: format!("<return:{}>", local.0),
