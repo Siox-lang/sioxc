@@ -710,9 +710,10 @@ pub(super) fn process_value<'ctx>(
         )
     {
         if let Some(result) = cache.evaluated_calls.get(&(id, None)).copied() {
+            debug::capture_value(builder, design, cache, id, result);
             return Some(result);
         }
-        return super::hardware::hardware_call_value(
+        let result = super::hardware::hardware_call_value(
             context,
             module,
             builder,
@@ -720,7 +721,9 @@ pub(super) fn process_value<'ctx>(
             id,
             index_sites,
             cache,
-        );
+        )?;
+        debug::capture_value(builder, design, cache, id, result);
+        return Some(result);
     }
     let emitted = match &value.kind {
         ProcessValueKind::Parameter { .. } => cache.parameters.get(&id).copied()?,
@@ -1036,6 +1039,7 @@ pub(super) fn process_value<'ctx>(
             use inkwell::values::BasicMetadataValueEnum as MetadataValue;
 
             if let Some(returned) = cache.evaluated_calls.get(&(id, active)).copied() {
+                debug::capture_value(builder, design, cache, id, returned);
                 return if *integer_result {
                     fit_signed(builder, returned, width)
                 } else {

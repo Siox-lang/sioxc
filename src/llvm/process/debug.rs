@@ -78,15 +78,13 @@ pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     refresh: Cell<Option<FunctionValue<'ctx>>>,
     /// Calls in otherwise-pure selections still need taken-path source ranges.
     value_activity: Vec<bool>,
-    /// Only bodies containing runtime calls need execution-context variants.
+    /// Effectful expression frames share their caller's execution cache.
     value_effects: Vec<bool>,
     /// Only multiply-consumed source calls need readiness across branch joins.
     reused_calls: std::collections::HashSet<ProcessValueId>,
     aggregate_returns: HashMap<ProcessValueId, AggregateReturn>,
     aggregate_members: HashMap<ProcessValueId, (ProcessValueId, u32, u32)>,
-    // Compatibility helpers capture hardware effects; procedural CFG bodies
-    // execute them directly. Their native specializations cannot be shared.
-    value_functions: RefCell<HashMap<(ValueFunctionKey, bool), ValueFunction<'ctx>>>,
+    value_functions: RefCell<HashMap<ValueFunctionKey, ValueFunction<'ctx>>>,
     /// Reversible native register packing, never executable inspection storage.
     register_returns: RefCell<HashMap<FunctionValue<'ctx>, SourceLayout>>,
     hardware_processes: HashMap<u32, siox::ir::ProcessId>,

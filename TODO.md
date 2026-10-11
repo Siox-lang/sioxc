@@ -211,20 +211,26 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   includes opposite field orders, an intervening putchar call, first-failure
   bounds diagnostics, zero divisors, unavailable short-circuited abort fields,
   changing inputs, exact call counts and stdout/VCD parity under both hints.
-  Effectful debug bodies distinguish compatibility-helper capture from direct
-  CFG execution, preventing stale foreign-call results; effect-free native
-  bodies remain shared across those contexts. Complete grouping for separately
-  demanded/selected nested-call and partial aggregate returns; no debug
+  Effectful expression source frames now stay in the caller's common emitter
+  and effect cache, rather than introducing a debug-only native body. Hardware
+  compatibility captures and direct CFG execution keep their ordinary lifetimes;
+  effect-free native bodies remain shared across those contexts. Complete
+  grouping for separately demanded/selected nested-call and partial aggregate
+  returns; no debug
   boundary may force an unconsumed field or invent a zero for a pruned member.
-  A repeated-effect native probe still fails stdout parity: reusing `pair.left`
-  across another foreign call prints `ACABKMKL` in the debug executable instead
-  of ordinary `ACBKML`, despite matching native assertions and VCDs. Foreign
-  results survive ordinary state-cache clears, but results evaluated inside a
-  debug native body are not transported back to the caller's effect cache.
-  Preserve actual effect results/readiness across those boundaries and consumer
-  formats without retaining stale pure reads or forcing discarded fields;
-  verify side-effect order/counts, not only numeric results and waveforms.
-  Partial leaf evaluations now retain the source function/type as inline
+  Reusing a foreign field across another call now preserves the ordinary stdout
+  order/count, including narrow/wide consumer formats and changing source epochs.
+  A seeded host-random regression also verifies one draw across consumer formats.
+  GDB checks cached partial return fragments, complete inline scalar snapshots,
+  normalized procedural pure-tail native returns and exact stop counts. Inline references
+  reset before their visible source range, and the completion edge remains
+  inspectable after the return snapshot is written. Cached actual foreign values
+  populate inspection bindings without a new evaluation or a stale pure read.
+  Continue auditing source formals after procedural effect normalization: the
+  loop's native `formats` boundary has unavailable `value`/`saved` at entry even
+  though its actual finish values are correct. Determine genuine pruning versus
+  missing source-value transport; never force expressions merely for inspection.
+  Effect-free partial leaf evaluations retain the source function/type as inline
   frames over their existing native leaf bodies, with fragmented `$return`
   snapshots. They no longer advertise a full native aggregate return ABI;
   discarded fields remain unavailable. Complete one-leaf wrappers keep their

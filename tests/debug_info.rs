@@ -2210,7 +2210,20 @@ quotient_seen = []
 while gdb.selected_thread() is not None:
     frame = gdb.selected_frame()
     name = frame.name().rsplit('::', 1)[-1]
-    value = int(frame.read_var('value')[0] if name == 'checked' else frame.read_var('value'))
+    for stop in stops:
+        stop.enabled = False
+    # An in-place source frame does not force its argument before its ordinary
+    # first consumer. Step until those actual bits have been captured.
+    for _ in range(300):
+        try:
+            value = int(frame.read_var('value')[0] if name == 'checked' else frame.read_var('value'))
+            break
+        except (gdb.error, ValueError):
+            gdb.execute('nexti', to_string=True)
+            frame = gdb.selected_frame()
+    else:
+        raise AssertionError('consumed source argument unavailable')
+    assert frame.name().rsplit('::', 1)[-1] == name, frame.name()
     index = int(frame.read_var('index')) if name == 'checked' else None
     divisor = int(frame.read_var('divisor')) if name == 'quotients' else None
     caller_frame = frame.older()
@@ -2220,7 +2233,7 @@ while gdb.selected_thread() is not None:
     kind = frame.type()
     seen.append((name, value, caller, kind))
     if name in ['effects', 'mixed_effects']:
-        assert kind == (gdb.INLINE_FRAME if caller == 'between' else gdb.NORMAL_FRAME), (caller, kind)
+        assert kind == gdb.INLINE_FRAME, (caller, kind)
     elif name == 'checked':
         assert kind == gdb.NORMAL_FRAME, kind
         checked_seen.append((value, index))
@@ -2249,7 +2262,7 @@ while gdb.selected_thread() is not None:
             stop.enabled = True
     else:
         assert kind == gdb.INLINE_FRAME, kind
-        assert name in ['effects', 'flags'], (name, kind)
+        assert name in ['effects', 'mixed_effects', 'flags'], (name, kind)
         for stop in stops:
             stop.enabled = False
         for _ in range(300):
@@ -2258,28 +2271,41 @@ while gdb.selected_thread() is not None:
             try:
                 result = frame.read_var('$return')
                 retained = [field for field in ['left', 'right'] if not result[field].is_optimized_out]
-                if len(retained) == 1:
+                if len(retained) == (1 if caller == 'between' or name == 'flags' else 2):
                     field = retained[0]
                     expected = 0 if name == 'flags' else value + (field == 'right')
-                    if int(result[field]) == expected:
+                    if int(result[field]) == expected and all(
+                            int(result[field]) == value + (field == 'right') for field in retained
+                            if name != 'flags'):
+                        assert result.type.name == ('Flags' if name == 'flags' else 'Pair'), str(result.type)
                         break
             except (gdb.error, ValueError):
                 pass
             gdb.execute('nexti', to_string=True)
         else:
             raise AssertionError('missing retained return fragment')
-        assert 'Value returned is' not in gdb.execute('finish', to_string=True)
+        if caller == 'between':
+            # GDB finish may coalesce both leaf ranges of the same inline
+            # source call. Observe each fragment at its actual boundary.
+            for _ in range(100):
+                gdb.execute('nexti', to_string=True)
+                if gdb.selected_frame().name().rsplit('::', 1)[-1] != name:
+                    break
+            else:
+                raise AssertionError('partial source frame did not exit')
+        else:
+            assert 'Value returned is' not in gdb.execute('finish', to_string=True)
         for stop in stops:
             stop.enabled = True
     gdb.execute('continue', to_string=True)
 assert int(gdb.parse_and_eval('$_exitcode')) == 0
 assert Counter(seen) == Counter([
-    ('mixed_effects', 105, 'mixed', gdb.NORMAL_FRAME),
-    ('mixed_effects', 115, 'mixed', gdb.NORMAL_FRAME),
-    ('effects', 65, 'forward', gdb.NORMAL_FRAME),
-    ('effects', 75, 'forward', gdb.NORMAL_FRAME),
-    ('effects', 75, 'reverse', gdb.NORMAL_FRAME),
-    ('effects', 85, 'reverse', gdb.NORMAL_FRAME),
+    ('mixed_effects', 105, 'mixed', gdb.INLINE_FRAME),
+    ('mixed_effects', 115, 'mixed', gdb.INLINE_FRAME),
+    ('effects', 65, 'forward', gdb.INLINE_FRAME),
+    ('effects', 75, 'forward', gdb.INLINE_FRAME),
+    ('effects', 75, 'reverse', gdb.INLINE_FRAME),
+    ('effects', 85, 'reverse', gdb.INLINE_FRAME),
     ('effects', 85, 'between', gdb.INLINE_FRAME),
     ('effects', 85, 'between', gdb.INLINE_FRAME),
     ('effects', 95, 'between', gdb.INLINE_FRAME),
@@ -2382,6 +2408,237 @@ assert sorted(quotient_seen) == [(0, 0), (0, 1), (10, 1), (10, 2)], quotient_see
         assert_eq!(failures[0].status.code(), failures[1].status.code());
         assert_eq!(failures[0].stdout, failures[1].stdout);
         assert_eq!(failures[0].stderr, failures[1].stderr);
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn effectful_source_frames_share_actual_cached_results() {
+    let directory =
+        std::env::temp_dir().join(format!("siox_dwarf_effect_reuse_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("reuse.siox");
+    let text = r#"module dwarf_effect_reuse;
+use std::bits::unsigned;
+extern "C" { fn putchar(value: integer) -> integer; }
+struct Pair { pub left: integer, pub right: integer }
+#[inline(HINT)]
+fn effects(value: integer) -> Pair {
+    return Pair { .left = putchar(value), .right = putchar(value + 1) };
+}
+#[inline(HINT)]
+fn consume(value: integer) -> integer {
+    let pair: Pair = effects(value);
+    return integer(unsigned[8](pair.left)) + putchar(value + 2) + pair.left + pair.right;
+}
+#[inline(HINT)]
+fn character(value: integer) -> integer { return putchar(value); }
+#[inline(HINT)]
+fn formats(value: integer) -> integer {
+    let saved: integer = character(value);
+    return integer(unsigned[8](saved)) + putchar(value + 2) + saved;
+}
+#[inline(HINT)]
+fn random_value() -> integer { return randint(0, 100); }
+#[inline(HINT)]
+fn random_formats() -> integer {
+    let saved: integer = random_value();
+    return integer(unsigned[8](saved)) + saved;
+}
+entity E { value: integer in, enabled: Bool in, total: integer out, formatted: integer out }
+impl E {
+    total = if enabled { consume(value) } else { 0 };
+    formatted = if enabled { formats(value + 20) } else { 0 };
+}
+#[test] entity T {}
+impl T {
+    let value: integer = 65;
+    let enabled: Bool = false;
+    let e: E = { .value = value, .enabled = enabled };
+    stimulus: process {
+        await 1ns;
+        assert!(e.total == 0 and e.formatted == 0, "untaken effects");
+        enabled = true; await 1ns;
+        assert!(e.total == 263 and e.formatted == 257, "reused foreign results");
+        value = 75; await 1ns;
+        assert!(e.total == 303 and e.formatted == 287, "new source epoch");
+        for index in 0..3 {
+            let result: integer = formats(110 + index);
+            assert!(result == 332 + 3 * index, "repeated source entry");
+        }
+        seed(42);
+        let random: integer = random_formats();
+        let next: integer = randint(0, 100);
+        seed(42);
+        let first: integer = randint(0, 100);
+        let second: integer = randint(0, 100);
+        assert!(random == first + first and next == second, "one host effect across consumer formats");
+        print!("random {} {}", random, next);
+    }
+}"#;
+    let python = r#"import gdb
+from collections import Counter
+
+gdb.execute('set disable-randomization off')
+stop = gdb.Breakpoint('dwarf_effect_reuse::formats')
+gdb.execute('run')
+seen = []
+while gdb.selected_thread() is not None:
+    stop.enabled = False
+    frame = gdb.selected_frame()
+    assert frame.name() == 'dwarf_effect_reuse::formats', frame.name()
+    if frame.type() == gdb.NORMAL_FRAME:
+        # Procedural CFG calls keep their canonical native function, rather
+        # than the expression emitter's in-place frame.
+        assert frame.older().name() == 'T::stimulus', frame.older().name()
+        value = 110 + int(frame.older().read_var('index'))
+        gdb.execute('finish', to_string=True)
+        result = gdb.history(0)
+        assert str(result.type) == 'integer' and int(result) == 3 * value + 2, str(result)
+        seen.append(value)
+        stop.enabled = True
+        gdb.execute('continue', to_string=True)
+        continue
+    assert frame.type() == gdb.INLINE_FRAME, frame.type()
+    # No previous invocation's snapshot may be exposed before this return.
+    try:
+        result = frame.read_var('$return')
+        assert result.is_optimized_out, str(result)
+    except (gdb.error, ValueError):
+        pass
+    for _ in range(500):
+        frame = gdb.selected_frame()
+        while frame is not None and frame.name() != 'dwarf_effect_reuse::formats':
+            frame = frame.older()
+        if frame is None:
+            # Lazy argument expressions retain their caller's source location;
+            # the inline callee can have discontiguous machine ranges.
+            gdb.execute('nexti', to_string=True)
+            continue
+        try:
+            value = int(frame.read_var('value'))
+            result = frame.read_var('$return')
+            if not result.is_optimized_out and int(result) == 3 * value + 2:
+                assert str(result.type) == 'integer', str(result.type)
+                seen.append(value)
+                break
+        except (gdb.error, ValueError):
+            pass
+        gdb.execute('nexti', to_string=True)
+    else:
+        raise AssertionError('consumed scalar return unavailable')
+    frame.select()
+    assert 'Value returned is' not in gdb.execute('finish', to_string=True)
+    stop.enabled = True
+    gdb.execute('continue', to_string=True)
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+assert Counter(seen) == Counter([85, 95, 110, 111, 112, 113]), seen"#;
+    let fragments = r#"import gdb
+from collections import Counter
+
+gdb.execute('set disable-randomization off')
+stop = gdb.Breakpoint('dwarf_effect_reuse::effects')
+gdb.execute('run')
+seen = []
+while gdb.selected_thread() is not None:
+    stop.enabled = False
+    assert gdb.selected_frame().type() == gdb.INLINE_FRAME
+    for _ in range(300):
+        frame = gdb.selected_frame()
+        while frame is not None and frame.name() != 'dwarf_effect_reuse::effects':
+            frame = frame.older()
+        if frame is not None:
+            try:
+                result = frame.read_var('$return')
+                fields = [field for field in ['left', 'right'] if not result[field].is_optimized_out]
+                if len(fields) == 1:
+                    field = fields[0]
+                    value = int(result[field])
+                    if value in ([65, 75] if field == 'left' else [66, 76]):
+                        assert result.type.name == 'Pair', str(result.type)
+                        seen.append((field, value))
+                        break
+            except (gdb.error, ValueError):
+                pass
+        gdb.execute('nexti', to_string=True)
+    else:
+        raise AssertionError('cached foreign return fragment unavailable')
+    for _ in range(100):
+        gdb.execute('nexti', to_string=True)
+        if gdb.selected_frame().name() != 'dwarf_effect_reuse::effects':
+            break
+    else:
+        raise AssertionError('partial frame did not exit')
+    stop.enabled = True
+    gdb.execute('continue', to_string=True)
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+assert Counter(seen) == Counter([('left', 65), ('left', 65), ('right', 66),
+                                ('left', 75), ('left', 75), ('right', 76)]), seen"#;
+    for hint in ["always", "never"] {
+        std::fs::write(&source, text.replace("HINT", hint)).unwrap();
+        let mut outputs = Vec::new();
+        for debugging in [false, true] {
+            let binary = directory.join(if debugging {
+                "debug.bin"
+            } else {
+                "ordinary.bin"
+            });
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(
+                command
+                    .arg(&source)
+                    .arg("-o")
+                    .arg(&binary)
+                    .output()
+                    .unwrap(),
+            );
+            outputs.push(success(
+                Command::new(&binary)
+                    .arg("-o")
+                    .arg(binary.with_extension("vcd"))
+                    .output()
+                    .unwrap(),
+            ));
+        }
+        assert_eq!(
+            outputs[0].stdout, outputs[1].stdout,
+            "effect order/count changed"
+        );
+        assert_eq!(outputs[0].stderr, outputs[1].stderr);
+        assert_eq!(
+            std::fs::read(directory.join("ordinary.vcd")).unwrap(),
+            std::fs::read(directory.join("debug.vcd")).unwrap()
+        );
+        let binary = directory.join("debug.bin");
+        if Command::new("llvm-dwarfdump")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            success(
+                Command::new("llvm-dwarfdump")
+                    .arg("--verify")
+                    .arg(&binary)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        if Command::new("gdb").arg("--version").output().is_ok() {
+            for python in [python, fragments] {
+                success(
+                    Command::new("gdb")
+                        .args(["-q", "-batch", "-ex"])
+                        .arg(format!("python exec({python:?})"))
+                        .arg(&binary)
+                        .output()
+                        .unwrap(),
+                );
+            }
+        }
     }
     std::fs::remove_dir_all(directory).unwrap();
 }

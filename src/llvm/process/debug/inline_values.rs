@@ -1447,11 +1447,29 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
         );
     }
     let key = (id, width, signed, layout.cloned());
-    let function_key = (
-        key.clone(),
-        cache.hardware_calls && debug.value_effects[id.0 as usize],
-    );
-    let existing = debug.value_functions.borrow().get(&function_key).cloned();
+    if debug
+        .value_effects
+        .get(id.0 as usize)
+        .copied()
+        .unwrap_or(false)
+    {
+        // A debug-only native body would partition the common emitter's
+        // captured effects. Keep their execution/cache in the caller and use
+        // a real DWARF inline frame, including lazy argument consumption.
+        return call_value(debug.context, builder, key, cache, |builder, cache| {
+            inline_body(
+                module,
+                builder,
+                design,
+                None,
+                operand,
+                source,
+                cache,
+                |builder, cache, active| emit(builder, cache, active, operand),
+            )
+        });
+    }
+    let existing = debug.value_functions.borrow().get(&key).cloned();
     let (function, formats, literals) = if let Some(existing) = existing {
         existing
     } else {
@@ -1484,7 +1502,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
             module,
             &body_builder,
             design,
-            draft,
+            Some(draft),
             operand,
             source,
             &mut body_cache,
@@ -1534,7 +1552,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
         debug
             .value_functions
             .borrow_mut()
-            .insert(function_key, (function, formats.clone(), literals.clone()));
+            .insert(key.clone(), (function, formats.clone(), literals.clone()));
         (function, formats, literals)
     };
     // Metadata never requests arguments. Emit only formats actually consumed
@@ -1624,11 +1642,7 @@ pub(in crate::llvm::process) fn literal_value<'ctx>(
         return Some(());
     }
     let key = (id, 0, false, None);
-    let function_key = (
-        key.clone(),
-        cache.hardware_calls && debug.value_effects[id.0 as usize],
-    );
-    let existing = debug.value_functions.borrow().get(&function_key).cloned();
+    let existing = debug.value_functions.borrow().get(&key).cloned();
     let (function, _, literals) = if let Some(existing) = existing {
         existing
     } else {
@@ -1648,7 +1662,7 @@ pub(in crate::llvm::process) fn literal_value<'ctx>(
             module,
             &body_builder,
             design,
-            function,
+            Some(function),
             *operand,
             source,
             &mut body_cache,
@@ -1670,7 +1684,7 @@ pub(in crate::llvm::process) fn literal_value<'ctx>(
         debug
             .value_functions
             .borrow_mut()
-            .insert(function_key, entry.clone());
+            .insert(key, entry.clone());
         entry
     };
     call_value(
@@ -1956,7 +1970,7 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     design: &Design,
-    function: FunctionValue<'ctx>,
+    function: Option<FunctionValue<'ctx>>,
     operand: ProcessValueId,
     source: &ProcessValueInline,
     cache: &mut ProcessValueCache<'ctx, '_>,
@@ -1967,6 +1981,15 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
     ) -> Option<IntValue<'ctx>>,
 ) -> Option<IntValue<'ctx>> {
     let debug = cache.debug?;
+    let native = function.is_some();
+    let function = function.or_else(|| builder.get_insert_block()?.get_parent())?;
+    let previous_location = cache.source_location;
+    let inline_caller = (!native)
+        .then(|| {
+            value_location(cache, source.call)
+                .or_else(|| debug.generated_location(builder, source.call))
+        })
+        .flatten();
     // A leaf that does not cover the whole result is a partial evaluation.
     // Keep its declared type on an inline frame, not on the native leaf ABI,
     // and expose only its retained result fragment.
@@ -2056,7 +2079,9 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
         DIFlags::ZERO,
         false,
     );
-    let caller = if partial_path.is_some() || indirect_frame {
+    let caller = if !native {
+        inline_caller
+    } else if partial_path.is_some() || indirect_frame {
         let file = debug.file(source.call.file);
         let line = debug
             .sources
@@ -2111,7 +2136,10 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
         scope.as_debug_info_scope(),
         caller,
     );
-    builder.set_current_debug_location(entry_location);
+    // Inline frame ranges must start after their reference reset. Otherwise
+    // a function-name stop can inspect stale pointers from the previous loop
+    // iteration before this invocation's line-zero setup has executed.
+    builder.set_current_debug_location(inline_caller.unwrap_or(entry_location));
     let mut bindings = Vec::new();
     for (index, (binding, ty)) in source
         .parameters
@@ -2374,6 +2402,27 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
     }
     let argument_entry = builder.get_insert_block()?;
     let argument_anchor = argument_entry.get_last_instruction();
+    // Inline frames can execute repeatedly in the same native invocation.
+    // Reset their return reference at the source entry, not just native entry.
+    let expose_return = (!native || indirect_frame) && partial_path.is_none();
+    let return_reference = expose_return.then(|| {
+        let entry = function.get_first_basic_block().unwrap();
+        let allocation = debug.context.create_builder();
+        if let Some(first) = entry.get_first_instruction() {
+            allocation.position_before(&first);
+        } else {
+            allocation.position_at_end(entry);
+        }
+        let pointer = debug.context.ptr_type(AddressSpace::default());
+        let reference = allocation
+            .build_alloca(pointer, "debug.return.reference")
+            .unwrap();
+        builder
+            .build_store(reference, pointer.const_null())
+            .unwrap();
+        reference
+    });
+    builder.set_current_debug_location(entry_location);
     if cache.debug_arguments.is_some() {
         // Inspection of native inputs is inserted here after discovering the
         // consumed formats. Keep the body in another block: even at -O0,
@@ -2425,12 +2474,16 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
                 .is_none()
                 .then_some(source.result_layout.as_ref())
                 .flatten(),
-            indirect_frame && partial_path.is_none(),
+            return_reference,
             cache,
         );
     }
     let location = value_location(cache, result_span)?;
     cache.value_frames.pop();
+    cache.source_location = previous_location;
+    // Keep the completion edge in the callee's source range so its captured
+    // return is inspectable after the last store. The enclosing value-location
+    // guard restores the caller before its next source operation.
     builder.set_current_debug_location(location);
     result
 }
@@ -2444,7 +2497,7 @@ fn capture_result<'ctx>(
     value: IntValue<'ctx>,
     span: Span,
     layout: Option<&SourceLayout>,
-    expose: bool,
+    reference: Option<PointerValue<'ctx>>,
     cache: &ProcessValueCache<'ctx, '_>,
 ) {
     let Some(debug) = cache.debug else { return };
@@ -2458,7 +2511,8 @@ fn capture_result<'ctx>(
     // at -O0. These inspection writes never become simulation operands.
     let _location = ValueLocationGuard::new(builder, cache, span);
     // Do not present padding of a narrower consumer as a complete result.
-    let expose = expose && value.get_type().get_bit_width() >= layout.packed_width().unwrap();
+    let reference =
+        reference.filter(|_| value.get_type().get_bit_width() >= layout.packed_width().unwrap());
     if let Some(bytes) = inspection_bits(&layout).and_then(|bits| u32::try_from(bits / 8).ok()) {
         let buffer = debug.inspection_buffer(module, "sx.debug.return", bytes);
         if let Some(value) = fit(builder, value, layout.packed_width().unwrap()) {
@@ -2470,31 +2524,13 @@ fn capture_result<'ctx>(
                 &mut 0,
                 &mut 0,
             );
-            if expose {
+            if let Some(reference) = reference {
                 if let (Some(frame), Some(ty), Some(location)) = (
                     cache.value_frames.last(),
                     debug.ty(design, &layout, needs_mirror(&layout)),
                     value_location(cache, span),
                 ) {
-                    // Use the same nullable inspection reference as locals.
-                    // A global dbg.declare has no machine location; a direct
-                    // global address could also expose the previous call's
-                    // snapshot before this invocation has returned.
                     let function = builder.get_insert_block().unwrap().get_parent().unwrap();
-                    let entry = function.get_first_basic_block().unwrap();
-                    let allocation = debug.context.create_builder();
-                    if let Some(first) = entry.get_first_instruction() {
-                        allocation.position_before(&first);
-                    } else {
-                        allocation.position_at_end(entry);
-                    }
-                    let pointer = debug.context.ptr_type(AddressSpace::default());
-                    let reference = allocation
-                        .build_alloca(pointer, "debug.return.reference")
-                        .unwrap();
-                    allocation
-                        .build_store(reference, pointer.const_null())
-                        .unwrap();
                     builder
                         .build_store(reference, buffer.as_pointer_value())
                         .unwrap();
@@ -2590,7 +2626,7 @@ pub(in crate::llvm::process) fn selected_value<'ctx>(
         builder.position_at_end(block);
         let value = emit(builder, arm, id, cache)?;
         capture_result(
-            module, builder, design, id, value, span, layout, false, cache,
+            module, builder, design, id, value, span, layout, None, cache,
         );
         let exit = builder.get_insert_block()?;
         builder.build_unconditional_branch(join).ok()?;

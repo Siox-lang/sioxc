@@ -16534,3 +16534,73 @@ Record it in TODO and continue with the shared cache/inline-body callers next.
 Do not call the passing aggregate fixture or the 98% engineering estimate full
 DWARF completion. Compiler sources remain at the verified frozen hash; no job
 is running. Preserve foreign AGENTS/.codex and 441 historical chat insertions.
+
+### 2026-10-11 — Codex — shared effect-cache source frames
+
+Resuming the confirmed repeated-effect bug. Own debug/inline_values.rs,
+its inline_body caller in functions.rs if needed, debug_info.rs regression and
+TODO updates. Reuse the common emitter's captured effects by retaining effectful
+expression source frames in the caller rather than separating their execution
+into a debug-only body cache. Keep real source types, lazy argument consumption,
+fragmented returns and read-only inspection; do not preserve stale pure loads
+or introduce an effect runtime. Verify actual stdout order/counts, changing
+epochs and GDB frames before broad gates. No live guarded jobs at ownership
+start; preserve foreign AGENTS/.codex and historical chat insertions. No push.
+
+Isolated reused-effect stdout/VCD now match with in-place effectful source
+frames. Focused ordered aggregate native/GDB test 1291709 passes. Own the
+common values.rs cache-hit capture if the new reused-fragment regression needs
+it, and debug.rs to remove the now-redundant native effect-context cache key.
+Inline reference resets must precede the source frame's visible machine range;
+initialize/reset read-only return snapshots at each source entry. Extend the
+regression to actual reused effects, consumer formats, host calls and loops
+before claiming acceptance. Full gate and remaining DWARF scope are pending.
+
+### 2026-10-11 — Codex — shared-cache focused verification
+
+1317471 is terminal exited/success/0. New reused-effect regression and existing
+ordered aggregate regression pass native output/VCD, DWARF verification and GDB
+under both inline hints. Cached foreign results now populate new inspection
+bindings without executing again. The new fixture covers mixed widths, changed
+epochs, seeded host draws, repeated CFG calls and both retained partial fields.
+Inline source-entry reference reset uses the caller's range; completion keeps
+the callee's range long enough to inspect the final snapshot. No execution
+runtime/storage was introduced; obsolete native effect-context cache keys removed.
+The normalized procedural loop's native pure-tail boundary has unavailable
+value/saved entry bindings while actual finish values are correct; record that
+signature/pruning audit rather than force metadata dependencies. Own matching
+sibling architecture/testing updates. Full suites/corpora/bitpack are next;
+do not claim acceptance or complete the goal from the focused checks. No push.
+
+Frozen hash 5f6f9baa186f745e93db5143549275b5670fded22f5b9fa03320ea2ec6366112.
+Full gate 1319987 hit the existing hand-built inactive-inline unit: its synthetic
+ID is not in the empty design's effect-fact table. The new unconditional table
+index panicked (the old context-key expression short-circuited that lookup).
+Stopped the owned failed gate during subsequent stages; it is not acceptance.
+Use the existing optional-fact query pattern, keeping the same unit unchanged.
+Re-run focused full DWARF default/bitpack and strict Clippy before a fresh gate.
+No live job now; no compiler commit yet. Preserve all foreign work.
+
+1328976 is terminal exited/success/0, peak 984514560 bytes. The unchanged
+inactive-inline synthetic-ID unit, all sixteen DWARF fixtures in default and
+bitpack, and strict all-target/all-feature Clippy pass. Freeze the corrected
+source for a new full suite/corpus/native-smoke gate; the cancelled 1319987 run
+is not acceptance. Compiler goal remains active; no push.
+
+### 2026-10-11 — Codex — shared effect-cache full acceptance
+
+1339082 is terminal exited/success/0, peak 1612697600 bytes. Frozen source hash
+39955b3c49451d522994a1866104443c54565232d07da53737d4a418de355e69 is unchanged.
+Both full suites, sixteen DWARF fixtures per packing mode, strict Clippy,
+frontend/artifact checks, four 228-program corpora and four native FIFO/wide
+GDB/VCD smokes pass. AST graph refresh: 5368 nodes, 15306 edges, 252 communities;
+existing vendored extractor warnings persist. Commit only owned frame/cache/
+capture code, regression, TODO and appended chat tail; sibling architecture/
+testing docs separately. Preserve foreign AGENTS/.codex and 441 historical chat
+insertions. No push. Full goal remains active: independently demanded/selected
+grouping, normalized pure-tail formal/signature transport, companion planes and
+remaining wide/partial ABI work still require evidence and implementation.
+Static ELF inspection confirms the procedural probe's normal `formats` frame is
+a retained debug pure-tail body, not proof of entry visibility for the whole
+effect-normalized function. Continue that source-binding audit without forcing
+an expression or treating an unavailable reference as a manufactured zero.

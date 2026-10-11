@@ -226,7 +226,7 @@ fn shared_function<'ctx>(
                 module,
                 &builder,
                 design,
-                function,
+                Some(function),
                 *operand,
                 source,
                 &mut body,
