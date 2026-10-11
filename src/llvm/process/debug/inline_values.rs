@@ -1773,6 +1773,18 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
             })
         })
     });
+    // GDB's SysV classifier cannot assign alignment/register classes to
+    // three-, five-, etc. byte basic fields. Keep their true source type on
+    // an inline frame instead of advertising an unsupported native return ABI.
+    // Large aggregates already use the supported memory-return convention.
+    let indirect_frame = cfg!(all(target_arch = "x86_64", not(target_os = "windows")))
+        && source.result_layout.as_ref().is_some_and(|layout| {
+            matches!(
+                layout.kind,
+                LayoutKind::Struct { .. } | LayoutKind::Array { .. }
+            ) && inspection_bits(layout).is_some_and(|bits| bits <= 128)
+                && return_alignment(layout).is_none()
+        });
     let partial = partial_path.map(|(_, path)| {
         let mut source = source.clone();
         source.locals.push(siox::ir::ProcessValueBinding {
@@ -1837,7 +1849,7 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
         DIFlags::ZERO,
         false,
     );
-    let caller = if let Some((_, path)) = partial_path {
+    let caller = if partial_path.is_some() || indirect_frame {
         let file = debug.file(source.call.file);
         let line = debug
             .sources
@@ -1845,7 +1857,10 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
             .0;
         let native = debug.builder.create_function(
             debug.namespace(""),
-            &format!("<partial {name}.{path}>"),
+            &partial_path.map_or_else(
+                || format!("<return {name}>"),
+                |(_, path)| format!("<partial {name}.{path}>"),
+            ),
             Some(""),
             file,
             line,
@@ -2199,11 +2214,11 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
             operand,
             value,
             result_span,
-            source
-                .aggregate
+            partial_path
                 .is_none()
                 .then_some(source.result_layout.as_ref())
                 .flatten(),
+            indirect_frame && partial_path.is_none(),
             cache,
         );
     }
@@ -2222,6 +2237,7 @@ fn capture_result<'ctx>(
     value: IntValue<'ctx>,
     span: Span,
     layout: Option<&SourceLayout>,
+    expose: bool,
     cache: &ProcessValueCache<'ctx, '_>,
 ) {
     let Some(debug) = cache.debug else { return };
@@ -2234,6 +2250,8 @@ fn capture_result<'ctx>(
     // A constant/arithmetic return can otherwise have no machine range even
     // at -O0. These inspection writes never become simulation operands.
     let _location = ValueLocationGuard::new(builder, cache, span);
+    // Do not present padding of a narrower consumer as a complete result.
+    let expose = expose && value.get_type().get_bit_width() >= layout.packed_width().unwrap();
     if let Some(bytes) = inspection_bits(&layout).and_then(|bits| u32::try_from(bits / 8).ok()) {
         let buffer = debug.inspection_buffer(module, "sx.debug.return", bytes);
         if let Some(value) = fit(builder, value, layout.packed_width().unwrap()) {
@@ -2245,6 +2263,64 @@ fn capture_result<'ctx>(
                 &mut 0,
                 &mut 0,
             );
+            if expose {
+                if let (Some(frame), Some(ty), Some(location)) = (
+                    cache.value_frames.last(),
+                    debug.ty(design, &layout, needs_mirror(&layout)),
+                    value_location(cache, span),
+                ) {
+                    // Use the same nullable inspection reference as locals.
+                    // A global dbg.declare has no machine location; a direct
+                    // global address could also expose the previous call's
+                    // snapshot before this invocation has returned.
+                    let function = builder.get_insert_block().unwrap().get_parent().unwrap();
+                    let entry = function.get_first_basic_block().unwrap();
+                    let allocation = debug.context.create_builder();
+                    if let Some(first) = entry.get_first_instruction() {
+                        allocation.position_before(&first);
+                    } else {
+                        allocation.position_at_end(entry);
+                    }
+                    let pointer = debug.context.ptr_type(AddressSpace::default());
+                    let reference = allocation
+                        .build_alloca(pointer, "debug.return.reference")
+                        .unwrap();
+                    allocation
+                        .build_store(reference, pointer.const_null())
+                        .unwrap();
+                    builder
+                        .build_store(reference, buffer.as_pointer_value())
+                        .unwrap();
+                    let variable = debug.builder.create_auto_variable(
+                        frame.scope.as_debug_info_scope(),
+                        "$return",
+                        debug.file(span.file),
+                        debug.sources.line_col(span.file, span.start).0,
+                        ty,
+                        true,
+                        DIFlags::ZERO,
+                        0,
+                    );
+                    unsafe {
+                        inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd(
+                            debug.builder.as_mut_ptr(),
+                            reference.as_value_ref(),
+                            variable.as_mut_ptr(),
+                            debug
+                                .builder
+                                .create_expression(binding_expression(None))
+                                .as_mut_ptr(),
+                            location.as_mut_ptr(),
+                            builder.get_insert_block().unwrap().as_mut_ptr(),
+                        );
+                    }
+                    let ready = debug
+                        .context
+                        .append_basic_block(function, "debug.return.available");
+                    builder.build_unconditional_branch(ready).unwrap();
+                    builder.position_at_end(ready);
+                }
+            }
         }
     }
 }
@@ -2306,7 +2382,9 @@ pub(in crate::llvm::process) fn selected_value<'ctx>(
     {
         builder.position_at_end(block);
         let value = emit(builder, arm, id, cache)?;
-        capture_result(module, builder, design, id, value, span, layout, cache);
+        capture_result(
+            module, builder, design, id, value, span, layout, false, cache,
+        );
         let exit = builder.get_insert_block()?;
         builder.build_unconditional_branch(join).ok()?;
         results.push((value, exit));

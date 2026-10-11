@@ -226,8 +226,13 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   Fully known literals retain arbitrary-width bits; omitted nonconstant bits
   and unconsumed metadata remain unavailable. Function-entry GDB checks cover
   contextual operator literals without changing the native argument payload.
-  Finish auditing remaining composite/generic conversions, non-enum Resolve
-  signatures and other companion-plane transports;
+  Mixed integer/real struct-to-struct From and signed integer-derived Resolve
+  now have entry-signature and actual finish-value regressions under both inline
+  hints. Nested packed returns check numeric-only callee views remain unavailable
+  until the caller actually consumes metadata; caller companions retain all nine
+  source states. Finish auditing other supported conversion specializations and
+  companion-plane transports. Generic From constructor syntax rejected by the
+  ordinary frontend is a separate language boundary, not missing DWARF coverage;
   these cases do not prove every signature or every argument's availability.
   Procedural 81/129-bit constructor and
   generic bindings now retain their checked signed/unsigned target type even
@@ -244,6 +249,14 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   hide that limitation; wide-call inspection/step-out tests use the actual
   caller return address, not GDB's unsupported return decoding. Track the
   debugger fix independently from compiler return-ABI checks.
+  Small complete aggregates containing odd-byte-sized basic fields now retain
+  their true return type on an inline source frame over the existing native
+  body. A nullable, read-only `$return` snapshot becomes available after the
+  whole result executes; finish returns to the caller without invoking GDB's
+  unsupported native classifier. Regressions cover 17/33/65/81-bit fields with
+  an 8-bit sibling, procedural and hardware calls, both inline hints, repeated
+  calls without stale snapshots, caller bindings and ordinary/debug VCD parity.
+  This is not native GDB history-value decoding or an arbitrary-width scalar fix.
   Two-integer hardware aggregate
   `finish` values are checked for straight-line, nested/match, independent and
   alias returns with positive, negative and zero inputs. Scalar

@@ -1583,6 +1583,15 @@ fn tap_wide(value: unsigned[81]) -> Logic {
     let result: Logic = copy[78];
     return result; // wide logic return stop
 }
+fn echo_packed(value: unsigned[9]) -> unsigned[9] {
+    let copy: unsigned[9] = value;
+    return copy; // numeric packed return stop
+}
+fn nested_packed(value: unsigned[9]) -> Logic {
+    let returned: unsigned[9] = echo_packed(value);
+    let result: Logic = returned[6];
+    return result; // nested packed return stop
+}
 fn selected(value: unsigned[9], take: integer) -> Logic {
     if take > 0 {
         let copy: unsigned[9] = value;
@@ -1605,6 +1614,9 @@ impl T {
         let clean: unsigned[9] = "101010101";
         let known: Logic = tap(clean);
         assert!(known == '1', "known expression result");
+        let nested_unknown: Logic = nested_packed(states);
+        let nested_known: Logic = nested_packed(clean);
+        assert!(nested_unknown == 'X' and nested_known == '1', "packed return metadata transport");
         let packet_result: Logic = tap_packet(packet);
         assert!(packet_result == 'X', "aggregate expression result");
         let number: integer = value_only(states);
@@ -1667,8 +1679,10 @@ unavailable = gdb.Breakpoint({source:?} + ':{unavailable_line}')
 wide = gdb.Breakpoint({source:?} + ':{wide_line}')
 selected = gdb.Breakpoint({source:?} + ':{selected_line}')
 unselected = gdb.Breakpoint({source:?} + ':{unselected_line}')
+echo_packed = gdb.Breakpoint({source:?} + ':{echo_packed_line}')
+nested_packed = gdb.Breakpoint({source:?} + ':{nested_packed_line}')
 gdb.execute('run')
-counts = {{'tap': 0, 'packet': 0, 'hardware': 0, 'unavailable': 0, 'wide': 0, 'selected': 0, 'unselected': 0}}
+counts = {{'tap': 0, 'packet': 0, 'hardware': 0, 'unavailable': 0, 'wide': 0, 'selected': 0, 'unselected': 0, 'echo_packed': 0, 'nested_packed': 0}}
 def symbols(view, labels=range(8, -1, -1)):
     return ''.join(str(view[i] if view.type.code == gdb.TYPE_CODE_ARRAY else view['[' + str(i) + ']']).strip("'") for i in labels)
 def missing(frame, name):
@@ -1713,6 +1727,22 @@ while True:
             assert symbols(view, range(80, -1, -1)) == '01XZUWLH-' * 9
             assert view.type.sizeof == 81
         assert str(frame.read_var('result')).strip("'") == 'X'
+    elif frame.name() == 'debug_expression_logic::echo_packed':
+        expected = [130, 341][counts['echo_packed']]
+        counts['echo_packed'] += 1
+        for name in ['value', 'copy']: assert int(frame.read_var(name)) == expected
+        # Only numeric bits execute inside this frame. Metadata is consumed
+        # later in the caller; do not manufacture it here for inspection.
+        for name in ['value$logic', 'copy$logic']: missing(frame, name)
+        gdb.execute('finish', to_string=True)
+        assert int(gdb.history(0)) == expected
+    elif frame.name() == 'debug_expression_logic::nested_packed':
+        expected = ['01XZUWLH-', '101010101'][counts['nested_packed']]
+        counts['nested_packed'] += 1
+        for name in ['value$logic', 'returned$logic']:
+            assert symbols(frame.read_var(name)) == expected
+        gdb.execute('finish', to_string=True)
+        assert str(gdb.history(0)).strip("'") == expected[2]
     else:
         assert frame.name() == 'debug_expression_logic::selected'
         if frame.find_sal().line == {selected_line}:
@@ -1728,6 +1758,7 @@ while True:
 assert int(gdb.parse_and_eval('$_exitcode')) == 0
 assert counts['tap'] == 2 and counts['packet'] == 1 and counts['unavailable'] == 1 and counts['hardware'] >= 1, counts
 assert counts['wide'] == counts['selected'] == counts['unselected'] == 1, counts
+assert counts['echo_packed'] == counts['nested_packed'] == 2, counts
 "#,
             source = source.to_string_lossy(),
             line = line("expression logic return stop"),
@@ -1737,6 +1768,8 @@ assert counts['wide'] == counts['selected'] == counts['unselected'] == 1, counts
             wide_line = line("wide logic return stop"),
             selected_line = line("selected logic return stop"),
             unselected_line = line("unselected logic return stop"),
+            echo_packed_line = line("numeric packed return stop"),
+            nested_packed_line = line("nested packed return stop"),
         );
         success(
             Command::new("gdb")
@@ -1753,6 +1786,310 @@ assert counts['wide'] == counts['selected'] == counts['unselected'] == 1, counts
         );
     } else {
         eprintln!("GDB unavailable: native packed results checked, companion probe skipped");
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn conversion_and_non_enum_resolve_keep_source_signatures() {
+    let directory =
+        std::env::temp_dir().join(format!("siox_dwarf_signatures_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("signatures.siox");
+    let text = r#"module debug_signatures;
+struct Source { pub count: integer, pub gain: real }
+struct Target { pub count: integer, pub gain: real }
+impl From<Source> for Target {
+    #[inline(HINT)]
+    fn from(value: Source) -> Self {
+        return Target { .count = value.count + 1, .gain = value.gain };
+    }
+}
+fn convert(value: Source) -> real {
+    let converted: Target = Target(value);
+    return real(converted.count) + converted.gain;
+}
+entity Probe { value: Source in, result: real out }
+impl Probe { result = convert(value); }
+struct Number(integer);
+impl Resolve for Number {
+    #[inline(HINT)]
+    fn resolve(self, rhs: Self) -> Self {
+        let first: integer = integer(self);
+        let second: integer = integer(rhs);
+        return if first > second { self } else { rhs };
+    }
+}
+entity Resolved { first: Number in, second: Number in, result: Number out }
+impl Resolved { result = first; }
+impl Resolved { result = second; }
+#[test] entity T {}
+impl T {
+    let value: Source = { .count = 7, .gain = -2.5 };
+    let probe: Probe = { .value = value };
+    let first: Number = Number(-5);
+    let second: Number = Number(3);
+    let resolved: Resolved = { .first = first, .second = second };
+    stimulus: process {
+        await 1ns;
+        assert!(probe.result == 5.5, "composite conversion positive");
+        assert!(integer(resolved.result) == 3, "mixed signs");
+        value = { .count = -9, .gain = 3.5 };
+        first = Number(7);
+        await 1ns;
+        assert!(probe.result == -4.5, "composite conversion negative");
+        assert!(integer(resolved.result) == 7, "both positive");
+        second = Number(-9);
+        await 1ns;
+        assert!(integer(resolved.result) == 7, "reversed signs");
+        first = Number(-11);
+        await 1ns;
+        assert!(integer(resolved.result) == -9, "both negative");
+    }
+}
+"#;
+    let python = r#"import gdb
+stops = [gdb.Breakpoint('debug_signatures::' + name) for name in ['from', 'resolve']]
+conversions, resolutions = set(), set()
+gdb.execute('run')
+while gdb.selected_thread() is not None:
+    frame = gdb.selected_frame()
+    name = frame.name()
+    if name == 'debug_signatures::from':
+        value = frame.read_var('value')
+        assert value.type.name == 'Source', value.type
+        inputs = (int(value['count']), float(value['gain']))
+        conversions.add(inputs)
+        assert frame.function().type.target().name == 'Target', frame.function().type
+    else:
+        assert name == 'debug_signatures::resolve', name
+        values = [frame.read_var(parameter) for parameter in ['self', 'rhs']]
+        assert all(value.type.name == 'Number' and value.type.sizeof == 8 for value in values), values
+        inputs = tuple(int(value) for value in values)
+        resolutions.add(tuple(sorted(inputs)))
+        assert frame.function().type.target().name == 'Number', frame.function().type
+    gdb.execute('finish', to_string=True)
+    result = gdb.history(0)
+    if name == 'debug_signatures::from':
+        assert result.type.name == 'Target', result.type
+        assert (int(result['count']), float(result['gain'])) == (inputs[0] + 1, inputs[1]), (inputs, str(result))
+    else:
+        assert result.type.name == 'Number', result.type
+        assert int(result) == max(inputs), (inputs, str(result))
+    gdb.execute('continue')
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+assert {(7, -2.5), (-9, 3.5)} <= conversions, conversions
+assert {(-5, 3), (3, 7), (-9, 7), (-11, -9)} <= resolutions, resolutions
+"#;
+    for hint in ["always", "never"] {
+        std::fs::write(&source, text.replace("HINT", hint)).unwrap();
+        let debug = directory.join("debug.bin");
+        let ordinary = directory.join("ordinary.bin");
+        for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+            success(
+                Command::new(binary)
+                    .arg("-o")
+                    .arg(binary.with_extension("vcd"))
+                    .output()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            std::fs::read(debug.with_extension("vcd")).unwrap(),
+            std::fs::read(ordinary.with_extension("vcd")).unwrap()
+        );
+        if Command::new("llvm-dwarfdump")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            success(
+                Command::new("llvm-dwarfdump")
+                    .arg("--verify")
+                    .arg(&debug)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        if Command::new("gdb").arg("--version").output().is_ok() {
+            success(
+                Command::new("gdb")
+                    .args(["-nx", "-q", "--batch"])
+                    .arg(&debug)
+                    .args([
+                        "-ex",
+                        "set disable-randomization off",
+                        "-ex",
+                        &format!("python {python}"),
+                    ])
+                    .output()
+                    .unwrap(),
+            );
+        } else {
+            eprintln!("GDB unavailable: native signatures checked, finish probe skipped");
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn odd_sized_aggregate_returns_keep_inspectable_source_frames() {
+    let directory =
+        std::env::temp_dir().join(format!("siox_dwarf_odd_return_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("odd.siox");
+    let text = r#"module debug_odd;
+use std::bits::unsigned;
+struct Odd { pub value: unsigned[WIDTH], pub tail: unsigned[8] }
+#[inline(HINT)]
+fn make(value: unsigned[WIDTH], tail: unsigned[8]) -> Odd {
+    return Odd { .value = value, .tail = tail };
+}
+#[inline(HINT)]
+fn consume(value: unsigned[WIDTH], tail: unsigned[8]) -> integer {
+    let odd: Odd = make(value, tail);
+    return integer(unsigned[8](odd.value)) + integer(odd.tail);
+}
+entity Probe { value: unsigned[WIDTH] in, tail: unsigned[8] in, result: integer out }
+impl Probe { result = consume(value, tail); }
+#[test] entity T {}
+impl T {
+    let value: unsigned[WIDTH] = FIRST;
+    let tail: unsigned[8] = 255;
+    let probe: Probe = { .value = value, .tail = tail };
+    stimulus: process {
+        let initial: integer = consume(value, tail);
+        assert!(initial == 256, "procedural first odd return");
+        await 1ns;
+        assert!(probe.result == 256, "hardware first odd return");
+        value = SECOND;
+        tail = 17;
+        await 1ns;
+        let updated: integer = consume(value, tail);
+        assert!(updated == 24 and probe.result == 24, "updated odd returns");
+    }
+}
+"#;
+    for width in [17, 33, 65, 81] {
+        let first = (1u128 << (width - 1)) + 1;
+        let second = (1u128 << (width - 2)) + 7;
+        let text = text
+            .replace("WIDTH", &width.to_string())
+            .replace("FIRST", &first.to_string())
+            .replace("SECOND", &second.to_string());
+        for hint in ["always", "never"] {
+            std::fs::write(&source, text.replace("HINT", hint)).unwrap();
+            let debug = directory.join("debug.bin");
+            let ordinary = directory.join("ordinary.bin");
+            for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+                let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+                command.args(["--std", "std", "--test"]);
+                if debugging {
+                    command.arg("--debug");
+                }
+                success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+                success(
+                    Command::new(binary)
+                        .arg("-o")
+                        .arg(binary.with_extension("vcd"))
+                        .output()
+                        .unwrap(),
+                );
+            }
+            assert_eq!(
+                std::fs::read(debug.with_extension("vcd")).unwrap(),
+                std::fs::read(ordinary.with_extension("vcd")).unwrap()
+            );
+            if Command::new("llvm-dwarfdump")
+                .arg("--version")
+                .output()
+                .is_ok()
+            {
+                success(
+                    Command::new("llvm-dwarfdump")
+                        .arg("--verify")
+                        .arg(&debug)
+                        .output()
+                        .unwrap(),
+                );
+            }
+            if Command::new("gdb").arg("--version").output().is_ok() {
+                let python = format!(
+                    r#"import gdb
+gdb.Breakpoint('debug_odd::make')
+gdb.execute('run')
+seen = {{'process': [], 'hardware': []}}
+while gdb.selected_thread() is not None:
+    frame = gdb.selected_frame()
+    assert frame.name() == 'debug_odd::make' and frame.type() == gdb.INLINE_FRAME, frame.name()
+    assert frame.function().type.target().name == 'Odd', frame.function().type
+    inputs = (int(frame.read_var('value')), int(frame.read_var('tail')))
+    # A reference must not expose a previous invocation's return snapshot.
+    try:
+        result = frame.read_var('$return')
+        assert result.is_optimized_out or result['value'].is_optimized_out, str(result)
+    except (gdb.MemoryError, ValueError):
+        pass
+    for _ in range(200):
+        frame = gdb.selected_frame()
+        assert frame.name() == 'debug_odd::make', frame.name()
+        try:
+            result = frame.read_var('$return')
+            if (int(result['value']), int(result['tail'])) == inputs: break
+        except (gdb.error, ValueError):
+            pass
+        gdb.execute('stepi', to_string=True)
+    else:
+        raise AssertionError('whole return snapshot unavailable')
+    assert result['value'].type == frame.read_var('value').type, result['value'].type
+    assert result['value'].type.sizeof == ({width} + 7) // 8
+    assert 'Value returned is' not in gdb.execute('finish', to_string=True)
+    frame = gdb.selected_frame()
+    assert frame.name() == 'debug_odd::consume', frame.name()
+    owner = frame.older().name()
+    # Finish stops at the return address, before the caller has necessarily
+    # completed its binding. Inspect after its normal capture, not before.
+    for _ in range(200):
+        frame = gdb.selected_frame()
+        assert frame.name() == 'debug_odd::consume', frame.name()
+        try:
+            result = frame.read_var('odd')
+            if (int(result['value']), int(result['tail'])) == inputs: break
+        except (gdb.error, ValueError):
+            pass
+        gdb.execute('stepi', to_string=True)
+    else:
+        raise AssertionError('caller binding unavailable')
+    seen['hardware' if '<hardware:' in owner else 'process'].append(inputs)
+    gdb.execute('continue')
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+assert seen['process'] == [({first}, 255), ({second}, 17)], seen
+assert {{({first}, 255), ({second}, 17)}} <= set(seen['hardware']), seen
+"#
+                );
+                success(
+                    Command::new("gdb")
+                        .args(["-nx", "-q", "--batch"])
+                        .arg(&debug)
+                        .args([
+                            "-ex",
+                            "set disable-randomization off",
+                            "-ex",
+                            &format!("python {python}"),
+                        ])
+                        .output()
+                        .unwrap(),
+                );
+            } else {
+                eprintln!("GDB unavailable: native odd returns checked, frame probe skipped");
+            }
+        }
     }
     std::fs::remove_dir_all(directory).unwrap();
 }

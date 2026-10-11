@@ -16347,3 +16347,82 @@ GDB/VCD smokes pass. Graph refresh completed with 5361 nodes, 15276 edges and
 partial source-frame/return-fragment batch and its sibling docs only. Preserve
 foreign AGENTS/.codex and 441 historical chat lines; no push. Next run the
 prepared narrow-consumer diagnostic, then continue the remaining full goal.
+
+### 2026-10-11 — Codex — conversion and Resolve signature follow-through
+
+Previous turn verified terminal evidence rather than changing code: composite
+probe 733670 exited/success/0, including ordinary/debug native assertions,
+VCD parity, dwarfdump and actual GDB mixed integer/real From results. Narrow
+partial-consumer probe 726604 and signed Number Resolve probe 729353 also
+passed; neither needs a speculative compiler fix. Generic From probe 730722
+was rejected by the ordinary frontend before DWARF, so it is not evidence of
+a debugger regression or supported generic-constructor coverage.
+
+Own tests/debug_info.rs and TODO for permanent supported-signature coverage,
+then audit packed return companion transport in the existing shared debug
+emitter. Keep foreign AGENTS/.codex and historical chat edits untouched.
+No verification job is running. Full aggregate grouping and remaining ABI /
+companion audits stay open; no push or completion claim.
+
+Signature regression 740137 passed default/bitpack, both inline hints. Packed
+nested-return probe 743828 passed actual stops/call counts: the numeric-only
+echo frame correctly has unavailable logic companions; its consuming caller
+retains all source states once metadata is used. The first probe script used
+closing-brace lines and stopped nowhere; it is not debugger-coverage evidence.
+
+Odd-sized aggregate probe 744962 passes native execution/VCD/dwarfdump but GDB
+finish errors on a three-byte unsigned[17] field's alignment. Primary GDB source
+(gnu.googlesource.com/binutils-gdb, gdb/amd64-tdep.c and gdb/gdbtypes.c) confirms
+both unknown non-power-of-two alignment and unsupported basic integer classes.
+Own debug.rs / debug/inline_values.rs metadata and tests to use the existing
+inline source-frame representation for unsupported small aggregate return ABIs.
+Keep original source types and native payloads; expose the already-computed
+whole result at its return point, not a fabricated native history value or an
+extra wrapper. Do not claim to fix GDB's arbitrary-width scalar classifier.
+
+Odd-return reproduction 753379 passed actual GDB snapshot/finish/caller values,
+native assertions, VCD parity and dwarfdump after using nullable entry-owned
+inspection references. A direct global dbg.declare had no machine location;
+reuse the local reference mechanism instead. The permanent fixture additionally
+rejects stale snapshots on repeated entry. GDB's C++ canonical spelling expands
+`unsigned` to `unsigned int`; compare source field/formal types directly. Finish
+can stop before the caller assignment has completed, so the test observes its
+normal capture before checking that binding (without forcing any computation).
+
+763747 is terminal exited/success/0, peak 770306048 bytes. The odd-sized fixture
+passes for 17/33/65/81-bit fields plus an 8-bit sibling, both inline hints and
+procedural/hardware callers. All fourteen bitpack debugger fixtures and strict
+all-target/all-feature Clippy pass. Default suite 759913 had thirteen passes
+and only the overly-early caller inspection failure; the corrected default
+odd-sized fixture now passes. Full acceptance must rerun both complete suites.
+The packed fixture now includes nested numeric/metadata return transport with
+exact call counts and GDB finish values; signature probes are permanent too.
+
+Freeze source hash f4cb8c6adf987acca81023475287ae9344eaace106c71f773d0ef5f374a4b9a4
+for acceptance. Corpus remains clean at 05278a8d; do not mix moving upstream
+into the batch. Own sibling architecture/testing doc additions alongside TODO.
+Remaining full-goal work still includes demand-preserving grouping of checked,
+effectful and independently selected partial/nested aggregates, other supported
+signature/metadata-plane transports, and native return ABI audits. No push.
+
+Full acceptance launched as siox-job-3000-1791709835673167633-770600.service.
+Log: /home/max/.cache/siox-jobs/siox-job-3000-1791709835673167633-770600.log.
+Poll this exact service until terminal; no Rust edits or overlapping heavy jobs.
+Pending owned compiler files: debug/inline_values.rs, tests/debug_info.rs, TODO
+and this appended chat tail. Sibling docs: architecture.md and testing.md.
+Preserve foreign AGENTS/.codex and 441 historical chat insertions. Commit only
+after full terminal success and unchanged source hash; the goal remains active.
+
+### 2026-10-11 — Codex — odd-return / signature full acceptance
+
+770600 is terminal exited/success/0, peak 1610874880 bytes. Frozen source hash
+f4cb8c6adf987acca81023475287ae9344eaace106c71f773d0ef5f374a4b9a4 is unchanged.
+Full default/bitpack suites, fourteen debugger fixtures per mode, strict Clippy,
+frontend/artifact checks, four 228-program corpora and four native FIFO/wide
+GDB/VCD smokes pass. AST graph refresh completed: 5363 nodes, 15284 edges,
+251 communities, with existing vendored extractor warnings. Commit only the
+owned inline-frame/snapshot change, signature/packed/odd-sized regressions,
+TODO and appended chat tail; sibling architecture/testing docs separately.
+No push. Next own aggregate_returns / joint_aggregate_demand and their callers
+for checked/effectful source boundaries, after tracing actual evaluation order.
+The full DWARF objective stays active.
