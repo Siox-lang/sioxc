@@ -2003,17 +2003,37 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
             })
         })
     });
-    // GDB's SysV classifier cannot assign alignment/register classes to
-    // three-, five-, etc. byte basic fields. Keep their true source type on
-    // an inline frame instead of advertising an unsupported native return ABI.
+    // Wide basic returns and odd-sized aggregate leaves are not a reliable
+    // GDB return ABI. Keep their declared types on an inline source frame over
+    // this same body, without changing the executable payload or ABI.
+    let result_layout = source
+        .result_layout
+        .as_ref()
+        .filter(|layout| layout.packed_width().is_some())
+        .map(std::borrow::Cow::Borrowed)
+        .or_else(|| debug.value_debug_layout(design, operand));
     // Large aggregates already use the supported memory-return convention.
+    // A word-sized declared return can still have a wider private consumer
+    // payload. Up to two words use registers; larger integers use a hidden
+    // memory ABI which GDB cannot infer from the smaller source type.
+    let wide_native = function
+        .get_type()
+        .get_return_type()
+        .is_some_and(|ty| ty.is_int_type() && ty.into_int_type().get_bit_width() > 128);
     let indirect_frame = cfg!(all(target_arch = "x86_64", not(target_os = "windows")))
-        && source.result_layout.as_ref().is_some_and(|layout| {
-            matches!(
+        && result_layout.as_ref().is_some_and(|layout| {
+            let Some(bits) = inspection_bits(layout) else {
+                return false;
+            };
+            let aggregate = matches!(
                 layout.kind,
                 LayoutKind::Struct { .. } | LayoutKind::Array { .. }
-            ) && inspection_bits(layout).is_some_and(|bits| bits <= 128)
-                && return_alignment(layout).is_none()
+            );
+            if aggregate {
+                bits <= 128 && return_alignment(layout).is_none()
+            } else {
+                bits > 64 || wide_native || return_alignment(layout).is_none()
+            }
         });
     let partial = partial_path.map(|(_, path)| {
         let mut source = source.clone();
@@ -2479,7 +2499,7 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
             result_span,
             partial_path
                 .is_none()
-                .then_some(source.result_layout.as_ref())
+                .then_some(result_layout.as_deref())
                 .flatten(),
             return_reference,
             cache,
@@ -2514,15 +2534,17 @@ fn capture_result<'ctx>(
     else {
         return;
     };
+    let Some(width) = layout.packed_width() else {
+        return;
+    };
     // A constant/arithmetic return can otherwise have no machine range even
     // at -O0. These inspection writes never become simulation operands.
     let _location = ValueLocationGuard::new(builder, cache, span);
     // Do not present padding of a narrower consumer as a complete result.
-    let reference =
-        reference.filter(|_| value.get_type().get_bit_width() >= layout.packed_width().unwrap());
+    let reference = reference.filter(|_| value.get_type().get_bit_width() >= width);
     if let Some(bytes) = inspection_bits(&layout).and_then(|bits| u32::try_from(bits / 8).ok()) {
         let buffer = debug.inspection_buffer(module, "sx.debug.return", bytes);
-        if let Some(value) = fit(builder, value, layout.packed_width().unwrap()) {
+        if let Some(value) = fit(builder, value, width) {
             debug.copy_fields(
                 builder,
                 buffer.as_pointer_value(),

@@ -724,7 +724,7 @@ fn wide_source_returns_keep_declared_bindings() {
     let directory =
         std::env::temp_dir().join(format!("siox_dwarf_wide_return_{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
-    for width in [81usize, 129] {
+    for width in [81usize, 127, 128, 129, 256] {
         for inline in ["never", "always"] {
             let source = directory.join(format!("returns_{width}_{inline}.siox"));
             let signed_bits = format!("{}0{}", "1".repeat(width - 65), "1".repeat(64));
@@ -772,6 +772,8 @@ impl T {{
         assert!(wider == 18446744073709551617, "wider consumer result");
         let low: unsigned[8] = low_byte(1208925819614629174706177);
         assert!(low == 1, "narrow callee result");
+        let widened_low: unsigned[193] = unsigned[193](low_byte(1208925819614629174706177));
+        assert!(widened_low == 1, "wide private payload retains the narrow declared result");
         let generic_signed: signed[{width}] = generic_identity(signed[{width}](0b{signed_bits}));
         assert!(generic_signed == large_negative, "generic signed result");
         let generic_unsigned: unsigned[{width}] = generic_identity(unsigned[{width}](1208925819614629174706177));
@@ -820,25 +822,50 @@ impl T {{
                     |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
                 let python = format!(
                     r#"import gdb
-# GDB's AMD64 classifier does not recognize arbitrary-width basic integer
-# returns, even with print-finish disabled. Step out at the real caller PC
-# instead; native assertions verify the result without accepting fabricated 0.
+# Unsupported native integer classifiers must not see the source return ABI.
+# Wide source frames expose complete actual results through the existing
+# read-only snapshot; narrowed consumers leave omitted result bits unavailable.
 stops = [gdb.Breakpoint({source:?} + ':' + str(line)) for line in [{signed_line}, {unsigned_line}, {low_line}, {generic_line}]]
 gdb.execute('run')
-for name, expected in [('signed_identity', -2), ('signed_identity', -(1 << 64) - 1), ('signed_identity', 0), ('signed_identity', (1 << 64) + 1), ('unsigned_identity', (1 << 80) + 1), ('unsigned_identity', 0), ('unsigned_identity', (1 << 80) + 1), ('unsigned_identity', (1 << 64) + 1), ('low_byte', (1 << 80) + 1), ('generic_identity', -(1 << 64) - 1), ('generic_identity', (1 << 80) + 1)]:
+for name, expected, complete in [('signed_identity', -2, True), ('signed_identity', -(1 << 64) - 1, True), ('signed_identity', 0, True), ('signed_identity', (1 << 64) + 1, True), ('unsigned_identity', (1 << 80) + 1, True), ('unsigned_identity', 0, True), ('unsigned_identity', (1 << 80) + 1, False), ('unsigned_identity', (1 << 64) + 1, True), ('low_byte', (1 << 80) + 1, True), ('low_byte', (1 << 80) + 1, True), ('generic_identity', -(1 << 64) - 1, True), ('generic_identity', (1 << 80) + 1, True)]:
     assert gdb.selected_frame().name().split('(')[0] == 'debug_wide_returns::' + name
     for binding in ['value', 'copy']:
         actual = gdb.parse_and_eval(binding)
         assert int(actual) == expected, ('wide source binding', name, binding, actual, expected)
         assert actual.type.sizeof == ({width} + 7) // 8
-    if name == 'low_byte':
+    if name == 'low_byte' and gdb.selected_frame().type() == gdb.NORMAL_FRAME:
         gdb.execute('finish')
         returned = gdb.history(0)
         assert int(returned) == 1 and returned.type.sizeof == 1, ('narrow finish', returned)
     else:
-        caller = gdb.newest_frame().older().pc()
-        gdb.execute('tbreak *%#x' % caller)
-        gdb.execute('continue')
+        frame = gdb.selected_frame()
+        assert frame.type() == gdb.INLINE_FRAME, frame.type()
+        return_size = 1 if name == 'low_byte' else ({width} + 7) // 8
+        returned_expected = (expected & 255) if name == 'low_byte' else expected
+        assert frame.function().type.target().sizeof == return_size
+        try:
+            previous = frame.read_var('$return')
+            assert previous.is_optimized_out or previous.is_unavailable, str(previous)
+        except (gdb.error, ValueError):
+            pass
+        if complete:
+            for _ in range(200):
+                try:
+                    returned = gdb.selected_frame().read_var('$return')
+                    if not returned.is_optimized_out and int(returned) == returned_expected: break
+                except (gdb.error, ValueError):
+                    pass
+                gdb.execute('stepi', to_string=True)
+            else:
+                raise AssertionError(('complete wide result unavailable', name, expected))
+            assert returned.type.sizeof == return_size, returned.type
+        else:
+            try:
+                returned = frame.read_var('$return')
+                assert returned.is_optimized_out or returned.is_unavailable, str(returned)
+            except (gdb.error, ValueError):
+                pass
+        assert 'Value returned is' not in gdb.execute('finish', to_string=True)
     assert gdb.selected_frame().name() == 'T::stimulus'
     gdb.execute('continue')
 assert int(gdb.parse_and_eval('$_exitcode')) == 0
@@ -2486,10 +2513,23 @@ while gdb.selected_thread() is not None:
         binding = frame.read_var(name)
         assert binding.type.sizeof == 11 and int(binding) == expected, (name, str(binding))
     seen.append(expected)
-    # GDB cannot decode arbitrary-width integer returns. Native assertions
-    # verify the result; step out using the real caller address instead.
-    gdb.execute('tbreak *%#x' % frame.older().pc())
-    gdb.execute('continue', to_string=True)
+    assert frame.type() == gdb.INLINE_FRAME, frame.type()
+    for _ in range(300):
+        frame = gdb.selected_frame()
+        while frame is not None and frame.name() != 'dwarf_narrow_binding::both':
+            frame = frame.older()
+        assert frame is not None, 'wide source frame disappeared before completing'
+        try:
+            returned = frame.read_var('$return')
+            if not returned.is_optimized_out and int(returned) == expected + (expected & 255): break
+        except (gdb.error, ValueError):
+            pass
+        gdb.execute('stepi', to_string=True)
+    else:
+        raise AssertionError('complete hardware wide return unavailable')
+    assert returned.type.sizeof == 11, returned.type
+    frame.select()
+    assert 'Value returned is' not in gdb.execute('finish', to_string=True)
     stop.enabled = True
     gdb.execute('continue', to_string=True)
 assert Counter(seen) == Counter([(1 << 80) + 8, (1 << 80) + 17]), seen

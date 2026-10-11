@@ -16660,3 +16660,61 @@ only owned capture selection/width guard, regressions, TODO and appended chat
 tail; sibling architecture/testing docs separately. No push; full DWARF goal
 stays active. Next reuse the existing inline-return inspection path for wide
 basic scalars without changing source types or exposing fabricated return bits.
+
+### 2026-10-11 — Codex — wide scalar return source frames
+
+Committed compiler 81e8015 and sibling docs a1ecc6f after full 1454815 and
+additional 1541670 success. No push. Own inline_values.rs, wide-return and
+narrow-binding regression updates, TODO and sibling architecture/testing docs.
+Reuse the existing odd-return inline frame over the same native body for
+unsupported odd-byte-sized scalar returns. Keep declared types and executable
+ABI unchanged, expose only actual complete result bits, and check GDB finish
+without fabricated history values. All guarded jobs terminal at ownership
+start; preserve foreign AGENTS/.codex and 441 historical chat insertions.
+
+1639806 is terminal exited/success/0, peak 1105059840 bytes. All seventeen
+DWARF fixtures pass in default and bitpack, plus strict all-target/all-feature
+Clippy. Wide source coverage now includes 81/127/128/129/256 bits, complete
+read-only return snapshots, unavailable narrowed results, entry resets and
+inline-source finish. A byte declaration consumed through a private 193-bit
+payload also keeps a truthful source frame. Ordinary register-return integer
+frames remain unchanged: wrapping every carry temporary above 64 bits was an
+overreach, caught by existing tests; only the hidden-memory payload case above
+128 bits needs that extra classification. Update matching TODO/docs and freeze
+the source for full suite/corpus/native smoke acceptance. No push; goal active.
+
+Full acceptance unit siox-job-3000-1791750177449754373-1690209.service is
+confirmed running. Frozen compiler source hash:
+cc7e13aee66354a7aa4f2e425d00623b59d70b73d4bbff902069f80aa227d892.
+Stage logs: /home/max/.cache/siox-jobs/tmp/dwarf-wide-return-acceptance.CHPI8t.
+Fmt, artifact checks, frontend check/Clippy and build have passed; the full
+default suite is live. Both full suites, strict Clippy, four corpora, four
+native GDB/VCD smokes and AST refresh must finish successfully before commit.
+Poll this same unit; do not restart it after observation interruptions or edit
+Rust during the gate. No commit/push yet; preserve foreign work. Next audit
+smaller private native return payloads against their declared scalar widths
+with an actual executable/GDB probe, not an inferred ABI fix.
+
+1690209 remains authoritatively running. Both full suites and strict Clippy
+have passed; the ordinary corpus is progressing through hardware cases. No
+Rust changes during verification. Prepared narrow_source_return.siox/.py in
+/home/max/.cache/siox-jobs/tmp/dwarf-partial-return-20261010: a dynamic 32-bit
+identity consumed as eight bits checks whether native finish falsely reports
+the low byte as a complete source return. Run ordinary/debug native assertions,
+VCD parity and this GDB probe only after the current guarded gate terminates.
+If it reproduces, trace the exact returned operand and existing consumer-format
+SSA before a shared-root fix; do not manufacture omitted bits or force another
+evaluation. The probe is diagnostic, not evidence of a failure yet.
+
+### 2026-10-11 — Codex — wide-return full acceptance
+
+1690209 is terminal exited/success/0, peak 1612632064 bytes. Frozen compiler
+hash cc7e13aee66354a7aa4f2e425d00623b59d70b73d4bbff902069f80aa227d892
+is unchanged. Both full suites, seventeen DWARF fixtures per packing mode,
+strict Clippy/frontend/artifact checks, four 228-program corpora and four
+FIFO/wide native GDB/VCD smokes pass. AST refresh: 5369 nodes, 15308 edges,
+240 communities; existing vendored extractor warnings persist. Commit only
+owned inline-frame classification/result-layout guard, return regressions,
+TODO and this appended tail; sibling architecture/testing docs separately.
+Preserve foreign AGENTS/.codex and 441 historical chat insertions. No push;
+the full goal stays active. Then run the prepared 32-to-8-bit return probe.

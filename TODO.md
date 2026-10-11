@@ -276,7 +276,7 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   companion-plane transports. Generic From constructor syntax rejected by the
   ordinary frontend is a separate language boundary, not missing DWARF coverage;
   these cases do not prove every signature or every argument's availability.
-  Procedural 81/129-bit constructor and
+  Procedural 81/127/128/129/256-bit constructor and
   generic bindings now retain their checked signed/unsigned target type even
   without stored layouts, including narrow/wider consumer tests. Expression
   parameters/locals now expose recursive `$logic` companions over already
@@ -288,8 +288,14 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   GDB 18.1 on AMD64 does not classify arbitrary-width basic integer returns:
   an 81-bit signed return reports zero and a 129-bit return triggers an internal
   assertion, even with return printing disabled. Do not change source types to
-  hide that limitation; wide-call inspection/step-out tests use the actual
-  caller return address, not GDB's unsupported return decoding. Track the
+  hide that limitation; wide scalar source calls now reuse an inline frame
+  over the existing native body and expose a read-only `$return` snapshot only
+  when the emitted result retains every declared bit. Narrowed results remain
+  unavailable, and repeated entry clears the previous snapshot. GDB `finish`
+  leaves the inline frame without invoking unsupported native return decoding.
+  A small declared result with a private integer payload above 128 bits uses
+  the same path: GDB cannot infer that hidden memory ABI from the source type.
+  Ordinary register-return integers keep their native frames. Track the
   debugger fix independently from compiler return-ABI checks.
   Small complete aggregates containing odd-byte-sized basic fields now retain
   their true return type on an inline source frame over the existing native
@@ -298,7 +304,7 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   unsupported native classifier. Regressions cover 17/33/65/81-bit fields with
   an 8-bit sibling, procedural and hardware calls, both inline hints, repeated
   calls without stale snapshots, caller bindings and ordinary/debug VCD parity.
-  This is not native GDB history-value decoding or an arbitrary-width scalar fix.
+  This does not fix GDB's native arbitrary-width history-value decoder.
   Two-integer hardware aggregate
   `finish` values are checked for straight-line, nested/match, independent and
   alias returns with positive, negative and zero inputs. Scalar
