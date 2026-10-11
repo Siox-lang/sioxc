@@ -336,6 +336,11 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   modes. Shared-body units verify void/sret signatures, canonical i192/i145
   results, entry-owned storage and no second execution wrapper. The caller reads
   only a separate canonical payload, never normalized inspection bytes.
+  Generic identity specializations now have actual GDB formal/finish coverage
+  for a 31-byte struct combining a 3-bit tag, real and descending signed[81]
+  array, plus procedural real returns. Both hints and packing modes preserve
+  concrete source types, every memory-return field and signed zero across
+  changing inputs without a signature or executable-ABI change.
   Runtime and nonempty-literal Char[] returns now use the same caller-owned
   transport: a borrowed 32-byte Unicode/UTF-8 view followed by the unchanged
   canonical handle or packed literal bits. Actual GDB finish checks embedded

@@ -1409,6 +1409,17 @@ struct Triple { pub left: integer, pub gain: real, pub right: integer }
 struct Wide { pub data: unsigned[81], pub gain: real }
 struct Signed { pub data: signed[81], pub gain: real }
 struct Nested { pub body: Signed, pub gains: real[2..0] }
+struct Packet { pub tag: unsigned[3], pub gain: real, pub data: signed[81][2..1] }
+#[inline(__INLINE__)]
+fn identity<T>(value: T) -> T {
+    let copy: T = value;
+    return copy; // generic memory and real return stop
+}
+fn same(value: Packet) -> Bool {
+    let copied: Packet = identity(value);
+    return copied.tag == value.tag and copied.gain == value.gain
+        and copied.data[2] == value.data[2] and copied.data[1] == value.data[1];
+}
 #[inline(__INLINE__)]
 fn make_triple(left: integer, gain: real, right: integer) -> Triple {
     return Triple { .left = left, .gain = gain, .right = right }; // three word return stop
@@ -1433,11 +1444,12 @@ fn consume_nested(data: signed[81], gain: real) -> real {
     let value: Nested = make_nested(data, gain);
     return (if value.body.data == data { 1.0 } else { -1.0 }) * (value.body.gain + value.gains[2] + value.gains[1] + value.gains[0]);
 }
-entity Probe { left: integer in, gain: real in, right: integer in, data: unsigned[81] in, signed_data: signed[81] in, triple: real out, wide: real out, nested: real out }
+entity Probe { left: integer in, gain: real in, right: integer in, data: unsigned[81] in, signed_data: signed[81] in, packet: Packet in, triple: real out, wide: real out, nested: real out, copied: Bool out }
 impl Probe {
     triple = consume_triple(left, gain, right);
     wide = consume_wide(data, gain);
     nested = consume_nested(signed_data, gain);
+    copied = same(packet);
 }
 #[test] entity T {}
 impl T {
@@ -1446,24 +1458,34 @@ impl T {
     let right: integer = 13;
     let data: unsigned[81] = unsigned[81](0b__FIRST__);
     let signed_data: signed[81] = signed[81](5);
-    let probe: Probe = { .left = left, .gain = gain, .right = right, .data = data, .signed_data = signed_data };
+    let packet: Packet = { .tag = 5, .gain = 2.5, .data = [-2, -3] };
+    let probe: Probe = { .left = left, .gain = gain, .right = right, .data = data, .signed_data = signed_data, .packet = packet };
     stimulus: process {
         await 1ns;
         assert!(probe.triple == 19.5 and probe.wide == 1.5 and probe.nested == 3.0, "positive memory result");
+        assert!(probe.copied, "generic composite identity");
         left = -7;
         gain = -2.5;
         right = 9;
         data = unsigned[81](0b__SECOND__);
         signed_data = signed[81](0b__SIGNED__);
+        packet = { .tag = 2, .gain = -3.5, .data = [4, -5] };
         await 1ns;
         assert!(probe.triple == -0.5 and probe.wide == -2.5 and probe.nested == -5.0, "negative memory result");
+        assert!(probe.copied, "generic composite new epoch");
         left = 0;
         gain = -0.0;
         right = 0;
         data = unsigned[81](0);
         signed_data = signed[81](0);
+        packet = { .tag = 0, .gain = -0.0, .data = [0, 0] };
         await 1ns;
         assert!(probe.triple == 0.0 and probe.wide == 0.0 and probe.nested == 0.0, "zero memory result");
+        assert!(probe.copied, "generic composite zero");
+        let real_value: real = identity(6.25);
+        let negative: real = identity(-2.5);
+        let zero: real = identity(-0.0);
+        assert!(real_value == 6.25 and negative == -2.5 and zero == 0.0, "generic real identity");
     }
 }
 "#;
@@ -1512,13 +1534,40 @@ impl T {
             let line = |marker| text.lines().position(|line| line.contains(marker)).unwrap() + 1;
             let python = format!(
                 r#"import gdb, math
-stops = [gdb.Breakpoint({source:?} + ':' + str(line)) for line in [{triple_line}, {wide_line}, {nested_line}]]
-seen = {{'make_triple': set(), 'make_wide': set(), 'make_nested': set()}}
+stops = [gdb.Breakpoint({source:?} + ':' + str(line)) for line in [{triple_line}, {wide_line}, {nested_line}, {generic_line}]]
+seen = {{'make_triple': set(), 'make_wide': set(), 'make_nested': set(), 'identity': set()}}
+reals = []
 gdb.execute('run')
 while True:
     frame = gdb.selected_frame()
     name = frame.name().split('::')[-1]
     assert name in seen, frame.name()
+    if name == 'identity':
+        assert frame.type() == gdb.NORMAL_FRAME
+        value = frame.read_var('value')
+        result_type = frame.function().type.target()
+        if result_type.name == 'Packet':
+            assert value.type.name == 'Packet' and value.type.sizeof == 31, value.type
+            gain = float(value['gain'])
+            inputs = (int(value['tag']), gain, math.copysign(1.0, gain), int(value['data']['[2]']), int(value['data']['[1]']))
+            gdb.execute('finish', to_string=True)
+            result = gdb.history(0)
+            assert result.type.name == 'Packet' and result.type.sizeof == 31, result.type
+            actual_gain = float(result['gain'])
+            actual = (int(result['tag']), actual_gain, math.copysign(1.0, actual_gain), int(result['data']['[2]']), int(result['data']['[1]']))
+            assert actual == inputs, (actual, inputs)
+            seen[name].add(inputs)
+        else:
+            assert value.type.name == result_type.name == 'real', result_type
+            inputs = (float(value), math.copysign(1.0, float(value)))
+            gdb.execute('finish', to_string=True)
+            result = gdb.history(0)
+            assert result.type.name == 'real', result.type
+            assert (float(result), math.copysign(1.0, float(result))) == inputs, (str(result), inputs)
+            reals.append(inputs)
+        gdb.execute('continue', to_string=True)
+        if gdb.selected_thread() is None: break
+        continue
     gain = float(frame.read_var('gain'))
     sign = math.copysign(1.0, gain)
     if name == 'make_triple':
@@ -1547,11 +1596,14 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
 assert set([(5, 13, 1.5, 1.0), (-7, 9, -2.5, -1.0), (0, 0, -0.0, -1.0)]).issubset(seen['make_triple']), seen
 assert set([({first}, 1.5, 1.0), ({second}, -2.5, -1.0), (0, -0.0, -1.0)]).issubset(seen['make_wide']), seen
 assert set([(5, 1.5, 1.0), (-7, -2.5, -1.0), (0, -0.0, -1.0)]).issubset(seen['make_nested']), seen
+assert set([(5, 2.5, 1.0, -2, -3), (2, -3.5, -1.0, 4, -5), (0, -0.0, -1.0, 0, 0)]).issubset(seen['identity']), seen
+assert reals == [(6.25, 1.0), (-2.5, -1.0), (-0.0, -1.0)], reals
 "#,
                 source = source.to_string_lossy(),
                 triple_line = line("three word return stop"),
                 wide_line = line("normalized wide return stop"),
                 nested_line = line("nested memory return stop"),
+                generic_line = line("generic memory and real return stop"),
             );
             success(
                 Command::new("gdb")

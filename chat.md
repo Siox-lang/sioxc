@@ -16896,3 +16896,55 @@ curated history and ignored caches. Commit only owned inline_values.rs,
 debug_info.rs, TODO and appended chat tail, plus sibling docs separately.
 Then run the prepared generic aggregate/real signature probe. Preserve foreign
 AGENTS/.codex and 441 historical chat additions. No push. Goal stays active.
+
+### 2026-10-12 — Codex — generic composite/real signature coverage
+
+Committed compiler 9fed2c3 and sibling docs 31e26fc after full acceptance.
+2134078 is terminal exited/success/0, peak 107622400 bytes: generic identity
+over a 31-byte struct with a 3-bit tag, real and descending signed[81] array
+retains concrete Packet formals/results and all actual GDB memory-return fields
+across input epochs. A procedural generic real returns 6.25 correctly through
+native history. Ordinary/debug assertions and VCD parity pass. Native graphify
+cluster refresh also preserves 5371 nodes/15315 edges and updates 254 labels.
+No signature fix is warranted by this probe. Own an extension of the existing
+large-return fixture for these specializations, both hints and packing modes,
+including signed zero real returns; update matching TODO/docs after evidence.
+No live jobs; preserve foreign work and leave the full goal active. No push.
+
+2140271 is terminal exited/success/0, peak 188461056 bytes. The existing
+large-return fixture now covers concrete generic Packet formals/results with
+descending signed[81] array fields and generic real positive/negative/signed-
+zero returns, across all three input epochs, both hints and both packing modes.
+Native assertions, GDB history fields/types, DWARF verification and VCD parity
+pass; strict Clippy passes. No production compiler changes. Update matching
+TODO/docs and freeze test hash
+2508bf65481b1c6bd91d71f8c20c6e6134f631e63726a3c23253b364c0a7b572.
+Run complete CI acceptance (both suites, two ordinary corpora and AST/label
+refresh) before this regression-only commit. The unchanged compiler's four
+debug/ordinary corpora and four native smokes already passed in 2002602;
+this fixture additionally runs its own emitted debug/ordinary binaries/GDB.
+Other supported signature/companion and partial-demand audits remain active.
+
+Generic-return CI acceptance is confirmed live as
+siox-job-3000-1791757110096844734-2149076.service. Poll this exact unit/log;
+do not restart after an interrupted observation. Tests stay frozen at
+2508bf65481b1c6bd91d71f8c20c6e6134f631e63726a3c23253b364c0a7b572.
+After terminal success, stage only owned large-return regression, TODO and
+appended chat tail (after line 15000); docs separately. No production changes
+or push. Preserve foreign AGENTS/.codex and 441 historical chat additions.
+
+### 2026-10-12 — Codex — generic-return acceptance and joint-partial probe
+
+2149076 is terminal exited/success/0, peak 833495040 bytes. Frozen test hash
+2508bf65481b1c6bd91d71f8c20c6e6134f631e63726a3c23253b364c0a7b572 is unchanged.
+Both full suites (nineteen DWARF fixtures each), strict Clippy and both ordinary
+228-program corpora pass. AST/label refresh preserves 5371 nodes, 15315 edges,
+254 communities; existing vendored extractor warnings remain. Commit only
+owned generic-return test extension, TODO and appended chat; sibling docs
+separately. No production signature fix, and no push.
+Prepared joint_partial_return.siox/.py in the existing diagnostic cache for
+the next named TODO gap: two jointly consumed nested-call fields with an unused
+middle abort field. The probe counts source stops and inspects retained return
+fragments at completion; missing fields must stay unavailable. It is not yet
+evidence of a failure. Run it after the accepted regression/docs commits, then
+trace the aggregate coverage/demand proof before any production edit. Goal active.
