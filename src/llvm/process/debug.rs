@@ -78,11 +78,15 @@ pub(in crate::llvm) struct DebugInfo<'ctx, 's> {
     refresh: Cell<Option<FunctionValue<'ctx>>>,
     /// Calls in otherwise-pure selections still need taken-path source ranges.
     value_activity: Vec<bool>,
+    /// Only bodies containing runtime calls need execution-context variants.
+    value_effects: Vec<bool>,
     /// Only multiply-consumed source calls need readiness across branch joins.
     reused_calls: std::collections::HashSet<ProcessValueId>,
     aggregate_returns: HashMap<ProcessValueId, AggregateReturn>,
     aggregate_members: HashMap<ProcessValueId, (ProcessValueId, u32, u32)>,
-    value_functions: RefCell<HashMap<ValueFunctionKey, ValueFunction<'ctx>>>,
+    // Compatibility helpers capture hardware effects; procedural CFG bodies
+    // execute them directly. Their native specializations cannot be shared.
+    value_functions: RefCell<HashMap<(ValueFunctionKey, bool), ValueFunction<'ctx>>>,
     /// Reversible native register packing, never executable inspection storage.
     register_returns: RefCell<HashMap<FunctionValue<'ctx>, SourceLayout>>,
     hardware_processes: HashMap<u32, siox::ir::ProcessId>,
@@ -144,21 +148,30 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
         module.set_triple(&machine.get_triple());
         module.set_data_layout(&target.get_data_layout());
         let mut value_activity = Vec::with_capacity(design.process_ir.values.len());
+        let mut value_effects = Vec::with_capacity(design.process_ir.values.len());
         let mut uses = vec![0u8; design.process_ir.values.len()];
         for value in &design.process_ir.values {
+            let mut activity = matches!(value.kind, ProcessValueKind::InlineCall { .. });
+            let mut effects = matches!(
+                value.kind,
+                ProcessValueKind::ForeignCall { .. } | ProcessValueKind::HostCall { .. }
+            );
             crate::ir::for_each_process_value_dependency(&value.kind, |id| {
                 if let Some(count) = uses.get_mut(id.0 as usize) {
                     *count = count.saturating_add(1);
                 }
+                activity |= value_activity.get(id.0 as usize).copied().unwrap_or(false);
+                effects |= value_effects.get(id.0 as usize).copied().unwrap_or(false);
             });
-            value_activity.push(
-                matches!(value.kind, ProcessValueKind::InlineCall { .. })
-                    || crate::ir::process::process_value_dependencies(&value.kind)
-                        .iter()
-                        .any(|id| value_activity.get(id.0 as usize).copied().unwrap_or(false)),
-            );
+            value_activity.push(activity);
+            value_effects.push(effects);
         }
         let (aggregate_returns, aggregate_members) = inline_values::aggregate_returns(design);
+        for (member, (leader, _, _)) in &aggregate_members {
+            // The leader's native body emits all grouped fields, not merely
+            // its original operand. Include effects from every retained piece.
+            value_effects[leader.0 as usize] |= value_effects[member.0 as usize];
+        }
         let reused_calls = design
             .process_ir
             .values
@@ -188,6 +201,7 @@ impl<'ctx, 's> DebugInfo<'ctx, 's> {
             string_mirrors: RefCell::new(Vec::new()),
             refresh: Cell::new(None),
             value_activity,
+            value_effects,
             reused_calls,
             aggregate_returns,
             aggregate_members,

@@ -16426,3 +16426,97 @@ TODO and appended chat tail; sibling architecture/testing docs separately.
 No push. Next own aggregate_returns / joint_aggregate_demand and their callers
 for checked/effectful source boundaries, after tracing actual evaluation order.
 The full DWARF objective stays active.
+
+### 2026-10-11 — Codex — checked/effectful aggregate ordering
+
+Own debug/inline_values.rs aggregate_returns / joint_aggregate_demand and
+tests/debug_info.rs for the next DWARF batch. First reproduce foreign-call
+and checked-index aggregate field evaluation order in ordinary/debug binaries;
+only group when executable demand and observable ordering are preserved.
+Division is total in the common emitter, so its conservative exclusion also
+needs review. Preserve foreign AGENTS/.codex and historical chat insertions.
+No guarded job is running; HEAD a2cd7bf is the verified baseline. No push.
+
+The changing-input native probe exposes a shared DWARF function-cache bug:
+compatibility hardware emission builds a body with captured foreign calls,
+then procedural CFG emission reuses it despite having a different execution
+context. Foreign results become stale after the input changes. Own debug.rs
+cache-key typing as well: separate native specializations by that existing
+emitter flag rather than introducing execution wrappers or a new runtime.
+An independent ordinary-build probe also latches aggregate-return array checks
+from an untaken hardware call; record that lowering gap rather than claim it
+is a DWARF-only regression. Current probes use valid initial indices for parity.
+
+Focused regression 1127794 passed the order/demand unit, the new native/GDB
+fixture and strict all-target/all-feature Clippy. Expanded regression 1136365
+passed default and bitpack, including an effectful sibling beside a pure group
+leader. Effect-free bodies still share their native cache entry; only bodies
+whose retained executable pieces contain runtime effects distinguish helper
+capture from direct CFG execution. Actual source calls, return fragments,
+transient input values, foreign stdout order/counts, VCD bytes, first bounds
+diagnostics and untaken abort fields are checked under both inline hints.
+Record the independently reproduced inactive aggregate bounds-prefix issue in
+TODO's IR section; it is not fixed by this DWARF transport batch. Own sibling
+architecture/testing doc updates too. Full goal still needs independently
+demanded/selected grouping, remaining supported signatures/companions and ABIs.
+Launch a frozen full acceptance next; preserve all foreign dirt and do not push.
+
+Frozen source hash 4cbd8037fb4b6cd163e76a3db38628aea06f58952258e6802d6fc5e170234152.
+Full acceptance is live as siox-job-3000-1791729520149903661-1139935.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791729520149903661-1139935.log.
+Poll this exact unit until terminal; no Rust edits or overlapping heavy jobs.
+Own pending debug.rs, debug/inline_values.rs, debug_info.rs, TODO and this chat
+tail, plus sibling architecture/testing docs. Corpus is clean at 05278a8d.
+Commit only after full terminal success and unchanged hash. Goal remains active.
+
+1139935 failed the mixed-return debugger fixture in both default/bitpack:
+the effectful ordering proof was also applied to effect-free nested calls,
+rejecting the existing SubArray consumer's opposite pure branch orders and
+turning its supported whole native return into partial inline frames. Fourteen
+other debugger fixtures pass per mode; strict Clippy passes. Stopped this owned
+failed gate during ordinary corpus rather than waste the remaining stages;
+do not claim corpus/graph/smoke acceptance from it. Correct the classification:
+effect-free nested calls still need joint demand, while checks/effects also
+need observable order proof. Re-run the unchanged mixed-return regression and
+the effectful fixture, then a new complete frozen gate. No commit yet.
+
+1166581 is terminal exited/success/0, peak 1209143296 bytes. All fifteen DWARF
+fixtures pass in default/bitpack, including the unchanged opposite-order pure
+SubArray ABI check; strict all-target/all-feature Clippy passes. Checks/effects
+retain the new order proof, while effect-free nested calls retain their existing
+joint-demand proof. The new regression still checks whole checked/foreign
+returns, intervening-effect fragments, short circuit, pure-leader/effectful
+sibling cache keys, changing inputs and native diagnostic/output parity. Freeze
+the corrected source and launch a new complete gate; the cancelled 1139935 run
+is not acceptance evidence. Full goal remains active, no push.
+
+Corrected frozen hash ea3df29260b95f45310fba13a5933a70e3ca011d2058a7938235a4a77bba7356.
+Acceptance is live as siox-job-3000-1791730012479261720-1175773.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791730012479261720-1175773.log.
+Poll this service to terminal; no Rust edits or overlapping jobs. Commit only
+after all full suites/corpora/native GDB smokes and graph refresh pass, followed
+by a source-hash check. Preserve foreign AGENTS/.codex and historical chat edits.
+
+While 1175773 runs, read the existing wide-scalar fixture and effect cache
+lifetimes. Prepared reused_effect.siox in the disk-cache probe directory, not
+in the frozen source hash. It reuses a foreign-returning field on both sides
+of another foreign call. The common ForeignCall cache survives state clears,
+but a native source body's effect cache is local to that body; verify actual
+stdout parity before claiming repeated effect transport works. This is a
+pending probe, not a confirmed failure. Wide scalar finish currently uses the
+real caller PC to avoid GDB's unsupported classifier; any inline-frame extension
+must keep genuinely narrowed result bits unavailable rather than fabricate a
+wide snapshot. No compiler edits or extra jobs during the current full gate.
+
+### 2026-10-11 — Codex — ordered checked/effectful full acceptance
+
+1175773 is terminal exited/success/0, peak 1612709888 bytes. Frozen hash
+ea3df29260b95f45310fba13a5933a70e3ca011d2058a7938235a4a77bba7356 is unchanged.
+Both full suites, fifteen DWARF fixtures per packing mode, strict Clippy,
+frontend/artifact checks, four 228-program corpora and four native FIFO/wide
+GDB/VCD smokes pass. AST graph refresh: 5367 nodes, 15303 edges, 252 communities;
+existing vendored extractor warnings persist. Commit only owned debug cache/
+ordering code, regression, TODO and appended chat tail; sibling architecture/
+testing docs separately. Preserve foreign AGENTS/.codex and 441 historical
+chat insertions. No push. Next execute the prepared repeated-effect probe before
+choosing any additional cache/transport change. The full DWARF goal stays active.

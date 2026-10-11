@@ -86,6 +86,14 @@ listed under LLVM and Output below.
   source return ABI is not the failure. Trace field/index selection and signed
   labels through SourceValues, preserve the declared real leaf format, and
   verify native arithmetic and waveform parity rather than inspection alone.
+- 🔴 **Inactive aggregate-return array checks.** A hardware function returning
+  a struct with runtime-indexed array fields can latch bounds failures even
+  when its caller is in an untaken conditional. Ordinary and DWARF native
+  builds both reproduce this with index 999 on a declared two-element array;
+  equivalent scalar-return array calls already have inactive-path coverage.
+  Keep SourceValues aggregate field/check prefixes under the caller's active
+  predicate, preserving first-failure source order. This is a lowering gap,
+  separate from the debug return transport and its active-call parity checks.
 - 🔴 **Hardware signed widening/aggregate-field equality.** Comparing a returned
   nested `signed[81]` field with the same negative source argument (`-7`)
   selects the unequal branch in both ordinary and DWARF native builds, even though actual
@@ -194,8 +202,19 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   executable use first crosses a value that demands every retained field.
   Whole-value conditionals and provably valid constant array selectors preserve
   that proof; separate field uses and unknown/invalid selectors cannot justify
-  eager grouping. Complete demand-preserving grouping for effectful/checked,
-  independently selected nested-call and partial aggregate returns; no debug
+  eager grouping. Complete checked/effectful aggregates now share a native
+  boundary when joint demand also proves an uninterrupted first-use field
+  order. Construction order is not assumed to be consumption order; an
+  intervening call/check/mutable read or conflicting branch orders keeps the
+  original leaf evaluations. One-bit and/or RHSs are not unconditional demand.
+  Total division can be grouped without introducing checks. Native/GDB coverage
+  includes opposite field orders, an intervening putchar call, first-failure
+  bounds diagnostics, zero divisors, unavailable short-circuited abort fields,
+  changing inputs, exact call counts and stdout/VCD parity under both hints.
+  Effectful debug bodies distinguish compatibility-helper capture from direct
+  CFG execution, preventing stale foreign-call results; effect-free native
+  bodies remain shared across those contexts. Complete grouping for separately
+  demanded/selected nested-call and partial aggregate returns; no debug
   boundary may force an unconsumed field or invent a zero for a pruned member.
   Partial leaf evaluations now retain the source function/type as inline
   frames over their existing native leaf bodies, with fragmented `$return`

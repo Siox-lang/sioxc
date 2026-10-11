@@ -241,17 +241,22 @@ pub(super) fn aggregate_returns(
     design: &Design,
 ) -> (HashMap<ProcessValueId, AggregateReturn>, AggregateMembers) {
     let mut pure = Vec::with_capacity(design.process_ir.values.len());
-    let mut nested_pure = Vec::with_capacity(design.process_ir.values.len());
+    let mut emittable = Vec::with_capacity(design.process_ir.values.len());
+    let mut needs_order = Vec::with_capacity(design.process_ir.values.len());
     let mut groups: HashMap<_, Vec<_>> = HashMap::new();
     for (index, value) in design.process_ir.values.iter().enumerate() {
-        // ponytail: checked/effectful leaves still require demand-preserving
-        // transport; grouping must not introduce effects or source stops.
+        // Total arithmetic may be grouped freely. Effectful calls and checks
+        // need joint demand and an uninterrupted executable field order.
         let safe = matches!(
             value.kind,
             ProcessValueKind::Number(_)
                 | ProcessValueKind::BitString { .. }
                 | ProcessValueKind::Char(_)
                 | ProcessValueKind::Signal { .. }
+                | ProcessValueKind::Parameter { .. }
+                | ProcessValueKind::Array(_)
+                | ProcessValueKind::Construct { .. }
+                | ProcessValueKind::Field { .. }
                 | ProcessValueKind::RawResize { .. }
                 | ProcessValueKind::BitSlice { .. }
                 | ProcessValueKind::PackedSlice { .. }
@@ -263,19 +268,37 @@ pub(super) fn aggregate_returns(
         ) || matches!(
             value.kind,
             ProcessValueKind::Binary { ref operation, .. }
-                if !matches!(operation,
-                    ProcessBinaryOp::Div | ProcessBinaryOp::SignedDiv | ProcessBinaryOp::Custom(_))
+                if !matches!(operation, ProcessBinaryOp::Custom(_))
         );
         pure.push(
             safe && !siox::ir::any_process_value_dependency(&value.kind, |id| {
                 !pure.get(id.0 as usize).copied().unwrap_or(false)
             }),
         );
-        nested_pure.push(
-            (safe || matches!(value.kind, ProcessValueKind::InlineCall { .. }))
+        emittable.push(
+            (safe
+                || matches!(
+                    value.kind,
+                    ProcessValueKind::InlineCall { .. }
+                        | ProcessValueKind::CheckedIndex { .. }
+                        | ProcessValueKind::Index { .. }
+                        | ProcessValueKind::ForeignCall { .. }
+                        | ProcessValueKind::HostCall { .. }
+                ))
                 && !siox::ir::any_process_value_dependency(&value.kind, |id| {
-                    !nested_pure.get(id.0 as usize).copied().unwrap_or(false)
+                    !emittable.get(id.0 as usize).copied().unwrap_or(false)
                 }),
+        );
+        needs_order.push(
+            matches!(
+                value.kind,
+                ProcessValueKind::Index { .. }
+                    | ProcessValueKind::CheckedIndex { .. }
+                    | ProcessValueKind::ForeignCall { .. }
+                    | ProcessValueKind::HostCall { .. }
+            ) || siox::ir::any_process_value_dependency(&value.kind, |id| {
+                needs_order.get(id.0 as usize).copied().unwrap_or(false)
+            }),
         );
         if let ProcessValueKind::InlineCall { source, .. } = &value.kind {
             if let Some((expansion, _)) = &source.aggregate {
@@ -313,13 +336,13 @@ pub(super) fn aggregate_returns(
                     format!(".{path}")
                 };
                 let selected = projection_slice(layout, &projection)?;
-                (nested_pure[operand.0 as usize]
+                (emittable[operand.0 as usize]
                     && design.process_ir.values[operand.0 as usize].bit_width
                         == Some(selected.width))
                 .then(|| (*operand, selected.offset, selected.layout.clone()))
             })
             .collect::<Option<Vec<_>>>();
-        let Some(pieces) = pieces else { continue };
+        let Some(mut pieces) = pieces else { continue };
         // A packed native return cannot describe missing fields as unavailable.
         // Keep partial returns leaf-backed rather than inventing zero values.
         let mut regions = pieces
@@ -333,15 +356,40 @@ pub(super) fn aggregate_returns(
         if covered != layout_width(layout) {
             continue;
         }
-        if pieces
+        let order = if pieces
             .iter()
             .any(|(operand, _, _)| !pure[operand.0 as usize])
-            && !joint_aggregate_demand(design, &group)
         {
-            continue;
+            if !joint_aggregate_demand(design, &group) {
+                continue;
+            }
+            if pieces
+                .iter()
+                .any(|(operand, _, _)| needs_order[operand.0 as usize])
+            {
+                let Some(order) = aggregate_evaluation_order(design, &group) else {
+                    continue;
+                };
+                Some(order)
+            } else {
+                // Effect-free nested calls still execute exactly once under
+                // joint demand; opposite pure branch orders need no effect
+                // transport and retain their complete source return ABI.
+                None
+            }
+        } else {
+            None
+        };
+        for (id, (_, offset, layout)) in group.iter().zip(&pieces) {
+            members.insert(*id, (leader, *offset, layout_width(layout).unwrap()));
         }
-        for (id, (_, offset, layout)) in group.into_iter().zip(&pieces) {
-            members.insert(id, (leader, *offset, layout_width(layout).unwrap()));
+        if let Some(order) = order {
+            // Source construction order need not be consumer order. Preserve
+            // the original field offsets while emitting in first-use order.
+            pieces = order
+                .iter()
+                .map(|id| pieces[group.iter().position(|member| member == id).unwrap()].clone())
+                .collect();
         }
         returns.insert(
             leader,
@@ -394,6 +442,24 @@ fn constant_selector(design: &Design, id: ProcessValueId) -> Option<i128> {
     let width = value.bit_width?;
     (folded >= 0 && (1..=64).contains(&width) && folded < 1i128.checked_shl(width)?)
         .then_some(folded)
+}
+
+/// The common emitter guards activity-sensitive one-bit `and` / `or` RHSs.
+/// A mathematical dependency is therefore not necessarily executable demand.
+fn eager_binary_right(
+    design: &Design,
+    operation: &ProcessBinaryOp,
+    left: ProcessValueId,
+    right: ProcessValueId,
+) -> bool {
+    if !matches!(operation, ProcessBinaryOp::And | ProcessBinaryOp::Or)
+        || design.process_ir.values[left.0 as usize].bit_width != Some(1)
+        || design.process_ir.values[right.0 as usize].bit_width != Some(1)
+    {
+        return true;
+    }
+    constant_selector(design, left)
+        .is_some_and(|value| (value != 0) == matches!(operation, ProcessBinaryOp::And))
 }
 
 /// Every path to a field must first cross a value demanding all fields. This
@@ -479,13 +545,26 @@ fn joint_aggregate_demand(design: &Design, group: &[ProcessValueId]) -> bool {
                 | ProcessValueKind::RawResize { .. }
                 | ProcessValueKind::BitSlice { .. }
                 | ProcessValueKind::PackedSlice { .. }
-                | ProcessValueKind::Unary { .. }
-                | ProcessValueKind::Binary { .. } => {
+                | ProcessValueKind::Unary { .. } => {
                     siox::ir::for_each_process_value_dependency(&value.kind, |child| {
                         if let Some(child) = required.get(&child) {
                             demand.extend(child);
                         }
                     });
+                }
+                ProcessValueKind::Binary {
+                    operation,
+                    left,
+                    right,
+                } => {
+                    if let Some(left) = required.get(left) {
+                        demand.extend(left);
+                    }
+                    if eager_binary_right(design, operation, *left, *right) {
+                        if let Some(right) = required.get(right) {
+                            demand.extend(right);
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -524,6 +603,126 @@ fn joint_aggregate_demand(design: &Design, group: &[ProcessValueId]) -> bool {
                     .into_iter()
                     .all(protected)
             })
+}
+
+/// Moving later fields into the first field's native body must not cross a
+/// check, call, or mutable read. Joint demand alone does not prove this:
+/// `(pair.left + foreign()) + pair.right` demands both but cannot be grouped.
+fn aggregate_evaluation_order(
+    design: &Design,
+    group: &[ProcessValueId],
+) -> Option<Vec<ProcessValueId>> {
+    #[derive(Clone, Default)]
+    struct Order {
+        fields: Vec<ProcessValueId>,
+        before: bool,
+        after: bool,
+    }
+    impl Order {
+        fn append(&mut self, other: &Self) -> Option<()> {
+            if !self.fields.is_empty() && !other.fields.is_empty() && (self.after || other.before) {
+                return None;
+            }
+            if self.fields.is_empty() {
+                self.before |= other.before;
+            }
+            self.after = if other.fields.is_empty() {
+                self.after || other.before || other.after
+            } else {
+                other.after
+            };
+            for field in &other.fields {
+                if !self.fields.contains(field) {
+                    self.fields.push(*field);
+                }
+            }
+            Some(())
+        }
+    }
+    // ponytail: one bounded field-order summary per DAG value; branch-specific
+    // native bodies are needed if different paths demand different orders.
+    let mut orders: Vec<Order> = Vec::with_capacity(design.process_ir.values.len());
+    let mut complete = None;
+    for (index, value) in design.process_ir.values.iter().enumerate() {
+        let id = ProcessValueId(index as u32);
+        let mut order = Order::default();
+        if group.contains(&id) {
+            // Its internal effects stay inside this field, in their old order.
+            order.fields.push(id);
+        } else if let ProcessValueKind::Select {
+            condition,
+            then_value,
+            else_value,
+        } = value.kind
+        {
+            order = orders[condition.0 as usize].clone();
+            let then = &orders[then_value.0 as usize];
+            let els = &orders[else_value.0 as usize];
+            let arm = if let Some(condition) = constant_selector(design, condition) {
+                if condition != 0 { then } else { els }.clone()
+            } else {
+                if !then.fields.is_empty() && !els.fields.is_empty() && then.fields != els.fields {
+                    return None;
+                }
+                let mut arm = if then.fields.is_empty() { els } else { then }.clone();
+                arm.before |= then.before || els.before;
+                arm.after |= then.after || els.after;
+                arm
+            };
+            order.append(&arm)?;
+        } else {
+            let mut valid = true;
+            siox::ir::for_each_process_value_dependency(&value.kind, |child| {
+                valid &= order.append(&orders[child.0 as usize]).is_some();
+            });
+            if !valid {
+                return None;
+            }
+            let transparent = matches!(
+                value.kind,
+                ProcessValueKind::Number(_)
+                    | ProcessValueKind::BitString { .. }
+                    | ProcessValueKind::Char(_)
+                    | ProcessValueKind::Parameter { .. }
+                    | ProcessValueKind::RawResize { .. }
+                    | ProcessValueKind::BitSlice { .. }
+                    | ProcessValueKind::PackedSlice { .. }
+                    | ProcessValueKind::Unary {
+                        operation: ProcessUnaryOp::Neg | ProcessUnaryOp::Not,
+                        ..
+                    }
+            ) || matches!(value.kind, ProcessValueKind::Binary { ref operation, .. }
+                if !matches!(operation, ProcessBinaryOp::Custom(_)));
+            if !transparent {
+                if !order.fields.is_empty()
+                    && !matches!(
+                        value.kind,
+                        ProcessValueKind::InlineCall { .. }
+                            | ProcessValueKind::CheckedIndex { .. }
+                            | ProcessValueKind::ForeignCall { .. }
+                            | ProcessValueKind::HostCall { .. }
+                    )
+                {
+                    return None;
+                }
+                order.after = true;
+                if order.fields.is_empty() {
+                    order.before = true;
+                }
+            }
+        }
+        if order.fields.len() == group.len() {
+            if complete
+                .as_ref()
+                .is_some_and(|other| *other != order.fields)
+            {
+                return None;
+            }
+            complete = Some(order.fields.clone());
+        }
+        orders.push(order);
+    }
+    complete
 }
 
 /// Use the source ABI only at the native boundary. The common emitter
@@ -1248,7 +1447,11 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
         );
     }
     let key = (id, width, signed, layout.cloned());
-    let existing = debug.value_functions.borrow().get(&key).cloned();
+    let function_key = (
+        key.clone(),
+        cache.hardware_calls && debug.value_effects[id.0 as usize],
+    );
+    let existing = debug.value_functions.borrow().get(&function_key).cloned();
     let (function, formats, literals) = if let Some(existing) = existing {
         existing
     } else {
@@ -1331,7 +1534,7 @@ pub(in crate::llvm::process) fn inline_value<'ctx>(
         debug
             .value_functions
             .borrow_mut()
-            .insert(key.clone(), (function, formats.clone(), literals.clone()));
+            .insert(function_key, (function, formats.clone(), literals.clone()));
         (function, formats, literals)
     };
     // Metadata never requests arguments. Emit only formats actually consumed
@@ -1421,7 +1624,11 @@ pub(in crate::llvm::process) fn literal_value<'ctx>(
         return Some(());
     }
     let key = (id, 0, false, None);
-    let existing = debug.value_functions.borrow().get(&key).cloned();
+    let function_key = (
+        key.clone(),
+        cache.hardware_calls && debug.value_effects[id.0 as usize],
+    );
+    let existing = debug.value_functions.borrow().get(&function_key).cloned();
     let (function, _, literals) = if let Some(existing) = existing {
         existing
     } else {
@@ -1463,7 +1670,7 @@ pub(in crate::llvm::process) fn literal_value<'ctx>(
         debug
             .value_functions
             .borrow_mut()
-            .insert(key, entry.clone());
+            .insert(function_key, entry.clone());
         entry
     };
     call_value(
@@ -2717,6 +2924,105 @@ mod demand_tests {
             constant_integer(&design, ProcessValueId(1), context.i8_type()),
             Some(context.i8_type().const_int(7, false))
         );
+    }
+
+    #[test]
+    fn aggregate_order_keeps_checks_calls_and_reads_between_fields() {
+        let span = Span::new(FileId(0), 0..1);
+        let node = |kind| siox::ir::ProcessValue {
+            span,
+            ty: None,
+            bit_width: Some(8),
+            kind,
+        };
+        let add = |left, right| {
+            node(ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Add,
+                left: ProcessValueId(left),
+                right: ProcessValueId(right),
+            })
+        };
+        let mut design = Design::default();
+        design.process_ir.values = vec![
+            node(ProcessValueKind::Local {
+                process: siox::ir::ProcessId(0),
+                local: siox::ir::ProcessLocalId(0),
+            }),
+            node(ProcessValueKind::Number(ProcessNumber::Integer(vec![1]))),
+            node(ProcessValueKind::Number(ProcessNumber::Integer(vec![2]))),
+            add(2, 1),
+        ];
+        let fields = [ProcessValueId(1), ProcessValueId(2)];
+        let reverse = vec![fields[1], fields[0]];
+        assert!(joint_aggregate_demand(&design, &fields));
+        assert_eq!(
+            aggregate_evaluation_order(&design, &fields),
+            Some(reverse.clone())
+        );
+        // A whole-value conditional can guard the complete ordered call.
+        design
+            .process_ir
+            .values
+            .push(node(ProcessValueKind::Select {
+                condition: ProcessValueId(0),
+                then_value: ProcessValueId(3),
+                else_value: ProcessValueId(0),
+            }));
+        assert_eq!(aggregate_evaluation_order(&design, &fields), Some(reverse));
+        design.process_ir.values.pop();
+        // Different first-use orders need different native bodies, not one
+        // eager order chosen from the arena or from field declaration order.
+        design.process_ir.values.push(add(1, 2));
+        assert_eq!(aggregate_evaluation_order(&design, &fields), None);
+        design.process_ir.values.pop();
+        for barrier in [
+            ProcessValueKind::ForeignCall {
+                name: "putchar".into(),
+                arguments: vec![ProcessValueId(0)],
+                float_arguments: vec![false],
+                integer_arguments: vec![true],
+                float_result: false,
+                integer_result: true,
+            },
+            ProcessValueKind::CheckedIndex {
+                index: ProcessValueId(0),
+                valid: ProcessValueId(0),
+                left: 0,
+                right: 1,
+                span,
+            },
+            ProcessValueKind::Local {
+                process: siox::ir::ProcessId(0),
+                local: siox::ir::ProcessLocalId(0),
+            },
+        ] {
+            design.process_ir.values.truncate(3);
+            design.process_ir.values.push(node(barrier));
+            design.process_ir.values.push(add(1, 3));
+            design.process_ir.values.push(add(4, 2));
+            assert!(joint_aggregate_demand(&design, &fields));
+            assert_eq!(aggregate_evaluation_order(&design, &fields), None);
+        }
+        // One-bit `and` / `or` can skip a call in the right field entirely.
+        design.process_ir.values.truncate(3);
+        design.process_ir.values[1] = node(ProcessValueKind::Local {
+            process: siox::ir::ProcessId(0),
+            local: siox::ir::ProcessLocalId(0),
+        });
+        design.process_ir.values[1].bit_width = Some(1);
+        design.process_ir.values[2].bit_width = Some(1);
+        for operation in [ProcessBinaryOp::And, ProcessBinaryOp::Or] {
+            design.process_ir.values.truncate(3);
+            design
+                .process_ir
+                .values
+                .push(node(ProcessValueKind::Binary {
+                    operation,
+                    left: fields[0],
+                    right: fields[1],
+                }));
+            assert!(!joint_aggregate_demand(&design, &fields));
+        }
     }
 
     #[test]

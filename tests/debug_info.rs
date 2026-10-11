@@ -2095,6 +2095,298 @@ assert {{({first}, 255), ({second}, 17)}} <= set(seen['hardware']), seen
 }
 
 #[test]
+fn checked_and_effectful_aggregates_preserve_demand_and_order() {
+    let directory = std::env::temp_dir().join(format!("siox_dwarf_ordered_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("ordered.siox");
+    let text = r#"module dwarf_ordered_aggregate;
+extern "C" { fn putchar(value: integer) -> integer; fn abort() -> integer; }
+struct Pair { pub left: integer, pub right: integer }
+struct Flags { pub left: Bool, pub right: Bool }
+#[inline(HINT)]
+fn effects(value: integer) -> Pair {
+    return Pair { .right = putchar(value + 1), .left = putchar(value) };
+}
+#[inline(HINT)]
+fn mixed_effects(value: integer) -> Pair {
+    return Pair { .left = value, .right = putchar(value + 1) };
+}
+#[inline(HINT)]
+fn mixed(value: integer) -> integer {
+    let pair: Pair = mixed_effects(value);
+    return pair.left + pair.right;
+}
+#[inline(HINT)]
+fn forward(value: integer) -> integer {
+    let pair: Pair = effects(value);
+    return pair.left + pair.right;
+}
+#[inline(HINT)]
+fn reverse(value: integer) -> integer {
+    let pair: Pair = effects(value);
+    return pair.right + pair.left;
+}
+#[inline(HINT)]
+fn between(value: integer) -> integer {
+    let pair: Pair = effects(value);
+    return pair.left + putchar(value + 2) + pair.right;
+}
+#[inline(HINT)]
+fn checked(value: integer[2], index: integer) -> Pair {
+    return Pair {
+        .right = value[1 - index],
+        .left = value[index]
+    };
+}
+#[inline(HINT)]
+fn checked_total(value: integer, index: integer, enabled: Bool) -> integer {
+    let pair: Pair = checked([value, value + 3], index);
+    return if enabled { pair.left + pair.right } else { 0 };
+}
+#[inline(HINT)]
+fn quotients(value: integer, divisor: integer) -> Pair {
+    return Pair { .right = 10 / (divisor - 1), .left = value / divisor };
+}
+#[inline(HINT)]
+fn quotient_total(value: integer, divisor: integer) -> integer {
+    let pair: Pair = quotients(value, divisor);
+    return pair.left + pair.right;
+}
+#[inline(HINT)]
+fn flags(value: integer) -> Flags {
+    return Flags { .left = value < 0, .right = abort() != 0 };
+}
+#[inline(HINT)]
+fn flags_total(value: integer) -> Bool {
+    let pair: Flags = flags(value);
+    return pair.left and pair.right;
+}
+entity E { value: integer in, index: integer in, divisor: integer in, enabled: Bool in,
+    first: integer out, second: integer out, middle: integer out, mixed_sum: integer out,
+    checked_sum: integer out, quotient: integer out, flag: Bool out }
+impl E {
+    first = if enabled { forward(value + 65) } else { 0 };
+    second = if enabled { reverse(value + 75) } else { 0 };
+    middle = if enabled { between(value + 85) } else { 0 };
+    mixed_sum = if enabled { mixed(value + 105) } else { 0 };
+    checked_sum = if enabled { checked_total(value, index, enabled) } else { 0 };
+    quotient = quotient_total(value, divisor);
+    flag = flags_total(value);
+}
+#[test] entity T {}
+impl T {
+    let value: integer = 0;
+    let index: integer = 0;
+    let divisor: integer = 0;
+    let enabled: Bool = false;
+    let e: E = { .value = value, .index = index, .divisor = divisor, .enabled = enabled };
+    stimulus: process {
+        await 1ns;
+        assert!(e.first == 0 and e.second == 0 and e.middle == 0 and e.mixed_sum == 0 and e.checked_sum == 0,
+            "untaken foreign calls and checks");
+        assert!(e.quotient == -10 and not e.flag, "total division and short circuit");
+        enabled = true; index = 0; divisor = 1; await 1ns;
+        assert!(e.first == 131 and e.second == 151 and e.middle == 258 and e.checked_sum == 3,
+            "ordered aggregate results");
+        assert!(e.quotient == 0 and not e.flag, "zero sibling divisor");
+        assert!(e.mixed_sum == 211, "effectful sibling beside pure group leader");
+        value = 10; index = 1; divisor = 2; await 1ns;
+        assert!(e.first == 151 and e.second == 171 and e.middle == 288 and e.checked_sum == 23,
+            "changing aggregate results: {} {} {} {}", e.first, e.second, e.middle, e.checked_sum);
+        assert!(e.quotient == 15 and not e.flag, "nonzero division");
+        assert!(e.mixed_sum == 231, "mixed effectful return changes with input");
+    }
+}"#;
+    let python = r#"import gdb
+from collections import Counter
+
+gdb.execute('set disable-randomization off')
+stops = [gdb.Breakpoint('dwarf_ordered_aggregate::' + name)
+         for name in ['effects', 'mixed_effects', 'checked', 'quotients', 'flags']]
+gdb.execute('run')
+seen = []
+checked_seen = []
+quotient_seen = []
+while gdb.selected_thread() is not None:
+    frame = gdb.selected_frame()
+    name = frame.name().rsplit('::', 1)[-1]
+    value = int(frame.read_var('value')[0] if name == 'checked' else frame.read_var('value'))
+    index = int(frame.read_var('index')) if name == 'checked' else None
+    divisor = int(frame.read_var('divisor')) if name == 'quotients' else None
+    caller_frame = frame.older()
+    while caller_frame.name().startswith('<'):
+        caller_frame = caller_frame.older()
+    caller = caller_frame.name().rsplit('::', 1)[-1]
+    kind = frame.type()
+    seen.append((name, value, caller, kind))
+    if name in ['effects', 'mixed_effects']:
+        assert kind == (gdb.INLINE_FRAME if caller == 'between' else gdb.NORMAL_FRAME), (caller, kind)
+    elif name == 'checked':
+        assert kind == gdb.NORMAL_FRAME, kind
+        checked_seen.append((value, index))
+    elif name == 'quotients':
+        assert kind == gdb.NORMAL_FRAME, kind
+        quotient_seen.append((value, divisor))
+    else:
+        assert kind == gdb.INLINE_FRAME, kind
+    if kind == gdb.NORMAL_FRAME:
+        for stop in stops:
+            stop.enabled = False
+        gdb.execute('finish', to_string=True)
+        result = gdb.history(0)
+        if name in ['effects', 'mixed_effects']:
+            expected = (value, value + 1)
+        elif name == 'checked':
+            expected = (value + (3 if index else 0), value + (0 if index else 3))
+        elif name == 'quotients':
+            expected = (0 if divisor == 0 else int(value / divisor),
+                        0 if divisor == 1 else int(10 / (divisor - 1)))
+        else:
+            raise AssertionError((name, kind))
+        assert result.type.name == 'Pair', str(result.type)
+        assert tuple(int(result[field]) for field in ['left', 'right']) == expected, (name, value, str(result))
+        for stop in stops:
+            stop.enabled = True
+    else:
+        assert kind == gdb.INLINE_FRAME, kind
+        assert name in ['effects', 'flags'], (name, kind)
+        for stop in stops:
+            stop.enabled = False
+        for _ in range(300):
+            frame = gdb.selected_frame()
+            assert frame.name().rsplit('::', 1)[-1] == name, frame.name()
+            try:
+                result = frame.read_var('$return')
+                retained = [field for field in ['left', 'right'] if not result[field].is_optimized_out]
+                if len(retained) == 1:
+                    field = retained[0]
+                    expected = 0 if name == 'flags' else value + (field == 'right')
+                    if int(result[field]) == expected:
+                        break
+            except (gdb.error, ValueError):
+                pass
+            gdb.execute('nexti', to_string=True)
+        else:
+            raise AssertionError('missing retained return fragment')
+        assert 'Value returned is' not in gdb.execute('finish', to_string=True)
+        for stop in stops:
+            stop.enabled = True
+    gdb.execute('continue', to_string=True)
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+assert Counter(seen) == Counter([
+    ('mixed_effects', 105, 'mixed', gdb.NORMAL_FRAME),
+    ('mixed_effects', 115, 'mixed', gdb.NORMAL_FRAME),
+    ('effects', 65, 'forward', gdb.NORMAL_FRAME),
+    ('effects', 75, 'forward', gdb.NORMAL_FRAME),
+    ('effects', 75, 'reverse', gdb.NORMAL_FRAME),
+    ('effects', 85, 'reverse', gdb.NORMAL_FRAME),
+    ('effects', 85, 'between', gdb.INLINE_FRAME),
+    ('effects', 85, 'between', gdb.INLINE_FRAME),
+    ('effects', 95, 'between', gdb.INLINE_FRAME),
+    ('effects', 95, 'between', gdb.INLINE_FRAME),
+    ('checked', 0, 'checked_total', gdb.NORMAL_FRAME),
+    ('checked', 10, 'checked_total', gdb.NORMAL_FRAME),
+    ('checked', 10, 'checked_total', gdb.NORMAL_FRAME),
+    ('quotients', 0, 'quotient_total', gdb.NORMAL_FRAME),
+    ('quotients', 0, 'quotient_total', gdb.NORMAL_FRAME),
+    ('quotients', 10, 'quotient_total', gdb.NORMAL_FRAME),
+    ('quotients', 10, 'quotient_total', gdb.NORMAL_FRAME),
+    ('flags', 0, 'flags_total', gdb.INLINE_FRAME),
+    ('flags', 10, 'flags_total', gdb.INLINE_FRAME),
+]), seen
+assert sorted(checked_seen) == [(0, 0), (10, 0), (10, 1)], checked_seen
+assert sorted(quotient_seen) == [(0, 0), (0, 1), (10, 1), (10, 2)], quotient_seen"#;
+    for hint in ["always", "never"] {
+        let text = text.replace("HINT", hint);
+        std::fs::write(&source, &text).unwrap();
+        let debug = directory.join("debug.bin");
+        let ordinary = directory.join("ordinary.bin");
+        let mut outputs = Vec::new();
+        for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+            outputs.push(success(
+                Command::new(binary)
+                    .arg("-o")
+                    .arg(binary.with_extension("vcd"))
+                    .output()
+                    .unwrap(),
+            ));
+        }
+        assert_eq!(
+            outputs[0].stdout, outputs[1].stdout,
+            "foreign-call order/count changed"
+        );
+        assert_eq!(outputs[0].stderr, outputs[1].stderr);
+        assert_eq!(
+            std::fs::read(debug.with_extension("vcd")).unwrap(),
+            std::fs::read(ordinary.with_extension("vcd")).unwrap()
+        );
+        if Command::new("llvm-dwarfdump")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            success(
+                Command::new("llvm-dwarfdump")
+                    .arg("--verify")
+                    .arg(&debug)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        if Command::new("gdb").arg("--version").output().is_ok() {
+            success(
+                Command::new("gdb")
+                    .args([
+                        "-q",
+                        "-batch",
+                        "-ex",
+                        "set disable-randomization off",
+                        "-ex",
+                    ])
+                    .arg(format!("python exec({python:?})"))
+                    .arg(&debug)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        // Both invalid field checks are demanded. The first diagnostic must
+        // remain the left-field access, not the earlier-written right field.
+        let failing = text
+            .replace("let index: integer = 0;", "let index: integer = 999;")
+            .replace("let enabled: Bool = false;", "let enabled: Bool = true;");
+        std::fs::write(&source, failing).unwrap();
+        let mut failures = Vec::new();
+        for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+            let output = Command::new(binary).output().unwrap();
+            assert!(!output.status.success(), "invalid indices must fail");
+            let diagnostic = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                diagnostic.contains("index 999 is outside declared range 0..1"),
+                "{diagnostic}"
+            );
+            assert!(diagnostic.contains(".left = value[index]"), "{diagnostic}");
+            failures.push(output);
+        }
+        assert_eq!(failures[0].status.code(), failures[1].status.code());
+        assert_eq!(failures[0].stdout, failures[1].stdout);
+        assert_eq!(failures[0].stderr, failures[1].stderr);
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn partial_aggregate_returns_keep_only_demanded_fragments() {
     let directory = std::env::temp_dir().join(format!("siox_dwarf_partial_{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
