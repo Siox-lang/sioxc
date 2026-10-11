@@ -1758,6 +1758,170 @@ assert counts['wide'] == counts['selected'] == counts['unselected'] == 1, counts
 }
 
 #[test]
+fn partial_aggregate_returns_keep_only_demanded_fragments() {
+    let directory = std::env::temp_dir().join(format!("siox_dwarf_partial_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("partial.siox");
+    let text = r#"module dwarf_partial;
+extern "C" { fn abort() -> integer; }
+struct Pair { pub left: integer, pub right: RIGHT_TYPE }
+#[inline(CALLEE)]
+fn partial(value: integer) -> Pair {
+    return Pair { .left = value + 1, .right = RIGHT_ABORT };
+}
+#[inline(CALLER)]
+fn consume(value: integer) -> integer {
+    let pair: Pair = partial(value);
+    return pair.left;
+}
+#[inline(CALLEE)]
+fn partial_right(value: integer) -> Pair {
+    return Pair { .left = abort(), .right = RIGHT_VALUE };
+}
+#[inline(CALLER)]
+fn consume_right(value: integer) -> RIGHT_TYPE {
+    let pair: Pair = partial_right(value);
+    return pair.right;
+}
+entity Probe { value: integer in, result: integer out, other: RIGHT_TYPE out }
+impl Probe {
+    result = consume(value);
+    other = consume_right(value);
+}
+#[test] entity T {}
+impl T {
+    let value: integer = 5;
+    let probe: Probe = { .value = value };
+    stimulus: process {
+        await 1ns;
+        assert!(probe.result == 6 and probe.other == RIGHT_POSITIVE, "positive retained fields");
+        value = -9;
+        await 1ns;
+        assert!(probe.result == -8 and probe.other == RIGHT_NEGATIVE, "negative retained fields");
+    }
+}
+"#;
+    let python = r#"import gdb
+stops = [gdb.Breakpoint('dwarf_partial::' + name) for name in ['partial', 'partial_right']]
+gdb.execute('run')
+seen = []
+while gdb.selected_thread() is not None:
+    frame = gdb.selected_frame()
+    assert frame.type() == gdb.INLINE_FRAME, gdb.execute('info frame', to_string=True)
+    name = frame.name()
+    right = name.endswith('partial_right')
+    retained, pruned = ('right', 'left') if right else ('left', 'right')
+    value = int(frame.read_var('value'))
+    floating = right and frame.function().type.target().fields()[1].type.code == gdb.TYPE_CODE_FLT
+    number = float if floating else int
+    expected = value + (2.5 if floating else 2 if right else 1)
+    assert frame.function().type.target().name == 'Pair', frame.function().type
+    # Stop after the ordinary result has executed. Inspection must not force
+    # the abort field, or claim the retained value exists before evaluation.
+    for _ in range(100):
+        frame = gdb.selected_frame()
+        assert frame.name() == name, frame.name()
+        try:
+            result = frame.read_var('$return')
+            if not result[retained].is_optimized_out and number(result[retained]) == expected:
+                break
+        except (gdb.error, gdb.MemoryError, ValueError):
+            pass
+        gdb.execute('stepi', to_string=True)
+    else:
+        raise AssertionError('retained return fragment never became available')
+    assert result[pruned].is_optimized_out, str(result)
+    finished = gdb.execute('finish', to_string=True)
+    # This is a source inline frame over a partial native evaluation, not a
+    # whole-result ABI. GDB must not invent a return value from stale registers.
+    assert 'Value returned is' not in finished, finished
+    frame = gdb.selected_frame()
+    assert frame.name() == 'dwarf_partial::' + ('consume_right' if right else 'consume'), frame.name()
+    pair = frame.read_var('pair')
+    assert number(pair[retained]) == expected, str(pair)
+    assert pair[pruned].is_optimized_out, str(pair)
+    seen.append((retained, value))
+    gdb.execute('continue')
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+assert sorted(seen) == [('left', -9), ('left', 5), ('right', -9), ('right', 5)], seen
+"#;
+    for (ty, value, abort, positive, negative) in [
+        ("integer", "value + 2", "abort()", "7", "-7"),
+        ("real", "real(value) + 2.5", "real(abort())", "7.5", "-6.5"),
+    ] {
+        let text = text
+            .replace("RIGHT_TYPE", ty)
+            .replace("RIGHT_VALUE", value)
+            .replace("RIGHT_ABORT", abort)
+            .replace("RIGHT_POSITIVE", positive)
+            .replace("RIGHT_NEGATIVE", negative);
+        for callee in ["always", "never"] {
+            for caller in ["always", "never"] {
+                std::fs::write(
+                    &source,
+                    text.replace("CALLEE", callee).replace("CALLER", caller),
+                )
+                .unwrap();
+                let debug = directory.join("debug.bin");
+                let ordinary = directory.join("ordinary.bin");
+                for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+                    let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+                    command.args(["--std", "std", "--test"]);
+                    if debugging {
+                        command.arg("--debug");
+                    }
+                    success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+                    success(
+                        Command::new(binary)
+                            .arg("-o")
+                            .arg(binary.with_extension("vcd"))
+                            .output()
+                            .unwrap(),
+                    );
+                }
+                assert_eq!(
+                    std::fs::read(debug.with_extension("vcd")).unwrap(),
+                    std::fs::read(ordinary.with_extension("vcd")).unwrap()
+                );
+                if Command::new("llvm-dwarfdump")
+                    .arg("--version")
+                    .output()
+                    .is_ok()
+                {
+                    success(
+                        Command::new("llvm-dwarfdump")
+                            .arg("--verify")
+                            .arg(&debug)
+                            .output()
+                            .unwrap(),
+                    );
+                }
+                if Command::new("gdb").arg("--version").output().is_ok() {
+                    success(
+                        Command::new("gdb")
+                            .args(["-nx", "-q", "--batch"])
+                            .arg(&debug)
+                            .args([
+                                "-ex",
+                                "set disable-randomization off",
+                                "-ex",
+                                &format!("python {python}"),
+                            ])
+                            .output()
+                            .unwrap(),
+                    );
+                } else {
+                    eprintln!(
+                        "GDB unavailable: native partial returns checked, frame probe skipped"
+                    );
+                }
+            }
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn hardware_expression_calls_keep_source_frames() {
     let directory =
         std::env::temp_dir().join(format!("siox_dwarf_hardware_{}", std::process::id()));

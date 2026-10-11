@@ -16280,3 +16280,70 @@ logic-view/constant changes, tests, TODO and this tail; sibling docs separately.
 No push. Next own inline_values.rs and debug_info.rs for the partial-return
 native/GDB reproduction and demand-preserving fix. The scratch probe now tests
 both left-only and right-only returns with an abort in the discarded field.
+
+### 2026-10-10 — Codex — reproduced partial-return ABI mismatch
+
+Committed accepted logic batch 77289f4 and sibling docs e70e171. Guarded
+604985's ordinary/debug executables and VCD parity passed, as did dwarfdump;
+GDB failed exactly the partial-result assertions. Left-only finish returned
+{left=6,right=<register garbage>}; right-only returned {left=7,right=<garbage>}
+instead of retaining right=7. Negative inputs reproduce the same mismatch.
+Own inline_values.rs, its inline_body callers and debug_info.rs to represent
+un-grouped aggregate leaf evaluation as an actual inline source frame, not
+a native full-result ABI. Reuse fragmented bindings for a $return view with
+only the retained field available. Preserve source types, lazy/checked/effectful
+execution, source call sites and ordinary/debug native parity; do not fabricate
+full values or add a second execution wrapper. Keep the full objective open.
+
+Native/GDB probe 605193 passed assertions, VCD parity and dwarfdump after the
+metadata change. Corrected snapshot script 605780 passed all four actual
+left/right positive/negative cases: $return and caller pair retain only the
+demanded field; finish emits no invented whole result. 605859 exposed an
+over-broad classification of complete one-field wrappers; retain their native
+ABI when a leaf covers the whole inspection layout. Rerun 607977 passes all
+twelve default debugger fixtures and is continuing with bitpack/Clippy.
+Own sibling architecture/testing docs and TODO for this distinction. Missing
+fields remain unavailable, and whole-value demand grouping is still separate
+unfinished work; this fix does not claim an eager full return for partial calls.
+
+607977 exited/success/0 (peak 1010147328 bytes): all twelve debugger fixtures
+pass in default/bitpack and strict Clippy passes. Expanded mixed integer/real
+partial-return coverage then passed in both modes under 612524, also with
+strict Clippy (peak 985427968). The fixture covers both retained positions,
+positive/negative data, all four caller/callee inline settings, real native
+assertions/VCD parity and actual GDB fragment/caller values and call counts.
+The baseline and fixed isolated executables each have six text symbols named
+sx.debug.call.*; the extra two symbols are inspection buffers, not functions.
+Freeze source hash 9906359b3b53698b41228b882786feb09387573f5060d6c5b7ba916e3f7bc4ec
+for full acceptance. The corpus checkout remains clean at 05278a8d; later
+upstream compiler/corpus updates are not silently mixed into this batch.
+
+Full acceptance is live as siox-job-3000-1791668289212278393-614815.service.
+Log: /home/max/.cache/siox-jobs/siox-job-3000-1791668289212278393-614815.log.
+Poll this exact unit; no Rust edits or overlapping heavy jobs while it runs.
+Owned pending code: inline_values.rs and debug_info.rs, plus TODO/chat and
+sibling architecture/testing docs. Preserve foreign AGENTS/.codex and 441
+historical chat insertions. Commit only after terminal success and hash check.
+Latest committed baseline is 77289f4 (docs e70e171). Full DWARF still needs
+demand-preserving aggregate grouping, remaining signature/companion transport
+and ABI audits; do not equate the partial-view fix with full completion.
+
+While 614815 runs, prepared narrow.siox beside the isolated partial probe.
+It consumes only eight bits from a partial integer return, using 256 and -257
+inputs. The numeric inspection path fits captured values to declaration width,
+whereas RawResize normally emits its operand at the natural width first;
+source inspection alone does not prove this case loses bits. After acceptance,
+run native/GDB checks before deciding whether another fix is needed. The scratch
+probe is not part of the frozen hash and has not yet been executed.
+
+### 2026-10-11 — Codex — partial-return full acceptance
+
+614815 is terminal exited/success/0, peak 1611063296 bytes. Source hash
+9906359b3b53698b41228b882786feb09387573f5060d6c5b7ba916e3f7bc4ec is unchanged.
+All full default/bitpack tests, twelve debugger fixtures per mode, strict Clippy,
+frontend/artifact checks, four 228-program corpora and four FIFO/wide native
+GDB/VCD smokes pass. Graph refresh completed with 5361 nodes, 15276 edges and
+238 communities; existing vendored extractor warnings remain. Commit the owned
+partial source-frame/return-fragment batch and its sibling docs only. Preserve
+foreign AGENTS/.codex and 441 historical chat lines; no push. Next run the
+prepared narrow-consumer diagnostic, then continue the remaining full goal.

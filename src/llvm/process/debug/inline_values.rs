@@ -1760,6 +1760,32 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
     ) -> Option<IntValue<'ctx>>,
 ) -> Option<IntValue<'ctx>> {
     let debug = cache.debug?;
+    // A leaf that does not cover the whole result is a partial evaluation.
+    // Keep its declared type on an inline frame, not on the native leaf ABI,
+    // and expose only its retained result fragment.
+    let partial_path = source.aggregate.as_ref().filter(|(_, path)| {
+        !source.result_layout.as_ref().is_some_and(|root| {
+            inspection_projection(root, path).is_some_and(|(offset, leaf)| {
+                offset == 0
+                    && inspection_bits(root)
+                        .zip(inspection_bits(leaf))
+                        .is_some_and(|(whole, part)| whole == part)
+            })
+        })
+    });
+    let partial = partial_path.map(|(_, path)| {
+        let mut source = source.clone();
+        source.locals.push(siox::ir::ProcessValueBinding {
+            name: "$return".into(),
+            span: source.result_span,
+            scope: None,
+            layout: source.result_layout.clone(),
+            value: None,
+            fields: vec![(path.clone(), Some(operand))],
+        });
+        source
+    });
+    let source = partial.as_ref().unwrap_or(source);
     let (owner, name) = source.name.rsplit_once("::").unwrap_or(("", &source.name));
     let file = debug.file(source.function.file);
     let line = debug
@@ -1811,7 +1837,33 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
         DIFlags::ZERO,
         false,
     );
-    function.set_subprogram(scope);
+    let caller = if let Some((_, path)) = partial_path {
+        let file = debug.file(source.call.file);
+        let line = debug
+            .sources
+            .line_col(source.call.file, source.call.start)
+            .0;
+        let native = debug.builder.create_function(
+            debug.namespace(""),
+            &format!("<partial {name}.{path}>"),
+            Some(""),
+            file,
+            line,
+            debug
+                .builder
+                .create_subroutine_type(file, None, &[], DIFlags::ARTIFICIAL),
+            true,
+            true,
+            line,
+            DIFlags::ARTIFICIAL,
+            false,
+        );
+        function.set_subprogram(native);
+        Some(debug.location(native, source.call, None))
+    } else {
+        function.set_subprogram(scope);
+        None
+    };
     debug.declare_lexical_scopes(
         scope,
         source
@@ -1821,20 +1873,22 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
             .collect(),
         &[],
     );
-    let caller = None;
     cache.source_location = Some(debug.builder.create_debug_location(
         debug.context,
         line,
         0,
         scope.as_debug_info_scope(),
-        None,
+        caller,
     ));
     // Function-name breakpoints must skip reference-slot initialization. The
     // first visible source instruction follows native-input inspection below.
-    let entry_location =
-        debug
-            .builder
-            .create_debug_location(debug.context, 0, 0, scope.as_debug_info_scope(), None);
+    let entry_location = debug.builder.create_debug_location(
+        debug.context,
+        0,
+        0,
+        scope.as_debug_info_scope(),
+        caller,
+    );
     builder.set_current_debug_location(entry_location);
     let mut bindings = Vec::new();
     for (index, (binding, ty)) in source
@@ -2153,8 +2207,9 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
             cache,
         );
     }
+    let location = value_location(cache, result_span)?;
     cache.value_frames.pop();
-    builder.set_current_debug_location(debug.location(scope, result_span, None));
+    builder.set_current_debug_location(location);
     result
 }
 

@@ -197,6 +197,13 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   eager grouping. Complete demand-preserving grouping for effectful/checked,
   independently selected nested-call and partial aggregate returns; no debug
   boundary may force an unconsumed field or invent a zero for a pruned member.
+  Partial leaf evaluations now retain the source function/type as inline
+  frames over their existing native leaf bodies, with fragmented `$return`
+  snapshots. They no longer advertise a full native aggregate return ABI;
+  discarded fields remain unavailable. Complete one-leaf wrappers keep their
+  native result ABI. GDB checks both retained field positions, source types,
+  caller bindings and untaken abort fields for integer/integer and integer/real
+  structs across all caller/callee inline/shared hint combinations.
   Shared Process functions now retain their source frames directly on the
   canonical native body, including selected branches, lexical locals and
   declaration-owned scalar inspection types. Keep native body-count, actual
