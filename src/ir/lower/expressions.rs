@@ -342,6 +342,12 @@ impl<'a> Lowering<'a> {
                 // An operator on an enum/struct-typed operand inlines its
                 // operator-trait impl body (spec 3.25); `==`/`!=` stay
                 // built-in discriminant comparison unless an `Eq` impl takes them.
+                // `real` with another number: both as `real` (the numeric
+                // ladder's top), the other converted by its `From` impl.
+                if let Some((l, r)) = self.promoted_real_operands(lhs, rhs, &HashMap::new()) {
+                    let built = self.make_binary(op.clone(), l, r, false, false, ast::expr_span(e));
+                    return built;
+                }
                 let op_str = crate::syntax::pretty::bin_op(op);
                 if let Some(native) =
                     self.native_vector_logical(op_str, lhs, rhs, &|e| self.lower_expr(e))

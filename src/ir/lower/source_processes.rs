@@ -7466,6 +7466,11 @@ fn value_ref_with_type_inner(
     match expression {
         ast::Expr::Binary { op, lhs, rhs, .. } => {
             if let Some(value) =
+                lower_process_real_promotion(op, lhs, rhs, span, process, context, ty.as_ref())
+            {
+                return value;
+            }
+            if let Some(value) =
                 inline_process_binary_operator(op, lhs, rhs, process, context, ty.as_ref())
             {
                 return value;
@@ -8720,6 +8725,66 @@ fn is_float_operation(operation: &ProcessBinaryOp) -> bool {
             | ProcessBinaryOp::FloatGt
             | ProcessBinaryOp::FloatGe
     )
+}
+
+/// `real op x` (or `x op real`) for an `x` whose type has `impl From<S> for
+/// real`: `x` promotes to `real` through that conversion, the top of the
+/// numeric ladder, and the operation is the float one. `None` when the
+/// operands do not mix `real` with such a type; an `integer` side keeps its
+/// own coercion.
+fn lower_process_real_promotion(
+    op: &ast::BinOp,
+    lhs: &ast::Expr,
+    rhs: &ast::Expr,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    ty: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let real = crate::types::Ty::Real;
+    let left_type = operand_type(lhs, process, context);
+    let right_type = operand_type(rhs, process, context);
+    let left_real = matches!(left_type, Some(crate::types::Ty::Real));
+    if left_real == matches!(right_type, Some(crate::types::Ty::Real)) {
+        return None;
+    }
+    let (other, other_type, real_side) = if left_real {
+        (rhs, right_type, lhs)
+    } else {
+        (lhs, left_type, rhs)
+    };
+    let function = other_type
+        .as_ref()
+        .filter(|ty| !matches!(ty, crate::types::Ty::Integer))
+        .and_then(|ty| process_type_key(ty, context))
+        .and_then(|key| context.functions.get_conversion("real", &key))?;
+    let first_value = context.process_ir.values.len();
+    let other_value = value_ref_with_type(other, process, context, other_type.as_ref());
+    let Some(converted) = inline_process_function(
+        function,
+        None,
+        &[other_value],
+        process,
+        context,
+        Some(&real),
+    ) else {
+        truncate_process_values(context, first_value);
+        return None;
+    };
+    let real_value = value_ref_with_type(real_side, process, context, Some(&real));
+    let (left, right) = if left_real {
+        (real_value, converted)
+    } else {
+        (converted, real_value)
+    };
+    let kind = ProcessValueKind::Binary {
+        operation: lower_binary_operator(op, Some(&real), Some(&real)),
+        left,
+        right,
+    };
+    let ty = ty.cloned().or(Some(real));
+    let width = source_value_width(&kind, ty.as_ref(), process, context);
+    Some(push_value(span, ty, width, kind, context))
 }
 
 fn lower_binary_operator(

@@ -185,6 +185,21 @@ impl<'a> Checker<'a> {
 
     /// As [`Self::operator_accepts`], but allowing the right operand to be a
     /// contextual literal that adopts the left's type.
+    /// Whether `left op right` mixes `real` with a number that converts to it
+    /// (`impl From<T> for real`, as std declares for every numeric family):
+    /// both operands then promote to `real`, the top of the numeric ladder.
+    pub(super) fn promotes_to_real(&self, left: &Ty, right: &Ty) -> bool {
+        let converts = |ty: &Ty| match ty {
+            Ty::Real | Ty::Integer => true,
+            _ => self
+                .type_kind_name(&Ty::Real)
+                .zip(self.type_kind_name(ty))
+                .is_some_and(|key| self.conversion_sigs.contains(&key)),
+        };
+        (matches!(left, Ty::Real) && converts(right))
+            || (matches!(right, Ty::Real) && converts(left))
+    }
+
     pub(super) fn operator_accepts_expr(
         &self,
         symbol: &str,
@@ -193,6 +208,11 @@ impl<'a> Checker<'a> {
         rhs: &Expr,
         sym: &HashMap<String, Ty>,
     ) -> bool {
+        if matches!(symbol, "+" | "-" | "*" | "/" | "%" | "<" | "==")
+            && self.promotes_to_real(left, right)
+        {
+            return true;
+        }
         let contextual_rhs = Self::is_contextual_literal(rhs) && self.assignable(left, rhs, sym);
         let numeric_kernel_coercion = matches!(
             (left, right),

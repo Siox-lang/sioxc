@@ -252,6 +252,24 @@ impl Ord<signed> for signed {
     fn le(self, rhs: signed) -> Bool { return not rhs.lt(self); }
 }
 
+// --- to real -------------------------------------------------------------------
+
+// `real(x)`: the number a vector holds. These place `unsigned` and `signed`
+// on the numeric ladder, so `r + u` with `r: real` promotes `u` to `real`.
+impl From<unsigned> for real {
+    fn from(value: unsigned) -> real {
+        return real(integer(value) - ((integer(value) >> value'length) << value'length));
+    }
+}
+
+impl From<signed> for real {
+    fn from(value: signed) -> real {
+        let w: integer = integer(value) - ((integer(value) >> value'length) << value'length);
+        if (w >> (value'length - 1)) == 1 { return real(w - (1 << value'length)); }
+        return real(w);
+    }
+}
+
 // --- bit methods (Rust's integer methods) ------------------------------------
 
 // Bit `k` is `k` places above the LSB, `self'low + k`, whichever way the

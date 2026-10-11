@@ -389,6 +389,75 @@ impl<'a> Lowering<'a> {
         self.inline_function(f, display_name, callee, args, env)
     }
 
+    /// `arg` as a `real` through its type's `impl From<S> for real`
+    /// (`real(ufixed)`), inlined at `site`. `None` when it has no such impl.
+    pub(super) fn real_from(
+        &self,
+        site: &ast::Expr,
+        arg: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Expr> {
+        let family = self.operand_type_name(arg)?;
+        let function = self.op_impls.get("From", "real").and_then(|impls| {
+            impls.iter().find_map(|(f, source)| {
+                (source.clone().or_else(|| {
+                    f.params
+                        .iter()
+                        .find(|p| !p.is_self)
+                        .and_then(|p| p.ty.as_ref())
+                        .and_then(|ty| self.free_fns.type_head_key(ty))
+                }) == Some(family.clone()))
+                .then_some(*f)
+            })
+        })?;
+        match self.inline_function(
+            function,
+            format!("real({family})"),
+            site,
+            std::slice::from_ref(arg),
+            env,
+        )? {
+            Val::Scalar(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// `real op x` (or `x op real`) for an `x` whose type has `impl From<S>
+    /// for real`: both operands as `real`, `x` converted by that impl. `None`
+    /// when the operands do not mix `real` with such a type; an `integer`
+    /// side keeps its own coercion.
+    pub(super) fn promoted_real_operands(
+        &self,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<(Expr, Expr)> {
+        let is_real = |e: &ast::Expr| {
+            matches!(
+                self.expr_types.get(&ast::expr_span(e)),
+                Some(crate::types::Ty::Real)
+            )
+        };
+        let (left_real, right_real) = (is_real(lhs), is_real(rhs));
+        if left_real == right_real {
+            return None;
+        }
+        let other = if left_real { rhs } else { lhs };
+        if matches!(
+            self.expr_types.get(&ast::expr_span(other)),
+            Some(crate::types::Ty::Integer) | None
+        ) {
+            return None;
+        }
+        let converted = self.real_from(other, other, env)?;
+        let real = self.lower_scalar_env(if left_real { lhs } else { rhs }, env);
+        Some(if left_real {
+            (real, converted)
+        } else {
+            (converted, real)
+        })
+    }
+
     /// Inline `f` for a call at `callee` with `args`, as a free function's
     /// call is; `display_name` names it in depth diagnostics.
     pub(super) fn inline_function(
@@ -1048,24 +1117,11 @@ impl<'a> Lowering<'a> {
         // `real(x)` for a type with `impl From<S> for real` (`real(ufixed)`)
         // is that conversion, not the kernel reading of its word.
         if to_real {
-            if let Some(family) = args.first().and_then(|arg| self.operand_type_name(arg)) {
-                let function = self.op_impls.get("From", "real").and_then(|impls| {
-                    impls.iter().find_map(|(f, source)| {
-                        (source.clone().or_else(|| {
-                            f.params
-                                .iter()
-                                .find(|p| !p.is_self)
-                                .and_then(|p| p.ty.as_ref())
-                                .and_then(|ty| self.free_fns.type_head_key(ty))
-                        }) == Some(family.clone()))
-                        .then_some(*f)
-                    })
-                });
-                if let Some(Val::Scalar(value)) = function.and_then(|f| {
-                    self.inline_function(f, format!("real({family})"), callee, args, env)
-                }) {
-                    return Some(value);
-                }
+            if let Some(value) = args
+                .first()
+                .and_then(|arg| self.real_from(callee, arg, env))
+            {
+                return Some(value);
             }
         }
         if to_real {
