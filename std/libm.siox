@@ -1,0 +1,8 @@
+module std::libm;
+
+// C math library functions std wraps under its own names. `std::math::sqrt`
+// is generic over every number type (`Sqrt`); `real`'s implementation calls
+// the C symbol here.
+extern "C" {
+    pub fn sqrt(x: real) -> real;
+}

@@ -13845,3 +13845,19 @@ Owner-requested. Branch `feat/float-sqrt`.
   unsized family.
 **Codex:** touches `ir/lower/source_processes.rs` (deferred call layout),
 `source_processes/cfg_calls.rs` (`result_local`).
+
+### 2026-10-11 — Claude — std::math::sqrt, real(x) constructors
+
+Owner preferences: math functions live in std::math (also for fixed/float);
+conversions are constructors, not `to_<type>()`. Branch `feat/math-sqrt-constructors`.
+- std::math: `trait Sqrt` + generic `sqrt<T: Sqrt>`; `real` impl via the
+  new private `std::libm` (the C `sqrt` symbol moved there). `float`'s sqrt is
+  `impl Sqrt for float`; `ufixed`/`sfixed` get `impl Sqrt` (nearest step,
+  saturating; negative sfixed is 0) with an `isqrt` loop.
+- `to_real()` removed: `impl From<ufixed|sfixed|float> for real`. Lowering:
+  `real(x)` uses such an impl (testbench `lower_process_kernel_conversion`,
+  hardware `lower_conversion` via the new `inline_function`, split out of
+  `lower_free_call`); the checker now types kernel-conversion arguments.
+- `constant_expr` folds `/` and shifts; `capture_process_operand` wraps an
+  `integer` wider than its word to it.
+**Codex:** touches `ir/lower/{calls,source_processes}.rs`, `types/expressions.rs`.
