@@ -16718,3 +16718,93 @@ owned inline-frame classification/result-layout guard, return regressions,
 TODO and this appended tail; sibling architecture/testing docs separately.
 Preserve foreign AGENTS/.codex and 441 historical chat insertions. No push;
 the full goal stays active. Then run the prepared 32-to-8-bit return probe.
+
+Committed compiler acf4700 and sibling docs ca76cdf after full acceptance;
+no push. Diagnostic native/GDB jobs 1814632, 1817718 and 1820648 are terminal
+exited/success/0. The tightened assertion reads gdb.history directly because
+finish's printed history text is not reliably captured by to_string. Direct,
+contextual and high-unknown-bit 32-bit identities consumed at eight bits retain
+full native returns (65537/131074, or 65540/131077 for the contextual input),
+with ordinary/debug numeric assertions and VCD parity. No smaller-return ABI
+fix is warranted by these probes. The canonical shared body retains the source
+width; consumer truncation belongs to its caller. Leave this verified route
+alone. Next audit demand-preserving separately selected/partial nested-call
+grouping and remaining companion/signature transports against their real
+emitted frames. No guarded jobs live; preserve foreign work. Goal stays active.
+
+### 2026-10-11 — Codex — selected nested partial-return inspection
+
+Own inline_values.rs selected/partial frame capture and tests/debug_info.rs
+as needed, with matching TODO/docs after evidence. Diagnostic
+selected_nested_partial.siox/.py live in the disk-backed
+/home/max/.cache/siox-jobs/tmp/dwarf-partial-return-20261010 directory.
+1829608 failed in ordinary hardware lowering because the nested leaf had an
+unused standalone foreign-call statement; use a demanded foreign result, as
+existing hardware fixtures do. Corrected 1831028 compiles/runs ordinary and
+debug with matching numeric assertions, effect output BLMCMDNN and VCD. GDB
+hits inline partial frames but the script never reads a retained $return
+fragment before leaving one frame. Trace actual capture/ranges and validate
+the probe before a fix. No live guarded jobs; no Rust changes yet. Preserve
+foreign AGENTS/.codex/historical chat; no push. Goal active.
+
+1835568 reproduced only the probe's premature exit: instruction/ELF tracing
+shows lazy caller-owned argument reads leave the partial inline range before
+the captured foreign result and return fragment execute. Corrected 1839584 is
+terminal exited/success/0, peak 36184064 bytes: all eight expected fragments
+are inspectable, with exact BLMCMDNN effect order and VCD parity. No emitter
+fix is warranted from this case. Own a permanent selected/nested/partial
+regression with both hints, discontiguous-range stepping, nullable entry
+references, pruned abort fields, caller fragments and actual history-count
+checks. Do not rely on finish's empty captured output as proof of no history.
+
+1843953 caught another probe-timing assumption: source finish reaches the
+caller assignment before its existing fragment store. Wait through that store
+instead of claiming early availability. Corrected 1847679 is terminal
+exited/success/0, peak 98451456 bytes. New eighteenth regression passes both
+packing modes and both hints, including exact eight-fragment/effect order,
+fresh entry references, pruned abort fields, consumed formals/caller fragments
+and no new native history slot. Strict Clippy passes. No production compiler
+change was necessary for this audited case. Update matching TODO/docs, freeze
+tests and run complete acceptance before committing only the owned regression
+and appended log/docs. Remaining whole-return grouping and companion/signature
+audits still keep the full goal active; no push.
+
+Full acceptance unit siox-job-3000-1791752673714994050-1852419.service is
+confirmed running, with retained stage logs at
+/home/max/.cache/siox-jobs/tmp/dwarf-selected-partial-acceptance.hNu03a.
+Frozen source/test hash:
+6478fe004793dd4275cada856e43d299ffdd7babaa195e099500be2d61dbab8c.
+Fmt/artifact/frontend/build stages passed; the full default suite is live.
+Poll this unit, do not restart after an interrupted observation, and keep Rust
+unchanged through both full suites, strict Clippy, four corpora, four native
+GDB/VCD smokes and AST refresh. Test/TODO/sibling architecture/testing edits
+remain uncommitted. Only owned chat additions after line 15000 may be staged;
+441 historical insertions and AGENTS/.codex belong to others. Goal active.
+
+1852419 is confirmed live: both full suites (eighteen DWARF fixtures per mode)
+and strict Clippy passed; ordinary corpus acceptance is running. Compiler/test
+hash remains frozen. Prepared return_logic_companion.siox/.py in the existing
+disk-backed dwarf-partial-return-20261010 diagnostic directory: an 81-bit
+known-binary complete return first checks its numeric $return snapshot, then
+its source-enum $return$logic view. The capture_result path currently creates
+only the numeric snapshot, but this is not yet a reproduced failure. Run the
+probe under guarded-run only after 1852419 terminates; inspect existing actual
+numeric/metadata values or binary proof before implementing any companion.
+No extra metadata evaluation, stale views or modified executable payloads.
+First commit the independently selected partial regression/docs after its full
+gate succeeds; keep unrelated foreign changes out of that commit. No push.
+
+### 2026-10-11 — Codex — selected-partial full acceptance and companion audit
+
+1852419 is terminal exited/success/0, peak 1456009216 bytes. Frozen hash
+6478fe004793dd4275cada856e43d299ffdd7babaa195e099500be2d61dbab8c is unchanged.
+Both full suites include eighteen DWARF fixtures; strict Clippy, frontend and
+artifact checks, four 228-program corpora and four native GDB/VCD smokes pass.
+AST refresh produced 5370 nodes, 15310 edges and 237 communities, with existing
+vendored extractor warnings. Commit only owned selected-partial regression,
+TODO and appended chat tail, then matching sibling docs. No production fix
+was needed for that audited path. Next own inline_values.rs return companion
+capture if the prepared executable/GDB probe proves a gap; preserve demand,
+actual emitted planes and std-owned enum values. Goal remains active; no push.
+User also requested graphify cleanup if needed: inspect generated artifacts
+and stale output before changing anything; preserve curated data and history.

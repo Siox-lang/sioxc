@@ -218,6 +218,13 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   grouping for separately demanded/selected nested-call and partial aggregate
   returns; no debug
   boundary may force an unconsumed field or invent a zero for a pruned member.
+  Independently selected nested partial returns now have a native/GDB
+  regression for neither/left/right/both consumers and changing inputs.
+  Existing fragment frames preserve the exact foreign effect order, including
+  transient hardware evaluations, and keep an unused abort field unavailable.
+  Inspection waits through lazy caller-owned argument ranges and the caller's
+  actual fragment store; it never requires an earlier fabricated value.
+  Direct history-slot checks prove partial source finish adds no native return.
   Reusing a foreign field across another call now preserves the ordinary stdout
   order/count, including narrow/wide consumer formats and changing source epochs.
   A seeded host-random regression also verifies one draw across consumer formats.

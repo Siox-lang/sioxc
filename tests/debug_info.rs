@@ -3024,6 +3024,187 @@ assert sorted(seen) == [('left', -9), ('left', 5), ('right', -9), ('right', 5)],
 }
 
 #[test]
+fn independently_selected_nested_partial_returns_keep_source_fragments() {
+    let directory = std::env::temp_dir().join(format!(
+        "siox_dwarf_selected_partial_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("selected.siox");
+    let text = r#"module selected_nested_partial;
+extern "C" { fn putchar(value: integer) -> integer; fn abort() -> integer; }
+struct Triple { pub left: integer, pub right: integer, pub unused: integer }
+#[inline(HINT)]
+fn leaf(value: integer) -> integer { return putchar(value + 65) - 64; }
+#[inline(HINT)]
+fn partial(value: integer) -> Triple {
+    return Triple { .left = leaf(value), .right = leaf(value + 10), .unused = abort() };
+}
+#[inline(HINT)]
+fn consume(value: integer, left: Bool, right: Bool) -> integer {
+    let pair: Triple = partial(value);
+    let a: integer = if left { pair.left } else { 0 };
+    let b: integer = if right { pair.right } else { 0 };
+    return a + b;
+}
+entity Probe { value: integer in, left: Bool in, right: Bool in, result: integer out }
+impl Probe { result = consume(value, left, right); }
+#[test] entity T {}
+impl T {
+    let value: integer = 1;
+    let left: Bool = false;
+    let right: Bool = false;
+    let probe: Probe = { .value = value, .left = left, .right = right };
+    stimulus: process {
+        await 1ns;
+        assert!(probe.result == 0, "neither field");
+        left = true;
+        await 1ns;
+        assert!(probe.result == 2, "left only");
+        left = false; right = true; value = 2;
+        await 1ns;
+        assert!(probe.result == 13, "right only");
+        left = true; value = 3;
+        await 1ns;
+        assert!(probe.result == 18, "both fields");
+        left = false; right = false;
+        await 1ns;
+        assert!(probe.result == 0, "neither again");
+    }
+}"#;
+    let python = r#"import gdb
+stop = gdb.Breakpoint('selected_nested_partial::partial')
+gdb.execute('run')
+seen = []
+while gdb.selected_thread() is not None:
+    frame = gdb.selected_frame()
+    assert frame.type() == gdb.INLINE_FRAME
+    assert frame.function().type.target().name == 'Triple'
+    assert frame.function().type.target().sizeof == 24
+    for name in ['left', 'right', 'unused']:
+        try:
+            int(frame.read_var('$return')[name])
+        except (gdb.error, ValueError):
+            continue
+        raise AssertionError(('stale entry fragment', name))
+    stop.enabled = False
+    for _ in range(500):
+        frame = gdb.selected_frame()
+        while frame is not None and frame.name() != 'selected_nested_partial::partial':
+            frame = frame.older()
+        # Lazy argument reads have caller locations, so this source frame can
+        # temporarily disappear. It must return for the completed fragment.
+        if frame is not None:
+            try:
+                result = frame.read_var('$return')
+                fields = [(name, int(result[name])) for name in ['left', 'right', 'unused'] if not result[name].is_optimized_out]
+                if fields: break
+            except (gdb.error, ValueError):
+                pass
+        instruction = gdb.execute('x/i $pc', to_string=True)
+        gdb.execute('nexti' if '\tcall' in instruction else 'stepi', to_string=True)
+    else:
+        raise AssertionError('retained fragment never became available')
+    assert len(fields) == 1 and fields[0][0] != 'unused', fields
+    retained, expected = fields[0]
+    assert int(frame.read_var('value')) == expected - (1 if retained == 'left' else 11)
+    assert all(result[name].is_optimized_out for name in ['left', 'right', 'unused'] if name != retained)
+    seen.append((retained, expected))
+    # finish output is not reliably captured. Inspect the first unused history
+    # slot directly, so a fabricated native return cannot silently pass.
+    history = 1
+    while True:
+        try: gdb.history(history)
+        except gdb.error: break
+        history += 1
+    frame.select()
+    gdb.execute('finish', to_string=True)
+    try: gdb.history(history)
+    except gdb.error: pass
+    else: raise AssertionError('partial source finish added a native return')
+    caller = gdb.selected_frame()
+    assert caller.name() == 'selected_nested_partial::consume', caller.name()
+    # finish stops at the caller's assignment before its fragment store runs.
+    # Observe that existing store instead of requesting an earlier value.
+    for _ in range(100):
+        try:
+            pair = gdb.selected_frame().read_var('pair')
+            if int(pair[retained]) == expected: break
+        except (gdb.error, ValueError):
+            pass
+        gdb.execute('stepi', to_string=True)
+    else:
+        raise AssertionError('caller did not capture its consumed fragment')
+    assert pair['unused'].is_optimized_out
+    stop.enabled = True
+    gdb.execute('continue', to_string=True)
+assert seen == [('left', 2), ('right', 12), ('right', 13), ('left', 3), ('right', 13), ('left', 4), ('right', 14), ('right', 14)], seen
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+"#;
+    for hint in ["always", "never"] {
+        std::fs::write(&source, text.replace("HINT", hint)).unwrap();
+        let ordinary = directory.join("ordinary.bin");
+        let debug = directory.join("debug.bin");
+        let mut outputs = Vec::new();
+        for (binary, debugging) in [(&ordinary, false), (&debug, true)] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+            let output = success(
+                Command::new(binary)
+                    .arg("-o")
+                    .arg(binary.with_extension("vcd"))
+                    .output()
+                    .unwrap(),
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("BLMCMDNN"));
+            outputs.push((output.stdout, output.stderr));
+        }
+        assert_eq!(outputs[0], outputs[1]);
+        assert_eq!(
+            std::fs::read(ordinary.with_extension("vcd")).unwrap(),
+            std::fs::read(debug.with_extension("vcd")).unwrap()
+        );
+        if Command::new("llvm-dwarfdump")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            success(
+                Command::new("llvm-dwarfdump")
+                    .arg("--verify")
+                    .arg(&debug)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        if Command::new("gdb").arg("--version").output().is_ok() {
+            success(
+                Command::new("gdb")
+                    .args(["-nx", "-q", "--batch"])
+                    .arg(&debug)
+                    .args([
+                        "-ex",
+                        "set disable-randomization off",
+                        "-ex",
+                        &format!("python {python}"),
+                    ])
+                    .output()
+                    .unwrap(),
+            );
+        } else {
+            eprintln!(
+                "GDB unavailable: selected partial native results checked, frame probe skipped"
+            );
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn hardware_expression_calls_keep_source_frames() {
     let directory =
         std::env::temp_dir().join(format!("siox_dwarf_hardware_{}", std::process::id()));
