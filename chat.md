@@ -16604,3 +16604,59 @@ Static ELF inspection confirms the procedural probe's normal `formats` frame is
 a retained debug pure-tail body, not proof of entry visibility for the whole
 effect-normalized function. Continue that source-binding audit without forcing
 an expression or treating an unavailable reference as a manufactured zero.
+
+### 2026-10-11 — Codex — normalized source-binding transport audit
+
+Own cfg_calls.rs/source-value inspection remapping, inline_values.rs and the
+effect-reuse DWARF regression as needed. Trace the actual normalized test IR
+and native frame before choosing a fix for unavailable value/saved bindings.
+Reuse executable captures; do not introduce inspection-only evaluation roots,
+ABI inputs or stale aliases. No guarded jobs running at ownership start.
+Preserve foreign AGENTS/.codex and historical chat changes. No push.
+
+Normalized IR probe 1434185 and native GDB step probe 1435739 passed: the loop
+formal is genuinely absent from the pure tail; saved becomes 110 after its
+existing captured character result is read. No extra transport is warranted.
+Own the shared capture_binding width guard and native-input inspection selection:
+new narrow-binding regression 1438820 fails because a consumed 8-bit format
+fabricates value=8 for an actual 81-bit source argument 2^80+8. Keep unconsumed
+bits unavailable, retain known literals/sound natural-width extension, and
+prefer a full-width already-consumed input format at entry when one exists.
+
+Both focused regressions pass in 1445416; all seventeen DWARF fixtures in
+default/bitpack and strict Clippy are now running in that same guarded unit.
+Own matching sibling architecture/testing docs. Record actual normalized
+pruning and consumed-local visibility, not an unimplemented transport fix.
+
+1445416 is terminal exited/success/0, peak 880267264 bytes. Both focused
+regressions, all seventeen DWARF fixtures in each packing mode and strict
+all-target/all-feature Clippy pass. Freeze compiler source hash
+98808331c4c17f6728dea72303a3656455b89e6a9a9186b5a023dd74fe8a0f5f
+for full suite/corpus/native-smoke acceptance. No Rust edits during that gate.
+
+Full acceptance unit siox-job-3000-1791736850317053668-1454815.service is still
+running: fmt/frontend checks, both full suites, strict Clippy and both ordinary
+228-program corpora passed. The default debug corpus has reached hardware-local
+cases; debug bitpack/native smokes/AST refresh remain pending. Poll this same
+unit; do not restart after a terminal interruption. Source hash is unchanged.
+Retained stage logs: /home/max/.cache/siox-jobs/tmp/dwarf-binding-width-acceptance.9LRr3h.
+After the gate, run the prepared narrow_integer_expression scratch native/GDB
+probe to check the sound natural-width-extension exception before committing.
+No compiler/docs commit yet; leave the goal active and preserve foreign work.
+
+### 2026-10-11 — Codex — narrow-binding full acceptance
+
+1454815 is terminal exited/success/0, peak 1612054528 bytes. Frozen hash
+98808331c4c17f6728dea72303a3656455b89e6a9a9186b5a023dd74fe8a0f5f
+is unchanged. Both full suites, seventeen DWARF fixtures per packing mode,
+strict Clippy/frontend/artifact checks, four 228-program corpora and four
+FIFO/wide native GDB/VCD smokes pass. AST graph refresh: 5369 nodes, 15308
+edges, 240 communities; existing vendored extraction warnings remain.
+Additional narrowed integer-product native/GDB probe 1541670 is terminal
+exited/success/0: numeric assertions and ordinary/debug VCD match; omitted
+formal/local bits stay unavailable rather than displaying low bytes as whole
+integers. No broader remap or extra argument transport was required. Commit
+only owned capture selection/width guard, regressions, TODO and appended chat
+tail; sibling architecture/testing docs separately. No push; full DWARF goal
+stays active. Next reuse the existing inline-return inspection path for wide
+basic scalars without changing source types or exposing fabricated return bits.

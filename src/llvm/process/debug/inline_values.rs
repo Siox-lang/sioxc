@@ -2454,11 +2454,18 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
             argument_builder.position_at_end(argument_entry);
         }
         argument_builder.set_current_debug_location(entry_location);
-        let mut seen = std::collections::HashSet::new();
-        for ((id, ..), value) in &arguments.values {
-            if seen.insert(*id) {
-                capture_binding(&argument_builder, design, cache, *id, *value, true);
-            }
+        // The first consumer can be narrower than the source declaration.
+        // Prefer the widest already-requested format, never add one for DWARF.
+        let mut values = arguments
+            .values
+            .iter()
+            .map(|((id, ..), value)| (*id, *value))
+            .collect::<Vec<_>>();
+        values
+            .sort_by_key(|(id, value)| (id.0, std::cmp::Reverse(value.get_type().get_bit_width())));
+        values.dedup_by_key(|(id, _)| *id);
+        for (id, value) in values {
+            capture_binding(&argument_builder, design, cache, id, value, true);
         }
     }
     let result_span = source.result_span;
@@ -2779,28 +2786,37 @@ fn capture_binding<'ctx>(
                 continue;
             }
             let mut value = value;
+            let width = match &binding.inspection {
+                ValueInspection::Packed(layout) => Some(
+                    layout.packed_width().unwrap().min(
+                        design.process_ir.values[id.0 as usize]
+                            .bit_width
+                            .unwrap_or_else(|| layout.packed_width().unwrap()),
+                    ),
+                ),
+                ValueInspection::Logic(layout) => layout.packed_width(),
+                ValueInspection::String(..) => None,
+            };
+            if let Some(width) = width.filter(|width| value.get_type().get_bit_width() < *width) {
+                // Missing consumer bits are not zeros. Fully known literals
+                // can supply them without execution; other values stay absent.
+                let Some(width) = std::num::NonZeroU32::new(width) else {
+                    continue;
+                };
+                let Ok(ty) = debug.context.custom_width_int_type(width) else {
+                    continue;
+                };
+                let Some(constant) = constant_integer(design, id, ty) else {
+                    continue;
+                };
+                value = constant;
+            }
             let metadata = if let ValueInspection::Logic(layout) = &binding.inspection {
                 // Body-local plane values do not dominate the entry insertion
                 // point. A proven binary value needs no such plane.
                 let meta_free = cache.meta_free.get(id.0 as usize).copied().unwrap_or(false);
                 if at_entry && !meta_free {
                     continue;
-                }
-                // A narrow consumer cannot establish the binding's omitted
-                // numeric bits. A fully known literal is the exception: use its
-                // actual number, not zero/sign padding of a truncated consumer.
-                let width = layout.packed_width().unwrap();
-                if value.get_type().get_bit_width() < width {
-                    let Some(width) = std::num::NonZeroU32::new(width) else {
-                        continue;
-                    };
-                    let Ok(ty) = debug.context.custom_width_int_type(width) else {
-                        continue;
-                    };
-                    let Some(constant) = constant_integer(design, id, ty) else {
-                        continue;
-                    };
-                    value = constant;
                 }
                 let metadata = if at_entry {
                     None

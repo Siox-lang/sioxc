@@ -226,10 +226,12 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   reset before their visible source range, and the completion edge remains
   inspectable after the return snapshot is written. Cached actual foreign values
   populate inspection bindings without a new evaluation or a stale pure read.
-  Continue auditing source formals after procedural effect normalization: the
-  loop's native `formats` boundary has unavailable `value`/`saved` at entry even
-  though its actual finish values are correct. Determine genuine pruning versus
-  missing source-value transport; never force expressions merely for inspection.
+  Normalized IR and native instruction stepping now confirm that the loop's
+  pure-tail `formats` boundary does not consume its original formal `value`;
+  it remains unavailable rather than forcing a debug-only argument. Its local
+  `saved` becomes inspectable after reading the already-captured result, with
+  repeated-entry checks and correct native finish values. Audit other normalized
+  signatures without treating genuine pruning as a missing executable input.
   Effect-free partial leaf evaluations retain the source function/type as inline
   frames over their existing native leaf bodies, with fragmented `$return`
   snapshots. They no longer advertise a full native aggregate return ABI;
@@ -259,6 +261,13 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   Fully known literals retain arbitrary-width bits; omitted nonconstant bits
   and unconsumed metadata remain unavailable. Function-entry GDB checks cover
   contextual operator literals without changing the native argument payload.
+  A nonconstant source argument consumed only at a narrower width remains
+  unavailable instead of zero/sign-padding omitted bits. Entry inspection
+  prefers the widest already-consumed format when the same argument is used
+  both narrowly and fully; no new ABI format is requested. Dynamic 81-bit
+  hardware operands check parameter/local availability and epoch changes under
+  both hints, alongside ordinary/debug output and VCD parity. Known constants
+  and sound extension from a retained natural-width value remain inspectable.
   Mixed integer/real struct-to-struct From and signed integer-derived Resolve
   now have entry-signature and actual finish-value regressions under both inline
   hints. Nested packed returns check numeric-only callee views remain unavailable

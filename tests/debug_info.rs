@@ -2413,6 +2413,161 @@ assert sorted(quotient_seen) == [(0, 0), (0, 1), (10, 1), (10, 2)], quotient_see
 }
 
 #[test]
+fn narrow_source_consumers_do_not_fabricate_binding_bits() {
+    let directory =
+        std::env::temp_dir().join(format!("siox_dwarf_narrow_binding_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("narrow.siox");
+    let text = r#"module dwarf_narrow_binding;
+use std::bits::unsigned;
+#[inline(HINT)]
+fn low(value: unsigned[81]) -> unsigned[8] {
+    let saved: unsigned[81] = value;
+    return unsigned[8](saved);
+}
+#[inline(HINT)]
+fn both(value: unsigned[81]) -> unsigned[81] {
+    let saved: unsigned[81] = value;
+    let byte: unsigned[8] = unsigned[8](saved);
+    return unsigned[81](byte) + saved;
+}
+entity Probe { value: unsigned[81] in, byte: unsigned[8] out, whole: unsigned[81] out }
+impl Probe { byte = low(value + 3); whole = both(value + 3); }
+#[test] entity T {}
+impl T {
+    let value: unsigned[81] = 1208925819614629174706181;
+    let probe: Probe = { .value = value };
+    stimulus: process {
+        await 1ns;
+        assert!(probe.byte == 8 and probe.whole == 1208925819614629174706192, "first consumer formats");
+        value = 1208925819614629174706190;
+        await 1ns;
+        assert!(probe.byte == 17 and probe.whole == 1208925819614629174706210, "new consumer epoch");
+    }
+}"#;
+    let python = r#"import gdb
+from collections import Counter
+gdb.execute('set disable-randomization off')
+stop = gdb.Breakpoint('dwarf_narrow_binding::low')
+gdb.execute('run')
+seen = []
+while gdb.selected_thread() is not None:
+    frame = gdb.selected_frame()
+    assert frame.name() == 'dwarf_narrow_binding::low', frame.name()
+    stop.enabled = False
+    for name in ['value', 'saved']:
+        try:
+            binding = frame.read_var(name)
+            assert binding.is_optimized_out or binding.is_unavailable, (name, str(binding))
+        except (gdb.error, ValueError):
+            pass
+    gdb.execute('finish', to_string=True)
+    result = gdb.history(0)
+    seen.append(int(result))
+    stop.enabled = True
+    gdb.execute('continue', to_string=True)
+# Both retained hardware reads must report the actual low byte in each epoch.
+assert Counter(seen) == Counter([8, 8, 17, 17]), seen
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+"#;
+    let complete = r#"import gdb
+from collections import Counter
+gdb.execute('set disable-randomization off')
+stop = gdb.Breakpoint('dwarf_narrow_binding::both')
+gdb.execute('run')
+seen = []
+while gdb.selected_thread() is not None:
+    frame = gdb.selected_frame()
+    assert frame.name() == 'dwarf_narrow_binding::both', frame.name()
+    stop.enabled = False
+    expected = int(frame.read_var('value'))
+    assert expected in [(1 << 80) + 8, (1 << 80) + 17], expected
+    for name in ['value', 'saved']:
+        binding = frame.read_var(name)
+        assert binding.type.sizeof == 11 and int(binding) == expected, (name, str(binding))
+    seen.append(expected)
+    # GDB cannot decode arbitrary-width integer returns. Native assertions
+    # verify the result; step out using the real caller address instead.
+    gdb.execute('tbreak *%#x' % frame.older().pc())
+    gdb.execute('continue', to_string=True)
+    stop.enabled = True
+    gdb.execute('continue', to_string=True)
+assert Counter(seen) == Counter([(1 << 80) + 8, (1 << 80) + 17]), seen
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+"#;
+    for hint in ["always", "never"] {
+        std::fs::write(&source, text.replace("HINT", hint)).unwrap();
+        let mut outputs = Vec::new();
+        for debugging in [false, true] {
+            let binary = directory.join(if debugging {
+                "debug.bin"
+            } else {
+                "ordinary.bin"
+            });
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(
+                command
+                    .arg(&source)
+                    .arg("-o")
+                    .arg(&binary)
+                    .output()
+                    .unwrap(),
+            );
+            outputs.push(success(
+                Command::new(&binary)
+                    .arg("-o")
+                    .arg(binary.with_extension("vcd"))
+                    .output()
+                    .unwrap(),
+            ));
+        }
+        assert_eq!(outputs[0].stdout, outputs[1].stdout);
+        assert_eq!(outputs[0].stderr, outputs[1].stderr);
+        assert_eq!(
+            std::fs::read(directory.join("ordinary.vcd")).unwrap(),
+            std::fs::read(directory.join("debug.vcd")).unwrap()
+        );
+        let binary = directory.join("debug.bin");
+        if Command::new("llvm-dwarfdump")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            success(
+                Command::new("llvm-dwarfdump")
+                    .arg("--verify")
+                    .arg(&binary)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        if Command::new("gdb").arg("--version").output().is_ok() {
+            success(
+                Command::new("gdb")
+                    .args(["-q", "-batch", "-ex"])
+                    .arg(format!("python exec({python:?})"))
+                    .arg(&binary)
+                    .output()
+                    .unwrap(),
+            );
+            success(
+                Command::new("gdb")
+                    .args(["-q", "-batch", "-ex"])
+                    .arg(format!("python exec({complete:?})"))
+                    .arg(&binary)
+                    .output()
+                    .unwrap(),
+            );
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn effectful_source_frames_share_actual_cached_results() {
     let directory =
         std::env::temp_dir().join(format!("siox_dwarf_effect_reuse_{}", std::process::id()));
@@ -2488,10 +2643,31 @@ while gdb.selected_thread() is not None:
     frame = gdb.selected_frame()
     assert frame.name() == 'dwarf_effect_reuse::formats', frame.name()
     if frame.type() == gdb.NORMAL_FRAME:
-        # Procedural CFG calls keep their canonical native function, rather
-        # than the expression emitter's in-place frame.
+        # Effects already executed in the caller CFG. This source frame owns
+        # only the remaining pure tail, not a full native function signature.
         assert frame.older().name() == 'T::stimulus', frame.older().name()
         value = 110 + int(frame.older().read_var('index'))
+        def unavailable(name):
+            try:
+                binding = gdb.selected_frame().read_var(name)
+                return binding.is_optimized_out or binding.is_unavailable
+            except (gdb.error, ValueError):
+                return True
+        assert unavailable('value') and unavailable('saved')
+        for _ in range(100):
+            frame = gdb.selected_frame()
+            assert frame.name() == 'dwarf_effect_reuse::formats', frame.name()
+            assert unavailable('value'), 'pruned formal must not become a made-up zero'
+            try:
+                saved = frame.read_var('saved')
+                if not saved.is_optimized_out and int(saved) == value:
+                    assert str(saved.type) == 'integer', str(saved.type)
+                    break
+            except (gdb.error, ValueError):
+                pass
+            gdb.execute('nexti', to_string=True)
+        else:
+            raise AssertionError('consumed normalized local unavailable')
         gdb.execute('finish', to_string=True)
         result = gdb.history(0)
         assert str(result.type) == 'integer' and int(result) == 3 * value + 2, str(result)
