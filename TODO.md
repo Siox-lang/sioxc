@@ -225,6 +225,13 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   Inspection waits through lazy caller-owned argument ranges and the caller's
   actual fragment store; it never requires an earlier fabricated value.
   Direct history-slot checks prove partial source finish adds no native return.
+  Complete inline packed returns now use the same source-enum observer for
+  `$return$logic`, with a separately reset nullable reference. Only matching
+  already-emitted metadata or binary proof permits capture; missing planes
+  and narrowed results remain unavailable. Wide signed/unsigned/template
+  return coverage checks actual enum mirror stores and repeated entries.
+  An 81-bit hardware X-return regression verifies that the native result keeps
+  X while an unconsumed source-frame metadata plane stays unavailable in GDB.
   Reusing a foreign field across another call now preserves the ordinary stdout
   order/count, including narrow/wide consumer formats and changing source epochs.
   A seeded host-random regression also verifies one draw across consumer formats.

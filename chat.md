@@ -16808,3 +16808,91 @@ capture if the prepared executable/GDB probe proves a gap; preserve demand,
 actual emitted planes and std-owned enum values. Goal remains active; no push.
 User also requested graphify cleanup if needed: inspect generated artifacts
 and stale output before changing anything; preserve curated data and history.
+
+Committed compiler ff7acdb and sibling docs 266b193. Probe 1975110 exhausted
+its short instruction budget before the return stores; corrected 1976167
+reaches the complete numeric 81-bit snapshot and fails specifically because
+$return$logic is absent. Both ordinary/debug binaries already pass numeric
+assertions and VCD parity. Own a shared capture_result companion using the
+existing ValueBinding logic capture and independently reset nullable reference;
+only complete already-emitted bits and cached planes/binary proof qualify.
+Extend existing wide-return regression, including narrowed consumers and
+repeated signed/unsigned/template invocations; no new executable dependency.
+Graphify is 24 MB and ignored, so no cache/history purge is warranted; refresh
+stale community labels with its native command after the code gate.
+
+1979838 compiled the shared observer reuse and verified all widths up to 129
+bits before the 256-bit companion exceeded the probe's fixed 2000-instruction
+budget. Its numeric snapshot was already readable while enum mirror writes
+were still executing; scale the observer budget with source width rather than
+claim premature availability or change the emitter. Corrected 1984721 is live:
+default wide-return regression passes (64.99s), bitpack build/check continues,
+then strict Clippy and native graphify cluster refresh. No Rust edits while
+live. Prepared return_missing_metadata.siox/.py in the diagnostic cache to
+check that a genuine X plane unconsumed inside the source frame stays absent
+instead of being invented from numeric bits. This probe is not evidence yet.
+
+1984721 is terminal exited/success/0, peak 899293184 bytes. Extended complete
+return companions pass default/bitpack wide fixtures across 81/127/128/129/256
+bits and both hints; strict Clippy passes. Native graphify cluster refresh
+preserves 5370 nodes/15310 edges and refreshes 237 community names/report/HTML
+without deleting cache or history (24 MB total, ignored by Git).
+1994797 proves the original 81-bit known-binary GDB companion is fixed with
+VCD parity, then fails in ordinary procedural lowering of a packed X argument;
+that baseline unsupported path is not a DWARF regression. The supported
+hardware-port variant, 1996241, is terminal exited/success/0: real X survives
+native assertions and VCD parity while the unconsumed return plane stays
+unavailable in GDB. Permanent nineteenth fixture 1999843 passes both hints
+and both packing modes, exited/success/0, peak 100749312 bytes. Update matching
+TODO and sibling architecture/testing docs. Freeze Rust for complete default/
+bitpack acceptance, four corpora, native smokes and AST update before committing
+only owned changes. Foreign AGENTS/.codex and 441 historical chat additions
+remain untouched. Signature/companion and whole-return audits keep goal active.
+
+Full return-companion acceptance is confirmed live as
+siox-job-3000-1791754959478476633-2002602.service; poll that exact unit/log,
+do not restart after an observation interruption. Frozen source/test hash:
+66af926e0b255d74b8426ef39660493510aca1cb5c2299e61d2977caf68fc45f.
+Only this owned appended tail (after line 15000), inline_values.rs, debug_info.rs
+and TODO may be staged after a terminal successful gate; sibling docs separately.
+No push. Check graph freshness after the included AST-only update; native
+cluster-only refresh cannot incorporate the new source before that update.
+
+2002602 remains confirmed live: the full default suite passes all nineteen
+DWARF fixtures (89.40s), and bitpack validation is running. Hash remains frozen.
+Prepared generic_aggregate_return.siox/.py in the diagnostic cache for the next
+signature audit: a generic identity over a struct containing a 3-bit tag, real
+and descending 81-bit signed array, plus a procedural generic real return.
+Check ordinary/debug native assertions, VCD parity, concrete source formals/
+return types and actual GDB finish values before inferring a signature fix.
+Do not run it concurrently with acceptance. Probe is not evidence yet. Keep
+the goal active and commit only the accepted return-companion batch first.
+
+2002602 remains live after both complete suites pass; nineteen DWARF fixtures
+pass in default and bitpack. Strict all-target Clippy/corpus stages continue.
+No source change or restart. Generic composite/real signature scratch probe is
+ready for the next available guarded slot after acceptance/owned commits.
+
+2002602 is still authoritatively running and has completed the ordinary
+228-program corpus with zero failures. Bitpack corpus is now live; both
+debug corpora, native smokes and AST refresh still follow. Preserve the frozen
+source and poll the same unit. No commit/push until the full gate is terminal.
+
+2002602 has completed both ordinary 228-program corpora with zero failures
+and remains confirmed live for debug corpus acceptance. Both full suites and
+strict Clippy already passed. Do not restart it or mutate frozen Rust; run the
+prepared generic signature probe only after terminal acceptance/owned commits.
+
+### 2026-10-12 — Codex — return-companion full acceptance
+
+2002602 is terminal exited/success/0, peak 1612681216 bytes. Frozen hash
+66af926e0b255d74b8426ef39660493510aca1cb5c2299e61d2977caf68fc45f is unchanged.
+Both full suites with nineteen DWARF fixtures per mode, strict frontend/all-
+target Clippy, artifact checks, four 228-program corpora and four FIFO/wide
+native GDB/VCD smokes pass. AST refresh: 5371 nodes, 15315 edges, 254 communities;
+existing vendored extractor warnings persist. Refresh the changed community
+labels using the native cluster command in the next guarded job; preserve
+curated history and ignored caches. Commit only owned inline_values.rs,
+debug_info.rs, TODO and appended chat tail, plus sibling docs separately.
+Then run the prepared generic aggregate/real signature probe. Preserve foreign
+AGENTS/.codex and 441 historical chat additions. No push. Goal stays active.

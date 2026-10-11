@@ -825,6 +825,11 @@ impl T {{
 # Unsupported native integer classifiers must not see the source return ABI.
 # Wide source frames expose complete actual results through the existing
 # read-only snapshot; narrowed consumers leave omitted result bits unavailable.
+def logic_bits(view, width):
+    if view.type.code == gdb.TYPE_CODE_STRUCT and any(field.name == 'bits' for field in view.type.fields()):
+        view = view['bits']
+    return ''.join(str(view[index] if view.type.code == gdb.TYPE_CODE_ARRAY else view['[' + str(index) + ']']).strip("'") for index in range(width - 1, -1, -1))
+
 stops = [gdb.Breakpoint({source:?} + ':' + str(line)) for line in [{signed_line}, {unsigned_line}, {low_line}, {generic_line}]]
 gdb.execute('run')
 for name, expected, complete in [('signed_identity', -2, True), ('signed_identity', -(1 << 64) - 1, True), ('signed_identity', 0, True), ('signed_identity', (1 << 64) + 1, True), ('unsigned_identity', (1 << 80) + 1, True), ('unsigned_identity', 0, True), ('unsigned_identity', (1 << 80) + 1, False), ('unsigned_identity', (1 << 64) + 1, True), ('low_byte', (1 << 80) + 1, True), ('low_byte', (1 << 80) + 1, True), ('generic_identity', -(1 << 64) - 1, True), ('generic_identity', (1 << 80) + 1, True)]:
@@ -848,6 +853,13 @@ for name, expected, complete in [('signed_identity', -2, True), ('signed_identit
             assert previous.is_optimized_out or previous.is_unavailable, str(previous)
         except (gdb.error, ValueError):
             pass
+        try:
+            previous = frame.read_var('$return$logic')
+            logic_bits(previous, 8 if name == 'low_byte' else {width})
+        except (gdb.error, ValueError):
+            pass
+        else:
+            raise AssertionError(('stale return companion', name))
         if complete:
             for _ in range(200):
                 try:
@@ -859,12 +871,30 @@ for name, expected, complete in [('signed_identity', -2, True), ('signed_identit
             else:
                 raise AssertionError(('complete wide result unavailable', name, expected))
             assert returned.type.sizeof == return_size, returned.type
+            logic_width = 8 if name == 'low_byte' else {width}
+            expected_bits = format(returned_expected & ((1 << logic_width) - 1), '0' + str(logic_width) + 'b')
+            # The existing enum mirror writes one source-owned state per bit.
+            for _ in range(max(2000, 32 * logic_width)):
+                try:
+                    companion = gdb.selected_frame().read_var('$return$logic')
+                    if logic_bits(companion, logic_width) == expected_bits: break
+                except (gdb.error, ValueError):
+                    pass
+                gdb.execute('stepi', to_string=True)
+            else:
+                raise AssertionError(('complete return companion unavailable', name, expected_bits))
         else:
             try:
                 returned = frame.read_var('$return')
                 assert returned.is_optimized_out or returned.is_unavailable, str(returned)
             except (gdb.error, ValueError):
                 pass
+            try:
+                logic_bits(frame.read_var('$return$logic'), {width})
+            except (gdb.error, ValueError):
+                pass
+            else:
+                raise AssertionError('narrowed consumer fabricated a complete return companion')
         assert 'Value returned is' not in gdb.execute('finish', to_string=True)
     assert gdb.selected_frame().name() == 'T::stimulus'
     gdb.execute('continue')
@@ -894,6 +924,118 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
             } else {
                 eprintln!("GDB unavailable: native wide returns checked, binding probe skipped");
             }
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn complete_source_returns_do_not_invent_missing_logic_planes() {
+    let directory = std::env::temp_dir().join(format!(
+        "siox_dwarf_missing_return_plane_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("missing.siox");
+    let text = r#"module return_missing_metadata;
+use std::bits::unsigned;
+#[inline(HINT)]
+fn echo(value: unsigned[81]) -> unsigned[81] {
+    let copy: unsigned[81] = value;
+    return copy; // missing return plane
+}
+entity Probe { input: unsigned[81] in, result: unsigned[81] out }
+impl Probe { result = echo(input); }
+#[test] entity T {}
+impl T {
+    let input: unsigned[81] = "10000000000000000000000000000000000000000000000000000000000000000000000000000000X";
+    let probe: Probe = { .input = input };
+    stimulus: process {
+        await 1ns;
+        assert!(probe.result[80] == '1' and probe.result[0] == 'X', "unknown return");
+    }
+}"#;
+    let line = text
+        .lines()
+        .position(|line| line.contains("missing return plane"))
+        .unwrap()
+        + 1;
+    let python = format!(
+        r#"import gdb
+gdb.Breakpoint({source:?} + ':{line}')
+gdb.execute('run')
+assert gdb.selected_frame().type() == gdb.INLINE_FRAME
+for _ in range(500):
+    try:
+        if int(gdb.selected_frame().read_var('$return')) == (1 << 80): break
+    except (gdb.error, ValueError):
+        pass
+    gdb.execute('stepi', to_string=True)
+else:
+    raise AssertionError('complete numeric return unavailable')
+try:
+    view = gdb.selected_frame().read_var('$return$logic')
+    assert view.is_optimized_out or view.is_unavailable, str(view)
+except (gdb.error, ValueError):
+    pass
+gdb.execute('finish', to_string=True)
+gdb.execute('continue', to_string=True)
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+"#,
+        source = source.to_string_lossy(),
+    );
+    for hint in ["never", "always"] {
+        std::fs::write(&source, text.replace("HINT", hint)).unwrap();
+        let ordinary = directory.join("ordinary.bin");
+        let debug = directory.join("debug.bin");
+        for (binary, debugging) in [(&ordinary, false), (&debug, true)] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+            success(
+                Command::new(binary)
+                    .arg("-o")
+                    .arg(binary.with_extension("vcd"))
+                    .output()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            std::fs::read(ordinary.with_extension("vcd")).unwrap(),
+            std::fs::read(debug.with_extension("vcd")).unwrap()
+        );
+        if Command::new("llvm-dwarfdump")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            success(
+                Command::new("llvm-dwarfdump")
+                    .arg("--verify")
+                    .arg(&debug)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        if Command::new("gdb").arg("--version").output().is_ok() {
+            success(
+                Command::new("gdb")
+                    .args(["-nx", "-q", "--batch"])
+                    .arg(&debug)
+                    .args([
+                        "-ex",
+                        "set disable-randomization off",
+                        "-ex",
+                        &format!("python {python}"),
+                    ])
+                    .output()
+                    .unwrap(),
+            );
+        } else {
+            eprintln!("GDB unavailable: native unknown return checked, plane probe skipped");
         }
     }
     std::fs::remove_dir_all(directory).unwrap();

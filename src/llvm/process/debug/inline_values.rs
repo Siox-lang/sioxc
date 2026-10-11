@@ -2434,13 +2434,20 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
             allocation.position_at_end(entry);
         }
         let pointer = debug.context.ptr_type(AddressSpace::default());
-        let reference = allocation
-            .build_alloca(pointer, "debug.return.reference")
-            .unwrap();
-        builder
-            .build_store(reference, pointer.const_null())
-            .unwrap();
-        reference
+        let reference = |name| {
+            let reference = allocation.build_alloca(pointer, name).unwrap();
+            builder
+                .build_store(reference, pointer.const_null())
+                .unwrap();
+            reference
+        };
+        (
+            reference("debug.return.reference"),
+            result_layout
+                .as_ref()
+                .filter(|layout| layout_has_packed_metadata(design, layout))
+                .map(|_| reference("debug.return.logic.reference")),
+        )
     });
     builder.set_current_debug_location(entry_location);
     if cache.debug_arguments.is_some() {
@@ -2524,8 +2531,8 @@ fn capture_result<'ctx>(
     value: IntValue<'ctx>,
     span: Span,
     layout: Option<&SourceLayout>,
-    reference: Option<PointerValue<'ctx>>,
-    cache: &ProcessValueCache<'ctx, '_>,
+    reference: Option<(PointerValue<'ctx>, Option<PointerValue<'ctx>>)>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
 ) {
     let Some(debug) = cache.debug else { return };
     let Some(layout) = layout
@@ -2553,7 +2560,7 @@ fn capture_result<'ctx>(
                 &mut 0,
                 &mut 0,
             );
-            if let Some(reference) = reference {
+            if let Some((reference, logic_reference)) = reference {
                 if let (Some(frame), Some(ty), Some(location)) = (
                     cache.value_frames.last(),
                     debug.ty(design, &layout, needs_mirror(&layout)),
@@ -2585,6 +2592,51 @@ fn capture_result<'ctx>(
                             location.as_mut_ptr(),
                             builder.get_insert_block().unwrap().as_mut_ptr(),
                         );
+                    }
+                    // Reuse the ordinary binding observer: no missing plane
+                    // may be requested just to complete a return's logic view.
+                    if let Some((reference, view, ty)) = logic_reference.and_then(|reference| {
+                        let view = logic::inspection_layout(design, &layout)?;
+                        let ty = debug.ty(design, &view, true)?;
+                        Some((reference, view, ty))
+                    }) {
+                        if let Some(bytes) =
+                            inspection_bits(&view).and_then(|bits| u32::try_from(bits / 8).ok())
+                        {
+                            let binding = ValueBinding {
+                                id,
+                                variable: debug.builder.create_auto_variable(
+                                    frame.scope.as_debug_info_scope(),
+                                    "$return$logic",
+                                    debug.file(span.file),
+                                    debug.sources.line_col(span.file, span.start).0,
+                                    ty,
+                                    true,
+                                    DIFlags::ZERO,
+                                    0,
+                                ),
+                                location,
+                                reference,
+                                buffer: debug.inspection_buffer(
+                                    module,
+                                    "sx.debug.return.logic",
+                                    bytes,
+                                ),
+                                inspection: ValueInspection::Logic(layout.as_ref().clone()),
+                                signed: false,
+                                parameter: false,
+                                captured: Cell::new(None),
+                                fragment: None,
+                            };
+                            cache
+                                .value_frames
+                                .last_mut()
+                                .unwrap()
+                                .bindings
+                                .push(binding);
+                            capture_binding(builder, design, cache, id, value, false);
+                            cache.value_frames.last_mut().unwrap().bindings.pop();
+                        }
                     }
                     let ready = debug
                         .context
