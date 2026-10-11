@@ -1,0 +1,18 @@
+module core::intrinsics;
+
+// Kernel `real` math the compiler emits natively, as a VHDL simulator builds
+// in `ieee.math_real`: no C declaration, no library to link. Each is the
+// LLVM intrinsic of its name (`llvm.sqrt.f64`). `std::math` is the public
+// face: `std::math::sqrt` is generic over every number type, and `real`'s
+// implementation of it is `sqrt` here.
+extern "intrinsic" {
+    pub fn sqrt(x: real) -> real;
+    pub fn sin(x: real) -> real;
+    pub fn cos(x: real) -> real;
+    pub fn exp(x: real) -> real;
+    pub fn log(x: real) -> real;
+    pub fn pow(x: real, y: real) -> real;
+    pub fn floor(x: real) -> real;
+    pub fn ceil(x: real) -> real;
+    pub fn round(x: real) -> real;
+}

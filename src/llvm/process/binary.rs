@@ -28,6 +28,7 @@ pub(super) fn process_binary<'ctx>(
             | ProcessBinaryOp::FloatMul
             | ProcessBinaryOp::FloatDiv
             | ProcessBinaryOp::FloatRem
+            | ProcessBinaryOp::FloatPow
     ) {
         let float = context.f64_type();
         let left = process_value_at(
@@ -68,6 +69,9 @@ pub(super) fn process_binary<'ctx>(
             ProcessBinaryOp::FloatMul => builder.build_float_mul(left, right, "pv.fmul").ok()?,
             ProcessBinaryOp::FloatDiv => builder.build_float_div(left, right, "pv.fdiv").ok()?,
             ProcessBinaryOp::FloatRem => builder.build_float_rem(left, right, "pv.frem").ok()?,
+            ProcessBinaryOp::FloatPow => {
+                real_intrinsic(context, module, builder, "llvm.pow.f64", &[left, right])?
+            }
             _ => return None,
         };
         let bits = builder
@@ -448,6 +452,7 @@ pub(super) fn process_binary<'ctx>(
         | ProcessBinaryOp::FloatMul
         | ProcessBinaryOp::FloatDiv
         | ProcessBinaryOp::FloatRem
+        | ProcessBinaryOp::FloatPow
         | ProcessBinaryOp::FloatEq
         | ProcessBinaryOp::FloatNe
         | ProcessBinaryOp::FloatLt

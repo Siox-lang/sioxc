@@ -399,6 +399,22 @@ impl<'a> Lowering<'a> {
         args: &[ast::Expr],
         env: &HashMap<String, Val>,
     ) -> Option<Val> {
+        // A `core::intrinsics` function is a native operation, not a call.
+        if let Some(intrinsic) = self.free_fns.intrinsic(f) {
+            let span = ast::expr_span(callee);
+            let operands: Vec<Expr> = args
+                .iter()
+                .map(|a| self.coerce_real(self.lower_scalar_env(a, env), ast::expr_span(a)))
+                .collect();
+            let mut arena = self.source_values.borrow_mut();
+            return Some(Val::Scalar(match (intrinsic, operands.as_slice()) {
+                (crate::ir::Intrinsic::Real(function), [x]) => {
+                    arena.unary(ProcessUnaryOp::Real(function), x, span)
+                }
+                (crate::ir::Intrinsic::Pow, [x, y]) => arena.binary(BinOp::FPow, x, y, span),
+                _ => return None,
+            }));
+        }
         // A bodyless declaration is a foreign C function (`extern "C"`).
         if f.body.is_none() {
             let is_type = |t: &Option<ast::Type>, expected: &str| {

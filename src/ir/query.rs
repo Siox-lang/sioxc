@@ -789,6 +789,16 @@ fn un_sym(op: UnOp) -> &'static str {
         UnOp::Neg => "-",
         UnOp::RealToInt => "integer",
         UnOp::IntToReal => "real",
+        UnOp::Real(function) => match function {
+            crate::ir::RealFunction::Sqrt => "sqrt",
+            crate::ir::RealFunction::Sin => "sin",
+            crate::ir::RealFunction::Cos => "cos",
+            crate::ir::RealFunction::Exp => "exp",
+            crate::ir::RealFunction::Log => "log",
+            crate::ir::RealFunction::Floor => "floor",
+            crate::ir::RealFunction::Ceil => "ceil",
+            crate::ir::RealFunction::Round => "round",
+        },
     }
 }
 
@@ -826,6 +836,7 @@ fn bin_sym(op: BinOp) -> &'static str {
         BinOp::FMul => "*.",
         BinOp::FDiv => "/.",
         BinOp::FRem => "%.",
+        BinOp::FPow => "**.",
         BinOp::FEq => "==.",
         BinOp::FNe => "!=.",
         BinOp::FLt => "<.",

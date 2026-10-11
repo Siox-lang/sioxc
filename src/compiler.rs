@@ -1169,6 +1169,7 @@ const CORE: &[(&str, &str)] = &[
     ("attrs", include_str!("../core/attrs.siox")),
     ("macros", include_str!("../core/macros.siox")),
     ("fmt", include_str!("../core/fmt.siox")),
+    ("intrinsics", include_str!("../core/intrinsics.siox")),
 ];
 
 /// The embedded source of a `core::` module path.

@@ -124,10 +124,8 @@ impl<'a> Lowering<'a> {
                     ast::Item::Fn(f) => {
                         self.free_fns.insert_free(f);
                     }
-                    ast::Item::ExternBlock { fns, .. } => {
-                        for f in fns {
-                            self.free_fns.insert_free(f);
-                        }
+                    ast::Item::ExternBlock { abi, fns, .. } => {
+                        self.free_fns.insert_extern(abi, fns);
                     }
                     ast::Item::Struct(s) => {
                         self.structs

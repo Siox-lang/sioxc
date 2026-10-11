@@ -148,11 +148,7 @@ fn process_functions<'a>(
     for item in modules.iter().flat_map(|module| &module.items) {
         match item {
             ast::Item::Fn(function) => functions.insert_free(function),
-            ast::Item::ExternBlock { fns, .. } => {
-                for function in fns {
-                    functions.insert_free(function);
-                }
-            }
+            ast::Item::ExternBlock { abi, fns, .. } => functions.insert_extern(abi, fns),
             _ => {}
         }
     }
@@ -3632,7 +3628,9 @@ fn process_display_kind_from_value(
                 ProcessUnaryOp::Neg | ProcessUnaryOp::RealToInteger => {
                     Some(ProcessDisplayKind::Signed)
                 }
-                ProcessUnaryOp::IntegerToReal => Some(ProcessDisplayKind::Real),
+                ProcessUnaryOp::IntegerToReal | ProcessUnaryOp::Real(_) => {
+                    Some(ProcessDisplayKind::Real)
+                }
                 ProcessUnaryOp::Not => Some(ProcessDisplayKind::Unsigned),
             }),
         ProcessValueKind::Binary { operation, .. } => match operation {
@@ -3640,7 +3638,8 @@ fn process_display_kind_from_value(
             | ProcessBinaryOp::FloatSub
             | ProcessBinaryOp::FloatMul
             | ProcessBinaryOp::FloatDiv
-            | ProcessBinaryOp::FloatRem => Some(ProcessDisplayKind::Real),
+            | ProcessBinaryOp::FloatRem
+            | ProcessBinaryOp::FloatPow => Some(ProcessDisplayKind::Real),
             ProcessBinaryOp::Eq
             | ProcessBinaryOp::Ne
             | ProcessBinaryOp::Lt
@@ -4912,13 +4911,18 @@ fn process_value_is_real(id: ProcessValueId, context: &LoweringContext<'_>) -> b
                 operation: ProcessUnaryOp::Neg,
                 operand,
             } => pending.push(*operand),
+            ProcessValueKind::Unary {
+                operation: ProcessUnaryOp::Real(_) | ProcessUnaryOp::IntegerToReal,
+                ..
+            } => return true,
             ProcessValueKind::Binary {
                 operation:
                     ProcessBinaryOp::FloatAdd
                     | ProcessBinaryOp::FloatSub
                     | ProcessBinaryOp::FloatMul
                     | ProcessBinaryOp::FloatDiv
-                    | ProcessBinaryOp::FloatRem,
+                    | ProcessBinaryOp::FloatRem
+                    | ProcessBinaryOp::FloatPow,
                 ..
             } => return true,
             ProcessValueKind::Select {
@@ -5640,6 +5644,27 @@ fn lower_process_foreign_call(
     let function = context.functions.get(callee)?;
     if function.body.is_some() || function.params.iter().any(|parameter| parameter.is_self) {
         return None;
+    }
+    // A `core::intrinsics` function is a native operation, not a call.
+    if let Some(intrinsic) = context.functions.intrinsic(function) {
+        let real = crate::types::Ty::Real;
+        let operands = args
+            .iter()
+            .map(|argument| value_ref_with_type(argument, process, context, Some(&real)))
+            .collect::<Vec<_>>();
+        let kind = match (intrinsic, operands.as_slice()) {
+            (crate::ir::Intrinsic::Real(function), [operand]) => ProcessValueKind::Unary {
+                operation: ProcessUnaryOp::Real(function),
+                operand: *operand,
+            },
+            (crate::ir::Intrinsic::Pow, [left, right]) => ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::FloatPow,
+                left: *left,
+                right: *right,
+            },
+            _ => return None,
+        };
+        return Some(push_value(*span, Some(real), Some(64), kind, context));
     }
     let parameters = function
         .params
@@ -8446,7 +8471,9 @@ fn source_value_width(
             .get(table.0)
             .map(|table| table.element_width),
         ProcessValueKind::Unary { operation, operand } => match operation {
-            ProcessUnaryOp::RealToInteger | ProcessUnaryOp::IntegerToReal => Some(64),
+            ProcessUnaryOp::RealToInteger
+            | ProcessUnaryOp::IntegerToReal
+            | ProcessUnaryOp::Real(_) => Some(64),
             ProcessUnaryOp::Neg | ProcessUnaryOp::Not => value_width(operand),
         },
         ProcessValueKind::RawResize { operand } => value_width(operand),
@@ -8475,7 +8502,8 @@ fn source_value_width(
             | ProcessBinaryOp::FloatSub
             | ProcessBinaryOp::FloatMul
             | ProcessBinaryOp::FloatDiv
-            | ProcessBinaryOp::FloatRem => Some(64),
+            | ProcessBinaryOp::FloatRem
+            | ProcessBinaryOp::FloatPow => Some(64),
             ProcessBinaryOp::Shl => shifted_width(value_width(left)?, *right, context),
             _ => Some(value_width(left)?.max(value_width(right)?)),
         },
@@ -8684,6 +8712,7 @@ fn is_float_operation(operation: &ProcessBinaryOp) -> bool {
             | ProcessBinaryOp::FloatMul
             | ProcessBinaryOp::FloatDiv
             | ProcessBinaryOp::FloatRem
+            | ProcessBinaryOp::FloatPow
             | ProcessBinaryOp::FloatEq
             | ProcessBinaryOp::FloatNe
             | ProcessBinaryOp::FloatLt

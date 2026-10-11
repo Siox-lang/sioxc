@@ -397,6 +397,7 @@ pub(super) fn process_value_is_real(design: &Design, id: ProcessValueId) -> bool
                 | ProcessBinaryOp::FloatMul
                 | ProcessBinaryOp::FloatDiv
                 | ProcessBinaryOp::FloatRem
+                | ProcessBinaryOp::FloatPow
         ),
         ProcessValueKind::Select {
             then_value,

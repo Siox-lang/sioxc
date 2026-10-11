@@ -815,3 +815,37 @@ impl T {
         );
     }
 }
+
+/// `std::math`'s `real` functions are compiler built-ins (`core::intrinsics`,
+/// LLVM's `llvm.<fn>.f64`), in hardware and a testbench, with no C
+/// declaration in source.
+#[cfg(feature = "llvm")]
+#[test]
+fn real_math_is_built_in() {
+    let stdout = run(
+        "real_intrinsics",
+        r#"
+module real_intrinsics;
+use std::math::{sqrt, sin, cos, exp, log, pow, floor, ceil, round, PI};
+entity Dut { x: real in, a: real out, b: real out, c: real out, d: real out }
+impl Dut { a = sqrt(x); b = pow(x, 0.5); c = floor(x + 0.7) + ceil(x + 0.2) + round(x + 0.5); d = sin(PI / 2.0) + cos(0.0) + log(exp(x)); }
+#[test] entity T {}
+impl T {
+    let x: real = 0.0; let a: real; let b: real; let c: real; let d: real;
+    let dut: Dut = { .x = x, .a = a, .b = b, .c = c, .d = d };
+    check: process {
+        x = 16.0; await 1ns;
+        print!("hw {} {} {} {}", a, b, c, d);
+        let y: real = 2.0;
+        print!("tb {} {} {} {} {} {}", sqrt(y), pow(y, 10.0), floor(2.7), ceil(2.2), round(2.5), log(exp(3.0)));
+    }
+}
+"#,
+    );
+    for line in ["hw 4 4 50 18", "tb 1.41421 1024 2 3 3 3"] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}

@@ -13861,3 +13861,20 @@ conversions are constructors, not `to_<type>()`. Branch `feat/math-sqrt-construc
 - `constant_expr` folds `/` and shifts; `capture_process_operand` wraps an
   `integer` wider than its word to it.
 **Codex:** touches `ir/lower/{calls,source_processes}.rs`, `types/expressions.rs`.
+
+### 2026-10-11 — Claude — real math as compiler built-ins
+
+Owner preference ("like with nvc"): `real` math is built in, not C externs.
+Branch `feat/real-math-intrinsics`.
+- `core::intrinsics` (`extern "intrinsic"`, reserved to `core`: E-P036
+  elsewhere) declares sqrt/sin/cos/exp/log/pow/floor/ceil/round; std::math
+  re-exports them and `impl Sqrt for real` calls `intrinsics::sqrt`;
+  `std::libm` is gone.
+- IR: `RealFunction` (ir/expr.rs); `UnOp::Real` / `ProcessUnaryOp::Real`,
+  `BinOp::FPow` / `ProcessBinaryOp::FloatPow`; `FunctionIndex::insert_extern`
+  + `intrinsic()`; both call lowerings emit the op instead of a ForeignCall;
+  LLVM calls `llvm.<fn>.f64` (`real_intrinsic` in process/support.rs).
+**Codex:** touches `ir/{expr,process,functions,derive,query}.rs`,
+`ir/lower/{calls,collect,hardware,operators,source_processes}.rs`,
+`llvm/emit.rs`, `llvm/process/{binary,logic,support,values,value_types}.rs`,
+`types/items.rs`, `syntax/parser.rs`, `compiler.rs`, `diag.rs`.

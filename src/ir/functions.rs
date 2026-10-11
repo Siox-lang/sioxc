@@ -7,6 +7,15 @@ use crate::syntax::ast;
 
 use super::OperatorImpls;
 
+/// A built-in function of `core::intrinsics`, by what it computes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Intrinsic {
+    /// A one-argument `real` function.
+    Real(crate::ir::RealFunction),
+    /// `pow(x, y)`.
+    Pow,
+}
+
 /// Functions available to lowering and constant evaluation.
 ///
 /// Module-level and foreign functions use the resolver's stable declaration
@@ -35,6 +44,9 @@ pub struct FunctionIndex<'a> {
     /// Exact `impl From<Source> for Target` bodies, keyed by both nominal
     /// identities so equal leaves in different modules cannot collide.
     conversions: HashMap<(String, String), &'a ast::FnDecl>,
+    /// Functions of an `extern "intrinsic"` block (`core::intrinsics`): the
+    /// compiler emits them natively instead of calling a foreign symbol.
+    intrinsics: std::collections::HashSet<DefId>,
 }
 
 impl<'a> FunctionIndex<'a> {
@@ -47,6 +59,7 @@ impl<'a> FunctionIndex<'a> {
             operators: OperatorImpls::default(),
             blanket_array_operators: HashMap::new(),
             conversions: HashMap::new(),
+            intrinsics: std::collections::HashSet::new(),
         }
     }
 
@@ -85,6 +98,31 @@ impl<'a> FunctionIndex<'a> {
         self.conversions
             .get(&(target.to_string(), source.to_string()))
             .copied()
+    }
+
+    /// Register an `extern` block's functions; an `"intrinsic"` one's are
+    /// the compiler's built-ins.
+    pub fn insert_extern(&mut self, abi: &str, functions: &'a [ast::FnDecl]) {
+        for function in functions {
+            self.insert_free(function);
+            if abi == "intrinsic" {
+                if let Some(id) = self.resolved.declared(function.name.span) {
+                    self.intrinsics.insert(id);
+                }
+            }
+        }
+    }
+
+    /// The built-in operation `function` is, when it is an intrinsic.
+    pub fn intrinsic(&self, function: &ast::FnDecl) -> Option<Intrinsic> {
+        let id = self.resolved.declared(function.name.span)?;
+        if !self.intrinsics.contains(&id) {
+            return None;
+        }
+        match function.name.text.as_str() {
+            "pow" => Some(Intrinsic::Pow),
+            name => crate::ir::RealFunction::from_name(name).map(Intrinsic::Real),
+        }
     }
 
     /// Register a module-level or foreign function declaration.
