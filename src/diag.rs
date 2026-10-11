@@ -467,8 +467,9 @@ pub mod codes {
     /// A macro invocation that cannot expand: no form matches its arguments,
     /// its body names no parameter, or expansions nest too deep.
     pub const MACRO_EXPANSION: &str = "E-P035";
-    /// A misused lang item: `attr lang` bound outside `core`/`std`, naming
-    /// nothing, or one role bound twice.
+    /// A misused compiler hook: `attr lang` bound outside `core`/`std`,
+    /// naming nothing, or one role bound twice; or `extern "intrinsic"`
+    /// outside `core`.
     pub const LANG_ITEM: &str = "E-P036";
     /// A type attribute (`attr integers: integer = self'high + 1;` in an
     /// implementation) that is not a shape fact: its value reads something

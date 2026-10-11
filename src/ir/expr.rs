@@ -161,6 +161,60 @@ pub enum Expr {
     Unknown,
 }
 
+/// A `real` function the compiler emits natively, as a simulator builds in
+/// `ieee.math_real`: declared in `core::intrinsics` (`extern "intrinsic"`),
+/// lowered to LLVM's `llvm.<name>.f64`, never a C declaration in source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RealFunction {
+    /// The square root.
+    Sqrt,
+    /// The sine, in radians.
+    Sin,
+    /// The cosine, in radians.
+    Cos,
+    /// `e` to the power of the operand.
+    Exp,
+    /// The natural logarithm.
+    Log,
+    /// Rounded toward minus infinity.
+    Floor,
+    /// Rounded toward plus infinity.
+    Ceil,
+    /// Rounded to the nearest integer, ties away from zero.
+    Round,
+}
+
+impl RealFunction {
+    /// The one-argument intrinsic `core::intrinsics` declares by `name`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "sqrt" => Self::Sqrt,
+            "sin" => Self::Sin,
+            "cos" => Self::Cos,
+            "exp" => Self::Exp,
+            "log" => Self::Log,
+            "floor" => Self::Floor,
+            "ceil" => Self::Ceil,
+            "round" => Self::Round,
+            _ => return None,
+        })
+    }
+
+    /// The LLVM intrinsic implementing it.
+    pub fn llvm_name(self) -> &'static str {
+        match self {
+            Self::Sqrt => "llvm.sqrt.f64",
+            Self::Sin => "llvm.sin.f64",
+            Self::Cos => "llvm.cos.f64",
+            Self::Exp => "llvm.exp.f64",
+            Self::Log => "llvm.log.f64",
+            Self::Floor => "llvm.floor.f64",
+            Self::Ceil => "llvm.ceil.f64",
+            Self::Round => "llvm.round.f64",
+        }
+    }
+}
+
 /// A prefix operation in the digital IR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnOp {
@@ -177,6 +231,8 @@ pub enum UnOp {
     /// `real(x)` on an integer: the integer's *value* as an f64, not its bits
     /// reinterpreted.
     IntToReal,
+    /// A built-in `real` function (`core::intrinsics::sqrt`).
+    Real(RealFunction),
 }
 
 /// An infix operation in the digital IR.
@@ -254,6 +310,8 @@ pub enum BinOp {
     FDiv,
     /// Float remainder, C's `fmod`.
     FRem,
+    /// Float power, `core::intrinsics::pow` (`llvm.pow.f64`).
+    FPow,
     /// Float comparison on f64-bit values (`real` operands); the result is a
     /// `Bool` (0/1), computed with ordered IEEE-754 semantics — integer compare
     /// on the raw bits would misorder negatives and `±0.0`.

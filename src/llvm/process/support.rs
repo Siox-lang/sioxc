@@ -892,3 +892,31 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
     }
     supported
 }
+
+/// Call the LLVM intrinsic `name` (`llvm.sqrt.f64`) on f64 operands: the
+/// built-in `real` functions of `core::intrinsics`.
+pub(super) fn real_intrinsic<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    name: &str,
+    operands: &[inkwell::values::FloatValue<'ctx>],
+) -> Option<inkwell::values::FloatValue<'ctx>> {
+    let float = context.f64_type();
+    let function = module.get_function(name).unwrap_or_else(|| {
+        let parameters = vec![float.into(); operands.len()];
+        module.add_function(name, float.fn_type(&parameters, false), None)
+    });
+    let arguments = operands
+        .iter()
+        .map(|operand| (*operand).into())
+        .collect::<Vec<inkwell::values::BasicMetadataValueEnum>>();
+    let inkwell::values::ValueKind::Basic(result) = builder
+        .build_call(function, &arguments, "pv.real.fn")
+        .ok()?
+        .try_as_basic_value()
+    else {
+        return None;
+    };
+    Some(result.into_float_value())
+}

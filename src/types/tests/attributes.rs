@@ -193,3 +193,14 @@ fn type_attributes_are_shape_facts() {
         "{unknown:?}"
     );
 }
+
+#[test]
+/// `extern "intrinsic"` is `core::intrinsics`' alone (E-P036).
+fn intrinsic_abi_is_reserved_for_core() {
+    let codes =
+        diag_codes("module m;\nextern \"intrinsic\" {\n    pub fn sqrt(x: real) -> real;\n}\n");
+    assert!(
+        codes.contains(&format!("{:?}", Some(codes::LANG_ITEM))),
+        "{codes:?}"
+    );
+}

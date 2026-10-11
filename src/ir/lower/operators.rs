@@ -232,14 +232,19 @@ impl<'a> Lowering<'a> {
             Expr::Binary { op, .. } => {
                 matches!(
                     op,
-                    BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv | BinOp::FRem
+                    BinOp::FAdd
+                        | BinOp::FSub
+                        | BinOp::FMul
+                        | BinOp::FDiv
+                        | BinOp::FRem
+                        | BinOp::FPow
                 )
             }
             Expr::Select { then, els, .. } => self.is_real_expr(then) || self.is_real_expr(els),
             Expr::CCall { f64_ret, .. } => *f64_ret,
             // `real(n)`: an integer converted by value.
             Expr::Unary {
-                op: UnOp::IntToReal,
+                op: UnOp::IntToReal | UnOp::Real(_),
                 ..
             } => true,
             _ => false,

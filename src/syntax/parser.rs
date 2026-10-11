@@ -534,7 +534,8 @@ impl<'a> Parser<'a> {
             }
             let t = self.bump();
             let abi = self.text_of(t.span).trim_matches('"').to_string();
-            if abi != "C" {
+            // "intrinsic" is the compiler's own: `core::intrinsics`.
+            if abi != "C" && abi != "intrinsic" {
                 self.error_at(t.span, "only the \"C\" ABI is supported");
             }
             self.expect(TokenKind::LBrace, "to open an extern block");
