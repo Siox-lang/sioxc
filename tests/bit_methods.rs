@@ -798,7 +798,7 @@ impl T {
         let inf: float<32, 23> = one / zero;
         let mz: float<32, 23> = -zero;
         print!("special {} {} {} {} {}", neg.sqrt().is_nan(), integer(mz.sqrt()), inf.sqrt(), zero.sqrt(),
-            one.sqrt().to_real());
+            real(one.sqrt()));
     }
 }
 "#,

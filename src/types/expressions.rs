@@ -459,6 +459,16 @@ impl<'a> Checker<'a> {
                 for a in args {
                     self.check_expr(a, sym);
                 }
+                // A kernel conversion's argument is typed too: `real(x)`
+                // dispatches to `impl From<S> for real` by `x`'s type.
+                if matches!(callee.as_ref(), Expr::Path(path)
+                    if matches!(path.segments.as_slice(), [only]
+                        if matches!(only.text.as_str(), "real" | "integer" | "Char")))
+                {
+                    for a in args {
+                        self.type_of(a, sym);
+                    }
+                }
                 if *bang {
                     self.check_format_arity(callee, args, sym);
                 } else if matches!(callee.as_ref(), Expr::Field { .. }) {

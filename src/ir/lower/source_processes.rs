@@ -2877,6 +2877,25 @@ fn capture_process_operand(
                 .as_ref()
                 .and_then(|ty| process_layout_for_type(ty, node.span, context))
         });
+    // A kernel integer wider than its word (`x << 6` keeps the operand's
+    // bits) wraps to the word it is captured as, as any `integer` does.
+    let word = layout.as_ref().and_then(SourceLayout::packed_width);
+    let (value, width) = match (word, node.bit_width) {
+        (Some(word), Some(width))
+            if width > word && matches!(node.ty, Some(crate::types::Ty::Integer)) =>
+        {
+            let narrowed = push_value(
+                node.span,
+                node.ty.clone(),
+                Some(word),
+                ProcessValueKind::RawResize { operand: value },
+                context,
+            );
+            context.process_ir.value_layouts[narrowed.0 as usize] = layout.clone();
+            (narrowed, Some(word))
+        }
+        _ => (value, node.bit_width),
+    };
     process.locals.push(ProcessLocal {
         id: local,
         name: format!("<call:{}>", local.0),
@@ -2895,7 +2914,7 @@ fn capture_process_operand(
     let id = push_value(
         node.span,
         node.ty,
-        node.bit_width,
+        width,
         ProcessValueKind::Local {
             process: process.id,
             local,
@@ -4968,6 +4987,23 @@ fn lower_process_kernel_conversion(
         .filter(|ty| !matches!(ty, crate::types::Ty::Error))
         .cloned();
     let operand = value_ref_with_type(&args[0], process, context, operand_type.as_ref());
+    // `real(x)` for a type with `impl From<S> for real` (`real(ufixed)`) is
+    // that conversion, not the kernel reading of its word.
+    if let Some(function) = operand_type
+        .clone()
+        .or_else(|| process_value_type(operand, context))
+        .and_then(|ty| process_type_key(&ty, context))
+        .and_then(|source| context.functions.get_conversion(&name, &source))
+    {
+        return inline_process_function(
+            function,
+            None,
+            &[operand],
+            process,
+            context,
+            Some(&target),
+        );
+    }
     let operand_is_real = matches!(operand_type, Some(crate::types::Ty::Real))
         || process_value_is_real(operand, context);
     let kind = if name == "integer" && operand_is_real {

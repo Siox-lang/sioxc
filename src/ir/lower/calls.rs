@@ -386,6 +386,19 @@ impl<'a> Lowering<'a> {
     ) -> Option<Val> {
         let display_name = call_fn_key(callee)?;
         let f = self.free_fns.get(callee)?;
+        self.inline_function(f, display_name, callee, args, env)
+    }
+
+    /// Inline `f` for a call at `callee` with `args`, as a free function's
+    /// call is; `display_name` names it in depth diagnostics.
+    pub(super) fn inline_function(
+        &self,
+        f: &ast::FnDecl,
+        display_name: String,
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+        env: &HashMap<String, Val>,
+    ) -> Option<Val> {
         // A bodyless declaration is a foreign C function (`extern "C"`).
         if f.body.is_none() {
             let is_type = |t: &Option<ast::Type>, expected: &str| {
@@ -1016,6 +1029,29 @@ impl<'a> Lowering<'a> {
         // rather than the number.
         let to_real = matches!(callee, ast::Expr::Path(p) if p.segments.len() == 1
             && p.segments[0].text == "real");
+        // `real(x)` for a type with `impl From<S> for real` (`real(ufixed)`)
+        // is that conversion, not the kernel reading of its word.
+        if to_real {
+            if let Some(family) = args.first().and_then(|arg| self.operand_type_name(arg)) {
+                let function = self.op_impls.get("From", "real").and_then(|impls| {
+                    impls.iter().find_map(|(f, source)| {
+                        (source.clone().or_else(|| {
+                            f.params
+                                .iter()
+                                .find(|p| !p.is_self)
+                                .and_then(|p| p.ty.as_ref())
+                                .and_then(|ty| self.free_fns.type_head_key(ty))
+                        }) == Some(family.clone()))
+                        .then_some(*f)
+                    })
+                });
+                if let Some(Val::Scalar(value)) = function.and_then(|f| {
+                    self.inline_function(f, format!("real({family})"), callee, args, env)
+                }) {
+                    return Some(value);
+                }
+            }
+        }
         if to_real {
             // ...and so is crossing into it: `real(n)` is the number n.
             if !self.is_real_expr(&v) {
@@ -1502,6 +1538,9 @@ impl<'a> Lowering<'a> {
                     BinOp::Add | BinOp::SAdd => left.checked_add(right),
                     BinOp::Sub | BinOp::SSub => left.checked_sub(right),
                     BinOp::Mul | BinOp::SMul => left.checked_mul(right),
+                    BinOp::Div | BinOp::SDiv => left.checked_div(right),
+                    BinOp::Shl => left.checked_shl(u32::try_from(right).ok()?),
+                    BinOp::Shr | BinOp::AShr => left.checked_shr(u32::try_from(right).ok()?),
                     _ => None,
                 }
             }

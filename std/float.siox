@@ -2,6 +2,7 @@ module std::float;
 
 use std::bits::unsigned;
 use std::fixed::{ufixed, sfixed};
+use std::math::Sqrt;
 use std::numeric::Rounding;
 
 // Floating point, after VHDL-2008's `float_pkg`. The parameters are the
@@ -330,12 +331,21 @@ impl float {
         let f: integer = 0 - self'low;
         return low_bits(integer(self) >> f, self'high) == 0;
     }
+}
 
+// Prints as its value: `{:.3}` and `{:e}` reach the real it converts to.
+impl Display for float {
+    fn fmt(self, f: Formatter) {
+        write!(f, "{}", real(self));
+    }
+}
+
+impl Sqrt for float {
     // The square root, rounded to nearest even (IEEE `squareRoot`): NaN for a
     // NaN or a negative number, and zero, `-0` and infinity are their own
     // roots. The radicand needs `2f + 6` bits of the 64-bit kernel word, so
     // it holds up to 28 mantissa bits (binary16, binary32), as `*` and `/` do.
-    pub fn sqrt(self) -> float {
+    fn sqrt(self) -> float {
         let e: integer = self'high;
         let f: integer = 0 - self'low;
         let a: integer = integer(self);
@@ -357,12 +367,14 @@ impl float {
             0, (k - odd) / 2 + bias, root_with_sticky(radicand, self), f + 3, e, f
         );
     }
+}
 
-    // The number this holds, as a `real`.
-    pub fn to_real(self) -> real {
-        let e: integer = self'high;
-        let f: integer = 0 - self'low;
-        let a: integer = integer(self);
+// `real(x)`: the number a float holds.
+impl From<float> for real {
+    fn from(value: float) -> real {
+        let e: integer = value'high;
+        let f: integer = 0 - value'low;
+        let a: integer = integer(value);
         let sign: real = if low_bits(a >> (e + f), 1) == 1 { 0.0 - 1.0 } else { 1.0 };
         let exponent: integer = low_bits(a >> f, e);
         let fraction: integer = low_bits(a, f);
@@ -378,13 +390,6 @@ impl float {
 // `float<32, 23>(1.5)`: a number in the format being built — `Self'high`
 // exponent and `-Self'low` fraction bits — rounded to nearest even; beyond
 // the range it is infinite, below it zero.
-// Prints as its value: `{:.3}` and `{:e}` reach the real it converts to.
-impl Display for float {
-    fn fmt(self, f: Formatter) {
-        write!(f, "{}", self.to_real());
-    }
-}
-
 impl From<real> for float {
     fn from(value: real) -> float {
         return float_word(value, Self'high, 0 - Self'low);
