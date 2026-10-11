@@ -16520,3 +16520,17 @@ ordering code, regression, TODO and appended chat tail; sibling architecture/
 testing docs separately. Preserve foreign AGENTS/.codex and 441 historical
 chat insertions. No push. Next execute the prepared repeated-effect probe before
 choosing any additional cache/transport change. The full DWARF goal stays active.
+
+### 2026-10-11 — Codex — committed batch and repeated-effect diagnosis
+
+Committed compiler c07b7a3 and sibling docs 57ab3ec after 1175773 full success.
+No push. New isolated native probe 1264136 is terminal failed/exit-code/1:
+ordinary/debug assertions and VCD bytes match, but stdout differs. The source
+uses `pair.left + putchar(value + 2) + pair.left + pair.right`; ordinary prints
+ACBKML, debug prints ACABKMKL. This confirms the predicted effect-cache boundary
+gap: body-owned foreign captures are not carried into the caller's persistent
+effect cache, so a cleared source-result entry reexecutes that foreign field.
+Record it in TODO and continue with the shared cache/inline-body callers next.
+Do not call the passing aggregate fixture or the 98% engineering estimate full
+DWARF completion. Compiler sources remain at the verified frozen hash; no job
+is running. Preserve foreign AGENTS/.codex and 441 historical chat insertions.

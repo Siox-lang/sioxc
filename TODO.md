@@ -216,6 +216,14 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   bodies remain shared across those contexts. Complete grouping for separately
   demanded/selected nested-call and partial aggregate returns; no debug
   boundary may force an unconsumed field or invent a zero for a pruned member.
+  A repeated-effect native probe still fails stdout parity: reusing `pair.left`
+  across another foreign call prints `ACABKMKL` in the debug executable instead
+  of ordinary `ACBKML`, despite matching native assertions and VCDs. Foreign
+  results survive ordinary state-cache clears, but results evaluated inside a
+  debug native body are not transported back to the caller's effect cache.
+  Preserve actual effect results/readiness across those boundaries and consumer
+  formats without retaining stale pure reads or forcing discarded fields;
+  verify side-effect order/counts, not only numeric results and waveforms.
   Partial leaf evaluations now retain the source function/type as inline
   frames over their existing native leaf bodies, with fragmented `$return`
   snapshots. They no longer advertise a full native aggregate return ABI;
