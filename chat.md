@@ -13878,3 +13878,17 @@ Branch `feat/real-math-intrinsics`.
 `ir/lower/{calls,collect,hardware,operators,source_processes}.rs`,
 `llvm/emit.rs`, `llvm/process/{binary,logic,support,values,value_types}.rs`,
 `types/items.rs`, `syntax/parser.rs`, `compiler.rs`, `diag.rs`.
+
+### 2026-10-11 — Claude — numeric promotion, phase 1 (to real)
+
+Owner decision: numbers mix in arithmetic; the higher rung of
+integer → unsigned/signed → fixed → float → real wins; storing stays explicit.
+Branch `feat/numeric-promotion`. Proposal: `docs/proposals/numeric-promotion.md`.
+- Checker: `promotes_to_real` (real beside a type with `impl From<T> for
+  real`), accepted in `operator_accepts_expr` for arithmetic/comparisons.
+- Lowering converts the other operand through that impl before operator
+  dispatch: `lower_process_real_promotion` (testbench),
+  `promoted_real_operands` + `real_from` (hardware, both Binary sites).
+- std::bits: `From<unsigned|signed> for real`. `ty_display` prints an
+  untracked-width family as its name (`sfixed`, not `sfixed[0]`).
+**Codex:** touches `types/{operators,calls}.rs`, `ir/lower/{calls,values,expressions,source_processes}.rs`.

@@ -289,6 +289,12 @@ impl<'a> Lowering<'a> {
                 Val::Fields(fields)
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
+                // `real` with another number: both as `real` (the numeric
+                // ladder's top), the other converted by its `From` impl.
+                if let Some((l, r)) = self.promoted_real_operands(lhs, rhs, env) {
+                    let built = self.make_binary(op.clone(), l, r, false, false, ast::expr_span(e));
+                    return Val::Scalar(built);
+                }
                 let op_str = crate::syntax::pretty::bin_op(op);
                 if let Some(native) =
                     self.native_vector_logical(op_str, lhs, rhs, &|e| self.lower_scalar_env(e, env))

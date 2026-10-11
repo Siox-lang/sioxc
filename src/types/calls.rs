@@ -317,6 +317,13 @@ impl<'a> Checker<'a> {
                 .def(*id)
                 .map(|d| d.name.clone())
                 .unwrap_or_else(|| ty_name(t)),
+            // A length of 0 is a family whose width this pass does not track
+            // (a fixed or float format): its name says it, not `sfixed[0]`.
+            Ty::Array {
+                elem: _,
+                len: 0,
+                family: Some(name),
+            } => self.key_leaf(name).to_string(),
             Ty::Array {
                 elem: _,
                 len,

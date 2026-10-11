@@ -849,3 +849,45 @@ impl T {
         );
     }
 }
+
+/// A `real` beside any number whose type has `impl From<T> for real`
+/// promotes it: `r + u - s`, `v * r + f`, `s < r`, in hardware and a
+/// testbench, and `sqrt(i + r + u - s)`.
+#[cfg(feature = "llvm")]
+#[test]
+fn real_promotes_every_number_beside_it() {
+    let stdout = run(
+        "numeric_promotion",
+        r#"
+module numeric_promotion;
+use std::fixed::sfixed;
+use std::float::float;
+use std::math::sqrt;
+entity Dut { r: real in, u: unsigned[8] in, s: sfixed<8, 4> in, v: signed[8] in, f: float<32, 23> in,
+    y: real out, z: real out, lt: Bool out }
+impl Dut { y = r + u - s; z = v * r + f; lt = s < r; }
+#[test] entity T {}
+impl T {
+    let r: real; let u: unsigned[8]; let s: sfixed<8, 4>; let v: signed[8]; let f: float<32, 23>;
+    let y: real; let z: real; let lt: Bool;
+    let dut: Dut = { .r = r, .u = u, .s = s, .v = v, .f = f, .y = y, .z = z, .lt = lt };
+    check: process {
+        r = 2.5; u = 4; s = sfixed<8, 4>(1.5); v = 0 - 3; f = float<32, 23>(0.25);
+        await 1ns;
+        print!("hw {} {} {}", y, z, lt);
+        let i: integer = 3;
+        let tr: real = 2.5;
+        let tu: unsigned[8] = 4;
+        let ts: sfixed<8, 4> = sfixed<8, 4>(1.5);
+        print!("tb {} {} {} {}", sqrt(i + tr + tu - ts), tr * ts, ts - tr, tu > tr);
+    }
+}
+"#,
+    );
+    for line in ["hw 5 -7.25 true", "tb 2.82843 3.75 -1 true"] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}
