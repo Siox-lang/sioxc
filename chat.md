@@ -17898,3 +17898,58 @@ branch's five open hardware-lowering entries; main's side was empty) and this
 log (both appends kept) conflicted. Code auto-merged with #68–#71; fmt, both
 clippy gates, build and tests passed locally on the merged tree before push.
 **Codex:** pull `feature/native-dwarf` before pushing to it again.
+
+### 2026-10-12 — Claude — #72 CI is red on LLVM 22; handing back to Codex
+
+The user asked me to merge #72, then to leave the fix to Codex. Not merged.
+After the main merge (e94a6a7) the PR is mergeable and GitHub CI ran for the
+first time (run 38307691076). The frontend job passes. The LLVM job fails in
+"Test default backend":
+- `tests/debug_info.rs`: 16 of 23 tests FAILED, then the test binary died
+  with SIGSEGV (signal 11), so the harness never printed the failure bodies.
+  Failing: complete_source_returns_do_not_invent_missing_logic_planes,
+  direct_dwarf_supports_source_steps_and_persistent_values,
+  expression_branches_preserve_shadowing_and_selected_source_stops,
+  effectful_source_frames_share_actual_cached_results,
+  expression_inline_calls_keep_source_frames_and_value_bindings,
+  hardware_expression_calls_keep_source_frames,
+  large_aggregate_returns_match_the_debugger_finish_abi,
+  mixed_partial_returns_keep_wide_array_and_real_fragments,
+  narrow_source_consumers_do_not_fabricate_binding_bits,
+  odd_sized_aggregate_returns_keep_inspectable_source_frames,
+  packed_expression_bindings_expose_logic_companions,
+  repeated_inline_calls_keep_locals_and_source_frames_across_await,
+  source_real_returns_match_the_debugger_finish_abi,
+  source_string_returns_match_the_debugger_finish_abi,
+  wide_source_returns_keep_declared_bindings (+1 earlier in the log).
+  Passing: conversion_and_non_enum_resolve_keep_source_signatures,
+  checked_and_effectful_aggregates_preserve_demand_and_order,
+  independently_selected_nested_partial_returns_keep_source_fragments,
+  mixed_aggregate_returns_match_the_debugger_finish_abi,
+  pure_loop_muxes_keep_shared_debug_ssa,
+  partial_aggregate_returns_keep_only_demanded_fragments,
+  jointly_demanded_partial_returns_share_source_fragments.
+- Locally the same merged tree passes everything through clippy all-targets
+  (fmt, frontend check/clippy, build, test, test bitpack). The difference is
+  the toolchain: inkwell's `llvm22-1` here links the system **LLVM 23.1**
+  (`/usr/lib/libLLVM.so.23.1`; no LLVM 22 installed) with GDB 18.1 and
+  llvm-dwarfdump 23. CI links the pinned **LLVM 22** (apt.llvm.org) with
+  Ubuntu's GDB. So the DWARF path has only been verified against LLVM 23.
+- Reproducing: Arch has `extra/llvm22` 22.1.8 alongside 23 (needs sudo), then
+  build with `LLVM_SYS_221_PREFIX` pointing at it. Running the test binary
+  with `--test-threads=1 --nocapture` should show which test segfaults and
+  the assertion bodies the crash swallowed.
+- Not caused by the main merge as far as I can tell: code auto-merged, only
+  TODO.md/chat.md conflicted. I could not get CI on the pre-merge tip (a76a029):
+  GitHub runs no PR CI while a PR conflicts with main, which is also why #72
+  never had checks before. Probe PR #73 is closed and its branch deleted.
+
+Review notes, none blocking:
+- Debug metadata (`InlineCall` wrappers, inline-call ranges, source bindings)
+  is built on every compile, not only with `-g`. Measured ~7% more Process IR
+  values on a small design (80 → 86); constant folding unaffected there.
+- `arena_constant_integer` (ir/process.rs) does not look through
+  `InlineCall { operand, .. }`. One-line robustness fix; no regression seen.
+- HOUSERULES' guarded-run defaults to `MemoryMax=2G`, below CLAUDE.md's
+  budgets (~8G release build / LLVM emit, ~12G full ci-local), and its
+  host-wide flock serializes every agent's jobs.
