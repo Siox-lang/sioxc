@@ -13970,3 +13970,12 @@ bound is not constant is legal for simulation and warns (W-P019
   `Reactive` procedural CFG sensitive to every signal it reads
   (`procedural_sensitivity`). Reactive from the start, so writes do not settle.
 **Codex:** `Design` gained `procedural_items` (struct literals need it).
+
+### 2026-10-12 — Claude — generic struct value parameters size port fields
+
+Branch `fix/generic-struct-value-params`. `struct_fields` (ir/lower/layout.rs)
+substituted only type parameters, so `struct Bus<D: integer> { data:
+unsigned[D] }` behind a view-typed port lowered `data` at width 0 in the
+instance. Value parameters now substitute as expressions (new
+`subst_type_values` in lower_helpers/substitute.rs). Found while writing the
+bus-interface libraries in /home/max/siox-libs (separate repos).

@@ -79,6 +79,11 @@ the [ingress invariants](https://github.com/Siox-lang/siox-paper/blob/main/docs/
 when extending the IR; executable extensions and optimization measurements are
 listed under LLVM and Output below.
 
+- A module-level `const` of a non-integer type (`const OK: Bit = '1';`) is
+  unknown in a hardware body (E-P001); integer constants work.
+- E-P003 for `Bool` assigned to `Bit` suggests `Bit(...)`, but std has no
+  `From<Bool> for Bit`, so the suggested fix is itself rejected.
+
 ## LLVM
 
 Owns exact-width native code generation and the object-side runtime ABI. Code:
