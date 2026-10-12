@@ -2160,6 +2160,142 @@ assert {(-5, 3), (3, 7), (-9, 7), (-11, -9)} <= resolutions, resolutions
 }
 
 #[test]
+fn numeric_family_conversions_keep_source_signatures() {
+    let directory = std::env::temp_dir().join(format!("siox_dwarf_numeric_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("numeric.siox");
+    let text = r#"module debug_numeric;
+use std::float::float;
+use std::fixed::sfixed;
+#[inline(HINT)]
+fn inspect(value: float<32, 23>, fixed: sfixed<8, 4>) -> real {
+    let narrow: float<16, 10> = float<16, 10>(value);
+    let back: sfixed<8, 4> = sfixed<8, 4>(narrow);
+    let other: float<32, 23> = float<32, 23>(fixed);
+    return real(narrow) + real(back) + real(other);
+}
+entity Probe { value: float<32, 23> in, fixed: sfixed<8, 4> in, result: real out }
+impl Probe { result = inspect(value, fixed); }
+#[test] entity T {}
+impl T {
+    let value: float<32, 23> = float<32, 23>(1.5);
+    let fixed: sfixed<8, 4> = sfixed<8, 4>(1.5);
+    let probe: Probe = { .value = value, .fixed = fixed };
+    stimulus: process {
+        let initial: real = inspect(value, fixed);
+        assert!(initial == 4.5, "procedural positive conversions");
+        await 1ns;
+        assert!(probe.result == 4.5, "hardware positive conversions");
+        value = float<32, 23>(-2.5);
+        fixed = sfixed<8, 4>(-2.5);
+        await 1ns;
+        let updated: real = inspect(value, fixed);
+        assert!(updated == -7.5 and probe.result == -7.5, "negative conversions");
+    }
+}
+"#;
+    let python = r#"import gdb
+stops = [gdb.Breakpoint(name) for name in ['std::float::from', 'std::fixed::from']]
+seen = {'process': set(), 'hardware': set()}
+expected = {
+    ('float[32]', 'float[16]'): {0: 0, 0x3fc00000: 0x3e00, 0xc0200000: 0xc100},
+    ('float[16]', 'sfixed[8]'): {0: 0, 0x3e00: 24, 0xc100: 216},
+    ('sfixed[8]', 'float[32]'): {0: 0, 24: 0x3fc00000, 216: 0xc0200000},
+}
+def source_name(ty):
+    return ty.name.replace(' ', '').rsplit('::', 1)[-1]
+gdb.execute('run')
+while gdb.selected_thread() is not None:
+    frame = gdb.selected_frame()
+    argument = frame.read_var('value')
+    result_type = frame.function().type.target()
+    signature = (source_name(argument.type), source_name(result_type))
+    if signature not in expected:
+        gdb.execute('continue')
+        continue
+    widths = {'float[32]': 32, 'float[16]': 16, 'sfixed[8]': 8}
+    assert argument.type.sizeof == (widths[signature[0]] + 7) // 8, argument.type
+    assert result_type.sizeof == (widths[signature[1]] + 7) // 8, result_type
+    value = int(argument) & ((1 << widths[signature[0]]) - 1)
+    assert value in expected[signature], (signature, value)
+    names = []
+    caller = frame.older()
+    while caller is not None:
+        names.append(caller.name() or '')
+        caller = caller.older()
+    context = 'hardware' if any('::<hardware:' in name for name in names) else 'process'
+    gdb.execute('finish', to_string=True)
+    result = gdb.history(0)
+    assert source_name(result.type) == signature[1], result.type
+    bits = int(result) & ((1 << widths[signature[1]]) - 1)
+    assert bits == expected[signature][value], (signature, value, bits)
+    seen[context].add((signature, value))
+    gdb.execute('continue')
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+for context, actual in seen.items():
+    for signature, values in expected.items():
+        for value in values:
+            if value != 0:
+                assert (signature, value) in actual, (context, signature, value, seen)
+"#;
+    for hint in ["always", "never"] {
+        std::fs::write(&source, text.replace("HINT", hint)).unwrap();
+        let debug = directory.join("debug.bin");
+        let ordinary = directory.join("ordinary.bin");
+        for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+            success(
+                Command::new(binary)
+                    .arg("-o")
+                    .arg(binary.with_extension("vcd"))
+                    .output()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            std::fs::read(debug.with_extension("vcd")).unwrap(),
+            std::fs::read(ordinary.with_extension("vcd")).unwrap()
+        );
+        if Command::new("llvm-dwarfdump")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            success(
+                Command::new("llvm-dwarfdump")
+                    .arg("--verify")
+                    .arg(&debug)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        if Command::new("gdb").arg("--version").output().is_ok() {
+            success(
+                Command::new("gdb")
+                    .args(["-nx", "-q", "--batch"])
+                    .arg(&debug)
+                    .args([
+                        "-ex",
+                        "set disable-randomization off",
+                        "-ex",
+                        &format!("python {python}"),
+                    ])
+                    .output()
+                    .unwrap(),
+            );
+        } else {
+            eprintln!("GDB unavailable: numeric native results checked, signature probe skipped");
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn odd_sized_aggregate_returns_keep_inspectable_source_frames() {
     let directory =
         std::env::temp_dir().join(format!("siox_dwarf_odd_return_{}", std::process::id()));

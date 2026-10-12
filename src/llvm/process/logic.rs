@@ -848,10 +848,13 @@ pub(super) fn packed_discriminant<'ctx>(
         .ok()?;
     let low = ty.const_int(encoding.binary_value(false)?, false);
     let high = ty.const_int(encoding.binary_value(true)?, false);
-    let clean = builder
-        .build_select(value_bit, high, low, "pv.logic.binary")
-        .ok()?
-        .into_int_value();
+    // Preserve the std-defined codes without introducing branchy -O0 selects
+    // into native-input inspection before LLVM's prologue_end marker.
+    let bit = fit(builder, value_bit, width)?;
+    let delta = builder
+        .build_int_mul(bit, high.const_sub(low), "pv.logic.binary.delta")
+        .ok()?;
+    let clean = builder.build_int_add(low, delta, "pv.logic.binary").ok()?;
     let Some(metadata) = metadata else {
         return Some(clean);
     };

@@ -1960,3 +1960,32 @@ fn unsupported_process_value_width_is_an_error_not_a_panic() {
         "{error}"
     );
 }
+
+#[test]
+fn binary_logic_mapping_preserves_std_codes_and_wrapping() {
+    let context = Context::create();
+    let module = context.create_module("binary_codes");
+    let function = module.add_function("check", context.void_type().fn_type(&[], false), None);
+    let builder = context.create_builder();
+    builder.position_at_end(context.append_basic_block(function, "entry"));
+    for (width, low, high) in [(4, 13, 2), (8, 0, 1), (8, 2, 13), (8, 255, 0)] {
+        let encoding = siox::ir::LogicEncoding {
+            value_bits: [(low, false), (high, true)].into(),
+            binary: [low, high].into(),
+            ..siox::ir::LogicEncoding::default()
+        };
+        for (bit, expected) in [(false, low), (true, high)] {
+            let value = context.bool_type().const_int(u64::from(bit), false);
+            let mapped =
+                packed_discriminant(&context, &builder, &encoding, value, None, width).unwrap();
+            assert_eq!(mapped.get_zero_extended_constant(), Some(expected));
+            let unknown = mapped.get_type().const_int(9, false);
+            let retained =
+                packed_discriminant(&context, &builder, &encoding, value, Some(unknown), width)
+                    .unwrap();
+            assert_eq!(retained.get_zero_extended_constant(), Some(9));
+        }
+    }
+    builder.build_return(None).unwrap();
+    module.verify().unwrap();
+}

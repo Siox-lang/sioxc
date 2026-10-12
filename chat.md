@@ -17643,3 +17643,98 @@ names both the upstream integration and local DWARF changes; AGENTS12,
 historical chat441 and .codex remain outside the commit. Companion docs get a
 separate commit. No push requested. Goal stays active: remaining signature/
 companion transport audits are not proved by this finite accepted corpus.
+
+### 2026-10-12 — Codex — numeric-family signature audit
+
+Previous turn made authoritative progress: compiler 6c73cdc and docs dd65321,
+full accepted job 3730900 (four corpora, both suites/22 DWARF fixtures, GDB).
+No live jobs. Own tests/debug_info.rs for a concrete remaining signature gap:
+std float format conversion and float/sfixed round trips are compiled by the
+corpus but not checked for actual formal/return types and finish values.
+Reuse native ordinary/debug/VCD/GDB fixtures; do not add an abstraction or
+change production LLVM without a reproduced fault. Preserve foreign edits.
+
+3897949 stopped at formatting only; corrected the single wrapping difference.
+3898937 is terminal exited/success/0, peak 367722496: the new conversion audit
+passes ordinary/debug assertions, VCD equality, DWARF verification and actual
+GDB argument/finish types/values under both wrapper inline hints. No production
+fix is justified. Tighten GDB evidence to require each positive/negative
+conversion separately in procedural and hardware caller stacks, then bitpack.
+
+3904522 found the procedural source types are namespace-qualified, so the first
+probe matched hardware only. Normalize qualified type spelling in the test,
+not compiler types. 3910186 then reproduces a real shared-function entry fault:
+std float32-to-float16 formal reference is NULL at the function breakpoint.
+3914975/3918472 are bounded diagnostic jobs, not accepted tests. Native
+disassembly proves sx.fn.6.from receives the full i32 in edi, yet GDB stops
+at +7 before reference reset/copy/publish (+14..+51). This is not pruning.
+inline_body already separates draft native input inspection from its body,
+but only when debug_arguments is Some; shared Process functions instead bind
+existing cache.parameters and therefore skip that boundary. Own the common
+debug/inline_values.rs entry guard: every native source body needs the existing
+debug.arguments.available boundary after setup, without a new argument or
+reevaluation. Retain test requirements for both hardware/procedural contexts.
+
+3924227 disproves the block-boundary-only fix: shared input stops are still
+early. Trace the sibling value emitters: layout reads already return captured
+native inputs before applying their declaration span, but process_value_at
+applies the declaration span first and process_value reaches Parameter after
+its location guard. Those are references to captured inputs, not executable
+declarations. Match the layout emitter's existing fast-path ordering in the
+two scalar emitters, retaining the consumer's actual source location. Recheck
+the full regression; do not call the first attempted fix accepted.
+
+3939549 and 3957651 still reproduce the early stop. Temporary diagnostic test
+3950404/3962548 produced the exact TestExecutable IR on disk, not just the
+hardware-only CLI dump. Its shared input setup and reference publication are
+already line zero. The binary snapshot uses select(bit, high, low), which LLVM
+-O0 lowers to actual conditional branches. LLVM DwarfDebug::findPrologueEndLoc
+stops at initial control flow and chooses an early scope-line fallback; moving
+locations or adding a fall-through block cannot fix that. Verified against the
+official LLVM DwarfDebug.cpp implementation and native disassembly.
+Remove the temporary diagnostic test and all unsuccessful production edits.
+Own process/logic.rs packed_discriminant: express its binary mapping as
+low + zext(bit) * (high - low), using the same std-derived codes and LLVM
+integer wrapping. No branch before source entry, no fake enum values, no
+new input or execution demand. Preserve the existing metadata selection.
+
+3975113 stopped at formatting only; 3976837 is terminal exited/success/0,
+peak 1280028672: the branch-free mapping fixes the full GDB entry/finish audit
+in default and bitpack under both hints and caller contexts, and strict Clippy
+passes. All unsuccessful location/fast-path edits and temporary diagnostic
+code are removed. Add a constant-code regression for arbitrary reversed std
+codes, width wrapping and unchanged nonbinary metadata forwarding.
+
+The exact IR diagnostic also found a concrete remaining provenance audit:
+shared std float32-to-float16 conversion returns an inspection layout with
+range 0..15 instead of the target format's 5..-10. Numeric finish is correct;
+this fixture does not inspect returned logical labels. Check wide fixed-family
+return companions next before claiming that every format transport is done.
+
+3987987 found a one-line wrapping difference in the new unit's formatter gate.
+Cancelled the conclusively failed run, not an observation interruption; its
+stop status is not acceptance. Apply the exact formatter output and require a
+standalone format check before the retained full-CI run so failure exits early.
+
+Frozen acceptance is live as siox-job-3000-1791823205927388896-3992561.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791823205927388896-3992561.log.
+Poll this handle; no Rust edits while it runs. Own sibling architecture/testing
+documentation for the binary mapping and numeric-family signature regression;
+these doc updates do not modify acceptance inputs. No push.
+
+Frozen source/test/core hash:
+d372d1b8437a0c3727bd167dab9eac6e15123a78e790c290211939adc732b715.
+TODO/companion docs now name the actual remaining target-format range audit,
+rather than treating the newly verified numeric signatures as still untested.
+
+3992561 is terminal exited/success/0, peak 1935474688 bytes. Complete local
+CI passed: default/bitpack full suites with 23 DWARF fixtures each, the
+reordered-code/wrapping unit, strict Clippy and formatter/artifact gates.
+All four current ordinary/debug corpora passed 239/0. Native FIFO/wide GDB
+breakpoints, source inspection/stepping and VCD parity passed. AST/community
+refresh completed (5522 nodes, 264 communities); existing libfst parser
+warnings remain unrelated to compiler validation. Frozen source/test/core
+hash d372d1b8437a0c3727bd167dab9eac6e15123a78e790c290211939adc732b715
+is unchanged. Commit only the branch-free mapping, two regressions, TODO and
+owned appended log; preserve foreign AGENTS12/chat441/.codex. Companion docs
+separately. No push; the explicit target-format return-range audit remains.

@@ -322,8 +322,17 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   now have entry-signature and actual finish-value regressions under both inline
   hints. Nested packed returns check numeric-only callee views remain unavailable
   until the caller actually consumes metadata; caller companions retain all nine
-  source states. Finish auditing other supported conversion specializations and
-  companion-plane transports. Generic From constructor syntax rejected by the
+  source states. Binary32-to-binary16, float-to-sfixed and sfixed-to-float now
+  check source argument/return types, byte sizes and actual finish values in
+  both hardware and procedural caller stacks, with positive/negative epochs
+  under both hints. Binary inspection mapping is branch-free over std-defined
+  discriminants, so -O0 snapshot setup does not prematurely end the native
+  prologue. Reversed codes and width wrapping have a separate unit check.
+  Remaining concrete format audit: a shared float16 conversion's return
+  inspection layout currently defaults to 0..15 rather than the target's
+  5..-10. Verify logical labels on wide fixed-family return companions and
+  preserve target-format provenance without changing execution demand.
+  Finish auditing other companion-plane transports. Generic From constructor syntax rejected by the
   ordinary frontend is a separate language boundary, not missing DWARF coverage;
   these cases do not prove every signature or every argument's availability.
   Procedural 81/127/128/129/256-bit constructor and
