@@ -9,7 +9,10 @@ impl<'a> Checker<'a> {
             Type::Path(p) => self.path_ty(p),
             Type::Indexed { base, index, .. } => {
                 // Unconstrained (`Char[]`): width 0 = "set at use".
-                let width = index.as_deref().map(width_of).unwrap_or(0);
+                let (width, low) = index
+                    .as_deref()
+                    .map(|index| self.index_shape(index))
+                    .unwrap_or((0, 0));
                 match self.ast_ty(base) {
                     // The *first* index on a nominal array family sets its width
                     // (`unsigned[8]`). A *second* index makes an array of those
@@ -18,10 +21,12 @@ impl<'a> Checker<'a> {
                         elem,
                         len: 0,
                         family: Some(family),
+                        ..
                     } => Ty::Array {
                         elem,
                         len: width,
                         family: Some(family),
+                        low,
                     },
                     v @ Ty::Array {
                         family: Some(_), ..
@@ -29,6 +34,7 @@ impl<'a> Checker<'a> {
                         elem: Box::new(v),
                         len: width,
                         family: None,
+                        low: 0,
                     },
                     // An index on an *unconstrained* array fills its hole
                     // rather than nesting: `string[5]` is `Char[5]`, not
@@ -38,21 +44,44 @@ impl<'a> Checker<'a> {
                         elem,
                         len: 0,
                         family: None,
+                        ..
                     } => Ty::Array {
                         elem,
                         len: width,
                         family: None,
+                        low,
                     },
                     other => Ty::Array {
                         elem: Box::new(other),
                         len: width,
                         family: None,
+                        low: 0,
                     },
                 }
             }
             Type::Generic { base, .. } => self.ast_ty(base),
             Type::View { view, .. } => self.path_ty(view),
         }
+    }
+
+    /// The length and lowest index an index states: `[8]` is `(8, 0)`,
+    /// `[3..-4]` is `(8, -4)` in either direction. Bounds fold as constants
+    /// (a format's range is an expression after desugaring); an unknown one
+    /// is length 0, "set at use".
+    pub(super) fn index_shape(&self, index: &Expr) -> (u32, i64) {
+        if let Expr::Range { lo, hi, .. } = index {
+            let Some((lo, hi)) = self.const_int(lo).zip(self.const_int(hi)) else {
+                return (width_of(index), 0);
+            };
+            let len = u32::try_from((hi - lo).abs() + 1).unwrap_or(0);
+            return (len, i64::try_from(lo.min(hi)).unwrap_or(0));
+        }
+        (
+            self.const_int(index)
+                .and_then(|width| u32::try_from(width).ok())
+                .unwrap_or_else(|| width_of(index)),
+            0,
+        )
     }
 
     /// Interpret a collected method signature at a call site. Signatures are
@@ -123,6 +152,7 @@ impl<'a> Checker<'a> {
                 elem: Box::new(self.array_element_ty(&key)),
                 family: Some(key),
                 len: 0,
+                low: 0,
             },
             None => self.named_ty(path.span),
         }

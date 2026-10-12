@@ -171,6 +171,7 @@ fn string_literal_gets_a_targeted_hint() {
             elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
             family: Some("unsigned".to_string()),
             len: 4,
+            low: 0,
         },
         &s("0101"),
     )
@@ -181,6 +182,7 @@ fn string_literal_gets_a_targeted_hint() {
         elem: Box::new(Ty::Char),
         len: 2,
         family: None,
+        low: 0,
     };
     assert!(strlit_help(&str_ty, &s("hi")).is_none());
 }

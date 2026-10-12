@@ -13892,3 +13892,16 @@ Branch `feat/numeric-promotion`. Proposal: `docs/proposals/numeric-promotion.md`
 - std::bits: `From<unsigned|signed> for real`. `ty_display` prints an
   untracked-width family as its name (`sfixed`, not `sfixed[0]`).
 **Codex:** touches `types/{operators,calls}.rs`, `ir/lower/{calls,values,expressions,source_processes}.rs`.
+
+### 2026-10-12 — Claude — formats in checked types (numeric promotion phase 2, step 1)
+
+Branch `feat/numeric-formats`.
+- `types::Ty::Array` gains `low: i64` (the lowest index), set by
+  `Checker::index_shape`, which folds a format's range (`3..-4` after
+  desugaring) — fixed/float types had length 0 ("unknown") before.
+- `compatible`: two sized families whose binary points differ (a negative
+  `low` on either side and unequal lows) no longer assign: `ufixed<8, 4>`
+  into `ufixed<8, 2>` silently reread the bits (2.5 became 10). Label-only
+  ranges (`unsigned[15..8]` into `unsigned[8]`) still assign.
+- Diagnostics show a format as `ufixed<8, 4>`.
+**Codex:** `Ty::Array` gained a field: literals need `low`, patterns `..`.

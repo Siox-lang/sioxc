@@ -145,6 +145,7 @@ impl<'a> Checker<'a> {
                 elem,
                 len,
                 family: None,
+                ..
             } if self.is_entity_ty(&elem) => (0, len as i64 - 1, "instance"),
             // A data array's bounds come from its declaration, not its
             // length: `Logic[15..8]` is indexed `8..15`.

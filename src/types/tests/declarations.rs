@@ -145,18 +145,21 @@ fn vector_names_its_real_family() {
         elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
         family: Some("signed".to_string()),
         len: 8,
+        low: 0,
     };
     assert_eq!(ty_name(&int8), "signed[8]");
     let byte = Ty::Array {
         elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
         family: Some("Byte".to_string()),
         len: 0,
+        low: 0,
     };
     assert_eq!(ty_name(&byte), "Byte");
     let anon = Ty::Array {
         elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
         family: Some("unsigned".to_string()),
         len: 4,
+        low: 0,
     };
     assert_eq!(ty_name(&anon), "unsigned[4]");
     // Width still ignores the family: unsigned[8] and signed[8] stay compatible.
@@ -165,7 +168,8 @@ fn vector_names_its_real_family() {
         &Ty::Array {
             elem: Box::new(Ty::Named(crate::resolve::DefId(0))),
             family: Some("unsigned".to_string()),
-            len: 8
+            len: 8,
+            low: 0,
         }
     ));
 }
@@ -631,4 +635,21 @@ fn enum_newtype_base_must_be_an_enum() {
     assert_eq!(non_enum, 1, "a non-enum base is not a derivation");
     let plain = check_src("module m;\nenum S { Idle = 0, Run = 1 }\n");
     assert_eq!(plain, 0, "the width comes from the variants");
+}
+
+#[test]
+/// A family's lowest index is part of its type when it places a binary
+/// point: `Q[3..-4]` into `Q[5..-2]` (a fixed format's fraction moved) is a
+/// mismatch, while label-only ranges of equal length still assign.
+fn a_binary_point_is_part_of_a_family_type() {
+    let base = "module m;\nstruct Q(Logic[]);\nentity E { y: Bit out, }\nimpl E {\n  DECLS\n}\n";
+    let mismatch = check_src(&base.replace("DECLS", "let a: Q[3..-4];\n  let b: Q[5..-2] = a;"));
+    assert_eq!(mismatch, 1);
+    let same_point = check_src(&base.replace("DECLS", "let a: Q[3..-4];\n  let b: Q[3..-4] = a;"));
+    assert_eq!(same_point, 0);
+    let labels = check_src(&base.replace(
+        "DECLS",
+        "let a: unsigned[15..8];\n  let b: unsigned[8] = a;\n  let c: Logic[7..0];\n  let d: Logic[8..1] = c;",
+    ));
+    assert_eq!(labels, 0);
 }
