@@ -1431,6 +1431,87 @@ pub fn lower(
         process_ir.processes.push(process);
     }
 
+    // Hardware items whose loops do not unroll run as procedural CFGs,
+    // re-evaluated whenever a signal they read changes.
+    for item in &design.procedural_items {
+        let Some((root, owner)) = instance_at(hierarchy, &item.path) else {
+            continue;
+        };
+        let entity = hierarchy.instance(owner).entity_id;
+        let items = crate::testbench::implementation_items(modules, resolved, entity);
+        let statements = items.iter().find_map(|candidate| match candidate {
+            ImplItem::Process(process) if process.span == item.span => {
+                Some(process.body.stmts.as_slice())
+            }
+            ImplItem::Stmt(statement) if ast::stmt_span(statement) == item.span => {
+                Some(std::slice::from_ref(statement))
+            }
+            _ => None,
+        });
+        let Some(statements) = statements else {
+            continue;
+        };
+        let id = ProcessId(process_ir.processes.len() as u32);
+        // The instance's parameters fold as constants (`unsigned[W]`).
+        let mut instance_integers = constant_integers.clone();
+        for (name, value) in &hierarchy.instance(owner).params {
+            if let crate::elab::ParamValue::Int(value) = value {
+                instance_integers.insert(name.clone(), *value);
+            }
+        }
+        let mut process = {
+            let mut context = LoweringContext {
+                modules,
+                resolved,
+                typed,
+                design,
+                hierarchy,
+                root_path: &item.path,
+                process_ir: &mut process_ir,
+                suffixes: &suffixes,
+                constants: &constants,
+                type_aliases: &type_aliases,
+                constant_stack: std::collections::HashSet::new(),
+                functions: &functions,
+                constant_integers: &instance_integers,
+                value_bindings: Vec::new(),
+                self_formats: Vec::new(),
+
+                widening: std::collections::HashSet::new(),
+                inline_self_values: Vec::new(),
+                inline_return_types: Vec::new(),
+                inline_return_blocks: Vec::new(),
+                inline_functions: std::collections::HashSet::new(),
+                cfg_call_cache: Vec::new(),
+                shared_functions: &shared_functions,
+            };
+            lower_process(
+                id,
+                owner,
+                Some(
+                    item.label
+                        .clone()
+                        .unwrap_or_else(|| format!("{}::<procedural:{}>", item.path, id.0)),
+                ),
+                item.span,
+                // Reactive from the start: a hardware write does not settle.
+                ProcessActivation::Reactive {
+                    sensitivity: Vec::new(),
+                },
+                statements,
+                &mut context,
+            )
+        };
+        process.root = root;
+        process.activation = ProcessActivation::Reactive {
+            sensitivity: procedural_sensitivity(&process, &process_ir),
+        };
+        if let Some(test) = process_ir.tests.iter_mut().find(|test| test.root == root) {
+            test.processes.push(id);
+        }
+        process_ir.processes.push(process);
+    }
+
     // Backends look calls up by value (`ProcessIr::call_of`).
     process_ir.calls.sort_unstable_by_key(|call| call.value.0);
     design.process_ir = process_ir;
@@ -9032,6 +9113,73 @@ fn builtin_callee_is(callee: &ast::Expr, expected: &str, context: &LoweringConte
                         && definition.name == expected
                 })
             })
+}
+
+/// The root and the instance at hierarchical `path`.
+fn instance_at(
+    hierarchy: &Hierarchy,
+    path: &str,
+) -> Option<(crate::elab::InstanceId, crate::elab::InstanceId)> {
+    fn find(
+        hierarchy: &Hierarchy,
+        id: crate::elab::InstanceId,
+        at: &str,
+        path: &str,
+    ) -> Option<crate::elab::InstanceId> {
+        if at == path {
+            return Some(id);
+        }
+        let rest = path.strip_prefix(at)?.strip_prefix('.')?;
+        hierarchy.instance(id).children.iter().find_map(|&child| {
+            let name = &hierarchy.instance(child).name;
+            rest.starts_with(name.as_str())
+                .then(|| find(hierarchy, child, &format!("{at}.{name}"), path))
+                .flatten()
+        })
+    }
+    hierarchy.roots.iter().find_map(|&root| {
+        find(hierarchy, root, &hierarchy.root_path(root), path).map(|id| (root, id))
+    })
+}
+
+/// Every signal a procedural CFG reads, as a hardware process is sensitive
+/// to: the values its instructions and branches use, written places aside.
+fn procedural_sensitivity(process: &ProcessCfg, ir: &ProcessIr) -> Vec<ProcessSensitivity> {
+    let mut roots = Vec::new();
+    for block in &process.blocks {
+        for instruction in &block.instructions {
+            match instruction {
+                ProcessInstruction::Declare {
+                    initializer: Some(value),
+                    ..
+                }
+                | ProcessInstruction::Assign { value, .. } => roots.push(*value),
+                ProcessInstruction::Schedule { value, delay, .. } => roots.extend([*value, *delay]),
+                ProcessInstruction::Runtime { arguments, .. } => roots.extend(arguments),
+                ProcessInstruction::Declare { .. } => {}
+            }
+        }
+        match &block.terminator {
+            ProcessTerminator::Branch { condition, .. } => roots.push(*condition),
+            ProcessTerminator::Match { scrutinee, .. } => roots.push(*scrutinee),
+            ProcessTerminator::For { iterable, .. } => roots.push(*iterable),
+            ProcessTerminator::Suspend { arguments, .. } => roots.extend(arguments),
+            ProcessTerminator::Return {
+                value: Some(value), ..
+            } => roots.push(*value),
+            _ => {}
+        }
+    }
+    let mut sensitivity = Vec::new();
+    for root in roots {
+        for signal in ir.signal_reads(root).unwrap_or_default() {
+            let signal = ProcessSensitivity::Signal(signal);
+            if !sensitivity.contains(&signal) {
+                sensitivity.push(signal);
+            }
+        }
+    }
+    sensitivity
 }
 
 #[cfg(test)]

@@ -4,6 +4,18 @@ use std::collections::HashMap;
 
 use super::{Expr, LookupTable, ProcessIr, SourceLayout};
 
+/// One hardware item (`process { .. }` or a concurrent statement) of the
+/// instance at `path`, found again by its source span.
+#[derive(Clone, Debug)]
+pub struct ProceduralItem {
+    /// The owning instance's hierarchical path.
+    pub path: String,
+    /// The item's span: the process block or the statement.
+    pub span: crate::diag::Span,
+    /// Its qualified label, if it has one.
+    pub label: Option<String>,
+}
+
 /// A lowered design, ready to simulate.
 ///
 /// Hardware behavior appears in two deliberately separate forms: combinational
@@ -32,6 +44,10 @@ pub struct Design {
     /// Driver-context labels retained from `name: process { ... }`, qualified
     /// by instance path for diagnostics and backend tracing.
     pub process_labels: HashMap<u32, String>,
+    /// Hardware processes and concurrent statements whose loops do not
+    /// unroll (a bound that is not constant): Process lowering simulates
+    /// each as a procedural CFG instead of a driver graph.
+    pub procedural_items: Vec<ProceduralItem>,
     /// Labels from every source context folded into one resolved
     /// combinational target. Resolution replaces those context drivers with a
     /// normalized driver, so target ownership must survive independently of

@@ -84,9 +84,6 @@ listed under LLVM and Output below.
 Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
-- 🔴 **Non-constant loop bounds in hardware.** A hardware loop whose bound is
-  not constant once the arguments' shapes are known reports the caller's
-  locals as unknown names instead of naming the bound.
 - 🔴 **Runtime recursion and non-packed conversions.** Extend the currently
   supported inline-call and packed-value contract only with explicit frame,
   ownership, conversion and suspension semantics. Recursive runtime calls are

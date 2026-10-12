@@ -1457,9 +1457,17 @@ impl<'a> Lowering<'a> {
                     body,
                     ..
                 } => {
-                    let first = self.constant_expr(&self.lower_scalar_env(lo, env))?;
-                    let last = self.constant_expr(&self.lower_scalar_env(hi, env))?;
+                    let bound = |e: &ast::Expr| {
+                        let value = self.constant_expr(&self.lower_scalar_env(e, env));
+                        if value.is_none() {
+                            self.procedural_loop.set(Some(ast::expr_span(e)));
+                        }
+                        value
+                    };
+                    let first = bound(lo)?;
+                    let last = bound(hi)?;
                     if first.abs_diff(last) >= MAX_ITERATIONS {
+                        self.procedural_loop.set(Some(ast::expr_span(hi)));
                         return None;
                     }
                     let step = if first <= last { 1 } else { -1 };

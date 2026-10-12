@@ -770,6 +770,11 @@ impl<'a> Lowering<'a> {
         // statements receive separate contexts (parallel-driver resolution).
         for im in &impls {
             for item in &im.items {
+                let drivers = self.hardware.drivers.len();
+                let event_blocks = self.hardware.event_blocks.len();
+                let unresolved = self.unresolved_names.borrow().len();
+                let depth_exceeded = self.depth_exceeded.borrow().len();
+                self.procedural_loop.set(None);
                 match item {
                     ast::ImplItem::Process(process) => {
                         self.lint_generated_dead_assignments(process.body.stmts.iter());
@@ -805,6 +810,32 @@ impl<'a> Lowering<'a> {
                         self.lower_stmt(statement, None);
                     }
                     _ => {}
+                }
+                // A loop that does not unroll has no driver graph: the item
+                // is simulated as a procedural process instead (no RTL form).
+                if let Some(bound) = self.procedural_loop.take() {
+                    let written: Vec<u32> =
+                        self.hardware.drivers[drivers..]
+                            .iter()
+                            .map(|driver| driver.target.0)
+                            .chain(self.hardware.event_blocks[event_blocks..].iter().flat_map(
+                                |block| block.updates.iter().map(|update| update.target.0),
+                            ))
+                            .chain(match item {
+                                ast::ImplItem::Process(process) => {
+                                    self.block_covered_targets(&process.body)
+                                }
+                                _ => Default::default(),
+                            })
+                            .collect();
+                    self.procedural_driven.extend(written);
+                    self.hardware.drivers.truncate(drivers);
+                    self.hardware.event_blocks.truncate(event_blocks);
+                    // What failed to lower as a driver graph is the CFG's to
+                    // judge: it reports its own errors.
+                    self.unresolved_names.borrow_mut().truncate(unresolved);
+                    self.depth_exceeded.borrow_mut().truncate(depth_exceeded);
+                    self.defer_procedural_item(item, bound);
                 }
             }
         }

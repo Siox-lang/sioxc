@@ -329,6 +329,13 @@ struct Lowering<'a> {
     /// `&self`, so the diagnostic is recorded here and flushed by `lower`
     /// instead of silently leaving an `Unknown` in the driver.
     depth_exceeded: std::cell::RefCell<Vec<(String, crate::diag::Span)>>,
+    /// The bound of a loop the item being lowered cannot unroll: the item is
+    /// then simulated as a procedural process (`Design::procedural_items`).
+    procedural_loop: std::cell::Cell<Option<crate::diag::Span>>,
+    /// Signals a procedural item writes, for the undriven-output lint.
+    procedural_driven: HashSet<u32>,
+    /// Loop bounds already warned about (one W-P019 per bound).
+    procedural_bounds: HashSet<crate::diag::Span>,
     /// Arena-owned values bound by source functions and lexical locals.
     source_values: std::cell::RefCell<source_values::SourceValues>,
     /// Operands hoisted out of a per-element metavalue unroll by a helper that
