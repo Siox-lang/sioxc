@@ -213,15 +213,14 @@ pub fn lower_in(
     // Backend compatibility forms are always a projection of canonical CFGs,
     // not the source normalization draft. Failed source expressions remain in
     // Process IR for validation; the compiler reports projection failure.
+    l.out.parametric = l.parametric_unknown.get();
     if let Err(error) = derive_scheduler_forms(&mut l.out) {
-        if !l.sink.has_errors() {
-            let mut diagnostic = crate::diag::Diagnostic::error(format!(
+        if !l.sink.has_errors() && !l.out.parametric {
+            let diagnostic = crate::diag::Diagnostic::error(format!(
                 "cannot construct the hardware scheduler view from canonical source CFGs: {error}"
             ))
-            .with_code(crate::diag::codes::UNSUPPORTED_EXPR);
-            if let Some(process) = l.out.process_ir.processes.first() {
-                diagnostic = diagnostic.at(process.span);
-            }
+            .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+            .at(error.span);
             l.sink.emit(diagnostic);
         }
     }
@@ -332,6 +331,10 @@ struct Lowering<'a> {
     /// The bound of a loop the item being lowered cannot unroll: the item is
     /// then simulated as a procedural process (`Design::procedural_items`).
     procedural_loop: std::cell::Cell<Option<crate::diag::Span>>,
+    /// Set when an unbound generic parameter left a value `Unknown`: a
+    /// generic root analysed on its own, whose projection is then incomplete
+    /// by construction rather than wrong.
+    parametric_unknown: std::cell::Cell<bool>,
     /// Signals a procedural item writes, for the undriven-output lint.
     procedural_driven: HashSet<u32>,
     /// Loop bounds already warned about (one W-P019 per bound).

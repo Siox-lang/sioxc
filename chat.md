@@ -14002,3 +14002,16 @@ Branch `fix/library-gaps`.
   (new, types/calls.rs, shared with `check_conversion_route`).
 - Testbench DUT bindings match indexed leaves (`down[2].rdata`), so
   `.down = wires` and `.bus = wires[2]` link DUT to DUT.
+
+### 2026-10-12 — Claude — error spans and library roots
+
+Branch `fix/diagnostic-spans-and-roots`.
+- derive.rs: `derive_scheduler_forms` returns `SchedulerError { message,
+  span }`, the span of the process that failed. lower.rs used the *first*
+  process's span for every projection failure.
+- compiler.rs `entry_roots`: only the entry file's uninstantiated entities are
+  roots (object, IR and check modes). Imported modules are libraries.
+- A generic root checked on its own (`has_unbound_parameters`,
+  ir/lower/diagnostics.rs) skips W-P019 deferral, E-P017 for unsized arrays,
+  and the projection error (`Design::parametric`).
+**Codex:** `Design` gained `parametric: bool` (struct literals need it).

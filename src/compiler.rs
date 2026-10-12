@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use crate::diag::{Diagnostic, DiagnosticSink, FileId, Severity, SourceMap};
 use crate::elab::Hierarchy;
 use crate::ir::Design;
-use crate::resolve::Resolved;
+use crate::resolve::{DefId, Resolved};
 use crate::syntax::ast::{Item, Module};
 use crate::syntax::token::{Token, TokenKind};
 use crate::syntax::{lexer::Lexer, parser, pretty};
@@ -560,11 +560,12 @@ impl Compiler {
         let resolved = result.resolved.as_ref().expect("resolution completed");
         let (hierarchy, test_plan) = match &request.emit {
             Emit::Metadata => (
-                crate::elab::elaborate_for_check(
+                crate::elab::elaborate_entities(
                     &result.modules,
                     resolved,
                     typed,
                     &mut result.diagnostics,
+                    &entry_roots(&result.modules, resolved),
                 ),
                 None,
             ),
@@ -602,7 +603,13 @@ impl Compiler {
                 (hierarchy, Some(plan))
             }
             _ => (
-                crate::elab::elaborate(&result.modules, resolved, typed, &mut result.diagnostics),
+                crate::elab::elaborate_entities(
+                    &result.modules,
+                    resolved,
+                    typed,
+                    &mut result.diagnostics,
+                    &entry_roots(&result.modules, resolved),
+                ),
                 None,
             ),
         };
@@ -648,8 +655,13 @@ impl Compiler {
         result.hierarchy = Some(hierarchy);
         result.design = Some(design);
         if let Err(error) = process_result {
-            // After a reported error the projection failure is its echo.
-            if !result.diagnostics.has_errors() {
+            // After a reported error the projection failure is its echo, and
+            // a generic root analysed without parameters has no full view.
+            let parametric = result
+                .design
+                .as_ref()
+                .is_some_and(|design| design.parametric);
+            if !result.diagnostics.has_errors() && !parametric {
                 result.failure = Some(CompileFailure::new(
                     FailureKind::Validation,
                     format!("cannot derive hardware scheduling forms from Process IR: {error}"),
@@ -831,6 +843,29 @@ fn backend_unavailable() -> CompileFailure {
 /// may be module-qualified to break a tie between equal leaf names. With no
 /// explicit choice, exactly one root must exist -- `top` is vendor metadata
 /// and deliberately does not participate.
+/// The structural roots a compilation builds: entities of the entry file that
+/// nothing instantiates. An imported module is a library, so its unused
+/// entities are never roots: a generic one has no parameters to elaborate
+/// with, and any one of them would make the design's own root ambiguous.
+/// A library is analysed as a root when it is itself the entry file.
+fn entry_roots(modules: &[Module], resolved: &Resolved) -> HashSet<DefId> {
+    let Some(entry) = modules.first() else {
+        return HashSet::new();
+    };
+    let declared: HashSet<DefId> = entry
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Entity(entity) => resolved.declared(entity.name.span),
+            _ => None,
+        })
+        .collect();
+    crate::elab::structural_root_entities(modules, resolved)
+        .into_iter()
+        .filter(|id| declared.contains(id))
+        .collect()
+}
+
 fn select_top(
     modules: &[Module],
     resolved: &Resolved,
@@ -876,7 +911,7 @@ fn select_top(
         };
     }
 
-    let roots = crate::elab::structural_root_entities(modules, resolved);
+    let roots = entry_roots(modules, resolved);
     let tops: Vec<&str> = entities
         .iter()
         .filter(|(id, _, _)| roots.contains(id))
@@ -1307,15 +1342,16 @@ mod tests {
     /// selection must ignore it and use structural reachability instead.
     fn default_object_root_is_structural_not_vendor_metadata() {
         let mut sink = DiagnosticSink::new();
+        // The entry file comes first, as the compiler loads it.
         let modules = [
-            syntax::parse_module(
-                FileId(0),
-                "module vendor; pub attr top: integer for entity;",
-                &mut sink,
-            ),
             syntax::parse_module(
                 FileId(1),
                 "module design; entity Preferred {} attr vendor::top for Preferred = 1; entity Other {}",
+                &mut sink,
+            ),
+            syntax::parse_module(
+                FileId(0),
+                "module vendor; pub attr top: integer for entity;",
                 &mut sink,
             ),
         ];
@@ -1323,7 +1359,7 @@ mod tests {
         syntax::attributes::attach(&mut modules, &mut sink);
         let resolved = resolve::resolve(&modules, &mut sink);
         assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
-        let crate::syntax::ast::Item::Entity(preferred) = &modules[1].items[0] else {
+        let crate::syntax::ast::Item::Entity(preferred) = &modules[0].items[0] else {
             panic!("expected preferred entity");
         };
         let metadata = resolved
@@ -1337,6 +1373,33 @@ mod tests {
         assert!(failure.message.contains("design::Preferred"));
         assert!(failure.message.contains("design::Other"));
         assert!(failure.message.contains("--top"));
+    }
+
+    #[test]
+    /// An imported module is a library: its unused entities, generic or not,
+    /// never compete with the entry file's root.
+    fn imported_entities_are_never_default_roots() {
+        let mut sink = DiagnosticSink::new();
+        let modules = [
+            syntax::parse_module(
+                FileId(0),
+                "module design; use bus::Fanout; entity Root {} impl Root { let f: Fanout<2> = {}; }",
+                &mut sink,
+            ),
+            syntax::parse_module(
+                FileId(1),
+                "module bus; pub entity Fanout<N: integer> {} impl<N: integer> Fanout<N> {} \
+                 pub entity Arbiter<N: integer> {} impl<N: integer> Arbiter<N> {} \
+                 pub entity Monitor {} impl Monitor {}",
+                &mut sink,
+            ),
+        ];
+        let resolved = resolve::resolve(&modules, &mut sink);
+        assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
+        assert_eq!(
+            select_top(&modules, &resolved, None).unwrap(),
+            "design::Root"
+        );
     }
 
     #[test]

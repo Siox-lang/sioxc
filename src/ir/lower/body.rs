@@ -840,7 +840,11 @@ impl<'a> Lowering<'a> {
                     // judge: it reports its own errors.
                     self.unresolved_names.borrow_mut().truncate(unresolved);
                     self.depth_exceeded.borrow_mut().truncate(depth_exceeded);
-                    self.defer_procedural_item(item, bound);
+                    // A bound on an unbound generic parameter is constant
+                    // once instantiated: nothing to simulate or warn about.
+                    if !self.has_unbound_parameters() {
+                        self.defer_procedural_item(item, bound);
+                    }
                 }
             }
         }

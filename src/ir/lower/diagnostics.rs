@@ -307,6 +307,20 @@ impl<'a> Lowering<'a> {
         false
     }
 
+    /// Whether the entity being lowered has a value parameter with no value:
+    /// a generic root analysed by `check` on its own. Its widths, array
+    /// lengths and loop bounds are unknown, not wrong.
+    pub(super) fn has_unbound_parameters(&self) -> bool {
+        self.lower_stack
+            .last()
+            .and_then(|entity| self.entities.get(entity))
+            .is_some_and(|decl| {
+                decl.params.params.iter().any(|param| {
+                    param.bound.is_some() && !self.cur_env.contains_key(&param.name.text)
+                })
+            })
+    }
+
     /// A generic entity analysed without a concrete parameter set may not yet
     /// know either its instance-array bounds or which generate branches build
     /// its slots. Do not turn that uncertainty into E-P017; concrete
@@ -330,6 +344,11 @@ impl<'a> Lowering<'a> {
     /// span, no code and no help: an index form with no lowering contract, and
     /// an expression that is not a place at all.
     pub(super) fn report_bad_assign_target(&mut self, target: &ast::Expr) {
+        // An array sized by an unbound parameter has no elements to place.
+        if self.has_unbound_parameters() {
+            self.parametric_unknown.set(true);
+            return;
+        }
         let text = crate::syntax::pretty::expr_string(target);
         let span = ast::expr_span(target);
         let diag = if matches!(target, ast::Expr::Index { .. }) {
