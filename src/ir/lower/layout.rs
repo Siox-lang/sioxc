@@ -643,7 +643,28 @@ impl<'a> Lowering<'a> {
                 let sname = self.free_fns.type_head_key(base)?;
                 let s = self.structs.get(&sname)?;
                 let mut subst: HashMap<String, ast::Type> = HashMap::new();
+                // Value parameters (`D: integer`) size fields (`unsigned[D]`):
+                // substitute the argument expression, which the field's layout
+                // then evaluates in the use site's environment.
+                let mut values: HashMap<String, ast::Expr> = HashMap::new();
                 for (index, arg) in args.iter().enumerate() {
+                    let declared = match arg {
+                        ast::GenericArg::Named { name, .. }
+                        | ast::GenericArg::NamedType { name, .. } => {
+                            s.params.params.iter().find(|p| p.name.text == name.text)
+                        }
+                        _ => s.params.params.get(index),
+                    };
+                    if let (
+                        Some(parameter),
+                        ast::GenericArg::Positional(value) | ast::GenericArg::Named { value, .. },
+                    ) = (declared, arg)
+                    {
+                        if parameter.bound.is_some() {
+                            values.insert(parameter.name.text.clone(), value.clone());
+                            continue;
+                        }
+                    }
                     let Some(ty) = (match arg {
                         ast::GenericArg::Positional(e) => expr_to_type(e),
                         ast::GenericArg::PositionalType(ty) => Some(ty.clone()),
@@ -670,7 +691,12 @@ impl<'a> Lowering<'a> {
                 Some(
                     fields
                         .into_iter()
-                        .map(|(n, ft)| (n, subst_type_params(&ft, &subst)))
+                        .map(|(n, ft)| {
+                            (
+                                n,
+                                subst_type_values(&subst_type_params(&ft, &subst), &values),
+                            )
+                        })
                         .collect(),
                 )
             }

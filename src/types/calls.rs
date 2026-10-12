@@ -35,12 +35,7 @@ impl<'a> Checker<'a> {
         let Some(source) = self.type_kind_name(&source_ty) else {
             return;
         };
-        let explicit = self
-            .conversion_sigs
-            .contains(&(target.clone(), source.clone()));
-        let derived_enum = self.enum_conversion_is_total(&target, &source);
-        let derived_struct = self.struct_conversion_is_total(&target, &source);
-        if target == source || explicit || derived_enum || derived_struct {
+        if self.conversion_exists(&target, &source) {
             return;
         }
         self.error_with_help(
@@ -53,6 +48,17 @@ impl<'a> Checker<'a> {
             ),
             "`T(x)` needs an `impl From<S> for T`, or a derivation chain between the two types; conversions are never implicit".to_string(),
         );
+    }
+
+    /// Whether `target(x)` is defined for an `x` of type `source`: an
+    /// `impl From<source> for target`, or a total nominal derivation.
+    pub(super) fn conversion_exists(&self, target: &str, source: &str) -> bool {
+        target == source
+            || self
+                .conversion_sigs
+                .contains(&(target.to_string(), source.to_string()))
+            || self.enum_conversion_is_total(target, source)
+            || self.struct_conversion_is_total(target, source)
     }
 
     /// A chain-connected enum conversion is total only when every source

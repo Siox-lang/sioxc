@@ -76,6 +76,54 @@ pub(in crate::ir) fn subst_type_params(
     }
 }
 
+/// Substitute value parameters (`D -> 32`) into a type's index and
+/// generic-argument expressions: the value-side counterpart of
+/// [`subst_type_params`].
+pub(in crate::ir) fn subst_type_values(
+    ty: &ast::Type,
+    map: &HashMap<String, ast::Expr>,
+) -> ast::Type {
+    if map.is_empty() {
+        return ty.clone();
+    }
+    match ty {
+        ast::Type::Indexed { base, index, span } => ast::Type::Indexed {
+            base: Box::new(subst_type_values(base, map)),
+            index: index.as_ref().map(|i| Box::new(subst_expr_paths(i, map))),
+            span: *span,
+        },
+        ast::Type::Generic { base, args, span } => ast::Type::Generic {
+            base: Box::new(subst_type_values(base, map)),
+            args: args
+                .iter()
+                .map(|arg| match arg {
+                    ast::GenericArg::Positional(e) => {
+                        ast::GenericArg::Positional(subst_expr_paths(e, map))
+                    }
+                    ast::GenericArg::Named { name, value } => ast::GenericArg::Named {
+                        name: name.clone(),
+                        value: subst_expr_paths(value, map),
+                    },
+                    ast::GenericArg::PositionalType(ty) => {
+                        ast::GenericArg::PositionalType(subst_type_values(ty, map))
+                    }
+                    ast::GenericArg::NamedType { name, ty } => ast::GenericArg::NamedType {
+                        name: name.clone(),
+                        ty: subst_type_values(ty, map),
+                    },
+                })
+                .collect(),
+            span: *span,
+        },
+        ast::Type::View { view, target, span } => ast::Type::View {
+            view: view.clone(),
+            target: Box::new(subst_type_values(target, map)),
+            span: *span,
+        },
+        ast::Type::Path(_) => ty.clone(),
+    }
+}
+
 /// Deep-clone a statement, replacing every bare single-segment path named in
 /// `map` with its expression. Used to inline a method body: `self` maps to the
 /// receiver and each parameter to its argument, so `self.valid = '1'` in a

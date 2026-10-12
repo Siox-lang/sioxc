@@ -1075,3 +1075,34 @@ fn a_non_constant_hardware_loop_bound_warns() {
         compilation.failure
     );
 }
+
+#[test]
+/// A generic entity checked on its own has no values for its parameters.
+/// Its loops over `N`, its arrays of length `N` and its run-time indices are
+/// incomplete, not wrong: no W-P019, no E-P017, no projection failure.
+fn a_generic_entity_checks_clean_without_its_parameters() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let dir = std::env::temp_dir().join(format!("siox_parametric_{}", std::process::id()));
+    let source = "module parametric;\n\
+        pub entity Pick<N: integer, SHIFT: integer> {\n\
+            sel: unsigned[8] in, xs: unsigned[8][N] in, y: unsigned[8] out, clk: Bit in\n\
+        }\n\
+        impl<N: integer, SHIFT: integer> Pick<N, SHIFT> {\n\
+            let held: unsigned[8][N];\n\
+            let index: unsigned[8];\n\
+            index = sel >> SHIFT;\n\
+            for i in 0..N - 1 { if clk.rising() { held[i] = xs[i]; } }\n\
+            y = if index >= N { 0 } else { held[index] };\n\
+        }\n";
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory(dir.join("parametric.siox"), source),
+            Emit::Metadata,
+        ));
+    let rendered = compilation.render_diagnostics();
+    assert!(
+        compilation.succeeded() && !rendered.contains("warning") && !rendered.contains("error"),
+        "{rendered} {:?}",
+        compilation.failure
+    );
+}

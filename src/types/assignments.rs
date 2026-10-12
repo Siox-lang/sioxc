@@ -19,10 +19,21 @@ impl<'a> Checker<'a> {
             Expr::Field { .. } | Expr::Index { .. } => target_root_name(target),
             _ => None,
         };
+        // A leaf of an array-of-views port (`down[2].ready`) is checked by its
+        // index-free name (`down.ready`), the view applying per element.
+        let element_leaf = match target {
+            Expr::Field { .. } => index_free_path(target),
+            _ => None,
+        };
         let bad = exact
             .as_deref()
             .filter(|n| dirs.illegal.contains(*n))
             .map(str::to_string)
+            .or_else(|| {
+                element_leaf
+                    .filter(|n| dirs.illegal.contains(n))
+                    .map(|_| crate::syntax::pretty::expr_string(target))
+            })
             .or_else(|| root.filter(|r| dirs.plain_in_roots.contains(r)));
         if let Some(root) = target_root_name(target) {
             if dirs.consts.contains(&root) {
@@ -352,11 +363,31 @@ impl<'a> Checker<'a> {
         }
         if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
+            // Suggest `T(...)` only where that conversion is defined: a named
+            // type without a route from the value's type would reject it.
+            let route = match (self.type_kind_name(&lhs), self.type_kind_name(&rhs)) {
+                (Some(target), Some(source))
+                    if self.structs.contains_key(&target)
+                        || self.enum_variants.contains_key(&target) =>
+                {
+                    self.conversion_exists(&target, &source)
+                }
+                _ => true,
+            };
             let help = strlit_help(&lhs, value).unwrap_or_else(|| {
-                format!(
-                    "wrap it in a conversion, e.g. `{}(...)`",
-                    self.ty_display(&lhs)
-                )
+                if route {
+                    format!(
+                        "wrap it in a conversion, e.g. `{}(...)`",
+                        self.ty_display(&lhs)
+                    )
+                } else {
+                    format!(
+                        "no `From<{}> for {}` exists; add one, or produce a {} another way",
+                        self.ty_display(&rhs),
+                        self.ty_display(&lhs),
+                        self.ty_display(&lhs)
+                    )
+                }
             });
             self.sink.emit(
                 Diagnostic::error(format!(
@@ -532,5 +563,18 @@ impl<'a> Checker<'a> {
             }
             None => true,
         }
+    }
+}
+
+/// A place's dotted name with its element indices dropped: `down[2].ready` is
+/// `down.ready`.
+fn index_free_path(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+        Expr::Field { base, field, .. } => {
+            Some(format!("{}.{}", index_free_path(base)?, field.text))
+        }
+        Expr::Index { base, .. } => index_free_path(base),
+        _ => None,
     }
 }

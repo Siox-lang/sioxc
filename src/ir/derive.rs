@@ -12,107 +12,135 @@ use super::*;
 
 /// Replace the compatibility scheduler graph with a projection of canonical
 /// Process IR hardware regions.
-pub(crate) fn derive_scheduler_forms(design: &mut Design) -> Result<(), String> {
+pub(crate) fn derive_scheduler_forms(design: &mut Design) -> Result<(), SchedulerError> {
     let (drivers, event_blocks) = scheduler_forms(&design.process_ir)?;
     design.drivers = drivers;
     design.event_blocks = event_blocks;
     Ok(())
 }
 
-fn scheduler_forms(ir: &ProcessIr) -> Result<(Vec<Driver>, Vec<EventBlock>), String> {
+/// A process with no scheduler form, located at that process's source.
+#[derive(Debug)]
+pub(crate) struct SchedulerError {
+    pub message: String,
+    pub span: crate::diag::Span,
+}
+
+impl std::fmt::Display for SchedulerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+fn scheduler_forms(ir: &ProcessIr) -> Result<(Vec<Driver>, Vec<EventBlock>), SchedulerError> {
     let mut drivers = Vec::new();
     let mut event_blocks = Vec::new();
-
     for process in &ir.processes {
-        match process.region {
-            ProcessRegion::Procedural => {}
-            ProcessRegion::Combinational => {
-                for assignment in region_assignments(ir, process, process.entry)? {
-                    drivers.push(Driver {
+        process_forms(ir, process, &mut drivers, &mut event_blocks).map_err(|message| {
+            SchedulerError {
+                message,
+                span: process.span,
+            }
+        })?;
+    }
+    Ok((drivers, event_blocks))
+}
+
+/// One process's scheduler form, appended to `drivers` or `event_blocks`.
+fn process_forms(
+    ir: &ProcessIr,
+    process: &ProcessCfg,
+    drivers: &mut Vec<Driver>,
+    event_blocks: &mut Vec<EventBlock>,
+) -> Result<(), String> {
+    match process.region {
+        ProcessRegion::Procedural => {}
+        ProcessRegion::Combinational => {
+            for assignment in region_assignments(ir, process, process.entry)? {
+                drivers.push(Driver {
+                    target: assignment.target,
+                    cond: assignment.guard,
+                    expr: assignment.value,
+                    meta: None,
+                    ctx: assignment.driver_context,
+                    span: Some(assignment.span),
+                });
+            }
+        }
+        ProcessRegion::Event {
+            condition,
+            body,
+            driver_context,
+        } => {
+            // The event condition and body are semantic metadata, not a
+            // license to ignore executable work on the other CFG path.
+            // Reject such a graph before replacing the existing view.
+            let entry = process
+                .blocks
+                .get(process.entry.0 as usize)
+                .ok_or_else(|| format!("event process {:?} has no entry", process.id))?;
+            let ProcessTerminator::Branch {
+                condition: entry_condition,
+                then_block,
+                else_block,
+            } = &entry.terminator
+            else {
+                return Err(format!(
+                    "event process {:?} entry is not a branch",
+                    process.id
+                ));
+            };
+            if !entry.instructions.is_empty()
+                || *entry_condition != condition
+                || *then_block != body
+            {
+                return Err(format!(
+                    "event process {:?} entry does not match its declared region",
+                    process.id
+                ));
+            }
+            let exit = process
+                .blocks
+                .get(else_block.0 as usize)
+                .ok_or_else(|| format!("event process {:?} has no inactive exit", process.id))?;
+            if !exit.instructions.is_empty()
+                || !matches!(
+                    exit.terminator,
+                    ProcessTerminator::Return { value: None, .. }
+                )
+            {
+                return Err(format!(
+                    "event process {:?} inactive path contains behavior",
+                    process.id
+                ));
+            }
+            let condition = digital_expr(ir, condition)?;
+            let updates = region_assignments(ir, process, body)?
+                .into_iter()
+                .map(|assignment| {
+                    if assignment.driver_context != driver_context {
+                        return Err(format!(
+                            "event process {:?} write uses driver context {}, expected {}",
+                            process.id, assignment.driver_context, driver_context
+                        ));
+                    }
+                    Ok(NextUpdate {
                         target: assignment.target,
                         cond: assignment.guard,
                         expr: assignment.value,
                         meta: None,
-                        ctx: assignment.driver_context,
                         span: Some(assignment.span),
-                    });
-                }
-            }
-            ProcessRegion::Event {
-                condition,
-                body,
-                driver_context,
-            } => {
-                // The event condition and body are semantic metadata, not a
-                // license to ignore executable work on the other CFG path.
-                // Reject such a graph before replacing the existing view.
-                let entry = process
-                    .blocks
-                    .get(process.entry.0 as usize)
-                    .ok_or_else(|| format!("event process {:?} has no entry", process.id))?;
-                let ProcessTerminator::Branch {
-                    condition: entry_condition,
-                    then_block,
-                    else_block,
-                } = &entry.terminator
-                else {
-                    return Err(format!(
-                        "event process {:?} entry is not a branch",
-                        process.id
-                    ));
-                };
-                if !entry.instructions.is_empty()
-                    || *entry_condition != condition
-                    || *then_block != body
-                {
-                    return Err(format!(
-                        "event process {:?} entry does not match its declared region",
-                        process.id
-                    ));
-                }
-                let exit = process.blocks.get(else_block.0 as usize).ok_or_else(|| {
-                    format!("event process {:?} has no inactive exit", process.id)
-                })?;
-                if !exit.instructions.is_empty()
-                    || !matches!(
-                        exit.terminator,
-                        ProcessTerminator::Return { value: None, .. }
-                    )
-                {
-                    return Err(format!(
-                        "event process {:?} inactive path contains behavior",
-                        process.id
-                    ));
-                }
-                let condition = digital_expr(ir, condition)?;
-                let updates = region_assignments(ir, process, body)?
-                    .into_iter()
-                    .map(|assignment| {
-                        if assignment.driver_context != driver_context {
-                            return Err(format!(
-                                "event process {:?} write uses driver context {}, expected {}",
-                                process.id, assignment.driver_context, driver_context
-                            ));
-                        }
-                        Ok(NextUpdate {
-                            target: assignment.target,
-                            cond: assignment.guard,
-                            expr: assignment.value,
-                            meta: None,
-                            span: Some(assignment.span),
-                        })
                     })
-                    .collect::<Result<Vec<_>, String>>()?;
-                event_blocks.push(EventBlock {
-                    condition,
-                    updates,
-                    ctx: driver_context,
-                });
-            }
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            event_blocks.push(EventBlock {
+                condition,
+                updates,
+                ctx: driver_context,
+            });
         }
     }
-
-    Ok((drivers, event_blocks))
+    Ok(())
 }
 
 /// Public designs cannot author a second executable scheduler representation.
@@ -133,7 +161,7 @@ pub(super) fn validate_scheduler_forms(design: &Design) -> Result<(), String> {
             _ => false,
         }
     }
-    let (drivers, blocks) = scheduler_forms(&design.process_ir)?;
+    let (drivers, blocks) = scheduler_forms(&design.process_ir).map_err(|error| error.message)?;
     if drivers.len() != design.drivers.len() || blocks.len() != design.event_blocks.len() {
         return Err("scheduler view count disagrees with canonical Process CFGs".into());
     }
@@ -743,6 +771,18 @@ mod tests {
         assert_eq!(first.ctx, 9);
         assert_eq!(guarded.ctx, 9);
         assert!(design.event_blocks.is_empty());
+    }
+
+    #[test]
+    fn a_failure_is_located_at_the_process_that_failed() {
+        let mut design = event_design();
+        let mut broken = design.process_ir.processes[0].clone();
+        broken.span = Span::new(FileId(0), 40..50);
+        broken.blocks[0].terminator = ProcessTerminator::Goto(ProcessBlockId(1));
+        design.process_ir.processes.push(broken);
+        let error =
+            derive_scheduler_forms(&mut design).expect_err("the second process is malformed");
+        assert_eq!(error.span, Span::new(FileId(0), 40..50));
     }
 
     #[test]

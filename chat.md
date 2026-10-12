@@ -17845,3 +17845,56 @@ truthful pruning/unavailable snapshots and GDB classifier limits remain explicit
 Record acceptance in companion dwarf-audit.md, remove the completed native
 TODO history, then commit only owned production/regression/TODO/appended log.
 Companion architecture/testing/audit commits separately; no push.
+
+### 2026-10-12 — Claude — generic struct value parameters size port fields
+
+Branch `fix/generic-struct-value-params`. `struct_fields` (ir/lower/layout.rs)
+substituted only type parameters, so `struct Bus<D: integer> { data:
+unsigned[D] }` behind a view-typed port lowered `data` at width 0 in the
+instance. Value parameters now substitute as expressions (new
+`subst_type_values` in lower_helpers/substitute.rs). Found while writing the
+bus-interface libraries in /home/max/siox-libs (separate repos).
+
+### 2026-10-12 — Claude — arrays of view ports; core::cmp defaults
+
+Branch `feat/view-port-arrays`, for the bus-interconnect libraries.
+- `down: Bus[N] Requester` applies the view per element. The parser now
+  normalizes a view on an array to an array of views (`apply_view`,
+  syntax/parser.rs; `type_str` prints it back as written); lower_body
+  (ir/lower/body.rs) and the checker's input-leaf check (types/collect.rs,
+  types/assignments.rs) look through the indices.
+- core/cmp.siox: `gt`/`ge`/`ne` defaults use operators (`rhs < self`), not
+  `rhs.lt(self)`. A swapped method call made an `integer` generic parameter
+  the receiver (`x > N`), which had no impl and lowered to Unknown.
+
+### 2026-10-12 — Claude — three library gaps
+
+Branch `fix/library-gaps`.
+- `fold_const` (ir/lower/collect.rs) resolves a character-literal constant
+  against its declared enum: `const OK: Bit = '1'` was unknown in hardware.
+- std/logic.siox: `impl From<Bool> for Bit`. The assignment-mismatch help
+  (types/assignments.rs) suggests `T(...)` only when `conversion_exists`
+  (new, types/calls.rs, shared with `check_conversion_route`).
+- Testbench DUT bindings match indexed leaves (`down[2].rdata`), so
+  `.down = wires` and `.bus = wires[2]` link DUT to DUT.
+
+### 2026-10-12 — Claude — error spans and library roots
+
+Branch `fix/diagnostic-spans-and-roots`.
+- derive.rs: `derive_scheduler_forms` returns `SchedulerError { message,
+  span }`, the span of the process that failed. lower.rs used the *first*
+  process's span for every projection failure.
+- compiler.rs `entry_roots`: only the entry file's uninstantiated entities are
+  roots (object, IR and check modes). Imported modules are libraries.
+- A generic root checked on its own (`has_unbound_parameters`,
+  ir/lower/diagnostics.rs) skips W-P019 deferral, E-P017 for unsized arrays,
+  and the projection error (`Design::parametric`).
+**Codex:** `Design` gained `parametric: bool` (struct literals need it).
+
+### 2026-10-12 — Claude — merged main into feature/native-dwarf (#72)
+
+User asked to resolve #72's conflicts and merge it. Only TODO.md (kept the
+branch's five open hardware-lowering entries; main's side was empty) and this
+log (both appends kept) conflicted. Code auto-merged with #68–#71; fmt, both
+clippy gates, build and tests passed locally on the merged tree before push.
+**Codex:** pull `feature/native-dwarf` before pushing to it again.

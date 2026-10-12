@@ -158,12 +158,17 @@ impl<'a> Lowering<'a> {
             // An applied-view port (`bus: Source Stream`) gives each leaf its
             // direction from the view (`out valid; in ready;`); a plain port
             // applies its single direction to every leaf.
-            let view = self.view_of(&p.ty).and_then(|k| self.view_dirs.get(&k));
+            // An array of views (`down: Bus[4] Source`) applies the view to
+            // each element, so `down[2].valid` takes `valid`'s direction.
+            let mut element = &p.ty;
+            while let ast::Type::Indexed { base, .. } = element {
+                element = base;
+            }
+            let view = self.view_of(element).and_then(|k| self.view_dirs.get(&k));
             for (k, &id) in &self.locals {
                 if *k == p.name.text || k.starts_with(&dot) || k.starts_with(&idx) {
                     let dir = match view {
-                        Some(m) => k
-                            .strip_prefix(&dot)
+                        Some(m) => view_leaf(&k[p.name.text.len()..])
                             .and_then(|field| m.get(field).copied())
                             .or(p.dir),
                         None => p.dir,
@@ -835,7 +840,11 @@ impl<'a> Lowering<'a> {
                     // judge: it reports its own errors.
                     self.unresolved_names.borrow_mut().truncate(unresolved);
                     self.depth_exceeded.borrow_mut().truncate(depth_exceeded);
-                    self.defer_procedural_item(item, bound);
+                    // A bound on an unbound generic parameter is constant
+                    // once instantiated: nothing to simulate or warn about.
+                    if !self.has_unbound_parameters() {
+                        self.defer_procedural_item(item, bound);
+                    }
                 }
             }
         }
@@ -860,4 +869,13 @@ impl<'a> Lowering<'a> {
         self.cur_instance_path = saved_instance_path;
         ports
     }
+}
+
+/// The view field a flattened port leaf names, past the port's element
+/// indices: `.valid` and `[2].valid` are both `valid`.
+fn view_leaf(mut rest: &str) -> Option<&str> {
+    while let Some(tail) = rest.strip_prefix('[') {
+        rest = &tail[tail.find(']')? + 1..];
+    }
+    rest.strip_prefix('.')
 }
