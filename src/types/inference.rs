@@ -77,6 +77,7 @@ impl<'a> Checker<'a> {
                     elem: Box::new(self.ty_from_head("Logic")),
                     family: Some(self.array_family_key("unsigned")),
                     len: crate::syntax::radix_digits(digits).count() as u32 * bits,
+                    low: 0,
                 }
             }
             // A char literal defaults to `Char`; an annotation/target
@@ -87,6 +88,7 @@ impl<'a> Checker<'a> {
                 elem: Box::new(Ty::Char),
                 len: text.chars().count() as u32,
                 family: None,
+                low: 0,
             },
             Expr::Path(p) => {
                 if let Some(ty) = self
@@ -241,6 +243,7 @@ impl<'a> Checker<'a> {
                 elem: Box::new(self.ty_from_head("Logic")),
                 family: Some(self.array_family_key("unsigned")),
                 len: 0,
+                low: 0,
             },
             // An array literal: element type from the first element, length
             // from the count.
@@ -253,6 +256,7 @@ impl<'a> Checker<'a> {
                     elem: Box::new(elem),
                     len: elems.len() as u32,
                     family: None,
+                    low: 0,
                 }
             }
             Expr::Range { .. } | Expr::PartialRange { .. } => self.ty_from_head("Range"),
@@ -272,6 +276,7 @@ impl<'a> Checker<'a> {
                                 elem: elem.clone(),
                                 family: family.clone(),
                                 len: width,
+                                low: 0,
                             }
                         }
                     }
@@ -335,6 +340,7 @@ impl<'a> Checker<'a> {
                             elem: Box::new(self.array_element_ty(&head)),
                             family: Some(head),
                             len: w,
+                            low: 0,
                         },
                         None => Ty::Error,
                     }
@@ -367,6 +373,7 @@ impl<'a> Checker<'a> {
                             elem: Box::new(self.ty_from_head("Logic")),
                             family,
                             len: w,
+                            low: 0,
                         }
                     }
                     _ => self.free_call_return_type(p, args, sym),

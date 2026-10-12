@@ -428,6 +428,7 @@ impl<'a> Checker<'a> {
                     elem,
                     len,
                     family: None,
+                    ..
                 } => {
                     elems.len() as u32 == *len
                         && elems.iter().all(|e| self.assignable(elem, e, sym))
@@ -460,6 +461,7 @@ impl<'a> Checker<'a> {
                         elem,
                         len,
                         family: None,
+                        ..
                     } if matches!(elem.as_ref(), Ty::Named(_)) => {
                         let Ty::Named(id) = elem.as_ref() else {
                             unreachable!()

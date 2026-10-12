@@ -217,6 +217,7 @@ impl<'a> Checker<'a> {
                 elem: Box::new(self.array_element_ty(name)),
                 family: Some(name.to_string()),
                 len: 0,
+                low: 0,
             },
             // Only a type can be a type head: an enum variant or constant
             // that happens to share the name (a variant `Style::Logic`) must not

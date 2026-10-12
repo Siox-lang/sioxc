@@ -67,6 +67,11 @@ pub enum Ty {
         /// The nominal family for a library newtype such as `unsigned`, which
         /// drives method and operator dispatch. `None` for a plain array.
         family: Option<String>,
+        /// The lowest index: 0 for `unsigned[8]` (`7..0`), `-4` for
+        /// `sfixed<8, 4>` (`3..-4`). With `len` it is the whole range, which
+        /// for a fixed or float format *is* the format: `ufixed<8, 4>` and
+        /// `ufixed<8, 2>` are different types.
+        low: i64,
     },
     /// A declared function or method with no return type. Unlike `Error`, this
     /// is known and must be rejected anywhere a value is required.
@@ -82,7 +87,9 @@ impl Ty {
         match self {
             Ty::Integer | Ty::Real => Some(64),
             Ty::Char => Some(32),
-            Ty::Array { elem, len, family } => {
+            Ty::Array {
+                elem, len, family, ..
+            } => {
                 if family.is_some() {
                     (*len != 0).then_some(*len)
                 } else {

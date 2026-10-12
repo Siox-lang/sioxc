@@ -384,6 +384,7 @@ fn process_declared_type_inner(
                     elem: Box::new(element),
                     len,
                     family: Some(family),
+                    low: 0,
                 }
             })
         }
@@ -420,15 +421,18 @@ fn process_declared_type_inner(
                     elem,
                     len: 0,
                     family: Some(family),
+                    ..
                 } => Some(crate::types::Ty::Array {
                     elem,
                     len: length,
                     family: Some(family),
+                    low: 0,
                 }),
                 element => Some(crate::types::Ty::Array {
                     elem: Box::new(element),
                     len: length,
                     family: None,
+                    low: 0,
                 }),
             }
         }
@@ -515,6 +519,7 @@ fn process_type_from_layout(
                 .and_then(|length| u32::try_from(length).ok())
                 .unwrap_or(*width),
             family: Some(family.clone()),
+            low: 0,
         }),
         LayoutKind::Array { range, element } => Some(crate::types::Ty::Array {
             elem: Box::new(process_type_from_layout(element, resolved)?),
@@ -523,6 +528,7 @@ fn process_type_from_layout(
                 .and_then(|length| u32::try_from(length).ok())
                 .unwrap_or(0),
             family: None,
+            low: 0,
         }),
         LayoutKind::Struct { name, .. } => nominal_type_from_name(name, resolved),
         LayoutKind::Opaque { .. } => None,
@@ -693,6 +699,7 @@ fn process_layout_for_type(
             elem: _,
             len,
             family: Some(family),
+            ..
         } => {
             let element_enum = context
                 .design
@@ -719,6 +726,7 @@ fn process_layout_for_type(
             elem,
             len,
             family: None,
+            ..
         } => LayoutKind::Array {
             range: (*len != 0).then(|| crate::ir::LayoutRange {
                 left: 0,
@@ -2038,7 +2046,7 @@ fn lower_ordered_storage_initializer(
     // a real handle and must still execute, even when the loaded file is empty.
     if matches!(
         ty.as_ref(),
-        Some(crate::types::Ty::Array { elem, len: 0, family: None })
+        Some(crate::types::Ty::Array { elem, len: 0, family: None, .. })
             if matches!(elem.as_ref(), crate::types::Ty::Char)
     ) && matches!(
         &context.process_ir.values[value.0 as usize].kind,
@@ -5135,12 +5143,14 @@ fn lower_process_named_conversion(
                     len: 0,
                     elem,
                     family,
+                    ..
                 },
                 crate::types::Ty::Array { len, .. },
             ) => crate::types::Ty::Array {
                 elem: elem.clone(),
                 len: *len,
                 family: family.clone(),
+                low: 0,
             },
             _ => target_type,
         };
@@ -5221,6 +5231,7 @@ fn lower_process_raw_resize(
                     elem,
                     family,
                     len: width,
+                    low: 0,
                 },
                 Some(operand_type) => target.cloned().unwrap_or(operand_type),
                 None => target.cloned()?,
@@ -5274,6 +5285,7 @@ fn lower_process_raw_resize(
                 elem,
                 family: Some(family),
                 len,
+                low: 0,
             }
         }
         ast::Expr::Path(path) => {
@@ -5306,6 +5318,7 @@ fn lower_process_raw_resize(
                     elem,
                     family: Some(family),
                     len,
+                    low: 0,
                 };
                 return Some(push_value(
                     *span,
@@ -5450,6 +5463,7 @@ fn inline_with_self_format(
         elem,
         family: Some(family),
         len,
+        low: 0,
     };
     let Some(mut layout) = process_layout_for_type(&target_type, span, context) else {
         truncate_process_values(context, first_value);
@@ -5842,6 +5856,7 @@ fn lower_process_file_call(
         elem: Box::new(crate::types::Ty::Char),
         family: None,
         len: u32::try_from(path.chars().count()).ok()?,
+        low: 0,
     };
     let path_kind = ProcessValueKind::String(path);
     let path_width = source_value_width(&path_kind, Some(&path_type), process, context);
@@ -5855,6 +5870,7 @@ fn lower_process_file_call(
             elem: Box::new(crate::types::Ty::Char),
             family: None,
             len: 0,
+            low: 0,
         }),
         ProcessHostValueOp::FileExists => bool_type(context.resolved),
         _ => None,
@@ -6450,6 +6466,7 @@ fn process_array_elements(
         elem,
         len,
         family: None,
+        ..
     } = ty
     else {
         return None;
@@ -6556,11 +6573,13 @@ fn inline_process_array_binary_operator(
             elem: left_element,
             len: left_len,
             family: None,
+            ..
         },
         crate::types::Ty::Array {
             elem: right_element,
             len: right_len,
             family: None,
+            ..
         },
     ) = (left_type, right_type)
     else {
@@ -7226,7 +7245,10 @@ fn contextual_string_bits(
     process: &ProcessCfg,
     context: &LoweringContext<'_>,
 ) -> Option<(u32, Vec<u64>)> {
-    let crate::types::Ty::Array { elem, len, family } = ty? else {
+    let crate::types::Ty::Array {
+        elem, len, family, ..
+    } = ty?
+    else {
         return None;
     };
     if matches!(elem.as_ref(), crate::types::Ty::Char) {
@@ -8966,6 +8988,7 @@ mod tests {
             elem: Box::new(crate::types::Ty::Error),
             len: 8,
             family: Some("Format".into()),
+            low: 0,
         };
         let layout = SourceLayout {
             span,

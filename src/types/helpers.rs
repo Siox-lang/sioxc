@@ -241,14 +241,33 @@ pub(super) fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
         (Named(a), Named(b)) => a == b,
         // All indexed collections use the same shape. Nominal families do not
         // gate assignment; their behavior lives in trait implementations.
+        // A binary point does: a fixed or float format keeps its fraction at
+        // negative indices, so `ufixed<8, 4>` (`3..-4`) into `ufixed<8, 2>`
+        // (`5..-2`) would reread every bit at another weight. Other ranges are
+        // labels (`unsigned[15..8]` into `unsigned[8]` is the same number).
         (
             Array {
-                elem: ea, len: la, ..
+                elem: ea,
+                len: la,
+                family: fa,
+                low: low_a,
             },
             Array {
-                elem: eb, len: lb, ..
+                elem: eb,
+                len: lb,
+                family: fb,
+                low: low_b,
             },
-        ) => compatible(ea, eb) && (*la == 0 || *lb == 0 || la == lb),
+        ) => {
+            compatible(ea, eb)
+                && (*la == 0 || *lb == 0 || la == lb)
+                && (*la == 0
+                    || *lb == 0
+                    || fa.is_none()
+                    || fb.is_none()
+                    || (*low_a >= 0 && *low_b >= 0)
+                    || low_a == low_b)
+        }
         _ => false,
     }
 }

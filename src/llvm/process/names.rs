@@ -92,6 +92,7 @@ pub(super) fn runtime_handle_width(ty: Option<&siox::types::Ty>) -> Option<u32> 
             elem,
             len: 0,
             family: None,
+            ..
         }) if matches!(elem.as_ref(), siox::types::Ty::Char)
     )
     .then_some(64)
