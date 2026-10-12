@@ -214,10 +214,18 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   Effectful expression source frames now stay in the caller's common emitter
   and effect cache, rather than introducing a debug-only native body. Hardware
   compatibility captures and direct CFG execution keep their ordinary lifetimes;
-  effect-free native bodies remain shared across those contexts. Complete
-  grouping for separately demanded/selected nested-call and partial aggregate
-  returns; no debug
-  boundary may force an unconsumed field or invent a zero for a pruned member.
+  effect-free native bodies remain shared across those contexts. Remaining
+  grouping audits must still preserve demand for separately selected fields;
+  no debug boundary may force an unconsumed field or invent a zero for a pruned
+  member. Jointly demanded partial groups now compact only retained fields
+  into a private carrier, preserving their original source paths and complete
+  declared type through LLVM return fragments. They share one inline source
+  boundary in the common emitter/cache, including checked/foreign effects in
+  proven first-use order. Selected-return joins capture the actual joined bits
+  without repeating a selector or losing its fragment. Native/GDB coverage
+  includes forward/reverse field use, pure/foreign nested calls, both selected
+  return branches, changing inputs, fresh entry references, discarded abort
+  fields, direct history-slot checks and stdout/VCD parity under both hints.
   Independently selected nested partial returns now have a native/GDB
   regression for neither/left/right/both consumers and changing inputs.
   Existing fragment frames preserve the exact foreign effect order, including

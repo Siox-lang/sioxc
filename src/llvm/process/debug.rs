@@ -55,8 +55,10 @@ type ValueFunction<'ctx> = (
 
 struct AggregateReturn {
     layout: SourceLayout,
-    /// Only retained executable operands, at their declared packed offsets.
+    /// Only retained executable operands, at their carrier's packed offsets.
     pieces: Vec<(ProcessValueId, u32, SourceLayout)>,
+    /// Partial carriers keep the original source paths for fragment inspection.
+    fields: Vec<(String, Option<ProcessValueId>)>,
 }
 
 pub(in crate::llvm) struct DebugInfo<'ctx, 's> {

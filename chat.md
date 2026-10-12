@@ -16948,3 +16948,84 @@ middle abort field. The probe counts source stops and inspects retained return
 fragments at completion; missing fields must stay unavailable. It is not yet
 evidence of a failure. Run it after the accepted regression/docs commits, then
 trace the aggregate coverage/demand proof before any production edit. Goal active.
+
+Committed compiler ed03b34 and sibling docs 0149462 after generic acceptance.
+Joint-partial probe 2214433 passed ordinary/debug assertions and VCD parity,
+but disabled its breakpoint during same-line source finish and missed sibling
+stops. Corrected 2226116 keeps that breakpoint live during finish and observes
+four truthful single-field partial frames: left=2/right=12, then left=4/right=14.
+The demanded sum should share one partial source boundary per epoch without
+evaluating the discarded middle abort field. aggregate_returns currently
+rejects the group at its full-coverage gate, before the existing joint-demand
+proof can justify grouping the retained subset. This is a reproduced remaining
+grouping gap, not a numeric simulation failure. No live jobs or Rust edits.
+Next own debug.rs/inline_values.rs and regressions: keep a compact private
+carrier for retained fields only, preserve full declared source types on inline
+frames with LLVM return fragments, and reuse existing demand/order/cache proof.
+Do not zero-fill missing fields, claim a full native return ABI, force a discarded
+operand or split effectful execution out of the common cache. Preserve the
+independent selected-partial regression and native/VCD parity. Goal stays active;
+no push. Foreign AGENTS/.codex and 441 historical chat additions remain untouched.
+
+### 2026-10-12 — Codex — joint partial-return grouping implementation
+
+Own debug.rs AggregateReturn and inline_values.rs grouping/fragment capture.
+Extend the existing group proof to nonoverlapping retained subsets only with
+joint demand; retain uninterrupted effect/check order when required. Compact
+the private carrier instead of filling absent source regions. Partial groups
+stay in the caller's common emitter/cache via the existing inline source frame,
+whose synthetic $return uses the original field paths and declared layout.
+Reuse the existing aggregate builder and nullable fragment observer; do not
+advertise a full native return ABI or add an execution wrapper. Preserve the
+independent selected-partial cases. No live guarded job; foreign work untouched.
+
+2250748 passes the original joint-partial native/GDB probe with two combined
+source frames instead of four leaf frames; assertions/VCD match and the middle
+abort field stays unavailable. New carrier unit rejects overlaps and independent
+uses and proves 128 retained bits rather than a padded 192-bit source result.
+2272040 and 2279194 pass that unit, joint/independent regressions in both packing
+modes, all twenty default DWARF fixtures and strict Clippy. New coverage includes
+pure/foreign nested calls, forward/reverse first-use order, fresh entry references
+and direct finish history-slot checks.
+2290280 then exposed a real selected-join capture gap: aggregate_result builds
+the whole selected carrier without emitting the original selector IDs, leaving
+their source fragments absent. Completion now observes those IDs from the
+already-computed joined bits while the frame is live; no selector/effect repeats.
+2293164 passes both positive and fallback native/GDB cases with three combined
+frames and VCD parity. Extended permanent selected/plain, pure/foreign, forward/
+reverse and both-hint coverage passes both modes in 2296122, terminal success/0,
+peak 862851072 bytes; strict Clippy passes. Update matching TODO/docs and freeze
+Rust for full suites, four corpora, native smokes and graph refresh before commit.
+The full goal remains active; no push, and preserve all foreign changes.
+
+Full joint-partial acceptance is confirmed live as
+siox-job-3000-1791760022111950112-2302449.service; poll that exact unit/log,
+do not restart after an observation interruption. Frozen source/test hash:
+2aaa2369da571dfa78e7b4f69b034a80bf1c5b9667ec7a08023b12dd2e6fdd25.
+Only owned debug.rs/inline_values.rs, debug_info.rs, TODO and appended chat
+tail after line 15000 may be staged after terminal success; sibling docs
+separately. Foreign AGENTS/.codex and 441 historical chat additions are untouched.
+Source remains frozen through full default/bitpack suites, four 228-program
+corpora, four native GDB/VCD smokes and AST/community refresh. Goal active.
+
+2302449 remains confirmed live. All twenty default DWARF fixtures pass
+(96.31s); remaining full-suite/bitpack/corpus stages continue. Frozen hash
+2aaa2369da571dfa78e7b4f69b034a80bf1c5b9667ec7a08023b12dd2e6fdd25 is unchanged.
+No Rust edits, restart or commit while the acceptance handle is live.
+
+2302449 remains live after both full suites pass all twenty DWARF fixtures
+(default 96.31s, bitpack 95.64s). Strict Clippy/corpus stages continue. Frozen
+hash is unchanged. Poll the same handle; no Rust mutation or commit yet.
+
+### 2026-10-12 — Codex — joint-partial full acceptance
+
+2302449 is terminal exited/success/0, peak 1612701696 bytes. Frozen hash
+2aaa2369da571dfa78e7b4f69b034a80bf1c5b9667ec7a08023b12dd2e6fdd25 is unchanged.
+Both complete suites with twenty DWARF fixtures per mode, strict Clippy,
+frontend/artifact gates, four 228-program corpora and four FIFO/wide native
+GDB/VCD smokes pass. AST/community refresh: 5373 nodes, 15327 edges,
+247 communities; existing vendored extractor warnings persist. Commit only
+owned group/fragment implementation, carrier proof, native regressions, TODO
+and this appended chat tail, then matching sibling architecture/testing docs.
+No push. Remaining supported mixed/partial and companion/signature audits
+keep the full goal active. Preserve AGENTS/.codex and 441 historical chat additions.

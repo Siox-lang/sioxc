@@ -321,6 +321,9 @@ pub(super) fn aggregate_returns(
         let Some(layout) = &source.result_layout else {
             continue;
         };
+        let Some(root_width) = layout_width(layout) else {
+            continue;
+        };
         let pieces = group
             .iter()
             .map(|id| {
@@ -343,17 +346,26 @@ pub(super) fn aggregate_returns(
             })
             .collect::<Option<Vec<_>>>();
         let Some(mut pieces) = pieces else { continue };
-        // A packed native return cannot describe missing fields as unavailable.
-        // Keep partial returns leaf-backed rather than inventing zero values.
+        // Reject overlapping source regions. Missing fields need a compact
+        // private carrier and source fragments, never zero-filled source bits.
         let mut regions = pieces
             .iter()
             .map(|(_, offset, layout)| (*offset, layout_width(layout).unwrap()))
             .collect::<Vec<_>>();
         regions.sort_unstable();
-        let covered = regions.into_iter().try_fold(0u32, |end, (offset, width)| {
-            (offset == end).then(|| end.checked_add(width)).flatten()
+        let covered = regions.iter().try_fold(0u32, |end, (offset, width)| {
+            (*offset >= end)
+                .then(|| offset.checked_add(*width))
+                .flatten()
         });
-        if covered != layout_width(layout) {
+        if covered.is_none_or(|end| end > root_width) {
+            continue;
+        }
+        let retained = regions
+            .iter()
+            .try_fold(0u32, |sum, (_, width)| sum.checked_add(*width));
+        let partial = retained != Some(root_width);
+        if retained.is_none() || (partial && !joint_aggregate_demand(design, &group)) {
             continue;
         }
         let order = if pieces
@@ -380,6 +392,36 @@ pub(super) fn aggregate_returns(
         } else {
             None
         };
+        let mut carrier = layout.clone();
+        let mut fields = Vec::new();
+        if partial {
+            let mut indices = (0..pieces.len()).collect::<Vec<_>>();
+            indices.sort_by_key(|index| pieces[*index].1);
+            let mut offset = 0;
+            let mut retained_fields = Vec::new();
+            for index in indices {
+                let ProcessValueKind::InlineCall { source, .. } =
+                    &design.process_ir.values[group[index].0 as usize].kind
+                else {
+                    unreachable!();
+                };
+                let path = source.aggregate.as_ref().unwrap().1.clone();
+                let (operand, position, layout) = &mut pieces[index];
+                *position = offset;
+                offset += layout_width(layout).unwrap();
+                fields.push((path.clone(), Some(*operand)));
+                retained_fields.push(siox::ir::LayoutField {
+                    name: path,
+                    direction: None,
+                    layout: layout.clone(),
+                });
+            }
+            carrier.kind = LayoutKind::Struct {
+                name: "<partial return>".into(),
+                view: None,
+                fields: retained_fields,
+            };
+        }
         for (id, (_, offset, layout)) in group.iter().zip(&pieces) {
             members.insert(*id, (leader, *offset, layout_width(layout).unwrap()));
         }
@@ -394,8 +436,9 @@ pub(super) fn aggregate_returns(
         returns.insert(
             leader,
             AggregateReturn {
-                layout: layout.clone(),
+                layout: carrier,
                 pieces,
+                fields,
             },
         );
     }
@@ -1725,33 +1768,84 @@ fn aggregate_value<'ctx>(
         return None;
     };
     let mut source = source.as_ref().clone();
-    source.aggregate = None;
     let root_width = layout_width(&aggregate.layout)?;
-    let returned = inline_value(
-        module,
-        builder,
-        design,
-        leader,
-        *operand,
-        &source,
-        root_width,
-        false,
-        Some(&aggregate.layout),
-        None,
-        index_sites,
-        cache,
-        |builder, cache, _, _| {
-            aggregate_result(
-                module,
-                builder,
-                design,
-                &aggregate.layout,
-                &aggregate.pieces,
-                index_sites,
-                cache,
-            )
-        },
-    )?;
+    let returned = if !aggregate.fields.is_empty() {
+        source.locals.push(siox::ir::ProcessValueBinding {
+            name: "$return".into(),
+            span: source.result_span,
+            scope: None,
+            layout: source.result_layout.clone(),
+            value: None,
+            fields: aggregate.fields.clone(),
+        });
+        // A partial source result has no full native return ABI. Keep this
+        // frame over the common emitter/cache, including captured effects.
+        call_value(
+            debug.context,
+            builder,
+            (leader, root_width, false, Some(aggregate.layout.clone())),
+            cache,
+            |builder, cache| {
+                inline_body(
+                    module,
+                    builder,
+                    design,
+                    None,
+                    *operand,
+                    &source,
+                    cache,
+                    |builder, cache, _| {
+                        let returned = aggregate_result(
+                            module,
+                            builder,
+                            design,
+                            &aggregate.layout,
+                            &aggregate.pieces,
+                            index_sites,
+                            cache,
+                        )?;
+                        // Synchronized selections assemble a whole carrier,
+                        // without emitting the original per-field selector IDs.
+                        // Observe their actual joined bits before this frame ends.
+                        let _location = ValueLocationGuard::new(builder, cache, source.result_span);
+                        for (operand, offset, layout) in &aggregate.pieces {
+                            let part =
+                                extract_region(builder, returned, *offset, layout_width(layout)?)?;
+                            capture_value(builder, design, cache, *operand, part);
+                        }
+                        Some(returned)
+                    },
+                )
+            },
+        )?
+    } else {
+        source.aggregate = None;
+        inline_value(
+            module,
+            builder,
+            design,
+            leader,
+            *operand,
+            &source,
+            root_width,
+            false,
+            Some(&aggregate.layout),
+            None,
+            index_sites,
+            cache,
+            |builder, cache, _, _| {
+                aggregate_result(
+                    module,
+                    builder,
+                    design,
+                    &aggregate.layout,
+                    &aggregate.pieces,
+                    index_sites,
+                    cache,
+                )
+            },
+        )?
+    };
     let field = extract_region(builder, returned, offset, field_width)?;
     if signed && process_value_is_signed(design, id) {
         fit_signed(builder, field, width)
@@ -2035,18 +2129,25 @@ pub(in crate::llvm::process) fn inline_body<'ctx>(
                 bits > 64 || wide_native || return_alignment(layout).is_none()
             }
         });
-    let partial = partial_path.map(|(_, path)| {
-        let mut source = source.clone();
-        source.locals.push(siox::ir::ProcessValueBinding {
-            name: "$return".into(),
-            span: source.result_span,
-            scope: None,
-            layout: source.result_layout.clone(),
-            value: None,
-            fields: vec![(path.clone(), Some(operand))],
+    let partial = partial_path
+        .filter(|_| {
+            !source
+                .locals
+                .iter()
+                .any(|binding| binding.name == "$return")
+        })
+        .map(|(_, path)| {
+            let mut source = source.clone();
+            source.locals.push(siox::ir::ProcessValueBinding {
+                name: "$return".into(),
+                span: source.result_span,
+                scope: None,
+                layout: source.result_layout.clone(),
+                value: None,
+                fields: vec![(path.clone(), Some(operand))],
+            });
+            source
         });
-        source
-    });
     let source = partial.as_ref().unwrap_or(source);
     let (owner, name) = source.name.rsplit_once("::").unwrap_or(("", &source.name));
     let file = debug.file(source.function.file);
@@ -3012,6 +3113,104 @@ fn capture_binding<'ctx>(
 #[cfg(test)]
 mod demand_tests {
     use super::*;
+
+    #[test]
+    fn partial_groups_compact_only_jointly_demanded_fields() {
+        let mut design = Design::default();
+        let span = Span::new(FileId(0), 0..10);
+        let scalar = SourceLayout {
+            span,
+            kind: LayoutKind::Scalar {
+                width: 64,
+                domain: ScalarDomain::Integer,
+                nominal: None,
+                value_range: None,
+            },
+        };
+        let layout = SourceLayout {
+            span,
+            kind: LayoutKind::Struct {
+                name: "Triple".into(),
+                view: None,
+                fields: ["left", "unused", "right"]
+                    .into_iter()
+                    .map(|name| siox::ir::LayoutField {
+                        name: name.into(),
+                        direction: None,
+                        layout: scalar.clone(),
+                    })
+                    .collect(),
+            },
+        };
+        let node = |kind| siox::ir::ProcessValue {
+            span,
+            ty: Some(siox::types::Ty::Integer),
+            bit_width: Some(64),
+            kind,
+        };
+        for value in [2, 12] {
+            design
+                .process_ir
+                .values
+                .push(node(ProcessValueKind::Number(ProcessNumber::Integer(
+                    vec![value],
+                ))));
+        }
+        for (operand, path) in [(0, "left"), (1, "right")] {
+            design
+                .process_ir
+                .values
+                .push(node(ProcessValueKind::InlineCall {
+                    operand: ProcessValueId(operand),
+                    source: Box::new(ProcessValueInline {
+                        name: "partial".into(),
+                        function: span,
+                        call: span,
+                        result_span: span,
+                        result_layout: Some(layout.clone()),
+                        aggregate: Some((1, path.into())),
+                        branches: Vec::new(),
+                        parameters: Vec::new(),
+                        locals: Vec::new(),
+                    }),
+                }));
+        }
+        design
+            .process_ir
+            .values
+            .push(node(ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Add,
+                left: ProcessValueId(2),
+                right: ProcessValueId(3),
+            }));
+        let (groups, members) = aggregate_returns(&design);
+        let group = &groups[&ProcessValueId(2)];
+        assert_eq!(layout_width(&group.layout), Some(128));
+        assert_eq!(layout_width(&layout), Some(192));
+        assert_eq!(
+            group.fields,
+            vec![
+                ("left".into(), Some(ProcessValueId(0))),
+                ("right".into(), Some(ProcessValueId(1)))
+            ]
+        );
+        assert_eq!(members[&ProcessValueId(2)], (ProcessValueId(2), 0, 64));
+        assert_eq!(members[&ProcessValueId(3)], (ProcessValueId(2), 64, 64));
+        // Separate consumers cannot make the retained subset unconditional.
+        design
+            .process_ir
+            .values
+            .push(node(ProcessValueKind::RawResize {
+                operand: ProcessValueId(2),
+            }));
+        assert!(aggregate_returns(&design).0.is_empty());
+        design.process_ir.values.pop();
+        if let ProcessValueKind::InlineCall { source, .. } = &mut design.process_ir.values[3].kind {
+            source.aggregate.as_mut().unwrap().1 = "left".into();
+        }
+        // Duplicate/overlapping projections are not a retained carrier.
+        assert!(aggregate_returns(&design).0.is_empty());
+    }
 
     #[test]
     fn inspection_constants_preserve_full_words_and_negation() {

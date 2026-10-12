@@ -3218,6 +3218,199 @@ assert sorted(seen) == [('left', -9), ('left', 5), ('right', -9), ('right', 5)],
 }
 
 #[test]
+fn jointly_demanded_partial_returns_share_source_fragments() {
+    let directory =
+        std::env::temp_dir().join(format!("siox_dwarf_joint_partial_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("joint.siox");
+    let text = r#"module joint_partial_return;
+extern "C" { fn abort() -> integer; fn putchar(value: integer) -> integer; }
+struct Triple { pub left: integer, pub unused: integer, pub right: integer }
+#[inline(HINT)]
+fn leaf(value: integer) -> integer { return LEAF; }
+#[inline(HINT)]
+fn partial(value: integer) -> Triple {
+    BODY
+}
+fn consume(value: integer) -> integer {
+    let pair: Triple = partial(value);
+    return SUM;
+}
+entity Probe { value: integer in, total: integer out }
+impl Probe { total = consume(value); }
+#[test] entity T {}
+impl T {
+    let value: integer = 1;
+    let probe: Probe = { .value = value };
+    stimulus: process {
+        await 1ns;
+        assert!(probe.total == 14, "joint partial initial");
+        value = 3;
+        await 1ns;
+        assert!(probe.total == 18, "joint partial new epoch");
+        FALLBACK
+    }
+}"#;
+    let python = r#"import gdb
+stop = gdb.Breakpoint('joint_partial_return::partial')
+gdb.execute('run')
+seen = []
+while gdb.selected_thread() is not None:
+    frame = gdb.selected_frame()
+    assert frame.type() == gdb.INLINE_FRAME
+    assert frame.function().type.target().name == 'Triple'
+    assert frame.function().type.target().sizeof == 24
+    for name in ['left', 'unused', 'right']:
+        try: int(frame.read_var('$return')[name])
+        except (gdb.error, ValueError): pass
+        else: raise AssertionError(('stale entry fragment', name))
+    stop.enabled = False
+    for _ in range(1000):
+        frame = gdb.selected_frame()
+        while frame is not None and frame.name() != 'joint_partial_return::partial':
+            frame = frame.older()
+        if frame is not None:
+            try:
+                result = frame.read_var('$return')
+                fields = [(name, int(result[name])) for name in ['left', 'unused', 'right'] if not result[name].is_optimized_out]
+                assert all(name != 'unused' for name, _ in fields), fields
+                if len(fields) == 2: break
+            except (gdb.error, ValueError):
+                pass
+        instruction = gdb.execute('x/i $pc', to_string=True)
+        gdb.execute('nexti' if '\tcall' in instruction else 'stepi', to_string=True)
+    else:
+        raise AssertionError('joint retained fragments never became available')
+    assert result['unused'].is_optimized_out
+    seen.append(tuple(fields))
+    history = 1
+    while True:
+        try: gdb.history(history)
+        except gdb.error: break
+        history += 1
+    frame.select()
+    # Keep same-line sibling breakpoints live during source finish.
+    stop.enabled = True
+    gdb.execute('finish', to_string=True)
+    try: gdb.history(history)
+    except gdb.error: pass
+    else: raise AssertionError('partial source finish fabricated a native return')
+    if gdb.selected_thread() is not None and gdb.selected_frame().name() != 'joint_partial_return::partial':
+        gdb.execute('continue', to_string=True)
+assert seen == EXPECTED, seen
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+"#;
+    for selected in [false, true] {
+        let initial =
+            "return Triple { .left = leaf(value), .unused = abort(), .right = leaf(value + 10) };";
+        let body = if selected {
+            format!("if value > 0 {{ {initial} }} return Triple {{ .left = leaf(value - 10), .unused = abort(), .right = leaf(value) }};")
+        } else {
+            initial.into()
+        };
+        let text = text.replace("BODY", &body).replace(
+            "FALLBACK",
+            if selected {
+                "value = -3; await 1ns; assert!(probe.total == -14, \"selected partial fallback\");"
+            } else {
+                ""
+            },
+        );
+        let python = python.replace("EXPECTED", if selected {
+            "[(('left', 2), ('right', 12)), (('left', 4), ('right', 14)), (('left', -12), ('right', -2))]"
+        } else {
+            "[(('left', 2), ('right', 12)), (('left', 4), ('right', 14))]"
+        });
+        for (leaf, effectful) in [("value + 1", false), ("putchar(value + 65) - 64", true)] {
+            for (sum, stdout) in [
+                ("pair.left + pair.right", "BLDN"),
+                ("pair.right + pair.left", "LBND"),
+            ] {
+                let stdout = format!(
+                    "{stdout}{}",
+                    if selected {
+                        if sum.starts_with("pair.left") {
+                            "4>"
+                        } else {
+                            ">4"
+                        }
+                    } else {
+                        ""
+                    }
+                );
+                for hint in ["never", "always"] {
+                    std::fs::write(
+                        &source,
+                        text.replace("HINT", hint)
+                            .replace("LEAF", leaf)
+                            .replace("SUM", sum),
+                    )
+                    .unwrap();
+                    let ordinary = directory.join("ordinary.bin");
+                    let debug = directory.join("debug.bin");
+                    let mut outputs = Vec::new();
+                    for (binary, debugging) in [(&ordinary, false), (&debug, true)] {
+                        let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+                        command.args(["--std", "std", "--test"]);
+                        if debugging {
+                            command.arg("--debug");
+                        }
+                        success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+                        let output = success(
+                            Command::new(binary)
+                                .arg("-o")
+                                .arg(binary.with_extension("vcd"))
+                                .output()
+                                .unwrap(),
+                        );
+                        if effectful {
+                            assert!(String::from_utf8_lossy(&output.stdout).contains(&stdout));
+                        }
+                        outputs.push((output.stdout, output.stderr));
+                    }
+                    assert_eq!(outputs[0], outputs[1]);
+                    assert_eq!(
+                        std::fs::read(ordinary.with_extension("vcd")).unwrap(),
+                        std::fs::read(debug.with_extension("vcd")).unwrap()
+                    );
+                    if Command::new("llvm-dwarfdump")
+                        .arg("--version")
+                        .output()
+                        .is_ok()
+                    {
+                        success(
+                            Command::new("llvm-dwarfdump")
+                                .arg("--verify")
+                                .arg(&debug)
+                                .output()
+                                .unwrap(),
+                        );
+                    }
+                    if Command::new("gdb").arg("--version").output().is_ok() {
+                        success(
+                            Command::new("gdb")
+                                .args(["-nx", "-q", "--batch"])
+                                .arg(&debug)
+                                .args([
+                                    "-ex",
+                                    "set disable-randomization off",
+                                    "-ex",
+                                    &format!("python {python}"),
+                                ])
+                                .output()
+                                .unwrap(),
+                        );
+                    } else {
+                        eprintln!("GDB unavailable: native joint partial returns checked, fragment probe skipped");
+                    }
+                }
+            }
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn independently_selected_nested_partial_returns_keep_source_fragments() {
     let directory = std::env::temp_dir().join(format!(
         "siox_dwarf_selected_partial_{}",
