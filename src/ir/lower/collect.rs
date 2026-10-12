@@ -63,6 +63,7 @@ impl<'a> Lowering<'a> {
             expanding_structs: std::cell::RefCell::new(std::collections::HashSet::new()),
             depth_exceeded: std::cell::RefCell::new(Vec::new()),
             procedural_loop: std::cell::Cell::new(None),
+            parametric_unknown: std::cell::Cell::new(false),
             procedural_driven: HashSet::new(),
             procedural_bounds: HashSet::new(),
             source_values: std::cell::RefCell::new(source_values::SourceValues::default()),

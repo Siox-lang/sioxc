@@ -48,6 +48,10 @@ pub struct Design {
     /// unroll (a bound that is not constant): Process lowering simulates
     /// each as a procedural CFG instead of a driver graph.
     pub procedural_items: Vec<ProceduralItem>,
+    /// A generic root was lowered without values for its parameters (`check`
+    /// analysing a library on its own). Its scheduler view is incomplete by
+    /// construction, so a projection failure there is not an error.
+    pub parametric: bool,
     /// Labels from every source context folded into one resolved
     /// combinational target. Resolution replaces those context drivers with a
     /// normalized driver, so target ownership must survive independently of

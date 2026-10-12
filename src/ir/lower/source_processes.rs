@@ -1515,7 +1515,7 @@ pub fn lower(
     // Backends look calls up by value (`ProcessIr::call_of`).
     process_ir.calls.sort_unstable_by_key(|call| call.value.0);
     design.process_ir = process_ir;
-    crate::ir::derive_scheduler_forms(design)
+    crate::ir::derive_scheduler_forms(design).map_err(|error| error.message)
 }
 
 /// Register persistent state declared by one test root and connect each

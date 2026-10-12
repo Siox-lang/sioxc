@@ -150,7 +150,9 @@ impl<'a> Lowering<'a> {
                     .last()
                     .and_then(|entity| self.entities.get(entity))
                     .is_some_and(|decl| decl.params.params.iter().any(|q| q.name.text == leaf));
-                if !parametric {
+                if parametric {
+                    self.parametric_unknown.set(true);
+                } else {
                     // Nothing declares this name. Every signal, constant and
                     // in-scope parameter is known here, so record it rather
                     // than lowering to a silent `Unknown` that `check` called
@@ -287,6 +289,12 @@ impl<'a> Lowering<'a> {
                     return Expr::Unknown;
                 }
                 if self.is_unresolved_instance_array_reference(e) {
+                    return Expr::Unknown;
+                }
+                // Analysed without its parameters, a generic entity's arrays
+                // have no length yet: that is not a missing hardware form.
+                if self.has_unbound_parameters() {
+                    self.parametric_unknown.set(true);
                     return Expr::Unknown;
                 }
                 // No signal, no mux tree, no `Index` impl. Record the shape
