@@ -3362,11 +3362,7 @@ impl<'a> Parser<'a> {
                     return first;
                 }
             };
-            return Type::View {
-                view,
-                target: Box::new(first),
-                span: start.to(self.prev_span()),
-            };
+            return apply_view(first, view, start.to(self.prev_span()));
         }
         first
     }
@@ -3957,6 +3953,24 @@ fn path_text(path: &Path) -> &str {
     match path.segments.as_slice() {
         [only] => &only.text,
         _ => "",
+    }
+}
+
+/// Apply a view to a type. On an array the view applies to each element, as a
+/// port's direction does: `Bus[4] Source` is four `Bus Source` elements, so
+/// indexing one yields the applied view.
+fn apply_view(ty: Type, view: Path, span: Span) -> Type {
+    match ty {
+        Type::Indexed { base, index, span } => Type::Indexed {
+            base: Box::new(apply_view(*base, view, span)),
+            index,
+            span,
+        },
+        target => Type::View {
+            view,
+            target: Box::new(target),
+            span,
+        },
     }
 }
 
@@ -4623,6 +4637,24 @@ mod tests {
         };
         assert_eq!(i.trait_.as_ref().unwrap().segments[0].text, "ClockLike");
         assert!(matches!(i.items[0], ImplItem::Fn(_)));
+    }
+
+    #[test]
+    /// A view after an array type applies to each element and prints back as
+    /// written.
+    fn a_view_on_an_array_applies_per_element() {
+        let m = parse_ok("module m;\nentity Hub {\n  down: Bus<8>[4] Source,\n}\n");
+        let Item::Entity(e) = &m.items[0] else {
+            panic!("expected entity")
+        };
+        let Type::Indexed { base, .. } = &e.ports[0].ty else {
+            panic!("expected an array of views, got {:?}", e.ports[0].ty)
+        };
+        assert!(matches!(base.as_ref(), Type::View { .. }));
+        assert_eq!(
+            crate::syntax::pretty::type_str(&e.ports[0].ty),
+            "Bus<8>[4] Source"
+        );
     }
 
     #[test]

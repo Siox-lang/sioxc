@@ -215,8 +215,9 @@ impl<'a> Checker<'a> {
                             name: p.name.text.clone(),
                             ty: self.ast_ty(&p.ty),
                             dir: p.dir,
+                            // An array of views applies the view per element.
                             view: self
-                                .type_key(&p.ty)
+                                .type_key(array_element(&p.ty))
                                 .filter(|key| self.views.contains_key(key)),
                             range: self.declared_range(&p.ty),
                             index_bounds: self.declared_index_bounds(&p.ty),
@@ -1040,4 +1041,13 @@ impl<'a> Checker<'a> {
                     .is_some_and(|types| types.contains(element))
             })
     }
+}
+
+/// The element type of a (possibly nested) array type; any other type is its
+/// own element.
+fn array_element(mut ty: &Type) -> &Type {
+    while let Type::Indexed { base, .. } = ty {
+        ty = base;
+    }
+    ty
 }

@@ -13979,3 +13979,15 @@ unsigned[D] }` behind a view-typed port lowered `data` at width 0 in the
 instance. Value parameters now substitute as expressions (new
 `subst_type_values` in lower_helpers/substitute.rs). Found while writing the
 bus-interface libraries in /home/max/siox-libs (separate repos).
+
+### 2026-10-12 — Claude — arrays of view ports; core::cmp defaults
+
+Branch `feat/view-port-arrays`, for the bus-interconnect libraries.
+- `down: Bus[N] Requester` applies the view per element. The parser now
+  normalizes a view on an array to an array of views (`apply_view`,
+  syntax/parser.rs; `type_str` prints it back as written); lower_body
+  (ir/lower/body.rs) and the checker's input-leaf check (types/collect.rs,
+  types/assignments.rs) look through the indices.
+- core/cmp.siox: `gt`/`ge`/`ne` defaults use operators (`rhs < self`), not
+  `rhs.lt(self)`. A swapped method call made an `integer` generic parameter
+  the receiver (`x > N`), which had no impl and lowered to Unknown.

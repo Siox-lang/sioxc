@@ -16,15 +16,19 @@ module core::cmp;
 // `==` and `!=`.
 pub trait Eq<Rhs> {
     fn eq(self, rhs: Rhs) -> Bool;
-    fn ne(self, rhs: Rhs) -> Bool { return not self.eq(rhs); }
+    fn ne(self, rhs: Rhs) -> Bool { return not (self == rhs); }
 }
 
 // `<`, `<=`, `>` and `>=`.
 pub trait Ord<Rhs> {
     fn lt(self, rhs: Rhs) -> Bool;
     fn le(self, rhs: Rhs) -> Bool;
-    fn gt(self, rhs: Rhs) -> Bool { return rhs.lt(self); }
-    fn ge(self, rhs: Rhs) -> Bool { return rhs.le(self); }
+    // Operators, not `rhs.lt(self)`: `Rhs` need not have an order of its
+    // own (`x > N` for a vector `x` and an `integer` parameter `N`), and
+    // the operator falls back to the built-in comparison where the method
+    // call has nothing to call.
+    fn gt(self, rhs: Rhs) -> Bool { return rhs < self; }
+    fn ge(self, rhs: Rhs) -> Bool { return rhs <= self; }
 }
 
 // How a bit-string pattern's character matches an element: `"01--" =>` in

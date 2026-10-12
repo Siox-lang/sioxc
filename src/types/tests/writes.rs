@@ -28,6 +28,27 @@ fn rejects_write_to_input_bus_leaf() {
 }
 
 #[test]
+/// An array of views applies the view to each element: an element's `in`
+/// leaf is read-only, its `out` leaf writable.
+fn an_array_of_views_checks_each_elements_leaves() {
+    let bus = "module m;\n\
+             struct S { valid: Bit, ready: Bit, }\n\
+             view Source for S { valid out, ready in }\n\
+             entity P { bus: S[2] Source }\n";
+    let bad = check_src(&format!(
+        "{bus}impl P {{ bus[0].valid = '1'; bus[1].valid = '0'; bus[0].ready = '1'; }}\n"
+    ));
+    assert_eq!(bad, 1, "driving the `in` leaf bus[0].ready must error");
+    let ok = check_src(&format!(
+        "{bus}impl P {{ bus[0].valid = bus[1].ready; bus[1].valid = bus[0].ready; }}\n"
+    ));
+    assert_eq!(
+        ok, 0,
+        "out leaves are writable and in leaves readable per element"
+    );
+}
+
+#[test]
 /// A chain of integer aliases still enforces the underlying value range.
 fn chained_integer_aliases_still_enforce_value_ranges() {
     let errors = check_src(
