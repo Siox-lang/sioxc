@@ -17738,3 +17738,110 @@ hash d372d1b8437a0c3727bd167dab9eac6e15123a78e790c290211939adc732b715
 is unchanged. Commit only the branch-free mapping, two regressions, TODO and
 owned appended log; preserve foreign AGENTS12/chat441/.codex. Companion docs
 separately. No push; the explicit target-format return-range audit remains.
+
+### 2026-10-12 — Codex — target-format return-range regression
+
+Previous turn committed accepted compiler 63d6194 and docs 990b3b9. No live
+jobs. Own tests/debug_info.rs, then IR source-process lowering only if the
+failure is reproduced. Check sfixed<8,4> to sfixed<81,4> return snapshots and
+logical labels 76..-4 through procedural/hardware callers, both wrapper hints
+and changing positive/negative inputs. Ordinary execution must pass first;
+do not manufacture companion planes or weaken unavailable-bit checks.
+Preserve foreign AGENTS12/chat441/.codex. No push.
+
+4161215 passes ordinary/debug native assertions and DWARF verification, but
+leaves the sfixed81 frame before a whole return snapshot appears. That method
+actually emits only its 64-bit kernel word; padding it for inspection would
+violate the established unavailable-bit contract. Keep that absence truthful.
+Use a complete 81-bit Word family conversion instead: binary Bit storage,
+unchanged raw bits, source range 76..-4 to target 72..-8. It tests logical
+return labels without demanding an unconsumed plane or extending missing bits;
+force both inline hints to cover actual shared Process copies as well.
+
+1255/7833/18649 are failed ordinary-language probes, not DWARF evidence:
+the generic Bit-backed form loses bounds in checking, and the indexed custom
+From constructor reaches an incomplete ordinary Process block. Remove these
+probes; do not fix unrelated language boundaries under this goal. Extend the
+already-passing numeric-family fixture instead. Its debug compile uses the
+compiler API to inspect actual source-call and used shared-function return
+layouts before the same native/GDB/VCD checks. Require the known target
+float16 5..-10, float32 8..-23 and sfixed8 3..-4 ranges independently of
+whether a return companion plane was consumed. No generated fake values.
+
+44098 confirms the original concrete failure in canonical IR: used
+std::float::from value1786 returns range0..31, expected8..-23. Own the common
+inline_with_self_format return descriptor and matching shared Process copy.
+Reuse its already-known explicit target layout; do not change executable
+value widths, materialize missing bits or alter argument requests. Add the
+target shape to shared signatures only for methods returning their Self family,
+so different target ranges cannot overwrite one shared return description;
+kernel-number helpers continue sharing across formats.
+
+52532 is terminal exited/success/0, peak 1030205440: canonical return ranges,
+native assertions, GDB entry/finish checks and VCD/DWARF parity pass default
+and bitpack under both wrapper hints. Strengthen the same fixture with two
+16-bit targets (binary16 M10 and bfloat16 M7) from the same binary32 input;
+require both target ranges and both actual return bit patterns separately in
+procedural/hardware stacks. This tests the shared-signature separation rather
+than merely observing a single metadata overwrite.
+
+67419/76998/85444 exposed test provenance assumptions, not a production
+regression: one conversion has the std float type-field span rather than an
+explicit constructor span. Check actual call-site lines when available, valid
+target formats for declaration-derived spans, and independently require both
+used shared binary32-to-16-bit function ranges. 98546 is terminal
+exited/success/0, peak 1141551104: binary16 and bfloat16 layouts and actual
+finish patterns pass in both packing modes, both hints and caller contexts;
+strict Clippy passes. No failed wide/custom probes remain. Freeze Rust for
+full acceptance before committing this metadata/signature change. No push.
+
+Frozen acceptance: siox-job-3000-1791828977283331750-116642.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791828977283331750-116642.log.
+Source/test/core hash:
+5b29df4680466b53b223725e9282daea0cb86710997a5effd71cec66d7a693fd.
+Poll this exact job; do not edit Rust while it runs. Own companion
+architecture/testing documentation for explicit return ranges and same-width
+format separation. TODO/docs updates do not change acceptance inputs.
+
+### 2026-10-12 — Codex — DWARF acceptance checklist
+
+Continuation confirmed; acceptance job116642 is authoritatively running.
+Default tests passed; bitpack tests are still active. Source remains frozen.
+Own a short companion docs/dwarf-audit.md checklist mapping the documented
+source-debugging contract to named permanent checks. Distinguish truthful
+unavailable values and debugger limitations from unfinished implementation;
+do not treat optional-tool test success alone as evidence of GDB execution.
+Both GDB and llvm-dwarfdump are installed on this host. Preserve foreign edits.
+
+Job116642 now passed both full suites (23 DWARF checks per packing mode),
+formatter, artifact checks and strict Clippy. The exact service remains live,
+currently compiling the ordinary corpus float_sqrt_test; no restart or source
+edit. New companion dwarf-audit.md records the finite documented acceptance
+requirements, named checks and explicit supported limits; testing.md links it.
+Commit/acceptance remain pending all four corpus runs, native GDB smoke and
+graph refresh. Verify the same source hash and terminal service status first.
+
+### 2026-10-12 — Codex — DWARF TODO closure review
+
+Job116642 remains live; both ordinary corpora passed 239/0. Debug corpora,
+GDB smoke and graph refresh remain. Own only the native-debugging TODO item:
+move its completed history to the existing companion testing/audit documents,
+retaining concrete pending acceptance steps and the no-new-demand invariant.
+The audit checks the actual Direct/Register/Memory return variants and packed,
+literal/runtime-string views; wide/odd/partial source frames have permanent
+checks, so open-ended transport-audit wording is no longer a concrete task.
+Foreign companion docs/language.md is now dirty; preserve it, do not stage it.
+
+Job116642 is terminal exited/success/0, peak 2607013888 bytes. Both full suites
+passed all 23 DWARF fixtures, strict Clippy/artifact/format gates passed, and
+all four ordinary/debug default/bitpack corpora passed 239/0. GDB smoke logs
+prove FIFO/wide breakpoints, inspection, stepping and VCD parity in both build
+modes. Source/test/core hash remains
+5b29df4680466b53b223725e9282daea0cb86710997a5effd71cec66d7a693fd.
+AST/community refresh completed (5523 nodes, 242 communities); existing libfst
+graph-extraction warnings are not compiler faults. The finite requirement
+review includes every backend return variant and documented supported layout;
+truthful pruning/unavailable snapshots and GDB classifier limits remain explicit.
+Record acceptance in companion dwarf-audit.md, remove the completed native
+TODO history, then commit only owned production/regression/TODO/appended log.
+Companion architecture/testing/audit commits separately; no push.

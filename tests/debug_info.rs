@@ -2172,7 +2172,8 @@ fn inspect(value: float<32, 23>, fixed: sfixed<8, 4>) -> real {
     let narrow: float<16, 10> = float<16, 10>(value);
     let back: sfixed<8, 4> = sfixed<8, 4>(narrow);
     let other: float<32, 23> = float<32, 23>(fixed);
-    return real(narrow) + real(back) + real(other);
+    let alternate: float<16, 7> = float<16, 7>(value);
+    return real(narrow) + real(back) + real(other) + real(alternate);
 }
 entity Probe { value: float<32, 23> in, fixed: sfixed<8, 4> in, result: real out }
 impl Probe { result = inspect(value, fixed); }
@@ -2183,14 +2184,14 @@ impl T {
     let probe: Probe = { .value = value, .fixed = fixed };
     stimulus: process {
         let initial: real = inspect(value, fixed);
-        assert!(initial == 4.5, "procedural positive conversions");
+        assert!(initial == 6.0, "procedural positive conversions");
         await 1ns;
-        assert!(probe.result == 4.5, "hardware positive conversions");
+        assert!(probe.result == 6.0, "hardware positive conversions");
         value = float<32, 23>(-2.5);
         fixed = sfixed<8, 4>(-2.5);
         await 1ns;
         let updated: real = inspect(value, fixed);
-        assert!(updated == -7.5 and probe.result == -7.5, "negative conversions");
+        assert!(updated == -10.0 and probe.result == -10.0, "negative conversions");
     }
 }
 "#;
@@ -2198,9 +2199,9 @@ impl T {
 stops = [gdb.Breakpoint(name) for name in ['std::float::from', 'std::fixed::from']]
 seen = {'process': set(), 'hardware': set()}
 expected = {
-    ('float[32]', 'float[16]'): {0: 0, 0x3fc00000: 0x3e00, 0xc0200000: 0xc100},
-    ('float[16]', 'sfixed[8]'): {0: 0, 0x3e00: 24, 0xc100: 216},
-    ('sfixed[8]', 'float[32]'): {0: 0, 24: 0x3fc00000, 216: 0xc0200000},
+    ('float[32]', 'float[16]'): {0: (0,), 0x3fc00000: (0x3e00, 0x3fc0), 0xc0200000: (0xc100, 0xc020)},
+    ('float[16]', 'sfixed[8]'): {0: (0,), 0x3e00: (24,), 0xc100: (216,)},
+    ('sfixed[8]', 'float[32]'): {0: (0,), 24: (0x3fc00000,), 216: (0xc0200000,)},
 }
 def source_name(ty):
     return ty.name.replace(' ', '').rsplit('::', 1)[-1]
@@ -2228,27 +2229,150 @@ while gdb.selected_thread() is not None:
     result = gdb.history(0)
     assert source_name(result.type) == signature[1], result.type
     bits = int(result) & ((1 << widths[signature[1]]) - 1)
-    assert bits == expected[signature][value], (signature, value, bits)
-    seen[context].add((signature, value))
+    assert bits in expected[signature][value], (signature, value, bits)
+    seen[context].add((signature, value, bits))
     gdb.execute('continue')
 assert int(gdb.parse_and_eval('$_exitcode')) == 0
 for context, actual in seen.items():
     for signature, values in expected.items():
-        for value in values:
+        for value, results in values.items():
             if value != 0:
-                assert (signature, value) in actual, (context, signature, value, seen)
+                for result in results:
+                    assert (signature, value, result) in actual, (context, signature, value, result, seen)
 "#;
     for hint in ["always", "never"] {
         std::fs::write(&source, text.replace("HINT", hint)).unwrap();
         let debug = directory.join("debug.bin");
         let ordinary = directory.join("ordinary.bin");
         for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
-            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
-            command.args(["--std", "std", "--test"]);
             if debugging {
-                command.arg("--debug");
+                use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+                use siox::ir::{LayoutKind, LayoutRange, ProcessValueKind};
+                let compilation = Compiler::new("std").compile(
+                    CompileRequest::new(SourceInput::path(&source), Emit::TestExecutable)
+                        .with_output(binary)
+                        .with_debug(true),
+                );
+                assert!(
+                    compilation.succeeded(),
+                    "{} {:?}",
+                    compilation.render_diagnostics(),
+                    compilation.failure
+                );
+                let ir = &compilation.design.as_ref().unwrap().process_ir;
+                let used = ir
+                    .calls
+                    .iter()
+                    .map(|call| call.function)
+                    .collect::<std::collections::HashSet<_>>();
+                let mut seen = std::collections::HashSet::new();
+                let mut shared_formats = std::collections::HashSet::new();
+                for (index, value) in ir.values.iter().enumerate() {
+                    let ProcessValueKind::InlineCall { source, .. } = &value.kind else {
+                        continue;
+                    };
+                    if !matches!(
+                        source.name.as_str(),
+                        "std::float::from" | "std::fixed::from"
+                    ) || (source.call == source.function
+                        && !ir.functions.iter().any(|function| {
+                            function.result.0 as usize == index && used.contains(&function.id)
+                        }))
+                    {
+                        continue;
+                    }
+                    let Some(siox::ir::SourceLayout {
+                        kind:
+                            LayoutKind::Packed {
+                                family,
+                                width,
+                                range,
+                                ..
+                            },
+                        ..
+                    }) = &source.result_layout
+                    else {
+                        continue;
+                    };
+                    let shared = source.call == source.function;
+                    // Conversion ingress can retain the argument's extent.
+                    // Its owning source line still names the target format.
+                    let line = compilation
+                        .sources
+                        .line_col(source.call.file, source.call.start)
+                        .0;
+                    let call = compilation
+                        .sources
+                        .get(source.call.file)
+                        .unwrap()
+                        .text
+                        .lines()
+                        .nth(line as usize - 1)
+                        .unwrap();
+                    let bounds = match (family.rsplit("::").next(), *width) {
+                        (Some("float"), 16) if shared || !call.contains("float<16,") => {
+                            assert!(
+                                matches!(
+                                    range,
+                                    Some(
+                                        LayoutRange {
+                                            left: 5,
+                                            right: -10
+                                        } | LayoutRange { left: 8, right: -7 }
+                                    )
+                                ),
+                                "shared target format lost: {range:?}"
+                            );
+                            let range = range.unwrap();
+                            (range.left, range.right)
+                        }
+                        (Some("float"), 16) if call.contains("float<16, 7>") => (8, -7),
+                        (Some("float"), 16) => (5, -10),
+                        (Some("float"), 32) => (8, -23),
+                        (Some("sfixed"), 8) => (3, -4),
+                        _ => continue,
+                    };
+                    assert_eq!(
+                        *range,
+                        Some(LayoutRange {
+                            left: bounds.0,
+                            right: bounds.1
+                        }),
+                        "{} value {index}: target format lost, shared={shared}, call={call:?}, span={:?}",
+                        source.name, source.call
+                    );
+                    seen.insert((family.rsplit("::").next().unwrap(), *width, bounds));
+                    if shared
+                        && family.rsplit("::").next() == Some("float")
+                        && *width == 16
+                        && source.parameters.first().is_some_and(|parameter| {
+                            matches!(
+                                parameter.layout.as_ref().map(|layout| &layout.kind),
+                                Some(LayoutKind::Packed { width: 32, .. })
+                            )
+                        })
+                    {
+                        shared_formats.insert(bounds);
+                    }
+                }
+                assert!(
+                    seen.contains(&("float", 16, (5, -10)))
+                        && seen.contains(&("float", 16, (8, -7)))
+                        && seen.contains(&("sfixed", 8, (3, -4))),
+                    "{seen:?}"
+                );
+                assert_eq!(shared_formats, [(5, -10), (8, -7)].into());
+            } else {
+                success(
+                    Command::new(env!("CARGO_BIN_EXE_sioxc"))
+                        .args(["--std", "std", "--test"])
+                        .arg(&source)
+                        .arg("-o")
+                        .arg(binary)
+                        .output()
+                        .unwrap(),
+                );
             }
-            success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
             success(
                 Command::new(binary)
                     .arg("-o")

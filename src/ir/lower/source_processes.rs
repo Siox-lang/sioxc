@@ -5714,6 +5714,18 @@ fn lower_process_family_from(
     )
 }
 
+/// A family result uses its Self format; kernel-number helpers do not.
+fn returns_self_format(function: &ast::FnDecl, layout: &SourceLayout) -> bool {
+    let LayoutKind::Packed { family, .. } = &layout.kind else {
+        return false;
+    };
+    function
+        .ret
+        .as_ref()
+        .and_then(crate::ir::lower_helpers::type_head_name)
+        .is_some_and(|head| head == "Self" || family.rsplit("::").next() == Some(head))
+}
+
 /// Inline `function` with `Self` standing for the format `family[index]`, as
 /// a `From` conversion to that format and an associated call on it
 /// (`ufixed<6, 2>::resize(x)`) both need. Values pushed from `first_value`
@@ -5762,6 +5774,9 @@ fn inline_with_self_format(
         *width = len;
         *range = Some(crate::ir::LayoutRange { left, right });
     }
+    // Only a result of the type itself is a word of the requested format;
+    // an integer helper keeps its declared inspection type.
+    let in_format = returns_self_format(function, &layout);
     let format = push_value(
         span,
         Some(target_type.clone()),
@@ -5771,17 +5786,6 @@ fn inline_with_self_format(
     );
     context.process_ir.value_layouts[format.0 as usize] = Some(layout);
     context.self_formats.push(format);
-    // Only a result of the type itself (`-> ufixed`, `-> Self`) is a word of
-    // the format; `-> integer` keeps its own width.
-    let in_format = function
-        .ret
-        .as_ref()
-        .and_then(crate::ir::lower_helpers::type_head_name)
-        .is_some_and(|head| {
-            head == "Self"
-                || matches!(&target_type, crate::types::Ty::Array { family: Some(family), .. }
-                    if family.rsplit("::").next() == Some(head))
-        });
     let result = inline_process_function(
         function,
         span,
@@ -5797,7 +5801,29 @@ fn inline_with_self_format(
     );
     context.self_formats.pop();
     match result {
-        Some(result) if in_format => Some(inherit_receiver_layout(result, format, context)),
+        Some(result) if in_format => {
+            // Source result types retain the explicit target range, rather
+            // than a generic width-only layout or the source operand's range.
+            // The native result/argument widths remain executable decisions.
+            let shared = context
+                .process_ir
+                .calls
+                .last()
+                .filter(|call| call.value == result)
+                .map(|call| context.process_ir.functions[call.function.0 as usize].result);
+            let layout = context.process_ir.value_layouts[format.0 as usize]
+                .as_ref()
+                .unwrap()
+                .clone();
+            for value in std::iter::once(result).chain(shared) {
+                if let ProcessValueKind::InlineCall { source, .. } =
+                    &mut context.process_ir.values[value.0 as usize].kind
+                {
+                    source.result_layout = Some(layout.clone());
+                }
+            }
+            Some(inherit_receiver_layout(result, format, context))
+        }
         Some(result) => Some(result),
         None => {
             truncate_process_values(context, first_value);
@@ -6517,6 +6543,16 @@ fn shared_process_function(
         .collect::<Vec<_>>();
     // The signature is the operands' shapes, never where they were declared.
     let mut key = format!("{:?}->{:?}", function.span, return_type);
+    if let Some(layout) = context
+        .self_formats
+        .last()
+        .and_then(|value| process_value_source_layout(*value, context.process_ir))
+        .filter(|layout| returns_self_format(function, layout))
+    {
+        // Equal bit widths do not imply equal target formats (or source
+        // return labels). Kernel-number helpers still share across formats.
+        key.push_str(&format!("|Self:{:?}", layout.kind));
+    }
     for (operand, layout) in operands.iter().zip(&layouts) {
         let value = &context.process_ir.values[operand.0 as usize];
         let shape = layout.as_ref().map(|layout| &layout.kind);
