@@ -217,6 +217,81 @@ impl<'a> Lowering<'a> {
     }
 
     /// Whether a lowered expression produces f64-bit (`real`) values.
+    /// The type `e` widens to as an operand of a mixed numeric operation
+    /// (spec 3.17), unless it is being widened right now.
+    pub(super) fn promotion_of(&self, e: &ast::Expr) -> Option<&crate::types::Ty> {
+        let span = ast::expr_span(e);
+        if self.widening.borrow().contains(&span) {
+            return None;
+        }
+        self.promotions.get(&span)
+    }
+
+    /// `e` widened to its promoted type through std's `Widen<Source>` impl
+    /// for that type (alignment and extension), inlined with `Self` as the
+    /// promoted format. `None` when `e` does not widen.
+    pub(super) fn promoted_operand(
+        &self,
+        e: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Expr> {
+        let crate::types::Ty::Array {
+            len,
+            family: Some(family),
+            low,
+            ..
+        } = self.promotion_of(e)?.clone()
+        else {
+            return None;
+        };
+        let span = ast::expr_span(e);
+        self.widening.borrow_mut().insert(span);
+        let result = (|| {
+            let target = self.free_fns.canonical_type_key(&family);
+            let source = self.operand_type_name(e)?;
+            let impls = self.op_impls.get("Widen", &target)?;
+            let (function, _) = impls.iter().find(|(f, declared)| {
+                declared.clone().or_else(|| {
+                    f.params
+                        .iter()
+                        .find(|p| !p.is_self)
+                        .and_then(|p| p.ty.as_ref())
+                        .and_then(|ty| self.free_fns.type_head_key(ty))
+                }) == Some(source.clone())
+            })?;
+            let number = |value: i64| {
+                let literal = ast::Expr::Int {
+                    text: value.unsigned_abs().to_string(),
+                    span,
+                };
+                if value < 0 {
+                    ast::Expr::Unary {
+                        op: ast::UnOp::Neg,
+                        rhs: Box::new(literal),
+                        span,
+                    }
+                } else {
+                    literal
+                }
+            };
+            let index = ast::Expr::Range {
+                lo: Box::new(number(low + i64::from(len) - 1)),
+                hi: Box::new(number(low)),
+                span,
+            };
+            let value = self.inline_in_format(function, &index, e, std::slice::from_ref(e), env)?;
+            // A word of the format: a sign-extended source carries no bits
+            // above it.
+            Some(if len < 64 {
+                self.source_slice(&value, len - 1, 0, span)
+            } else {
+                value
+            })
+        })();
+        self.widening.borrow_mut().remove(&span);
+        result
+    }
+
     pub(super) fn is_real_expr(&self, e: &Expr) -> bool {
         match e {
             Expr::Canonical { value, .. } => {
@@ -391,8 +466,18 @@ impl<'a> Lowering<'a> {
         if !vector(lhs) && !vector(rhs) {
             return built;
         }
+        // The metavalue rule reads the operands as written: widening one for
+        // a mixed comparison neither makes nor clears an unknown element.
+        let spans = [ast::expr_span(lhs), ast::expr_span(rhs)];
+        let guarded: Vec<_> = spans
+            .into_iter()
+            .filter(|span| self.widening.borrow_mut().insert(*span))
+            .collect();
         let left = self.lower_scalar_env(lhs, env);
         let right = self.lower_scalar_env(rhs, env);
+        for span in guarded {
+            self.widening.borrow_mut().remove(&span);
+        }
         let mut arena = self.source_values.borrow_mut();
         let left = arena.append(&left, ast::expr_span(lhs), None);
         let right = arena.append(&right, ast::expr_span(rhs), None);

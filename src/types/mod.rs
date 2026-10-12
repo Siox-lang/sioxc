@@ -111,9 +111,22 @@ pub struct Typed {
     /// span, to the attribute's declared value in terms of `self`. See
     /// [`expand_type_attrs`].
     type_attr_reads: HashMap<Span, Expr>,
+    /// Each operand of a mixed numeric operation that widens, keyed by its
+    /// span, to the type it widens to (spec 3.17, `core::convert::Widen`).
+    promotions: HashMap<Span, Ty>,
 }
 
 impl Typed {
+    /// The type an operand widens to in a mixed numeric operation.
+    pub fn promotion(&self, span: Span) -> Option<&Ty> {
+        self.promotions.get(&span)
+    }
+
+    /// Every operand promotion, keyed by the operand's span.
+    pub fn promotions(&self) -> &HashMap<Span, Ty> {
+        &self.promotions
+    }
+
     /// Checked type of the expression covering this exact source span.
     pub fn expr_type(&self, span: Span) -> Option<&Ty> {
         self.expr_types.get(&span)
@@ -425,6 +438,8 @@ struct Checker<'a> {
     /// Each type attribute read, by span, to the declared value it expands
     /// to; handed on in [`Typed`].
     type_attr_reads: HashMap<Span, Expr>,
+    /// Operand promotions of mixed numeric operations; handed on in [`Typed`].
+    promotions: HashMap<Span, Ty>,
 }
 
 #[cfg(test)]

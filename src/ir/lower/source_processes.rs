@@ -59,6 +59,9 @@ struct LoweringContext<'a> {
     /// A value carrying the format a family `From` impl is building, which
     /// its body reads as `Self'high` (`lower_process_family_from`).
     self_formats: Vec<ProcessValueId>,
+    /// Operands being widened now (spec 3.17): their source value is
+    /// lowered as written.
+    widening: std::collections::HashSet<crate::diag::Span>,
     inline_self_values: Vec<Option<ProcessValueId>>,
     inline_return_types: Vec<Option<crate::types::Ty>>,
     /// Procedure returns resume the enclosing caller, not the whole process.
@@ -1197,6 +1200,8 @@ pub fn lower(
                 constant_integers: &constant_integers,
                 value_bindings: Vec::new(),
                 self_formats: Vec::new(),
+
+                widening: std::collections::HashSet::new(),
                 inline_self_values: Vec::new(),
                 inline_return_types: Vec::new(),
                 inline_return_blocks: Vec::new(),
@@ -1256,6 +1261,8 @@ pub fn lower(
                             constant_integers: &constant_integers,
                             value_bindings: Vec::new(),
                             self_formats: Vec::new(),
+
+                            widening: std::collections::HashSet::new(),
                             inline_self_values: Vec::new(),
                             inline_return_types: Vec::new(),
                             inline_return_blocks: Vec::new(),
@@ -1308,6 +1315,8 @@ pub fn lower(
                             constant_integers: &constant_integers,
                             value_bindings: Vec::new(),
                             self_formats: Vec::new(),
+
+                            widening: std::collections::HashSet::new(),
                             inline_self_values: Vec::new(),
                             inline_return_types: Vec::new(),
                             inline_return_blocks: Vec::new(),
@@ -1377,6 +1386,8 @@ pub fn lower(
                     constant_integers: &constant_integers,
                     value_bindings: Vec::new(),
                     self_formats: Vec::new(),
+
+                    widening: std::collections::HashSet::new(),
                     inline_self_values: Vec::new(),
                     inline_return_types: Vec::new(),
                     inline_return_blocks: Vec::new(),
@@ -3798,6 +3809,12 @@ fn operand_type(
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> Option<crate::types::Ty> {
+    let span = ast::expr_span(expression);
+    if !context.widening.contains(&span) {
+        if let Some(promoted) = context.typed.promotion(span) {
+            return Some(promoted.clone());
+        }
+    }
     let checked = context
         .typed
         .expr_type(ast::expr_span(expression))
@@ -3811,6 +3828,81 @@ fn operand_type(
     let ty = process_value_type(value, context);
     truncate_process_values(context, first_value);
     ty
+}
+
+/// `expression` widened to its promoted type (spec 3.17) through std's
+/// `Widen<Source>` impl for that type, inlined with `Self` as the promoted
+/// format. `None` when it does not widen.
+fn process_promoted_operand(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let span = ast::expr_span(expression);
+    if context.widening.contains(&span) {
+        return None;
+    }
+    let target = context.typed.promotion(span)?.clone();
+    context.widening.insert(span);
+    let result = widen_operand(expression, &target, span, process, context);
+    context.widening.remove(&span);
+    result
+}
+
+fn widen_operand(
+    expression: &ast::Expr,
+    target: &crate::types::Ty,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let crate::types::Ty::Array {
+        len,
+        family: Some(family),
+        low,
+        ..
+    } = target
+    else {
+        return None;
+    };
+    let source_type = operand_type(expression, process, context)?;
+    let source = process_type_key(&source_type, context)?;
+    let function = context
+        .functions
+        .get_widening(&context.functions.canonical_type_key(family), &source)?;
+    let first_value = context.process_ir.values.len();
+    let operand = value_ref_with_type(expression, process, context, Some(&source_type));
+    let number = |value: i64| {
+        let literal = ast::Expr::Int {
+            text: value.unsigned_abs().to_string(),
+            span,
+        };
+        if value < 0 {
+            ast::Expr::Unary {
+                op: ast::UnOp::Neg,
+                rhs: Box::new(literal),
+                span,
+            }
+        } else {
+            literal
+        }
+    };
+    let index = ast::Expr::Range {
+        lo: Box::new(number(low + i64::from(*len) - 1)),
+        hi: Box::new(number(*low)),
+        span,
+    };
+    inline_with_self_format(
+        function,
+        family.clone(),
+        &index,
+        &[operand],
+        span,
+        first_value,
+        process,
+        context,
+        Some(target),
+    )
 }
 
 /// Whether a checked type says something: not an error, and not a generic
@@ -7334,6 +7426,9 @@ fn value_ref_with_type(
     context: &mut LoweringContext<'_>,
     contextual_type: Option<&crate::types::Ty>,
 ) -> crate::ir::ProcessValueId {
+    if let Some(value) = process_promoted_operand(expression, process, context) {
+        return value;
+    }
     let value = value_ref_with_type_inner(expression, process, context, contextual_type);
     // A kernel integer widens into `real` by value (language §3.17's one
     // implicit promotion): convert it, rather than reading its bits as f64.
@@ -9034,6 +9129,8 @@ mod tests {
             constant_integers: &Default::default(),
             value_bindings: vec![],
             self_formats: vec![],
+
+            widening: std::collections::HashSet::new(),
             inline_self_values: vec![],
             inline_return_types: vec![],
             inline_return_blocks: vec![],

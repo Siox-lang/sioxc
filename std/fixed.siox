@@ -1,5 +1,6 @@
 module std::fixed;
 
+use core::convert::Widen;
 use std::math::Sqrt;
 use std::numeric::{Overflow, Rounding};
 
@@ -283,6 +284,48 @@ fn clamp(v: integer, lo: integer, hi: integer) -> integer {
     if v > hi { return hi; }
     if v < lo { return lo; }
     return v;
+}
+
+// --- numeric promotion -------------------------------------------------------------
+
+// A number into a fixed format that holds all of its values (spec 3.17): its
+// binary point aligned to `Self`'s, a signed source sign-extended. Only
+// shifts and extension, so in hardware it is wiring.
+impl Widen<unsigned> for ufixed {
+    fn widen(value: unsigned) -> ufixed { return word(value) << (0 - Self'low); }
+}
+
+impl Widen<unsigned> for sfixed {
+    fn widen(value: unsigned) -> sfixed { return word(value) << (0 - Self'low); }
+}
+
+impl Widen<signed> for sfixed {
+    fn widen(value: signed) -> sfixed {
+        return sext_word(word(value), value'length) << (0 - Self'low);
+    }
+}
+
+impl Widen<ufixed> for ufixed {
+    fn widen(value: ufixed) -> ufixed { return word(value) << (value'low - Self'low); }
+}
+
+impl Widen<ufixed> for sfixed {
+    fn widen(value: ufixed) -> sfixed { return word(value) << (value'low - Self'low); }
+}
+
+impl Widen<sfixed> for sfixed {
+    fn widen(value: sfixed) -> sfixed {
+        return sext_word(word(value), value'length) << (value'low - Self'low);
+    }
+}
+
+// `s + 1`: the integer as a number in `s`'s format (1.0, not one step).
+impl Widen<integer> for ufixed {
+    fn widen(value: integer) -> ufixed { return value << (0 - Self'low); }
+}
+
+impl Widen<integer> for sfixed {
+    fn widen(value: integer) -> sfixed { return value << (0 - Self'low); }
 }
 
 // --- helpers -------------------------------------------------------------------

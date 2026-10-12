@@ -1162,6 +1162,13 @@ impl<'a> Lowering<'a> {
     /// declared enum/struct, a suffix literal's target type, an enum variant's
     /// enum, or `integer` for a bare numeric literal.
     pub(super) fn operand_type_name(&self, e: &ast::Expr) -> Option<String> {
+        if let Some(crate::types::Ty::Array {
+            family: Some(family),
+            ..
+        }) = self.promotion_of(e)
+        {
+            return Some(self.free_fns.canonical_type_key(family));
+        }
         if let Some(family) = self.source_call_family(e) {
             return Some(family);
         }
