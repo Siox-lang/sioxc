@@ -949,3 +949,37 @@ impl T {
         );
     }
 }
+
+/// A method declared `-> float` that returns an `integer` local on some path
+/// lowers in a testbench: the result is a word of the float, not a 64-bit
+/// integer wearing the float's type (its layout disagreed with its width).
+#[cfg(feature = "llvm")]
+#[test]
+fn an_integer_local_returned_as_a_family() {
+    let stdout = run(
+        "integer_local_return",
+        r#"
+module r1;
+use std::float::float;
+
+trait Keep { fn keep_or_zero(self) -> Self; }
+
+impl Keep for float {
+    fn keep_or_zero(self) -> float {
+        let a: integer = integer(self);
+        if a == 0 { return a; }
+        return a;
+    }
+}
+
+#[test]
+entity T {}
+impl T {
+    let x: float<32, 23> = float<32, 23>(1.5);
+    await 1ns;
+    print!("{} {}\n", x.keep_or_zero().is_zero(), real(x.keep_or_zero()));
+}
+"#,
+    );
+    assert!(stdout.lines().any(|line| line == "false 1.5"), "{stdout}");
+}

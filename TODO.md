@@ -84,10 +84,6 @@ listed under LLVM and Output below.
 Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
-- 🔴 **Integer locals returned as a family.** In a testbench, a method
-  declared `-> float` that returns an `integer` local (`return a;`) on one
-  path fails to lower when its result is then used as a receiver; returning
-  the word as an expression works.
 - 🔴 **Non-constant loop bounds in hardware.** A hardware loop whose bound is
   not constant once the arguments' shapes are known reports the caller's
   locals as unknown names instead of naming the bound.

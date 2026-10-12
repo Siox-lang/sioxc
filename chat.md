@@ -13943,3 +13943,15 @@ are removed; promotion inlines std's `From<S> for T` (hardware
   the checker types a `T[range](x)` argument.
 **Codex:** touches ir/functions.rs, ir/lower/{calls,operators,source_processes}.rs,
 types/{expressions,mod}.rs, resolve.rs, core/convert.siox.
+
+### 2026-10-12 — Claude — integer local returned as a family
+
+Branch `fix/small-lowering-bugs`. `narrow_to_type` (source_processes.rs)
+carried the returned value's layout onto the narrowed result whatever its
+width: an `integer` local returned from `-> float` produced a 32-bit value
+with a 64-bit integer layout and failed validation. The layout now carries
+over only at the declared width. `compiler.rs`: a scheduler-projection
+failure after an already-reported error is not echoed as a second failure.
+Next (owner ruling): a non-constant loop bound in hardware is legal for
+simulation and warns; runtime loops in hardware processes/functions are the
+follow-up.

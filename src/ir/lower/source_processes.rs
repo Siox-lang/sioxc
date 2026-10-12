@@ -6957,7 +6957,12 @@ fn narrow_to_type(
         ProcessValueKind::RawResize { operand: value },
         context,
     );
-    if let Some(layout) = process_value_source_layout(value, context.process_ir).cloned() {
+    // The source's layout carries over at the declared width only: an
+    // `integer` local returned from `-> float` is a word of the float.
+    if let Some(layout) = process_value_source_layout(value, context.process_ir)
+        .filter(|layout| layout.packed_width().is_none_or(|width| width == *len))
+        .cloned()
+    {
         context.process_ir.value_layouts[narrowed.0 as usize] = Some(layout);
     }
     narrowed
