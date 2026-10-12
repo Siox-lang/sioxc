@@ -5,11 +5,24 @@ use super::*;
 impl<'a> Lowering<'a> {
     /// Lower an expression into IR.
     pub(super) fn lower_expr(&self, e: &ast::Expr) -> Expr {
+        if let Some(value) = self.promoted_operand(e, &HashMap::new()) {
+            return value;
+        }
         if let Some(Val::Scalar(value)) = self.source_call_value(e, &HashMap::new()) {
             return value;
         }
         match e {
-            ast::Expr::Call { callee, args, .. } => {
+            ast::Expr::Call {
+                callee,
+                args,
+                qualifier,
+                ..
+            } => {
+                if let Some(value) = qualifier.as_deref().and_then(|qualifier| {
+                    self.lower_qualified_call(qualifier, callee, args, &HashMap::new())
+                }) {
+                    return value;
+                }
                 // `T()` — the nullary constructor — resolves to the type's
                 // default before any free-fn/conversion lookup (scalar context).
                 if let Some(Val::Scalar(v)) = self.lower_new(callee, args) {
@@ -332,6 +345,12 @@ impl<'a> Lowering<'a> {
                 // An operator on an enum/struct-typed operand inlines its
                 // operator-trait impl body (spec 3.25); `==`/`!=` stay
                 // built-in discriminant comparison unless an `Eq` impl takes them.
+                // `real` with another number: both as `real` (the numeric
+                // ladder's top), the other converted by its `From` impl.
+                if let Some((l, r)) = self.promoted_real_operands(lhs, rhs, &HashMap::new()) {
+                    let built = self.make_binary(op.clone(), l, r, false, false, ast::expr_span(e));
+                    return built;
+                }
                 let op_str = crate::syntax::pretty::bin_op(op);
                 if let Some(native) =
                     self.native_vector_logical(op_str, lhs, rhs, &|e| self.lower_expr(e))
@@ -348,11 +367,11 @@ impl<'a> Lowering<'a> {
                     if let Some(Val::Scalar(inlined)) =
                         self.inline_op(op_str, lhs, rhs, &HashMap::new())
                     {
-                        return self.mark_vector_compare(op, lhs, rhs, inlined);
+                        return self.mark_vector_compare(op, lhs, rhs, inlined, &HashMap::new());
                     }
                 }
                 if let Some(derived) = self.inline_cmp(op_str, lhs, rhs, &HashMap::new()) {
-                    return self.mark_vector_compare(op, lhs, rhs, derived);
+                    return self.mark_vector_compare(op, lhs, rhs, derived, &HashMap::new());
                 }
                 let (mut l, mut r) = (self.lower_expr(lhs), self.lower_expr(rhs));
                 // A character literal's identity comes from its counterpart's
@@ -375,7 +394,7 @@ impl<'a> Lowering<'a> {
                     self.declares_kernel_integer(lhs) || self.declares_kernel_integer(rhs),
                     ast::expr_span(e),
                 );
-                self.mark_vector_compare(op, lhs, rhs, built)
+                self.mark_vector_compare(op, lhs, rhs, built, &HashMap::new())
             }
             // `{a, b, c}`: fold into `(((0 << w_a) or a) << w_b) or b ...`.
             // First part is the MSBs.
@@ -519,6 +538,9 @@ impl<'a> Lowering<'a> {
 
     /// The width an expression produces, from its operands and context.
     pub(super) fn ast_width(&self, e: &ast::Expr) -> u32 {
+        if let Some(crate::types::Ty::Array { len, .. }) = self.promotion_of(e) {
+            return *len;
+        }
         if let Some(width) = self
             .source_call_layout(e)
             .and_then(|layout| layout.bit_width())
@@ -827,6 +849,9 @@ impl<'a> Lowering<'a> {
         e: &ast::Expr,
         env: &HashMap<String, Val>,
     ) -> Option<(i64, i64)> {
+        if let Some(crate::types::Ty::Array { len, low, .. }) = self.promotion_of(e) {
+            return Some((low + i64::from(*len) - 1, *low));
+        }
         match e {
             ast::Expr::Path(_) => {
                 let path = expr_path(e)?;

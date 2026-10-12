@@ -182,6 +182,9 @@ pub struct Parser<'a> {
     last: usize,
     /// The argument tokens of every `name!(…)` read so far.
     macro_args: MacroArgTable,
+    /// The declarations after the first of a group `let a, b: T = v;`,
+    /// waiting for the loop collecting items or statements to take them.
+    grouped_lets: Vec<LetDecl>,
 }
 
 impl<'a> Parser<'a> {
@@ -218,6 +221,7 @@ impl<'a> Parser<'a> {
             texts: None,
             last: 0,
             macro_args: HashMap::new(),
+            grouped_lets: Vec::new(),
         }
     }
 
@@ -274,6 +278,7 @@ impl<'a> Parser<'a> {
                 );
             }
             stmts.push(self.parse_stmt());
+            stmts.extend(self.grouped_lets.drain(..).map(Stmt::Let));
             self.close_lint_scope(statement_start);
             if self.pos == before {
                 self.bump();
@@ -291,6 +296,7 @@ impl<'a> Parser<'a> {
             if let Some(item) = self.parse_impl_item() {
                 items.push(item);
             }
+            items.extend(self.grouped_lets.drain(..).map(ImplItem::Let));
             self.close_lint_scope(item_start);
             if self.pos == before {
                 self.bump();
@@ -347,6 +353,7 @@ impl<'a> Parser<'a> {
                     TokenKind::If | TokenKind::Match | TokenKind::For
                 ) {
                     self.parse_stmt();
+                    self.grouped_lets.clear();
                 } else {
                     self.parse_expr(false);
                     if self.eat(TokenKind::Eq) {
@@ -527,7 +534,8 @@ impl<'a> Parser<'a> {
             }
             let t = self.bump();
             let abi = self.text_of(t.span).trim_matches('"').to_string();
-            if abi != "C" {
+            // "intrinsic" is the compiler's own: `core::intrinsics`.
+            if abi != "C" && abi != "intrinsic" {
                 self.error_at(t.span, "only the \"C\" ABI is supported");
             }
             self.expect(TokenKind::LBrace, "to open an extern block");
@@ -623,6 +631,14 @@ impl<'a> Parser<'a> {
                 Item::MacroCall { path, span }
             }
             TokenKind::Attr => match self.parse_attr(is_pub) {
+                AttrItem::Decl(declaration) if declaration.targets.is_empty() => {
+                    self.error_at(
+                        declaration.span,
+                        "a module-level attribute names its targets (`for let, port`); \
+                         a type attribute is declared inside the type's implementation",
+                    );
+                    Item::AttrDecl(declaration)
+                }
                 AttrItem::Decl(declaration) => Item::AttrDecl(declaration),
                 AttrItem::Binding(binding) => Item::AttrBinding(binding),
             },
@@ -1459,6 +1475,7 @@ impl<'a> Parser<'a> {
             if let Some(it) = self.parse_impl_item() {
                 items.push(it);
             }
+            items.extend(self.grouped_lets.drain(..).map(ImplItem::Let));
             self.close_lint_scope(item_start);
             if self.pos == before {
                 self.bump();
@@ -1488,10 +1505,10 @@ impl<'a> Parser<'a> {
             self.error_here("attributes on impl items are only allowed on `let` declarations");
         }
         let is_pub = self.eat(TokenKind::Pub);
-        if is_pub && !self.at(TokenKind::Fn) {
+        if is_pub && !self.at(TokenKind::Fn) && !self.at(TokenKind::Attr) {
             self.error_at(
                 self.prev_span(),
-                "only functions may be `pub` inside an implementation",
+                "only functions and attributes may be `pub` inside an implementation",
             );
         }
         // `update: process { ... }`, `stages: for ...`, `tap: if ...` — a
@@ -1504,12 +1521,16 @@ impl<'a> Parser<'a> {
             }
         }
         match self.kind() {
-            TokenKind::Attr => match self.parse_attr(false) {
+            TokenKind::Attr => match self.parse_attr(is_pub) {
                 AttrItem::Binding(binding) => Some(ImplItem::AttrBinding(binding)),
+                AttrItem::Decl(declaration) if declaration.targets.is_empty() => {
+                    Some(ImplItem::Attr(declaration))
+                }
                 AttrItem::Decl(declaration) => {
                     self.error_at(
                         declaration.span,
-                        "an attribute is declared at module level, not inside an implementation",
+                        "a metadata attribute is declared at module level; inside an \
+                         implementation `attr name: T = value;` declares a type attribute",
                     );
                     None
                 }
@@ -1633,7 +1654,16 @@ impl<'a> Parser<'a> {
 
     /// Parse a `let`'s optional type, optional initializer and terminator, with
     /// any attributes already collected.
+    ///
+    /// `let a, b: T = v;` declares each name with the type and initializer,
+    /// as VHDL's `signal a, b : T := v;` does: the first is returned, the
+    /// rest wait in `grouped_lets`. A tuple is extracted with parentheses,
+    /// `let (q, r) = ..;`, so the two never share a spelling.
     fn parse_let_rest(&mut self, attrs: Vec<Attr>, start: Span, name: Ident) -> LetDecl {
+        let mut others = Vec::new();
+        while self.eat(TokenKind::Comma) {
+            others.push(self.parse_ident());
+        }
         let ty = if self.eat(TokenKind::Colon) {
             Some(self.parse_type())
         } else {
@@ -1645,13 +1675,21 @@ impl<'a> Parser<'a> {
             None
         };
         self.expect(TokenKind::Semi, "after a `let`");
-        LetDecl {
+        let declaration = LetDecl {
             attrs,
             name,
             ty,
             value,
             span: start.to(self.prev_span()),
-        }
+        };
+        // Each further name's diagnostics point at it, not at the `let`.
+        self.grouped_lets
+            .extend(others.into_iter().map(|name| LetDecl {
+                span: name.span.to(declaration.span),
+                name,
+                ..declaration.clone()
+            }));
+        declaration
     }
 
     /// Parse the rest of a function once its name has been consumed.
@@ -1897,15 +1935,19 @@ impl<'a> Parser<'a> {
     /// target kinds it allows, and an optional default.
     fn parse_attr_decl_rest(&mut self, start: Span, is_pub: bool, name: Ident) -> AttrDecl {
         let ty = self.parse_type();
-        self.expect(TokenKind::For, "before attribute targets");
         // Targets are a fixed vocabulary that includes keywords (`entity`,
         // `let`, `port`, `instance`, ...), so accept any name-like token.
+        // None is a type attribute, which only an implementation declares.
         let mut targets = Vec::new();
-        loop {
-            targets.push(self.parse_word());
-            if !self.eat(TokenKind::Comma) {
-                break;
+        if self.eat(TokenKind::For) {
+            loop {
+                targets.push(self.parse_word());
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
             }
+        } else if !self.at(TokenKind::Eq) {
+            self.expect(TokenKind::For, "before attribute targets");
         }
         let default = if self.eat(TokenKind::Eq) {
             Some(self.parse_expr(false))
@@ -1955,6 +1997,7 @@ impl<'a> Parser<'a> {
                 );
             }
             stmts.push(self.parse_stmt());
+            stmts.extend(self.grouped_lets.drain(..).map(Stmt::Let));
             self.close_lint_scope(statement_start);
             if self.pos == before {
                 self.bump();
@@ -2021,6 +2064,7 @@ impl<'a> Parser<'a> {
                 Stmt::Expr(Expr::Call {
                     callee: Box::new(callee),
                     type_args: Vec::new(),
+                    qualifier: None,
                     args: vec![arg],
                     bang: false,
                     span,
@@ -2289,45 +2333,104 @@ impl<'a> Parser<'a> {
                     span: t.span,
                 }
             }
-            // An integer literal (`5`) or inclusive range (`0..9`, `-1..1`).
-            TokenKind::Int | TokenKind::Minus => {
+            // A value or inclusive range: `5`, `0..9`, `-1..1`, and with
+            // expression bounds `0..DEPTH - 1`, `10ns..20ns`, `..7`, `8..`.
+            TokenKind::Int
+            | TokenKind::Minus
+            | TokenKind::Float
+            | TokenKind::LParen
+            | TokenKind::DotDot => {
                 let start = self.span();
-                let lo = self.parse_pattern_int();
-                let hi = if self.eat(TokenKind::DotDot) {
-                    self.parse_pattern_int()
+                let lo = (!self.at(TokenKind::DotDot)).then(|| self.parse_pattern_bound());
+                self.finish_range_pattern(start, lo)
+            }
+            _ => {
+                let start = self.span();
+                let saved = self.pos;
+                let path = self.parse_path();
+                if matches!(
+                    self.kind(),
+                    TokenKind::Plus
+                        | TokenKind::Minus
+                        | TokenKind::Star
+                        | TokenKind::Slash
+                        | TokenKind::Percent
+                        | TokenKind::Shl
+                        | TokenKind::Shr
+                ) {
+                    // `DEPTH + 1..`: a bound computed from a constant.
+                    self.pos = saved;
+                    let lo = self.parse_pattern_bound();
+                    self.finish_range_pattern(start, Some(lo))
+                } else if self.at(TokenKind::DotDot) {
+                    // `MIN..MAX`: a constant bound.
+                    self.finish_range_pattern(start, Some(Expr::Path(path)))
                 } else {
-                    lo
-                };
-                Pattern::Range {
-                    lo,
-                    hi,
-                    span: start.to(self.prev_span()),
+                    Pattern::Path(path)
                 }
             }
-            _ => Pattern::Path(self.parse_path()),
         }
     }
 
-    /// A (possibly negative, hex/binary/decimal) integer literal in a pattern.
-    fn parse_pattern_int(&mut self) -> i64 {
-        let neg = self.eat(TokenKind::Minus);
-        let t = self.bump();
-        let txt = self.text_of(t.span).replace('_', "");
-        let magnitude = if let Some(h) = txt.strip_prefix("0x").or_else(|| txt.strip_prefix("0X")) {
-            i128::from_str_radix(h, 16)
-        } else if let Some(b) = txt.strip_prefix("0b").or_else(|| txt.strip_prefix("0B")) {
-            i128::from_str_radix(b, 2)
+    /// One range-pattern bound: an expression binding tighter than any
+    /// comparison, so `..`, `|` and `=>` end it.
+    fn parse_pattern_bound(&mut self) -> Expr {
+        self.parse_bin(70, true)
+    }
+
+    /// The rest of a value or range pattern after its first bound: two
+    /// integer literals stay a [`Pattern::Range`]; anything else is a
+    /// [`Pattern::Bounds`], matched through the scrutinee's `Ord`.
+    fn finish_range_pattern(&mut self, start: crate::diag::Span, lo: Option<Expr>) -> Pattern {
+        let ranged = self.eat(TokenKind::DotDot);
+        let hi = if !ranged {
+            lo.clone()
+        } else if matches!(
+            self.kind(),
+            TokenKind::FatArrow | TokenKind::Pipe | TokenKind::Comma | TokenKind::RBrace
+        ) {
+            None
         } else {
-            txt.parse()
+            Some(self.parse_pattern_bound())
         };
-        let value = magnitude.map(|value| if neg { -value } else { value });
-        match value.ok().and_then(|value| i64::try_from(value).ok()) {
-            Some(value) => value,
-            None => {
-                self.error_at(t.span, "integer pattern is outside the supported i64 range");
-                0
-            }
+        let span = start.to(self.prev_span());
+        match (
+            lo.as_ref().and_then(|bound| self.pattern_int(bound)),
+            hi.as_ref().and_then(|bound| self.pattern_int(bound)),
+        ) {
+            (Some(lo), Some(hi)) => Pattern::Range { lo, hi, span },
+            _ => Pattern::Bounds {
+                lo: lo.map(Box::new),
+                hi: hi.map(Box::new),
+                span,
+            },
         }
+    }
+
+    /// An integer literal bound (`5`, `-1`, `0xFF`) as a value, or `None` for
+    /// any other expression (a suffix, a constant, arithmetic).
+    fn pattern_int(&self, bound: &Expr) -> Option<i64> {
+        let (text, negative) = match bound {
+            Expr::Int { text, .. } => (text, false),
+            Expr::Unary {
+                op: UnOp::Neg, rhs, ..
+            } => match rhs.as_ref() {
+                Expr::Int { text, .. } => (text, true),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let text = text.replace('_', "");
+        let magnitude =
+            if let Some(h) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+                i128::from_str_radix(h, 16)
+            } else if let Some(b) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+                i128::from_str_radix(b, 2)
+            } else {
+                text.parse()
+            }
+            .ok()?;
+        i64::try_from(if negative { -magnitude } else { magnitude }).ok()
     }
 
     // --- expressions (Pratt) ------------------------------------------------
@@ -2667,6 +2770,42 @@ impl<'a> Parser<'a> {
                     e = Expr::Call {
                         callee: Box::new(e),
                         type_args: Vec::new(),
+                        qualifier: None,
+                        args,
+                        bang: false,
+                        span: start.to(self.prev_span()),
+                    };
+                }
+                // `ufixed<6, 2>::resize(x)`: an associated function of an
+                // applied type, which is the call's `Self`.
+                TokenKind::Lt
+                    if matches!(e, Expr::Path(_))
+                        && self.matched_angle_end(self.pos).is_some_and(|end| {
+                            self.kind_at(end) == &TokenKind::ColonColon
+                                && self.kind_at(end + 1) == &TokenKind::Ident
+                        }) =>
+                {
+                    let Expr::Path(mut path) = e else {
+                        unreachable!()
+                    };
+                    let args = self.parse_generic_args();
+                    let qualifier = Type::Generic {
+                        base: Box::new(Type::Path(path.clone())),
+                        args,
+                        span: start.to(self.prev_span()),
+                    };
+                    while self.eat(TokenKind::ColonColon) {
+                        path.segments.push(self.parse_ident());
+                    }
+                    path.span = start.to(self.prev_span());
+                    if !self.at(TokenKind::LParen) {
+                        self.error_here("expected `(`: a type with arguments heads a call");
+                    }
+                    let args = self.parse_call_args();
+                    e = Expr::Call {
+                        callee: Box::new(Expr::Path(path)),
+                        type_args: Vec::new(),
+                        qualifier: Some(Box::new(qualifier)),
                         args,
                         bang: false,
                         span: start.to(self.prev_span()),
@@ -2690,6 +2829,7 @@ impl<'a> Parser<'a> {
                     e = Expr::Call {
                         callee: Box::new(e),
                         type_args,
+                        qualifier: None,
                         args,
                         bang: false,
                         span: start.to(self.prev_span()),
@@ -2728,6 +2868,7 @@ impl<'a> Parser<'a> {
                     e = Expr::Call {
                         callee: Box::new(e),
                         type_args: Vec::new(),
+                        qualifier: None,
                         args,
                         bang: true,
                         span,
@@ -2986,6 +3127,7 @@ impl<'a> Parser<'a> {
                 Expr::Call {
                     callee: Box::new(callee),
                     type_args: Vec::new(),
+                    qualifier: None,
                     args,
                     bang: true,
                     span: start.to(self.prev_span()),
@@ -4659,12 +4801,67 @@ mod tests {
     /// An integer pattern too large for `i64` is reported rather than silently
     /// wrapping to zero.
     fn overflowing_integer_pattern_is_not_silently_zero() {
-        let (_, errors) = parse(
+        // Wider than i64, it is an expression bound, compared at the
+        // scrutinee's own width (an `unsigned[128]` can hold it).
+        let module = parse_ok(
             "module m;\nimpl M {\n\
              match value { 18446744073709551616 => y = 1, _ => y = 0 }\n\
              }\n",
         );
-        assert_eq!(errors, 1);
+        let Item::Impl(im) = &module.items[0] else {
+            panic!("expected impl")
+        };
+        let ImplItem::Stmt(Stmt::Match(statement)) = &im.items[0] else {
+            panic!("expected match")
+        };
+        let Pattern::Bounds {
+            lo: Some(lo),
+            hi: Some(hi),
+            ..
+        } = &statement.arms[0].pattern
+        else {
+            panic!("expected an expression bound")
+        };
+        assert!(matches!(lo.as_ref(), Expr::Int { text, .. } if text == "18446744073709551616"));
+        assert!(matches!(hi.as_ref(), Expr::Int { text, .. } if text == "18446744073709551616"));
+    }
+
+    #[test]
+    /// `let a, b: T = v;` declares each name with the type and initializer,
+    /// in an implementation and in a block.
+    fn group_declaration_declares_each_name() {
+        let module = parse_ok(
+            "module m;\nimpl M {\n  let a, b, c: Bit = '0';\n  \
+             tick: process { let x, y: integer = 5; }\n}\n",
+        );
+        let Item::Impl(im) = &module.items[0] else {
+            panic!("expected impl")
+        };
+        let names: Vec<&str> = im
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ImplItem::Let(declaration) => {
+                    assert!(declaration.ty.is_some() && declaration.value.is_some());
+                    Some(declaration.name.text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["a", "b", "c"]);
+        let Some(ImplItem::Process(process)) = im.items.last() else {
+            panic!("expected process")
+        };
+        let locals: Vec<&str> = process
+            .body
+            .stmts
+            .iter()
+            .filter_map(|statement| match statement {
+                Stmt::Let(declaration) => Some(declaration.name.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(locals, ["x", "y"]);
     }
 
     #[test]

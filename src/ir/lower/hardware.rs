@@ -423,7 +423,9 @@ fn normalized_value_width(
             .get(table.0)
             .map(|table| table.element_width),
         ProcessValueKind::Unary { operation, operand } => match operation {
-            ProcessUnaryOp::RealToInteger | ProcessUnaryOp::IntegerToReal => Some(64),
+            ProcessUnaryOp::RealToInteger
+            | ProcessUnaryOp::IntegerToReal
+            | ProcessUnaryOp::Real(_) => Some(64),
             ProcessUnaryOp::Neg | ProcessUnaryOp::Not => width(operand),
         },
         ProcessValueKind::RawResize { operand } | ProcessValueKind::InlineCall { operand, .. } => {
@@ -454,7 +456,8 @@ fn normalized_value_width(
             | ProcessBinaryOp::FloatSub
             | ProcessBinaryOp::FloatMul
             | ProcessBinaryOp::FloatDiv
-            | ProcessBinaryOp::FloatRem => Some(64),
+            | ProcessBinaryOp::FloatRem
+            | ProcessBinaryOp::FloatPow => Some(64),
             // Raw kernel multiplication is evaluated before a consuming
             // slice, shift, or assignment selects the result's bits. Keeping
             // only max(lhs, rhs) here would drop fixed-point fraction bits

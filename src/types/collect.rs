@@ -126,6 +126,7 @@ impl<'a> Checker<'a> {
             fn_param_types: HashMap::new(),
             fn_return_types: HashMap::new(),
             const_types: HashMap::new(),
+            const_values: HashMap::new(),
             suffix_types: HashMap::new(),
             prefix_types: HashMap::new(),
             aliases: HashMap::new(),
@@ -142,6 +143,9 @@ impl<'a> Checker<'a> {
             current_impl_owner: std::cell::RefCell::new(None),
             file_modules,
             entity_names,
+            type_attrs: HashMap::new(),
+            type_attr_reads: HashMap::new(),
+            promotions: HashMap::new(),
         }
     }
 
@@ -149,6 +153,8 @@ impl<'a> Checker<'a> {
     pub(super) fn finish(self) -> Typed {
         Typed {
             expr_types: self.expr_types.into_inner(),
+            type_attr_reads: self.type_attr_reads,
+            promotions: self.promotions,
         }
     }
 
@@ -304,6 +310,12 @@ impl<'a> Checker<'a> {
                             ImplItem::ModeField { name, .. } if self.entity_names.contains(&ty) => {
                                 self.private_entity_members
                                     .insert((ty.clone(), name.text.clone()), name.span);
+                            }
+                            ImplItem::Attr(declaration) => {
+                                self.type_attrs.insert(
+                                    (ty.clone(), declaration.name.text.clone()),
+                                    declaration.clone(),
+                                );
                             }
                             _ => {}
                         }
@@ -625,6 +637,7 @@ impl<'a> Checker<'a> {
             Item::Const(constant) => {
                 if let Some(id) = self.resolved.declared(constant.name.span) {
                     self.const_types.insert(id, constant.ty.clone());
+                    self.const_values.insert(id, constant.value.clone());
                 }
             }
             Item::Fn(f) if !f.generics.params.is_empty() => {

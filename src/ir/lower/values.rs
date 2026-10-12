@@ -55,6 +55,9 @@ impl<'a> Lowering<'a> {
     /// Lower an expression to a value in `env`, which may be an aggregate of
     /// leaves rather than a single expression.
     pub(super) fn lower_val_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Val {
+        if let Some(value) = self.promoted_operand(e, env) {
+            return Val::Scalar(value);
+        }
         if let Some(value) = self.source_call_value(e, env) {
             return value;
         }
@@ -118,7 +121,18 @@ impl<'a> Lowering<'a> {
             ast::Expr::Match {
                 scrutinee, arms, ..
             } => self.lower_match_val(scrutinee, arms, env),
-            ast::Expr::Call { callee, args, .. } => {
+            ast::Expr::Call {
+                callee,
+                args,
+                qualifier,
+                ..
+            } => {
+                if let Some(value) = qualifier
+                    .as_deref()
+                    .and_then(|qualifier| self.lower_qualified_call(qualifier, callee, args, env))
+                {
+                    return Val::Scalar(value);
+                }
                 // `T()` — the nullary constructor — resolves to the type's
                 // default (a struct yields per-field values) before any
                 // free-fn/conversion lookup.
@@ -278,6 +292,12 @@ impl<'a> Lowering<'a> {
                 Val::Fields(fields)
             }
             ast::Expr::Binary { op, lhs, rhs, .. } => {
+                // `real` with another number: both as `real` (the numeric
+                // ladder's top), the other converted by its `From` impl.
+                if let Some((l, r)) = self.promoted_real_operands(lhs, rhs, env) {
+                    let built = self.make_binary(op.clone(), l, r, false, false, ast::expr_span(e));
+                    return Val::Scalar(built);
+                }
                 let op_str = crate::syntax::pretty::bin_op(op);
                 if let Some(native) =
                     self.native_vector_logical(op_str, lhs, rhs, &|e| self.lower_scalar_env(e, env))
@@ -287,26 +307,46 @@ impl<'a> Lowering<'a> {
                 if let Some(compared) = self.array_comparison(op, lhs, rhs, env) {
                     return Val::Scalar(compared);
                 }
+                // As `lower_expr`: comparisons are marked for the metavalue
+                // rule, and a character literal reads as its counterpart's
+                // type. Without these, `v[2] == 'X'` inside a function never
+                // saw the `X` its caller passed.
                 if !matches!(op_str, "==" | "!=") {
                     if let Some(v) = self.inline_op(op_str, lhs, rhs, env) {
-                        return v;
+                        return match v {
+                            Val::Scalar(inlined) => {
+                                Val::Scalar(self.mark_vector_compare(op, lhs, rhs, inlined, env))
+                            }
+                            fields => fields,
+                        };
                     }
                 }
                 if let Some(derived) = self.inline_cmp(op_str, lhs, rhs, env) {
-                    return Val::Scalar(derived);
+                    return Val::Scalar(self.mark_vector_compare(op, lhs, rhs, derived, env));
                 }
-                let (l, r) = (
+                let (mut l, mut r) = (
                     self.lower_scalar_env(lhs, env),
                     self.lower_scalar_env(rhs, env),
                 );
-                Val::Scalar(self.make_binary(
+                if let ast::Expr::CharLit { ch, .. } = lhs.as_ref() {
+                    if let Some(v) = self.typed_char_literal(*ch, rhs) {
+                        l = v;
+                    }
+                }
+                if let ast::Expr::CharLit { ch, .. } = rhs.as_ref() {
+                    if let Some(v) = self.typed_char_literal(*ch, lhs) {
+                        r = v;
+                    }
+                }
+                let built = self.make_binary(
                     op.clone(),
                     l,
                     r,
                     self.binary_uses_kernel_integer(lhs, rhs),
                     self.declares_kernel_integer(lhs) || self.declares_kernel_integer(rhs),
                     ast::expr_span(e),
-                ))
+                );
+                Val::Scalar(self.mark_vector_compare(op, lhs, rhs, built, env))
             }
             ast::Expr::Unary { op, rhs, .. } => {
                 // `not x` on an enum operand inlines its impl, as it does in
@@ -657,6 +697,10 @@ impl<'a> Lowering<'a> {
 
     /// The signal at the base of an access expression.
     pub(super) fn base_signal(&self, base: &ast::Expr) -> Option<SignalId> {
+        // A widened operand is a computed value, not the signal it names.
+        if self.promotion_of(base).is_some() {
+            return None;
+        }
         if let Some(signal) = self.source_call_signal(base) {
             return signal;
         }

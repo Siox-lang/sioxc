@@ -785,6 +785,8 @@ pub enum ProcessUnaryOp {
     RealToInteger,
     /// Convert a signed kernel integer to the IEEE-754 real of its value.
     IntegerToReal,
+    /// A built-in `real` function (`core::intrinsics::sqrt`).
+    Real(super::RealFunction),
 }
 
 /// A binary operation after precedence has already shaped the expression tree.
@@ -855,6 +857,8 @@ pub enum ProcessBinaryOp {
     FloatDiv,
     /// IEEE-754 remainder, C's `fmod`.
     FloatRem,
+    /// IEEE-754 power, `core::intrinsics::pow`.
+    FloatPow,
     /// Ordered IEEE-754 equality.
     FloatEq,
     /// Ordered IEEE-754 inequality.
@@ -1243,6 +1247,7 @@ pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]
                 | ProcessBinaryOp::FloatMul
                 | ProcessBinaryOp::FloatDiv
                 | ProcessBinaryOp::FloatRem
+                | ProcessBinaryOp::FloatPow
                 | ProcessBinaryOp::FloatEq
                 | ProcessBinaryOp::FloatNe
                 | ProcessBinaryOp::FloatLt
@@ -1350,6 +1355,7 @@ impl ProcessIr {
                     UnOp::Not => ProcessUnaryOp::Not,
                     UnOp::RealToInt => ProcessUnaryOp::RealToInteger,
                     UnOp::IntToReal => ProcessUnaryOp::IntegerToReal,
+                    UnOp::Real(function) => ProcessUnaryOp::Real(*function),
                 },
                 operand: self.import_test_fragment(rhs, fallback_span),
             },
@@ -2630,6 +2636,7 @@ pub(crate) fn process_binary_from_digital(operation: BinOp) -> ProcessBinaryOp {
         BinOp::FMul => ProcessBinaryOp::FloatMul,
         BinOp::FDiv => ProcessBinaryOp::FloatDiv,
         BinOp::FRem => ProcessBinaryOp::FloatRem,
+        BinOp::FPow => ProcessBinaryOp::FloatPow,
         BinOp::FEq => ProcessBinaryOp::FloatEq,
         BinOp::FNe => ProcessBinaryOp::FloatNe,
         BinOp::FLt => ProcessBinaryOp::FloatLt,

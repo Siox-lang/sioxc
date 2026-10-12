@@ -824,6 +824,12 @@ impl Rewriter<'_> {
                                 self.stmt(s, &mut scope, sink);
                             }
                             ImplItem::AttrBinding(b) => self.expr(&mut b.value, &env, sink),
+                            ImplItem::Attr(a) => {
+                                self.ty(&mut a.ty, &env, sink);
+                                if let Some(value) = &mut a.default {
+                                    self.expr(value, &env, sink);
+                                }
+                            }
                             ImplItem::ModeField { .. } => {}
                         }
                     }
@@ -1081,6 +1087,11 @@ impl Rewriter<'_> {
                     self.pattern(alt, env, sink);
                 }
             }
+            Pattern::Bounds { lo, hi, .. } => {
+                for bound in [lo, hi].into_iter().flatten() {
+                    self.expr(bound, env, sink);
+                }
+            }
             Pattern::Wildcard
             | Pattern::BitPattern { .. }
             | Pattern::Range { .. }
@@ -1145,10 +1156,14 @@ impl Rewriter<'_> {
             Expr::Call {
                 callee,
                 type_args,
+                qualifier,
                 args,
                 span,
                 ..
             } => {
+                if let Some(qualifier) = qualifier {
+                    self.ty(qualifier, env, sink);
+                }
                 if let Expr::Index { base, .. } = callee.as_ref() {
                     if let Expr::Path(p) = base.as_ref() {
                         self.reject_format_range(p, env, sink);

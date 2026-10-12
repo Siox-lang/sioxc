@@ -4562,7 +4562,7 @@ fn repeated_inline_calls_keep_locals_and_source_frames_across_await() {
     let text = r#"module debug_calls;
 use std::bits::unsigned;
 use std::primitive::string;
-struct Payload { pub tag: integer, pub gain: real, pub wide: unsigned[81] }
+struct Payload { pub tag: integer, pub gain: real, pub wide: unsigned[81], pub data: unsigned[9] }
 impl Payload {
     pub fn inspect(self) {
         self.tag = self.tag + 1;
@@ -4616,13 +4616,32 @@ fn check_empty(value: string) {
     await 1ns;
     assert!(value'length == 0, "empty parameter stop");
 }
+fn check_logic(value: unsigned[9]) {
+    await 1ns;
+    assert!(value[6] == 'X', "logic parameter before stop");
+    value = "101010101";
+    await 1ns;
+    assert!(value[6] == '1', "logic parameter after stop");
+}
+fn outer_logic(value: unsigned[9]) {
+    check_logic(value);
+    await 1ns;
+    assert!(value[6] == '1', "outer logic parameter stop");
+}
+fn check_binary(value: unsigned[9]) {
+    await 1ns;
+    assert!(value == 341, "binary parameter stop");
+}
 #[test] entity T {}
 impl T {
     stimulus: process {
         let local: integer = 10;
         let cells: integer[2] = [0, 10];
         let index: integer = 1;
-        let packet: Payload = { .tag = 9, .gain = 1.5, .wide = 18446744073709551617 };
+        let packet: Payload = { .tag = 9, .gain = 1.5, .wide = 18446744073709551617, .data = "01XZUWLH-" };
+        let bits: unsigned[9] = "01XZUWLH-";
+        let packed_cells: unsigned[9][-1..-2] = ["01XZUWLH-", "01XZUWLH-"];
+        let packed_index: integer = -1;
         let text: string = read<string>("argument.txt");
         leaf(1); // first call
         leaf(2); // second call
@@ -4639,6 +4658,9 @@ impl T {
         check_string("β\0🙂");
         check_empty("");
         packet.inspect();
+        outer_logic(bits);
+        check_logic(packed_cells[packed_index]);
+        check_binary(341);
         assert!(local == 11 and cells[1] == 11 and chosen == 4 and chosen_again == 5, "caller stop");
     }
 }"#;
@@ -4693,8 +4715,14 @@ wide = gdb.Breakpoint({source:?} + ':{wide_line}')
 string = gdb.Breakpoint({source:?} + ':{string_line}')
 empty = gdb.Breakpoint({source:?} + ':{empty_line}')
 receiver = gdb.Breakpoint({source:?} + ':{receiver_line}')
+logic_before = gdb.Breakpoint({source:?} + ':{logic_before_line}')
+logic_after = gdb.Breakpoint({source:?} + ':{logic_after_line}')
+logic_outer = gdb.Breakpoint({source:?} + ':{logic_outer_line}')
+binary = gdb.Breakpoint({source:?} + ':{binary_line}')
 caller = gdb.Breakpoint({source:?} + ':{caller_line}')
 gdb.execute('run')
+def symbols(view, width):
+    return ''.join(str(view[i] if view.type.code == gdb.TYPE_CODE_ARRAY else view['[' + str(i) + ']']).strip("'") for i in range(width - 1, -1, -1))
 def frame(name, local):
     actual = gdb.selected_frame()
     assert actual.name() == name, (actual.name(), name)
@@ -4741,6 +4769,10 @@ assert gdb.selected_frame().name() == 'debug_calls::check_payload'
 view = gdb.parse_and_eval('value')
 assert int(view['tag']) == 9 and float(view['gain']) == 1.5
 assert int(view['wide']) == (1 << 64) + 1
+logic = gdb.selected_frame().read_var('value$logic')
+assert int(logic['tag']) == 9 and float(logic['gain']) == 1.5
+assert symbols(logic['data'], 9) == '01XZUWLH-'
+assert symbols(logic['wide'], 81) == format((1 << 64) + 1, '081b')
 payload.delete()
 gdb.execute('continue')
 assert gdb.selected_frame().name() == 'debug_calls::check_real'
@@ -4749,6 +4781,7 @@ real.delete()
 gdb.execute('continue')
 assert gdb.selected_frame().name() == 'debug_calls::check_wide'
 assert int(gdb.parse_and_eval('value')) == (1 << 64) + 1
+assert symbols(gdb.selected_frame().read_var('value$logic'), 81) == format((1 << 64) + 1, '081b')
 wide.delete()
 gdb.execute('continue')
 for _ in range(2):
@@ -4770,8 +4803,33 @@ assert gdb.selected_frame().name().endswith('::inspect')
 view = gdb.parse_and_eval('self')
 assert int(view['tag']) == 10 and float(view['gain']) == 1.5
 assert int(view['wide']) == (1 << 64) + 1
+logic = gdb.selected_frame().read_var('self$logic')
+assert int(logic['tag']) == 10 and float(logic['gain']) == 1.5
+assert symbols(logic['data'], 9) == '01XZUWLH-'
 assert 'self =' in gdb.execute('info args', to_string=True)
 receiver.delete()
+gdb.execute('continue')
+for nested in [True, False]:
+    for expected in ['01XZUWLH-', '101010101']:
+        actual = gdb.selected_frame()
+        assert actual.name() == 'debug_calls::check_logic', actual.name()
+        assert symbols(actual.read_var('value$logic'), 9) == expected
+        if nested:
+            parent = actual.older()
+            assert parent.name() == 'debug_calls::outer_logic', parent.name()
+            assert symbols(parent.read_var('value$logic'), 9) == expected
+        gdb.execute('continue')
+    if nested:
+        actual = gdb.selected_frame()
+        assert actual.name() == 'debug_calls::outer_logic'
+        assert symbols(actual.read_var('value$logic'), 9) == '101010101'
+        gdb.execute('continue')
+logic_before.delete()
+logic_after.delete()
+logic_outer.delete()
+assert gdb.selected_frame().name() == 'debug_calls::check_binary'
+assert symbols(gdb.selected_frame().read_var('value$logic'), 9) == '101010101'
+binary.delete()
 gdb.execute('continue')
 frame('T::stimulus', 11)
 assert int(gdb.parse_and_eval('chosen')) == 4
@@ -4793,6 +4851,10 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
             string_line = line("string parameter stop"),
             empty_line = line("empty parameter stop"),
             receiver_line = line("receiver parameter stop"),
+            logic_before_line = line("logic parameter before stop"),
+            logic_after_line = line("logic parameter after stop"),
+            logic_outer_line = line("outer logic parameter stop"),
+            binary_line = line("binary parameter stop"),
             caller_line = line("caller stop"),
             first_line = line("first call"),
             second_line = line("second call"),

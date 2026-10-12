@@ -516,6 +516,11 @@ pub enum ImplItem {
     /// `attr precedence = 40;` binds the enclosing implementation (or, for an
     /// attribute declared `for entity`, the entity it implements).
     AttrBinding(AttrBinding),
+    /// `pub attr integers: integer = self'high + 1;` — a type attribute: a
+    /// shape fact every value of the implemented type answers (`x'integers`,
+    /// `Self'integers`). It has no targets, and its `default` is the value,
+    /// written in terms of `self`'s shape only, so a read is a constant.
+    Attr(AttrDecl),
 }
 
 /// A `process { ... }` block: concurrent with other processes, sequential
@@ -827,6 +832,19 @@ pub enum Pattern {
         /// The pattern's extent.
         span: Span,
     },
+    /// A range whose bounds are not both integer literals: constants
+    /// (`0..DEPTH - 1`), typed literals (`10ns..20ns`, `-1.5..1.5`), or an
+    /// open end (`..7`, `8..`). Matches through the scrutinee's `Ord`; a
+    /// single expression (`(N - 1)`) is `lo == hi`. Either order is the same
+    /// set of values.
+    Bounds {
+        /// Inclusive bound written first, or none for `..hi`.
+        lo: Option<Box<Expr>>,
+        /// Inclusive bound written second, or none for `lo..`.
+        hi: Option<Box<Expr>>,
+        /// The pattern's extent.
+        span: Span,
+    },
     /// A character literal (`'0'`, `'Z'`) naming a variant of a char-valued
     /// enum — `Logic` above all. Like the expression form it has no intrinsic
     /// value: the variant it selects comes from the scrutinee's type.
@@ -992,6 +1010,11 @@ pub enum Expr {
         /// and a parameterized type's constructor `float<32, 23>(x)`.
         /// Ordinary generic functions infer their parameters from values.
         type_args: Vec<GenericArg>,
+        /// The `Self` type of an associated call written with type
+        /// arguments, `ufixed<6, 2>::resize(x)`: `ufixed<6, 2>`, while
+        /// `callee` names the function (`ufixed::resize`). Inside the
+        /// function `Self'high`/`'low` describe this type.
+        qualifier: Option<Box<Type>>,
         /// The value arguments, in order.
         args: Vec<Expr>,
         /// Whether the call was written with `!`, as in `assert!(...)`.

@@ -156,6 +156,9 @@ pub struct Hierarchy {
     /// expression's span. Lowering reads them from here rather than
     /// re-deriving types over the elaborated tree.
     pub(crate) expr_types: HashMap<Span, Ty>,
+    /// Operands of mixed numeric operations that widen, by span, to the type
+    /// they widen to (Stage 4's `Typed::promotions`).
+    pub(crate) promotions: HashMap<Span, Ty>,
     /// Stable display/storage spelling for each entity declaration. Keeping it
     /// beside the instance forest lets downstream consumers disambiguate equal
     /// root leaves without rediscovering module ownership from source text.
@@ -420,7 +423,8 @@ fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<Def
                     | ImplItem::Fn(_)
                     | ImplItem::ModeField { .. }
                     | ImplItem::Process(_)
-                    | ImplItem::AttrBinding(_) => {}
+                    | ImplItem::AttrBinding(_)
+                    | ImplItem::Attr(_) => {}
                 }
             }
         }
@@ -481,6 +485,7 @@ fn elaborate_roots(
         out: Hierarchy::default(),
     };
     e.out.expr_types = typed.expr_types().clone();
+    e.out.promotions = typed.promotions().clone();
     e.collect(modules);
 
     let mut stack = Vec::new();

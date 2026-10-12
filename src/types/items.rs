@@ -106,7 +106,19 @@ impl<'a> Checker<'a> {
                     self.check_function_fallthrough(f, body, &names);
                 }
             }
-            Item::ExternBlock { fns, .. } => {
+            Item::ExternBlock { abi, fns, span } => {
+                // The compiler's built-ins are `core`'s alone: anywhere else
+                // the ABI would silently become a C call.
+                if abi == "intrinsic" && !self.module_of(*span).starts_with("core::") {
+                    self.error_with_help(
+                        codes::LANG_ITEM,
+                        *span,
+                        "`extern \"intrinsic\"` is reserved for `core::intrinsics`".to_string(),
+                        "call the built-ins through `std::math`, or declare a C function with \
+                         `extern \"C\"`"
+                            .to_string(),
+                    );
+                }
                 for function in fns {
                     self.check_extern_c_signature(function);
                 }
@@ -420,7 +432,8 @@ impl<'a> Checker<'a> {
                         ImplItem::ModeField { .. }
                         | ImplItem::Process(_)
                         | ImplItem::Stmt(_)
-                        | ImplItem::AttrBinding(_) => {}
+                        | ImplItem::AttrBinding(_)
+                        | ImplItem::Attr(_) => {}
                     }
                 }
             }

@@ -26,9 +26,19 @@ impl<'a> Checker<'a> {
                 // Silently lowering it produced an `Unknown` that only failed
                 // at codegen, naming a driver index rather than the attribute.
                 let a = attr.text.as_str();
+                let type_attr = if SYS_ATTRS.contains(&a) {
+                    None
+                } else {
+                    self.type_attr(base, a, sym)
+                        .map(|(owner, declaration)| (owner, declaration.clone()))
+                };
+                if let Some((owner, declaration)) = &type_attr {
+                    self.check_type_attr_read(owner, declaration, *span);
+                }
                 // A declared attribute's read was folded into its value before
                 // resolution; one left here already failed with its reason.
-                if !PHASE2_ATTRS.contains(&a)
+                if type_attr.is_none()
+                    && !PHASE2_ATTRS.contains(&a)
                     && !SYS_ATTRS.contains(&a)
                     && !self.attr_value_kinds.contains_key(a)
                 {
@@ -242,6 +252,21 @@ impl<'a> Checker<'a> {
                     );
                     return;
                 }
+                // Mixed numbers: each operand that is not already of the
+                // promoted type widens to it (spec 3.17).
+                if !matches!(
+                    op,
+                    BinOp::Custom { .. } | BinOp::And | BinOp::Or | BinOp::Shl | BinOp::Shr
+                ) {
+                    let (left, right) = (self.type_of(lhs, sym), self.type_of(rhs, sym));
+                    if let Some(promoted) = self.numeric_promotion(&left, &right) {
+                        for (operand, ty) in [(lhs, left), (rhs, right)] {
+                            if ty != promoted {
+                                self.promotions.insert(expr_span(operand), promoted.clone());
+                            }
+                        }
+                    }
+                }
                 let comparison_handled = if is_comparison(op) {
                     self.check_comparison_fit(lhs, rhs, sym);
                     self.check_comparison_operands(op, lhs, rhs, *span, sym)
@@ -431,6 +456,7 @@ impl<'a> Checker<'a> {
                 args,
                 bang,
                 span,
+                ..
             } => {
                 // A method callee is a `Field` node, but its name is a method,
                 // not a field — check the receiver and let `check_method_exists`
@@ -447,6 +473,17 @@ impl<'a> Checker<'a> {
                 }
                 for a in args {
                     self.check_expr(a, sym);
+                }
+                // A kernel conversion's argument is typed too: `real(x)` and
+                // `signed[16](x)` dispatch to `impl From<S> for T` by `x`'s type.
+                if matches!(callee.as_ref(), Expr::Index { .. })
+                    || matches!(callee.as_ref(), Expr::Path(path)
+                    if matches!(path.segments.as_slice(), [only]
+                        if matches!(only.text.as_str(), "real" | "integer" | "Char")))
+                {
+                    for a in args {
+                        self.type_of(a, sym);
+                    }
                 }
                 if *bang {
                     self.check_format_arity(callee, args, sym);

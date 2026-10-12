@@ -66,6 +66,10 @@ impl<'a> Checker<'a> {
             .type_key(self_ty(im))
             .unwrap_or_else(|| "<error>".to_string());
         for item in &im.items {
+            if let ImplItem::Attr(declaration) = item {
+                self.check_type_attr_decl(declaration, im.trait_.is_some());
+                continue;
+            }
             if let ImplItem::Process(process) = item {
                 if im.trait_.is_some() || !self.entity_names.contains(&backing) {
                     self.error_with_help(
@@ -254,7 +258,7 @@ impl<'a> Checker<'a> {
                         *self.type_params.borrow_mut() = saved;
                     }
                 }
-                ImplItem::ModeField { .. } | ImplItem::AttrBinding(_) => {}
+                ImplItem::ModeField { .. } | ImplItem::AttrBinding(_) | ImplItem::Attr(_) => {}
                 ImplItem::Process(process) => {
                     self.check_process_block(&process.body, &dirs, &ranged, &sym, &index_bounds)
                 }

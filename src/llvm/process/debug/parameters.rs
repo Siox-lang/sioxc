@@ -11,6 +11,7 @@ pub(super) struct ParameterLocation<'ctx> {
     expression: DIExpression<'ctx>,
     span: Span,
     snapshot: Option<(ProcessValueId, SourceLayout, GlobalValue<'ctx>)>,
+    logic: bool,
 }
 
 impl<'ctx> DebugInfo<'ctx, '_> {
@@ -217,13 +218,70 @@ impl<'ctx> DebugInfo<'ctx, '_> {
                     reference,
                     expression: self.builder.create_expression(ops),
                     span: parameter.span,
+                    logic: false,
                     snapshot: snapshot.then(|| {
                         (
                             parameter.value,
-                            layout.unwrap().into_owned(),
+                            layout.as_deref().unwrap().clone(),
                             module.get_global(&name).unwrap(),
                         )
                     }),
+                });
+                let Some(layout) = layout
+                    .as_deref()
+                    .filter(|layout| layout_has_packed_metadata(design, layout))
+                else {
+                    continue;
+                };
+                let Some(view) = logic::inspection_layout(design, layout) else {
+                    continue;
+                };
+                let Some(ty) = self.ty(design, &view, true) else {
+                    continue;
+                };
+                let Some(bytes) =
+                    inspection_bits(&view).and_then(|bits| u32::try_from(bits / 8).ok())
+                else {
+                    continue;
+                };
+                let buffer = self.inspection_buffer(
+                    module,
+                    &format!(
+                        "sx.debug.argument.logic.{}.{}.{}",
+                        process.id.0, call_id, index
+                    ),
+                    bytes,
+                );
+                let reference = builder
+                    .build_alloca(
+                        self.context.ptr_type(AddressSpace::default()),
+                        "debug.logic.reference",
+                    )
+                    .unwrap();
+                builder
+                    .build_store(
+                        reference,
+                        self.context.ptr_type(AddressSpace::default()).const_null(),
+                    )
+                    .unwrap();
+                parameters.push(ParameterLocation {
+                    variable: self.builder.create_auto_variable(
+                        scope,
+                        &format!("{}$logic", parameter.name),
+                        self.file(parameter.span.file),
+                        self.sources
+                            .line_col(parameter.span.file, parameter.span.start)
+                            .0,
+                        ty,
+                        true,
+                        DIFlags::ZERO,
+                        0,
+                    ),
+                    reference,
+                    expression: self.builder.create_expression(vec![0x06]),
+                    span: parameter.span,
+                    snapshot: Some((parameter.value, layout.clone(), buffer)),
+                    logic: true,
                 });
             }
             locations.push(parameters);
@@ -247,7 +305,17 @@ impl<'ctx> DebugInfo<'ctx, '_> {
         let mut cache = ProcessValueCache::new(activity, meta_free);
         while let Some(id) = inline {
             for parameter in &self.parameter_locations.borrow()[&key][id as usize] {
-                if let Some((value, layout, buffer)) = &parameter.snapshot {
+                if let Some((id, layout, buffer)) = &parameter.snapshot {
+                    if parameter.logic {
+                        // Never retain a previous snapshot when either plane
+                        // of the current captured place cannot be read.
+                        builder
+                            .build_store(
+                                parameter.reference,
+                                self.context.ptr_type(AddressSpace::default()).const_null(),
+                            )
+                            .unwrap();
+                    }
                     // Bindings are already captured places. False activity
                     // suppresses bounds side effects in the existing reader;
                     // no foreign calls or IO are reachable through these roots.
@@ -256,20 +324,52 @@ impl<'ctx> DebugInfo<'ctx, '_> {
                         module,
                         builder,
                         design,
-                        *value,
+                        *id,
                         layout,
                         Some(self.context.bool_type().const_zero()),
                         index_sites,
                         &mut cache,
                     ) {
-                        self.copy_fields(
-                            builder,
-                            buffer.as_pointer_value(),
-                            value,
-                            layout,
-                            &mut 0,
-                            &mut 0,
-                        );
+                        if parameter.logic {
+                            // Formal roots are captured constants/places, just
+                            // like numeric snapshots above. Read their existing
+                            // companion state without bounds effects or calls.
+                            let Some(metadata) = process_value_meta_in_layout(
+                                self.context,
+                                module,
+                                builder,
+                                design,
+                                *id,
+                                layout,
+                                Some(self.context.bool_type().const_zero()),
+                                index_sites,
+                                &mut cache,
+                            ) else {
+                                continue;
+                            };
+                            self.copy_logic_fields(
+                                builder,
+                                design,
+                                *buffer,
+                                value,
+                                Some(metadata),
+                                layout,
+                                &mut 0,
+                                &mut 0,
+                            );
+                            builder
+                                .build_store(parameter.reference, buffer.as_pointer_value())
+                                .unwrap();
+                        } else {
+                            self.copy_fields(
+                                builder,
+                                buffer.as_pointer_value(),
+                                value,
+                                layout,
+                                &mut 0,
+                                &mut 0,
+                            );
+                        }
                     }
                 }
             }

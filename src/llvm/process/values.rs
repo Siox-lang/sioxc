@@ -1387,6 +1387,30 @@ pub(super) fn process_value<'ctx>(
                     .ok()?
                     .into_int_value()
             }
+            ProcessUnaryOp::Real(function) => {
+                let operand = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    64,
+                    false,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let real = builder
+                    .build_bit_cast(operand, context.f64_type(), "pv.real.arg")
+                    .ok()?
+                    .into_float_value();
+                let result =
+                    real_intrinsic(context, module, builder, function.llvm_name(), &[real])?;
+                builder
+                    .build_bit_cast(result, context.i64_type(), "pv.real.bits")
+                    .ok()?
+                    .into_int_value()
+            }
         },
         ProcessValueKind::InlineCall { operand, source } => debug::inline_value(
             module,

@@ -485,3 +485,67 @@ fn unreachable_range_arm_warns_only_when_fully_covered() {
         "disjoint ranges"
     );
 }
+
+#[test]
+/// An arm the earlier ranges cover between them is unreachable, constant
+/// bounds included; two ranges that share one endpoint warn (W-P018).
+fn range_arms_union_coverage_and_shared_endpoints() {
+    let base = "module m;\nconst DEPTH: integer = 8;\nentity E { y: Bit out, }\nimpl E {\n  let n: integer;\n  match n {\n    ARMS\n    _ => { y = '0'; }\n  }\n}\n";
+    let count = |arms: &str, code| warnings(&base.replace("ARMS", arms), code);
+    // `3..8` lies in `0..5` and `6..9` together, in neither alone.
+    assert_eq!(
+        count(
+            "0..5 => { y = '1'; } 6..9 => { y = '1'; } 3..8 => { y = '0'; }",
+            codes::UNREACHABLE_MATCH_ARM
+        ),
+        1
+    );
+    // Folded constant bounds and open ends take part.
+    assert_eq!(
+        count(
+            "..-1 => { y = '1'; } 0..DEPTH - 1 => { y = '1'; } 2..DEPTH * 0 + 5 => { y = '0'; }",
+            codes::UNREACHABLE_MATCH_ARM
+        ),
+        1
+    );
+    // A partial overlap is legitimate priority, not unreachable.
+    assert_eq!(
+        count(
+            "0..9 => { y = '1'; } 5..20 => { y = '0'; }",
+            codes::UNREACHABLE_MATCH_ARM
+        ),
+        0
+    );
+    // Sharing exactly one endpoint, in either direction.
+    assert_eq!(
+        count(
+            "0..10 => { y = '1'; } 10..20 => { y = '0'; }",
+            codes::OVERLAPPING_RANGE_ENDPOINTS
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            "10..DEPTH + 12 => { y = '1'; } 0..10 => { y = '0'; }",
+            codes::OVERLAPPING_RANGE_ENDPOINTS
+        ),
+        1
+    );
+    // Adjacent ranges and single values do not.
+    assert_eq!(
+        count(
+            "0..9 => { y = '1'; } 10..20 => { y = '0'; } 20 => { y = '1'; }",
+            codes::OVERLAPPING_RANGE_ENDPOINTS
+        ),
+        0
+    );
+}
+
+#[test]
+/// Constant bounds and open ends count towards a sized vector's coverage.
+fn constant_range_bounds_cover_the_domain() {
+    let src = "module m;\nconst DEPTH: integer = 8;\nentity E { y: Bit out, }\nimpl E {\n  let n: signed[8];\n  match n {\n    ..-1 => { y = '0'; }\n    0..DEPTH - 1 => { y = '1'; }\n    DEPTH.. => { y = '0'; }\n  }\n}\n";
+    assert_eq!(warnings(src, codes::NON_EXHAUSTIVE_MATCH), 0);
+    let gap = src.replace("DEPTH..", "DEPTH + 1..");
+    assert_eq!(warnings(&gap, codes::NON_EXHAUSTIVE_MATCH), 1);
+}

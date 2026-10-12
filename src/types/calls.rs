@@ -317,15 +317,33 @@ impl<'a> Checker<'a> {
                 .def(*id)
                 .map(|d| d.name.clone())
                 .unwrap_or_else(|| ty_name(t)),
+            // A length of 0 is a family whose width is not known here (a
+            // width-generic parameter): its name says it, not `sfixed[0]`.
+            Ty::Array {
+                elem: _,
+                len: 0,
+                family: Some(name),
+                ..
+            } => self.key_leaf(name).to_string(),
+            // A format family (`struct ufixed<W, F>(Logic[W - F - 1 .. 0 - F])`)
+            // shows its parameters: the length and the fraction width.
             Ty::Array {
                 elem: _,
                 len,
                 family: Some(name),
+                low,
+            } if *low < 0 => format!("{}<{len}, {}>", self.key_leaf(name), -low),
+            Ty::Array {
+                elem: _,
+                len,
+                family: Some(name),
+                ..
             } => format!("{}[{len}]", self.key_leaf(name)),
             Ty::Array {
                 elem,
                 len,
                 family: None,
+                ..
             } => format!("{}[{len}]", self.ty_display(elem)),
             _ => ty_name(t),
         }

@@ -46,7 +46,7 @@ pub(crate) mod query;
 pub(crate) use derive::derive_scheduler_forms;
 pub use design::*;
 pub use expr::*;
-pub use functions::FunctionIndex;
+pub use functions::{FunctionIndex, Intrinsic};
 pub use layout::*;
 pub(crate) use lower::lower_processes;
 use lower::AccessStep;

@@ -467,9 +467,14 @@ pub mod codes {
     /// A macro invocation that cannot expand: no form matches its arguments,
     /// its body names no parameter, or expansions nest too deep.
     pub const MACRO_EXPANSION: &str = "E-P035";
-    /// A misused lang item: `attr lang` bound outside `core`/`std`, naming
-    /// nothing, or one role bound twice.
+    /// A misused compiler hook: `attr lang` bound outside `core`/`std`,
+    /// naming nothing, or one role bound twice; or `extern "intrinsic"`
+    /// outside `core`.
     pub const LANG_ITEM: &str = "E-P036";
+    /// A type attribute (`attr integers: integer = self'high + 1;` in an
+    /// implementation) that is not a shape fact: its value reads something
+    /// other than `self`'s attributes and constants, or its name is taken.
+    pub const INVALID_TYPE_ATTR: &str = "E-P037";
 
     // Warnings
     // W-P001 retired: parallel drivers are legal when their type implements
@@ -517,6 +522,9 @@ pub mod codes {
     pub const INCOMPLETE_STRUCT_LITERAL: &str = "W-P016";
     /// A lint directive or `-A`/`-W`/`-D`/`-F` flag names no lint.
     pub const UNKNOWN_LINT: &str = "W-P017";
+    /// Two match ranges that share exactly one endpoint (`0..10`, `10..20`),
+    /// usually an off-by-one: siox ranges include both ends.
+    pub const OVERLAPPING_RANGE_ENDPOINTS: &str = "W-P018";
 }
 
 #[cfg(test)]

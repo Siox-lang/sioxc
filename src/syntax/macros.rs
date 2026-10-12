@@ -850,6 +850,11 @@ impl Expander<'_> {
                 ImplItem::Process(p) => self.block(&mut p.body, true, depth),
                 ImplItem::Stmt(s) => self.stmt(s, false, depth),
                 ImplItem::AttrBinding(b) => self.expr(&mut b.value, depth),
+                ImplItem::Attr(a) => {
+                    if let Some(value) = &mut a.default {
+                        self.expr(value, depth);
+                    }
+                }
                 ImplItem::ModeField { .. } => {}
             }
             out.push(member);
@@ -1099,9 +1104,10 @@ impl Expander<'_> {
 
 /// A call's arguments, split at top-level commas. A trailing comma is
 /// allowed; no tokens are no arguments. A generic argument list in call or
-/// construction position (`float<32, 23>(x)`) nests like a bracket, by the
-/// parser's own rule: a `<` after a name whose matching `>` is followed by
-/// `(` or `{`. Any other `<` is a comparison.
+/// construction position (`float<32, 23>(x)`, `ufixed<6, 2>::resize(x)`)
+/// nests like a bracket, by the parser's own rule: a `<` after a name whose
+/// matching `>` is followed by `(`, `{` or `::`. Any other `<` is a
+/// comparison.
 fn split_args(tokens: &[MacroToken]) -> Vec<Vec<MacroToken>> {
     use TokenKind as K;
     let mut generic_close = HashSet::new();
@@ -1118,10 +1124,9 @@ fn split_args(tokens: &[MacroToken]) -> Vec<Vec<MacroToken>> {
                 K::Gt | K::Shr => {
                     level = level.saturating_sub(if token.kind == K::Gt { 1 } else { 2 });
                     if level == 0 {
-                        if tokens
-                            .get(close + 1)
-                            .is_some_and(|next| matches!(next.kind, K::LParen | K::LBrace))
-                        {
+                        if tokens.get(close + 1).is_some_and(|next| {
+                            matches!(next.kind, K::LParen | K::LBrace | K::ColonColon)
+                        }) {
                             generic_open.insert(open);
                             generic_close.insert(close);
                         }

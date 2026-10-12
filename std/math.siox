@@ -2,6 +2,7 @@ module std::math;
 
 use std::cmp::Ordering;
 use std::convert::From;
+use core::intrinsics;
 
 // Complex value over the reals (modelled on ieee.math_complex). Components
 // are the kernel base type `real` (f64 in simulation).
@@ -104,19 +105,24 @@ pub fn mod<T: Ord<T>>(a: T, m: T) -> T {
     return rem(a, m);
 }
 
-// Real math straight from the C math library (spec 3.27, `extern "C"`):
-// `real` maps to `double`, and the native test executable links -lm.
-extern "C" {
-    pub fn sqrt(x: real) -> real;
-    pub fn sin(x: real) -> real;
-    pub fn cos(x: real) -> real;
-    pub fn exp(x: real) -> real;
-    pub fn log(x: real) -> real;
-    pub fn pow(x: real, y: real) -> real;
-    pub fn floor(x: real) -> real;
-    pub fn ceil(x: real) -> real;
-    pub fn round(x: real) -> real;
+// The square root of any number type that implements `Sqrt`: `real`
+// built in, `float` (IEEE `squareRoot`) and `ufixed`/`sfixed`
+// (to the nearest step) beside their types. `x.sqrt()` is the same call.
+pub trait Sqrt {
+    fn sqrt(self) -> Self;
 }
+
+pub fn sqrt<T: Sqrt>(x: T) -> T {
+    return x.sqrt();
+}
+
+impl Sqrt for real {
+    fn sqrt(self) -> real { return intrinsics::sqrt(self); }
+}
+
+// Real math the compiler builds in (`core::intrinsics`, LLVM's own `sqrt`,
+// `sin`, …), as a VHDL simulator builds in `ieee.math_real`.
+pub use core::intrinsics::{sin, cos, exp, log, pow, floor, ceil, round};
 
 pub const PI: real = 3.141592653589793;
 pub const E: real = 2.718281828459045;

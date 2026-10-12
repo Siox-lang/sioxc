@@ -376,6 +376,7 @@ pub(super) fn process_empty_string(design: &Design, id: ProcessValueId) -> bool 
             elem,
             len: 0,
             family: None,
+            ..
         }) if matches!(elem.as_ref(), siox::types::Ty::Char)
     )
 }

@@ -56,10 +56,18 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
 - 🔴 **Incremental/query interface.** Add demand-driven caching only when the
   LSP or future project tool needs incremental multi-file recomputation; keep
   the current explicit phase products as the public boundary.
+- 🔴 **Tuples.** Anonymous product types, `let` destructuring and
+  multi-signal `match`. See [the proposal](docs/proposals/tuples.md).
+- 🔴 **Payload enums.** Tagged-union variants, binding patterns,
+  `Option`/`Result` and `checked_*`; builds on tuples. See
+  [the proposal](docs/proposals/payload-enums.md).
 - 🟡 **Public entity receiver methods.** Static public entity functions work.
   Lower `instance.method()` accessors and effectful methods to stable generated
   ports, first with one caller per method/instance, then define arbitration
   before allowing multiple callers. Struct/view methods already work.
+  **Deferred** (2026-10-10): a struct method is marked by its `self`
+  parameter, while an entity's implementation has no `self`, so entity
+  methods would look unlike struct methods. Settle the syntax first.
 
 ## IR
 
@@ -118,6 +126,13 @@ listed under LLVM and Output below.
 Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
+- 🔴 **Integer locals returned as a family.** In a testbench, a method
+  declared `-> float` that returns an `integer` local (`return a;`) on one
+  path fails to lower when its result is then used as a receiver; returning
+  the word as an expression works.
+- 🔴 **Non-constant loop bounds in hardware.** A hardware loop whose bound is
+  not constant once the arguments' shapes are known reports the caller's
+  locals as unknown names instead of naming the bound.
 - 🔴 **Runtime recursion and non-packed conversions.** Extend the currently
   supported inline-call and packed-value contract only with explicit frame,
   ownership, conversion and suspension semantics. Recursive runtime calls are
@@ -169,7 +184,14 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   distinct call-site scopes, return types and true formal parameters, including
   live mutable/indexed aliases, receivers, aggregates, wide/real projections
   and borrowed runtime/literal strings (including zero-storage empty values)
-  across suspension. Procedural expression-shaped calls now preserve repeated,
+  across suspension.
+  CFG-expanded formal parameters now expose recursive `$logic` companions over
+  their captured constant/place state, including nested parent aliases, receivers,
+  indexed negative-label arrays, wide fields and binary literals across waits
+  and mutation. References are cleared before refresh; a missing plane remains
+  unavailable. Native/GDB checks reuse the suspended-call regression and compare
+  ordinary/debug VCDs in both packing modes; no simulation argument copies.
+  Procedural expression-shaped calls now preserve repeated,
   same-line and nested source frames, scalar/aggregate bindings, borrowed
   runtime-string arguments/returns, literal/empty string bindings and
   selected-call stops without ordinary-build copies. Consumed
@@ -457,10 +479,13 @@ Owns user-visible types, traits, operators, attributes, simulation helpers,
 math/text/file services, and small technology-independent helpers. Code: `std/`.
 
 - 🟡 **Library build-out.** Synchronizers, fixed-point families and initial
-  floating-point operators exist. Remaining: fixed-point division/configurable
-  resize, floating-point division/square root/subnormals/rounding modes and
-  fixed-point conversions; optionally generic vectors/matrices. Each needs
-  executable conformance tests. See
+  floating-point operators exist. Remaining: floating-point
+  subnormals/rounding modes, and binary64 `*`/`/`/`sqrt` (their significand
+  product, dividend and radicand need more than the 64-bit kernel word);
+  optionally
+  generic vectors/matrices. Each needs
+  executable conformance tests. Fixed point is complete, `resize` styles
+  included. See
   [the remaining proposal](docs/proposals/std-buildout.md). Memories, FIFOs and
   stream adapters are IP for vendor packages and libraries, not std.
 - 🟡 **API reference.** Keep [`siox-paper/docs/std.md`](https://github.com/Siox-lang/siox-paper/blob/main/docs/std.md) synchronized with each

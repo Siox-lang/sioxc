@@ -387,7 +387,9 @@ fn process_packed_meta_uncached<'ctx>(
                     .ok()
                     .map(|value| value.into_int_value())
             }
-            ProcessUnaryOp::RealToInteger | ProcessUnaryOp::IntegerToReal => None,
+            ProcessUnaryOp::RealToInteger
+            | ProcessUnaryOp::IntegerToReal
+            | ProcessUnaryOp::Real(_) => None,
         },
         ProcessValueKind::Binary {
             operation,

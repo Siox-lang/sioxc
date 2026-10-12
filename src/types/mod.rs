@@ -25,6 +25,7 @@ mod assignments;
 mod ast_types;
 mod calls;
 mod collect;
+mod expand;
 mod expressions;
 mod helpers;
 mod impls;
@@ -66,6 +67,11 @@ pub enum Ty {
         /// The nominal family for a library newtype such as `unsigned`, which
         /// drives method and operator dispatch. `None` for a plain array.
         family: Option<String>,
+        /// The lowest index: 0 for `unsigned[8]` (`7..0`), `-4` for
+        /// `sfixed<8, 4>` (`3..-4`). With `len` it is the whole range, which
+        /// for a fixed or float format *is* the format: `ufixed<8, 4>` and
+        /// `ufixed<8, 2>` are different types.
+        low: i64,
     },
     /// A declared function or method with no return type. Unlike `Error`, this
     /// is known and must be rejected anywhere a value is required.
@@ -81,7 +87,9 @@ impl Ty {
         match self {
             Ty::Integer | Ty::Real => Some(64),
             Ty::Char => Some(32),
-            Ty::Array { elem, len, family } => {
+            Ty::Array {
+                elem, len, family, ..
+            } => {
                 if family.is_some() {
                     (*len != 0).then_some(*len)
                 } else {
@@ -99,9 +107,26 @@ impl Ty {
 pub struct Typed {
     /// Checked type of each expression, keyed by its span.
     expr_types: HashMap<Span, Ty>,
+    /// Each read of a type attribute (`x'integers`), keyed by the read's
+    /// span, to the attribute's declared value in terms of `self`. See
+    /// [`expand_type_attrs`].
+    type_attr_reads: HashMap<Span, Expr>,
+    /// Each operand of a mixed numeric operation that widens, keyed by its
+    /// span, to the type it widens to (spec 3.17, ``From``).
+    promotions: HashMap<Span, Ty>,
 }
 
 impl Typed {
+    /// The type an operand widens to in a mixed numeric operation.
+    pub fn promotion(&self, span: Span) -> Option<&Ty> {
+        self.promotions.get(&span)
+    }
+
+    /// Every operand promotion, keyed by the operand's span.
+    pub fn promotions(&self) -> &HashMap<Span, Ty> {
+        &self.promotions
+    }
+
     /// Checked type of the expression covering this exact source span.
     pub fn expr_type(&self, span: Span) -> Option<&Ty> {
         self.expr_types.get(&span)
@@ -112,6 +137,8 @@ impl Typed {
         &self.expr_types
     }
 }
+
+pub use expand::expand_type_attrs;
 
 /// Type-check resolved modules.
 ///
@@ -343,6 +370,9 @@ struct Checker<'a> {
     /// are values, not nominal types; retaining the declaration identity lets
     /// equal leaves in different modules keep distinct contracts.
     const_types: HashMap<DefId, Type>,
+    /// Constant definition -> its initializer, folded on demand where a
+    /// static analysis needs a value (match-arm ranges).
+    const_values: HashMap<DefId, Expr>,
     /// Literal suffix -> the type names defining it via `impl Suffix<sym, _>
     /// for T` (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,
@@ -402,6 +432,14 @@ struct Checker<'a> {
     /// Every entity name, so a type that is not an entity is not mistaken
     /// for an instantiation.
     entity_names: HashSet<String>,
+    /// (type key, name) -> a type attribute its implementation declares
+    /// (`pub attr integers: integer = self'high + 1;`).
+    type_attrs: HashMap<(String, String), AttrDecl>,
+    /// Each type attribute read, by span, to the declared value it expands
+    /// to; handed on in [`Typed`].
+    type_attr_reads: HashMap<Span, Expr>,
+    /// Operand promotions of mixed numeric operations; handed on in [`Typed`].
+    promotions: HashMap<Span, Ty>,
 }
 
 #[cfg(test)]

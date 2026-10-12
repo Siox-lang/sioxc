@@ -165,6 +165,19 @@ impl LogicEncoding for Logic {
     }
 }
 
+// `std_match` per element (VHDL-2008 `?=`): `'-'` on either side matches
+// anything; otherwise both must be known and the same as `0`/`1`, with
+// `'L'`/`'H'` reading as `'0'`/`'1'`. A metavalue matches nothing.
+impl Match<Logic> for Logic {
+    fn matches(self, pattern: Logic) -> Bool {
+        if self == '-' or pattern == '-' { return true; }
+        return self.to_x01() != 'X' and self.to_x01() == pattern.to_x01();
+    }
+    fn unknown(self) -> Bool {
+        return self != '-' and self.to_x01() == 'X';
+    }
+}
+
 // There is no dedicated clock type: any `Logic` (or `Bit`) signal is a clock
 // when edge detection is applied to it. `rising`/`falling`/`edge` are ordinary
 // trait methods (`clk.rising()`), the analogue of VHDL's `rising_edge`, built

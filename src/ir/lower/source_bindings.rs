@@ -329,6 +329,28 @@ impl Lowering<'_> {
         expression: &ast::Expr,
         env: &HashMap<String, Val>,
     ) -> Option<SourceLayout> {
+        // A widened operand has its promoted format, not its declaration's.
+        if let Some(crate::types::Ty::Array {
+            len,
+            family: Some(family),
+            low,
+            ..
+        }) = self.promotion_of(expression)
+        {
+            let family = self.free_fns.canonical_type_key(family);
+            return Some(SourceLayout {
+                span: ast::expr_span(expression),
+                kind: LayoutKind::Packed {
+                    width: *len,
+                    range: Some(crate::ir::LayoutRange {
+                        left: low + i64::from(*len) - 1,
+                        right: *low,
+                    }),
+                    element_enum: self.array_element_enum(&family),
+                    family,
+                },
+            });
+        }
         if let Some(layout) = self.source_call_layout(expression) {
             let root = access_steps(expression).map(|(root, _)| root);
             if root.as_ref().is_none_or(|root| !env.contains_key(root)) {

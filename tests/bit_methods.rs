@@ -319,3 +319,633 @@ impl T {
         );
     }
 }
+
+/// A vector element holds whatever value of its enum is written, metavalues
+/// included, as in VHDL: only a resolver gives `'X'` meaning. Packed
+/// `unsigned` (value plane plus companion), and array `Logic`, `Bit` and user
+/// enum vectors, written in hardware functions and testbenches alike; an
+/// element also reads back into a scalar.
+#[cfg(feature = "llvm")]
+#[test]
+fn enum_vector_elements_take_any_value() {
+    let stdout = run(
+        "element_values",
+        r#"
+module element_values;
+enum State { Idle, Run, Done }
+fn marks(v: unsigned) -> unsigned {
+    let r: unsigned = v;
+    r[v'low] = 'X'; r[v'low + 1] = 'Z'; r[v'low + 2] = 'H'; r[v'low + 3] = 'U';
+    return r;
+}
+fn copies(v: unsigned) -> unsigned {
+    let r: unsigned = v;
+    r[v'low] = v[v'high]; r[v'low + 1] = v[v'high - 1];
+    return r;
+}
+fn states(v: State[]) -> State[] { let r: State[3..0] = v; r[0] = State::Done; r[3] = State::Run; return r; }
+fn logics(v: Logic[]) -> Logic[] { let r: Logic[3..0] = v; r[2] = 'W'; r[0] = '-'; return r; }
+entity Dut { a: unsigned[8] in, z: unsigned[8] in, st: State[3..0] in, lg: Logic[3..0] in,
+    m: unsigned[8] out, c: unsigned[8] out, so: State[3..0] out, lo: Logic[3..0] out }
+impl Dut { m = marks(a); c = copies(z); so = states(st); lo = logics(lg); }
+#[test] entity T {}
+impl T {
+    let a: unsigned[8] = 0; let z: unsigned[8] = "ZH000000";
+    let st: State[3..0] = [State::Idle, State::Idle, State::Idle, State::Idle];
+    let lg: Logic[3..0] = "1010";
+    let m: unsigned[8]; let c: unsigned[8]; let so: State[3..0]; let lo: Logic[3..0];
+    let d: Dut = { .a = a, .z = z, .st = st, .lg = lg, .m = m, .c = c, .so = so, .lo = lo };
+    check: process {
+        await 1ns;
+        print!("hw {}{}{}{} {}{} {} {}", m[3], m[2], m[1], m[0], c[1], c[0], so, lo);
+        let x: unsigned[8] = 0; let y: unsigned[8] = "ZH000000";
+        let s: State[3..0] = [State::Idle, State::Idle, State::Idle, State::Idle];
+        let g: Logic[3..0] = "1010";
+        let mm: unsigned[8] = marks(x); let cc: unsigned[8] = copies(y);
+        print!("tb {}{}{}{} {}{} {} {}", mm[3], mm[2], mm[1], mm[0], cc[1], cc[0], states(s), logics(g));
+        let e: Logic = mm[0];
+        print!("read {}", e);
+    }
+}
+"#,
+    );
+    let row = "'U''H''Z''X' 'H''Z' [Run, Idle, Idle, Done] 1W1-";
+    for line in [
+        format!("hw {row}"),
+        format!("tb {row}"),
+        "read 'X'".to_string(),
+    ] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}
+
+/// Bit patterns match through the element type's `Match` (`std_match` for
+/// `Logic`: `'H'`/`'L'` read as `'1'`/`'0'`, a metavalue matches only a
+/// `-`), and ranges take any constant bounds of the scrutinee's type, open
+/// ends and either order, through its `Ord`, in hardware (also inside a
+/// function) and testbenches.
+#[cfg(feature = "llvm")]
+#[test]
+fn bit_patterns_match_like_std_match_and_ranges_take_expressions() {
+    let stdout = run(
+        "match_patterns",
+        r#"
+module match_patterns;
+const DEPTH: integer = 8;
+fn decode(op: unsigned[4]) -> integer {
+    match op {
+        "00--" => { return 1; }
+        "01-1" => { return 2; }
+        _ => { return 0; }
+    }
+}
+fn bucket(n: integer) -> integer {
+    match n {
+        ..-1 => { return 0; }
+        0..DEPTH - 1 => { return 1; }
+        DEPTH.. => { return 2; }
+    }
+    return 9;
+}
+entity Dut { op: unsigned[4] in, n: integer in, d: integer out, b: integer out, e: integer out,
+    w: integer out }
+impl Dut {
+    d = decode(op);
+    b = bucket(n);
+    e = match n { 9..3 => 7, _ => 0 };
+    w = match op { "01-1" => 2, _ => 0 };
+}
+#[test] entity T {}
+impl T {
+    let op: unsigned[4] = 0; let n: integer = 0;
+    let d: integer; let b: integer; let e: integer; let w: integer;
+    let dut: Dut = { .op = op, .n = n, .d = d, .b = b, .e = e, .w = w };
+    check: process {
+        op = "0011"; n = 0 - 5; await 1ns; print!("hw {} {} {} {}", d, b, e, w);
+        op = "0H11"; n = 5; await 1ns; print!("hw {} {} {} {}", d, b, e, w);
+        op = "0X11"; n = 12; await 1ns; print!("hw {} {} {} {}", d, b, e, w);
+        op = "0LH1"; n = 8; await 1ns; print!("hw {} {} {} {}", d, b, e, w);
+        let a: unsigned[4] = "0011"; let h: unsigned[4] = "0H11"; let x: unsigned[4] = "0X11";
+        print!("tb {} {} {} {} {} {} {}", decode(a), decode(h), decode(x), bucket(0 - 5),
+            bucket(5), bucket(12), bucket(8));
+        let t: time = 15ns;
+        let slot: integer = match t { 0ns..9ns => 1, 10ns..19ns => 2, _ => 3 };
+        let r: real = 2.5;
+        let k: integer = match r { ..0.0 => 0, 0.0..1.0 => 1, 1.0.. => 2 };
+        print!("typed {} {}", slot, k);
+    }
+}
+"#,
+    );
+    for line in [
+        "hw 1 0 0 0",
+        "hw 2 1 7 2",
+        "hw 0 2 0 0",
+        "hw 1 2 7 0",
+        "tb 1 2 0 0 1 2 2",
+        "typed 2 2",
+    ] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}
+
+/// `T<args>::f(x)` calls an associated function with `T<args>` as `Self`:
+/// fixed-point `resize` with VHDL's overflow and rounding styles, and float
+/// `resize`/`From<float>` between formats, in hardware and a testbench.
+#[cfg(feature = "llvm")]
+#[test]
+fn fixed_and_float_resize_take_the_qualifier_as_self() {
+    let stdout = run(
+        "resize_styles",
+        r#"
+module resize_styles;
+use std::fixed::{ufixed, sfixed};
+use std::float::float;
+use std::numeric::{Overflow, Rounding};
+
+entity Dut {
+    x: ufixed<8, 4> in, y: sfixed<8, 4> in, z: float<32, 23> in,
+    a: ufixed<6, 2> out, b: ufixed<6, 2> out, c: ufixed<5, 2> out, d: ufixed<5, 2> out,
+    e: sfixed<6, 2> out, f: sfixed<6, 2> out, g: sfixed<5, 2> out, h: sfixed<5, 2> out,
+    p: float<16, 10> out, q: float<16, 10> out, r: float<16, 10> out,
+}
+impl Dut {
+    a = ufixed<6, 2>::resize(x, Overflow::Saturate, Rounding::Nearest);
+    b = ufixed<6, 2>::resize(x, Overflow::Wrap, Rounding::Truncate);
+    c = ufixed<5, 2>::resize(x, Overflow::Saturate, Rounding::Nearest);
+    d = ufixed<5, 2>::resize(x, Overflow::Wrap, Rounding::Truncate);
+    e = sfixed<6, 2>::resize(y, Overflow::Saturate, Rounding::Nearest);
+    f = sfixed<6, 2>::resize(y, Overflow::Saturate, Rounding::Truncate);
+    g = sfixed<5, 2>::resize(y, Overflow::Saturate, Rounding::Nearest);
+    h = sfixed<5, 2>::resize(y, Overflow::Wrap, Rounding::Truncate);
+    p = float<16, 10>::resize(z, Rounding::Nearest);
+    q = float<16, 10>::resize(z, Rounding::Truncate);
+    r = float<16, 10>(z);
+}
+
+#[test] entity T {}
+impl T {
+    let x: ufixed<8, 4>; let y: sfixed<8, 4>; let z: float<32, 23>;
+    let a: ufixed<6, 2>; let b: ufixed<6, 2>; let c: ufixed<5, 2>; let d: ufixed<5, 2>;
+    let e: sfixed<6, 2>; let f: sfixed<6, 2>; let g: sfixed<5, 2>; let h: sfixed<5, 2>;
+    let p: float<16, 10>; let q: float<16, 10>; let r: float<16, 10>;
+    let dut: Dut = { .x = x, .y = y, .z = z, .a = a, .b = b, .c = c, .d = d, .e = e, .f = f,
+        .g = g, .h = h, .p = p, .q = q, .r = r };
+    check: process {
+        x = ufixed<8, 4>(2.6875); y = sfixed<8, 4>(0.0 - 2.5625); z = float<32, 23>(1.000732421875);
+        await 1ns;
+        print!("hw1 {} {} {} {} | {} {} {} {} | {} {} {}", a, b, c, d, e, f, g, h, p, q, r);
+        x = ufixed<8, 4>(13.5); y = sfixed<8, 4>(0.0 - 7.0); z = float<32, 23>(70000.0);
+        await 1ns;
+        print!("hw2 {} {} {} {} | {} {} {} {} | {} {} {}", a, b, c, d, e, f, g, h, p, q, r);
+        let tx: ufixed<8, 4> = ufixed<8, 4>(13.5);
+        let ty: sfixed<8, 4> = sfixed<8, 4>(0.0 - 2.5625);
+        let tz: float<32, 23> = float<32, 23>(0.0 - 70000.0);
+        let t1: ufixed<5, 2> = ufixed<5, 2>::resize(tx, Overflow::Saturate, Rounding::Nearest);
+        let t2: ufixed<5, 2> = ufixed<5, 2>::resize(tx, Overflow::Wrap, Rounding::Truncate);
+        let t3: sfixed<6, 2> = sfixed<6, 2>::resize(ty, Overflow::Saturate, Rounding::Nearest);
+        let t4: sfixed<6, 2> = sfixed<6, 2>::resize(ty, Overflow::Wrap, Rounding::Truncate);
+        let t5: float<16, 10> = float<16, 10>::resize(tz, Rounding::Nearest);
+        let t6: float<16, 10> = float<16, 10>::resize(tz, Rounding::Truncate);
+        print!("tb {} {} {} {} {} {} {}", t1, t2, t3, t4, t5, t6,
+            ufixed<6, 2>::resize(tx, Overflow::Wrap, Rounding::Nearest));
+    }
+}
+"#,
+    );
+    for line in [
+        "hw1 2.75 2.5 2.75 2.5 | -2.5 -2.75 -2.5 -2.75 | 1.00098 1 1.00098",
+        "hw2 13.5 13.5 7.75 5.5 | -7 -7 -4 1 | inf 65504 inf",
+        "tb 7.75 5.5 -2.5 -2.75 -inf -65504 13.5",
+    ] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}
+
+/// A type attribute (`pub attr integers: integer = self'high + 1;` in an
+/// implementation) answers for every value of the type and for `Self`, in
+/// hardware and a testbench, nested ones included; a qualified call that
+/// returns `integer` keeps its width rather than the format's.
+#[cfg(feature = "llvm")]
+#[test]
+fn type_attributes_answer_for_values_and_self() {
+    let stdout = run(
+        "type_attrs",
+        r#"
+module type_attrs;
+use std::fixed::{ufixed, sfixed};
+use std::float::float;
+
+struct Q<W: integer, F: integer>(Logic[W - F - 1 .. 0 - F]);
+impl Q {
+    pub attr ints: integer = self'high + 1;
+    attr double: integer = self'ints * 2;
+    pub fn probe(v: Q) -> integer { return Self'ints * 100 + v'ints * 10 + v'double; }
+}
+
+entity Dut { x: ufixed<8, 4> in, z: float<32, 23> in, q: Q<10, 3> in,
+    i: integer out, f: integer out, b: integer out, p: integer out }
+impl Dut {
+    i = x'integers;
+    f = x'fractions;
+    b = z'bias;
+    p = Q<6, 2>::probe(q);
+}
+
+#[test] entity T {}
+impl T {
+    let x: ufixed<8, 4>; let z: float<32, 23>; let q: Q<10, 3>;
+    let i: integer; let f: integer; let b: integer; let p: integer;
+    let dut: Dut = { .x = x, .z = z, .q = q, .i = i, .f = f, .b = b, .p = p };
+    check: process {
+        await 1ns;
+        let s: sfixed<12, 5> = sfixed<12, 5>(1.0);
+        let d: float<64, 52> = float<64, 52>(1.0);
+        print!("hw {} {} {} {}", i, f, b, p);
+        print!("tb {} {} {} {} {}", s'integers, s'fractions, d'exponent, d'bias, Q<6, 2>::probe(q));
+    }
+}
+"#,
+    );
+    for line in ["hw 4 4 127 484", "tb 7 5 11 1023 484"] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}
+
+/// Float division is IEEE-754 (correctly rounded words, infinities, NaN),
+/// and fixed and float convert both ways, in hardware and a testbench; a
+/// float operator's result keeps its format as a conversion's argument.
+#[cfg(feature = "llvm")]
+#[test]
+fn float_division_and_fixed_conversions() {
+    let stdout = run(
+        "float_division",
+        r#"
+module float_division;
+use std::fixed::{ufixed, sfixed};
+use std::float::float;
+
+entity Dut { a: float<32, 23> in, b: float<32, 23> in, x: ufixed<8, 4> in, q: float<32, 23> out,
+    xf: float<32, 23> out, back: sfixed<8, 4> out }
+impl Dut {
+    q = a / b;
+    xf = float<32, 23>(x);
+    back = sfixed<8, 4>(a);
+}
+
+#[test] entity T {}
+impl T {
+    let a: float<32, 23>; let b: float<32, 23>; let x: ufixed<8, 4>;
+    let q: float<32, 23>; let xf: float<32, 23>; let back: sfixed<8, 4>;
+    let dut: Dut = { .a = a, .b = b, .x = x, .q = q, .xf = xf, .back = back };
+    check: process {
+        a = float<32, 23>(1.0); b = float<32, 23>(3.0); x = ufixed<8, 4>(2.6875);
+        await 1ns;
+        print!("hw1 {} {} {}", integer(q), xf, back);
+        a = float<32, 23>(0.0 - 3.14159); b = float<32, 23>(0.0);
+        await 1ns;
+        print!("hw2 {} {}", q, back);
+        let one: float<32, 23> = float<32, 23>(1.0);
+        let two: float<32, 23> = float<32, 23>(2.0);
+        let three: float<32, 23> = float<32, 23>(3.0);
+        let zero: float<32, 23> = float<32, 23>(0.0);
+        let inf: float<32, 23> = one / zero;
+        let r1: float<32, 23> = two / three;
+        let r2: float<32, 23> = float<32, 23>(7.5) / float<32, 23>(2.5);
+        let r3: float<32, 23> = zero / zero;
+        let r4: float<32, 23> = inf / inf;
+        let r5: float<32, 23> = float<32, 23>(5.0) / inf;
+        let r6: float<32, 23> = (zero - one) / zero;
+        print!("tb32 {} {} {} {} {} {}", integer(r1), r2, r3.is_nan(), r4.is_nan(), r5, r6);
+        let s: sfixed<8, 4> = sfixed<8, 4>(0.0 - 2.5625);
+        let sf: float<32, 23> = float<32, 23>(s);
+        let big: float<32, 23> = float<32, 23>(100.0);
+        let tie: float<32, 23> = float<32, 23>(0.03125);
+        let u1: ufixed<8, 4> = ufixed<8, 4>(float<32, 23>(3.14159));
+        let u2: ufixed<8, 4> = ufixed<8, 4>(big);
+        let u3: ufixed<8, 4> = ufixed<8, 4>(tie);
+        let s1: sfixed<8, 4> = sfixed<8, 4>(big);
+        let s2: sfixed<8, 4> = sfixed<8, 4>(zero - big);
+        let s3: sfixed<8, 4> = sfixed<8, 4>(r3);
+        print!("conv {} {} {} {} {} {} {}", sf, u1, u2, u3, s1, s2, s3);
+    }
+}
+"#,
+    );
+    for line in [
+        "hw1 1051372203 2.6875 1",
+        "hw2 -inf -3.125",
+        "tb32 1059760811 3 true true 0 -inf",
+        "conv -2.5625 3.125 15.9375 0.0625 7.9375 -8 0",
+    ] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}
+
+/// A function with a loop, called from an operator body: its bound may read
+/// a negative `'low` (hardware unrolls it), and shifting a kernel integer in
+/// it keeps one word (a testbench stores it in its 64-bit local).
+#[cfg(feature = "llvm")]
+#[test]
+fn loops_in_functions_called_from_operator_bodies() {
+    let stdout = run(
+        "loops_in_operators",
+        r#"
+module loops_in_operators;
+struct G<W: integer, M: integer>(Logic[W - M - 1 .. 0 - M]);
+
+// Restoring division with a bound read off a negative `'low`.
+fn loopdiv<T>(a: integer, b: integer, format: T) -> integer {
+    let rest: integer = a;
+    let q: integer = 0;
+    for k in 0..(0 - format'low) + 1 {
+        if rest >= b {
+            q = (q << 1) + 1;
+            rest = (rest - b) << 1;
+        } else {
+            q = q << 1;
+            rest = rest << 1;
+        }
+    }
+    return q;
+}
+
+impl From<integer> for G {
+    fn from(value: integer) -> G { return value; }
+}
+
+impl Div<G, G> for G {
+    fn div(self, rhs: G) -> G {
+        let f: integer = 0 - self'low;
+        return loopdiv((1 << f) + integer(self), (1 << f) + integer(rhs), self);
+    }
+}
+
+entity Dut { a: G<8, 4> in, b: G<8, 4> in, y: G<8, 4> out }
+impl Dut { y = a / b; }
+
+#[test] entity T {}
+impl T {
+    let a: G<8, 4>; let b: G<8, 4>; let y: G<8, 4>;
+    let dut: Dut = { .a = a, .b = b, .y = y };
+    check: process {
+        a = G<8, 4>(3); b = G<8, 4>(9);
+        await 1ns;
+        let t: G<8, 4> = a / b;
+        print!("loops {} {}", integer(y), integer(t));
+    }
+}
+"#,
+    );
+    assert!(
+        stdout.lines().any(|printed| printed == "loops 24 24"),
+        "{stdout}"
+    );
+}
+
+/// A testbench local of a user struct over a sized vector (`struct
+/// W(Logic[7..0])`) has that vector's width and range, as a signal does.
+#[cfg(feature = "llvm")]
+#[test]
+fn newtype_testbench_locals_take_the_wrapped_range() {
+    let stdout = run(
+        "newtype_locals",
+        r#"
+module newtype_locals;
+struct W(Logic[7..0]);
+struct H(Logic[8]);
+struct Word(unsigned[16]);
+fn top(v: W) -> Logic { return v[7]; }
+entity Dut { a: W in, y: W out }
+impl Dut { y = a; }
+#[test] entity T {}
+impl T {
+    let a: W; let y: W;
+    let dut: Dut = { .a = a, .y = y };
+    check: process {
+        let w: W;
+        let h: H;
+        let x: Word;
+        w = W(165);
+        h = H(3);
+        x = Word(1000);
+        a = w;
+        await 1ns;
+        print!("nt {} {} {} {} {} {} {}", integer(w), w'high, w'low, w'length, w[7], w[1], top(w));
+        print!("nt2 {} {} {} {}", integer(h), h'length, integer(x), integer(y));
+    }
+}
+"#,
+    );
+    for line in ["nt 165 7 0 8 '1' '0' '1'", "nt2 3 8 1000 165"] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}
+
+/// `x.sqrt()` is IEEE `squareRoot` (correctly rounded words in binary32 and
+/// binary16, NaN, -0, infinity) in hardware and a testbench, and its result
+/// works directly as a receiver or `print!` argument.
+#[cfg(feature = "llvm")]
+#[test]
+fn float_square_root() {
+    let stdout = run(
+        "float_sqrt",
+        r#"
+module float_sqrt;
+use std::float::float;
+entity Dut { a: float<32, 23> in, r: float<32, 23> out }
+impl Dut { r = a.sqrt(); }
+#[test] entity T {}
+impl T {
+    let a: float<32, 23>; let r: float<32, 23>;
+    let dut: Dut = { .a = a, .r = r };
+    check: process {
+        a = float<32, 23>(2.0); await 1ns;
+        print!("hw {}", integer(r));
+        let x2: float<32, 23> = float<32, 23>(2.0);
+        let x3: float<32, 23> = float<32, 23>(3.0);
+        let x9: float<32, 23> = float<32, 23>(9.0);
+        let xq: float<32, 23> = float<32, 23>(0.25);
+        let xt: float<32, 23> = float<32, 23>(0.00000000000000000001);
+        let xb: float<32, 23> = float<32, 23>(12345.678);
+        print!("tb32 {} {} {} {} {} {}", integer(x2.sqrt()), integer(x3.sqrt()), integer(x9.sqrt()),
+            integer(xq.sqrt()), integer(xt.sqrt()), integer(xb.sqrt()));
+        let h2: float<16, 10> = float<16, 10>(2.0);
+        let h3: float<16, 10> = float<16, 10>(3.0);
+        let h1: float<16, 10> = float<16, 10>(0.1);
+        print!("tb16 {} {} {}", integer(h2.sqrt()), integer(h3.sqrt()), integer(h1.sqrt()));
+        let zero: float<32, 23> = float<32, 23>(0.0);
+        let one: float<32, 23> = float<32, 23>(1.0);
+        let neg: float<32, 23> = zero - one;
+        let inf: float<32, 23> = one / zero;
+        let mz: float<32, 23> = -zero;
+        print!("special {} {} {} {} {}", neg.sqrt().is_nan(), integer(mz.sqrt()), inf.sqrt(), zero.sqrt(),
+            real(one.sqrt()));
+    }
+}
+"#,
+    );
+    for line in [
+        "hw 1068827891",
+        "tb32 1068827891 1071494103 1077936128 1056964608 786163455 1121859811",
+        "tb16 15784 16110 13583",
+        "special true 2147483648 inf 0 1",
+    ] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}
+
+/// `std::math`'s `real` functions are compiler built-ins (`core::intrinsics`,
+/// LLVM's `llvm.<fn>.f64`), in hardware and a testbench, with no C
+/// declaration in source.
+#[cfg(feature = "llvm")]
+#[test]
+fn real_math_is_built_in() {
+    let stdout = run(
+        "real_intrinsics",
+        r#"
+module real_intrinsics;
+use std::math::{sqrt, sin, cos, exp, log, pow, floor, ceil, round, PI};
+entity Dut { x: real in, a: real out, b: real out, c: real out, d: real out }
+impl Dut { a = sqrt(x); b = pow(x, 0.5); c = floor(x + 0.7) + ceil(x + 0.2) + round(x + 0.5); d = sin(PI / 2.0) + cos(0.0) + log(exp(x)); }
+#[test] entity T {}
+impl T {
+    let x: real = 0.0; let a: real; let b: real; let c: real; let d: real;
+    let dut: Dut = { .x = x, .a = a, .b = b, .c = c, .d = d };
+    check: process {
+        x = 16.0; await 1ns;
+        print!("hw {} {} {} {}", a, b, c, d);
+        let y: real = 2.0;
+        print!("tb {} {} {} {} {} {}", sqrt(y), pow(y, 10.0), floor(2.7), ceil(2.2), round(2.5), log(exp(3.0)));
+    }
+}
+"#,
+    );
+    for line in ["hw 4 4 50 18", "tb 1.41421 1024 2 3 3 3"] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}
+
+/// A `real` beside any number whose type has `impl From<T> for real`
+/// promotes it: `r + u - s`, `v * r + f`, `s < r`, in hardware and a
+/// testbench, and `sqrt(i + r + u - s)`.
+#[cfg(feature = "llvm")]
+#[test]
+fn real_promotes_every_number_beside_it() {
+    let stdout = run(
+        "numeric_promotion",
+        r#"
+module numeric_promotion;
+use std::fixed::sfixed;
+use std::float::float;
+use std::math::sqrt;
+entity Dut { r: real in, u: unsigned[8] in, s: sfixed<8, 4> in, v: signed[8] in, f: float<32, 23> in,
+    y: real out, z: real out, lt: Bool out }
+impl Dut { y = r + u - s; z = v * r + f; lt = s < r; }
+#[test] entity T {}
+impl T {
+    let r: real; let u: unsigned[8]; let s: sfixed<8, 4>; let v: signed[8]; let f: float<32, 23>;
+    let y: real; let z: real; let lt: Bool;
+    let dut: Dut = { .r = r, .u = u, .s = s, .v = v, .f = f, .y = y, .z = z, .lt = lt };
+    check: process {
+        r = 2.5; u = 4; s = sfixed<8, 4>(1.5); v = 0 - 3; f = float<32, 23>(0.25);
+        await 1ns;
+        print!("hw {} {} {}", y, z, lt);
+        let i: integer = 3;
+        let tr: real = 2.5;
+        let tu: unsigned[8] = 4;
+        let ts: sfixed<8, 4> = sfixed<8, 4>(1.5);
+        print!("tb {} {} {} {}", sqrt(i + tr + tu - ts), tr * ts, ts - tr, tu > tr);
+    }
+}
+"#,
+    );
+    for line in ["hw 5 -7.25 true", "tb 2.82843 3.75 -1 true"] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}
+
+/// Mixed numbers below `real` promote along the ladder by exact widening
+/// (`core::convert::Widen`): `unsigned + signed`, `ufixed + sfixed`,
+/// `sfixed + unsigned`, formats widened to cover both, `float` beside fixed,
+/// and an integer beside a fixed format as its value (`s + 1` adds 1.0), in
+/// hardware and a testbench, comparisons included.
+#[cfg(feature = "llvm")]
+#[test]
+fn numbers_promote_along_the_ladder() {
+    let stdout = run(
+        "numeric_ladder",
+        r#"
+module numeric_ladder;
+use std::fixed::{ufixed, sfixed};
+use std::float::float;
+entity Dut {
+    u: unsigned[8] in, v: signed[8] in, a: ufixed<8, 4> in, s: sfixed<8, 4> in, p: sfixed<12, 6> in,
+    f: float<32, 23> in,
+    uv: signed[9] out, as_: sfixed<9, 4> out, su: sfixed<13, 4> out, sp: sfixed<12, 6> out,
+    fs: float<32, 23> out, s1: sfixed<8, 4> out, lt: Bool out,
+}
+impl Dut {
+    uv = u + v;
+    as_ = a + s;
+    su = s + u;
+    sp = s + p;
+    fs = f + s;
+    s1 = s + 1;
+    lt = s < u;
+}
+#[test] entity T {}
+impl T {
+    let u: unsigned[8]; let v: signed[8]; let a: ufixed<8, 4>; let s: sfixed<8, 4>; let p: sfixed<12, 6>;
+    let f: float<32, 23>;
+    let uv: signed[9]; let as_: sfixed<9, 4>; let su: sfixed<13, 4>; let sp: sfixed<12, 6>;
+    let fs: float<32, 23>; let s1: sfixed<8, 4>; let lt: Bool;
+    let dut: Dut = { .u = u, .v = v, .a = a, .s = s, .p = p, .f = f, .uv = uv, .as_ = as_, .su = su,
+        .sp = sp, .fs = fs, .s1 = s1, .lt = lt };
+    check: process {
+        u = 200; v = 0 - 3; a = ufixed<8, 4>(2.5); s = sfixed<8, 4>(0.0 - 1.25);
+        p = sfixed<12, 6>(1.015625); f = float<32, 23>(0.5);
+        await 1ns;
+        print!("hw {} {} {} {} {} {} {}", uv, as_, su, sp, fs, s1, lt);
+        print!("tb {} {} {} {} {} {} {} {} {}", u + v, a + s, s + u, s + p, f + s, f + u, s + 1, a * 2, s < u);
+    }
+}
+"#,
+    );
+    for line in [
+        "hw 197 1.25 198.75 -0.234375 -0.75 -0.25 true",
+        "tb 197 1.25 198.75 -0.234375 -0.75 200.5 -0.25 5 true",
+    ] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}

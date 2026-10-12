@@ -1602,6 +1602,7 @@ fn fixed_and_empty_strings_are_executable_process_values() {
         elem: Box::new(siox::types::Ty::Char),
         len,
         family: None,
+        low: 0,
     };
     let values = vec![
         ProcessValue {

@@ -17096,3 +17096,459 @@ The full goal remains active: next audit the separate CFG formal-parameter
 inspection path in debug/parameters.rs, which does not currently create a
 formal-name $logic companion. Establish native/probe evidence before fixing it;
 expression companions already covered are not proof for suspended CFG aliases.
+### 2026-10-09 — Claude — enum vector elements take any value
+
+Owner: "we don't care if something is 'X' unless the resolver says so — that's
+how vhdl does it", for any enum vector. Branch `fix/element-metavalues`.
+- Hardware function element writes into packed vectors record a
+  `source_values::MetaMerge`; `lower_meta_ir` builds the merged companion
+  (base's, with the element's nibble replaced), so `r[k] = 'X'` and copies
+  of 'Z'/'H' keep their value (previously rejected / passed through the
+  std_logic and/or tables).
+- LLVM: an element of a packed enum vector read into a scalar layout
+  (`let e: Logic = u[0];`, and print snapshots) was unsupported in
+  `process_value_supported_in_layout` / `process_value_in_layout`.
+**Codex:** touches `metavalue.rs` (Canonical arm), `source_values.rs`
+(compaction carries `merge_meta`), `llvm/process/{support,values}.rs` Index arms.
+
+### 2026-10-09 — Claude — `Match` for bit patterns, expression range patterns
+
+Owner-approved. Branch `feat/match-patterns`.
+- `core::cmp::Match` (element level: `matches`, `unknown`); `Logic` implements
+  `std_match` in `std::logic`. A bit-pattern arm tests each fixed position
+  with `scrutinee[k].matches('0'|'1')`; a testbench match on a metavalue warns.
+- New `ast::Pattern::Bounds { lo, hi }` (constant/typed/open bounds, set
+  semantics) next to the literal `Pattern::Range`; matches through `Ord`.
+- Testbench path: guarded matches lower as a branch chain / select chain
+  (`lower_guarded_match`, `pattern_condition`); hardware: `arm_match_cond`.
+- Fixed on the way: element reads of a parameter inside a hardware function
+  lost their metavalue (a 1-bit RawResize after reconstruction); literal
+  method arguments now take the parameter's declared family; vector literals
+  in `let`s keep their companion; `lower_val_env` comparisons are marked like
+  `lower_expr`'s.
+**Codex:** touches parser patterns, `types/patterns.rs`, `resolve.rs`,
+`ir/lower/{calls,control,values,operators,source_bindings}.rs`,
+`source_values/reconstruct.rs`, `source_processes.rs` match lowering.
+
+### 2026-10-09 — Claude — match arm analysis
+
+Owner-requested (TODO item). Branch `feat/match-arm-analysis`.
+- `types`: `const_values` (DefId -> initializer) and `Checker::const_int`, a
+  small integer folder (literals, named constants, `+ - * / % << >>`).
+  `pattern_intervals` replaces the free `collect_pattern_ranges` and folds
+  `Pattern::Bounds`; open ends run to the edge of `i128`.
+- `unreachable_match_arm` now checks an arm against the union of earlier
+  ranges (`covered_by`), Or-patterns and folded bounds included.
+- New lint `overlapping_range_endpoints` (W-P018).
+- Parser: a pattern bound may start with a constant and an operator
+  (`DEPTH + 1..`).
+**Codex:** touches `types/{patterns,helpers,statements,collect,mod}.rs`,
+`diag.rs`/`diag/lints.rs` (new code), `syntax/parser.rs` pattern atom.
+
+### 2026-10-10 — Claude — `T<args>::f(x)`, fixed/float resize styles
+
+Owner-requested (TODO std item). Branch `feat/fixed-resize-styles`.
+- `ast::Expr::Call` gains `qualifier: Option<Box<Type>>`: the `Self` of an
+  associated call on an applied type, `ufixed<6, 2>::resize(x)` (callee stays
+  the path `ufixed::resize`). Parser postfix arm; import pass expands it
+  (`ufixed[1..-2]`); resolve walks it; the checker types the result as it.
+- Lowering: hardware `lower_family_from`'s body is now `inline_in_format`
+  (binds every parameter), shared with `lower_qualified_call`; Process path
+  `lower_process_family_from` likewise shares `inline_with_self_format` with
+  `lower_process_qualified_call`.
+- Macro `split_args` nests a `<...>` followed by `::` like one followed by `(`.
+- std: `std::numeric::{Overflow, Rounding}`; `ufixed`/`sfixed::resize`,
+  `float::resize`, `From<float> for float`, `encode_styled` (roundTowardZero).
+**Codex:** touches `syntax/{ast,parser,pretty,imports,macros}.rs`,
+`resolve.rs`, `types/{inference,expressions}.rs`, `ir/lower/{calls,expressions,values}.rs`,
+`source_processes.rs` (family-from helpers), `lower_helpers/substitute.rs`.
+
+### 2026-10-10 — Claude — type attributes
+
+Owner-approved. Branch `feat/type-attributes`.
+- `ImplItem::Attr(AttrDecl)` (no targets): `pub attr integers: integer =
+  self'high + 1;` inside an implementation; a module-level declaration
+  still needs `for` targets.
+- `types/expand.rs`: the checker records each read (`x'integers`,
+  `Self'integers`) in `Typed::type_attr_reads`, validates declarations
+  (shape facts only, `E-P037`), and `expand_type_attrs` (called from
+  `compiler.rs` after checking) rewrites reads to the declared value with
+  `self` -> base, so lowering sees only system attributes.
+- Fixed from #53: a qualified call returning something other than its type
+  (`-> integer`) took the format's width (both lowering paths).
+- std: `'integers`/`'fractions` on `ufixed`/`sfixed`, `'exponent`/
+  `'mantissa`/`'bias` on `float`.
+**Codex:** touches `syntax/{ast,parser,pretty,imports,macros,attributes}.rs`,
+`resolve.rs`, `elab.rs`, `types/{mod,collect,inference,expressions,impls,expand}.rs`,
+`ir/lower/{calls,source_processes}.rs`, `compiler.rs`, `diag.rs`.
+
+### 2026-10-10 — Claude — group declaration
+
+Owner-requested. Branch `feat/group-declaration`.
+- `let a, b: T = v;` (VHDL's `signal a, b : T := v;`): `parse_let_rest`
+  returns the first `LetDecl` and queues the rest in `Parser::grouped_lets`;
+  the impl-item and statement collection loops append them. Each name gets
+  its own copy of the type and initializer; later stages see single lets.
+- TODO: public entity receiver methods marked deferred (owner decision).
+**Codex:** touches `syntax/parser.rs` (let parsing, collection loops).
+
+### 2026-10-10 — Claude — float division, fixed <-> float conversions
+
+Owner-requested (TODO std item). Branch `feat/float-div-conversions`.
+- std::float: `impl Div<float, float>` (IEEE, nearest even; one kernel
+  division with a sticky bit, valid up to 29 mantissa bits),
+  `From<ufixed|sfixed> for float`, `From<float> for ufixed|sfixed`.
+- `inline_process_binary_operator`: an operator declared `-> Self`/its
+  family returns the left operand's type when the checker recorded none
+  (a conversion's argument); `float`'s kernel-word result used to make
+  `sfixed<8, 4>(a - b)` pick `From<integer>`.
+- TODO: binary64 `*`/`/` need wider kernel arithmetic (binary64 `*` is
+  already wrong on main: 1.5 * 3.0 = inf); loops in functions called from
+  operator bodies fail (hardware: unresolved caller locals; testbench:
+  shifted kernel integers widen past 64 bits).
+**Codex:** touches `ir/lower/source_processes.rs` (binary operator return type).
+
+### 2026-10-10 — Claude — loops in functions called from operator bodies
+
+Owner-requested (TODO, from the float-division work). Branch `fix/loops-in-operator-bodies`.
+- Hardware: `constant_expr` folds a unary negation, so a loop bound read off
+  a negative `'low` (`0..(0 - format'low) + 1`) unrolls.
+- Testbench: `source_value_width` widens a kernel-integer `<<` only for a
+  constant left operand (`1 << 100` stays multiword); a runtime one keeps
+  its width, so `rest = rest << 1` fits its 64-bit local.
+- TODO: user newtypes (`struct W(Logic[7..0])`) as testbench locals fail;
+  a non-constant hardware loop bound reports the caller's locals as unknown.
+**Codex:** touches `ir/lower/calls.rs` (`constant_expr`), `source_processes.rs`
+(`source_value_width` Shl).
+
+### 2026-10-10 — Claude — user newtypes as testbench locals
+
+Owner-requested. Branch `fix/newtype-testbench-locals`.
+- `source_processes.rs`: `sized_struct_base` finds a field-less struct's
+  sized base (`struct W(Logic[7..0])`); `process_declared_type` gives `W`
+  that length and `apply_process_declared_ranges` its range, so `let w: W;`
+  in a testbench has width 8 and range 7..0 (it was a zero-width layout and
+  the block failed at run time). Signals of `W` already worked.
+**Codex:** touches `ir/lower/source_processes.rs` (declared type/range of locals).
+### 2026-10-10 — Claude — float square root
+
+Owner-requested. Branch `feat/float-sqrt`.
+- std::float: `x.sqrt()` (IEEE squareRoot, nearest even) with a
+  digit-by-digit `root_with_sticky` loop whose bound comes from the format.
+- Testbench lowering, so a looped call's result works as a receiver
+  (`x.sqrt().to_real()`, `print!("{}", x.sqrt())`): a deferred method call
+  that returns its receiver's type takes the receiver's layout
+  (`value_ref_with_type_inner`); `cfg_calls::result_local` takes a select's
+  arms' layout, or plain bits of the node's width when the type is an
+  unsized family.
+**Codex:** touches `ir/lower/source_processes.rs` (deferred call layout),
+`source_processes/cfg_calls.rs` (`result_local`).
+
+### 2026-10-11 — Claude — std::math::sqrt, real(x) constructors
+
+Owner preferences: math functions live in std::math (also for fixed/float);
+conversions are constructors, not `to_<type>()`. Branch `feat/math-sqrt-constructors`.
+- std::math: `trait Sqrt` + generic `sqrt<T: Sqrt>`; `real` impl via the
+  new private `std::libm` (the C `sqrt` symbol moved there). `float`'s sqrt is
+  `impl Sqrt for float`; `ufixed`/`sfixed` get `impl Sqrt` (nearest step,
+  saturating; negative sfixed is 0) with an `isqrt` loop.
+- `to_real()` removed: `impl From<ufixed|sfixed|float> for real`. Lowering:
+  `real(x)` uses such an impl (testbench `lower_process_kernel_conversion`,
+  hardware `lower_conversion` via the new `inline_function`, split out of
+  `lower_free_call`); the checker now types kernel-conversion arguments.
+- `constant_expr` folds `/` and shifts; `capture_process_operand` wraps an
+  `integer` wider than its word to it.
+**Codex:** touches `ir/lower/{calls,source_processes}.rs`, `types/expressions.rs`.
+
+### 2026-10-11 — Claude — real math as compiler built-ins
+
+Owner preference ("like with nvc"): `real` math is built in, not C externs.
+Branch `feat/real-math-intrinsics`.
+- `core::intrinsics` (`extern "intrinsic"`, reserved to `core`: E-P036
+  elsewhere) declares sqrt/sin/cos/exp/log/pow/floor/ceil/round; std::math
+  re-exports them and `impl Sqrt for real` calls `intrinsics::sqrt`;
+  `std::libm` is gone.
+- IR: `RealFunction` (ir/expr.rs); `UnOp::Real` / `ProcessUnaryOp::Real`,
+  `BinOp::FPow` / `ProcessBinaryOp::FloatPow`; `FunctionIndex::insert_extern`
+  + `intrinsic()`; both call lowerings emit the op instead of a ForeignCall;
+  LLVM calls `llvm.<fn>.f64` (`real_intrinsic` in process/support.rs).
+**Codex:** touches `ir/{expr,process,functions,derive,query}.rs`,
+`ir/lower/{calls,collect,hardware,operators,source_processes}.rs`,
+`llvm/emit.rs`, `llvm/process/{binary,logic,support,values,value_types}.rs`,
+`types/items.rs`, `syntax/parser.rs`, `compiler.rs`, `diag.rs`.
+
+### 2026-10-11 — Claude — numeric promotion, phase 1 (to real)
+
+Owner decision: numbers mix in arithmetic; the higher rung of
+integer → unsigned/signed → fixed → float → real wins; storing stays explicit.
+Branch `feat/numeric-promotion`. Proposal: `docs/proposals/numeric-promotion.md`.
+- Checker: `promotes_to_real` (real beside a type with `impl From<T> for
+  real`), accepted in `operator_accepts_expr` for arithmetic/comparisons.
+- Lowering converts the other operand through that impl before operator
+  dispatch: `lower_process_real_promotion` (testbench),
+  `promoted_real_operands` + `real_from` (hardware, both Binary sites).
+- std::bits: `From<unsigned|signed> for real`. `ty_display` prints an
+  untracked-width family as its name (`sfixed`, not `sfixed[0]`).
+**Codex:** touches `types/{operators,calls}.rs`, `ir/lower/{calls,values,expressions,source_processes}.rs`.
+
+### 2026-10-12 — Claude — formats in checked types (numeric promotion phase 2, step 1)
+
+Branch `feat/numeric-formats`.
+- `types::Ty::Array` gains `low: i64` (the lowest index), set by
+  `Checker::index_shape`, which folds a format's range (`3..-4` after
+  desugaring) — fixed/float types had length 0 ("unknown") before.
+- `compatible`: two sized families whose binary points differ (a negative
+  `low` on either side and unequal lows) no longer assign: `ufixed<8, 4>`
+  into `ufixed<8, 2>` silently reread the bits (2.5 became 10). Label-only
+  ranges (`unsigned[15..8]` into `unsigned[8]`) still assign.
+- Diagnostics show a format as `ufixed<8, 4>`.
+**Codex:** `Ty::Array` gained a field: literals need `low`, patterns `..`.
+
+### 2026-10-12 — Claude — numeric promotion phase 2: the full ladder
+
+Branch `feat/numeric-promotion-2`. Proposal doc deleted (implemented).
+- Checker: `numeric_promotion` (operators.rs) computes the promoted type
+  below `real` (formats cover both operands); `check_expr` records each
+  operand that widens in `Typed::promotions` (span -> target `Ty`), carried
+  by `Hierarchy::promotions`.
+- `core::convert::Widen<Source>` (lang `widen`, a compiler trait) with exact
+  std impls (bits, fixed, float); `FunctionIndex::get_widening`.
+- Lowering hooks: hardware `promoted_operand` at `lower_expr`/`lower_val_env`
+  entry, plus `operand_type_name`, `ast_width`, `operand_range`,
+  `source_operand_layout`, `base_signal` see the promoted type; guard set
+  `widening`; `mark_vector_compare` reads operands as written. Testbench:
+  `process_promoted_operand` at `value_ref_with_type`, `operand_type`.
+- An integer beside a fixed/float format is its value (`s + 1` = +1.0);
+  corpus tests comparing raw words now write `integer(x) == N`.
+**Codex:** touches types/{operators,inference,expressions,mod,collect}.rs,
+elab.rs, ir/functions.rs, ir/lower/{operators,calls,expressions,values,
+source_bindings,source_processes,collect}.rs, ir/lower.rs, resolve.rs, core/convert.siox.
+
+### 2026-10-12 — Claude — numeric promotion through `From`; no `Widen` trait
+
+Branch `feat/promotion-via-from`. `core::convert::Widen` and its std impls
+are removed; promotion inlines std's `From<S> for T` (hardware
+`promoted_operand`, testbench `widen_operand` via `get_conversion`).
+- std `From` impls between formats take an exact path when `Self` holds
+  every source value (a condition on `Self'low`/`value'high`), else round
+  and saturate as before. New: `From<ufixed> for sfixed`,
+  `From<unsigned|signed> for ufixed/sfixed/float`, `From<signed|unsigned>
+  for signed`; `From<integer>` for fixed/float no longer goes through real.
+- `inline_block`: an `if` whose condition folds (`arena_constant_integer`)
+  lowers only the branch it takes.
+- **Behaviour change:** `signed[16](s)` sign-extends (was a raw zero-extend).
+  The testbench now tries a family's `From` before the kernel raw resize, and
+  the checker types a `T[range](x)` argument.
+**Codex:** touches ir/functions.rs, ir/lower/{calls,operators,source_processes}.rs,
+types/{expressions,mod}.rs, resolve.rs, core/convert.siox.
+
+### 2026-10-12 — Codex — CFG formal companion audit
+
+Own debug/parameters.rs and focused native regression if a gap is reproduced.
+Trace captured formal aliases through parameters/declare_parameters and existing
+logic mirrors; first compile/run a suspended packed-parameter diagnostic without
+changing production Rust. Previous turn committed verified mixed-fragment
+coverage (1b7c36c, docs bd1c625), so it made authoritative progress.
+No live guarded jobs. Preserve foreign AGENTS/chat/.codex; no push.
+
+2716950 reproduces the gap after ordinary/debug native assertions and VCD
+parity: suspended `value` is readable, `value$logic` is absent. 2719884 verifies
+the shared formal-location fix with the existing recursive logic copy/readers,
+native GDB source states, DWARF validity and unchanged VCD. Companions are
+debug-only nullable snapshots over captured places/constants, not new ABI
+arguments or source evaluations. Missing either plane clears the reference.
+Expanded the existing suspended-call fixture with aggregate/receiver/wide
+companions, nested mutable parent aliases, negative-label indexed arrays and
+binary literals. Corrected an initially mis-targeted test struct edit; no
+unrelated fixture changes remain. 2725436 is terminal exited/success/0, peak
+884137984 bytes: extended native/GDB regression passes default/bitpack and strict
+Clippy. Update matching TODO/architecture/testing and freeze Rust for full suites,
+four corpora, native smokes and AST/community refresh. Goal active; no push.
+
+Full acceptance launched as
+siox-job-3000-1791790586357096719-2732208.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791790586357096719-2732208.log.
+Frozen source/test hash:
+d091a14748e9e364883dbdcfc01cac4f10f0844446b4447e9a053c31d12ba9e0.
+Poll this exact unit to terminal exited/success/0 before committing; no restarts
+or Rust edits merely because observation is interrupted. Owned changes are
+parameters.rs, the existing suspended-call fixture, TODO and this appended chat
+tail; sibling architecture/testing docs separately. Preserve foreign12 AGENTS,
+441 historical chat additions and .codex. Goal remains active; no push.
+
+### 2026-10-12 — Codex — acceptance corpus drift
+
+2732208 remains running; both full suites and strict Clippy have passed on the
+unchanged frozen hash. The sibling corpus was externally fast-forwarded from
+05278a8 to f8234fe at 2026-10-12 09:42:16 +0200 during this acceptance run.
+It now requires numeric-format/promotion features absent from local compiler
+main (ahead46/behind39, origin/main 7c659f2). Default corpus currently reports
+11 ordinary failures, including new numeric_ladder/numeric_promotion and migrated
+fixed/float comparisons. These fail before DWARF emission; do not amend them to
+match an older compiler, clone a stale corpus, or claim a passing acceptance.
+Requested direction to integrate latest compiler main while preserving owned
+DWARF changes. No merge/pull, commit or further Rust edit without that direction;
+poll the existing acceptance handle, never restart merely after interruption.
+Goal active; this is the first corpus-drift blocker audit, not a blocked status.
+
+2732208 is now terminal failed/exit-code/1, peak 1612832768 bytes. Both complete
+suites passed all 21 DWARF fixtures (97.69s default, 109.28s bitpack), along
+with strict Clippy/frontend/artifact gates. Both current ordinary corpora finish
+227 passed/12 failed; therefore debug corpora, native smokes and graph refresh
+were not reached. This is a failed acceptance, not a compiler-wide pass.
+Frozen source/test hash d091a14748e9e364883dbdcfc01cac4f10f0844446b4447e9a053c31d12ba9e0
+is unchanged; no live jobs remain. Remote changes do not touch debug/parameters
+directly, but integrate 39 upstream compiler changes before retesting the current
+corpus rather than inventing fixes for absent numeric-format/promotion features.
+Still awaiting the requested integration choice; preserve all pending work,
+do not commit against the red gate or silently merge. Second consecutive
+corpus-drift/authority audit; goal active, not complete or blocked yet.
+
+### 2026-10-12 — Codex — third acceptance blocker audit
+
+Revalidated main 1b7c36c (ahead46/behind39), corpus f8234fe and unchanged frozen
+hash d091a14748e9e364883dbdcfc01cac4f10f0844446b4447e9a053c31d12ba9e0.
+2732208 remains terminal failed/exit-code/1; no live jobs. Both ordinary corpora
+still report 227 passed/12 failed from the compiler/corpus feature mismatch.
+No integration approval has arrived. The current DWARF patch and focused/full
+suite evidence are preserved, but the mandatory corpus gate cannot be completed
+without aligning compiler main or explicit alternate direction. Do not downgrade
+the corpus, waive the gate, silently merge, or repeat obsolete-compiler tests.
+Same blocker has persisted across three consecutive goal turns; mark the goal
+blocked pending the requested integration choice. Not complete; no commit/push.
+
+### 2026-10-12 — Codex — resumed goal, fresh blocker audit 1
+
+The goal was resumed, so restart the blocker counter rather than immediately
+marking it blocked again. Revalidated local main 1b7c36c (ahead46/behind39),
+clean sibling corpus f8234fe and terminal failed acceptance 2732208; no live jobs.
+Read-only git ls-remote confirms upstream main is still 7c659f2, matching the
+local remote ref. Both current corpus modes remain 227 passed/12 failed.
+Integration approval is still missing; a generic goal continuation is not that
+choice. Preserve the pending CFG companion fix and docs; do not merge upstream,
+commit against failed acceptance, downgrade the corpus or restart unchanged tests.
+Goal active, first fresh audit only. Await explicit integration direction.
+
+Fresh resumed blocker audit 2: main/corpus and terminal failed acceptance are
+unchanged, no live jobs, no integration choice received. Previous turn made
+no implementation progress; safe read-only revalidation confirms the same
+authority/corpus blocker. Preserve the patch; no redundant tests or merge.
+
+Fresh resumed blocker audit 3: confirmed main 1b7c36c, corpus f8234fe, unchanged
+frozen source hash and failed terminal acceptance 2732208; no live jobs or
+integration choice. Same mandatory corpus/authority blocker recurred on all
+three resumed turns. Mark goal blocked again; preserve pending DWARF changes.
+Completion remains unproven. Await explicit integration direction; no commit/push.
+
+### 2026-10-12 — Codex — authorized latest-main integration
+
+User explicitly requests merging latest main. Own integration and conflict
+resolution in IR/lowering, LLVM and related tests/docs as required; preserve
+both committed histories and all uncommitted work. Temporarily stash only the
+five dirty tracked files (AGENTS, TODO, chat, parameters.rs, debug_info.rs) in
+a named preservation stash. Foreign AGENTS12 and historical chat441 are not
+ours to commit; .codex and sibling docs remain untouched. Keep a pre-merge
+branch backup, resolve overlap with both designs intact, restore saved edits
+and run guarded full acceptance before any commit. No push requested.
+
+Fetched latest origin/main 0fa7091 (41 upstream commits). Preserved HEAD at
+codex/pre-main-dwarf-20261012 and dirty tracked edits in stash
+82d00debd9c7b424cf6c61f6864d7f78e4e37a14; leave that safety copy until accepted.
+Resolved four merge conflicts while retaining both log histories, upstream
+multi-argument format conversion/constant-branch pruning and source inspection
+boundaries. Restored all saved edits; AGENTS matches the saved bytes exactly.
+Unstaged foreign AGENTS12 and historical chat441 only, preserving them in the
+worktree. Merge remains uncommitted pending acceptance; sibling docs untouched.
+2953482 exposed nine compile integration errors from new upstream calls to
+source-aware helpers. Added actual call spans, retained selected return spans
+for guarded match chains, and made branch-span recording optional outside
+inline function frames. 2960858 passes the merged build and both suspended
+formal companion/conversion-signature native/GDB regressions, terminal
+exited/success/0, peak 1136013312 bytes. Freeze Rust for full acceptance.
+
+Initial merged acceptance 2976313 hit an upstream unit-test caller lacking the
+fourth reconstruct_metavalues argument. Cancelled that conclusively failed run
+to fix the call, not because of an observation timeout: unit is terminal dead,
+and its log proves failed cargo test despite systemd stop reporting success.
+Pass None like the adjacent table/ordinary-bit unit tests; no encoding exists
+in this fixture. Re-run full acceptance on the corrected frozen source. Use the
+actual sibling corpus, now externally advanced to f285f7d (signed-widen test).
+
+Corrected acceptance is live as
+siox-job-3000-1791796249531317181-2989909.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791796249531317181-2989909.log;
+stage logs /home/max/.cache/siox-jobs/tmp/dwarf-main-merge-acceptance.b0KAg4.
+Frozen source/test/core hash:
+3d27a8e3e1109852b09d7f078b841e9c5ce76f91bc0366088bdde0ce329326d4.
+Keep merge HEAD 0fa7091 and source frozen; poll this exact handle. Full acceptance
+must pass before merge commit. Foreign AGENTS12/chat441 and .codex stay excluded.
+
+2989909 is terminal failed/oom-kill/9, not accepted. Both complete suites
+passed all 21 DWARF fixtures (110.99s/107.12s), strict Clippy and the default
+239-program corpus passed. Bitpack corpus stopped after float_division native
+success; neither that file's printer roundtrip nor the next float_sqrt command
+was identified as the killed process. Unit limit was 2 GiB, high 1536 MiB;
+systemd's retained sampled peak is 1612402688. No source hash change.
+3132781 failed because GNU time is unavailable; use stdlib resource metrics.
+3140045 proves the isolated bitpack float_sqrt native compile/run passes,
+terminal exited/success/0, peak 546869248, child maxrss 540856 KiB. Therefore do
+not call float_sqrt a verified compiler defect. Parent cgroup limits are max.
+Retry full acceptance with explicit bounded 3 GiB/max and 2500 MiB/high after
+the verified 2 GiB OOM, retaining per-stage logs. No compiler limit or code
+changes; no commit/push until the complete gate passes.
+
+Bounded 3 GiB retry is live as
+siox-job-3000-1791798296892611558-3172968.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791798296892611558-3172968.log;
+stage logs /home/max/.cache/siox-jobs/tmp/dwarf-main-merge-acceptance-3g.utEqTc.
+Frozen source/test/core hash remains
+3d27a8e3e1109852b09d7f078b841e9c5ce76f91bc0366088bdde0ce329326d4.
+Poll this exact handle without restarting after an observation interruption.
+
+3172968 passed local CI completely, including both full suites, strict Clippy
+and both 239-program ordinary corpora, then OOM-killed while compiling the
+default debug float_sqrt test. It is not a passing full DWARF acceptance.
+3354612 is a bounded, deliberately interrupted GDB diagnostic (not a compile
+pass): repeated process_select/selected_value recursion widens loop operands
+and loses branch-local shared DAG values. SourceMap line scanning is sampled
+above that recursion, not established as the memory root cause.
+Own selection guards in value_types.rs/values.rs and debug/inline_values.rs.
+Keep recorded return scopes and activity-sensitive branch arms; pure synthesized
+loop muxes can use the existing shared SSA selection path. Validate against the
+actual float_sqrt program and selected-source-stop regressions before retaining.
+
+First selection-guard trial 3392396 was stopped as an inconclusive diagnostic,
+not accepted: it still grew above 1.6 GiB without producing an executable.
+Source trace explains the missing distinction: global activity flags include
+the original caller expressions of captured native formals. Those calls/checks
+do not execute inside the callee again, but their inherited flags still force
+branches and per-arm cache keys on pure loop muxes. Cut traversal at actual
+native parameters (except payload-free source literals), preserve fresh source
+calls/checks and recorded return arms, and allow proven pure selections to
+share inactive-independent SSA keys. Validate before retaining the refinement.
+
+3441067 proves the refined guard: debug float_sqrt compiles/runs within the
+original 2 GiB cap, child maxrss 783612 KiB, with native assertions and DWARF
+verification. Selected branch/shadowing and checked/effectful regressions pass.
+Added permanent restoring-root loop/SSA structural regression with a nested
+caller-owned identity input; it passes. 3458195 then passes 21/22 bitpack DWARF
+fixtures but reveals a real GDB enum return ABI issue (High reads 255 instead
+of 1). Pure SSA selection exposes unspecified upper bits from a native i1
+return. Reuse existing Register return normalization for exact sub-byte scalar
+layouts, keeping signed extension and caller decoding in the common codec.
+No fake bits/inspection-derived operand formats; validate before full acceptance.
+
+3477853 is terminal exited/success/0, peak 1610874880: the sub-byte Register
+codec fixes the bitpack enum finish regression, the permanent loop/SSA fixture
+passes, and strict Clippy passes. Additional selection/ABI code and the new
+fixture remain uncommitted pending their own full acceptance.
+Finalize the user's authorized latest-main merge separately: the staged
+source/test/core hash is exactly
+3d27a8e3e1109852b09d7f078b841e9c5ce76f91bc0366088bdde0ce329326d4,
+matching the snapshot that passed complete local CI in 3172968 (both full
+suites/21 DWARF fixtures, strict Clippy and both 239-program ordinary corpora).
+The subsequent extra debug-corpus OOM is recorded above, not claimed green.
+This merge includes upstream 0fa7091, conflict/call-span integration, and the
+previously verified CFG formal companion work. Do not sweep the later untested
+changes into it. Preserve foreign AGENTS12/chat441/.codex, backup branch/stash
+and sibling doc edits. No push; full DWARF completion remains unproven.

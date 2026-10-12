@@ -48,7 +48,7 @@ impl<'a> Checker<'a> {
         // unknown and the check steps aside rather than guessing.
         let mut covered: Vec<(i128, i128)> = Vec::new();
         for arm in arms {
-            if !collect_pattern_ranges(&arm.pattern, &mut covered) {
+            if !self.pattern_intervals(&arm.pattern, &mut covered) {
                 return;
             }
         }
@@ -108,6 +108,35 @@ impl<'a> Checker<'a> {
              drive it instead (`let x: T; x = <expr>;`)"
                 .to_string(),
         );
+    }
+
+    /// A range pattern's bounds are values of the matched type: `10ns` for a
+    /// `time`, a constant for an `unsigned`.
+    fn check_pattern_bounds(&mut self, ty: &Ty, pattern: &Pattern, sym: &HashMap<String, Ty>) {
+        match pattern {
+            Pattern::Bounds { lo, hi, .. } => {
+                for bound in [lo, hi].into_iter().flatten() {
+                    self.check_expr(bound, sym);
+                    if !matches!(ty, Ty::Error) && !self.assignable(ty, bound, sym) {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            expr_span(bound),
+                            format!(
+                                "range bound `{}` is not a {} value",
+                                crate::syntax::pretty::expr_string(bound),
+                                self.ty_display(ty)
+                            ),
+                        );
+                    }
+                }
+            }
+            Pattern::Or { alts, .. } => {
+                for alternative in alts {
+                    self.check_pattern_bounds(ty, alternative, sym);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Check every arm's pattern against the scrutinee's type.
@@ -179,6 +208,31 @@ impl<'a> Checker<'a> {
                         *span,
                         format!(
                             "an integer pattern cannot match a {} value",
+                            self.ty_display(ty)
+                        ),
+                    );
+                }
+            }
+            // Expression bounds compare through the type's order: a number,
+            // or a type with an `Ord` impl (`time`, the fixed formats).
+            Pattern::Bounds { span, .. } => {
+                let ordered = matches!(ty, Ty::Integer | Ty::Real)
+                    || matches!(
+                        ty,
+                        Ty::Array {
+                            family: Some(_),
+                            ..
+                        }
+                    )
+                    || self
+                        .type_kind_name(ty)
+                        .is_some_and(|name| self.has_impl("Ord", &name));
+                if !ordered {
+                    self.error(
+                        codes::TYPE_MISMATCH,
+                        *span,
+                        format!(
+                            "a range pattern needs an ordered value; {} has no `Ord`",
                             self.ty_display(ty)
                         ),
                     );
@@ -259,6 +313,9 @@ impl<'a> Checker<'a> {
     ) {
         let ty = self.type_of(scrutinee, sym);
         self.check_pattern_domains(&ty, arms);
+        for arm in arms {
+            self.check_pattern_bounds(&ty, &arm.pattern, sym);
+        }
         self.check_char_patterns(&ty, arms);
         let Ty::Named(id) = ty else {
             // A numeric scrutinee has a domain rather than a variant list.
@@ -360,13 +417,93 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// An integer constant expression's value: literals, named constants and
+    /// integer arithmetic over them. Anything else (a signal, a typed
+    /// literal, an overflow) is unknown.
+    pub(super) fn const_int(&self, e: &Expr) -> Option<i128> {
+        self.const_int_at(e, 0)
+    }
+
+    fn const_int_at(&self, e: &Expr, depth: u8) -> Option<i128> {
+        // A constant defined through itself is a resolve error; stop anyway.
+        if depth > 32 {
+            return None;
+        }
+        match e {
+            Expr::Int { text, .. } => unsigned_lit_text(text).map(i128::from),
+            Expr::Unary {
+                op: UnOp::Neg, rhs, ..
+            } => self.const_int_at(rhs, depth + 1)?.checked_neg(),
+            Expr::Binary { op, lhs, rhs, .. } => {
+                let (a, b) = (
+                    self.const_int_at(lhs, depth + 1)?,
+                    self.const_int_at(rhs, depth + 1)?,
+                );
+                match op {
+                    BinOp::Add => a.checked_add(b),
+                    BinOp::Sub => a.checked_sub(b),
+                    BinOp::Mul => a.checked_mul(b),
+                    BinOp::Div => a.checked_div(b),
+                    BinOp::Rem => a.checked_rem(b),
+                    BinOp::Shl => a.checked_shl(u32::try_from(b).ok()?),
+                    BinOp::Shr => a.checked_shr(u32::try_from(b).ok()?),
+                    _ => None,
+                }
+            }
+            Expr::Path(p) => {
+                let id = self
+                    .resolved
+                    .resolved(p.span)
+                    .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Const))?;
+                self.const_int_at(self.const_values.get(&id)?, depth + 1)
+            }
+            _ => None,
+        }
+    }
+
+    /// Append the value ranges a numeric pattern covers, folding constant
+    /// bounds; an open end runs to the edge of `i128`. Returns false when
+    /// the coverage is not a set of intervals — a bit pattern's don't-cares
+    /// scatter across the domain, a typed bound (`10ns`) is not an integer —
+    /// so the caller can step aside instead of reporting what it cannot see.
+    pub(super) fn pattern_intervals(&self, p: &Pattern, out: &mut Vec<(i128, i128)>) -> bool {
+        match p {
+            Pattern::Wildcard => {
+                out.push((i128::MIN, i128::MAX));
+                true
+            }
+            Pattern::Range { lo, hi, .. } => {
+                let (lo, hi) = (i128::from(*lo), i128::from(*hi));
+                // A range covers the same values written either way.
+                out.push((lo.min(hi), lo.max(hi)));
+                true
+            }
+            Pattern::Bounds { lo, hi, .. } => {
+                let bound = |b: &Option<Box<Expr>>, open: i128| match b {
+                    Some(e) => self.const_int(e),
+                    None => Some(open),
+                };
+                let (Some(lo), Some(hi)) = (bound(lo, i128::MIN), bound(hi, i128::MAX)) else {
+                    return false;
+                };
+                out.push((lo.min(hi), lo.max(hi)));
+                true
+            }
+            Pattern::Or { alts, .. } => alts.iter().all(|a| self.pattern_intervals(a, out)),
+            Pattern::Path(_) | Pattern::BitPattern { .. } | Pattern::CharLit { .. } => false,
+        }
+    }
+
     /// Warn (spec Stage 10) on arms that can never match: anything after a `_`
-    /// wildcard, or a variant already covered by an earlier arm.
+    /// wildcard, a variant already covered by an earlier arm, or a range the
+    /// earlier ranges cover between them. Also warn on two ranges that share
+    /// only an endpoint, which is usually an off-by-one.
     pub(super) fn check_unreachable_arms(&mut self, arms: &[MatchArm]) {
         let mut after_wildcard = false;
         let mut seen: HashSet<String> = HashSet::new();
-        // Inclusive integer ranges already matched (a bare literal is lo==hi).
-        let mut ranges: Vec<(i64, i64)> = Vec::new();
+        // Inclusive integer intervals already matched (a bare literal is
+        // lo==hi), each with whether it was written as a range.
+        let mut ranges: Vec<(i128, i128)> = Vec::new();
         for arm in arms {
             let reason = if after_wildcard {
                 Some("a previous `_` already matches everything".to_string())
@@ -386,27 +523,21 @@ impl<'a> Checker<'a> {
                         (!seen.insert(var.clone()))
                             .then(|| format!("`{var}` is already matched by an earlier arm"))
                     }
-                    // A range (or bare literal) wholly inside one already
-                    // matched can never be reached — first match wins.
-                    Pattern::Range { lo, hi, .. } => {
-                        let (lo, hi) = (*lo.min(hi), *lo.max(hi));
-                        let covered = ranges.iter().find(|(a, b)| lo >= *a && hi <= *b).copied();
-                        ranges.push((lo, hi));
-                        covered.map(|(a, b)| {
-                            let this = if lo == hi {
-                                format!("`{lo}`")
-                            } else {
-                                format!("`{lo}..{hi}`")
-                            };
-                            let prev = if a == b {
-                                format!("`{a}`")
-                            } else {
-                                format!("`{a}..{b}`")
-                            };
-                            format!("{this} is already covered by the earlier arm {prev}")
-                        })
+                    // A range (or literal) the earlier ones cover can never
+                    // be reached — first match wins.
+                    p => {
+                        let mut own = Vec::new();
+                        if self.pattern_intervals(p, &mut own) {
+                            let reason = self.interval_reason(&own, &ranges);
+                            if reason.is_none() {
+                                self.check_range_endpoints(p, &own, &ranges);
+                            }
+                            ranges.extend(own);
+                            reason
+                        } else {
+                            None
+                        }
                     }
-                    _ => None,
                 }
             };
             if let Some(reason) = reason {
@@ -417,6 +548,77 @@ impl<'a> Checker<'a> {
                 );
             }
         }
+    }
+
+    /// Why intervals `own` are unreachable after `earlier`, if every one of
+    /// them is covered: by a single earlier arm (named), or by several.
+    fn interval_reason(&self, own: &[(i128, i128)], earlier: &[(i128, i128)]) -> Option<String> {
+        if own.is_empty() || !own.iter().all(|&(lo, hi)| covered_by(lo, hi, earlier)) {
+            return None;
+        }
+        let this = own
+            .iter()
+            .map(|&(lo, hi)| show_interval(lo, hi))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let single = own
+            .iter()
+            .find_map(|&(lo, hi)| earlier.iter().find(|(a, b)| lo >= *a && hi <= *b).copied());
+        Some(match single {
+            Some((a, b)) if own.len() == 1 => format!(
+                "{this} is already covered by the earlier arm {}",
+                show_interval(a, b)
+            ),
+            _ => format!("{this} is already covered by the earlier arms"),
+        })
+    }
+
+    /// Warn when a range starts exactly where an earlier one ends, or ends
+    /// where one starts (`0..10` then `10..20`): both include the shared
+    /// value, so the second never sees it, which is rarely intended.
+    fn check_range_endpoints(
+        &mut self,
+        p: &Pattern,
+        own: &[(i128, i128)],
+        earlier: &[(i128, i128)],
+    ) {
+        if !matches!(p, Pattern::Range { .. } | Pattern::Bounds { .. }) {
+            return;
+        }
+        let Some(&(lo, hi)) = own.first().filter(|(lo, hi)| lo < hi) else {
+            return;
+        };
+        let Some(&(a, b)) = earlier
+            .iter()
+            .find(|&&(a, b)| a < b && ((lo == b && hi > b) || (hi == a && lo < a)))
+        else {
+            return;
+        };
+        let shared = if lo == b { b } else { a };
+        let (span, fix) = match p {
+            Pattern::Range { span, .. } | Pattern::Bounds { span, .. } => (
+                *span,
+                if lo == b {
+                    show_interval(b + 1, hi)
+                } else {
+                    show_interval(lo, a - 1)
+                },
+            ),
+            _ => return,
+        };
+        self.sink.emit(
+            Diagnostic::warning(format!(
+                "{} and the earlier arm {} share only `{shared}`",
+                show_interval(lo, hi),
+                show_interval(a, b)
+            ))
+            .with_code(codes::OVERLAPPING_RANGE_ENDPOINTS)
+            .at(span)
+            .help(format!(
+                "ranges include both ends, so `{shared}` matches the earlier arm; \
+                 if that is intended, write {fix}"
+            )),
+        );
     }
 
     /// Whether a type implements `Boolean`, so it may be used as a condition.

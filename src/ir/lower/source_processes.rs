@@ -59,6 +59,9 @@ struct LoweringContext<'a> {
     /// A value carrying the format a family `From` impl is building, which
     /// its body reads as `Self'high` (`lower_process_family_from`).
     self_formats: Vec<ProcessValueId>,
+    /// Operands being widened now (spec 3.17): their source value is
+    /// lowered as written.
+    widening: std::collections::HashSet<crate::diag::Span>,
     inline_self_values: Vec<Option<ProcessValueId>>,
     inline_return_types: Vec<Option<crate::types::Ty>>,
     /// Procedure returns resume the enclosing caller, not the whole process.
@@ -152,11 +155,7 @@ fn process_functions<'a>(
     for item in modules.iter().flat_map(|module| &module.items) {
         match item {
             ast::Item::Fn(function) => functions.insert_free(function),
-            ast::Item::ExternBlock { fns, .. } => {
-                for function in fns {
-                    functions.insert_free(function);
-                }
-            }
+            ast::Item::ExternBlock { abi, fns, .. } => functions.insert_extern(abi, fns),
             _ => {}
         }
     }
@@ -297,6 +296,29 @@ fn declared_process_type(ty: &ast::Type, resolved: &Resolved) -> Option<crate::t
 /// not persist a type for every contextual aggregate literal, so call
 /// arguments such as `[1, 2]` and `{ .a = 1 }` must inherit the signature's
 /// recursive shape before that signature disappears from Process IR.
+/// The sized vector a field-less struct wraps (`struct W(Logic[7..0])`):
+/// written without an index, `W` is that width and range, as a signal of it
+/// already is.
+fn sized_struct_base<'a>(
+    definition: crate::resolve::DefId,
+    context: &LoweringContext<'a>,
+) -> Option<&'a ast::Type> {
+    context
+        .modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .find_map(|item| {
+            let ast::Item::Struct(declaration) = item else {
+                return None;
+            };
+            (declaration.fields.is_empty()
+                && context.resolved.declared(declaration.name.span) == Some(definition))
+            .then_some(declaration.base.as_ref())
+            .flatten()
+            .filter(|base| matches!(base, ast::Type::Indexed { index: Some(_), .. }))
+        })
+}
+
 fn process_declared_type(
     ty: &ast::Type,
     context: &LoweringContext<'_>,
@@ -347,6 +369,17 @@ fn process_declared_type_inner(
                 let first = candidates.next()?.clone();
                 candidates.next().is_none().then_some(first)
             });
+            // A struct over a sized vector has that vector's length.
+            let len = context
+                .resolved
+                .resolved(path.span)
+                .and_then(|definition| sized_struct_base(definition, context))
+                .and_then(|base| process_declared_type_inner(base, context, aliases))
+                .and_then(|base| match base {
+                    crate::types::Ty::Array { len, .. } => Some(len),
+                    _ => None,
+                })
+                .unwrap_or(0);
             family.map(|family| {
                 let element = context
                     .design
@@ -356,8 +389,9 @@ fn process_declared_type_inner(
                     .unwrap_or(crate::types::Ty::Error);
                 crate::types::Ty::Array {
                     elem: Box::new(element),
-                    len: 0,
+                    len,
                     family: Some(family),
+                    low: 0,
                 }
             })
         }
@@ -394,15 +428,18 @@ fn process_declared_type_inner(
                     elem,
                     len: 0,
                     family: Some(family),
+                    ..
                 } => Some(crate::types::Ty::Array {
                     elem,
                     len: length,
                     family: Some(family),
+                    low: 0,
                 }),
                 element => Some(crate::types::Ty::Array {
                     elem: Box::new(element),
                     len: length,
                     family: None,
+                    low: 0,
                 }),
             }
         }
@@ -489,6 +526,7 @@ fn process_type_from_layout(
                 .and_then(|length| u32::try_from(length).ok())
                 .unwrap_or(*width),
             family: Some(family.clone()),
+            low: 0,
         }),
         LayoutKind::Array { range, element } => Some(crate::types::Ty::Array {
             elem: Box::new(process_type_from_layout(element, resolved)?),
@@ -497,6 +535,7 @@ fn process_type_from_layout(
                 .and_then(|length| u32::try_from(length).ok())
                 .unwrap_or(0),
             family: None,
+            low: 0,
         }),
         LayoutKind::Struct { name, .. } => nominal_type_from_name(name, resolved),
         LayoutKind::Opaque { .. } => None,
@@ -667,6 +706,7 @@ fn process_layout_for_type(
             elem: _,
             len,
             family: Some(family),
+            ..
         } => {
             let element_enum = context
                 .design
@@ -693,6 +733,7 @@ fn process_layout_for_type(
             elem,
             len,
             family: None,
+            ..
         } => LayoutKind::Array {
             range: (*len != 0).then(|| crate::ir::LayoutRange {
                 left: 0,
@@ -1164,6 +1205,8 @@ pub fn lower(
                 constant_integers: &constant_integers,
                 value_bindings: Vec::new(),
                 self_formats: Vec::new(),
+
+                widening: std::collections::HashSet::new(),
                 inline_self_values: Vec::new(),
                 inline_return_types: Vec::new(),
                 inline_return_blocks: Vec::new(),
@@ -1226,6 +1269,8 @@ pub fn lower(
                             constant_integers: &constant_integers,
                             value_bindings: Vec::new(),
                             self_formats: Vec::new(),
+
+                            widening: std::collections::HashSet::new(),
                             inline_self_values: Vec::new(),
                             inline_return_types: Vec::new(),
                             inline_return_blocks: Vec::new(),
@@ -1281,6 +1326,8 @@ pub fn lower(
                             constant_integers: &constant_integers,
                             value_bindings: Vec::new(),
                             self_formats: Vec::new(),
+
+                            widening: std::collections::HashSet::new(),
                             inline_self_values: Vec::new(),
                             inline_return_types: Vec::new(),
                             inline_return_blocks: Vec::new(),
@@ -1321,7 +1368,8 @@ pub fn lower(
                 | ImplItem::Fn(_)
                 | ImplItem::ModeField { .. }
                 | ImplItem::Let(_)
-                | ImplItem::AttrBinding(_) => {}
+                | ImplItem::AttrBinding(_)
+                | ImplItem::Attr(_) => {}
             }
         }
 
@@ -1352,6 +1400,8 @@ pub fn lower(
                     constant_integers: &constant_integers,
                     value_bindings: Vec::new(),
                     self_formats: Vec::new(),
+
+                    widening: std::collections::HashSet::new(),
                     inline_self_values: Vec::new(),
                     inline_return_types: Vec::new(),
                     inline_return_blocks: Vec::new(),
@@ -2026,7 +2076,7 @@ fn lower_ordered_storage_initializer(
     // a real handle and must still execute, even when the loaded file is empty.
     if matches!(
         ty.as_ref(),
-        Some(crate::types::Ty::Array { elem, len: 0, family: None })
+        Some(crate::types::Ty::Array { elem, len: 0, family: None, .. })
             if matches!(elem.as_ref(), crate::types::Ty::Char)
     ) && matches!(
         &context.process_ir.values[value.0 as usize].kind,
@@ -2939,6 +2989,25 @@ fn capture_process_operand(
                 .as_ref()
                 .and_then(|ty| process_layout_for_type(ty, node.span, context))
         });
+    // A kernel integer wider than its word (`x << 6` keeps the operand's
+    // bits) wraps to the word it is captured as, as any `integer` does.
+    let word = layout.as_ref().and_then(SourceLayout::packed_width);
+    let (value, width) = match (word, node.bit_width) {
+        (Some(word), Some(width))
+            if width > word && matches!(node.ty, Some(crate::types::Ty::Integer)) =>
+        {
+            let narrowed = push_value(
+                node.span,
+                node.ty.clone(),
+                Some(word),
+                ProcessValueKind::RawResize { operand: value },
+                context,
+            );
+            context.process_ir.value_layouts[narrowed.0 as usize] = layout.clone();
+            (narrowed, Some(word))
+        }
+        _ => (value, node.bit_width),
+    };
     process.locals.push(ProcessLocal {
         id: local,
         name: format!("<call:{}>", local.0),
@@ -2958,7 +3027,7 @@ fn capture_process_operand(
     let id = push_value(
         node.span,
         node.ty,
-        node.bit_width,
+        width,
         ProcessValueKind::Local {
             process: process.id,
             local,
@@ -3676,7 +3745,9 @@ fn process_display_kind_from_value(
                 ProcessUnaryOp::Neg | ProcessUnaryOp::RealToInteger => {
                     Some(ProcessDisplayKind::Signed)
                 }
-                ProcessUnaryOp::IntegerToReal => Some(ProcessDisplayKind::Real),
+                ProcessUnaryOp::IntegerToReal | ProcessUnaryOp::Real(_) => {
+                    Some(ProcessDisplayKind::Real)
+                }
                 ProcessUnaryOp::Not => Some(ProcessDisplayKind::Unsigned),
             }),
         ProcessValueKind::Binary { operation, .. } => match operation {
@@ -3684,7 +3755,8 @@ fn process_display_kind_from_value(
             | ProcessBinaryOp::FloatSub
             | ProcessBinaryOp::FloatMul
             | ProcessBinaryOp::FloatDiv
-            | ProcessBinaryOp::FloatRem => Some(ProcessDisplayKind::Real),
+            | ProcessBinaryOp::FloatRem
+            | ProcessBinaryOp::FloatPow => Some(ProcessDisplayKind::Real),
             ProcessBinaryOp::Eq
             | ProcessBinaryOp::Ne
             | ProcessBinaryOp::Lt
@@ -3835,6 +3907,12 @@ fn operand_type(
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> Option<crate::types::Ty> {
+    let span = ast::expr_span(expression);
+    if !context.widening.contains(&span) {
+        if let Some(promoted) = context.typed.promotion(span) {
+            return Some(promoted.clone());
+        }
+    }
     let checked = context
         .typed
         .expr_type(ast::expr_span(expression))
@@ -3848,6 +3926,81 @@ fn operand_type(
     let ty = process_value_type(value, context);
     truncate_process_values(context, first_value);
     ty
+}
+
+/// `expression` widened to its promoted type (spec 3.17) through std's
+/// `From<Source>` impl for that type, inlined with `Self` as the promoted
+/// format. `None` when it does not widen.
+fn process_promoted_operand(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let span = ast::expr_span(expression);
+    if context.widening.contains(&span) {
+        return None;
+    }
+    let target = context.typed.promotion(span)?.clone();
+    context.widening.insert(span);
+    let result = widen_operand(expression, &target, span, process, context);
+    context.widening.remove(&span);
+    result
+}
+
+fn widen_operand(
+    expression: &ast::Expr,
+    target: &crate::types::Ty,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let crate::types::Ty::Array {
+        len,
+        family: Some(family),
+        low,
+        ..
+    } = target
+    else {
+        return None;
+    };
+    let source_type = operand_type(expression, process, context)?;
+    let source = process_type_key(&source_type, context)?;
+    let function = context
+        .functions
+        .get_conversion(&context.functions.canonical_type_key(family), &source)?;
+    let first_value = context.process_ir.values.len();
+    let operand = value_ref_with_type(expression, process, context, Some(&source_type));
+    let number = |value: i64| {
+        let literal = ast::Expr::Int {
+            text: value.unsigned_abs().to_string(),
+            span,
+        };
+        if value < 0 {
+            ast::Expr::Unary {
+                op: ast::UnOp::Neg,
+                rhs: Box::new(literal),
+                span,
+            }
+        } else {
+            literal
+        }
+    };
+    let index = ast::Expr::Range {
+        lo: Box::new(number(low + i64::from(*len) - 1)),
+        hi: Box::new(number(*low)),
+        span,
+    };
+    inline_with_self_format(
+        function,
+        family.clone(),
+        &index,
+        &[operand],
+        span,
+        first_value,
+        process,
+        context,
+        Some(target),
+    )
 }
 
 /// Whether a checked type says something: not an error, and not a generic
@@ -3966,6 +4119,9 @@ fn lower_match(
         .typed
         .expr_type(ast::expr_span(&statement.scrutinee))
         .cloned();
+    if match_needs_guards(&statement.arms, scrutinee_type.as_ref(), context) {
+        return lower_guarded_match(statement, scrutinee_type.as_ref(), context, process, block);
+    }
     let mut arms = Vec::with_capacity(statement.arms.len());
     for arm in &statement.arms {
         arms.push(ProcessMatchArm {
@@ -4045,7 +4201,552 @@ fn lower_pattern(
         },
         ast::Pattern::CharLit { ch, .. } => character_number(*ch, scrutinee_type, context)
             .map_or(ProcessPattern::Char(*ch), ProcessPattern::Number),
+        // Expression bounds lower as guards (`lower_guarded_match`); reaching
+        // here is a fail-closed unsupported pattern.
+        ast::Pattern::Bounds { .. } => ProcessPattern::Path {
+            definition: None,
+            segments: Vec::new(),
+        },
     }
+}
+
+/// Whether a match needs its arms as conditions rather than decoded
+/// patterns: an expression range (through `Ord`), or a bit pattern on a type
+/// that says how it matches (`Match`).
+fn match_needs_guards(
+    arms: &[ast::MatchArm],
+    scrutinee_type: Option<&crate::types::Ty>,
+    context: &LoweringContext<'_>,
+) -> bool {
+    fn guarded(pattern: &ast::Pattern, matches: bool) -> bool {
+        match pattern {
+            ast::Pattern::Bounds { .. } => true,
+            ast::Pattern::BitPattern { .. } => matches,
+            ast::Pattern::Or { alts, .. } => alts.iter().any(|pattern| guarded(pattern, matches)),
+            _ => false,
+        }
+    }
+    let matches = scrutinee_type
+        .and_then(|ty| match ty {
+            crate::types::Ty::Array { elem, .. } => process_type_key(elem, context),
+            _ => None,
+        })
+        .and_then(|owner| context.functions.get_associated(&owner, "matches"))
+        .is_some();
+    arms.iter().any(|arm| guarded(&arm.pattern, matches))
+}
+
+/// A packed vector's element layout, its element type's `Match::matches`
+/// (`std_match` for `Logic`), and its lowest label: what a bit pattern
+/// matches position by position.
+fn element_match<'a>(
+    scrutinee: ProcessValueId,
+    process: &ProcessCfg,
+    context: &LoweringContext<'a>,
+) -> Option<(crate::ir::SourceLayout, &'a ast::FnDecl, i64)> {
+    let layout = operand_source_layout(scrutinee, process, context)?;
+    let LayoutKind::Packed {
+        range: Some(range),
+        element_enum: Some(element),
+        ..
+    } = &layout.kind
+    else {
+        return None;
+    };
+    let element_type = nominal_type_from_name(element, context.resolved)?;
+    let owner = process_type_key(&element_type, context)?;
+    let function = context.functions.get_associated(&owner, "matches")?;
+    // An element read is the element type's whole value (a `Logic`
+    // discriminant), not the vector's one value bit.
+    let element_layout = process_layout_for_type(&element_type, layout.span, context)?;
+    Some((element_layout, function, range.left.min(range.right)))
+}
+
+fn bool_value(
+    value: bool,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    push_value(
+        span,
+        bool_type(context.resolved),
+        Some(1),
+        ProcessValueKind::Number(ProcessNumber::Integer(vec![u64::from(value)])),
+        context,
+    )
+}
+
+fn bool_binary(
+    operation: ProcessBinaryOp,
+    left: ProcessValueId,
+    right: ProcessValueId,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    push_value(
+        span,
+        bool_type(context.resolved),
+        Some(1),
+        ProcessValueKind::Binary {
+            operation,
+            left,
+            right,
+        },
+        context,
+    )
+}
+
+/// `left op right` over lowered values: the left type's `Eq`/`Ord` impl,
+/// else the built-in comparison.
+fn compare_values(
+    operator: ast::BinOp,
+    left: ProcessValueId,
+    right: ProcessValueId,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let left_type = process_value_type(left, context);
+    let right_type = process_value_type(right, context);
+    let symbol = crate::syntax::pretty::bin_op(&operator);
+    if let Some(owner) = left_type
+        .as_ref()
+        .and_then(|ty| process_type_key(ty, context))
+    {
+        let input = right_type
+            .as_ref()
+            .and_then(|ty| process_type_key(ty, context));
+        if let Some(function) = context
+            .functions
+            .get_binary_operator(symbol, &owner, input.as_deref())
+            .filter(|function| !context.inline_functions.contains(&function.span))
+        {
+            let result = bool_type(context.resolved);
+            if let Some(value) = inline_process_function(
+                function,
+                span,
+                Some(left),
+                &[right],
+                process,
+                context,
+                result.as_ref(),
+            ) {
+                return Some(value);
+            }
+        }
+    }
+    let operation = lower_binary_operator(&operator, left_type.as_ref(), right_type.as_ref());
+    Some(bool_binary(operation, left, right, span, context))
+}
+
+/// Whether two lowered constants are written high-to-low, so a range of them
+/// is the same set swapped. `None` when either is not a known number.
+fn bounds_descend(
+    low: ProcessValueId,
+    high: ProcessValueId,
+    context: &LoweringContext<'_>,
+) -> Option<bool> {
+    let number =
+        |value: ProcessValueId| match &context.process_ir.values.get(value.0 as usize)?.kind {
+            ProcessValueKind::Number(ProcessNumber::Real(bits)) => Some(f64::from_bits(*bits)),
+            _ => constant_integer(value, context).map(|value| value as f64),
+        };
+    Some(number(low)? > number(high)?)
+}
+
+/// The condition one pattern puts on a lowered scrutinee.
+fn pattern_condition(
+    pattern: &ast::Pattern,
+    scrutinee: ProcessValueId,
+    scrutinee_type: Option<&crate::types::Ty>,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    match pattern {
+        ast::Pattern::Wildcard => Some(bool_value(true, span, context)),
+        ast::Pattern::Or { alts, .. } => {
+            let mut any = None;
+            for alternative in alts {
+                let condition = pattern_condition(
+                    alternative,
+                    scrutinee,
+                    scrutinee_type,
+                    span,
+                    process,
+                    context,
+                )?;
+                any = Some(match any {
+                    Some(any) => bool_binary(ProcessBinaryOp::Or, any, condition, span, context),
+                    None => condition,
+                });
+            }
+            any
+        }
+        ast::Pattern::Bounds { lo, hi, .. } => {
+            let mut low = lo
+                .as_deref()
+                .map(|bound| value_ref_with_type(bound, process, context, scrutinee_type));
+            let mut high = hi
+                .as_deref()
+                .map(|bound| value_ref_with_type(bound, process, context, scrutinee_type));
+            if let (Some(l), Some(h)) = (low, high) {
+                if bounds_descend(l, h, context) == Some(true) {
+                    std::mem::swap(&mut low, &mut high);
+                }
+            }
+            let above = match low {
+                Some(low) => Some(compare_values(
+                    ast::BinOp::Le,
+                    low,
+                    scrutinee,
+                    span,
+                    process,
+                    context,
+                )?),
+                None => None,
+            };
+            let below = match high {
+                Some(high) => Some(compare_values(
+                    ast::BinOp::Le,
+                    scrutinee,
+                    high,
+                    span,
+                    process,
+                    context,
+                )?),
+                None => None,
+            };
+            Some(match (above, below) {
+                (Some(above), Some(below)) => {
+                    bool_binary(ProcessBinaryOp::And, above, below, span, context)
+                }
+                (Some(condition), None) | (None, Some(condition)) => condition,
+                (None, None) => bool_value(true, span, context),
+            })
+        }
+        ast::Pattern::BitPattern { text, .. } => {
+            let (mask, value) = crate::syntax::bit_pattern_mask(text)?;
+            let width = context
+                .process_ir
+                .values
+                .get(scrutinee.0 as usize)?
+                .bit_width?;
+            if let Some((element, function, low)) = element_match(scrutinee, process, context) {
+                // Each position the pattern fixes, by the element type's
+                // `matches` (`std_match` for `Logic`): `scrutinee[k]
+                // .matches('1')`, all together. A `-` adds nothing.
+                let bit = |words: &[u64], index: u32| {
+                    words
+                        .get(index as usize / 64)
+                        .is_some_and(|word| word >> (index % 64) & 1 == 1)
+                };
+                let mut all = None;
+                for position in (0..width).filter(|position| bit(&mask, *position)) {
+                    let symbol = if bit(&value, position) { '1' } else { '0' };
+                    let member = push_element(
+                        span,
+                        scrutinee,
+                        low + i64::from(position),
+                        &element,
+                        process,
+                        context,
+                    );
+                    let member_type = context.process_ir.values[member.0 as usize].ty.clone();
+                    let member_width = context.process_ir.values[member.0 as usize].bit_width;
+                    let number = character_number(symbol, member_type.as_ref(), context)?;
+                    let character = push_value(
+                        span,
+                        member_type,
+                        member_width,
+                        ProcessValueKind::Number(number),
+                        context,
+                    );
+                    let result = bool_type(context.resolved);
+                    let matched = inline_process_function(
+                        function,
+                        span,
+                        Some(member),
+                        &[character],
+                        process,
+                        context,
+                        result.as_ref(),
+                    )?;
+                    all = Some(match all {
+                        Some(all) => bool_binary(ProcessBinaryOp::And, all, matched, span, context),
+                        None => matched,
+                    });
+                }
+                return Some(all.unwrap_or_else(|| bool_value(true, span, context)));
+            }
+            let number = |words: Vec<u64>, context: &mut LoweringContext<'_>| {
+                push_value(
+                    span,
+                    None,
+                    Some(width),
+                    ProcessValueKind::Number(ProcessNumber::Integer(words)),
+                    context,
+                )
+            };
+            let (mask, value) = (number(mask, context), number(value, context));
+            let selected = push_value(
+                span,
+                None,
+                Some(width),
+                ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::And,
+                    left: scrutinee,
+                    right: mask,
+                },
+                context,
+            );
+            Some(bool_binary(
+                ProcessBinaryOp::Eq,
+                selected,
+                value,
+                span,
+                context,
+            ))
+        }
+        ast::Pattern::Range { lo, hi, .. } => {
+            let (low, high) = ((*lo).min(*hi), (*lo).max(*hi));
+            let number = |n: i64, context: &mut LoweringContext<'_>| {
+                let literal = ast::Expr::Int {
+                    text: n.unsigned_abs().to_string(),
+                    span,
+                };
+                let magnitude = value_ref_with_type(&literal, process, context, scrutinee_type);
+                if n >= 0 {
+                    return magnitude;
+                }
+                let zero = value_ref_with_type(
+                    &ast::Expr::Int {
+                        text: "0".to_string(),
+                        span,
+                    },
+                    process,
+                    context,
+                    scrutinee_type,
+                );
+                let kind = ProcessValueKind::Binary {
+                    operation: lower_binary_operator(
+                        &ast::BinOp::Sub,
+                        scrutinee_type,
+                        scrutinee_type,
+                    ),
+                    left: zero,
+                    right: magnitude,
+                };
+                let width = source_value_width(&kind, scrutinee_type, process, context);
+                push_value(span, scrutinee_type.cloned(), width, kind, context)
+            };
+            let (low, high) = (number(low, context), number(high, context));
+            let above = compare_values(ast::BinOp::Le, low, scrutinee, span, process, context)?;
+            let below = compare_values(ast::BinOp::Le, scrutinee, high, span, process, context)?;
+            Some(bool_binary(
+                ProcessBinaryOp::And,
+                above,
+                below,
+                span,
+                context,
+            ))
+        }
+        // An enum variant, a constant or a character: equality with the
+        // value the decoded pattern names.
+        ast::Pattern::Path(path) => {
+            let value = match lower_pattern(pattern, scrutinee_type, context) {
+                ProcessPattern::Number(number) => push_value(
+                    span,
+                    scrutinee_type.cloned(),
+                    None,
+                    ProcessValueKind::Number(number),
+                    context,
+                ),
+                _ => value_ref_with_type(
+                    &ast::Expr::Path(path.clone()),
+                    process,
+                    context,
+                    scrutinee_type,
+                ),
+            };
+            compare_values(ast::BinOp::Eq, scrutinee, value, span, process, context)
+        }
+        ast::Pattern::CharLit { .. } => {
+            let ProcessPattern::Number(number) = lower_pattern(pattern, scrutinee_type, context)
+            else {
+                return None;
+            };
+            let width = context
+                .process_ir
+                .values
+                .get(scrutinee.0 as usize)?
+                .bit_width;
+            let value = push_value(
+                span,
+                scrutinee_type.cloned(),
+                width,
+                ProcessValueKind::Number(number),
+                context,
+            );
+            Some(bool_binary(
+                ProcessBinaryOp::Eq,
+                scrutinee,
+                value,
+                span,
+                context,
+            ))
+        }
+    }
+}
+
+/// The metavalue warning for a guarded match in a testbench: a scrutinee the
+/// type's `Match::unknown` flags cannot match a bit pattern (as VHDL's
+/// `std_match` reports). `None` when the type has no such check.
+fn match_metavalue_warning(
+    scrutinee: ProcessValueId,
+    scrutinee_type: Option<&crate::types::Ty>,
+    span: crate::diag::Span,
+    process: &mut ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    block: ProcessBlockId,
+) -> Option<()> {
+    if !matches!(process.activation, ProcessActivation::TimeZero) {
+        return None;
+    }
+    let _ = scrutinee_type;
+    let layout = operand_source_layout(scrutinee, process, context)?;
+    let LayoutKind::Packed {
+        range: Some(range),
+        element_enum: Some(element),
+        ..
+    } = &layout.kind
+    else {
+        return None;
+    };
+    let element_type = nominal_type_from_name(element, context.resolved)?;
+    let owner = process_type_key(&element_type, context)?;
+    let check = context.functions.get_associated(&owner, "unknown")?;
+    // An element read is the element type's whole value (a `Logic`
+    // discriminant), not the vector's one value bit.
+    let element_layout = process_layout_for_type(&element_type, layout.span, context)?;
+    let result = bool_type(context.resolved);
+    let mut unknown = None;
+    for label in layout_labels(*range)? {
+        let member = push_element(span, scrutinee, label, &element_layout, process, context);
+        let flagged = inline_process_function(
+            check,
+            span,
+            Some(member),
+            &[],
+            process,
+            context,
+            result.as_ref(),
+        )?;
+        unknown = Some(match unknown {
+            Some(any) => bool_binary(ProcessBinaryOp::Or, any, flagged, span, context),
+            None => flagged,
+        });
+    }
+    let unknown = unknown?;
+    let known = push_value(
+        span,
+        bool_type(context.resolved),
+        Some(1),
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::Not,
+            operand: unknown,
+        },
+        context,
+    );
+    let message = "match on a value holding a metavalue: its bit-pattern arms cannot match";
+    let text = push_value(
+        span,
+        None,
+        Some(u32::try_from(message.len() * 8).ok()?),
+        ProcessValueKind::String(message.to_string()),
+        context,
+    );
+    process.blocks[block.0 as usize]
+        .instructions
+        .push(ProcessInstruction::Runtime {
+            operation: ProcessRuntimeOp::Warn,
+            arguments: vec![known, text],
+            format: None,
+            span,
+        });
+    Some(())
+}
+
+/// A match whose arms are conditions (`match_needs_guards`): a first-match
+/// chain of branches, one block testing each arm. The scrutinee is evaluated
+/// once, before the chain.
+fn lower_guarded_match(
+    statement: &ast::MatchStmt,
+    scrutinee_type: Option<&crate::types::Ty>,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
+    let scrutinee = value_ref(&statement.scrutinee, process, context);
+    let scrutinee = capture_process_operand(scrutinee, context, process, block);
+    if statement.arms.iter().any(|arm| {
+        matches!(
+            arm.pattern,
+            ast::Pattern::BitPattern { .. } | ast::Pattern::Or { .. }
+        )
+    }) {
+        match_metavalue_warning(
+            scrutinee,
+            scrutinee_type,
+            statement.span,
+            process,
+            context,
+            block,
+        );
+    }
+    let mut test = block;
+    let mut tails = Vec::new();
+    let mut fell_through = true;
+    for arm in &statement.arms {
+        let body = process.push_block();
+        if pattern_has_wildcard(&arm.pattern) {
+            process.blocks[test.0 as usize].terminator = ProcessTerminator::Goto(body);
+            fell_through = false;
+        } else {
+            let condition = pattern_condition(
+                &arm.pattern,
+                scrutinee,
+                scrutinee_type,
+                arm.span,
+                process,
+                context,
+            )?;
+            let next = process.push_block();
+            process.blocks[test.0 as usize].terminator = ProcessTerminator::Branch {
+                condition,
+                then_block: body,
+                else_block: next,
+            };
+            test = next;
+        }
+        if let Some(tail) = lower_statements(&arm.body.stmts, context, process, body) {
+            tails.push(tail);
+        }
+        if !fell_through {
+            break;
+        }
+    }
+    if fell_through {
+        tails.push(test);
+    }
+    if tails.is_empty() {
+        return None;
+    }
+    let join = process.push_block();
+    for tail in tails {
+        process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(join);
+    }
+    Some(join)
 }
 
 /// Whether a pattern matches everything, so a match needs no fall-through
@@ -4161,6 +4862,17 @@ fn apply_process_declared_ranges(
                     return None;
                 }
                 apply_process_declared_ranges(layout, aliased, context, aliases)?;
+                aliases.remove(&definition);
+            } else if let Some((definition, base)) =
+                context.resolved.resolved(path.span).and_then(|definition| {
+                    sized_struct_base(definition, context).map(|base| (definition, base))
+                })
+            {
+                // `W` for `struct W(Logic[7..0])` takes the wrapped range.
+                if !aliases.insert(definition) {
+                    return None;
+                }
+                apply_process_declared_ranges(layout, base, context, aliases)?;
                 aliases.remove(&definition);
             }
         }
@@ -4410,13 +5122,18 @@ fn process_value_is_real(id: ProcessValueId, context: &LoweringContext<'_>) -> b
                 operation: ProcessUnaryOp::Neg,
                 operand,
             } => pending.push(*operand),
+            ProcessValueKind::Unary {
+                operation: ProcessUnaryOp::Real(_) | ProcessUnaryOp::IntegerToReal,
+                ..
+            } => return true,
             ProcessValueKind::Binary {
                 operation:
                     ProcessBinaryOp::FloatAdd
                     | ProcessBinaryOp::FloatSub
                     | ProcessBinaryOp::FloatMul
                     | ProcessBinaryOp::FloatDiv
-                    | ProcessBinaryOp::FloatRem,
+                    | ProcessBinaryOp::FloatRem
+                    | ProcessBinaryOp::FloatPow,
                 ..
             } => return true,
             ProcessValueKind::Select {
@@ -4453,6 +5170,7 @@ fn lower_process_kernel_conversion(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -4484,6 +5202,24 @@ fn lower_process_kernel_conversion(
         .filter(|ty| !matches!(ty, crate::types::Ty::Error))
         .cloned();
     let operand = value_ref_with_type(&args[0], process, context, operand_type.as_ref());
+    // `real(x)` for a type with `impl From<S> for real` (`real(ufixed)`) is
+    // that conversion, not the kernel reading of its word.
+    if let Some(function) = operand_type
+        .clone()
+        .or_else(|| process_value_type(operand, context))
+        .and_then(|ty| process_type_key(&ty, context))
+        .and_then(|source| context.functions.get_conversion(&name, &source))
+    {
+        return inline_process_function(
+            function,
+            ast::expr_span(expression),
+            None,
+            &[operand],
+            process,
+            context,
+            Some(&target),
+        );
+    }
     let operand_is_real = matches!(operand_type, Some(crate::types::Ty::Real))
         || process_value_is_real(operand, context);
     let kind = if name == "integer" && operand_is_real {
@@ -4549,6 +5285,7 @@ fn lower_process_named_conversion(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -4611,12 +5348,14 @@ fn lower_process_named_conversion(
                     len: 0,
                     elem,
                     family,
+                    ..
                 },
                 crate::types::Ty::Array { len, .. },
             ) => crate::types::Ty::Array {
                 elem: elem.clone(),
                 len: *len,
                 family: family.clone(),
+                low: 0,
             },
             _ => target_type,
         };
@@ -4650,6 +5389,7 @@ fn lower_process_raw_resize(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -4696,6 +5436,7 @@ fn lower_process_raw_resize(
                     elem,
                     family,
                     len: width,
+                    low: 0,
                 },
                 Some(operand_type) => target.cloned().unwrap_or(operand_type),
                 None => target.cloned()?,
@@ -4749,6 +5490,7 @@ fn lower_process_raw_resize(
                 elem,
                 family: Some(family),
                 len,
+                low: 0,
             }
         }
         ast::Expr::Path(path) => {
@@ -4781,6 +5523,7 @@ fn lower_process_raw_resize(
                     elem,
                     family: Some(family),
                     len,
+                    low: 0,
                 };
                 return Some(push_value(
                     *span,
@@ -4835,6 +5578,7 @@ fn lower_process_family_from(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -4873,10 +5617,39 @@ fn lower_process_family_from(
         truncate_process_values(context, first_value);
         return None;
     };
+    inline_with_self_format(
+        function,
+        family,
+        index,
+        &[operand],
+        *span,
+        first_value,
+        process,
+        context,
+        return_type,
+    )
+}
+
+/// Inline `function` with `Self` standing for the format `family[index]`, as
+/// a `From` conversion to that format and an associated call on it
+/// (`ufixed<6, 2>::resize(x)`) both need. Values pushed from `first_value`
+/// on are dropped when the format or the inlining fails.
+#[allow(clippy::too_many_arguments)]
+fn inline_with_self_format(
+    function: &ast::FnDecl,
+    family: String,
+    index: &ast::Expr,
+    operands: &[ProcessValueId],
+    span: crate::diag::Span,
+    first_value: usize,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
     let eval = |bound: &ast::Expr| {
         crate::ir::eval_const_fns(bound, context.constant_integers, context.functions, 0)
     };
-    let Some((left, right)) = (match index.as_ref() {
+    let Some((left, right)) = (match index {
         ast::Expr::Range { lo, hi, .. } => eval(lo).zip(eval(hi)),
         width => eval(width).map(|width| (width - 1, 0)),
     }) else {
@@ -4895,8 +5668,9 @@ fn lower_process_family_from(
         elem,
         family: Some(family),
         len,
+        low: 0,
     };
-    let Some(mut layout) = process_layout_for_type(&target_type, *span, context) else {
+    let Some(mut layout) = process_layout_for_type(&target_type, span, context) else {
         truncate_process_values(context, first_value);
         return None;
     };
@@ -4905,7 +5679,7 @@ fn lower_process_family_from(
         *range = Some(crate::ir::LayoutRange { left, right });
     }
     let format = push_value(
-        *span,
+        span,
         Some(target_type.clone()),
         Some(len),
         ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
@@ -4913,23 +5687,93 @@ fn lower_process_family_from(
     );
     context.process_ir.value_layouts[format.0 as usize] = Some(layout);
     context.self_formats.push(format);
+    // Only a result of the type itself (`-> ufixed`, `-> Self`) is a word of
+    // the format; `-> integer` keeps its own width.
+    let in_format = function
+        .ret
+        .as_ref()
+        .and_then(crate::ir::lower_helpers::type_head_name)
+        .is_some_and(|head| {
+            head == "Self"
+                || matches!(&target_type, crate::types::Ty::Array { family: Some(family), .. }
+                    if family.rsplit("::").next() == Some(head))
+        });
     let result = inline_process_function(
         function,
-        *span,
+        span,
         None,
-        &[operand],
+        operands,
         process,
         context,
-        Some(&target_type),
+        if in_format {
+            Some(&target_type)
+        } else {
+            return_type
+        },
     );
     context.self_formats.pop();
     match result {
-        Some(result) => Some(inherit_receiver_layout(result, format, context)),
+        Some(result) if in_format => Some(inherit_receiver_layout(result, format, context)),
+        Some(result) => Some(result),
         None => {
             truncate_process_values(context, first_value);
             None
         }
     }
+}
+
+/// `ufixed<6, 2>::resize(x, ..)`: an associated function called on an
+/// applied type, inlined with `Self` standing for that type's format.
+fn lower_process_qualified_call(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let ast::Expr::Call {
+        callee,
+        qualifier: Some(qualifier),
+        args,
+        bang: false,
+        span,
+        ..
+    } = expression
+    else {
+        return None;
+    };
+    let ast::Type::Indexed {
+        base,
+        index: Some(index),
+        ..
+    } = qualifier.as_ref()
+    else {
+        return None;
+    };
+    let ast::Type::Path(path) = base.as_ref() else {
+        return None;
+    };
+    let function = context.functions.get(callee)?;
+    let definition = context.resolved.resolved(path.span)?;
+    let family = context.resolved.qualified_name(definition)?;
+    let first_value = context.process_ir.values.len();
+    let operands: Vec<ProcessValueId> = args
+        .iter()
+        .map(|argument| {
+            let checked = operand_type(argument, process, context);
+            value_ref_with_type(argument, process, context, checked.as_ref())
+        })
+        .collect();
+    inline_with_self_format(
+        function,
+        family,
+        index,
+        &operands,
+        *span,
+        first_value,
+        process,
+        context,
+        return_type,
+    )
 }
 
 /// Lower zero-argument type construction to the type's retained recursive
@@ -4945,6 +5789,7 @@ fn lower_process_default(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -5005,6 +5850,7 @@ fn lower_process_foreign_call(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -5018,6 +5864,27 @@ fn lower_process_foreign_call(
     let function = context.functions.get(callee)?;
     if function.body.is_some() || function.params.iter().any(|parameter| parameter.is_self) {
         return None;
+    }
+    // A `core::intrinsics` function is a native operation, not a call.
+    if let Some(intrinsic) = context.functions.intrinsic(function) {
+        let real = crate::types::Ty::Real;
+        let operands = args
+            .iter()
+            .map(|argument| value_ref_with_type(argument, process, context, Some(&real)))
+            .collect::<Vec<_>>();
+        let kind = match (intrinsic, operands.as_slice()) {
+            (crate::ir::Intrinsic::Real(function), [operand]) => ProcessValueKind::Unary {
+                operation: ProcessUnaryOp::Real(function),
+                operand: *operand,
+            },
+            (crate::ir::Intrinsic::Pow, [left, right]) => ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::FloatPow,
+                left: *left,
+                right: *right,
+            },
+            _ => return None,
+        };
+        return Some(push_value(*span, Some(real), Some(64), kind, context));
     }
     let parameters = function
         .params
@@ -5079,6 +5946,7 @@ fn lower_process_host_call(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -5149,6 +6017,7 @@ fn lower_process_file_call(
     let ast::Expr::Call {
         callee,
         type_args,
+        qualifier: None,
         args,
         bang: false,
         span,
@@ -5193,6 +6062,7 @@ fn lower_process_file_call(
         elem: Box::new(crate::types::Ty::Char),
         family: None,
         len: u32::try_from(path.chars().count()).ok()?,
+        low: 0,
     };
     let path_kind = ProcessValueKind::String(path);
     let path_width = source_value_width(&path_kind, Some(&path_type), process, context);
@@ -5206,6 +6076,7 @@ fn lower_process_file_call(
             elem: Box::new(crate::types::Ty::Char),
             family: None,
             len: 0,
+            low: 0,
         }),
         ProcessHostValueOp::FileExists => bool_type(context.resolved),
         _ => None,
@@ -5974,6 +6845,7 @@ fn process_array_elements(
         elem,
         len,
         family: None,
+        ..
     } = ty
     else {
         return None;
@@ -6080,11 +6952,13 @@ fn inline_process_array_binary_operator(
             elem: left_element,
             len: left_len,
             family: None,
+            ..
         },
         crate::types::Ty::Array {
             elem: right_element,
             len: right_len,
             family: None,
+            ..
         },
     ) = (left_type, right_type)
     else {
@@ -6255,6 +7129,16 @@ fn inline_process_binary_operator(
         right_type.as_ref().or(Some(&left_type))
     };
     let right = value_ref_with_type(rhs, process, context, right_context);
+    // An operator declared to return its own type (`-> float`, `-> Self`)
+    // returns the left operand's, also where the checker recorded none (an
+    // argument of a conversion): `float`'s bodies compute in kernel words,
+    // and that word's type must not stand in for the format.
+    let own_type = function
+        .ret
+        .as_ref()
+        .and_then(crate::ir::lower_helpers::type_head_name)
+        .is_some_and(|head| head == "Self" || owner.rsplit("::").next() == Some(head));
+    let return_type = return_type.or(own_type.then_some(&left_type));
     let result = inline_process_function(
         function,
         ast::expr_span(lhs),
@@ -6722,7 +7606,9 @@ fn inline_pattern_condition(
             }
             return Some(condition);
         }
-        ast::Pattern::BitPattern { .. } | ast::Pattern::Range { .. } => return None,
+        ast::Pattern::BitPattern { .. }
+        | ast::Pattern::Range { .. }
+        | ast::Pattern::Bounds { .. } => return None,
     };
     let scrutinee_node = context.process_ir.values.get(scrutinee.0 as usize)?;
     let candidate = push_value(
@@ -6790,10 +7676,9 @@ fn inline_select_value(
         },
         context,
     );
-    context
-        .inline_value_branches
-        .last_mut()?
-        .push((selection, [then_span, else_span]));
+    if let Some(branches) = context.inline_value_branches.last_mut() {
+        branches.push((selection, [then_span, else_span]));
+    }
     Some((selection, span))
 }
 
@@ -6806,7 +7691,10 @@ fn contextual_string_bits(
     process: &ProcessCfg,
     context: &LoweringContext<'_>,
 ) -> Option<(u32, Vec<u64>)> {
-    let crate::types::Ty::Array { elem, len, family } = ty? else {
+    let crate::types::Ty::Array {
+        elem, len, family, ..
+    } = ty?
+    else {
         return None;
     };
     if matches!(elem.as_ref(), crate::types::Ty::Char) {
@@ -6892,6 +7780,9 @@ fn value_ref_with_type(
     context: &mut LoweringContext<'_>,
     contextual_type: Option<&crate::types::Ty>,
 ) -> crate::ir::ProcessValueId {
+    if let Some(value) = process_promoted_operand(expression, process, context) {
+        return value;
+    }
     let value = value_ref_with_type_inner(expression, process, context, contextual_type);
     // A kernel integer widens into `real` by value (language §3.17's one
     // implicit promotion): convert it, rather than reading its bits as f64.
@@ -7005,6 +7896,11 @@ fn value_ref_with_type_inner(
             let width = source_value_width(&kind, ty.as_ref(), process, context);
             return push_value(span, ty, width, kind, context);
         }
+        // A family's `From` impl for the argument's type comes before the
+        // kernel's raw resize (spec 3.17): `signed[16](s)` sign-extends.
+        if let Some(value) = lower_process_family_from(expression, process, context, ty.as_ref()) {
+            return value;
+        }
         if let Some(value) = lower_process_kernel_conversion(expression, process, context) {
             return value;
         }
@@ -7013,7 +7909,8 @@ fn value_ref_with_type_inner(
         {
             return value;
         }
-        if let Some(value) = lower_process_family_from(expression, process, context, ty.as_ref()) {
+        if let Some(value) = lower_process_qualified_call(expression, process, context, ty.as_ref())
+        {
             return value;
         }
         if let Some(value) = lower_process_raw_resize(expression, process, context, ty.as_ref()) {
@@ -7041,6 +7938,11 @@ fn value_ref_with_type_inner(
     // graph; an arbitrary source symbol must never become an LLVM opcode.
     match expression {
         ast::Expr::Binary { op, lhs, rhs, .. } => {
+            if let Some(value) =
+                lower_process_real_promotion(op, lhs, rhs, span, process, context, ty.as_ref())
+            {
+                return value;
+            }
             if let Some(value) =
                 inline_process_binary_operator(op, lhs, rhs, process, context, ty.as_ref())
             {
@@ -7432,6 +8334,44 @@ fn value_ref_with_type_inner(
         } => {
             let scrutinee_type = context.typed.expr_type(ast::expr_span(scrutinee)).cloned();
             let scrutinee = value_ref(scrutinee, process, context);
+            // Arms that are conditions (`match_needs_guards`) fold into a
+            // first-match chain of selects, last arm innermost.
+            if match_needs_guards(arms, scrutinee_type.as_ref(), context) {
+                // Without a `_`, the arms are taken to cover the scrutinee
+                // (the checker says when they do not): the last one is the
+                // fallback rather than a value no arm produces.
+                let mut result = (missing_value(span, context), span);
+                let covered = !arms.iter().any(|arm| pattern_has_wildcard(&arm.pattern));
+                for (position, arm) in arms.iter().enumerate().rev() {
+                    let last = covered && position + 1 == arms.len();
+                    let value = match arm.value_expr() {
+                        Some(value) => (
+                            value_ref_with_type(value, process, context, ty.as_ref()),
+                            ast::expr_span(value),
+                        ),
+                        None => (missing_value(arm.span, context), arm.span),
+                    };
+                    result = if last || pattern_has_wildcard(&arm.pattern) {
+                        value
+                    } else {
+                        let Some(condition) = pattern_condition(
+                            &arm.pattern,
+                            scrutinee,
+                            scrutinee_type.as_ref(),
+                            arm.span,
+                            process,
+                            context,
+                        ) else {
+                            return unsupported_process_value(span, ty.as_ref(), context);
+                        };
+                        inline_select_value(arm.span, condition, value, result, context)
+                            .unwrap_or_else(|| {
+                                (unsupported_process_value(span, ty.as_ref(), context), span)
+                            })
+                    };
+                }
+                return result.0;
+            }
             let arms = arms
                 .iter()
                 .map(|arm| {
@@ -7644,21 +8584,48 @@ fn value_ref_with_type_inner(
             .locals
             .get(local.0 as usize)
             .and_then(|local| local.layout.clone()),
-        ProcessValueKind::Call { arguments, .. } => match expression {
-            ast::Expr::Call { callee, .. } => context.functions.get(callee).and_then(|function| {
-                unsized_call_layout(
-                    function,
-                    ast::expr_span(expression),
-                    arguments,
-                    process,
-                    context,
-                )
-            }),
+        ProcessValueKind::Call {
+            callee: callee_value,
+            arguments,
+            ..
+        } => match expression {
+            // A deferred method call returning its receiver's type has the
+            // receiver's format, as an inlined one does (`x.sqrt().to_real()`
+            // reads the result's `self'high`).
+            ast::Expr::Call { callee, .. } => match (
+                callee.as_ref(),
+                &context.process_ir.values[callee_value.0 as usize].kind,
+            ) {
+                (ast::Expr::Field { field, .. }, ProcessValueKind::Field { base, .. }) => {
+                    let receiver = *base;
+                    process_value_type(receiver, context)
+                        .and_then(|ty| process_type_key(&ty, context))
+                        .and_then(|owner| context.functions.get_associated(&owner, &field.text))
+                        .filter(|function| returns_receiver_type(function, receiver, context))
+                        .and_then(|_| {
+                            process_value_source_layout(receiver, context.process_ir).cloned()
+                        })
+                }
+                _ => context.functions.get(callee).and_then(|function| {
+                    unsized_call_layout(
+                        function,
+                        ast::expr_span(expression),
+                        arguments,
+                        process,
+                        context,
+                    )
+                }),
+            },
             _ => None,
         },
         _ => None,
     };
-    let width = width.or_else(|| local_layout.as_ref().and_then(SourceLayout::packed_width));
+    let width = match (&kind, &local_layout) {
+        (ProcessValueKind::Call { .. }, Some(layout)) if layout.packed_width().is_some() => {
+            layout.packed_width()
+        }
+        _ => width.or_else(|| local_layout.as_ref().and_then(SourceLayout::packed_width)),
+    };
     let id = push_value(span, ty, width, kind, context);
     if local_layout.is_some() {
         context.process_ir.value_layouts[id.0 as usize] = local_layout;
@@ -7903,11 +8870,22 @@ fn source_value_width(
                     left,
                     right,
                 } => Some(value_width(left)?.max(value_width(right)?)),
+                // A constant shifted by a constant keeps every bit (`1 << 100`
+                // is multiword); any other kernel integer keeps its width, so
+                // `(1 << f) + x` stays the word its local is declared as.
                 ProcessValueKind::Binary {
                     operation: ProcessBinaryOp::Shl,
                     left,
                     right,
-                } => shifted_width(value_width(left)?, *right, context),
+                } => match crate::ir::process::arena_constant_integer(
+                    *left,
+                    &context.process_ir.values,
+                ) {
+                    Some(constant) if constant >= 0 => {
+                        shifted_width((128 - constant.leading_zeros()).max(1), *right, context)
+                    }
+                    _ => value_width(left),
+                },
                 ProcessValueKind::Select {
                     then_value,
                     else_value,
@@ -7959,7 +8937,9 @@ fn source_value_width(
             .get(table.0)
             .map(|table| table.element_width),
         ProcessValueKind::Unary { operation, operand } => match operation {
-            ProcessUnaryOp::RealToInteger | ProcessUnaryOp::IntegerToReal => Some(64),
+            ProcessUnaryOp::RealToInteger
+            | ProcessUnaryOp::IntegerToReal
+            | ProcessUnaryOp::Real(_) => Some(64),
             ProcessUnaryOp::Neg | ProcessUnaryOp::Not => value_width(operand),
         },
         ProcessValueKind::RawResize { operand } | ProcessValueKind::InlineCall { operand, .. } => {
@@ -7990,7 +8970,8 @@ fn source_value_width(
             | ProcessBinaryOp::FloatSub
             | ProcessBinaryOp::FloatMul
             | ProcessBinaryOp::FloatDiv
-            | ProcessBinaryOp::FloatRem => Some(64),
+            | ProcessBinaryOp::FloatRem
+            | ProcessBinaryOp::FloatPow => Some(64),
             ProcessBinaryOp::Shl => shifted_width(value_width(left)?, *right, context),
             _ => Some(value_width(left)?.max(value_width(right)?)),
         },
@@ -8199,6 +9180,7 @@ fn is_float_operation(operation: &ProcessBinaryOp) -> bool {
             | ProcessBinaryOp::FloatMul
             | ProcessBinaryOp::FloatDiv
             | ProcessBinaryOp::FloatRem
+            | ProcessBinaryOp::FloatPow
             | ProcessBinaryOp::FloatEq
             | ProcessBinaryOp::FloatNe
             | ProcessBinaryOp::FloatLt
@@ -8206,6 +9188,67 @@ fn is_float_operation(operation: &ProcessBinaryOp) -> bool {
             | ProcessBinaryOp::FloatGt
             | ProcessBinaryOp::FloatGe
     )
+}
+
+/// `real op x` (or `x op real`) for an `x` whose type has `impl From<S> for
+/// real`: `x` promotes to `real` through that conversion, the top of the
+/// numeric ladder, and the operation is the float one. `None` when the
+/// operands do not mix `real` with such a type; an `integer` side keeps its
+/// own coercion.
+fn lower_process_real_promotion(
+    op: &ast::BinOp,
+    lhs: &ast::Expr,
+    rhs: &ast::Expr,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    ty: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    let real = crate::types::Ty::Real;
+    let left_type = operand_type(lhs, process, context);
+    let right_type = operand_type(rhs, process, context);
+    let left_real = matches!(left_type, Some(crate::types::Ty::Real));
+    if left_real == matches!(right_type, Some(crate::types::Ty::Real)) {
+        return None;
+    }
+    let (other, other_type, real_side) = if left_real {
+        (rhs, right_type, lhs)
+    } else {
+        (lhs, left_type, rhs)
+    };
+    let function = other_type
+        .as_ref()
+        .filter(|ty| !matches!(ty, crate::types::Ty::Integer))
+        .and_then(|ty| process_type_key(ty, context))
+        .and_then(|key| context.functions.get_conversion("real", &key))?;
+    let first_value = context.process_ir.values.len();
+    let other_value = value_ref_with_type(other, process, context, other_type.as_ref());
+    let Some(converted) = inline_process_function(
+        function,
+        span,
+        None,
+        &[other_value],
+        process,
+        context,
+        Some(&real),
+    ) else {
+        truncate_process_values(context, first_value);
+        return None;
+    };
+    let real_value = value_ref_with_type(real_side, process, context, Some(&real));
+    let (left, right) = if left_real {
+        (real_value, converted)
+    } else {
+        (converted, real_value)
+    };
+    let kind = ProcessValueKind::Binary {
+        operation: lower_binary_operator(op, Some(&real), Some(&real)),
+        left,
+        right,
+    };
+    let ty = ty.cloned().or(Some(real));
+    let width = source_value_width(&kind, ty.as_ref(), process, context);
+    Some(push_value(span, ty, width, kind, context))
 }
 
 fn lower_binary_operator(
@@ -8387,6 +9430,7 @@ mod tests {
             elem: Box::new(crate::types::Ty::Error),
             len: 8,
             family: Some("Format".into()),
+            low: 0,
         };
         let layout = SourceLayout {
             span,
@@ -8432,6 +9476,8 @@ mod tests {
             constant_integers: &Default::default(),
             value_bindings: vec![],
             self_formats: vec![],
+
+            widening: std::collections::HashSet::new(),
             inline_self_values: vec![],
             inline_return_types: vec![],
             inline_return_blocks: vec![],

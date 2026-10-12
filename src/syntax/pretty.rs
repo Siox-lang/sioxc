@@ -423,6 +423,7 @@ impl Printer {
             }
             ImplItem::Stmt(s) => self.stmt(s),
             ImplItem::AttrBinding(b) => self.attr_binding(b),
+            ImplItem::Attr(a) => self.attr_decl(a),
         }
     }
 
@@ -456,8 +457,13 @@ impl Printer {
             .as_ref()
             .map(|d| format!(" = {}", expr(d)))
             .unwrap_or_default();
+        let targets = if targets.is_empty() {
+            String::new()
+        } else {
+            format!(" for {targets}")
+        };
         self.line(&format!(
-            "{kw}attr {}: {} for {targets}{default};",
+            "{kw}attr {}: {}{targets}{default};",
             a.name.text,
             type_str(&a.ty)
         ));
@@ -774,6 +780,7 @@ fn impl_item_span(item: &ImplItem) -> crate::diag::Span {
         ImplItem::Process(p) => p.span,
         ImplItem::Stmt(s) => stmt_span(s),
         ImplItem::AttrBinding(b) => b.span,
+        ImplItem::Attr(a) => a.span,
     }
 }
 
@@ -873,6 +880,14 @@ fn pattern(p: &Pattern) -> String {
         Pattern::Or { alts, .. } => alts.iter().map(pattern).collect::<Vec<_>>().join(" | "),
         Pattern::Range { lo, hi, .. } if lo == hi => lo.to_string(),
         Pattern::Range { lo, hi, .. } => format!("{lo}..{hi}"),
+        Pattern::Bounds { lo, hi, .. } => match (lo, hi) {
+            (Some(lo), Some(hi)) if expr_string(lo) == expr_string(hi) => expr_string(lo),
+            (lo, hi) => format!(
+                "{}..{}",
+                lo.as_deref().map(expr_string).unwrap_or_default(),
+                hi.as_deref().map(expr_string).unwrap_or_default()
+            ),
+        },
         Pattern::CharLit { ch, .. } => format!("'{ch}'"),
     }
 }
@@ -1073,10 +1088,19 @@ fn expr_inner(e: &Expr) -> (String, u8) {
         Expr::Call {
             callee,
             type_args,
+            qualifier,
             args,
             bang,
             span,
         } => {
+            if let (Some(qualifier), Expr::Path(path)) = (qualifier, callee.as_ref()) {
+                let a = args.iter().map(expr).collect::<Vec<_>>().join(", ");
+                let name = path.segments.last().map_or("", |s| s.text.as_str());
+                return (
+                    format!("{}::{name}({a})", type_str(qualifier)),
+                    POSTFIX_PREC,
+                );
+            }
             if *bang {
                 if let Some(args) = macro_call_args(*span) {
                     return (

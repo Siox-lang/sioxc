@@ -77,6 +77,7 @@ impl<'a> Checker<'a> {
                     elem: Box::new(self.ty_from_head("Logic")),
                     family: Some(self.array_family_key("unsigned")),
                     len: crate::syntax::radix_digits(digits).count() as u32 * bits,
+                    low: 0,
                 }
             }
             // A char literal defaults to `Char`; an annotation/target
@@ -87,6 +88,7 @@ impl<'a> Checker<'a> {
                 elem: Box::new(Ty::Char),
                 len: text.chars().count() as u32,
                 family: None,
+                low: 0,
             },
             Expr::Path(p) => {
                 if let Some(ty) = self
@@ -135,7 +137,9 @@ impl<'a> Checker<'a> {
                 "old" => self.type_of(base, sym),
                 "length" | "high" | "low" | "left" | "right" => Ty::Integer,
                 "ascending" => self.ty_from_head("Bool"),
-                _ => Ty::Error,
+                name => self
+                    .type_attr(base, name, sym)
+                    .map_or(Ty::Error, |(_, declaration)| self.ast_ty(&declaration.ty)),
             },
             Expr::Binary { op, lhs, rhs, .. } => {
                 if is_comparison(op) {
@@ -143,6 +147,15 @@ impl<'a> Checker<'a> {
                 }
                 let lhs_ty = self.type_of(lhs, sym);
                 let rhs_ty = self.type_of(rhs, sym);
+                // Mixed numbers promote (spec 3.17).
+                if matches!(
+                    op,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem
+                ) {
+                    if let Some(promoted) = self.numeric_promotion(&lhs_ty, &rhs_ty) {
+                        return promoted;
+                    }
+                }
                 let op_str = crate::syntax::pretty::bin_op(op);
                 let contextual_rhs =
                     Self::is_contextual_literal(rhs) && self.assignable(&lhs_ty, rhs, sym);
@@ -239,6 +252,7 @@ impl<'a> Checker<'a> {
                 elem: Box::new(self.ty_from_head("Logic")),
                 family: Some(self.array_family_key("unsigned")),
                 len: 0,
+                low: 0,
             },
             // An array literal: element type from the first element, length
             // from the count.
@@ -251,6 +265,7 @@ impl<'a> Checker<'a> {
                     elem: Box::new(elem),
                     len: elems.len() as u32,
                     family: None,
+                    low: 0,
                 }
             }
             Expr::Range { .. } | Expr::PartialRange { .. } => self.ty_from_head("Range"),
@@ -270,6 +285,7 @@ impl<'a> Checker<'a> {
                                 elem: elem.clone(),
                                 family: family.clone(),
                                 len: width,
+                                low: 0,
                             }
                         }
                     }
@@ -316,7 +332,12 @@ impl<'a> Checker<'a> {
             }
             // Conversion expressions type as their target (spec 3.17):
             // `unsigned[16](x)`, `signed[8](x)`, `integer(x)`, `resize(x, n)`.
-            Expr::Call { callee, args, .. } => match callee.as_ref() {
+            Expr::Call {
+                callee,
+                args,
+                qualifier,
+                ..
+            } => match callee.as_ref() {
                 Expr::Index { base, index, .. } => {
                     let head = match base.as_ref() {
                         Expr::Path(path) => self.path_key(path),
@@ -328,6 +349,7 @@ impl<'a> Checker<'a> {
                             elem: Box::new(self.array_element_ty(&head)),
                             family: Some(head),
                             len: w,
+                            low: 0,
                         },
                         None => Ty::Error,
                     }
@@ -360,6 +382,7 @@ impl<'a> Checker<'a> {
                             elem: Box::new(self.ty_from_head("Logic")),
                             family,
                             len: w,
+                            low: 0,
                         }
                     }
                     _ => self.free_call_return_type(p, args, sym),
@@ -371,6 +394,20 @@ impl<'a> Checker<'a> {
                         .unwrap_or_else(|| owner_segment.text.clone());
                     let name = &path.segments[path.segments.len() - 1].text;
                     match self.methods.get(&(owner.clone(), name.clone())) {
+                        // `ufixed<6, 2>::resize(x)`: the applied type is
+                        // `Self`, and so is a result of the bare family.
+                        Some(Some(ret)) if qualifier.is_some() => {
+                            let applied = qualifier
+                                .as_deref()
+                                .map_or(Ty::Error, |qualifier| self.ast_ty(qualifier));
+                            if matches!(ret, Type::Path(_))
+                                && self.type_key(ret).as_deref() == Some(owner.as_str())
+                            {
+                                applied
+                            } else {
+                                self.ast_ty_for_owner(ret, &applied)
+                            }
+                        }
                         Some(Some(ret)) => self.ast_ty_for_owner(ret, &self.ty_from_head(&owner)),
                         Some(None) => Ty::Void,
                         None if name == "new" && self.is_conversion_name(&owner) => {

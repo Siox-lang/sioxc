@@ -1,5 +1,8 @@
 module std::fixed;
 
+use std::math::Sqrt;
+use std::numeric::{Overflow, Rounding};
+
 
 // Fixed-point numbers, after VHDL-2008's `fixed_pkg`. The parameters are the
 // format: W bits in all, F of them fraction.
@@ -55,20 +58,40 @@ impl Ord<ufixed> for ufixed {
 // Each format prints as its value, with the caller's precision.
 impl Display for ufixed {
     fn fmt(self, f: Formatter) {
-        write!(f, "{}", self.to_real());
+        write!(f, "{}", real(self));
     }
 }
 
 impl Display for sfixed {
     fn fmt(self, f: Formatter) {
-        write!(f, "{}", self.to_real());
+        write!(f, "{}", real(self));
     }
 }
 
 impl ufixed {
-    // The number this holds.
-    pub fn to_real(self) -> real {
-        return real(word(self)) / real(1 << (0 - self'low));
+    // The format: `x'integers` bits above the binary point, `x'fractions`
+    // below it (4 and 4 for `ufixed<8, 4>`).
+    pub attr integers: integer = self'high + 1;
+    pub attr fractions: integer = 0 - self'low;
+}
+
+// `real(x)`: the number a fixed-point value holds.
+impl From<ufixed> for real {
+    fn from(value: ufixed) -> real {
+        return real(word(value)) / real(1 << (0 - value'low));
+    }
+}
+
+// `std::math::sqrt(x)`: the root rounded to the nearest step (ties away from
+// zero) and saturated, as the constructors round. The radicand needs
+// `W + F + 2` bits of the 64-bit kernel word.
+impl Sqrt for ufixed {
+    fn sqrt(self) -> ufixed {
+        return clamp(
+            (isqrt(word(self) << (2 - self'low), self) + 1) >> 1,
+            0,
+            largest(self'high, self'low, false)
+        );
     }
 }
 
@@ -122,9 +145,26 @@ impl Ord<sfixed> for sfixed {
 }
 
 impl sfixed {
-    // The number this holds.
-    pub fn to_real(self) -> real {
-        return real(sext_word(word(self), self'length)) / real(1 << (0 - self'low));
+    // The format: `x'integers` bits above the binary point, the sign
+    // included, and `x'fractions` below it.
+    pub attr integers: integer = self'high + 1;
+    pub attr fractions: integer = 0 - self'low;
+}
+
+impl From<sfixed> for real {
+    fn from(value: sfixed) -> real {
+        return real(sext_word(word(value), value'length)) / real(1 << (0 - value'low));
+    }
+}
+
+// A negative number has no root; fixed point has no NaN, so it is zero.
+impl Sqrt for sfixed {
+    fn sqrt(self) -> sfixed {
+        let n: integer = sext_word(word(self), self'length);
+        if n <= 0 { return 0; }
+        return clamp(
+            (isqrt(n << (2 - self'low), self) + 1) >> 1, 0, largest(self'high, self'low, true)
+        );
     }
 }
 
@@ -137,8 +177,10 @@ impl From<real> for ufixed {
     fn from(value: real) -> ufixed { return ufixed_word(value, Self'high, Self'low); }
 }
 
+// An integer is exact wherever it fits (`s + 1` adds 1.0) and saturates
+// beyond: integer arithmetic, so it lowers to hardware.
 impl From<integer> for ufixed {
-    fn from(value: integer) -> ufixed { return ufixed_word(real(value), Self'high, Self'low); }
+    fn from(value: integer) -> ufixed { return rescale(value, 0, Self'high, Self'low, false); }
 }
 
 impl From<real> for sfixed {
@@ -146,25 +188,116 @@ impl From<real> for sfixed {
 }
 
 impl From<integer> for sfixed {
-    fn from(value: integer) -> sfixed { return sfixed_word(real(value), Self'high, Self'low); }
+    fn from(value: integer) -> sfixed { return rescale(value, 0, Self'high, Self'low, true); }
 }
 
 // --- between formats ---------------------------------------------------------
 
-// `ufixed<12, 6>(x)` from another `ufixed`, `sfixed<8, 4>(y)` from another
-// `sfixed`: rounded to the nearest step (ties away from zero) and saturated.
+// `ufixed<12, 6>(x)` from another format, `sfixed<13, 4>(u)` from an
+// `unsigned`: rounded to the nearest step (ties away from zero) and
+// saturated. Into a format that holds every value of the source's (as
+// numeric promotion converts, spec 3.17) only the binary point moves and the
+// sign extends: the test is on formats, so hardware keeps just the wiring.
 impl From<ufixed> for ufixed {
     fn from(value: ufixed) -> ufixed {
+        if Self'low <= value'low and Self'high >= value'high {
+            return word(value) << (value'low - Self'low);
+        }
         return rescale(word(value), 0 - value'low, Self'high, Self'low, false);
     }
 }
 
 impl From<sfixed> for sfixed {
     fn from(value: sfixed) -> sfixed {
-        return rescale(
-            sext_word(word(value), value'length), 0 - value'low, Self'high, Self'low, true
+        let n: integer = sext_word(word(value), value'length);
+        if Self'low <= value'low and Self'high >= value'high {
+            return n << (value'low - Self'low);
+        }
+        return rescale(n, 0 - value'low, Self'high, Self'low, true);
+    }
+}
+
+impl From<ufixed> for sfixed {
+    fn from(value: ufixed) -> sfixed {
+        if Self'low <= value'low and Self'high > value'high {
+            return word(value) << (value'low - Self'low);
+        }
+        return rescale(word(value), 0 - value'low, Self'high, Self'low, true);
+    }
+}
+
+impl From<unsigned> for ufixed {
+    fn from(value: unsigned) -> ufixed {
+        if Self'low <= 0 and Self'high >= value'length - 1 {
+            return word(value) << (0 - Self'low);
+        }
+        return rescale(word(value), 0, Self'high, Self'low, false);
+    }
+}
+
+impl From<unsigned> for sfixed {
+    fn from(value: unsigned) -> sfixed {
+        if Self'low <= 0 and Self'high >= value'length {
+            return word(value) << (0 - Self'low);
+        }
+        return rescale(word(value), 0, Self'high, Self'low, true);
+    }
+}
+
+impl From<signed> for sfixed {
+    fn from(value: signed) -> sfixed {
+        let n: integer = sext_word(word(value), value'length);
+        if Self'low <= 0 and Self'high >= value'length - 1 {
+            return n << (0 - Self'low);
+        }
+        return rescale(n, 0, Self'high, Self'low, true);
+    }
+}
+
+// `ufixed<6, 2>::resize(x, Overflow::Wrap, Rounding::Truncate)`: `x` in the
+// format `Self` names, with VHDL's resize styles chosen explicitly. Wrap with
+// truncate is a plain bit selection; the constructor `ufixed<6, 2>(x)` is
+// saturate with round to nearest.
+impl ufixed {
+    pub fn resize(value: ufixed, overflow: Overflow, rounding: Rounding) -> ufixed {
+        return restyle(
+            word(value), 0 - value'low, Self'high, Self'low, false, overflow, rounding
         );
     }
+}
+
+impl sfixed {
+    pub fn resize(value: sfixed, overflow: Overflow, rounding: Rounding) -> sfixed {
+        return restyle(
+            sext_word(word(value), value'length), 0 - value'low, Self'high, Self'low, true,
+            overflow, rounding
+        );
+    }
+}
+
+// `rescale` with explicit styles. A wrapped value keeps the low bits of the
+// format, as a two's-complement word.
+fn restyle(
+    n: integer, fraction: integer, left: integer, right: integer, is_signed: Bool,
+    overflow: Overflow, rounding: Rounding
+) -> integer {
+    let scaled: integer = if rounding == Rounding::Truncate {
+        floor_scale(n, fraction, right)
+    } else {
+        scale(n, fraction, right)
+    };
+    if overflow == Overflow::Wrap {
+        let width: integer = left - right + 1;
+        return scaled - ((scaled >> width) << width);
+    }
+    return clamp(scaled, smallest(left, right, is_signed), largest(left, right, is_signed));
+}
+
+// `n` with `fraction` fraction bits, as steps of `2^right`, rounded toward
+// minus infinity.
+fn floor_scale(n: integer, fraction: integer, right: integer) -> integer {
+    if 0 - right >= fraction { return n << (0 - right - fraction); }
+    return floor_div(n, 1 << (fraction + right));
 }
 
 // The number `n`, with `fraction` fraction bits, in the format
@@ -200,6 +333,25 @@ fn clamp(v: integer, lo: integer, hi: integer) -> integer {
 }
 
 // --- helpers -------------------------------------------------------------------
+
+// `floor(sqrt(r))` for `r` below `2^(W + F + 2)`, `format`'s `W` bits and `F`
+// fraction bits: digit by digit, one root bit per step. The bound comes from
+// `format`'s shape, so hardware unrolls it.
+fn isqrt<T>(r: integer, format: T) -> integer {
+    let rest: integer = r;
+    let root: integer = 0;
+    let one: integer = 1 << (2 * ((format'length - format'low + 1) / 2));
+    for k in 0..(format'length - format'low + 1) / 2 {
+        if rest >= root + one {
+            rest = rest - (root + one);
+            root = (root >> 1) + one;
+        } else {
+            root = root >> 1;
+        }
+        one = one >> 2;
+    }
+    return root;
+}
 
 // `n / 2^k` rounded to the nearest integer, ties away from zero.
 fn round_shift(n: integer, k: integer) -> integer {

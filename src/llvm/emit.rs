@@ -2873,6 +2873,34 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         self.emit_at(e, self.expr_width(e))
     }
 
+    /// Call the LLVM intrinsic `name` (`llvm.sqrt.f64`) on f64 operands.
+    #[cfg(test)]
+    fn real_intrinsic(
+        &self,
+        name: &str,
+        operands: &[inkwell::values::FloatValue<'ctx>],
+    ) -> inkwell::values::FloatValue<'ctx> {
+        let float = self.ctx.f64_type();
+        let function = self.module.get_function(name).unwrap_or_else(|| {
+            let parameters = vec![float.into(); operands.len()];
+            self.module
+                .add_function(name, float.fn_type(&parameters, false), None)
+        });
+        let arguments = operands
+            .iter()
+            .map(|operand| (*operand).into())
+            .collect::<Vec<inkwell::values::BasicMetadataValueEnum>>();
+        let inkwell::values::ValueKind::Basic(result) = self
+            .builder
+            .build_call(function, &arguments, "real.fn")
+            .unwrap()
+            .try_as_basic_value()
+        else {
+            unreachable!("an f64 intrinsic returns a value")
+        };
+        result.into_float_value()
+    }
+
     /// Emit an expression at `width`, extending or truncating as needed.
     #[cfg(test)]
     fn emit_at(&self, e: &Expr, width: u32) -> IntValue<'ctx> {
@@ -2947,6 +2975,26 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                         let bits = self
                             .builder
                             .build_bit_cast(f, self.ctx.i64_type(), "rbits")
+                            .unwrap()
+                            .into_int_value();
+                        self.fit(bits, self.value_ty(width))
+                    }
+                    // A built-in `real` function: its LLVM intrinsic on the
+                    // operand's f64 bits.
+                    UnOp::Real(function) => {
+                        let x = self
+                            .builder
+                            .build_bit_cast(
+                                self.fit(a, self.ctx.i64_type()),
+                                self.ctx.f64_type(),
+                                "rarg",
+                            )
+                            .unwrap()
+                            .into_float_value();
+                        let y = self.real_intrinsic(function.llvm_name(), &[x]);
+                        let bits = self
+                            .builder
+                            .build_bit_cast(y, self.ctx.i64_type(), "rbits")
                             .unwrap()
                             .into_int_value();
                         self.fit(bits, self.value_ty(width))
@@ -3171,7 +3219,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
         // Float ops reinterpret the i64 words as f64.
         if matches!(
             op,
-            BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv | BinOp::FRem
+            BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv | BinOp::FRem | BinOp::FPow
         ) {
             let f = self.ctx.f64_type();
             let a = self
@@ -3189,6 +3237,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 BinOp::FSub => self.builder.build_float_sub(a, b, "fsub").unwrap(),
                 BinOp::FMul => self.builder.build_float_mul(a, b, "fmul").unwrap(),
                 BinOp::FRem => self.builder.build_float_rem(a, b, "frem").unwrap(),
+                BinOp::FPow => self.real_intrinsic("llvm.pow.f64", &[a, b]),
                 _ => self.builder.build_float_div(a, b, "fdiv").unwrap(),
             };
             return self
@@ -3442,7 +3491,9 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             BinOp::SLe => cmp(IntPredicate::SLE, "sle"),
             BinOp::SGt => cmp(IntPredicate::SGT, "sgt"),
             BinOp::SGe => cmp(IntPredicate::SGE, "sge"),
-            BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv | BinOp::FRem => unreachable!(),
+            BinOp::FAdd | BinOp::FSub | BinOp::FMul | BinOp::FDiv | BinOp::FRem | BinOp::FPow => {
+                unreachable!()
+            }
             BinOp::FEq | BinOp::FNe | BinOp::FLt | BinOp::FLe | BinOp::FGt | BinOp::FGe => {
                 unreachable!()
             }
