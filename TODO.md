@@ -126,13 +126,6 @@ listed under LLVM and Output below.
 Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
-- 🔴 **Integer locals returned as a family.** In a testbench, a method
-  declared `-> float` that returns an `integer` local (`return a;`) on one
-  path fails to lower when its result is then used as a receiver; returning
-  the word as an expression works.
-- 🔴 **Non-constant loop bounds in hardware.** A hardware loop whose bound is
-  not constant once the arguments' shapes are known reports the caller's
-  locals as unknown names instead of naming the bound.
 - 🔴 **Runtime recursion and non-packed conversions.** Extend the currently
   supported inline-call and packed-value contract only with explicit frame,
   ownership, conversion and suspension semantics. Recursive runtime calls are
@@ -295,6 +288,12 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   declaration-owned scalar inspection types. Keep native body-count, actual
   call-count and memory regressions as coverage expands; LLVM ABI types must
   not be inferred from the debugger's read-only inspection representation.
+  Synthesized pure loop selections retain the shared SSA DAG; recorded source
+  returns and fresh calls/checks still use guarded source ranges. Captured
+  native formals do not reexecute their caller dependencies. A restoring-root
+  regression covers this distinction and ordinary/debug VCD parity. Sub-byte
+  scalar returns reuse the byte-normalized register codec so GDB sees the
+  declared enum value instead of undefined upper return-register bits.
   Hardware expression formals now prefer concrete declaration layouts, with
   inspection-only packed operator specializations (including rhs `Self`) kept
   separate from kernel execution shapes. Native GDB checks cover contextual

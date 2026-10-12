@@ -4886,6 +4886,102 @@ assert int(gdb.parse_and_eval('$_exitcode')) == 0
 }
 
 #[test]
+fn pure_loop_muxes_keep_shared_debug_ssa() {
+    let directory =
+        std::env::temp_dir().join(format!("siox_dwarf_loop_mux_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("loop.siox");
+    let text = r#"module debug_loop_mux;
+fn identity(value: integer) -> integer { return value; }
+#[inline(always)]
+fn root(r: integer) -> integer {
+    let rest: integer = r;
+    let root: integer = 0;
+    let one: integer = 1 << 24;
+    for k in 0..12 {
+        if rest >= root + one {
+            rest = rest - (root + one);
+            root = (root >> 1) + one;
+        } else {
+            root = root >> 1;
+        }
+        one = one >> 2;
+    }
+    return (root << 1) + (if rest != 0 { 1 } else { 0 });
+}
+fn wrapped(value: integer) -> integer { return root(identity(value)); }
+entity Probe { value: integer in, result: integer out }
+impl Probe { result = wrapped(value); }
+#[test] entity T {}
+impl T {
+    let value: integer = 16;
+    let probe: Probe = { .value = value };
+    stimulus: process {
+        await 1ns;
+        assert!(probe.result == 8, "exact loop root");
+        value = 17;
+        await 1ns;
+        assert!(probe.result == 9, "loop sticky bit");
+    }
+}
+"#;
+    std::fs::write(&source, text).unwrap();
+    let debug = directory.join("debug.bin");
+    let ordinary = directory.join("ordinary.bin");
+    for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+        command.args(["--std", "std", "--test"]);
+        if debugging {
+            command.arg("--debug");
+        }
+        success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+        success(
+            Command::new(binary)
+                .arg("-o")
+                .arg(binary.with_extension("vcd"))
+                .output()
+                .unwrap(),
+        );
+    }
+    assert_eq!(
+        std::fs::read(debug.with_extension("vcd")).unwrap(),
+        std::fs::read(ordinary.with_extension("vcd")).unwrap()
+    );
+    let ir = success(
+        Command::new(env!("CARGO_BIN_EXE_sioxc"))
+            .args(["--std", "std", "--emit", "llvm-ir", "--debug"])
+            .arg(&source)
+            .output()
+            .unwrap(),
+    );
+    let ir = String::from_utf8(ir.stdout).unwrap();
+    // There are no source-return branches in root: its generated loop muxes
+    // must not clone the shared DAG into debug-only conditional machine arms.
+    assert!(
+        !ir.contains("debug.select.then"),
+        "pure loop created debug branches"
+    );
+    assert!(
+        ir.contains("!DISubprogram") && ir.contains("select i1"),
+        "source frames or shared selects missing"
+    );
+    if Command::new("llvm-dwarfdump")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        success(
+            Command::new("llvm-dwarfdump")
+                .arg("--verify")
+                .arg(&debug)
+                .output()
+                .unwrap(),
+        );
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn direct_dwarf_supports_source_steps_and_persistent_values() {
     let directory = std::env::temp_dir().join(format!("siox_dwarf_{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();

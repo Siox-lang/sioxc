@@ -366,7 +366,8 @@ pub(super) fn process_select<'ctx>(
         cache,
     )?;
     let condition = as_condition(builder, condition)?;
-    if cache.debug.is_some() && !cache.value_frames.is_empty() {
+    let source_frame = cache.debug.is_some() && !cache.value_frames.is_empty();
+    if debug::requires_source_selection(design, cache, id, [then_value, else_value]) {
         return debug::selected_value(
             module,
             builder,
@@ -391,7 +392,8 @@ pub(super) fn process_select<'ctx>(
             },
         );
     }
-    let checked_arms = cache.requires_activity(then_value) || cache.requires_activity(else_value);
+    let checked_arms = !source_frame
+        && (cache.requires_activity(then_value) || cache.requires_activity(else_value));
     let (then_active, else_active) = if !checked_arms {
         (None, None)
     } else {

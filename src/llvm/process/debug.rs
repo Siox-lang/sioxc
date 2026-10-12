@@ -21,8 +21,8 @@ mod parameters;
 mod strings;
 pub(super) use inline_values::{
     active_value, argument_value, call_return, call_value, capture_metadata, capture_value,
-    inline_body, inline_value, literal_value, selected_value, source_return_type, SourceReturn,
-    ValueArguments, ValueFrame, ValueLocationGuard,
+    inline_body, inline_value, literal_value, requires_source_selection, selected_value,
+    source_return_type, SourceReturn, ValueArguments, ValueFrame, ValueLocationGuard,
 };
 use logic::{LogicMirror, LogicSource};
 use parameters::ParameterLocation;

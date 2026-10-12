@@ -937,6 +937,7 @@ fn validate_accepts_good_and_flags_bad_ir() {
         event_blocks: vec![],
         process_ir: Default::default(),
         process_labels: Default::default(),
+        procedural_items: Vec::new(),
         resolved_process_labels: Default::default(),
         enum_bases: HashMap::new(),
         enum_syms: HashMap::new(),

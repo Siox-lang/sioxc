@@ -17552,3 +17552,94 @@ This merge includes upstream 0fa7091, conflict/call-span integration, and the
 previously verified CFG formal companion work. Do not sweep the later untested
 changes into it. Preserve foreign AGENTS12/chat441/.codex, backup branch/stash
 and sibling doc edits. No push; full DWARF completion remains unproven.
+
+### 2026-10-12 — Claude — integer local returned as a family
+
+Branch `fix/small-lowering-bugs`. `narrow_to_type` (source_processes.rs)
+carried the returned value's layout onto the narrowed result whatever its
+width: an `integer` local returned from `-> float` produced a 32-bit value
+with a 64-bit integer layout and failed validation. The layout now carries
+over only at the declared width. `compiler.rs`: a scheduler-projection
+failure after an already-reported error is not echoed as a second failure.
+Next (owner ruling): a non-constant loop bound in hardware is legal for
+simulation and warns; runtime loops in hardware processes/functions are the
+follow-up.
+
+### 2026-10-12 — Claude — hardware loops with non-constant bounds simulate
+
+Branch `feat/procedural-hardware-loops`. Owner ruling: a hardware loop whose
+bound is not constant is legal for simulation and warns (W-P019
+`non_constant_loop_bound`). Mechanism:
+- Hardware lowering flags such a loop (`Lowering::procedural_loop`: inline
+  `for` in calls.rs, process `for` in control.rs). `lower_body` then rolls the
+  item's drivers/event updates and collected name errors back and records it
+  in `Design::procedural_items` (instance path + item span).
+- `source_processes::lower` lowers each recorded item with `lower_process`
+  under the instance path, instance parameters folded as constants, as a
+  `Reactive` procedural CFG sensitive to every signal it reads
+  (`procedural_sensitivity`). Reactive from the start, so writes do not settle.
+**Codex:** `Design` gained `procedural_items` (struct literals need it).
+
+### 2026-10-12 — Codex — resumed DWARF validation and final upstream sync
+
+User authorized latest-main integration and goal is active again. Graph refresh
+3503191 completed exited/success/0, 5512 nodes/15799 edges/258 communities.
+959bac3 integrated fetched 0fa7091 and verified CFG formal companions; docs
+0ab47cf matches it. Two upstream commits landed during verification, now
+bdda008: retain the family's actual-width layout for returned integer locals
+and suppress a cascading projection failure after diagnostics. Integrate this
+small follow-up too, preserving both histories and the uncommitted selection/
+sub-byte ABI fixes and 22nd regression. Temporarily stash shared chat only;
+AGENTS12/.codex and sibling repos stay untouched. Full frozen acceptance follows.
+
+### 2026-10-12 — Codex — latest main frozen at c127af6
+
+Before validation, a read-only remote check found c127af6, including the
+hardware-loop simulation follow-up. Restarted the uncommitted merge against
+that fetched tip and preserved all local tracked changes in safety stash
+b7f2e841eb9d91169c540d73b787924185150307. Restored the DWARF selection guard,
+sub-byte return codec and 22nd regression without staging them for this merge.
+Kept both chat histories; foreign AGENTS12 and historical chat441 stay unstaged.
+Validate the combined worktree with full local CI, then both debug corpora
+and native debugger smokes. No push; full DWARF acceptance remains unproven.
+
+Acceptance is live as siox-job-3000-1791818501710265372-3709483.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791818501710265372-3709483.log.
+Frozen source/test/core hash:
+ea9def3c01f8751eb7eeca9cdd718cc5f2e43a8f7e4dfb833f56895598606731.
+Use the measured 3 GiB gate budget (prior whole-corpus 2 GiB OOM); keep one
+Cargo job. Poll this exact live handle and do not edit Rust during acceptance.
+
+3709483 is terminal failed/exit-code/1: the new upstream hardware-loop
+LoweringContext initializer omits the three source-debug context fields.
+The other five initializers already use None/empty source stacks. Add those
+same defaults to the procedural hardware context; no runtime behavior change.
+The failed build skipped corpus instead of exercising stale binaries.
+
+Corrected frozen acceptance: siox-job-3000-1791818801977310698-3730900.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791818801977310698-3730900.log.
+Source/test/core hash:
+a18900b7c88beae172b827d84630c15515af24370521e54ad16df0fdb2cbea8b.
+Poll this job; no Rust changes while it is live.
+
+Own sibling siox-paper/docs/{architecture,testing}.md for the selection/return
+codec description and restoring-root regression. These documentation-only
+updates do not change the frozen compiler or current acceptance inputs.
+
+3730900 is terminal exited/success/0, peak 2623414272 bytes. Complete local CI
+passed: both full suites (22 DWARF fixtures each), strict frontend/all-target
+Clippy, formatting/artifact gates and both ordinary 239-program corpora.
+Both debug corpora also passed 239/0, including float_sqrt. Native FIFO/wide
+GDB source breakpoints, inspection, stepping and ordinary/debug VCD parity
+passed. Graph update/clustering completed: 5520 nodes/15829 edges/253 communities;
+existing third_party/libfst extraction warnings remain, not compiler failures.
+Working and staged source/test/core hashes both match the frozen accepted
+a18900b7c88beae172b827d84630c15515af24370521e54ad16df0fdb2cbea8b.
+
+Commit the authorized c127af6 integration together with the now-verified owned
+selection/return-codec fixes and 22nd regression. This avoids committing an
+intermediate source snapshot different from the full accepted gate. Message
+names both the upstream integration and local DWARF changes; AGENTS12,
+historical chat441 and .codex remain outside the commit. Companion docs get a
+separate commit. No push requested. Goal stays active: remaining signature/
+companion transport audits are not proved by this finite accepted corpus.

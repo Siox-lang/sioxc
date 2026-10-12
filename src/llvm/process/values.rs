@@ -448,7 +448,8 @@ pub(super) fn process_value_in_layout<'ctx>(
                 cache,
             )?;
             let condition = as_condition(builder, condition)?;
-            if cache.debug.is_some() && !cache.value_frames.is_empty() {
+            let source_frame = cache.debug.is_some() && !cache.value_frames.is_empty();
+            if debug::requires_source_selection(design, cache, id, [*then_value, *else_value]) {
                 debug::selected_value(
                     module,
                     builder,
@@ -472,8 +473,9 @@ pub(super) fn process_value_in_layout<'ctx>(
                     },
                 )?
             } else {
-                let checked_arms =
-                    cache.requires_activity(*then_value) || cache.requires_activity(*else_value);
+                let checked_arms = !source_frame
+                    && (cache.requires_activity(*then_value)
+                        || cache.requires_activity(*else_value));
                 let (then_active, else_active) = if checked_arms {
                     let then_active = match active {
                         Some(outer) => builder

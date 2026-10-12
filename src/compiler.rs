@@ -647,10 +647,13 @@ impl Compiler {
         result.hierarchy = Some(hierarchy);
         result.design = Some(design);
         if let Err(error) = process_result {
-            result.failure = Some(CompileFailure::new(
-                FailureKind::Validation,
-                format!("cannot derive hardware scheduling forms from Process IR: {error}"),
-            ));
+            // After a reported error the projection failure is its echo.
+            if !result.diagnostics.has_errors() {
+                result.failure = Some(CompileFailure::new(
+                    FailureKind::Validation,
+                    format!("cannot derive hardware scheduling forms from Process IR: {error}"),
+                ));
+            }
             return result;
         }
 

@@ -825,6 +825,21 @@ pub(in crate::llvm::process) fn source_return_type<'ctx>(
         Some(SourceReturn::Direct(debug.context.f64_type().into()))
     } else {
         if let Some(layout) = layout.as_deref() {
+            // Source scalar types occupy a byte even when the kernel uses
+            // i1..i7. Normalize every return bit: otherwise an i1 ABI can
+            // leave the other register bits undefined for GDB's enum reader.
+            if width < 8
+                && layout_width(layout) == Some(width)
+                && matches!(
+                    layout.kind,
+                    LayoutKind::Scalar { .. } | LayoutKind::Packed { .. }
+                )
+            {
+                return Some(SourceReturn::Register {
+                    native: debug.context.i8_type().into(),
+                    layout: layout.clone(),
+                });
+            }
             // ponytail: SysV integer/double slots and memory classes;
             // odd-sized basic leaves and partial layouts remain separate work.
             // The native backend targets this host, not a cross-target triple.
@@ -2748,6 +2763,52 @@ fn capture_result<'ctx>(
             }
         }
     }
+}
+
+/// Source return arms and guarded evaluations need distinct machine ranges.
+/// Synthesized pure muxes (for example unrolled loop state) share their DAG
+/// through ordinary SSA selects; splitting those recreates it in both arms.
+pub(in crate::llvm::process) fn requires_source_selection(
+    design: &Design,
+    cache: &ProcessValueCache<'_, '_>,
+    selection: ProcessValueId,
+    arms: [ProcessValueId; 2],
+) -> bool {
+    let Some(frame) = cache.value_frames.last().filter(|_| cache.debug.is_some()) else {
+        return false;
+    };
+    if frame.branches.iter().any(|(id, _)| *id == selection) {
+        return true;
+    }
+    let mut pending = arms.to_vec();
+    let mut visited = std::collections::HashSet::new();
+    while let Some(id) = pending.pop() {
+        // Native formals refer to caller-owned evaluations. Their original
+        // source calls/checks do not execute again inside this body. Literal
+        // source arguments still have call ranges despite having no payload.
+        let captured = cache.parameters.contains_key(&id)
+            || cache
+                .debug_arguments
+                .as_ref()
+                .is_some_and(|args| args.ids.contains(&id) && process_string(design, id).is_none());
+        if captured || !visited.insert(id) || !cache.requires_activity(id) {
+            continue;
+        }
+        let Some(value) = design.process_ir.values.get(id.0 as usize) else {
+            return true;
+        };
+        if matches!(
+            value.kind,
+            ProcessValueKind::InlineCall { .. }
+                | ProcessValueKind::ForeignCall { .. }
+                | ProcessValueKind::HostCall { .. }
+                | ProcessValueKind::CheckedIndex { .. }
+        ) {
+            return true;
+        }
+        crate::ir::for_each_process_value_dependency(&value.kind, |id| pending.push(id));
+    }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
