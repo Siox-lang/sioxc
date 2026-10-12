@@ -112,7 +112,7 @@ pub struct Typed {
     /// [`expand_type_attrs`].
     type_attr_reads: HashMap<Span, Expr>,
     /// Each operand of a mixed numeric operation that widens, keyed by its
-    /// span, to the type it widens to (spec 3.17, `core::convert::Widen`).
+    /// span, to the type it widens to (spec 3.17, ``From``).
     promotions: HashMap<Span, Ty>,
 }
 

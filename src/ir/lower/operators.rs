@@ -227,9 +227,10 @@ impl<'a> Lowering<'a> {
         self.promotions.get(&span)
     }
 
-    /// `e` widened to its promoted type through std's `Widen<Source>` impl
-    /// for that type (alignment and extension), inlined with `Self` as the
-    /// promoted format. `None` when `e` does not widen.
+    /// `e` widened to its promoted type through std's `From<Source>` impl
+    /// for that type, inlined with `Self` as the promoted format: a format
+    /// that holds every value of `e`'s, so the impl only aligns and extends.
+    /// `None` when `e` does not widen.
     pub(super) fn promoted_operand(
         &self,
         e: &ast::Expr,
@@ -249,7 +250,7 @@ impl<'a> Lowering<'a> {
         let result = (|| {
             let target = self.free_fns.canonical_type_key(&family);
             let source = self.operand_type_name(e)?;
-            let impls = self.op_impls.get("Widen", &target)?;
+            let impls = self.op_impls.get("From", &target)?;
             let (function, _) = impls.iter().find(|(f, declared)| {
                 declared.clone().or_else(|| {
                     f.params

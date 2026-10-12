@@ -12,15 +12,3 @@ pub trait From {
 }
 
 attr lang for From = "from";
-
-// The exact conversion numeric promotion inserts (spec 3.17): a value into a
-// type that holds every value of its own type, so it only aligns and extends,
-// with no rounding and no saturation: wiring in hardware. `u + s` with
-// `u: unsigned[8]` and `s: sfixed<8, 4>` widens both operands to
-// `sfixed<13, 4>` before adding. The trait argument names the source, as
-// `From`'s does.
-pub trait Widen {
-    fn widen(v: Self) -> Self;
-}
-
-attr lang for Widen = "widen";

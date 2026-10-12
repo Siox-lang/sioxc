@@ -1,6 +1,5 @@
 module std::bits;
 
-use core::convert::Widen;
 use std::logic::Logic;
 
 // `unsigned` and `signed` are ordinary library types, not compiler-magic
@@ -253,31 +252,6 @@ impl Ord<signed> for signed {
     fn le(self, rhs: signed) -> Bool { return not rhs.lt(self); }
 }
 
-// --- numeric promotion -------------------------------------------------------------
-
-// `u + v` with `u: unsigned[8]` and `v: signed[8]` widens `u` to a `signed`
-// one bit wider: its value, zero-extended (spec 3.17).
-impl Widen<unsigned> for unsigned {
-    fn widen(value: unsigned) -> unsigned {
-        return integer(value) - ((integer(value) >> value'length) << value'length);
-    }
-}
-
-// A narrower `signed`, sign-extended.
-impl Widen<signed> for signed {
-    fn widen(value: signed) -> signed {
-        let w: integer = integer(value) - ((integer(value) >> value'length) << value'length);
-        if (w >> (value'length - 1)) == 1 { return w - (1 << value'length); }
-        return w;
-    }
-}
-
-impl Widen<unsigned> for signed {
-    fn widen(value: unsigned) -> signed {
-        return integer(value) - ((integer(value) >> value'length) << value'length);
-    }
-}
-
 // --- to real -------------------------------------------------------------------
 
 // `real(x)`: the number a vector holds. These place `unsigned` and `signed`
@@ -293,6 +267,22 @@ impl From<signed> for real {
         let w: integer = integer(value) - ((integer(value) >> value'length) << value'length);
         if (w >> (value'length - 1)) == 1 { return real(w - (1 << value'length)); }
         return real(w);
+    }
+}
+
+// `signed[16](s)` sign-extends, as VHDL's `resize`; narrowing keeps the low
+// bits. `signed[9](u)` zero-extends: every `unsigned[8]` value fits.
+impl From<signed> for signed {
+    fn from(value: signed) -> signed {
+        let w: integer = integer(value) - ((integer(value) >> value'length) << value'length);
+        if (w >> (value'length - 1)) == 1 { return w - (1 << value'length); }
+        return w;
+    }
+}
+
+impl From<unsigned> for signed {
+    fn from(value: unsigned) -> signed {
+        return integer(value) - ((integer(value) >> value'length) << value'length);
     }
 }
 
