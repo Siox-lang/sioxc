@@ -1787,18 +1787,35 @@ impl<'a> Lowering<'a> {
                     self.lower_scalar_env(&iff.cond, env),
                     ast::expr_span(&iff.cond),
                 );
-                let then = self.inline_block(&iff.then.stmts, env)?;
                 // The else value: an explicit else branch, or the statements
                 // after the if.
-                let els = match &iff.else_ {
+                let els = || match &iff.else_ {
                     Some(e) => match e.as_ref() {
-                        ast::ElseBranch::Block(b) => self.inline_block(&b.stmts, env)?,
+                        ast::ElseBranch::Block(b) => self.inline_block(&b.stmts, env),
                         ast::ElseBranch::If(i) => {
-                            self.inline_block(std::slice::from_ref(&ast::Stmt::If(i.clone())), env)?
+                            self.inline_block(std::slice::from_ref(&ast::Stmt::If(i.clone())), env)
                         }
                     },
-                    None => self.inline_block(rest, env)?,
+                    None => self.inline_block(rest, env),
                 };
+                // A condition on formats (`Self'low <= value'low`) is
+                // constant: only the branch it takes is built.
+                let constant = match &cond {
+                    Expr::Const(c) => Some(*c != 0),
+                    Expr::Canonical { value, .. } => crate::ir::arena_constant_integer(
+                        *value,
+                        &self.source_values.borrow().ir.values,
+                    )
+                    .map(|c| c != 0),
+                    _ => None,
+                };
+                match constant {
+                    Some(true) => return self.inline_block(&iff.then.stmts, env),
+                    Some(false) => return els(),
+                    None => {}
+                }
+                let then = self.inline_block(&iff.then.stmts, env)?;
+                let els = els()?;
                 Some(self.bind_source_value(
                     self.source_select_value(cond, then, els, iff.span),
                     iff.span,

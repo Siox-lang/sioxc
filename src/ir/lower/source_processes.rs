@@ -3831,7 +3831,7 @@ fn operand_type(
 }
 
 /// `expression` widened to its promoted type (spec 3.17) through std's
-/// `Widen<Source>` impl for that type, inlined with `Self` as the promoted
+/// `From<Source>` impl for that type, inlined with `Self` as the promoted
 /// format. `None` when it does not widen.
 fn process_promoted_operand(
     expression: &ast::Expr,
@@ -3869,7 +3869,7 @@ fn widen_operand(
     let source = process_type_key(&source_type, context)?;
     let function = context
         .functions
-        .get_widening(&context.functions.canonical_type_key(family), &source)?;
+        .get_conversion(&context.functions.canonical_type_key(family), &source)?;
     let first_value = context.process_ir.values.len();
     let operand = value_ref_with_type(expression, process, context, Some(&source_type));
     let number = |value: i64| {
@@ -7542,15 +7542,17 @@ fn value_ref_with_type_inner(
             let width = source_value_width(&kind, ty.as_ref(), process, context);
             return push_value(span, ty, width, kind, context);
         }
+        // A family's `From` impl for the argument's type comes before the
+        // kernel's raw resize (spec 3.17): `signed[16](s)` sign-extends.
+        if let Some(value) = lower_process_family_from(expression, process, context, ty.as_ref()) {
+            return value;
+        }
         if let Some(value) = lower_process_kernel_conversion(expression, process, context) {
             return value;
         }
         if let Some(value) =
             lower_process_named_conversion(expression, process, context, ty.as_ref())
         {
-            return value;
-        }
-        if let Some(value) = lower_process_family_from(expression, process, context, ty.as_ref()) {
             return value;
         }
         if let Some(value) = lower_process_qualified_call(expression, process, context, ty.as_ref())

@@ -13925,3 +13925,21 @@ Branch `feat/numeric-promotion-2`. Proposal doc deleted (implemented).
 **Codex:** touches types/{operators,inference,expressions,mod,collect}.rs,
 elab.rs, ir/functions.rs, ir/lower/{operators,calls,expressions,values,
 source_bindings,source_processes,collect}.rs, ir/lower.rs, resolve.rs, core/convert.siox.
+
+### 2026-10-12 — Claude — numeric promotion through `From`; no `Widen` trait
+
+Branch `feat/promotion-via-from`. `core::convert::Widen` and its std impls
+are removed; promotion inlines std's `From<S> for T` (hardware
+`promoted_operand`, testbench `widen_operand` via `get_conversion`).
+- std `From` impls between formats take an exact path when `Self` holds
+  every source value (a condition on `Self'low`/`value'high`), else round
+  and saturate as before. New: `From<ufixed> for sfixed`,
+  `From<unsigned|signed> for ufixed/sfixed/float`, `From<signed|unsigned>
+  for signed`; `From<integer>` for fixed/float no longer goes through real.
+- `inline_block`: an `if` whose condition folds (`arena_constant_integer`)
+  lowers only the branch it takes.
+- **Behaviour change:** `signed[16](s)` sign-extends (was a raw zero-extend).
+  The testbench now tries a family's `From` before the kernel raw resize, and
+  the checker types a `T[range](x)` argument.
+**Codex:** touches ir/functions.rs, ir/lower/{calls,operators,source_processes}.rs,
+types/{expressions,mod}.rs, resolve.rs, core/convert.siox.

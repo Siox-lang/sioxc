@@ -1,6 +1,5 @@
 module std::fixed;
 
-use core::convert::Widen;
 use std::math::Sqrt;
 use std::numeric::{Overflow, Rounding};
 
@@ -178,8 +177,10 @@ impl From<real> for ufixed {
     fn from(value: real) -> ufixed { return ufixed_word(value, Self'high, Self'low); }
 }
 
+// An integer is exact wherever it fits (`s + 1` adds 1.0) and saturates
+// beyond: integer arithmetic, so it lowers to hardware.
 impl From<integer> for ufixed {
-    fn from(value: integer) -> ufixed { return ufixed_word(real(value), Self'high, Self'low); }
+    fn from(value: integer) -> ufixed { return rescale(value, 0, Self'high, Self'low, false); }
 }
 
 impl From<real> for sfixed {
@@ -187,24 +188,69 @@ impl From<real> for sfixed {
 }
 
 impl From<integer> for sfixed {
-    fn from(value: integer) -> sfixed { return sfixed_word(real(value), Self'high, Self'low); }
+    fn from(value: integer) -> sfixed { return rescale(value, 0, Self'high, Self'low, true); }
 }
 
 // --- between formats ---------------------------------------------------------
 
-// `ufixed<12, 6>(x)` from another `ufixed`, `sfixed<8, 4>(y)` from another
-// `sfixed`: rounded to the nearest step (ties away from zero) and saturated.
+// `ufixed<12, 6>(x)` from another format, `sfixed<13, 4>(u)` from an
+// `unsigned`: rounded to the nearest step (ties away from zero) and
+// saturated. Into a format that holds every value of the source's (as
+// numeric promotion converts, spec 3.17) only the binary point moves and the
+// sign extends: the test is on formats, so hardware keeps just the wiring.
 impl From<ufixed> for ufixed {
     fn from(value: ufixed) -> ufixed {
+        if Self'low <= value'low and Self'high >= value'high {
+            return word(value) << (value'low - Self'low);
+        }
         return rescale(word(value), 0 - value'low, Self'high, Self'low, false);
     }
 }
 
 impl From<sfixed> for sfixed {
     fn from(value: sfixed) -> sfixed {
-        return rescale(
-            sext_word(word(value), value'length), 0 - value'low, Self'high, Self'low, true
-        );
+        let n: integer = sext_word(word(value), value'length);
+        if Self'low <= value'low and Self'high >= value'high {
+            return n << (value'low - Self'low);
+        }
+        return rescale(n, 0 - value'low, Self'high, Self'low, true);
+    }
+}
+
+impl From<ufixed> for sfixed {
+    fn from(value: ufixed) -> sfixed {
+        if Self'low <= value'low and Self'high > value'high {
+            return word(value) << (value'low - Self'low);
+        }
+        return rescale(word(value), 0 - value'low, Self'high, Self'low, true);
+    }
+}
+
+impl From<unsigned> for ufixed {
+    fn from(value: unsigned) -> ufixed {
+        if Self'low <= 0 and Self'high >= value'length - 1 {
+            return word(value) << (0 - Self'low);
+        }
+        return rescale(word(value), 0, Self'high, Self'low, false);
+    }
+}
+
+impl From<unsigned> for sfixed {
+    fn from(value: unsigned) -> sfixed {
+        if Self'low <= 0 and Self'high >= value'length {
+            return word(value) << (0 - Self'low);
+        }
+        return rescale(word(value), 0, Self'high, Self'low, true);
+    }
+}
+
+impl From<signed> for sfixed {
+    fn from(value: signed) -> sfixed {
+        let n: integer = sext_word(word(value), value'length);
+        if Self'low <= 0 and Self'high >= value'length - 1 {
+            return n << (0 - Self'low);
+        }
+        return rescale(n, 0, Self'high, Self'low, true);
     }
 }
 
@@ -284,48 +330,6 @@ fn clamp(v: integer, lo: integer, hi: integer) -> integer {
     if v > hi { return hi; }
     if v < lo { return lo; }
     return v;
-}
-
-// --- numeric promotion -------------------------------------------------------------
-
-// A number into a fixed format that holds all of its values (spec 3.17): its
-// binary point aligned to `Self`'s, a signed source sign-extended. Only
-// shifts and extension, so in hardware it is wiring.
-impl Widen<unsigned> for ufixed {
-    fn widen(value: unsigned) -> ufixed { return word(value) << (0 - Self'low); }
-}
-
-impl Widen<unsigned> for sfixed {
-    fn widen(value: unsigned) -> sfixed { return word(value) << (0 - Self'low); }
-}
-
-impl Widen<signed> for sfixed {
-    fn widen(value: signed) -> sfixed {
-        return sext_word(word(value), value'length) << (0 - Self'low);
-    }
-}
-
-impl Widen<ufixed> for ufixed {
-    fn widen(value: ufixed) -> ufixed { return word(value) << (value'low - Self'low); }
-}
-
-impl Widen<ufixed> for sfixed {
-    fn widen(value: ufixed) -> sfixed { return word(value) << (value'low - Self'low); }
-}
-
-impl Widen<sfixed> for sfixed {
-    fn widen(value: sfixed) -> sfixed {
-        return sext_word(word(value), value'length) << (value'low - Self'low);
-    }
-}
-
-// `s + 1`: the integer as a number in `s`'s format (1.0, not one step).
-impl Widen<integer> for ufixed {
-    fn widen(value: integer) -> ufixed { return value << (0 - Self'low); }
-}
-
-impl Widen<integer> for sfixed {
-    fn widen(value: integer) -> sfixed { return value << (0 - Self'low); }
 }
 
 // --- helpers -------------------------------------------------------------------
