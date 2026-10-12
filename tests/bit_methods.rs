@@ -983,3 +983,95 @@ impl T {
     );
     assert!(stdout.lines().any(|line| line == "false 1.5"), "{stdout}");
 }
+
+/// A hardware loop whose bound is not constant simulates as a procedural
+/// process (W-P019 warns it has no RTL form): in a function a concurrent
+/// assignment calls, directly in a process, and in a clocked process, in a
+/// generic entity; each re-runs when a signal it reads changes.
+#[cfg(feature = "llvm")]
+#[test]
+fn a_non_constant_hardware_loop_simulates() {
+    let stdout = run(
+        "procedural_loops",
+        r#"
+module procedural_loops;
+
+fn sum_to(n: integer) -> integer {
+    let s: integer = 0;
+    for k in 0..n { s = s + k; }
+    return s;
+}
+
+entity Dut<W: integer> { clk: Bit in, a: unsigned[4] in, y: unsigned[W] out, q: unsigned[W] out, z: unsigned[4] out }
+impl<W: integer> Dut<W> {
+    y = unsigned[W](sum_to(integer(a)));
+    z = a;
+    reg: process {
+        if clk.rising() {
+            let s: integer = 0;
+            for k in 0..integer(a) { s = s + 2; }
+            q = unsigned[W](s);
+        }
+    }
+}
+
+#[test]
+entity T {}
+impl T {
+    let clk: Bit = '0';
+    let a: unsigned[4] = 4;
+    let y: unsigned[8]; let q: unsigned[8]; let z: unsigned[4];
+    let dut: Dut<8> = { .clk = clk, .a = a, .y = y, .q = q, .z = z };
+    await 1ns;
+    print!("{} {} {}\n", y, q, z);
+    a = 5;
+    await 1ns;
+    print!("{} {} {}\n", y, q, z);
+    clk = '1';
+    await 1ns;
+    print!("{} {} {}\n", y, q, z);
+    a = 2;
+    await 1ns;
+    print!("{} {} {}\n", y, q, z);
+}
+"#,
+    );
+    let lines: Vec<&str> = stdout.lines().filter(|line| !line.is_empty()).collect();
+    for expected in ["10 0 4", "15 0 5", "15 12 5", "3 12 2"] {
+        assert!(
+            lines.contains(&expected),
+            "missing `{expected}` in:\n{stdout}"
+        );
+    }
+}
+
+/// The non-constant bound is a warning (W-P019, `non_constant_loop_bound`),
+/// not an error: the design still compiles.
+#[test]
+fn a_non_constant_hardware_loop_bound_warns() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let dir = std::env::temp_dir().join(format!("siox_loop_bound_{}", std::process::id()));
+    let source = "module loop_bound;\n\
+        fn sum_to(n: integer) -> integer {\n\
+            let s: integer = 0;\n\
+            for k in 0..n { s = s + k; }\n\
+            return s;\n\
+        }\n\
+        entity Dut { a: unsigned[4] in, y: unsigned[8] out }\n\
+        impl Dut { y = unsigned[8](sum_to(integer(a))); }\n";
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory(dir.join("loop_bound.siox"), source),
+            Emit::Metadata,
+        ));
+    let rendered = compilation.render_diagnostics();
+    assert!(
+        rendered.contains("warning[W-P019]") && rendered.contains("0..n"),
+        "{rendered}"
+    );
+    assert!(
+        compilation.succeeded(),
+        "{rendered} {:?}",
+        compilation.failure
+    );
+}

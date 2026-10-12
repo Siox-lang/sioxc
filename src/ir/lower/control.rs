@@ -69,10 +69,16 @@ impl<'a> Lowering<'a> {
                 body,
                 ..
             } => {
-                if let (Some(a), Some(b)) = (
+                let bounds = (
                     self.eval_const(lo, &self.cur_env),
                     self.eval_const(hi, &self.cur_env),
-                ) {
+                );
+                if bounds.0.is_none() {
+                    self.procedural_loop.set(Some(ast::expr_span(lo)));
+                } else if bounds.1.is_none() {
+                    self.procedural_loop.set(Some(ast::expr_span(hi)));
+                }
+                if let (Some(a), Some(b)) = bounds {
                     let saved = self.cur_env.get(&var.text).copied();
                     for i in loop_range(a, b) {
                         self.cur_env.insert(var.text.clone(), i);
@@ -980,6 +986,12 @@ impl<'a> Lowering<'a> {
                         self.eval_const(lo, &self.cur_env),
                         self.eval_const(hi, &self.cur_env),
                     ) else {
+                        let bound = if self.eval_const(lo, &self.cur_env).is_none() {
+                            lo
+                        } else {
+                            hi
+                        };
+                        self.procedural_loop.set(Some(ast::expr_span(bound)));
                         continue;
                     };
                     let saved = self.cur_env.get(&var.text).copied();

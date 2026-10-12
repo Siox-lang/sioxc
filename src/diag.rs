@@ -525,6 +525,9 @@ pub mod codes {
     /// Two match ranges that share exactly one endpoint (`0..10`, `10..20`),
     /// usually an off-by-one: siox ranges include both ends.
     pub const OVERLAPPING_RANGE_ENDPOINTS: &str = "W-P018";
+    /// A loop in hardware whose bound is not a constant: it simulates as a
+    /// procedural process, but has no RTL form.
+    pub const NON_CONSTANT_LOOP_BOUND: &str = "W-P019";
 }
 
 #[cfg(test)]

@@ -13955,3 +13955,18 @@ failure after an already-reported error is not echoed as a second failure.
 Next (owner ruling): a non-constant loop bound in hardware is legal for
 simulation and warns; runtime loops in hardware processes/functions are the
 follow-up.
+
+### 2026-10-12 — Claude — hardware loops with non-constant bounds simulate
+
+Branch `feat/procedural-hardware-loops`. Owner ruling: a hardware loop whose
+bound is not constant is legal for simulation and warns (W-P019
+`non_constant_loop_bound`). Mechanism:
+- Hardware lowering flags such a loop (`Lowering::procedural_loop`: inline
+  `for` in calls.rs, process `for` in control.rs). `lower_body` then rolls the
+  item's drivers/event updates and collected name errors back and records it
+  in `Design::procedural_items` (instance path + item span).
+- `source_processes::lower` lowers each recorded item with `lower_process`
+  under the instance path, instance parameters folded as constants, as a
+  `Reactive` procedural CFG sensitive to every signal it reads
+  (`procedural_sensitivity`). Reactive from the start, so writes do not settle.
+**Codex:** `Design` gained `procedural_items` (struct literals need it).

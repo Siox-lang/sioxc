@@ -73,7 +73,7 @@ impl<'a> Lowering<'a> {
     /// non-extern) with no combinational driver and no event-block update is
     /// never driven inside its entity — its value is stuck at the reset default.
     pub(super) fn lint_undriven_outputs(&mut self) {
-        let mut driven: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut driven: std::collections::HashSet<u32> = self.procedural_driven.clone();
         for d in &self.hardware.drivers {
             driven.insert(d.target.0);
         }
@@ -760,5 +760,48 @@ impl<'a> Lowering<'a> {
                 ),
             );
         }
+    }
+
+    /// Hand an item with a loop that does not unroll to Process lowering,
+    /// which simulates it as a CFG, and warn that it has no RTL form (W-P019).
+    pub(super) fn defer_procedural_item(&mut self, item: &ast::ImplItem, bound: crate::diag::Span) {
+        let (span, label) = match item {
+            ast::ImplItem::Process(process) => (process.span, process.label.as_ref()),
+            ast::ImplItem::Stmt(statement) => (
+                ast::stmt_span(statement),
+                match statement {
+                    ast::Stmt::Assign { label, .. } => label.as_ref(),
+                    _ => None,
+                },
+            ),
+            _ => return,
+        };
+        let label = label.map(|label| format!("{}::{}", self.cur_instance_path, label.text));
+        let path = self.cur_instance_path.clone();
+        if self
+            .out
+            .procedural_items
+            .iter()
+            .any(|item| item.path == path && item.span == span)
+        {
+            return;
+        }
+        self.out
+            .procedural_items
+            .push(crate::ir::ProceduralItem { path, span, label });
+        if !self.procedural_bounds.insert(bound) {
+            return;
+        }
+        self.sink.emit(
+            crate::diag::Diagnostic::warning(
+                "this loop bound is not a constant: the loop simulates, but has no RTL form",
+            )
+            .with_code(crate::diag::codes::NON_CONSTANT_LOOP_BOUND)
+            .at(bound)
+            .help(
+                "an RTL loop unrolls at elaboration: bound it by a constant, a generic \
+                 parameter or an argument's shape (`x'length`)",
+            ),
+        );
     }
 }
