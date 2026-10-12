@@ -363,11 +363,31 @@ impl<'a> Checker<'a> {
         }
         if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
+            // Suggest `T(...)` only where that conversion is defined: a named
+            // type without a route from the value's type would reject it.
+            let route = match (self.type_kind_name(&lhs), self.type_kind_name(&rhs)) {
+                (Some(target), Some(source))
+                    if self.structs.contains_key(&target)
+                        || self.enum_variants.contains_key(&target) =>
+                {
+                    self.conversion_exists(&target, &source)
+                }
+                _ => true,
+            };
             let help = strlit_help(&lhs, value).unwrap_or_else(|| {
-                format!(
-                    "wrap it in a conversion, e.g. `{}(...)`",
-                    self.ty_display(&lhs)
-                )
+                if route {
+                    format!(
+                        "wrap it in a conversion, e.g. `{}(...)`",
+                        self.ty_display(&lhs)
+                    )
+                } else {
+                    format!(
+                        "no `From<{}> for {}` exists; add one, or produce a {} another way",
+                        self.ty_display(&rhs),
+                        self.ty_display(&lhs),
+                        self.ty_display(&lhs)
+                    )
+                }
             });
             self.sink.emit(
                 Diagnostic::error(format!(

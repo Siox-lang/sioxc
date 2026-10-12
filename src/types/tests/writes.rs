@@ -49,6 +49,41 @@ fn an_array_of_views_checks_each_elements_leaves() {
 }
 
 #[test]
+/// The help for a mismatched assignment suggests `T(...)` only where that
+/// conversion is defined.
+fn conversion_help_names_only_a_defined_conversion() {
+    let help = |body: &str| {
+        let src = format!(
+            "module m;\n\
+             struct P {{ v: Bit }}\n\
+             impl From<Bool> for P {{ fn from(b: Bool) -> P {{ return P {{ .v = '1' }}; }} }}\n\
+             struct Q {{ v: Bit }}\n\
+             entity E {{ p: P out, q: Q out }}\n\
+             impl E {{ {body} }}\n{VEC}"
+        );
+        let mut sink = DiagnosticSink::new();
+        let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        sink.diagnostics()
+            .iter()
+            .filter(|d| d.code == Some(codes::TYPE_MISMATCH))
+            .flat_map(|d| d.help.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(
+        help("p = '1' == '1';").contains("`P(...)`"),
+        "P has a From<Bool>"
+    );
+    let q = help("q = '1' == '1';");
+    assert!(
+        !q.contains("`Q(...)`") && q.contains("no `From<Bool> for Q`"),
+        "{q}"
+    );
+}
+
+#[test]
 /// A chain of integer aliases still enforces the underlying value range.
 fn chained_integer_aliases_still_enforce_value_ranges() {
     let errors = check_src(

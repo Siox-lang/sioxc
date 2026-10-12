@@ -13991,3 +13991,14 @@ Branch `feat/view-port-arrays`, for the bus-interconnect libraries.
 - core/cmp.siox: `gt`/`ge`/`ne` defaults use operators (`rhs < self`), not
   `rhs.lt(self)`. A swapped method call made an `integer` generic parameter
   the receiver (`x > N`), which had no impl and lowered to Unknown.
+
+### 2026-10-12 — Claude — three library gaps
+
+Branch `fix/library-gaps`.
+- `fold_const` (ir/lower/collect.rs) resolves a character-literal constant
+  against its declared enum: `const OK: Bit = '1'` was unknown in hardware.
+- std/logic.siox: `impl From<Bool> for Bit`. The assignment-mismatch help
+  (types/assignments.rs) suggests `T(...)` only when `conversion_exists`
+  (new, types/calls.rs, shared with `check_conversion_route`).
+- Testbench DUT bindings match indexed leaves (`down[2].rdata`), so
+  `.down = wires` and `.bus = wires[2]` link DUT to DUT.
