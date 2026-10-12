@@ -17029,3 +17029,70 @@ owned group/fragment implementation, carrier proof, native regressions, TODO
 and this appended chat tail, then matching sibling architecture/testing docs.
 No push. Remaining supported mixed/partial and companion/signature audits
 keep the full goal active. Preserve AGENTS/.codex and 441 historical chat additions.
+
+Committed compiler e8a6b6c and sibling docs cc92d80 after full acceptance;
+no push. Prepared mixed_partial_return.siox/.py in the existing disk cache:
+descending signed[81] array fields, an unused middle abort and real/signed-zero
+data. 2526381 compiled and ran ordinary/debug with numeric assertions and VCD
+parity, then exhausted the GDB probe without observing all requested fragments
+in one frame. Do not infer a compiler bug yet: first inspect the actual group
+demand/coverage and frame fragments, including the caller's boolean equality
+consumer. The probe assumes joint grouping; that assumption needs evidence.
+No live guarded jobs or uncommitted Rust. Goal remains active; preserve foreign
+AGENTS/.codex and 441 historical chat additions. Next tighten the diagnostic
+and continue supported mixed/partial and companion/signature completion audits.
+
+### 2026-10-12 — Codex — mixed partial-demand comparison audit
+
+Own inline_values.rs demand proof and corresponding regressions if warranted.
+The mixed probe's packed equality reaches MetaCompare, which always evaluates
+its ordinary `inner` comparison but currently propagates no demand in
+joint_aggregate_demand. Trace supports forwarding only that inner result;
+metadata-only operands are not a proof of numeric evaluation. Test this shared
+proof adjustment against the existing mixed native/GDB probe before retaining
+it. No live guarded jobs; preserve foreign work and do not infer that every
+comparison/consumer now justifies grouping. Full goal stays active; no push.
+
+2581572 did not establish joint grouping even after forwarding MetaCompare's
+inner demand. Removed that unproven production change completely. Corrected
+2590011 instead follows each existing partial frame, keeps sibling breakpoints
+live during finish and reads whichever actual fragment is retained. It passes
+numeric assertions/VCD parity with descending signed[81] array elements and
+real data, including negative zero; the unused abort field stays unavailable.
+Tightened 2622740 passes every initial/changed/zero field combination and VCD
+parity, terminal exited/success/0. Thus the earlier failure was the probe's
+unsupported assumption that this comparison consumer justified one joint frame;
+there is no verified capture/ABI bug here. No uncommitted Rust or live jobs.
+Preserve separate-fragment semantics and audit other supported transports
+without weakening demand proof. Full goal active; no push, foreign work untouched.
+
+### 2026-10-12 — Codex — permanent mixed partial-return regression
+
+Own tests/debug_info.rs coverage for the verified mixed_partial_return probe.
+Retain separate source frames for actual descending signed[81] array leaves
+and real/signed-zero fragments; the discarded abort field must stay unavailable.
+Reuse the existing native/GDB/VCD verification pattern, with both inline hints
+and packing modes. No production change is justified by the diagnostic.
+Preserve foreign AGENTS/.codex/chat additions and sibling docs/language.md.
+Full DWARF goal active; no push. Previous turn made verified diagnostic progress.
+
+2657166 is terminal exited/success/0, peak 647380992 bytes. The permanent
+mixed-fragment fixture passes both hints/default/bitpack, with exact sets of
+nine epoch-specific array/real fragments, source type size, pruned abort,
+native assertions, VCD equality and dwarfdump verification. No production fix.
+Updated TODO and sibling testing coverage; replaced stale testing claims that
+already-covered checked/joint partial cases still needed implementation.
+Freeze Rust for full CI suites, both ordinary corpora and graph AST refresh.
+
+2659524 is terminal exited/success/0, peak 1470701568 bytes. Full default and
+bitpack suites pass, including all 21 DWARF fixtures (97.54s/98.43s), strict
+frontend/all-targets Clippy and both 228-program corpora with zero failures.
+Frozen source/test hash remains
+16487f0fe3d1d60e0d6c4d680593bc2198571d298e0d1f4bf713130af4976cf8.
+AST/community refresh reports 5374 nodes, 15329 edges and 251 communities;
+existing vendored extractor warnings persist. Commit only owned test/TODO/chat
+tail and sibling testing docs. Preserve foreign changes; no push.
+The full goal remains active: next audit the separate CFG formal-parameter
+inspection path in debug/parameters.rs, which does not currently create a
+formal-name $logic companion. Establish native/probe evidence before fixing it;
+expression companions already covered are not proof for suspended CFG aliases.

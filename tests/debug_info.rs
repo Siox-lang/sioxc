@@ -3218,6 +3218,153 @@ assert sorted(seen) == [('left', -9), ('left', 5), ('right', -9), ('right', 5)],
 }
 
 #[test]
+fn mixed_partial_returns_keep_wide_array_and_real_fragments() {
+    let directory =
+        std::env::temp_dir().join(format!("siox_dwarf_mixed_partial_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("mixed.siox");
+    let text = r#"module mixed_partial_return;
+use std::bits::signed;
+extern "C" { fn abort() -> integer; }
+struct Mixed { pub data: signed[81][2..1], pub unused: integer, pub gain: real }
+#[inline(HINT)]
+fn echo<T>(value: T) -> T { return value; }
+#[inline(HINT)]
+fn partial(data: signed[81][2..1], gain: real) -> Mixed {
+    return Mixed { .data = [echo(data[2]), echo(data[1])], .unused = abort(), .gain = echo(gain) };
+}
+fn consume(data: signed[81][2..1], gain: real) -> real {
+    let value: Mixed = partial(data, gain);
+    let first: Bool = value.data[2] == data[2];
+    let second: Bool = value.data[1] == data[1];
+    return (if first == second { 1.0 } else { -1.0 }) * value.gain;
+}
+entity Probe { data: signed[81][2..1] in, gain: real in, result: real out }
+impl Probe { result = consume(data, gain); }
+#[test] entity T {}
+impl T {
+    let data: signed[81][2..1] = [-2, -3];
+    let gain: real = 2.5;
+    let probe: Probe = { .data = data, .gain = gain };
+    stimulus: process {
+        await 1ns;
+        assert!(probe.result == 2.5, "mixed partial initial");
+        data = [4, -5]; gain = -3.5;
+        await 1ns;
+        assert!(probe.result == -3.5, "mixed partial new epoch");
+        data = [0, 0]; gain = -0.0;
+        await 1ns;
+        assert!(probe.result == 0.0, "mixed partial zero");
+    }
+}
+"#;
+    let python = r#"import gdb, math
+stop = gdb.Breakpoint('mixed_partial_return::partial')
+gdb.execute('run')
+seen = set()
+while gdb.selected_thread() is not None:
+    frame = gdb.selected_frame()
+    assert frame.type() == gdb.INLINE_FRAME
+    assert frame.function().type.target().name == 'Mixed'
+    assert frame.function().type.target().sizeof == 38
+    stop.enabled = False
+    # These comparison consumers do not prove joint numeric demand. Observe
+    # each actual fragment, including caller-owned lazy nested-call ranges.
+    for _ in range(1000):
+        frame = gdb.selected_frame()
+        while frame is not None and frame.name() != 'mixed_partial_return::partial':
+            frame = frame.older()
+        if frame is not None:
+            try:
+                result = frame.read_var('$return')
+                current = []
+                for key in ['[2]', '[1]']:
+                    if not result['data'][key].is_optimized_out:
+                        current.append((key, int(result['data'][key])))
+                if not result['gain'].is_optimized_out:
+                    gain = float(result['gain'])
+                    current.append(('gain', gain, math.copysign(1.0, gain)))
+                assert result['unused'].is_optimized_out, str(result)
+                if current:
+                    break
+            except (gdb.error, ValueError):
+                pass
+        instruction = gdb.execute('x/i $pc', to_string=True)
+        gdb.execute('nexti' if '\tcall' in instruction else 'stepi', to_string=True)
+    else:
+        raise AssertionError('retained mixed partial fragment unavailable')
+    seen.add(tuple(current))
+    frame.select()
+    # Same-line finish can reach a sibling fragment; keep its breakpoint live.
+    stop.enabled = True
+    gdb.execute('finish', to_string=True)
+    if gdb.selected_thread() is not None and gdb.selected_frame().name() != 'mixed_partial_return::partial':
+        gdb.execute('continue', to_string=True)
+assert seen == {
+    (('[2]', -2),), (('[1]', -3),), (('gain', 2.5, 1.0),),
+    (('[2]', 4),), (('[1]', -5),), (('gain', -3.5, -1.0),),
+    (('[2]', 0),), (('[1]', 0),), (('gain', -0.0, -1.0),),
+}, seen
+assert int(gdb.parse_and_eval('$_exitcode')) == 0
+"#;
+    for hint in ["always", "never"] {
+        std::fs::write(&source, text.replace("HINT", hint)).unwrap();
+        let debug = directory.join("debug.bin");
+        let ordinary = directory.join("ordinary.bin");
+        for (binary, debugging) in [(&debug, true), (&ordinary, false)] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_sioxc"));
+            command.args(["--std", "std", "--test"]);
+            if debugging {
+                command.arg("--debug");
+            }
+            success(command.arg(&source).arg("-o").arg(binary).output().unwrap());
+            success(
+                Command::new(binary)
+                    .arg("-o")
+                    .arg(binary.with_extension("vcd"))
+                    .output()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            std::fs::read(debug.with_extension("vcd")).unwrap(),
+            std::fs::read(ordinary.with_extension("vcd")).unwrap()
+        );
+        if Command::new("llvm-dwarfdump")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            success(
+                Command::new("llvm-dwarfdump")
+                    .arg("--verify")
+                    .arg(&debug)
+                    .output()
+                    .unwrap(),
+            );
+        }
+        if Command::new("gdb").arg("--version").output().is_ok() {
+            success(
+                Command::new("gdb")
+                    .args(["-nx", "-q", "--batch"])
+                    .arg(&debug)
+                    .args([
+                        "-ex",
+                        "set disable-randomization off",
+                        "-ex",
+                        &format!("python {python}"),
+                    ])
+                    .output()
+                    .unwrap(),
+            );
+        } else {
+            eprintln!("GDB unavailable: native mixed fragments checked, source probe skipped");
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn jointly_demanded_partial_returns_share_source_fragments() {
     let directory =
         std::env::temp_dir().join(format!("siox_dwarf_joint_partial_{}", std::process::id()));

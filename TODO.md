@@ -261,6 +261,13 @@ and future elaborated RTL artifacts. Code: `src/driver/` and `runtime/`.
   native result ABI. GDB checks both retained field positions, source types,
   caller bindings and untaken abort fields for integer/integer and integer/real
   structs across all caller/callee inline/shared hint combinations.
+  Mixed partial returns additionally retain descending signed[81] array leaves
+  and real fragments through generic nested calls, with changed input epochs
+  and negative zero. Comparison consumers retain independent source frames;
+  their metadata dependencies are not evidence of joint numeric demand. Native
+  GDB checks the full declared type and exactly the actual retained fragments,
+  with pruned abort fields unavailable and ordinary/debug VCD parity under
+  both inline hints and packing modes.
   Shared Process functions now retain their source frames directly on the
   canonical native body, including selected branches, lexical locals and
   declaration-owned scalar inspection types. Keep native body-count, actual
