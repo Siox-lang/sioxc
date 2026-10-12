@@ -128,6 +128,17 @@ impl From<Bit> for ULogic {
     }
 }
 
+// A `Bool` as a signal bit, as Rust's `From<bool>` for its integers:
+// `ready = Bit(count < DEPTH);`.
+impl From<Bool> for Bit {
+    fn from(v: Bool) -> Bit {
+        if v {
+            return '1';
+        }
+        return '0';
+    }
+}
+
 // The resolved nine-valued scalar (VHDL `std_logic`): the same value domain as
 // ULogic, but a distinct nominal type that implements `Resolve`, so parallel
 // drivers fold instead of erroring.

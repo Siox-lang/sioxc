@@ -79,14 +79,6 @@ the [ingress invariants](https://github.com/Siox-lang/siox-paper/blob/main/docs/
 when extending the IR; executable extensions and optimization measurements are
 listed under LLVM and Output below.
 
-- A module-level `const` of a non-integer type (`const OK: Bit = '1';`) is
-  unknown in a hardware body (E-P001); integer constants work.
-- E-P003 for `Bool` assigned to `Bit` suggests `Bit(...)`, but std has no
-  `From<Bool> for Bit`, so the suggested fix is itself rejected.
-- In a testbench, connecting one element of a testbench struct array to a
-  port (`let l: Leaf = { .bus = wires[2] };`) leaves the port unconnected;
-  the whole array (`.down = wires`) works, and so does an element inside a
-  hardware parent.
 
 ## LLVM
 
