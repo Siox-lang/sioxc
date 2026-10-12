@@ -252,6 +252,21 @@ impl<'a> Checker<'a> {
                     );
                     return;
                 }
+                // Mixed numbers: each operand that is not already of the
+                // promoted type widens to it (spec 3.17).
+                if !matches!(
+                    op,
+                    BinOp::Custom { .. } | BinOp::And | BinOp::Or | BinOp::Shl | BinOp::Shr
+                ) {
+                    let (left, right) = (self.type_of(lhs, sym), self.type_of(rhs, sym));
+                    if let Some(promoted) = self.numeric_promotion(&left, &right) {
+                        for (operand, ty) in [(lhs, left), (rhs, right)] {
+                            if ty != promoted {
+                                self.promotions.insert(expr_span(operand), promoted.clone());
+                            }
+                        }
+                    }
+                }
                 let comparison_handled = if is_comparison(op) {
                     self.check_comparison_fit(lhs, rhs, sym);
                     self.check_comparison_operands(op, lhs, rhs, *span, sym)

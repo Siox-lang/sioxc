@@ -5,6 +5,9 @@ use super::*;
 impl<'a> Lowering<'a> {
     /// Lower an expression into IR.
     pub(super) fn lower_expr(&self, e: &ast::Expr) -> Expr {
+        if let Some(value) = self.promoted_operand(e, &HashMap::new()) {
+            return value;
+        }
         if let Some(Val::Scalar(value)) = self.source_call_value(e, &HashMap::new()) {
             return value;
         }
@@ -535,6 +538,9 @@ impl<'a> Lowering<'a> {
 
     /// The width an expression produces, from its operands and context.
     pub(super) fn ast_width(&self, e: &ast::Expr) -> u32 {
+        if let Some(crate::types::Ty::Array { len, .. }) = self.promotion_of(e) {
+            return *len;
+        }
         if let Some(width) = self
             .source_call_layout(e)
             .and_then(|layout| layout.bit_width())
@@ -842,6 +848,9 @@ impl<'a> Lowering<'a> {
         e: &ast::Expr,
         env: &HashMap<String, Val>,
     ) -> Option<(i64, i64)> {
+        if let Some(crate::types::Ty::Array { len, low, .. }) = self.promotion_of(e) {
+            return Some((low + i64::from(*len) - 1, *low));
+        }
         match e {
             ast::Expr::Path(_) => {
                 let path = expr_path(e)?;

@@ -13905,3 +13905,23 @@ Branch `feat/numeric-formats`.
   ranges (`unsigned[15..8]` into `unsigned[8]`) still assign.
 - Diagnostics show a format as `ufixed<8, 4>`.
 **Codex:** `Ty::Array` gained a field: literals need `low`, patterns `..`.
+
+### 2026-10-12 — Claude — numeric promotion phase 2: the full ladder
+
+Branch `feat/numeric-promotion-2`. Proposal doc deleted (implemented).
+- Checker: `numeric_promotion` (operators.rs) computes the promoted type
+  below `real` (formats cover both operands); `check_expr` records each
+  operand that widens in `Typed::promotions` (span -> target `Ty`), carried
+  by `Hierarchy::promotions`.
+- `core::convert::Widen<Source>` (lang `widen`, a compiler trait) with exact
+  std impls (bits, fixed, float); `FunctionIndex::get_widening`.
+- Lowering hooks: hardware `promoted_operand` at `lower_expr`/`lower_val_env`
+  entry, plus `operand_type_name`, `ast_width`, `operand_range`,
+  `source_operand_layout`, `base_signal` see the promoted type; guard set
+  `widening`; `mark_vector_compare` reads operands as written. Testbench:
+  `process_promoted_operand` at `value_ref_with_type`, `operand_type`.
+- An integer beside a fixed/float format is its value (`s + 1` = +1.0);
+  corpus tests comparing raw words now write `integer(x) == N`.
+**Codex:** touches types/{operators,inference,expressions,mod,collect}.rs,
+elab.rs, ir/functions.rs, ir/lower/{operators,calls,expressions,values,
+source_bindings,source_processes,collect}.rs, ir/lower.rs, resolve.rs, core/convert.siox.

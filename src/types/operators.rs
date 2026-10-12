@@ -200,6 +200,98 @@ impl<'a> Checker<'a> {
             || (matches!(right, Ty::Real) && converts(left))
     }
 
+    /// The type a mixed numeric operation promotes to (spec 3.17), below
+    /// `real`: the higher rung of `unsigned/signed → ufixed/sfixed → float`,
+    /// in a format that holds every value of both operands (the larger
+    /// integer and fraction parts; a `signed` result gives an `unsigned`
+    /// operand one more bit). An `integer` beside a fixed or float format
+    /// takes that format. `None` when the operands already share a type, or
+    /// are not two such numbers.
+    pub(super) fn numeric_promotion(&self, left: &Ty, right: &Ty) -> Option<Ty> {
+        // (rung, signed, integer bits, fraction bits) of a sized family.
+        let shape = |ty: &Ty| -> Option<(u8, bool, i64, i64, String, Ty)> {
+            let Ty::Array {
+                elem,
+                len,
+                family: Some(family),
+                low,
+            } = ty
+            else {
+                return None;
+            };
+            if *len == 0 {
+                return None;
+            }
+            let (rung, signed) = match self.key_leaf(family) {
+                "unsigned" => (1, false),
+                "signed" => (1, true),
+                "ufixed" => (2, false),
+                "sfixed" => (2, true),
+                "float" => (3, true),
+                _ => return None,
+            };
+            let fraction = (-*low).max(0);
+            Some((
+                rung,
+                signed,
+                i64::from(*len) - fraction,
+                fraction,
+                family.clone(),
+                elem.as_ref().clone(),
+            ))
+        };
+        // An integer beside a fixed or float format takes it, by value.
+        match (left, right) {
+            (Ty::Integer, other) | (other, Ty::Integer) => {
+                return shape(other)
+                    .filter(|(rung, ..)| *rung >= 2)
+                    .map(|_| other.clone());
+            }
+            _ => {}
+        }
+        let (a, b) = (shape(left)?, shape(right)?);
+        if left == right {
+            return None;
+        }
+        let sibling = |family: &str, leaf: &str| match family.rsplit_once("::") {
+            Some((module, _)) => format!("{module}::{leaf}"),
+            None => leaf.to_string(),
+        };
+        let elem = a.5.clone();
+        if a.0 == 3 || b.0 == 3 {
+            // Float: the wider exponent and mantissa of the float operands.
+            let floats = [&a, &b].into_iter().filter(|shape| shape.0 == 3);
+            let (exponent, mantissa) =
+                floats.fold((0, 0), |(e, m), shape| (e.max(shape.2 - 1), m.max(shape.3)));
+            let family = if a.0 == 3 { a.4.clone() } else { b.4.clone() };
+            return Some(Ty::Array {
+                elem: Box::new(elem),
+                len: u32::try_from(exponent + mantissa + 1).ok()?,
+                family: Some(family),
+                low: -mantissa,
+            });
+        }
+        let signed = a.1 || b.1;
+        let integer =
+            |shape: &(u8, bool, i64, i64, String, Ty)| shape.2 + i64::from(signed && !shape.1);
+        let integer_bits = integer(&a).max(integer(&b));
+        let fraction = a.3.max(b.3);
+        let rung = a.0.max(b.0);
+        let leaf = match (rung, signed) {
+            (1, false) => "unsigned",
+            (1, true) => "signed",
+            (_, false) => "ufixed",
+            (_, true) => "sfixed",
+        };
+        let base = if a.0 == rung { &a.4 } else { &b.4 };
+        Some(Ty::Array {
+            elem: Box::new(elem),
+            len: u32::try_from(integer_bits + fraction).ok()?,
+            family: Some(sibling(base, leaf)),
+            low: -fraction,
+        })
+    }
+
     pub(super) fn operator_accepts_expr(
         &self,
         symbol: &str,
@@ -209,7 +301,7 @@ impl<'a> Checker<'a> {
         sym: &HashMap<String, Ty>,
     ) -> bool {
         if matches!(symbol, "+" | "-" | "*" | "/" | "%" | "<" | "==")
-            && self.promotes_to_real(left, right)
+            && (self.promotes_to_real(left, right) || self.numeric_promotion(left, right).is_some())
         {
             return true;
         }

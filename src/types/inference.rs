@@ -147,6 +147,15 @@ impl<'a> Checker<'a> {
                 }
                 let lhs_ty = self.type_of(lhs, sym);
                 let rhs_ty = self.type_of(rhs, sym);
+                // Mixed numbers promote (spec 3.17).
+                if matches!(
+                    op,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem
+                ) {
+                    if let Some(promoted) = self.numeric_promotion(&lhs_ty, &rhs_ty) {
+                        return promoted;
+                    }
+                }
                 let op_str = crate::syntax::pretty::bin_op(op);
                 let contextual_rhs =
                     Self::is_contextual_literal(rhs) && self.assignable(&lhs_ty, rhs, sym);

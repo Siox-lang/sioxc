@@ -47,6 +47,9 @@ pub struct FunctionIndex<'a> {
     /// Functions of an `extern "intrinsic"` block (`core::intrinsics`): the
     /// compiler emits them natively instead of calling a foreign symbol.
     intrinsics: std::collections::HashSet<DefId>,
+    /// Exact `impl Widen<Source> for Target` bodies, keyed as `conversions`:
+    /// the alignment numeric promotion inserts (spec 3.17).
+    widenings: HashMap<(String, String), &'a ast::FnDecl>,
 }
 
 impl<'a> FunctionIndex<'a> {
@@ -60,6 +63,7 @@ impl<'a> FunctionIndex<'a> {
             blanket_array_operators: HashMap::new(),
             conversions: HashMap::new(),
             intrinsics: std::collections::HashSet::new(),
+            widenings: HashMap::new(),
         }
     }
 
@@ -68,9 +72,11 @@ impl<'a> FunctionIndex<'a> {
         let Some(trait_path) = implementation.trait_.as_ref() else {
             return;
         };
-        if self.trait_path_key(trait_path).as_deref() != Some("From") {
-            return;
-        }
+        let (method, widening) = match self.trait_path_key(trait_path).as_deref() {
+            Some("From") => ("from", false),
+            Some("Widen") => ("widen", true),
+            _ => return,
+        };
         let Some(target) = self.type_head_key(&implementation.target) else {
             return;
         };
@@ -86,11 +92,22 @@ impl<'a> FunctionIndex<'a> {
             return;
         };
         if let Some(function) = implementation.items.iter().find_map(|item| match item {
-            ast::ImplItem::Fn(function) if function.name.text == "from" => Some(function),
+            ast::ImplItem::Fn(function) if function.name.text == method => Some(function),
             _ => None,
         }) {
-            self.conversions.insert((target, source), function);
+            if widening {
+                self.widenings.insert((target, source), function);
+            } else {
+                self.conversions.insert((target, source), function);
+            }
         }
+    }
+
+    /// Select the exact `Widen` body numeric promotion uses for a pair.
+    pub fn get_widening(&self, target: &str, source: &str) -> Option<&'a ast::FnDecl> {
+        self.widenings
+            .get(&(target.to_string(), source.to_string()))
+            .copied()
     }
 
     /// Select the exact source/target conversion body.

@@ -1,6 +1,7 @@
 module std::float;
 
-use std::bits::unsigned;
+use core::convert::Widen;
+use std::bits::{unsigned, signed};
 use std::fixed::{ufixed, sfixed};
 use std::math::Sqrt;
 use std::numeric::Rounding;
@@ -517,6 +518,47 @@ fn float_to_fixed(
     if signed_steps > top { return top; }
     if signed_steps < bottom { return bottom; }
     return signed_steps;
+}
+
+// --- numeric promotion -------------------------------------------------------------
+
+// A number into the float format of the operation (spec 3.17), rounded to
+// nearest even where the format cannot hold it exactly: floating point is
+// the approximate rung of the ladder.
+impl Widen<float> for float {
+    fn widen(value: float) -> float {
+        return refloat(integer(value), value'high, 0 - value'low, Self'high, 0 - Self'low, false);
+    }
+}
+
+impl Widen<ufixed> for float {
+    fn widen(value: ufixed) -> float {
+        return fixed_to_float(fixed_word(value, false), 0 - value'low, Self'high, 0 - Self'low);
+    }
+}
+
+impl Widen<sfixed> for float {
+    fn widen(value: sfixed) -> float {
+        return fixed_to_float(fixed_word(value, true), 0 - value'low, Self'high, 0 - Self'low);
+    }
+}
+
+impl Widen<unsigned> for float {
+    fn widen(value: unsigned) -> float {
+        return fixed_to_float(fixed_word(value, false), 0, Self'high, 0 - Self'low);
+    }
+}
+
+impl Widen<signed> for float {
+    fn widen(value: signed) -> float {
+        return fixed_to_float(fixed_word(value, true), 0, Self'high, 0 - Self'low);
+    }
+}
+
+impl Widen<integer> for float {
+    fn widen(value: integer) -> float {
+        return fixed_to_float(value, 0, Self'high, 0 - Self'low);
+    }
 }
 
 // The word of `value` with `e` exponent and `f` fraction bits.

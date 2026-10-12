@@ -891,3 +891,61 @@ impl T {
         );
     }
 }
+
+/// Mixed numbers below `real` promote along the ladder by exact widening
+/// (`core::convert::Widen`): `unsigned + signed`, `ufixed + sfixed`,
+/// `sfixed + unsigned`, formats widened to cover both, `float` beside fixed,
+/// and an integer beside a fixed format as its value (`s + 1` adds 1.0), in
+/// hardware and a testbench, comparisons included.
+#[cfg(feature = "llvm")]
+#[test]
+fn numbers_promote_along_the_ladder() {
+    let stdout = run(
+        "numeric_ladder",
+        r#"
+module numeric_ladder;
+use std::fixed::{ufixed, sfixed};
+use std::float::float;
+entity Dut {
+    u: unsigned[8] in, v: signed[8] in, a: ufixed<8, 4> in, s: sfixed<8, 4> in, p: sfixed<12, 6> in,
+    f: float<32, 23> in,
+    uv: signed[9] out, as_: sfixed<9, 4> out, su: sfixed<13, 4> out, sp: sfixed<12, 6> out,
+    fs: float<32, 23> out, s1: sfixed<8, 4> out, lt: Bool out,
+}
+impl Dut {
+    uv = u + v;
+    as_ = a + s;
+    su = s + u;
+    sp = s + p;
+    fs = f + s;
+    s1 = s + 1;
+    lt = s < u;
+}
+#[test] entity T {}
+impl T {
+    let u: unsigned[8]; let v: signed[8]; let a: ufixed<8, 4>; let s: sfixed<8, 4>; let p: sfixed<12, 6>;
+    let f: float<32, 23>;
+    let uv: signed[9]; let as_: sfixed<9, 4>; let su: sfixed<13, 4>; let sp: sfixed<12, 6>;
+    let fs: float<32, 23>; let s1: sfixed<8, 4>; let lt: Bool;
+    let dut: Dut = { .u = u, .v = v, .a = a, .s = s, .p = p, .f = f, .uv = uv, .as_ = as_, .su = su,
+        .sp = sp, .fs = fs, .s1 = s1, .lt = lt };
+    check: process {
+        u = 200; v = 0 - 3; a = ufixed<8, 4>(2.5); s = sfixed<8, 4>(0.0 - 1.25);
+        p = sfixed<12, 6>(1.015625); f = float<32, 23>(0.5);
+        await 1ns;
+        print!("hw {} {} {} {} {} {} {}", uv, as_, su, sp, fs, s1, lt);
+        print!("tb {} {} {} {} {} {} {} {} {}", u + v, a + s, s + u, s + p, f + s, f + u, s + 1, a * 2, s < u);
+    }
+}
+"#,
+    );
+    for line in [
+        "hw 197 1.25 198.75 -0.234375 -0.75 -0.25 true",
+        "tb 197 1.25 198.75 -0.234375 -0.75 200.5 -0.25 5 true",
+    ] {
+        assert!(
+            stdout.lines().any(|printed| printed == line),
+            "missing `{line}` in:\n{stdout}"
+        );
+    }
+}

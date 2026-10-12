@@ -55,6 +55,9 @@ impl<'a> Lowering<'a> {
     /// Lower an expression to a value in `env`, which may be an aggregate of
     /// leaves rather than a single expression.
     pub(super) fn lower_val_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Val {
+        if let Some(value) = self.promoted_operand(e, env) {
+            return Val::Scalar(value);
+        }
         if let Some(value) = self.source_call_value(e, env) {
             return value;
         }
@@ -694,6 +697,10 @@ impl<'a> Lowering<'a> {
 
     /// The signal at the base of an access expression.
     pub(super) fn base_signal(&self, base: &ast::Expr) -> Option<SignalId> {
+        // A widened operand is a computed value, not the signal it names.
+        if self.promotion_of(base).is_some() {
+            return None;
+        }
         if let Some(signal) = self.source_call_signal(base) {
             return signal;
         }
