@@ -907,6 +907,11 @@ fn generic_arg(a: &GenericArg) -> String {
 pub fn type_str(t: &Type) -> String {
     match t {
         Type::Path(p) => path(p),
+        // An array of applied views prints as written: `Bus[4] Source`.
+        Type::Indexed { .. } if indexed_view(t).is_some() => {
+            let (array, view) = indexed_view(t).unwrap_or_default();
+            format!("{array} {view}")
+        }
         Type::Indexed { base, index, .. } => match index {
             Some(i) => format!("{}[{}]", type_str(base), expr(i)),
             None => format!("{}[]", type_str(base)),
@@ -917,6 +922,20 @@ pub fn type_str(t: &Type) -> String {
         }
         // `Stream Source`: the backing type leads, the view follows it.
         Type::View { view, target, .. } => format!("{} {}", type_str(target), path(view)),
+    }
+}
+
+/// An array whose elements carry a view, split into the array of backing
+/// types and the view: `Bus[4] Source` is `("Bus[4]", "Source")`.
+fn indexed_view(t: &Type) -> Option<(String, String)> {
+    match t {
+        Type::View { view, target, .. } => Some((type_str(target), path(view))),
+        Type::Indexed { base, index, .. } => {
+            let (array, view) = indexed_view(base)?;
+            let index = index.as_ref().map(|i| expr(i)).unwrap_or_default();
+            Some((format!("{array}[{index}]"), view))
+        }
+        _ => None,
     }
 }
 
