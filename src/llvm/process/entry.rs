@@ -9,6 +9,186 @@ use super::*;
 /// executable nodes return [`PROCESS_UNSUPPORTED`] before a block performs any
 /// calls or writes, so an unsupported form cannot produce partial effects.
 #[allow(clippy::too_many_arguments)]
+/// Whether a value that reads no local, storage or call result is the same
+/// in every block of one activation: no suspension, storage or per-place
+/// write, or runtime call can intervene.
+fn values_hold_across_blocks(process: &ProcessCfg) -> bool {
+    process.blocks.iter().all(|block| {
+        !matches!(block.terminator, ProcessTerminator::Suspend { .. })
+            && block.instructions.iter().all(|instruction| {
+                !matches!(
+                    instruction,
+                    ProcessInstruction::Runtime { .. }
+                        | ProcessInstruction::Assign {
+                            semantics: ProcessAssignment::ImmediateStorage
+                                | ProcessAssignment::PerPlace,
+                            ..
+                        }
+                )
+            })
+    })
+}
+
+/// The pure values (reading no mutable place, no checked access) that two
+/// or more instruction or branch operands of `process` reach, largest arena
+/// id first, so each emission finds its operands already emitted. Emitted
+/// lazily in each conditional write's own block, a chain of guarded writes
+/// whose values build on one another re-emitted the chain in every block.
+pub(super) fn shared_pure_values(
+    design: &Design,
+    process: &ProcessCfg,
+    place_free: &[bool],
+    activity_values: &[bool],
+) -> Vec<ProcessValueId> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Reach {
+        Unseen,
+        Root(usize),
+        Shared,
+    }
+    let pure = |value: ProcessValueId| {
+        let index = value.0 as usize;
+        place_free.get(index).copied().unwrap_or(false)
+            && !activity_values.get(index).copied().unwrap_or(true)
+    };
+    let mut roots = Vec::new();
+    for block in &process.blocks {
+        for instruction in &block.instructions {
+            match instruction {
+                ProcessInstruction::Declare {
+                    initializer: Some(value),
+                    ..
+                }
+                | ProcessInstruction::Assign { value, .. }
+                | ProcessInstruction::Schedule { value, .. } => roots.push(*value),
+                _ => {}
+            }
+        }
+        if let ProcessTerminator::Branch { condition, .. } = block.terminator {
+            roots.push(condition);
+        }
+    }
+    let mut reach = vec![Reach::Unseen; design.process_ir.values.len()];
+    for (root_index, root) in roots.into_iter().enumerate() {
+        let mut pending = vec![(root, false)];
+        while let Some((value, shared)) = pending.pop() {
+            if !pure(value) {
+                continue;
+            }
+            let slot = &mut reach[value.0 as usize];
+            let next = match (*slot, shared) {
+                (Reach::Shared, _) => continue,
+                (_, true) => Reach::Shared,
+                (Reach::Unseen, false) => Reach::Root(root_index),
+                (Reach::Root(owner), false) if owner == root_index => continue,
+                (Reach::Root(_), false) => Reach::Shared,
+            };
+            *slot = next;
+            let shared = next == Reach::Shared;
+            siox::ir::for_each_process_value_dependency(
+                &design.process_ir.values[value.0 as usize].kind,
+                |dependency| pending.push((dependency, shared)),
+            );
+        }
+    }
+    (0..reach.len())
+        .rev()
+        .filter(|index| reach[*index] == Reach::Shared)
+        .map(|index| ProcessValueId(index as u32))
+        .collect()
+}
+
+/// Each block's immediate dominator by index (Cooper, Harvey and Kennedy's
+/// iteration over reverse postorder); none for the entry and for blocks
+/// the entry cannot reach.
+pub(super) fn immediate_dominators(process: &ProcessCfg) -> Vec<Option<usize>> {
+    let count = process.blocks.len();
+    let successors = process
+        .blocks
+        .iter()
+        .map(|block| match &block.terminator {
+            ProcessTerminator::Goto(target) => vec![target.0 as usize],
+            ProcessTerminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => vec![then_block.0 as usize, else_block.0 as usize],
+            ProcessTerminator::Match { arms, fallback, .. } => arms
+                .iter()
+                .map(|arm| arm.block.0 as usize)
+                .chain(fallback.map(|block| block.0 as usize))
+                .collect(),
+            ProcessTerminator::For { body, exit, .. } => {
+                vec![body.0 as usize, exit.0 as usize]
+            }
+            ProcessTerminator::Suspend { resume, .. } => vec![resume.0 as usize],
+            _ => Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let entry = process.entry.0 as usize;
+    let mut postorder = Vec::with_capacity(count);
+    let mut visited = vec![false; count];
+    let mut stack = vec![(entry, 0usize)];
+    visited[entry] = true;
+    while let Some((block, next)) = stack.last_mut() {
+        if let Some(&successor) = successors[*block].get(*next) {
+            *next += 1;
+            if !visited[successor] {
+                visited[successor] = true;
+                stack.push((successor, 0));
+            }
+        } else {
+            postorder.push(*block);
+            stack.pop();
+        }
+    }
+    let mut number = vec![0usize; count];
+    for (index, block) in postorder.iter().enumerate() {
+        number[*block] = index;
+    }
+    let mut predecessors = vec![Vec::new(); count];
+    for &block in &postorder {
+        for &successor in &successors[block] {
+            predecessors[successor].push(block);
+        }
+    }
+    let mut idom = vec![None; count];
+    idom[entry] = Some(entry);
+    let intersect = |idom: &[Option<usize>], mut left: usize, mut right: usize| {
+        while left != right {
+            while number[left] < number[right] {
+                left = idom[left].expect("processed dominator");
+            }
+            while number[right] < number[left] {
+                right = idom[right].expect("processed dominator");
+            }
+        }
+        left
+    };
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &block in postorder.iter().rev().filter(|block| **block != entry) {
+            let mut dominator = None;
+            for &predecessor in &predecessors[block] {
+                if idom[predecessor].is_some() {
+                    dominator = Some(match dominator {
+                        None => predecessor,
+                        Some(current) => intersect(&idom, predecessor, current),
+                    });
+                }
+            }
+            if dominator != idom[block] {
+                idom[block] = dominator;
+                changed = true;
+            }
+        }
+    }
+    idom[entry] = None;
+    idom
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn process_entry<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
@@ -17,6 +197,7 @@ pub(super) fn process_entry<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     range_sites: &HashMap<siox::diag::Span, u32>,
     activity_values: &[bool],
+    place_free: &[bool],
     supported_values: &ProcessValueSupport,
     schedule_sites: &HashMap<(ProcessId, siox::ir::ProcessBlockId, usize), ScheduleSite>,
     debug: Option<&DebugInfo<'ctx, '_>>,
@@ -44,10 +225,22 @@ pub(super) fn process_entry<'ctx>(
         .get_first_param()
         .expect("process entry has a resume block")
         .into_int_value();
+    // The runtime enters at the initial block or where a suspension resumes,
+    // nowhere else. Dispatching to every block made each one an entry, so
+    // no block dominated another and none could reuse its dominator's values.
+    let resumes = process
+        .blocks
+        .iter()
+        .filter_map(|block| match block.terminator {
+            ProcessTerminator::Suspend { resume, .. } => Some(resume),
+            _ => None,
+        })
+        .collect::<std::collections::HashSet<_>>();
     let cases = process
         .blocks
         .iter()
         .zip(&blocks)
+        .filter(|(block, _)| block.id == process.entry || resumes.contains(&block.id))
         .map(|(block, llvm)| (i32.const_int(u64::from(block.id.0), false), *llvm))
         .collect::<Vec<_>>();
     builder.build_switch(resume, invalid, &cases).unwrap();
@@ -62,6 +255,26 @@ pub(super) fn process_entry<'ctx>(
         .build_return(Some(&i8.const_int(u64::from(PROCESS_STOPPED), false)))
         .unwrap();
 
+    // A block starts from what its immediate dominator computed, when the
+    // process cannot change a place-free value between them. A fresh cache
+    // per block re-emitted a shared graph in every block that read it.
+    let dominators = if debug.is_none() && values_hold_across_blocks(process) {
+        immediate_dominators(process)
+    } else {
+        Vec::new()
+    };
+    let shared = if dominators.is_empty() {
+        Vec::new()
+    } else {
+        shared_pure_values(design, process, place_free, activity_values)
+    };
+    let dominating = dominators
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let mut block_values: Vec<Option<PlaceFreeValues<'ctx>>> =
+        (0..process.blocks.len()).map(|_| None).collect();
     for (block, llvm) in process.blocks.iter().zip(&blocks) {
         let inline = debug.and_then(|_| process.block_inline_call(block.id));
         builder.position_at_end(*llvm);
@@ -78,6 +291,29 @@ pub(super) fn process_entry<'ctx>(
         let mut cache = ProcessValueCache::new(activity_values, &supported_values.meta_free);
         cache.debug = debug;
         cache.debug_root = Some(process.root.0);
+        if let Some(values) = dominators
+            .get(block.id.0 as usize)
+            .copied()
+            .flatten()
+            .and_then(|dominator| block_values[dominator].as_ref())
+        {
+            cache.inherit(values);
+        }
+        if block.id == process.entry {
+            // Values several blocks read, emitted once where they all see them.
+            for &value in &shared {
+                process_value(
+                    context,
+                    module,
+                    &builder,
+                    design,
+                    value,
+                    None,
+                    index_sites,
+                    &mut cache,
+                );
+            }
+        }
         let mut failed = false;
         for (instruction_index, instruction) in block.instructions.iter().enumerate() {
             if let (Some(debug), Some(scope)) = (debug, scope) {
@@ -490,6 +726,9 @@ pub(super) fn process_entry<'ctx>(
                 .build_return(Some(&i8.const_int(u64::from(PROCESS_UNSUPPORTED), false)))
                 .unwrap();
             continue;
+        }
+        if dominating.contains(&(block.id.0 as usize)) {
+            block_values[block.id.0 as usize] = Some(cache.place_free_entries(place_free));
         }
 
         match &block.terminator {
@@ -931,6 +1170,7 @@ pub(super) fn process_entry_table<'ctx>(
         .map(|site| ((site.process, site.block, site.instruction), site.clone()))
         .collect::<HashMap<_, _>>();
     emit_scheduled_apply(context, module, design, &schedule_sites, &range_sites);
+    let place_free = place_free_process_values(design);
     let values = design
         .process_ir
         .processes
@@ -944,6 +1184,7 @@ pub(super) fn process_entry_table<'ctx>(
                 &index_sites,
                 &range_sites,
                 activity_values,
+                &place_free,
                 supported_values,
                 &schedule_by_location,
                 debug,

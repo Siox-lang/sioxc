@@ -44,6 +44,13 @@ pub(super) struct ProcessValueCache<'ctx, 'checks> {
     pub(super) source_results: debug::ValueResults<'ctx>,
 }
 
+/// Cached values that read no mutable place, carried into dominated blocks.
+pub(super) struct PlaceFreeValues<'ctx> {
+    emitted: HashMap<(ProcessValueId, Option<IntValue<'ctx>>, Option<u32>), IntValue<'ctx>>,
+    contextual: HashMap<(ProcessValueId, Option<IntValue<'ctx>>, u32, bool), IntValue<'ctx>>,
+    metadata: HashMap<(ProcessValueId, Option<IntValue<'ctx>>, SourceLayout), IntValue<'ctx>>,
+}
+
 impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
     pub(super) fn new(activity_sensitive: &'checks [bool], meta_free: &'checks [bool]) -> Self {
         Self {
@@ -95,6 +102,38 @@ impl<'ctx, 'checks> ProcessValueCache<'ctx, 'checks> {
         self.metadata.clear();
         self.signals.clear();
         self.source_results.clear();
+    }
+
+    /// The entries whose values read no mutable place, for a block this one
+    /// dominates. Within one activation without suspends, storage writes or
+    /// runtime calls such a value is the same wherever it is read.
+    pub(super) fn place_free_entries(&self, place_free: &[bool]) -> PlaceFreeValues<'ctx> {
+        let free =
+            |value: ProcessValueId| place_free.get(value.0 as usize).copied().unwrap_or(false);
+        PlaceFreeValues {
+            emitted: (self.emitted.iter())
+                .filter(|(key, _)| free(key.0))
+                .map(|(key, value)| (*key, *value))
+                .collect(),
+            contextual: (self.contextual.iter())
+                .filter(|(key, _)| free(key.0))
+                .map(|(key, value)| (*key, *value))
+                .collect(),
+            metadata: (self.metadata.iter())
+                .filter(|(key, _)| free(key.0))
+                .map(|(key, value)| (key.clone(), *value))
+                .collect(),
+        }
+    }
+
+    /// Start from the values a dominating block computed.
+    pub(super) fn inherit(&mut self, values: &PlaceFreeValues<'ctx>) {
+        self.emitted
+            .extend(values.emitted.iter().map(|(k, v)| (*k, *v)));
+        self.contextual
+            .extend(values.contextual.iter().map(|(k, v)| (*k, *v)));
+        self.metadata
+            .extend(values.metadata.iter().map(|(k, v)| (k.clone(), *v)));
     }
 
     pub(super) fn emitted_value(

@@ -857,3 +857,27 @@ pub(super) fn activity_sensitive_process_values(design: &Design) -> Vec<bool> {
     }
     checked
 }
+
+/// Whether each arena node reads no local, storage or call result, computed
+/// bottom-up in one pass. Within one activation that cannot suspend, write
+/// storage or call the runtime, such a value is the same wherever it is read.
+pub(super) fn place_free_process_values(design: &Design) -> Vec<bool> {
+    let mut free = Vec::with_capacity(design.process_ir.values.len());
+    for value in &design.process_ir.values {
+        let mut own = !matches!(
+            value.kind,
+            ProcessValueKind::Local { .. }
+                | ProcessValueKind::Storage(_)
+                | ProcessValueKind::StorageState { .. }
+                | ProcessValueKind::Parameter { .. }
+                | ProcessValueKind::Call { .. }
+                | ProcessValueKind::HostCall { .. }
+                | ProcessValueKind::ForeignCall { .. }
+        );
+        siox::ir::for_each_process_value_dependency(&value.kind, |dependency| {
+            own &= free.get(dependency.0 as usize).copied().unwrap_or(false);
+        });
+        free.push(own);
+    }
+    free
+}
