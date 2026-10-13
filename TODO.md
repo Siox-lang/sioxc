@@ -56,8 +56,6 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
 - 🔴 **Incremental/query interface.** Add demand-driven caching only when the
   LSP or future project tool needs incremental multi-file recomputation; keep
   the current explicit phase products as the public boundary.
-- 🔴 **Tuples.** Anonymous product types, `let` destructuring and
-  multi-signal `match`. See [the proposal](docs/proposals/tuples.md).
 - 🔴 **Payload enums.** Tagged-union variants, binding patterns,
   `Option`/`Result` and `checked_*`; builds on tuples. See
   [the proposal](docs/proposals/payload-enums.md).
