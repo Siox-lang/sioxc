@@ -373,6 +373,31 @@ impl<'a> Lowering<'a> {
                 if let Some(result) = temps.source_meta.get(&key) {
                     return result.clone();
                 }
+                // Built under an enclosing selection's activity, which holds
+                // whenever this one does.
+                for frame in temps.shared.iter().rev() {
+                    let key = (*value, width, temps.ctx, frame.guard);
+                    if let Some(result) = temps.source_meta.get(&key) {
+                        return result.clone();
+                    }
+                }
+                // Read by both arms of an enclosing selection: build it under
+                // that selection's activity, so the other arm finds it above.
+                // Built per arm, a chain of writes doubled at every link.
+                if let Some(frame) = temps
+                    .shared
+                    .iter()
+                    .position(|frame| frame.values.contains(value))
+                {
+                    let inner = temps.shared.split_off(frame);
+                    let cond = std::mem::replace(&mut temps.cond, inner[0].cond.clone());
+                    let guard = std::mem::replace(&mut temps.guard, inner[0].guard);
+                    let result = self.lower_meta_ir(e, width, temps);
+                    temps.cond = cond;
+                    temps.guard = guard;
+                    temps.shared.extend(inner);
+                    return result;
+                }
                 let merge = self.source_values.borrow().merge_meta.get(value).cloned();
                 let meta = match merge {
                     Some(merge) => Some(self.merged_meta(&merge, width, temps)),
@@ -434,6 +459,15 @@ impl<'a> Lowering<'a> {
             Expr::Select { cond, then, els } => {
                 let outer = temps.cond.clone();
                 let outer_guard = temps.guard;
+                let shared = self.shared_meta_values(then, els);
+                let frames = temps.shared.len();
+                if !shared.is_empty() {
+                    temps.shared.push(crate::ir::passes::SharedArms {
+                        values: shared,
+                        cond: outer.clone(),
+                        guard: outer_guard,
+                    });
+                }
                 let then_guard =
                     self.source_write_guard(&outer, cond.as_ref().clone(), temps.anchor);
                 self.set_meta_guard(temps, then_guard);
@@ -442,6 +476,7 @@ impl<'a> Lowering<'a> {
                 let else_guard = self.source_write_guard(&outer, negative, temps.anchor);
                 self.set_meta_guard(temps, else_guard);
                 let me = self.lower_meta_ir(els, width, temps);
+                temps.shared.truncate(frames);
                 temps.cond = outer;
                 temps.guard = outer_guard;
                 if mt.is_none() && me.is_none() {
@@ -649,6 +684,34 @@ impl<'a> Lowering<'a> {
             acc = arena.binary(BinOp::Or, &acc, &nibble, temps.anchor);
         }
         Some(acc)
+    }
+
+    /// The values with companions that both arms of a selection read.
+    fn shared_meta_values(
+        &self,
+        then: &Expr,
+        els: &Expr,
+    ) -> std::collections::HashSet<ProcessValueId> {
+        let (Expr::Canonical { value: then, .. }, Expr::Canonical { value: els, .. }) = (then, els)
+        else {
+            return Default::default();
+        };
+        let arena = &mut *self.source_values.borrow_mut();
+        let mut reach = |root: ProcessValueId| {
+            let mut seen = std::collections::HashSet::new();
+            let mut pending = vec![root];
+            while let Some(id) = pending.pop() {
+                if arena.may_have_meta(id, &self.out.meta_of) && seen.insert(id) {
+                    pending.extend(crate::ir::process::process_value_dependencies(
+                        &arena.ir.values[id.0 as usize].kind,
+                    ));
+                }
+            }
+            seen
+        };
+        let then = reach(*then);
+        let els = reach(*els);
+        then.intersection(&els).copied().collect()
     }
 
     /// Record activity as an arena identity so hoists and companion memo keys
