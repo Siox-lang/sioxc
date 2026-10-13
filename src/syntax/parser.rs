@@ -3639,6 +3639,30 @@ impl<'a> Parser<'a> {
         {
             position += 2;
         }
+        // `unsigned[16][]`: an empty bracket pair is never a value index, so
+        // a run of index groups containing one is an unconstrained array type.
+        let mut cursor = position;
+        while self.kind_at(cursor) == &TokenKind::LBracket {
+            if self.kind_at(cursor + 1) == &TokenKind::RBracket {
+                return true;
+            }
+            let mut depth = 0usize;
+            loop {
+                match self.kind_at(cursor) {
+                    TokenKind::LBracket => depth += 1,
+                    TokenKind::RBracket => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    TokenKind::Eof => return false,
+                    _ => {}
+                }
+                cursor += 1;
+            }
+            cursor += 1;
+        }
         self.kind_at(position) == &TokenKind::Lt
     }
 

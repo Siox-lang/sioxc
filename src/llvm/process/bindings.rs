@@ -221,6 +221,11 @@ pub(super) fn packed_arithmetic_operand_layout(
 pub(super) fn layout_has_packed_metadata(design: &Design, layout: &SourceLayout) -> bool {
     match &layout.kind {
         LayoutKind::Packed { .. } => packed_logic_layout(design, layout).is_some(),
+        // A runtime array is a handle; its elements come from a binary file
+        // and are always two-valued, so they carry no companion plane.
+        LayoutKind::Array { range: None, .. } if runtime_handle_layout(Some(layout)).is_some() => {
+            false
+        }
         LayoutKind::Array { element, .. } => layout_has_packed_metadata(design, element),
         LayoutKind::Struct { fields, .. } => fields
             .iter()

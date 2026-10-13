@@ -481,15 +481,20 @@ pub enum ProcessHostValueOp {
     Uniform,
     /// Decode one UTF-8 file into a runtime-owned string and return its handle.
     ReadUtf8,
+    /// Read a binary file into a runtime-owned array (`T[]`) and return its
+    /// handle. Arguments: the path, and the bytes one element consumes.
+    /// Length and indexing use the string services, which serve both.
+    ReadArray,
     /// Decode UTF-8 directly into a fixed `Char[N]` Process value.
     ReadUtf8Fixed,
     /// Read raw bytes into the exact-width Process value supplied by context.
     ReadBinary,
     /// Test whether a filesystem path exists without raising an I/O failure.
     FileExists,
-    /// Return the Unicode scalar count of a runtime-owned string handle.
+    /// Return the element count of a runtime-owned string or array handle.
     StringLength,
-    /// Read one Unicode scalar from a runtime-owned string handle.
+    /// Read one element (a Unicode scalar, or an array element's bits) from a
+    /// runtime-owned handle.
     StringIndex,
     /// Compare a runtime-owned string handle with a retained UTF-8 literal.
     StringEqualsUtf8,
@@ -1957,7 +1962,9 @@ impl ProcessIr {
                         | ProcessHostValueOp::ReadBinary
                         | ProcessHostValueOp::FileExists
                         | ProcessHostValueOp::StringLength => 1,
-                        ProcessHostValueOp::StringIndex | ProcessHostValueOp::StringEqualsUtf8 => 2,
+                        ProcessHostValueOp::StringIndex
+                        | ProcessHostValueOp::StringEqualsUtf8
+                        | ProcessHostValueOp::ReadArray => 2,
                     } =>
                 {
                     issues.push(format!(

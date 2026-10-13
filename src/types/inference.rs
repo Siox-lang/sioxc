@@ -294,7 +294,11 @@ impl<'a> Checker<'a> {
                         }
                     }
                     Ty::Array { elem, len, .. } if !is_range => {
-                        if signed_lit(index).is_some_and(|i| i < 0 || i as u64 >= *len as u64) {
+                        // An unconstrained array (`len` 0: a runtime string or
+                        // `T[]`) checks its bounds when the test runs.
+                        if signed_lit(index)
+                            .is_some_and(|i| i < 0 || *len != 0 && i as u64 >= *len as u64)
+                        {
                             Ty::Error
                         } else {
                             elem.as_ref().clone()

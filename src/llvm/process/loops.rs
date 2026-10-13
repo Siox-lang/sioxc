@@ -338,9 +338,15 @@ pub(super) fn emit_dynamic_string_loop<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<()> {
-    if !dynamic_string_value(design, iterable) || local_width(design, process, local) != Some(32) {
+    // The loop variable has the element's width: 32 for a string's code
+    // points, the packed width for an array's elements.
+    if !dynamic_string_value(design, iterable)
+        || local_width(design, process, local)
+            != runtime_handle_element_width(process_value_layout(design, iterable))
+    {
         return None;
     }
+    let element_width = local_width(design, process, local)?;
     let i64 = context.i64_type();
     let length_fn = module
         .get_function("sx_runtime_string_length")
@@ -439,8 +445,8 @@ pub(super) fn emit_dynamic_string_loop<'ctx>(
         module,
         builder,
         &local_state_name(process, local),
-        32,
-        fit(builder, character, 32)?,
+        element_width,
+        fit(builder, character, element_width)?,
     )?;
     builder.build_unconditional_branch(body).ok()?;
 
@@ -486,8 +492,8 @@ pub(super) fn emit_dynamic_string_loop<'ctx>(
         module,
         builder,
         &local_state_name(process, local),
-        32,
-        fit(builder, character, 32)?,
+        element_width,
+        fit(builder, character, element_width)?,
     )?;
     builder.build_unconditional_branch(body).ok()?;
     Some(())

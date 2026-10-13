@@ -1251,6 +1251,29 @@ pub(super) fn process_value<'ctx>(
                         .into()],
                     )
                 }
+                ProcessHostValueOp::ReadArray => {
+                    let [path, bytes] = arguments.as_slice() else {
+                        return None;
+                    };
+                    (
+                        "sx_runtime_read_array",
+                        i64.fn_type(&[pointer.into(), i64.into()], false),
+                        vec![
+                            host_path(
+                                context,
+                                module,
+                                builder,
+                                design,
+                                *path,
+                                &format!("sx.host.string.{}", path.0),
+                                index_sites,
+                                cache,
+                            )?
+                            .into(),
+                            scalar_argument(*bytes, cache)?,
+                        ],
+                    )
+                }
                 ProcessHostValueOp::StringLength => {
                     let [handle] = arguments.as_slice() else {
                         return None;
@@ -1317,7 +1340,10 @@ pub(super) fn process_value<'ctx>(
                 inkwell::values::ValueKind::Basic(value) => value.into_int_value(),
                 _ => return None,
             };
-            if *operation == ProcessHostValueOp::ReadUtf8 {
+            if matches!(
+                operation,
+                ProcessHostValueOp::ReadUtf8 | ProcessHostValueOp::ReadArray
+            ) {
                 emit_host_read_check(context, module, builder, value.span)?;
             }
             fit(builder, returned, width)?

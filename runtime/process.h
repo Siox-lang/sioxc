@@ -79,6 +79,7 @@ uint64_t sx_runtime_uniform(void);
  * every host. Paths have already been resolved against the source directory
  * by Process lowering. */
 uint64_t sx_runtime_read_utf8(const char *path);
+uint64_t sx_runtime_read_array(const char *path, uint64_t element_bytes);
 uint8_t sx_runtime_read_utf8_fixed(const char *path, uint64_t *words,
                                    uint32_t word_count,
                                    uint32_t character_capacity);

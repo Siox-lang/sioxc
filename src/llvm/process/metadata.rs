@@ -288,6 +288,7 @@ pub(super) fn emit_source_locations<'ctx>(
                 ProcessValueKind::HostCall {
                     operation: ProcessHostValueOp::StringIndex
                         | ProcessHostValueOp::ReadUtf8
+                        | ProcessHostValueOp::ReadArray
                         | ProcessHostValueOp::ReadUtf8Fixed
                         | ProcessHostValueOp::ReadBinary,
                     ..
