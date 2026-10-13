@@ -608,7 +608,20 @@ fn inline_call(
 ) -> Option<ProcessValueId> {
     let (function, receiver) = match context.process_ir.values[callee.0 as usize].kind.clone() {
         ProcessValueKind::Definition(definition) => {
-            (context.functions.get_definition(definition)?, None)
+            match context.functions.get_definition(definition) {
+                Some(function) => (function, None),
+                // `Target(value)`: the `From` body converting the argument's type.
+                None => {
+                    let [argument] = arguments else { return None };
+                    let target = context.process_ir.values[call.0 as usize]
+                        .ty
+                        .as_ref()
+                        .and_then(|ty| process_type_key(ty, context))?;
+                    let source = process_value_type(*argument, context)
+                        .and_then(|ty| process_type_key(&ty, context))?;
+                    (context.functions.get_conversion(&target, &source)?, None)
+                }
+            }
         }
         ProcessValueKind::Field { base, field } => {
             let owner =

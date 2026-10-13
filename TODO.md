@@ -134,7 +134,11 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   ownership, conversion and suspension semantics. Recursive runtime calls are
   rejected today; unsupported forms must fail before argument/callee effects
   or staged writes become observable. Keep the existing native transactional
-  failure regressions when adding these capabilities.
+  failure regressions when adding these capabilities. A testbench `From`
+  body that is not one value expression (a loop, a statement `if`) now
+  expands in the CFG like any call; it used to fall back silently to a raw
+  resize. In hardware such a body is still rejected (E-P017 on the loop's
+  index), not silently resized.
 - 🔴 **Host-service extensions.** Add general runtime-owned dynamic arrays
   and runtime-computed file-path arguments. Keep allocation, persistent state
   and host contact behind the fixed runtime ABI; LLVM emits value semantics,

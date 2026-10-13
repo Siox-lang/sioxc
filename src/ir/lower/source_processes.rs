@@ -5826,10 +5826,23 @@ fn lower_process_named_conversion(
             context,
             Some(&target_type),
         );
-        if result.is_none() {
-            truncate_process_values(context, first_value);
+        if result.is_some() {
+            return result;
         }
-        return result;
+        // A body that is not one value (a loop, a statement `if`) expands in
+        // the CFG as any call does; the raw resize below used to stand in for
+        // it silently. The CFG finds the body by these two types.
+        truncate_process_values(context, first_value);
+        let callee = value_ref(callee, process, context);
+        let operand = value_ref_with_type(argument, process, context, Some(&source_type));
+        let kind = ProcessValueKind::Call {
+            callee,
+            type_arguments: Vec::new(),
+            arguments: vec![operand],
+            bang: false,
+        };
+        let width = source_value_width(&kind, Some(&target_type), process, context);
+        return Some(push_value(*span, Some(target_type), width, kind, context));
     }
 
     if target == source || process_enum_conversion_is_total(context.design, &target, &source) {
