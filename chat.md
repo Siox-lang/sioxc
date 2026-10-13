@@ -18032,3 +18032,38 @@ passed source stepping/inspection and VCD parity. Frozen integration hash stays
 c13349428a29840a88005ce466714bc1796761ab7703761e9f7e0ad15d31c6bb.
 Commit the LLVM setup patch onto the preserved PR head, then perform the owner-
 authorized fast-forward push and monitor GitHub CI on that exact new SHA.
+
+### 2026-10-13 — Codex — update CI to stable GDB 18.1
+
+Owner requests updating CI's debugger after run38353377727 failed11/23 DWARF
+fixtures with Ubuntu GDB15.1. Latest official stable release is18.1, matching
+the accepted local debugger. Own only CI and this appended log in the isolated
+PR worktree; preserve foreign shared-worktree changes. Build the checksum-pinned
+official release with Python support, cache its install and select it before
+all native tests. Add a fail-fast Python wide-integer/API check; do not narrow
+source types, skip debugger tests or change compiler/test semantics. Verify the
+workflow recipe and existing debugger fixtures before committing.
+
+Verification job: siox-job-3000-1791871443637801798-890200.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791871443637801798-890200.log.
+It executes the workflow's actual source-build and preflight blocks, then both
+23-fixture DWARF suites and native GDB smoke under the new install. Source
+archive SHA512 passed; YAML/bash parsing and actionlint1.7.12 passed. Compiler,
+std, runtime, unit tests and corpus inputs are unchanged from accepted job713873.
+Do not restart this live job after an observation interruption.
+
+Job890200 built/installed the exact18.1 archive successfully but preflight
+rejected the C expression parser's unsigned __int128 spelling (syntax error,
+not an integer-conversion error). Remove that extra C expression rather than
+adding a separate compiled C fixture; the existing Siox wide DWARF tests check
+the actual conversion. Keep version/Python/API preflight and verify the retained
+fresh install plus both complete suites; no source-build restart is needed.
+
+Job960556 is terminal exited/success/0, peak2521534464 bytes. Version/Python/API
+preflight passed, both complete Rust1.90 suites passed all23 DWARF fixtures each
+(108.68s/108.79s), and the native FIFO/wide GDB smoke passed source stepping,
+inspection and VCD parity. Compiler/test/corpus sources remain unchanged; the
+full239/0 default/bitpack corpus gate from job713873 still applies. Pin the
+native runner to its current Ubuntu24.04 image so a cached debugger cannot
+outlive that image's Python ABI. Final actionlint/YAML/bash/diff checks before
+the scoped commit; hosted verification follows the ongoing PR push/CI task.
