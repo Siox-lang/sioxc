@@ -159,8 +159,9 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   million-cycle workload, and compares two runs (`--compare`). Report its
   before/after numbers with any optimization: structural simplifications
   alone are not evidence of a speedup. The 2026-10-13 baseline: the worst
-  outlier, `float_sqrt_test`, compiles for 75–80 s at 0.5 GB into a 2.5 MB
-  binary; the workload runs at about 1.1 µs a cycle (1.5 µs
+  outlier, `float_sqrt_test`, compiled for 75–80 s at 0.5 GB into a 2.5 MB
+  binary, until shared select arms expanded once (4.8 s, 83 MB, 341 KB); the
+  workload runs at about 1.1 µs a cycle (1.5 µs
   with `bitpack`). Indexed packed writes now use one update per
   value/companion plane rather than enumerating bits; retain structural and
   native range/X/Z regressions plus measured LLVM instruction/memory evidence
