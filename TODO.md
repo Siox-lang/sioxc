@@ -146,7 +146,8 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   expands in the CFG like any call; it used to fall back silently to a raw
   resize. In hardware such a body is still rejected (E-P017 on the loop's
   index), not silently resized.
-- 🟡 **Host-service extensions.** Add general runtime-owned dynamic arrays.
+- 🟡 **Host-service extensions.** Add general runtime-owned dynamic arrays
+  (design: [runtime-sized arrays](docs/proposals/runtime-arrays.md)).
   Runtime-computed file paths are done: a testbench `read`/`exists` path may
   be any string (fixed `Char[N]` values are formatted, runtime strings pass
   their UTF-8), resolved against the source directory by
