@@ -13,8 +13,8 @@ some sharp edges.
 Build `sioxc` from source. The compiler needs:
 
 - [Rust](https://rustup.rs) 1.90 or newer;
-- LLVM 22 development libraries (the version selected in `Cargo.toml`);
-- Clang and zlib for native `#[test]` executables. Clang links the LLVM-emitted
+- LLVM 23.1 development libraries (the version selected in `Cargo.toml`);
+- Clang 23 and zlib for native `#[test]` executables. Clang links the LLVM-emitted
   design with a fixed C scheduler, command-line, and waveform runtime; those
   design-independent runtime objects are normally precompiled with `sioxc`.
 
@@ -23,6 +23,11 @@ git clone --recursive https://github.com/Siox-lang/sioxc
 cd sioxc
 cargo build --release
 ```
+
+Inkwell is pinned to an upstream commit with LLVM 23 bindings until a released
+tag supports them. Repository builds enable strict LLVM 23.1 version checking.
+If several LLVM versions are installed, set `LLVM_SYS_231_PREFIX` to the LLVM 23
+installation and put its `bin` directory on `PATH` so Clang matches CI.
 
 The FST waveform writer is vendored by reference as a git submodule, so
 `--recursive` matters. An existing clone catches up with
@@ -155,8 +160,9 @@ parse tree, lowered IR, and instance hierarchy.
 ## Editor support
 
 [`siox-lsp`](https://github.com/Siox-lang/siox-lsp) is maintained in its own
-repository and depends on this compiler through Cargo Git. It provides live diagnostics,
-go-to-definition, hover, completion, rename, and more:
+repository and depends on this compiler through Cargo Git. Its first version
+provides live diagnostics, definition/type navigation, hover, references,
+document symbols, basic completion, and comment-safe formatting:
 
 ```bash
 git clone git@github.com:Siox-lang/siox-lsp.git

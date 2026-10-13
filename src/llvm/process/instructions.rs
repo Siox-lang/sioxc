@@ -230,6 +230,9 @@ pub(super) fn emit_process_format<'ctx>(
             _ => None,
         };
         if let Some(text) = text {
+            if let ProcessFormatPart::Value { value, .. } = part {
+                debug::literal_value(module, builder, design, *value, index_sites, cache)?;
+            }
             let text = private_string(
                 context,
                 module,
@@ -440,6 +443,7 @@ pub(super) fn emit_runtime_instruction<'ctx>(
             )?,
             None => {
                 let [message] = arguments else { return None };
+                debug::literal_value(module, builder, design, *message, index_sites, cache)?;
                 let message = process_string(design, *message)?;
                 private_string(
                     context,
@@ -546,6 +550,12 @@ pub(super) fn emit_runtime_instruction<'ctx>(
             cache,
         )?,
         None => {
+            if let Some(message) = arguments
+                .get(1)
+                .filter(|id| process_string(design, **id).is_some())
+            {
+                debug::literal_value(module, builder, design, *message, index_sites, cache)?;
+            }
             let message = arguments
                 .get(1)
                 .and_then(|message| process_string(design, *message))

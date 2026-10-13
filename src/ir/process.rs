@@ -187,17 +187,80 @@ pub struct ProcessCfg {
     pub entry: ProcessBlockId,
     /// Locals owned by this process, indexed by [`ProcessLocalId`].
     pub locals: Vec<ProcessLocal>,
+    /// Source call instances, independent of lexical spans shared by repeated
+    /// inlines. This is metadata, not a runtime call stack.
+    pub inline_calls: Vec<ProcessInlineCall>,
     /// The control-flow graph's blocks, indexed by [`ProcessBlockId`].
     pub blocks: Vec<ProcessBlock>,
 }
 
 impl ProcessCfg {
+    /// Innermost source call owning a CFG block. Calls are parent-first;
+    /// nested calls therefore override their enclosing allocation ranges.
+    pub fn block_inline_call(&self, block: ProcessBlockId) -> Option<u32> {
+        // ponytail: linear metadata lookup; index block ownership if profiling
+        // finds debug builds with many call instances dominated by this scan.
+        self.inline_calls
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(id, call)| {
+                call.blocks
+                    .iter()
+                    .any(|range| range.contains(&block.0))
+                    .then_some(id as u32)
+            })
+    }
+
+    /// Distinguish equal-spelled/equal-span locals at separate inline sites.
+    pub fn local_inline_call(&self, local: ProcessLocalId) -> Option<u32> {
+        self.inline_calls
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(id, call)| call.locals.contains(&local.0).then_some(id as u32))
+    }
+
     /// Append one empty block and return its dense id.
     pub(crate) fn push_block(&mut self) -> ProcessBlockId {
         let id = ProcessBlockId(self.blocks.len() as u32);
         self.blocks.push(ProcessBlock::empty(id));
         id
     }
+}
+
+/// One source function expanded into a process CFG. Allocation ranges retain
+/// identity without attaching a second source payload to every instruction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessInlineCall {
+    /// Enclosing call in this process, absent for a direct process call.
+    pub parent: Option<u32>,
+    /// Resolver-qualified source function name.
+    pub name: String,
+    /// Callee definition extent.
+    pub function: crate::diag::Span,
+    /// Caller expression/statement extent.
+    pub call: crate::diag::Span,
+    /// Captured formal bindings, in signature order, including `self`.
+    pub parameters: Vec<ProcessInlineParameter>,
+    /// Caller-owned return frame for a value-producing CFG call.
+    pub result: Option<ProcessValueId>,
+    /// Callee-owned CFG allocation ranges. Normalization can append ranges.
+    pub blocks: Vec<std::ops::Range<u32>>,
+    /// Callee-local allocation range, including nested calls.
+    pub locals: std::ops::Range<u32>,
+}
+
+/// A source parameter aliases this already-captured operand. Debug metadata
+/// must neither reevaluate its argument expression nor change place semantics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessInlineParameter {
+    /// Source spelling; receivers use `self`.
+    pub name: String,
+    /// Signature declaration extent.
+    pub span: crate::diag::Span,
+    /// Actual captured operand in the canonical arena.
+    pub value: ProcessValueId,
 }
 
 /// When a process runs.
@@ -271,6 +334,9 @@ pub struct ProcessLocal {
     pub source: Option<DefId>,
     /// The declaration site.
     pub span: crate::diag::Span,
+    /// Lexical statement extent in the declaring source block, for debugger
+    /// visibility and shadowing. Synthetic/transitional locals may omit it.
+    pub scope: Option<crate::diag::Span>,
     /// Transitional frontend type retained until expression lowering produces
     /// only concrete IR value/layout IDs.
     pub ty: Option<crate::types::Ty>,
@@ -634,6 +700,60 @@ pub struct ProcessValue {
     pub kind: ProcessValueKind,
 }
 
+/// Non-executable source bindings retained by a value-shaped inline call.
+/// A pruned binding has no value; inspection must not make it executable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessValueBinding {
+    /// Source spelling.
+    pub name: String,
+    /// Declaration extent.
+    pub span: crate::diag::Span,
+    /// Owning lexical extent; omitted for parameters or synthetic bindings.
+    pub scope: Option<crate::diag::Span>,
+    /// Declaration-owned inspection shape. Never changes the operand format.
+    pub layout: Option<SourceLayout>,
+    /// Existing value, when retained by ordinary reachability.
+    pub value: Option<ProcessValueId>,
+    /// Field-backed aggregate pieces; pruned leaves retain their source path.
+    /// These are inspection metadata, never executable dependencies.
+    pub fields: Vec<(String, Option<ProcessValueId>)>,
+}
+
+impl ProcessValueBinding {
+    /// Retained inspection values, without promoting them to execution roots.
+    pub fn values(&self) -> impl Iterator<Item = ProcessValueId> + '_ {
+        self.value
+            .into_iter()
+            .chain(self.fields.iter().filter_map(|(_, value)| *value))
+    }
+}
+
+/// Source identity of one expansion, including calls returning an existing value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessValueInline {
+    /// Qualified function spelling.
+    pub name: String,
+    /// Function declaration extent.
+    pub function: crate::diag::Span,
+    /// Caller expression extent.
+    pub call: crate::diag::Span,
+    /// Return expression extent, even when it aliases an existing argument.
+    pub result_span: crate::diag::Span,
+    /// Declared return shape for inspection; not an executable conversion.
+    pub result_layout: Option<SourceLayout>,
+    /// One field of a shared aggregate source call: stable expansion identity
+    /// and flattened result path. The identity is not an arena value index and
+    /// survives value remapping. It creates no executable dependencies.
+    pub aggregate: Option<(u64, String)>,
+    /// Selected return-expression extents, keyed by existing selection values.
+    /// Inspection metadata only; these IDs must not become executable roots.
+    pub branches: Vec<(ProcessValueId, [crate::diag::Span; 2])>,
+    /// Formal parameters in signature order.
+    pub parameters: Vec<ProcessValueBinding>,
+    /// Source-local aliases, not simulation storage.
+    pub locals: Vec<ProcessValueBinding>,
+}
+
 /// Which version of signal storage a process expression reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProcessSignalState {
@@ -918,6 +1038,14 @@ pub enum ProcessValueKind {
     RawResize {
         /// Value whose bit pattern is resized.
         operand: ProcessValueId,
+    },
+    /// Transparent source-call boundary. Unlike RawResize, this preserves
+    /// the consumer's arithmetic width and introduces no simulation copy.
+    InlineCall {
+        /// Executable result; the only semantic dependency.
+        operand: ProcessValueId,
+        /// Inspection-only source identity and bindings.
+        source: Box<ProcessValueInline>,
     },
     /// A binary operation.
     Binary {
@@ -1379,6 +1507,37 @@ impl ProcessIr {
                     process.id
                 ));
             }
+            for (id, call) in process.inline_calls.iter().enumerate() {
+                if call
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.value.0 >= value_count)
+                    || call.result.is_some_and(|value| value.0 >= value_count)
+                {
+                    issues.push(format!(
+                        "process {:?} inline call {id} has an invalid binding",
+                        process.id
+                    ));
+                }
+                if call.parent.is_some_and(|parent| parent as usize >= id) {
+                    issues.push(format!(
+                        "process {:?} inline call {id} has an invalid parent",
+                        process.id
+                    ));
+                }
+                if call.blocks.is_empty()
+                    || call.blocks.iter().any(|range| {
+                        range.start >= range.end || range.end as usize > process.blocks.len()
+                    })
+                    || call.locals.start > call.locals.end
+                    || call.locals.end as usize > process.locals.len()
+                {
+                    issues.push(format!(
+                        "process {:?} inline call {id} has invalid allocation ranges",
+                        process.id
+                    ));
+                }
+            }
             if process
                 .blocks
                 .get(process.entry.0 as usize)
@@ -1708,6 +1867,26 @@ impl ProcessIr {
                 }
             });
             match &value.kind {
+                ProcessValueKind::InlineCall { source, .. } => {
+                    for (selection, _) in &source.branches {
+                        if selection.0 >= id.0 {
+                            issues.push(format!(
+                                "process value {:?} has invalid source selection {:?}",
+                                id, selection
+                            ));
+                        }
+                    }
+                    for binding in source.parameters.iter().chain(&source.locals) {
+                        for child in binding.values() {
+                            if child.0 >= id.0 {
+                                issues.push(format!(
+                                    "process value {:?} has invalid source binding {}: {:?}",
+                                    id, binding.name, child
+                                ));
+                            }
+                        }
+                    }
+                }
                 ProcessValueKind::Signal { signals, .. } => {
                     if signals.is_empty() {
                         issues.push(format!("process value {:?} has no signal leaves", id));
@@ -2046,7 +2225,7 @@ fn process_terminator_targets(terminator: &ProcessTerminator) -> Vec<ProcessBloc
 }
 
 /// The operand ids an instruction reads.
-fn process_instruction_values(instruction: &ProcessInstruction) -> Vec<ProcessValueId> {
+pub(crate) fn process_instruction_values(instruction: &ProcessInstruction) -> Vec<ProcessValueId> {
     match instruction {
         ProcessInstruction::Declare { initializer, .. } => initializer.iter().copied().collect(),
         ProcessInstruction::Assign { target, value, .. } => vec![*target, *value],
@@ -2072,7 +2251,7 @@ fn process_instruction_values(instruction: &ProcessInstruction) -> Vec<ProcessVa
 }
 
 /// The operand ids a terminator reads.
-fn process_terminator_values(terminator: &ProcessTerminator) -> Vec<ProcessValueId> {
+pub(crate) fn process_terminator_values(terminator: &ProcessTerminator) -> Vec<ProcessValueId> {
     match terminator {
         ProcessTerminator::Return { value, .. } => value.iter().copied().collect(),
         ProcessTerminator::Branch { condition, .. } => vec![*condition],
@@ -2134,7 +2313,8 @@ fn try_for_each_process_value_dependency(
         | ProcessValueKind::PackedSlice { base, .. }
         | ProcessValueKind::TableLookup { index: base, .. }
         | ProcessValueKind::Unary { operand: base, .. }
-        | ProcessValueKind::RawResize { operand: base } => visit(*base),
+        | ProcessValueKind::RawResize { operand: base }
+        | ProcessValueKind::InlineCall { operand: base, .. } => visit(*base),
         ProcessValueKind::Index { base, index } => {
             visit(*base)?;
             visit(*index)
@@ -2220,7 +2400,8 @@ pub(crate) fn remap_process_value_dependencies(
         | ProcessValueKind::PackedSlice { base, .. }
         | ProcessValueKind::TableLookup { index: base, .. }
         | ProcessValueKind::Unary { operand: base, .. }
-        | ProcessValueKind::RawResize { operand: base } => remap(base),
+        | ProcessValueKind::RawResize { operand: base }
+        | ProcessValueKind::InlineCall { operand: base, .. } => remap(base),
         ProcessValueKind::Index { base, index } => {
             remap(base);
             remap(index);
@@ -2287,6 +2468,29 @@ pub(crate) fn remap_process_value_dependencies(
         | ProcessValueKind::Default
         | ProcessValueKind::Parameter { .. }
         | ProcessValueKind::Invalid => {}
+    }
+}
+
+/// Remap inspection-only bindings separately from executable dependencies.
+pub(crate) fn remap_process_value_bindings(
+    value: &mut ProcessValueKind,
+    mut map: impl FnMut(ProcessValueId) -> Option<ProcessValueId>,
+) {
+    if let ProcessValueKind::InlineCall { source, .. } = value {
+        source.branches.retain_mut(|(selection, _)| {
+            if let Some(mapped) = map(*selection) {
+                *selection = mapped;
+                true
+            } else {
+                false
+            }
+        });
+        for binding in source.parameters.iter_mut().chain(&mut source.locals) {
+            binding.value = binding.value.and_then(&mut map);
+            for (_, value) in &mut binding.fields {
+                *value = value.and_then(&mut map);
+            }
+        }
     }
 }
 

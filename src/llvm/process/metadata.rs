@@ -450,6 +450,7 @@ pub(in crate::llvm) fn emit_metadata<'ctx>(
     design: &Design,
     sources: Option<&siox::diag::SourceMap>,
     facts: &HardwareValueFacts,
+    debug: Option<&DebugInfo<'ctx, '_>>,
 ) {
     let process_ir = &design.process_ir;
     let supported_values = &facts.supported;
@@ -476,7 +477,14 @@ pub(in crate::llvm) fn emit_metadata<'ctx>(
         process_ir.processes.len() as u32,
     );
     test_name_table(context, module, design);
-    process_entry_table(context, module, design, supported_values, activity_values);
+    process_entry_table(
+        context,
+        module,
+        design,
+        supported_values,
+        activity_values,
+        debug,
+    );
 
     let test_roots = process_ir
         .tests

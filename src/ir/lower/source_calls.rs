@@ -306,6 +306,8 @@ impl<'a> Lowering<'a> {
                 values: shapes,
                 return_layout: None,
                 function: true,
+                source: None,
+                extent: None,
             });
         self.source_calls.push(SourceCallFrame {
             arguments,

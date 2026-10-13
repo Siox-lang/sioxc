@@ -295,6 +295,7 @@ fn new_process(
         },
         region: ProcessRegion::Procedural,
         entry: ProcessBlockId(0),
+        inline_calls: Vec::new(),
         locals: Vec::new(),
         blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
     })
@@ -427,7 +428,9 @@ fn normalized_value_width(
             | ProcessUnaryOp::Real(_) => Some(64),
             ProcessUnaryOp::Neg | ProcessUnaryOp::Not => width(operand),
         },
-        ProcessValueKind::RawResize { operand } => width(operand),
+        ProcessValueKind::RawResize { operand } | ProcessValueKind::InlineCall { operand, .. } => {
+            width(operand)
+        }
         ProcessValueKind::Binary {
             operation,
             left,

@@ -750,6 +750,7 @@ impl<'a> Lowering<'a> {
         let function = self.source_unary_operator(op, &family)?;
         self.inline_source_operator(
             function,
+            ast::expr_span(rhs),
             self.source_operator_operand(rhs, env, self.ast_width(rhs)),
             None,
         )

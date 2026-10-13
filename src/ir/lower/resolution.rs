@@ -270,7 +270,15 @@ impl<'a> Lowering<'a> {
                             declaration_span,
                         )
                     })
-                    .or_else(|| self.inline_resolve(&ty, folded.clone(), c));
+                    .or_else(|| {
+                        self.inline_resolve(
+                            &ty,
+                            folded.clone(),
+                            c,
+                            declaration_span,
+                            self.out.source_layouts.get(&path),
+                        )
+                    });
                 match resolved {
                     Some(r) => folded = r,
                     None => {
@@ -407,7 +415,7 @@ impl<'a> Lowering<'a> {
                         .source_values
                         .borrow_mut()
                         .binary_table(&result, &right, table, span),
-                    None => self.inline_resolve(element, result, right)?,
+                    None => self.inline_resolve(element, result, right, span, None)?,
                 };
             }
             let arena = &mut *self.source_values.borrow_mut();
@@ -424,10 +432,17 @@ impl<'a> Lowering<'a> {
     }
 
     /// Inline `impl Resolve for <ty>` over two already-lowered expressions.
-    pub(super) fn inline_resolve(&self, ty: &str, a: Expr, b: Expr) -> Option<Expr> {
+    pub(super) fn inline_resolve(
+        &self,
+        ty: &str,
+        a: Expr,
+        b: Expr,
+        span: crate::diag::Span,
+        layout: Option<&SourceLayout>,
+    ) -> Option<Expr> {
         let fns = self.op_impls.get("Resolve", ty)?;
         let (f, _) = fns.first()?;
-        let body = f.body.as_ref()?;
+        f.body.as_ref()?;
         let mut env: HashMap<String, Val> = HashMap::new();
         env.insert("self".to_string(), Val::Scalar(a));
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
@@ -435,7 +450,24 @@ impl<'a> Lowering<'a> {
                 env.insert(n.text.clone(), Val::Scalar(b));
             }
         }
-        match self.inline_block(&body.stmts, &env)? {
+        let layout = layout
+            .cloned()
+            .or_else(|| self.named_source_layout(ty, span));
+        let parameters = env
+            .keys()
+            .filter_map(|name| Some((name.clone(), layout.clone()?)))
+            .collect();
+        let inspection = super::source_bindings::SourceCallInspection {
+            result: self.source_function_return_layout(f, &parameters),
+            parameters,
+        };
+        let _shapes = self.source_shape_scope(
+            HashMap::new(),
+            f.ret
+                .as_ref()
+                .map(|ty| self.source_layout(ty, &self.cur_env)),
+        );
+        match self.inline_source_function(f, span, &mut env, Some(&inspection))? {
             Val::Scalar(e) => Some(e),
             _ => None,
         }

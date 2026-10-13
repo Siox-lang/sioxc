@@ -20,10 +20,12 @@ impl<'ctx> MetadataEmitter<'_, 'ctx, '_> {
     ) -> Option<IntValue<'ctx>> {
         let key = (id, self.cache.key(id, active, None).1, layout.clone());
         if let Some(value) = self.cache.metadata.get(&key).copied() {
+            debug::capture_metadata(self.builder, self.design, self.cache, id, layout);
             return Some(value);
         }
         let value = self.emit_uncached(id, layout, active)?;
         self.cache.metadata.insert(key, value);
+        debug::capture_metadata(self.builder, self.design, self.cache, id, layout);
         Some(value)
     }
 
@@ -269,7 +271,8 @@ impl<'ctx> MetadataEmitter<'_, 'ctx, '_> {
                 }
                 result
             }
-            ProcessValueKind::RawResize { operand } => {
+            ProcessValueKind::RawResize { operand }
+            | ProcessValueKind::InlineCall { operand, .. } => {
                 let source = process_value_layout(self.design, *operand)?;
                 let part = self.emit(*operand, source, active)?;
                 fit(self.builder, part, width)
@@ -532,10 +535,11 @@ pub(super) fn process_value_meta_supported(
                         && process_value_meta_supported(design, arm.value, layout, supported)
                 })
         }
-        ProcessValueKind::RawResize { operand } => process_value_layout(design, *operand)
-            .is_some_and(|source| {
+        ProcessValueKind::RawResize { operand } | ProcessValueKind::InlineCall { operand, .. } => {
+            process_value_layout(design, *operand).is_some_and(|source| {
                 process_value_meta_supported(design, *operand, source, supported)
-            }),
+            })
+        }
         _ => false,
     }
 }

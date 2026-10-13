@@ -34,8 +34,7 @@ static NATIVE_BUILD_SERIAL: AtomicU64 = AtomicU64::new(0);
 pub(super) struct BuildRequest<'a> {
     pub design: &'a Design,
     pub sources: &'a siox::diag::SourceMap,
-    /// Reserved for native source-level debug metadata. Process execution is
-    /// source-located today, but interactive stepping is not implemented.
+    /// Source-level DWARF from the direct LLVM Process backend.
     pub debug: bool,
     pub output: &'a Path,
 }
@@ -52,12 +51,7 @@ pub(super) fn build(request: BuildRequest<'_>) -> Result<(), String> {
     if !issues.is_empty() {
         return Err(issues.join("; "));
     }
-    if debug {
-        return Err(
-            "native Process IR debug metadata is not implemented; omit --debug for now".into(),
-        );
-    }
-    link_process_runtime(design, sources, output)
+    link_process_runtime(design, sources, output, debug)
 }
 
 fn native_build_dir() -> PathBuf {
@@ -78,12 +72,17 @@ fn link_process_runtime(
     design: &Design,
     sources: &siox::diag::SourceMap,
     output_path: &Path,
+    debug: bool,
 ) -> Result<(), String> {
     let temporary = native_build_dir();
     std::fs::create_dir_all(&temporary).map_err(|error| error.to_string())?;
     let object = temporary.join("design.o");
     let result = (|| {
-        siox::llvm::emit_object_with_sources(design, sources, &object)?;
+        if debug {
+            siox::llvm::emit_object_with_debug(design, sources, &object)?;
+        } else {
+            siox::llvm::emit_object_with_sources(design, sources, &object)?;
+        }
 
         // Empty embedded objects are intentional fallback markers written by
         // build.rs when the host cannot precompile the fixed runtime.

@@ -29,6 +29,7 @@ pub(super) fn lower_loop_iterable(
     let first_block = process.blocks.len();
     let first_local = process.locals.len();
     let first_value = context.process_ir.values.len();
+    let first_inline = process.inline_calls.len();
     let mut tail = block;
     if let Some(value) = normalize_value(
         value,
@@ -42,6 +43,7 @@ pub(super) fn lower_loop_iterable(
     }
     process.blocks.truncate(first_block);
     process.locals.truncate(first_local);
+    process.inline_calls.truncate(first_inline);
     process.blocks[block.0 as usize] = original;
     truncate_process_values(context, first_value);
     (block, value)
@@ -111,14 +113,27 @@ fn normalize_block(
     let first_block = process.blocks.len();
     let first_local = process.locals.len();
     let first_value = context.process_ir.values.len();
+    let first_inline = process.inline_calls.len();
+    let previous_scope = context.inline_scope;
+    let scope = process.block_inline_call(block).or(previous_scope);
+    context.inline_scope = scope;
     process.blocks[block.0 as usize] = ProcessBlock::empty(block);
     let result = normalize_contents(&original, process, context);
+    context.inline_scope = previous_scope;
     if result.is_none() {
         process.blocks.truncate(first_block);
         process.locals.truncate(first_local);
+        process.inline_calls.truncate(first_inline);
         process.blocks[block.0 as usize] = original;
         truncate_process_values(context, first_value);
         return false;
+    }
+    if let Some(scope) = scope {
+        if first_block < process.blocks.len() {
+            process.inline_calls[scope as usize]
+                .blocks
+                .push(first_block as u32..process.blocks.len() as u32);
+        }
     }
     true
 }
@@ -318,6 +333,13 @@ fn normalize_value(
             result
         }
         _ => {
+            let call = match &node.kind {
+                ProcessValueKind::InlineCall { source, .. } => Some((source.function, source.call)),
+                _ => None,
+            };
+            let caller_block = *block;
+            let first_instruction = process.blocks[block.0 as usize].instructions.len();
+            let first_block = process.blocks.len();
             let dependencies = crate::ir::process_value_dependencies(&node.kind);
             let mut operands = Vec::with_capacity(dependencies.len());
             for (index, operand) in dependencies.iter().copied().enumerate() {
@@ -340,6 +362,34 @@ fn normalize_value(
                     memo.insert(operand, lowered);
                 }
             }
+            if let Some((function, call)) = call {
+                // Extracted effects run in the caller CFG, not in the native
+                // value frame. Preserve their evaluation order, but do not
+                // label a caller instruction as the callee's return line.
+                for (id, body) in process.blocks.iter_mut().enumerate() {
+                    let start = if id == caller_block.0 as usize {
+                        first_instruction
+                    } else if id >= first_block {
+                        0
+                    } else {
+                        continue;
+                    };
+                    for instruction in &mut body.instructions[start..] {
+                        let span = match instruction {
+                            ProcessInstruction::Declare { span, .. }
+                            | ProcessInstruction::Assign { span, .. }
+                            | ProcessInstruction::Schedule { span, .. }
+                            | ProcessInstruction::Runtime { span, .. } => span,
+                        };
+                        if span.file == function.file
+                            && span.start >= function.start
+                            && span.end <= function.end
+                        {
+                            *span = call;
+                        }
+                    }
+                }
+            }
             let mut kind = node.kind;
             let mut operands = operands.into_iter();
             // The dependency visitor preserves written positions. Equal IDs
@@ -348,7 +398,17 @@ fn normalize_value(
             crate::ir::remap_process_value_dependencies(&mut kind, |_| {
                 operands.next().expect("matching canonical operand order")
             });
-            let result = push_value(node.span, node.ty, node.bit_width, kind, context);
+            crate::ir::process::remap_process_value_bindings(&mut kind, |child| {
+                memo.get(&child)
+                    .copied()
+                    .or_else(|| (!has_call(child, context)).then_some(child))
+            });
+            // A deferred call can acquire its concrete width during CFG
+            // expansion. Its enclosing value must not retain an unknown width.
+            let width = node
+                .bit_width
+                .or_else(|| source_value_width(&kind, node.ty.as_ref(), process, context));
+            let result = push_value(node.span, node.ty, width, kind, context);
             context.process_ir.value_layouts[result.0 as usize] =
                 context.process_ir.value_layouts[value.0 as usize].clone();
             // Host/foreign effects belong at this source evaluation boundary,
@@ -423,6 +483,7 @@ fn result_local(
         name: format!("<return:{}>", local.0),
         source: None,
         span: node.span,
+        scope: None,
         ty: node.ty.clone(),
         layout: layout.clone(),
     });
@@ -576,6 +637,10 @@ fn inline_call(
     }
     declare_result(result, process, *block, context);
     let resume = process.push_block();
+    let previous_scope = context.inline_scope;
+    let scope = begin_inline_call(function, node.span, receiver, &bindings, process, context);
+    process.inline_calls[scope as usize].result = Some(result);
+    let first_local = process.locals.len();
     let entry = process.push_block();
     process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(entry);
     context.inline_functions.insert(function.span);
@@ -585,6 +650,7 @@ fn inline_call(
     context.inline_return_blocks.push((resume, Some(result)));
     let first_body_block = entry.0 as usize;
     let tail = lower_statements(&body.stmts, context, process, entry);
+    finish_inline_call(scope, entry, first_local, process);
     let body_end = process.blocks.len();
     let mut supported = tail.is_none();
     for index in first_body_block..body_end {
@@ -608,6 +674,7 @@ fn inline_call(
     context.inline_self_values.pop();
     context.value_bindings.pop();
     context.inline_functions.remove(&function.span);
+    context.inline_scope = previous_scope;
     if !supported {
         return None;
     }

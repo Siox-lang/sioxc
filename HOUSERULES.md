@@ -62,6 +62,28 @@ Inside the package this is enforced by module discipline. No upward or sideways
 
 ## 4. Testing gate
 
+On the shared development host, agents launch heavy builds, corpora and editor
+tests through `bash scripts/guarded-run.sh COMMAND ...`, **one job at a time**.
+It starts a separate systemd user service (not the agent's terminal scope),
+limits the job to 2 GiB with two Cargo jobs/test threads, disables core dumps,
+and keeps logs and exit status after a terminal interruption. Headless jobs
+cannot use the session bus to migrate into unlimited desktop app scopes. No
+unguarded fallback: use a suitable isolated runner when the user manager is
+unavailable. Temporary outputs use the disk-backed cache, not this host's
+RAM-backed `/tmp`; retain large compiler/artifact snapshots on disk as well.
+Ordinary CI invocations below remain portable and unchanged.
+
+The launcher prints a unit and log path. Inspect the service with
+`systemctl --user show <unit> -p SubState -p Result -p ExecMainStatus -p MemoryPeak`
+and read its log; service launch success is **not** test success.
+`SubState=exited`, `Result=success` and
+`ExecMainStatus=0` prove a completed successful job. A concurrent job exits 75;
+an OOM/timeout is a failed gate, never a pass. Re-poll a live unit instead of
+restarting it after an observation interruption. Set `SIOX_JOB_MEMORY` /
+`SIOX_JOB_HIGH` explicitly only when a measured job requires a larger budget.
+Verify the launcher with `bash scripts/test-guarded-run.sh` on this Linux host;
+it deliberately triggers an OOM inside a separate 64 MiB service.
+
 Before you commit, all three must be green:
 
 ```bash

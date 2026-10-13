@@ -489,6 +489,9 @@ impl SourceValues {
                 assert!(child.0 < id.0, "source operands precede their users");
                 mapped[child.0 as usize]
             });
+            super::super::process::remap_process_value_bindings(&mut value.kind, |child| {
+                live.contains(&child).then(|| mapped[child.0 as usize])
+            });
             let layout = old.ir.value_layouts.get_mut(index).and_then(Option::take);
             mapped[index] = self.push_node(value, layout);
             if old.raw_bits.contains(&id) {
@@ -586,22 +589,32 @@ impl Lowering<'_> {
             Expr::Slice { hi, lo, .. } => hi.checked_sub(*lo)?.checked_add(1),
             Expr::Canonical { value, .. } => {
                 let arena = self.source_values.borrow();
-                let node = &arena.ir.values[value.0 as usize];
-                node.bit_width.or_else(|| match &node.kind {
-                    ProcessValueKind::Signal {
-                        state: ProcessSignalState::Event,
-                        ..
-                    } => Some(1),
-                    ProcessValueKind::Signal { signals, .. } => {
-                        signals.iter().try_fold(0u32, |total, signal| {
-                            total.checked_add(self.out.signal_width(*signal)?)
-                        })
+                let mut value = *value;
+                loop {
+                    let node = &arena.ir.values[value.0 as usize];
+                    if let Some(width) = node.bit_width {
+                        return Some(width);
                     }
-                    ProcessValueKind::BitSlice { high, low, .. } => {
-                        high.checked_sub(*low)?.checked_add(1)
+                    if let ProcessValueKind::InlineCall { operand, .. } = node.kind {
+                        value = operand;
+                        continue;
                     }
-                    _ => None,
-                })
+                    return match &node.kind {
+                        ProcessValueKind::Signal {
+                            state: ProcessSignalState::Event,
+                            ..
+                        } => Some(1),
+                        ProcessValueKind::Signal { signals, .. } => {
+                            signals.iter().try_fold(0u32, |total, signal| {
+                                total.checked_add(self.out.signal_width(*signal)?)
+                            })
+                        }
+                        ProcessValueKind::BitSlice { high, low, .. } => {
+                            high.checked_sub(*low)?.checked_add(1)
+                        }
+                        _ => None,
+                    };
+                }
             }
             _ => None,
         }
@@ -1170,6 +1183,149 @@ mod tests {
             ProcessValueKind::TableLookup { .. }
         ));
         assert_eq!(arena.ir.values[bound_id.0 as usize], bound_node);
+    }
+
+    #[test]
+    fn inline_source_bindings_remap_without_retaining_discarded_effects() {
+        let span = crate::diag::Span::new(crate::diag::FileId(0), 0..10);
+        let mut arena = SourceValues::default();
+        let unused = arena.push_node(
+            ProcessValue {
+                span,
+                ty: Some(crate::types::Ty::Integer),
+                bit_width: Some(64),
+                kind: ProcessValueKind::ForeignCall {
+                    name: "must_not_run".into(),
+                    arguments: Vec::new(),
+                    float_arguments: Vec::new(),
+                    integer_arguments: Vec::new(),
+                    float_result: false,
+                    integer_result: true,
+                },
+            },
+            None,
+        );
+        let input = arena.import_test_fragment(&Expr::Current(SignalId(0)), span, None);
+        let unused_selection = arena.push_node(
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::Select {
+                    condition: input,
+                    then_value: unused,
+                    else_value: input,
+                },
+            },
+            None,
+        );
+        let root = arena.push_node(
+            ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::InlineCall {
+                    operand: input,
+                    source: Box::new(crate::ir::ProcessValueInline {
+                        name: "identity".into(),
+                        function: span,
+                        call: span,
+                        result_span: span,
+                        result_layout: None,
+                        aggregate: Some((1234, "payload.tag".into())),
+                        branches: vec![(unused_selection, [span; 2])],
+                        parameters: vec![
+                            crate::ir::ProcessValueBinding {
+                                name: "unused".into(),
+                                span,
+                                scope: None,
+                                layout: None,
+                                value: Some(unused),
+                                fields: Vec::new(),
+                            },
+                            crate::ir::ProcessValueBinding {
+                                name: "used".into(),
+                                span,
+                                scope: None,
+                                layout: None,
+                                value: Some(input),
+                                fields: Vec::new(),
+                            },
+                            crate::ir::ProcessValueBinding {
+                                name: "aggregate".into(),
+                                span,
+                                scope: None,
+                                layout: None,
+                                value: None,
+                                fields: vec![
+                                    ("discarded".into(), Some(unused)),
+                                    ("retained".into(), Some(input)),
+                                ],
+                            },
+                        ],
+                        locals: Vec::new(),
+                    }),
+                },
+            },
+            None,
+        );
+        assert_eq!(
+            crate::ir::process_value_dependencies(&arena.ir.values[root.0 as usize].kind),
+            vec![input]
+        );
+        let mapped =
+            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new(), None);
+        let mut draft = HardwareDraft::default();
+        draft.drivers.push(Driver {
+            target: SignalId(0),
+            cond: None,
+            expr: arena.reference(mapped[root.0 as usize]),
+            meta: None,
+            ctx: 0,
+            span: Some(span),
+        });
+        arena.retain_reachable(&mut draft);
+        assert_eq!(
+            arena.ir.values.len(),
+            2,
+            "debug bindings are not executable roots"
+        );
+        let ProcessValueKind::InlineCall { operand, source } = &mut arena.ir.values[1].kind else {
+            panic!("inline boundary lost")
+        };
+        assert_eq!(*operand, ProcessValueId(0));
+        assert_eq!(
+            source
+                .aggregate
+                .as_ref()
+                .map(|(identity, path)| (*identity, path.as_str())),
+            Some((1234, "payload.tag")),
+            "aggregate identity/path survive arena reconstruction and pruning"
+        );
+        assert_eq!(source.parameters[0].value, None);
+        assert_eq!(source.parameters[1].value, Some(ProcessValueId(0)));
+        assert_eq!(
+            source.parameters[2].fields,
+            vec![
+                ("discarded".into(), None),
+                ("retained".into(), Some(ProcessValueId(0))),
+            ],
+            "pruned debug leaves retain their source path but never retain effects"
+        );
+        assert!(
+            source.branches.is_empty(),
+            "discarded source selections are not roots"
+        );
+        assert!(arena.ir.validate(1).is_empty());
+        let ProcessValueKind::InlineCall { source, .. } = &mut arena.ir.values[1].kind else {
+            unreachable!()
+        };
+        source.parameters[2].fields[1].1 = Some(ProcessValueId(99));
+        assert!(arena
+            .ir
+            .validate(1)
+            .iter()
+            .any(|issue| issue.contains("invalid source binding aggregate")));
     }
 
     #[test]

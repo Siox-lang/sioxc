@@ -249,7 +249,10 @@ identity; unsupported lowering must still fail explicitly.
 One owner orders printing, diagnostics, formatting and waveform sampling.
 VCD/FST observe settled values, not worker completions or initialization defaults.
 Worker IDs and performance telemetry belong in a separate optional trace, not
-normal deterministic output. Source-level DWARF remains a separate TODO task.
+normal deterministic output. Source-level DWARF is emitted by the existing
+LLVM Process backend; see [debugger conventions and remaining inspection work](https://github.com/Siox-lang/siox-paper/blob/main/docs/testing.md#native-debugger-smoke-test).
+Worker-thread execution must preserve these source identities and coordinate
+debug inspection snapshots with each committed epoch.
 
 Reuse buffer capacity and release strings/events and workers at their defined
 test/run lifetimes. Buffer limits cannot silently drop effects or introduce

@@ -838,6 +838,7 @@ impl<'a> Lowering<'a> {
         )?;
         self.inline_source_operator(
             function,
+            ast::expr_span(lhs).to(ast::expr_span(rhs)),
             self.source_operator_operand(lhs, env, self.ast_width(lhs)),
             Some(self.source_operator_operand(
                 rhs,

@@ -192,6 +192,27 @@ impl<'a> Lowering<'a> {
         self.source_layout_at(ty, env, &mut HashSet::new())
     }
 
+    /// Already-resolved nominal identity, without manufacturing a source type use.
+    pub(super) fn named_source_layout(
+        &self,
+        name: &str,
+        span: crate::diag::Span,
+    ) -> Option<SourceLayout> {
+        if let Some(declaration) = self.structs.get(name) {
+            let definition = self.resolved.declared(declaration.name.span)?;
+            return self.out.type_layouts.get(&definition).cloned();
+        }
+        Some(SourceLayout {
+            span,
+            kind: LayoutKind::Scalar {
+                width: *self.enum_reprs.get(name)?,
+                domain: ScalarDomain::Enum(name.to_owned()),
+                nominal: Some(name.to_owned()),
+                value_range: None,
+            },
+        })
+    }
+
     /// The source layout for a type in `env`, recursing through fields and
     /// elements.
     pub(super) fn source_layout_at(

@@ -792,11 +792,13 @@ fn process_assignment_snapshot_requires_capturable_operands() {
             activation: ProcessActivation::TimeZero,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
+            inline_calls: Vec::new(),
             locals: vec![ProcessLocal {
                 id: ProcessLocalId(0),
                 name: "values".into(),
                 source: None,
                 span,
+                scope: None,
                 ty: None,
                 layout: None,
             }],
@@ -828,6 +830,57 @@ fn process_assignment_snapshot_requires_capturable_operands() {
 
     ir.values[1].bit_width = Some(64);
     assert!(ir.validate(0).is_empty(), "{:#?}", ir.validate(0));
+
+    ir.processes[0].inline_calls.push(ProcessInlineCall {
+        parent: None,
+        name: "test::callee".into(),
+        function: span,
+        call: span,
+        parameters: vec![],
+        result: None,
+        blocks: std::iter::once(0..1).collect(),
+        locals: 0..1,
+    });
+    assert_eq!(
+        ir.processes[0].block_inline_call(ProcessBlockId(0)),
+        Some(0)
+    );
+    assert_eq!(
+        ir.processes[0].local_inline_call(ProcessLocalId(0)),
+        Some(0)
+    );
+    assert!(ir.validate(0).is_empty(), "{:#?}", ir.validate(0));
+    ir.processes[0].inline_calls[0].parent = Some(0);
+    assert!(ir
+        .validate(0)
+        .iter()
+        .any(|issue| issue.contains("invalid parent")));
+    ir.processes[0].inline_calls[0].parent = None;
+    ir.processes[0].inline_calls[0]
+        .parameters
+        .push(ProcessInlineParameter {
+            name: "value".into(),
+            span,
+            value: ProcessValueId(ir.values.len() as u32),
+        });
+    assert!(ir
+        .validate(0)
+        .iter()
+        .any(|issue| issue.contains("invalid binding")));
+    ir.processes[0].inline_calls[0].parameters.clear();
+    ir.processes[0].inline_calls[0].result = Some(ProcessValueId(ir.values.len() as u32));
+    assert!(ir
+        .validate(0)
+        .iter()
+        .any(|issue| issue.contains("invalid binding")));
+    ir.processes[0].inline_calls[0].result = Some(ProcessValueId(0));
+    assert!(ir.validate(0).is_empty(), "{:#?}", ir.validate(0));
+    ir.processes[0].inline_calls[0].blocks.push(1..2);
+    assert!(ir
+        .validate(0)
+        .iter()
+        .any(|issue| issue.contains("invalid allocation ranges")));
+    ir.processes[0].inline_calls.clear();
 
     ir.values[3].bit_width = None;
     let issues = ir.validate(0);

@@ -128,7 +128,7 @@ impl Lowering<'_> {
                 } else if let Some(function) = lhs.family.as_deref().and_then(|family| {
                     self.source_binary_operator(spelling, family, rhs.family.as_deref(), span)
                 }) {
-                    self.inline_source_operator(function, lhs, Some(rhs))?
+                    self.inline_source_operator(function, span, lhs, Some(rhs))?
                 } else {
                     let integer = lhs.family.as_deref() == Some("integer")
                         || rhs.family.as_deref() == Some("integer");
@@ -148,7 +148,7 @@ impl Lowering<'_> {
                     .as_deref()
                     .and_then(|family| self.source_unary_operator(spelling, family))
                 {
-                    self.inline_source_operator(function, lhs, None)?
+                    self.inline_source_operator(function, span, lhs, None)?
                 } else {
                     let Val::Scalar(value) = lhs.value else {
                         return None;

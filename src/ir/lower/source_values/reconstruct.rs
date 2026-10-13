@@ -40,6 +40,9 @@ impl SourceValues {
                 mapped[child.0 as usize]
             });
             let layout = old.value_layouts.get_mut(index).and_then(Option::take);
+            crate::ir::process::remap_process_value_bindings(&mut value.kind, |child| {
+                mapped.get(child.0 as usize).copied()
+            });
             let span = value.span;
             if let ProcessValueKind::MetaCompare {
                 not_equal,

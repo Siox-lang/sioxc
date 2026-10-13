@@ -43,9 +43,11 @@ jobs:
 
   compiler:
     name: LLVM, native, bitpack, and corpus
-    runs-on: ubuntu-latest
+    # Cached GDB links against this image's Python runtime.
+    runs-on: ubuntu-24.04
     env:
-      LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
+      LLVM_SYS_231_PREFIX: /usr/lib/llvm-23
+      LLVM_SYS_231_STRICT_VERSIONING: "1"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -65,13 +67,52 @@ jobs:
         with:
           components: clippy
 
-      - name: Install LLVM 22 and Clang
+      - name: Install LLVM 23 and Clang
         run: |
           wget -q https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
-          sudo ./llvm.sh 22
-          sudo apt-get install -y clang-22 llvm-22-dev libpolly-22-dev
-          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+          sudo ./llvm.sh 23
+          sudo apt-get install -y clang-23 llvm-23-dev libpolly-23-dev
+          echo "/usr/lib/llvm-23/bin" >> "$GITHUB_PATH"
+          llvm-config-23 --version
+          clang-23 --version
+
+      - name: Install GDB build dependencies
+        run: sudo apt-get install -y build-essential texinfo python3-dev libgmp-dev libmpfr-dev libreadline-dev zlib1g-dev
+
+      - name: Cache GDB 18.1
+        id: gdb
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/gdb-18.1
+          key: gdb-18.1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/workflows/ci.yml') }}
+
+      - name: Build GDB 18.1 with Python support
+        if: steps.gdb.outputs.cache-hit != 'true'
+        env:
+          GDB_PREFIX: ${{ runner.tool_cache }}/gdb-18.1
+        run: |
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 -o gdb-18.1.tar.xz https://sourceware.org/pub/gdb/releases/gdb-18.1.tar.xz
+          echo "e7079ad31e6176391a4d278c85a668cc92c13c8dc1f4937f3d4438f9dc7afdbb12083af7f86e17e854b3d23c3ceff80c63bdbbc8e18b0cf9962656f75ab8b5a0  gdb-18.1.tar.xz" | sha512sum --check
+          tar -xf gdb-18.1.tar.xz
+          mkdir gdb-build
+          cd gdb-build
+          ../gdb-18.1/configure --prefix="$GDB_PREFIX" --with-python=/usr/bin/python3 \
+            --disable-gdbserver --disable-sim --disable-nls \
+            --without-guile --without-debuginfod --without-source-highlight
+          make -j2
+          make install
+
+      - name: Select and verify GDB 18.1
+        env:
+          GDB_PREFIX: ${{ runner.tool_cache }}/gdb-18.1
+        run: |
+          echo "$GDB_PREFIX/bin" >> "$GITHUB_PATH"
+          "$GDB_PREFIX/bin/gdb" --version
+          "$GDB_PREFIX/bin/gdb" --batch --nx \
+            -ex 'python assert gdb.VERSION.startswith("18.1")' \
+            -ex 'python assert hasattr(gdb.Value, "is_unavailable")'
 
       - uses: Swatinem/rust-cache@v2
 
@@ -80,6 +121,9 @@ jobs:
 
       - name: Test default backend
         run: cargo test --locked
+
+      - name: Verify native and Siox source debugging
+        run: bash scripts/test-gdb.sh "$GITHUB_WORKSPACE/siox-tests"
 
       - name: Test bitpack backend
         run: cargo test --locked --features bitpack

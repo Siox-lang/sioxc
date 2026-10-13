@@ -363,6 +363,7 @@ fn digital_expr(ir: &ProcessIr, id: ProcessValueId) -> Result<Expr, String> {
             | ProcessValueKind::Char(_)
             | ProcessValueKind::Unary { .. }
             | ProcessValueKind::RawResize { .. }
+            | ProcessValueKind::InlineCall { .. }
             | ProcessValueKind::BitSlice { .. }
             | ProcessValueKind::TableLookup { .. }
             | ProcessValueKind::CheckedIndex { .. }
@@ -469,7 +470,9 @@ pub(super) fn digital_node(
             },
             rhs: recurse(*operand)?,
         },
-        ProcessValueKind::RawResize { operand } => child_expression(*operand)?,
+        ProcessValueKind::RawResize { operand } | ProcessValueKind::InlineCall { operand, .. } => {
+            child_expression(*operand)?
+        }
         ProcessValueKind::Binary {
             operation,
             left,
@@ -653,6 +656,7 @@ mod tests {
                     driver_context: 9,
                 },
                 entry: ProcessBlockId(0),
+                inline_calls: Vec::new(),
                 locals: vec![],
                 blocks: vec![
                     ProcessBlock {

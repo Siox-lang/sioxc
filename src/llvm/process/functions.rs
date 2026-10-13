@@ -86,37 +86,78 @@ pub(super) fn shared_call<'ctx>(
         return None;
     }
     let shared = design.process_ir.functions.get(call.function.0 as usize)?;
-    let function = shared_function(context, module, design, shared, index_sites, cache)?;
-    // Each argument at its parameter's width, extended as its own type is.
-    let mut arguments = Vec::with_capacity(call.arguments.len());
-    for (argument, parameter) in call.arguments.iter().zip(&shared.parameters) {
-        let width = design
-            .process_ir
-            .values
-            .get(parameter.0 as usize)?
-            .bit_width?;
-        let value = process_value_at(
-            context,
-            module,
-            builder,
-            design,
-            *argument,
-            width,
-            process_value_is_signed(design, *argument),
-            active,
-            index_sites,
-            cache,
-        )?;
-        arguments.push(value.into());
+    if cache.debug.is_some() {
+        if let Some(active) = active {
+            let width = design
+                .process_ir
+                .values
+                .get(call.value.0 as usize)?
+                .bit_width?;
+            return debug::active_value(
+                context,
+                builder,
+                width,
+                active,
+                cache,
+                |builder, cache| {
+                    shared_call(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        call,
+                        None,
+                        index_sites,
+                        cache,
+                    )
+                },
+            );
+        }
     }
-    match builder
-        .build_call(function, &arguments, "pv.shared")
-        .ok()?
-        .try_as_basic_value()
-    {
-        inkwell::values::ValueKind::Basic(value) => Some(value.into_int_value()),
-        _ => None,
-    }
+    let width = design
+        .process_ir
+        .values
+        .get(call.value.0 as usize)?
+        .bit_width?;
+    debug::call_value(
+        context,
+        builder,
+        (call.value, width, false, None),
+        cache,
+        |builder, cache| {
+            let function = shared_function(context, module, design, shared, index_sites, cache)?;
+            // Each argument at its parameter's width, extended as its own type is.
+            let mut arguments = Vec::with_capacity(call.arguments.len());
+            for (argument, parameter) in call.arguments.iter().zip(&shared.parameters) {
+                let width = design
+                    .process_ir
+                    .values
+                    .get(parameter.0 as usize)?
+                    .bit_width?;
+                let value = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *argument,
+                    width,
+                    process_value_is_signed(design, *argument),
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                arguments.push(value.into());
+            }
+            debug::call_return(
+                context,
+                builder,
+                function,
+                &arguments,
+                "pv.shared",
+                cache.debug,
+            )
+        },
+    )
 }
 
 /// The LLVM function for `shared`, emitted on first use: its parameters bind
@@ -144,29 +185,92 @@ fn shared_function<'ctx>(
         .iter()
         .map(|parameter| int(*parameter).map(BasicMetadataTypeEnum::from))
         .collect::<Option<Vec<_>>>()?;
+    let result = if let (Some(debug), ProcessValueKind::InlineCall { operand, source }) = (
+        cache.debug,
+        &design.process_ir.values[shared.result.0 as usize].kind,
+    ) {
+        debug::source_return_type(
+            debug,
+            module,
+            design,
+            source,
+            *operand,
+            int(shared.result)?.get_bit_width(),
+            cache.debug_root,
+        )?
+    } else {
+        debug::SourceReturn::Direct(int(shared.result)?.into())
+    };
     let function = module.add_function(
         &name,
-        int(shared.result)?.fn_type(&parameters, false),
+        result.fn_type(context, &parameters),
         Some(Linkage::Internal),
     );
+    result.declare(context, function, cache.debug);
     let builder = context.create_builder();
     builder.position_at_end(context.append_basic_block(function, "entry"));
     let mut body = ProcessValueCache::new(cache.activity_sensitive, cache.meta_free);
+    body.debug = cache.debug;
+    body.debug_root = cache.debug_root;
     for (index, parameter) in shared.parameters.iter().enumerate() {
-        let argument = function.get_nth_param(index as u32)?.into_int_value();
+        let argument = function
+            .get_nth_param(index as u32 + result.parameter_offset())?
+            .into_int_value();
         body.parameters.insert(*parameter, argument);
     }
-    let returned = process_value(
-        context,
-        module,
-        &builder,
-        design,
-        shared.result,
-        None,
-        index_sites,
-        &mut body,
-    )
-    .and_then(|result| builder.build_return(Some(&result)).ok());
+    let returned = if body.debug.is_some() {
+        if let ProcessValueKind::InlineCall { operand, source } =
+            &design.process_ir.values[shared.result.0 as usize].kind
+        {
+            debug::inline_body(
+                module,
+                &builder,
+                design,
+                Some(function),
+                *operand,
+                source,
+                &mut body,
+                |builder, cache, active| {
+                    process_value(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        *operand,
+                        active,
+                        index_sites,
+                        cache,
+                    )
+                },
+            )
+        } else {
+            // Hand-built IR may have no source-call descriptor. Do not invent
+            // formal names or source statements for a generated native body.
+            body.source_location = body.debug?.generated_location(&builder, shared.span);
+            process_value(
+                context,
+                module,
+                &builder,
+                design,
+                shared.result,
+                None,
+                index_sites,
+                &mut body,
+            )
+        }
+    } else {
+        process_value(
+            context,
+            module,
+            &builder,
+            design,
+            shared.result,
+            None,
+            index_sites,
+            &mut body,
+        )
+    }
+    .and_then(|value| result.emit_return(body.debug, &builder, value));
     if returned.is_none() {
         // SAFETY: the function was created above and nothing calls it yet.
         unsafe { function.delete() };

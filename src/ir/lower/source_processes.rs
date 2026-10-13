@@ -67,6 +67,10 @@ struct LoweringContext<'a> {
     /// Procedure returns resume the enclosing caller, not the whole process.
     inline_return_blocks: Vec<(ProcessBlockId, Option<ProcessValueId>)>,
     inline_functions: std::collections::HashSet<crate::diag::Span>,
+    /// Current canonical source call instance while expanding a CFG body.
+    inline_scope: Option<u32>,
+    inline_value_locals: Vec<Vec<crate::ir::ProcessValueBinding>>,
+    inline_value_branches: Vec<Vec<(ProcessValueId, [crate::diag::Span; 2])>>,
     /// Memoized call reachability in the append-only procedural value arena.
     cfg_call_cache: Vec<bool>,
     /// Shared function bodies by signature, across every process lowered.
@@ -1163,6 +1167,7 @@ pub fn lower(
             activation: ProcessActivation::Initialization,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
+            inline_calls: Vec::new(),
             locals: Vec::new(),
             blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
         };
@@ -1206,6 +1211,9 @@ pub fn lower(
                 inline_return_types: Vec::new(),
                 inline_return_blocks: Vec::new(),
                 inline_functions: std::collections::HashSet::new(),
+                inline_scope: None,
+                inline_value_locals: Vec::new(),
+                inline_value_branches: Vec::new(),
                 cfg_call_cache: Vec::new(),
                 shared_functions: &shared_functions,
             };
@@ -1267,6 +1275,9 @@ pub fn lower(
                             inline_return_types: Vec::new(),
                             inline_return_blocks: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
+                            inline_scope: None,
+                            inline_value_locals: Vec::new(),
+                            inline_value_branches: Vec::new(),
                             cfg_call_cache: Vec::new(),
                             shared_functions: &shared_functions,
                         };
@@ -1321,6 +1332,9 @@ pub fn lower(
                             inline_return_types: Vec::new(),
                             inline_return_blocks: Vec::new(),
                             inline_functions: std::collections::HashSet::new(),
+                            inline_scope: None,
+                            inline_value_locals: Vec::new(),
+                            inline_value_branches: Vec::new(),
                             cfg_call_cache: Vec::new(),
                             shared_functions: &shared_functions,
                         };
@@ -1392,6 +1406,9 @@ pub fn lower(
                     inline_return_types: Vec::new(),
                     inline_return_blocks: Vec::new(),
                     inline_functions: std::collections::HashSet::new(),
+                    inline_scope: None,
+                    inline_value_locals: Vec::new(),
+                    inline_value_branches: Vec::new(),
                     cfg_call_cache: Vec::new(),
                     shared_functions: &shared_functions,
                 };
@@ -1482,6 +1499,9 @@ pub fn lower(
                 inline_return_types: Vec::new(),
                 inline_return_blocks: Vec::new(),
                 inline_functions: std::collections::HashSet::new(),
+                inline_scope: None,
+                inline_value_locals: Vec::new(),
+                inline_value_branches: Vec::new(),
                 cfg_call_cache: Vec::new(),
                 shared_functions: &shared_functions,
             };
@@ -1777,6 +1797,7 @@ fn lower_process(
         activation,
         region: ProcessRegion::Procedural,
         entry: ProcessBlockId(0),
+        inline_calls: Vec::new(),
         locals: Vec::new(),
         blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
     };
@@ -1807,6 +1828,7 @@ fn lower_legacy_process(
         activation,
         region: ProcessRegion::Procedural,
         entry: ProcessBlockId(0),
+        inline_calls: Vec::new(),
         locals: Vec::new(),
         blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
     };
@@ -2176,10 +2198,20 @@ fn lower_statements(
     process: &mut ProcessCfg,
     entry: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
+    let first_local = process.locals.len();
     let mut current = Some(entry);
     for statement in statements {
         let Some(block) = current else { break };
         current = lower_statement(statement, context, process, block);
+    }
+    if let (Some(first), Some(last)) = (statements.first(), statements.last()) {
+        let extent = ast::stmt_span(first).to(ast::stmt_span(last));
+        for local in &mut process.locals[first_local..] {
+            // Nested blocks record their smaller extent before returning.
+            if local.source.is_some() && local.scope.is_none() {
+                local.scope = Some(extent);
+            }
+        }
     }
     current
 }
@@ -2731,7 +2763,7 @@ fn lower_call(
         }
         _ => {
             if let Some(tail) =
-                inline_process_procedure_call(callee, arguments, context, process, block)
+                inline_process_procedure_call(callee, arguments, span, context, process, block)
             {
                 return Some(tail);
             }
@@ -2768,6 +2800,7 @@ fn lower_call(
 fn inline_process_procedure_call(
     callee: &ast::Expr,
     arguments: &[ast::Expr],
+    call_span: crate::diag::Span,
     context: &mut LoweringContext<'_>,
     process: &mut ProcessCfg,
     block: ProcessBlockId,
@@ -2830,6 +2863,7 @@ fn inline_process_procedure_call(
 
     let first_block = process.blocks.len();
     let first_local = process.locals.len();
+    let first_inline = process.inline_calls.len();
     let original_block = process.blocks[block.0 as usize].clone();
     // Evaluate non-place arguments and place selectors once, before callee
     // writes or suspension. Places themselves remain aliases, so later reads
@@ -2838,12 +2872,19 @@ fn inline_process_procedure_call(
     for (_, value) in &mut bindings {
         *value = capture_process_argument(*value, context, process, block);
     }
+    let bindings = bindings.into_iter().collect();
     let resume = process.push_block();
-    context.value_bindings.push(bindings.into_iter().collect());
+    let previous_scope = context.inline_scope;
+    let scope = begin_inline_call(function, call_span, receiver, &bindings, process, context);
+    let entry = process.push_block();
+    process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(entry);
+    context.value_bindings.push(bindings);
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(None);
     context.inline_return_blocks.push((resume, None));
-    let tail = lower_statements(&body.stmts, context, process, block);
+    let tail = lower_statements(&body.stmts, context, process, entry);
+    finish_inline_call(scope, entry, first_local, process);
+    context.inline_scope = previous_scope;
     context.inline_return_blocks.pop();
     context.inline_return_types.pop();
     context.inline_self_values.pop();
@@ -2871,6 +2912,7 @@ fn inline_process_procedure_call(
     {
         process.blocks.truncate(first_block);
         process.locals.truncate(first_local);
+        process.inline_calls.truncate(first_inline);
         process.blocks[block.0 as usize] = original_block;
         truncate_process_values(context, first_value);
         return None;
@@ -2879,6 +2921,64 @@ fn inline_process_procedure_call(
         process.blocks[tail.0 as usize].terminator = ProcessTerminator::Goto(resume);
     }
     Some(resume)
+}
+
+fn begin_inline_call(
+    function: &ast::FnDecl,
+    call: crate::diag::Span,
+    receiver: Option<ProcessValueId>,
+    bindings: &std::collections::HashMap<crate::resolve::DefId, ProcessValueId>,
+    process: &mut ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> u32 {
+    let id = process.inline_calls.len() as u32;
+    let name = context
+        .resolved
+        .declared(function.name.span)
+        .and_then(|definition| context.resolved.qualified_name(definition))
+        .unwrap_or_else(|| function.name.text.clone());
+    process.inline_calls.push(crate::ir::ProcessInlineCall {
+        parent: context.inline_scope,
+        name,
+        function: function.span,
+        call,
+        parameters: function
+            .params
+            .iter()
+            .filter_map(|parameter| {
+                let (name, value) = if parameter.is_self {
+                    ("self".into(), receiver?)
+                } else {
+                    let name = parameter.name.as_ref()?;
+                    (
+                        name.text.clone(),
+                        *bindings.get(&context.resolved.declared(name.span)?)?,
+                    )
+                };
+                Some(crate::ir::ProcessInlineParameter {
+                    name,
+                    value,
+                    span: parameter.span,
+                })
+            })
+            .collect(),
+        result: None,
+        blocks: Vec::new(),
+        locals: process.locals.len() as u32..process.locals.len() as u32,
+    });
+    context.inline_scope = Some(id);
+    id
+}
+
+fn finish_inline_call(
+    scope: u32,
+    entry: ProcessBlockId,
+    first_local: usize,
+    process: &mut ProcessCfg,
+) {
+    let call = &mut process.inline_calls[scope as usize];
+    call.blocks.push(entry.0..process.blocks.len() as u32);
+    call.locals = first_local as u32..process.locals.len() as u32;
 }
 
 /// Keep a call's evaluation boundary in ordinary Process locals. Dynamic
@@ -2997,6 +3097,7 @@ fn capture_process_operand(
         name: format!("<call:{}>", local.0),
         source: None,
         span: node.span,
+        scope: None,
         ty: node.ty.clone(),
         layout: layout.clone(),
     });
@@ -4307,6 +4408,7 @@ fn compare_values(
             let result = bool_type(context.resolved);
             if let Some(value) = inline_process_function(
                 function,
+                span,
                 Some(left),
                 &[right],
                 process,
@@ -4447,6 +4549,7 @@ fn pattern_condition(
                     let result = bool_type(context.resolved);
                     let matched = inline_process_function(
                         function,
+                        span,
                         Some(member),
                         &[character],
                         process,
@@ -4614,8 +4717,15 @@ fn match_metavalue_warning(
     let mut unknown = None;
     for label in layout_labels(*range)? {
         let member = push_element(span, scrutinee, label, &element_layout, process, context);
-        let flagged =
-            inline_process_function(check, Some(member), &[], process, context, result.as_ref())?;
+        let flagged = inline_process_function(
+            check,
+            span,
+            Some(member),
+            &[],
+            process,
+            context,
+            result.as_ref(),
+        )?;
         unknown = Some(match unknown {
             Some(any) => bool_binary(ProcessBinaryOp::Or, any, flagged, span, context),
             None => flagged,
@@ -4760,6 +4870,7 @@ fn lower_for(
         name: variable.text.clone(),
         source: context.resolved.declared(variable.span),
         span: variable.span,
+        scope: Some(span),
         ty,
         layout: None,
     });
@@ -4912,6 +5023,7 @@ fn push_local(
         name: declaration.name.text.clone(),
         source: context.resolved.declared(declaration.name.span),
         span: declaration.span,
+        scope: None,
         ty,
         layout,
     });
@@ -5046,7 +5158,9 @@ fn process_value_is_real(id: ProcessValueId, context: &LoweringContext<'_>) -> b
         let Some(value) = context.process_ir.values.get(id.0 as usize) else {
             continue;
         };
-        if matches!(value.ty, Some(crate::types::Ty::Real)) {
+        if matches!(value.ty, Some(crate::types::Ty::Real))
+            || process_value_source_layout(id, context.process_ir).is_some_and(layout_is_real)
+        {
             return true;
         }
         match &value.kind {
@@ -5182,6 +5296,7 @@ fn lower_process_kernel_conversion(
     {
         return inline_process_function(
             function,
+            ast::expr_span(expression),
             None,
             &[operand],
             process,
@@ -5295,6 +5410,7 @@ fn lower_process_named_conversion(
     if let Some(function) = context.functions.get_conversion(&target, &source) {
         let result = inline_process_function(
             function,
+            *span,
             None,
             &[operand],
             process,
@@ -5598,6 +5714,18 @@ fn lower_process_family_from(
     )
 }
 
+/// A family result uses its Self format; kernel-number helpers do not.
+fn returns_self_format(function: &ast::FnDecl, layout: &SourceLayout) -> bool {
+    let LayoutKind::Packed { family, .. } = &layout.kind else {
+        return false;
+    };
+    function
+        .ret
+        .as_ref()
+        .and_then(crate::ir::lower_helpers::type_head_name)
+        .is_some_and(|head| head == "Self" || family.rsplit("::").next() == Some(head))
+}
+
 /// Inline `function` with `Self` standing for the format `family[index]`, as
 /// a `From` conversion to that format and an associated call on it
 /// (`ufixed<6, 2>::resize(x)`) both need. Values pushed from `first_value`
@@ -5646,6 +5774,9 @@ fn inline_with_self_format(
         *width = len;
         *range = Some(crate::ir::LayoutRange { left, right });
     }
+    // Only a result of the type itself is a word of the requested format;
+    // an integer helper keeps its declared inspection type.
+    let in_format = returns_self_format(function, &layout);
     let format = push_value(
         span,
         Some(target_type.clone()),
@@ -5655,19 +5786,9 @@ fn inline_with_self_format(
     );
     context.process_ir.value_layouts[format.0 as usize] = Some(layout);
     context.self_formats.push(format);
-    // Only a result of the type itself (`-> ufixed`, `-> Self`) is a word of
-    // the format; `-> integer` keeps its own width.
-    let in_format = function
-        .ret
-        .as_ref()
-        .and_then(crate::ir::lower_helpers::type_head_name)
-        .is_some_and(|head| {
-            head == "Self"
-                || matches!(&target_type, crate::types::Ty::Array { family: Some(family), .. }
-                    if family.rsplit("::").next() == Some(head))
-        });
     let result = inline_process_function(
         function,
+        span,
         None,
         operands,
         process,
@@ -5680,7 +5801,29 @@ fn inline_with_self_format(
     );
     context.self_formats.pop();
     match result {
-        Some(result) if in_format => Some(inherit_receiver_layout(result, format, context)),
+        Some(result) if in_format => {
+            // Source result types retain the explicit target range, rather
+            // than a generic width-only layout or the source operand's range.
+            // The native result/argument widths remain executable decisions.
+            let shared = context
+                .process_ir
+                .calls
+                .last()
+                .filter(|call| call.value == result)
+                .map(|call| context.process_ir.functions[call.function.0 as usize].result);
+            let layout = context.process_ir.value_layouts[format.0 as usize]
+                .as_ref()
+                .unwrap()
+                .clone();
+            for value in std::iter::once(result).chain(shared) {
+                if let ProcessValueKind::InlineCall { source, .. } =
+                    &mut context.process_ir.values[value.0 as usize].kind
+                {
+                    source.result_layout = Some(layout.clone());
+                }
+            }
+            Some(inherit_receiver_layout(result, format, context))
+        }
         Some(result) => Some(result),
         None => {
             truncate_process_values(context, first_value);
@@ -6052,11 +6195,29 @@ fn lower_process_file_call(
     Some(push_value(*span, ty, width, kind, context))
 }
 
-fn process_value_is_runtime_string(id: ProcessValueId, context: &LoweringContext<'_>) -> bool {
+fn runtime_handle_width(layout: Option<&SourceLayout>) -> Option<u32> {
+    matches!(
+        layout.map(|layout| &layout.kind),
+        Some(LayoutKind::Array { range: None, element }) if matches!(
+            element.kind,
+            LayoutKind::Scalar { domain: crate::ir::ScalarDomain::Character, .. }
+        )
+    )
+    .then_some(64)
+}
+
+fn process_value_is_runtime_string(
+    id: ProcessValueId,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> bool {
     let Some(value) = context.process_ir.values.get(id.0 as usize) else {
         return false;
     };
     match &value.kind {
+        ProcessValueKind::InlineCall { operand, .. } => {
+            process_value_is_runtime_string(*operand, process, context)
+        }
         ProcessValueKind::HostCall {
             operation: ProcessHostValueOp::ReadUtf8,
             ..
@@ -6066,14 +6227,48 @@ fn process_value_is_runtime_string(id: ProcessValueId, context: &LoweringContext
             .storages
             .get(storage.0 as usize)
             .and_then(|storage| storage.initializer)
-            .is_some_and(|initializer| process_value_is_runtime_string(initializer, context)),
+            .is_some_and(|initializer| {
+                process_value_is_runtime_string(initializer, process, context)
+            }),
+        ProcessValueKind::Local {
+            process: owner,
+            local,
+        } if *owner == process.id => {
+            // The active CFG is not published yet. Follow its declaration's
+            // representation, not an unconstrained alias: even literal empty
+            // strings use fixed storage rather than a runtime handle.
+            // ponytail: linear declaration lookup; cache binding representation
+            // if profiling identifies many string operations in huge CFGs.
+            process
+                .blocks
+                .iter()
+                .flat_map(|block| &block.instructions)
+                .find_map(|instruction| match instruction {
+                    ProcessInstruction::Declare {
+                        local: declared,
+                        initializer,
+                        ..
+                    } if declared == local => Some(initializer.map_or_else(
+                        || {
+                            process.locals.get(local.0 as usize).is_some_and(|local| {
+                                runtime_handle_width(local.layout.as_ref()).is_some()
+                            })
+                        },
+                        |initializer| {
+                            process_value_is_runtime_string(initializer, process, context)
+                        },
+                    )),
+                    _ => None,
+                })
+                .unwrap_or(false)
+        }
         ProcessValueKind::Select {
             then_value,
             else_value,
             ..
         } => {
-            process_value_is_runtime_string(*then_value, context)
-                && process_value_is_runtime_string(*else_value, context)
+            process_value_is_runtime_string(*then_value, process, context)
+                && process_value_is_runtime_string(*else_value, process, context)
         }
         _ => false,
     }
@@ -6137,6 +6332,7 @@ fn inline_process_call(
     let arguments = lower_call_arguments(args, &parameter_types, receiver, process, context);
     let result = inline_process_function(
         function,
+        ast::expr_span(expression),
         receiver,
         &arguments,
         process,
@@ -6271,8 +6467,10 @@ fn same_type_argument(
 /// result is also a call of one shared copy (`ProcessIr::calls`). The
 /// expansion always stays: it defines the value, and a backend calls the
 /// shared copy only where the two are interchangeable.
+#[allow(clippy::too_many_arguments)]
 fn inline_process_function(
     function: &ast::FnDecl,
+    call: crate::diag::Span,
     receiver: Option<ProcessValueId>,
     arguments: &[ProcessValueId],
     process: &ProcessCfg,
@@ -6280,8 +6478,15 @@ fn inline_process_function(
     return_type: Option<&crate::types::Ty>,
 ) -> Option<ProcessValueId> {
     let first_value = context.process_ir.values.len();
-    let result =
-        expand_process_function(function, receiver, arguments, process, context, return_type)?;
+    let result = expand_process_function(
+        function,
+        call,
+        receiver,
+        arguments,
+        process,
+        context,
+        return_type,
+    )?;
     let share = match function.inline {
         ast::Inline::Always | ast::Inline::Hint => false,
         ast::Inline::Never => true,
@@ -6338,6 +6543,16 @@ fn shared_process_function(
         .collect::<Vec<_>>();
     // The signature is the operands' shapes, never where they were declared.
     let mut key = format!("{:?}->{:?}", function.span, return_type);
+    if let Some(layout) = context
+        .self_formats
+        .last()
+        .and_then(|value| process_value_source_layout(*value, context.process_ir))
+        .filter(|layout| returns_self_format(function, layout))
+    {
+        // Equal bit widths do not imply equal target formats (or source
+        // return labels). Kernel-number helpers still share across formats.
+        key.push_str(&format!("|Self:{:?}", layout.kind));
+    }
     for (operand, layout) in operands.iter().zip(&layouts) {
         let value = &context.process_ir.values[operand.0 as usize];
         let shape = layout.as_ref().map(|layout| &layout.kind);
@@ -6397,9 +6612,16 @@ fn shared_process_function(
     } else {
         (None, &parameters[..])
     };
-    let result =
-        expand_process_function(function, receiver, arguments, process, context, return_type)
-            .filter(|result| standalone_body(first_value, *result, context));
+    let result = expand_process_function(
+        function,
+        function.span,
+        receiver,
+        arguments,
+        process,
+        context,
+        return_type,
+    )
+    .filter(|result| standalone_body(first_value, *result, context));
     let shared = match result {
         Some(result) => {
             context
@@ -6442,6 +6664,45 @@ fn operand_source_layout(
     }
 }
 
+/// Inspection belongs to the source declaration, not the caller's narrower
+/// storage or the executable consumer format. Generic/unsized declarations
+/// retain their instantiated operand layout without changing value lowering.
+fn process_binding_layout(
+    declared: Option<&ast::Type>,
+    span: crate::diag::Span,
+    value: ProcessValueId,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> Option<SourceLayout> {
+    declared
+        .and_then(|ty| process_declared_type(ty, context))
+        .filter(|ty| is_concrete_type(ty, context))
+        .and_then(|ty| {
+            let mut layout = process_layout_for_type(&ty, span, context)?;
+            apply_process_declared_ranges(
+                &mut layout,
+                declared?,
+                context,
+                &mut std::collections::HashSet::new(),
+            )?;
+            (layout.packed_width()? > 0).then_some(layout)
+        })
+        .or_else(|| operand_source_layout(value, process, context))
+        .or_else(|| {
+            // Constructors retain their checked target type even without a
+            // stored/projection layout. Generic inspection must use that
+            // instantiated type, not the operand's raw integer bit pattern.
+            let ty = context
+                .process_ir
+                .values
+                .get(value.0 as usize)?
+                .ty
+                .as_ref()?;
+            let layout = process_layout_for_type(ty, span, context)?;
+            (layout.packed_width()? > 0).then_some(layout)
+        })
+}
+
 /// Whether the values built from `first` on (one function body over its
 /// parameters, with any bodies it shares in turn) compute `result` from
 /// those values alone, without state, effects or run-time checks.
@@ -6468,8 +6729,10 @@ fn standalone_body(first: usize, result: ProcessValueId, context: &LoweringConte
 /// Expand one already-selected Siox function over already-lowered operands.
 /// Calls and operators share this implementation so receiver binding,
 /// overload bodies, recursion recovery, and result typing cannot drift.
+#[allow(clippy::too_many_arguments)]
 fn expand_process_function(
     function: &ast::FnDecl,
+    call: crate::diag::Span,
     receiver: Option<ProcessValueId>,
     arguments: &[ProcessValueId],
     process: &ProcessCfg,
@@ -6533,32 +6796,95 @@ fn expand_process_function(
     context.value_bindings.push(bindings);
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(return_type);
+    context.inline_value_locals.push(Vec::new());
+    context.inline_value_branches.push(Vec::new());
     let statements = body.stmts.iter().collect::<Vec<_>>();
     let result = inline_value_statements(&statements, process, context);
+    let branches = context.inline_value_branches.pop().unwrap();
+    let mut locals = context.inline_value_locals.pop().unwrap();
+    for local in &mut locals {
+        // Branches fill their smaller scopes before returning, as CFG locals do.
+        local.scope.get_or_insert(body.span);
+    }
     context.inline_return_types.pop();
     context.inline_self_values.pop();
     context.value_bindings.pop();
     context.inline_functions.remove(&function.span);
     // ...and that argument's format: `abs(x)` on a `ufixed<8, 4>` is one.
-    let result = match (result, generic_argument) {
+    let (result, result_span) = result?;
+    let result = match (Some(result), generic_argument) {
         (Some(result), Some(argument)) => Some(inherit_receiver_layout(result, argument, context)),
         (result, _) => result,
-    };
-    // At the boundary a numeric value becomes the caller's family:
-    // `floor_div`'s integer is the `ufixed` the `/` impl returns. Only a
-    // family: a generic body's checked types can expect `Bool` of an operand
-    // that is not one.
-    match (result, caller_type) {
-        (
-            Some(value),
-            Some(
-                caller @ crate::types::Ty::Array {
-                    family: Some(_), ..
-                },
-            ),
-        ) => Some(retype(value, &caller, context)),
+    }?;
+    // Keep the declared numeric evaluation and caller-family boundary from
+    // fixed-point lowering; source provenance wraps that same executable value.
+    let result = match caller_type {
+        Some(
+            caller @ crate::types::Ty::Array {
+                family: Some(_), ..
+            },
+        ) => retype(result, &caller, context),
         _ => result,
-    }
+    };
+    let parameters = function
+        .params
+        .iter()
+        .zip(receiver.into_iter().chain(arguments.iter().copied()))
+        .map(|(parameter, value)| crate::ir::ProcessValueBinding {
+            name: parameter
+                .name
+                .as_ref()
+                .map_or_else(|| "self".to_string(), |name| name.text.clone()),
+            span: parameter.span,
+            scope: None,
+            layout: process_binding_layout(
+                parameter.ty.as_ref(),
+                parameter.span,
+                value,
+                process,
+                context,
+            ),
+            value: Some(value),
+            fields: Vec::new(),
+        })
+        .collect();
+    let name = context
+        .resolved
+        .declared(function.name.span)
+        .and_then(|definition| context.resolved.qualified_name(definition))
+        .unwrap_or_else(|| function.name.text.clone());
+    let node = &context.process_ir.values[result.0 as usize];
+    let ty = node.ty.clone();
+    let width = node.bit_width;
+    let layout = process_value_source_layout(result, context.process_ir).cloned();
+    let id = push_value(
+        call,
+        ty,
+        width,
+        ProcessValueKind::InlineCall {
+            operand: result,
+            source: Box::new(crate::ir::ProcessValueInline {
+                name,
+                function: function.span,
+                call,
+                result_span,
+                result_layout: process_binding_layout(
+                    function.ret.as_ref(),
+                    function.span,
+                    result,
+                    process,
+                    context,
+                ),
+                aggregate: None,
+                branches,
+                parameters,
+                locals,
+            }),
+        },
+        context,
+    );
+    context.process_ir.value_layouts[id.0 as usize] = layout;
+    Some(id)
 }
 
 /// `value` as a `ty`: narrowed to a sized array's width, otherwise relabelled
@@ -6777,6 +7103,7 @@ fn inline_process_array_binary_operator(
         .map(|(left, right)| {
             inline_process_function(
                 function,
+                span,
                 Some(left),
                 &[right],
                 process,
@@ -6818,7 +7145,15 @@ fn inline_process_array_unary_operator(
     let elements = operands
         .into_iter()
         .map(|operand| {
-            inline_process_function(function, Some(operand), &[], process, context, Some(elem))
+            inline_process_function(
+                function,
+                span,
+                Some(operand),
+                &[],
+                process,
+                context,
+                Some(elem),
+            )
         })
         .collect::<Option<Vec<_>>>()?;
     let result_type = return_type
@@ -6926,6 +7261,7 @@ fn inline_process_binary_operator(
     let return_type = return_type.or(own_type.then_some(&left_type));
     let result = inline_process_function(
         function,
+        ast::expr_span(lhs),
         Some(left),
         &[right],
         process,
@@ -6990,6 +7326,7 @@ fn inline_process_comparison(
     let right = narrow_to_type(right, right_context, context);
     let result = inline_process_function(
         function,
+        ast::expr_span(lhs),
         Some(left),
         &[right],
         process,
@@ -7139,8 +7476,15 @@ fn inline_process_unary_operator(
 
     let first_value = context.process_ir.values.len();
     let operand = value_ref_with_type(rhs, process, context, Some(&operand_type));
-    let result =
-        inline_process_function(function, Some(operand), &[], process, context, return_type);
+    let result = inline_process_function(
+        function,
+        ast::expr_span(rhs),
+        Some(operand),
+        &[],
+        process,
+        context,
+        return_type,
+    );
     if result.is_none() {
         truncate_process_values(context, first_value);
     }
@@ -7156,18 +7500,16 @@ fn inline_value_statements(
     statements: &[&Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
-) -> Option<ProcessValueId> {
+) -> Option<(ProcessValueId, crate::diag::Span)> {
     let (statement, rest) = statements.split_first()?;
     match *statement {
         Stmt::Return {
             value: Some(value), ..
         } => {
             let return_type = context.inline_return_types.last().cloned().flatten();
-            Some(value_ref_with_type(
-                value,
-                process,
-                context,
-                return_type.as_ref(),
+            Some((
+                value_ref_with_type(value, process, context, return_type.as_ref()),
+                ast::expr_span(value),
             ))
         }
         Stmt::Let(declaration) => {
@@ -7183,6 +7525,23 @@ fn inline_value_statements(
             );
             let definition = context.resolved.declared(declaration.name.span)?;
             context.value_bindings.last_mut()?.insert(definition, value);
+            let layout = process_binding_layout(
+                declaration.ty.as_ref(),
+                declaration.span,
+                value,
+                process,
+                context,
+            );
+            if let Some(locals) = context.inline_value_locals.last_mut() {
+                locals.push(crate::ir::ProcessValueBinding {
+                    name: declaration.name.text.clone(),
+                    span: declaration.span,
+                    scope: None,
+                    layout,
+                    value: Some(value),
+                    fields: Vec::new(),
+                });
+            }
             inline_value_statements(rest, process, context)
         }
         Stmt::If(statement) => inline_value_if(statement, rest, process, context),
@@ -7226,10 +7585,12 @@ fn constant_integer(value: ProcessValueId, context: &LoweringContext<'_>) -> Opt
 /// rest of a function at every nested `if`.
 fn inline_value_branch(
     branch: &[Stmt],
+    extent: Option<crate::diag::Span>,
     continuation: &[&Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
-) -> Option<ProcessValueId> {
+) -> Option<(ProcessValueId, crate::diag::Span)> {
+    let first_local = context.inline_value_locals.last()?.len();
     let mut statements = Vec::with_capacity(branch.len() + continuation.len());
     statements.extend(branch);
     statements.extend_from_slice(continuation);
@@ -7238,6 +7599,18 @@ fn inline_value_branch(
         .push(std::collections::HashMap::new());
     let result = inline_value_statements(&statements, process, context);
     context.value_bindings.pop();
+    if let Some(extent) = extent {
+        for local in &mut context.inline_value_locals.last_mut()?[first_local..] {
+            // The appended continuation belongs to its original enclosing block.
+            if local.scope.is_none()
+                && local.span.file == extent.file
+                && local.span.start >= extent.start
+                && local.span.end <= extent.end
+            {
+                local.scope = Some(extent);
+            }
+        }
+    }
     result
 }
 
@@ -7247,13 +7620,23 @@ fn inline_value_if(
     continuation: &[&Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
-) -> Option<ProcessValueId> {
+) -> Option<(ProcessValueId, crate::diag::Span)> {
     let condition = value_ref(&statement.cond, process, context);
-    let then_value = inline_value_branch(&statement.then.stmts, continuation, process, context)?;
+    let then_value = inline_value_branch(
+        &statement.then.stmts,
+        Some(statement.then.span),
+        continuation,
+        process,
+        context,
+    )?;
     let else_value = match statement.else_.as_deref() {
-        Some(ElseBranch::Block(block)) => {
-            inline_value_branch(&block.stmts, continuation, process, context)?
-        }
+        Some(ElseBranch::Block(block)) => inline_value_branch(
+            &block.stmts,
+            Some(block.span),
+            continuation,
+            process,
+            context,
+        )?,
         // `else if` is the branch `{ if … }`: inline it in its own scope.
         Some(ElseBranch::If(inner)) => {
             context
@@ -7263,7 +7646,7 @@ fn inline_value_if(
             context.value_bindings.pop();
             value?
         }
-        None => inline_value_branch(&[], continuation, process, context)?,
+        None => inline_value_branch(&[], None, continuation, process, context)?,
     };
     inline_select_value(statement.span, condition, then_value, else_value, context)
 }
@@ -7277,11 +7660,17 @@ fn inline_value_match(
     continuation: &[&Stmt],
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
-) -> Option<ProcessValueId> {
+) -> Option<(ProcessValueId, crate::diag::Span)> {
     let scrutinee = value_ref(&statement.scrutinee, process, context);
-    let mut result = inline_value_branch(&[], continuation, process, context);
+    let mut result = inline_value_branch(&[], None, continuation, process, context);
     for arm in statement.arms.iter().rev() {
-        let value = inline_value_branch(&arm.body.stmts, continuation, process, context)?;
+        let value = inline_value_branch(
+            &arm.body.stmts,
+            Some(arm.body.span),
+            continuation,
+            process,
+            context,
+        )?;
         match inline_pattern_condition(&arm.pattern, scrutinee, context)? {
             None => result = Some(value),
             Some(condition) => {
@@ -7390,10 +7779,10 @@ fn push_inline_binary(
 fn inline_select_value(
     span: crate::diag::Span,
     condition: ProcessValueId,
-    then_value: ProcessValueId,
-    else_value: ProcessValueId,
+    (then_value, then_span): (ProcessValueId, crate::diag::Span),
+    (else_value, else_span): (ProcessValueId, crate::diag::Span),
     context: &mut LoweringContext<'_>,
-) -> Option<ProcessValueId> {
+) -> Option<(ProcessValueId, crate::diag::Span)> {
     let then_node = context.process_ir.values.get(then_value.0 as usize)?;
     let else_node = context.process_ir.values.get(else_value.0 as usize)?;
     let ty = then_node.ty.clone().or_else(|| else_node.ty.clone());
@@ -7401,7 +7790,7 @@ fn inline_select_value(
         (Some(left), Some(right)) => Some(left.max(right)),
         (left, right) => left.or(right),
     };
-    Some(push_value(
+    let selection = push_value(
         span,
         ty,
         width,
@@ -7411,7 +7800,11 @@ fn inline_select_value(
             else_value,
         },
         context,
-    ))
+    );
+    if let Some(branches) = context.inline_value_branches.last_mut() {
+        branches.push((selection, [then_span, else_span]));
+    }
+    Some((selection, span))
 }
 
 /// Convert a contextually typed string token into the packed representation of
@@ -7790,7 +8183,8 @@ fn value_ref_with_type_inner(
                     Some(format) if is_self_type => format,
                     _ => value_ref(base, process, context),
                 };
-                if attr.text == "length" && process_value_is_runtime_string(base, context) {
+                if attr.text == "length" && process_value_is_runtime_string(base, process, context)
+                {
                     ProcessValueKind::HostCall {
                         operation: ProcessHostValueOp::StringLength,
                         arguments: vec![base],
@@ -7819,7 +8213,7 @@ fn value_ref_with_type_inner(
                 }
             } else {
                 let base = value_ref(base, process, context);
-                if process_value_is_runtime_string(base, context) {
+                if process_value_is_runtime_string(base, process, context) {
                     let index_span = ast::expr_span(index);
                     let index = value_ref_with_type(
                         index,
@@ -7990,11 +8384,11 @@ fn value_ref_with_type_inner(
                 )
             };
             if matches!(op, ast::BinOp::Eq | ast::BinOp::Ne) {
-                let operands = if process_value_is_runtime_string(left, context)
+                let operands = if process_value_is_runtime_string(left, process, context)
                     && process_value_is_string_literal(right, context)
                 {
                     Some((left, right))
-                } else if process_value_is_runtime_string(right, context)
+                } else if process_value_is_runtime_string(right, process, context)
                     && process_value_is_string_literal(left, context)
                 {
                     Some((right, left))
@@ -8071,13 +8465,16 @@ fn value_ref_with_type_inner(
                 // Without a `_`, the arms are taken to cover the scrutinee
                 // (the checker says when they do not): the last one is the
                 // fallback rather than a value no arm produces.
-                let mut result = missing_value(span, context);
+                let mut result = (missing_value(span, context), span);
                 let covered = !arms.iter().any(|arm| pattern_has_wildcard(&arm.pattern));
                 for (position, arm) in arms.iter().enumerate().rev() {
                     let last = covered && position + 1 == arms.len();
                     let value = match arm.value_expr() {
-                        Some(value) => value_ref_with_type(value, process, context, ty.as_ref()),
-                        None => missing_value(arm.span, context),
+                        Some(value) => (
+                            value_ref_with_type(value, process, context, ty.as_ref()),
+                            ast::expr_span(value),
+                        ),
+                        None => (missing_value(arm.span, context), arm.span),
                     };
                     result = if last || pattern_has_wildcard(&arm.pattern) {
                         value
@@ -8094,11 +8491,11 @@ fn value_ref_with_type_inner(
                         };
                         inline_select_value(arm.span, condition, value, result, context)
                             .unwrap_or_else(|| {
-                                unsupported_process_value(span, ty.as_ref(), context)
+                                (unsupported_process_value(span, ty.as_ref(), context), span)
                             })
                     };
                 }
-                return result;
+                return result.0;
             }
             let arms = arms
                 .iter()
@@ -8479,22 +8876,6 @@ fn source_value_width(
     process: &ProcessCfg,
     context: &LoweringContext<'_>,
 ) -> Option<u32> {
-    let runtime_handle_width = |layout: Option<&crate::ir::SourceLayout>| {
-        matches!(
-            layout.map(|layout| &layout.kind),
-            Some(LayoutKind::Array {
-                range: None,
-                element,
-            }) if matches!(
-                element.kind,
-                LayoutKind::Scalar {
-                    domain: crate::ir::ScalarDomain::Character,
-                    ..
-                }
-            )
-        )
-        .then_some(64)
-    };
     let value_width = |id: &ProcessValueId| context.process_ir.values.get(id.0 as usize)?.bit_width;
     let typed_width = |ty: &crate::types::Ty| {
         ty.bit_width()
@@ -8686,7 +9067,9 @@ fn source_value_width(
             | ProcessUnaryOp::Real(_) => Some(64),
             ProcessUnaryOp::Neg | ProcessUnaryOp::Not => value_width(operand),
         },
-        ProcessValueKind::RawResize { operand } => value_width(operand),
+        ProcessValueKind::RawResize { operand } | ProcessValueKind::InlineCall { operand, .. } => {
+            value_width(operand)
+        }
         ProcessValueKind::Binary {
             operation,
             left,
@@ -8967,6 +9350,7 @@ fn lower_process_real_promotion(
     let other_value = value_ref_with_type(other, process, context, other_type.as_ref());
     let Some(converted) = inline_process_function(
         function,
+        span,
         None,
         &[other_value],
         process,
@@ -9290,6 +9674,9 @@ mod tests {
             inline_return_types: vec![],
             inline_return_blocks: vec![],
             inline_functions: Default::default(),
+            inline_scope: None,
+            inline_value_locals: Vec::new(),
+            inline_value_branches: Vec::new(),
             cfg_call_cache: vec![],
             shared_functions: &std::cell::RefCell::new(SharedFunctions::new()),
         };
@@ -9418,10 +9805,12 @@ mod tests {
             design.process_ir.values.iter().any(|value| matches!(
                 &value.kind,
                 ProcessValueKind::Array(elements)
-                    if elements.len() == 2 && elements.iter().all(|element| matches!(
-                        design.process_ir.values[element.0 as usize].kind,
-                        ProcessValueKind::Select { .. }
-                    ))
+                    if elements.len() == 2 && elements.iter().all(|element| {
+                        let ProcessValueKind::InlineCall { operand, .. } =
+                            &design.process_ir.values[element.0 as usize].kind else { return false };
+                        matches!(design.process_ir.values[operand.0 as usize].kind,
+                            ProcessValueKind::Select { .. })
+                    })
             )),
             "blanket array operators should inline each element's source implementation"
         );
@@ -10256,6 +10645,7 @@ mod tests {
                     activation: ProcessActivation::TimeZero,
                     region: ProcessRegion::Procedural,
                     entry: ProcessBlockId(1),
+                    inline_calls: Vec::new(),
                     locals: Vec::new(),
                     blocks: vec![ProcessBlock {
                         id: ProcessBlockId(0),

@@ -2,6 +2,142 @@
 
 use super::*;
 
+/// Companion-plane reductions can contain one node per packed element. Walk
+/// equal-width bitwise nodes explicitly rather than consuming a Rust frame
+/// per element; leaves still use the shared checked/contextual value emitter.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn process_bitwise_chain<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    root: ProcessValueId,
+    width: u32,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let mut pending = vec![(root, 0, active)];
+    let mut operands = Vec::new();
+    while let Some((id, phase, active)) = pending.pop() {
+        let node = design.process_ir.values.get(id.0 as usize)?;
+        let key = cache.key(id, active, None);
+        if phase == 0 {
+            if let Some(value) =
+                debug::argument_value(builder, design, cache, (id, width, false, None))
+            {
+                debug::capture_value(builder, design, cache, id, value);
+                operands.push(value);
+                continue;
+            }
+            if let Some(value) = cache.emitted_value(key) {
+                debug::capture_value(builder, design, cache, id, value);
+                operands.push(fit(builder, value, width)?);
+                continue;
+            }
+            if let ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::And | ProcessBinaryOp::Or | ProcessBinaryOp::Xor,
+                left,
+                ..
+            } = &node.kind
+            {
+                if node.bit_width == Some(width) {
+                    pending.extend([(id, 1, active), (*left, 0, active)]);
+                    continue;
+                }
+            }
+            operands.push(process_value_at(
+                context,
+                module,
+                builder,
+                design,
+                id,
+                width,
+                false,
+                active,
+                index_sites,
+                cache,
+            )?);
+            continue;
+        }
+        if phase == 1 {
+            let ProcessValueKind::Binary {
+                operation,
+                left,
+                right,
+            } = &node.kind
+            else {
+                unreachable!()
+            };
+            let right_active = binary_right_activity(
+                builder,
+                operation,
+                *operands.last()?,
+                (
+                    design.process_ir.values[left.0 as usize].bit_width?,
+                    design.process_ir.values[right.0 as usize].bit_width?,
+                ),
+                *right,
+                active,
+                cache,
+            )?;
+            pending.extend([(id, 2, active), (*right, 0, right_active)]);
+            continue;
+        }
+        let _location = debug::ValueLocationGuard::new(builder, cache, node.span);
+        let right = operands.pop()?;
+        let left = operands.pop()?;
+        let value = match &node.kind {
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::And,
+                ..
+            } => builder.build_and(left, right, "pv.and").ok()?,
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Or,
+                ..
+            } => builder.build_or(left, right, "pv.or").ok()?,
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Xor,
+                ..
+            } => builder.build_xor(left, right, "pv.xor").ok()?,
+            _ => unreachable!("only equal-width bitwise nodes are scheduled"),
+        };
+        cache.emitted.insert(key, value);
+        debug::capture_value(builder, design, cache, id, value);
+        operands.push(value);
+    }
+    (operands.len() == 1).then(|| operands[0])
+}
+
+fn binary_right_activity<'ctx>(
+    builder: &Builder<'ctx>,
+    operation: &ProcessBinaryOp,
+    left: IntValue<'ctx>,
+    widths: (u32, u32),
+    right: ProcessValueId,
+    active: Option<IntValue<'ctx>>,
+    cache: &ProcessValueCache<'ctx, '_>,
+) -> Option<Option<IntValue<'ctx>>> {
+    if widths != (1, 1)
+        || !cache.requires_activity(right)
+        || !matches!(operation, ProcessBinaryOp::And | ProcessBinaryOp::Or)
+    {
+        return Some(active);
+    }
+    let left = as_condition(builder, left)?;
+    let required = if matches!(operation, ProcessBinaryOp::And) {
+        left
+    } else {
+        builder.build_not(left, "pv.or.right.active").ok()?
+    };
+    Some(Some(match active {
+        Some(active) => builder
+            .build_and(active, required, "pv.logical.right.active")
+            .ok()?,
+        None => required,
+    }))
+}
+
 /// Emit a normalized scalar binary operation with the same defined corner
 /// cases as the established hardware LLVM path.
 #[allow(clippy::too_many_arguments)]
@@ -276,28 +412,15 @@ pub(super) fn process_binary<'ctx>(
         index_sites,
         cache,
     )?;
-    let right_active = if left_width == 1
-        && right_width == 1
-        && cache.requires_activity(right)
-        && matches!(operation, ProcessBinaryOp::And | ProcessBinaryOp::Or)
-    {
-        let left_condition = as_condition(builder, left)?;
-        let required = if matches!(operation, ProcessBinaryOp::And) {
-            left_condition
-        } else {
-            builder
-                .build_not(left_condition, "pv.or.right.active")
-                .ok()?
-        };
-        Some(match active {
-            Some(active) => builder
-                .build_and(active, required, "pv.logical.right.active")
-                .ok()?,
-            None => required,
-        })
-    } else {
-        active
-    };
+    let right_active = binary_right_activity(
+        builder,
+        operation,
+        left,
+        (left_width, right_width),
+        right,
+        active,
+        cache,
+    )?;
     let right = process_value_at(
         context,
         module,

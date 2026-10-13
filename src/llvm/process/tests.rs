@@ -1,6 +1,634 @@
 use super::*;
 
 #[test]
+#[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
+fn string_return_boundary_preserves_array_types_and_payload_widths() {
+    use siox::ir::{ProcessValueInline, ScalarDomain};
+
+    for (literal, fixed, width) in [
+        (true, false, 32),
+        (true, true, 32),
+        (false, false, 64),
+        (false, false, 193),
+    ] {
+        let context = Context::create();
+        let module = context.create_module("string_return");
+        let builder = context.create_builder();
+        let mut sources = siox::diag::SourceMap::new();
+        let text = if fixed {
+            "fn echo(value: Char[1]) -> Char[1] { return value; }"
+        } else {
+            "fn echo(value: string) -> string { return value; }"
+        };
+        let file = sources.add("string_return.siox", text);
+        let span = Span::new(file, 0..text.len() as u32);
+        let layout = SourceLayout {
+            span,
+            kind: LayoutKind::Array {
+                range: fixed.then_some(LayoutRange { left: 0, right: 0 }),
+                element: Box::new(SourceLayout {
+                    span,
+                    kind: LayoutKind::Scalar {
+                        width: 32,
+                        domain: ScalarDomain::Character,
+                        nominal: Some("Char".into()),
+                        value_range: None,
+                    },
+                }),
+            },
+        };
+        let source = ProcessValueInline {
+            name: "echo".into(),
+            function: span,
+            call: span,
+            result_span: span,
+            result_layout: (fixed || !literal).then(|| layout.clone()),
+            aggregate: None,
+            branches: Vec::new(),
+            parameters: Vec::new(),
+            locals: Vec::new(),
+        };
+        let design = Design {
+            process_ir: ProcessIr {
+                values: vec![ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(if literal { 32 } else { 64 }),
+                    kind: if literal {
+                        ProcessValueKind::String("μ".into())
+                    } else {
+                        ProcessValueKind::Parameter {
+                            function: siox::ir::ProcessFunctionId(0),
+                            index: 0,
+                        }
+                    },
+                }],
+                value_layouts: vec![Some(layout)],
+                ..ProcessIr::default()
+            },
+            ..Design::default()
+        };
+        let debug = DebugInfo::new(&context, &module, &sources, &design).unwrap();
+        let result = debug::source_return_type(
+            &debug,
+            &module,
+            &design,
+            &source,
+            ProcessValueId(0),
+            width,
+            Some(7),
+        )
+        .unwrap();
+        let bits = context
+            .custom_width_int_type(std::num::NonZeroU32::new(width).unwrap())
+            .unwrap();
+        if fixed {
+            let debug::SourceReturn::Direct(ty) = &result else {
+                panic!("fixed Char[1] must not acquire a dynamic string view");
+            };
+            assert_eq!(*ty, bits.into());
+        } else {
+            let debug::SourceReturn::Memory { storage, .. } = &result else {
+                panic!("unbounded string return needs its borrowed source view");
+            };
+            assert_eq!(
+                storage
+                    .get_field_type_at_index(0)
+                    .unwrap()
+                    .into_array_type()
+                    .len(),
+                32
+            );
+            assert_eq!(storage.get_field_type_at_index(1).unwrap(), bits.into());
+        }
+        let native = module.add_function("echo", result.fn_type(&context, &[bits.into()]), None);
+        result.declare(&context, native, Some(&debug));
+        builder.position_at_end(context.append_basic_block(native, "entry"));
+        let value = native.get_last_param().unwrap().into_int_value();
+        result.emit_return(Some(&debug), &builder, value).unwrap();
+        let caller = module.add_function("caller", bits.fn_type(&[bits.into()], false), None);
+        builder.position_at_end(context.append_basic_block(caller, "entry"));
+        let value = debug::call_return(
+            &context,
+            &builder,
+            native,
+            &[caller.get_first_param().unwrap().into()],
+            "returned",
+            Some(&debug),
+        )
+        .unwrap();
+        assert_eq!(value.get_type(), bits);
+        builder.build_return(Some(&value)).unwrap();
+        assert_eq!(
+            module.get_function("sx_runtime_debug_string").is_some(),
+            !literal
+        );
+        if width == 193 {
+            assert!(module.print_to_string().to_string().contains("trunc i193"));
+        }
+        debug.finish(&module, &design);
+        module.verify().unwrap();
+    }
+}
+
+#[test]
+#[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
+fn shared_return_boundary_preserves_canonical_bits() {
+    use inkwell::attributes::{Attribute, AttributeLoc};
+    use siox::ir::{
+        LayoutField, ProcessCall, ProcessFunction, ProcessFunctionId, ProcessValueInline,
+        ScalarDomain,
+    };
+
+    for (fields, signature) in [
+        (
+            vec![(ScalarDomain::Integer, 3), (ScalarDomain::Integer, 3)],
+            Some("i16"),
+        ),
+        (
+            vec![
+                (ScalarDomain::Real, 64),
+                (ScalarDomain::Integer, 3),
+                (ScalarDomain::Integer, 3),
+            ],
+            Some("{ double, i16 }"),
+        ),
+        (
+            vec![(ScalarDomain::Real, 64), (ScalarDomain::Integer, 64)],
+            Some("{ double, i64 }"),
+        ),
+        (
+            vec![(ScalarDomain::Integer, 64), (ScalarDomain::Real, 64)],
+            Some("{ i64, double }"),
+        ),
+        (
+            vec![(ScalarDomain::Real, 64), (ScalarDomain::Real, 64)],
+            Some("{ double, double }"),
+        ),
+        (
+            vec![(ScalarDomain::Character, 32), (ScalarDomain::Real, 64)],
+            None,
+        ),
+        (
+            vec![(ScalarDomain::Real, 64), (ScalarDomain::Character, 32)],
+            Some("{ double, i32 }"),
+        ),
+        (
+            vec![(ScalarDomain::Real, 64), (ScalarDomain::Integer, 8)],
+            Some("{ double, i8 }"),
+        ),
+        (
+            vec![(ScalarDomain::Integer, 8), (ScalarDomain::Real, 64)],
+            None,
+        ),
+        (
+            vec![(ScalarDomain::Real, 64), (ScalarDomain::Integer, 16)],
+            Some("{ double, i16 }"),
+        ),
+        (
+            vec![(ScalarDomain::Integer, 16), (ScalarDomain::Real, 64)],
+            None,
+        ),
+        (
+            vec![(ScalarDomain::Integer, 3), (ScalarDomain::Real, 64)],
+            None,
+        ),
+        (
+            vec![
+                (ScalarDomain::Real, 64),
+                (ScalarDomain::Integer, 32),
+                (ScalarDomain::Integer, 16),
+            ],
+            Some("{ double, i48 }"),
+        ),
+        (
+            vec![
+                (ScalarDomain::Real, 64),
+                (ScalarDomain::Integer, 8),
+                (ScalarDomain::Integer, 8),
+            ],
+            Some("{ double, i16 }"),
+        ),
+        (
+            vec![
+                (ScalarDomain::Integer, 64),
+                (ScalarDomain::Real, 64),
+                (ScalarDomain::Integer, 64),
+            ],
+            None,
+        ),
+        (
+            vec![(ScalarDomain::Integer, 81), (ScalarDomain::Real, 64)],
+            None,
+        ),
+    ] {
+        let context = Context::create();
+        let module = context.create_module("shared_return");
+        let builder = context.create_builder();
+        let mut sources = siox::diag::SourceMap::new();
+        let text = "fn identity(value: Pair) -> Pair { return value; }";
+        let file = sources.add("shared_return.siox", text);
+        let span = Span::new(file, 0..text.len() as u32);
+        let width = fields.iter().map(|(_, width)| width).sum::<u32>();
+        let bytes = fields
+            .iter()
+            .map(|(_, width)| width.div_ceil(8))
+            .sum::<u32>();
+        let layout = SourceLayout {
+            span,
+            kind: LayoutKind::Struct {
+                name: "Pair".into(),
+                view: None,
+                fields: fields
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (domain, width))| LayoutField {
+                        name: format!("field{index}"),
+                        direction: None,
+                        layout: SourceLayout {
+                            span,
+                            kind: LayoutKind::Scalar {
+                                width,
+                                domain,
+                                nominal: None,
+                                value_range: None,
+                            },
+                        },
+                    })
+                    .collect(),
+            },
+        };
+        let source = ProcessValueInline {
+            name: "identity".into(),
+            function: span,
+            call: span,
+            result_span: span,
+            result_layout: Some(layout),
+            aggregate: None,
+            branches: Vec::new(),
+            parameters: Vec::new(),
+            locals: Vec::new(),
+        };
+        let node = |kind| ProcessValue {
+            span,
+            ty: None,
+            bit_width: Some(width),
+            kind,
+        };
+        let call = ProcessCall {
+            value: ProcessValueId(1),
+            function: ProcessFunctionId(0),
+            arguments: vec![ProcessValueId(0)],
+        };
+        let design = Design {
+            process_ir: ProcessIr {
+                values: vec![
+                    node(ProcessValueKind::Parameter {
+                        function: ProcessFunctionId(0),
+                        index: 0,
+                    }),
+                    node(ProcessValueKind::InlineCall {
+                        operand: ProcessValueId(0),
+                        source: Box::new(source),
+                    }),
+                ],
+                functions: vec![ProcessFunction {
+                    id: call.function,
+                    name: "identity".into(),
+                    span,
+                    parameters: vec![ProcessValueId(0)],
+                    result: ProcessValueId(1),
+                }],
+                ..ProcessIr::default()
+            },
+            ..Design::default()
+        };
+        let debug = DebugInfo::new(&context, &module, &sources, &design).unwrap();
+        let bits = context
+            .custom_width_int_type(std::num::NonZeroU32::new(width).unwrap())
+            .unwrap();
+        let probe = module.add_function("probe", bits.fn_type(&[bits.into()], false), None);
+        builder.position_at_end(context.append_basic_block(probe, "entry"));
+        let mut cache = ProcessValueCache::new(&[false; 2], &[true; 2]);
+        cache.debug = Some(&debug);
+        cache.parameters.insert(
+            ProcessValueId(0),
+            probe.get_first_param().unwrap().into_int_value(),
+        );
+        let returned = shared_call(
+            &context,
+            &module,
+            &builder,
+            &design,
+            &call,
+            None,
+            &HashMap::new(),
+            &mut cache,
+        )
+        .unwrap();
+        assert_eq!(returned.get_type(), bits);
+        builder.build_return(Some(&returned)).unwrap();
+        debug.finish(&module, &design);
+        module.verify().unwrap();
+        let native = module.get_function("sx.fn.0.identity").unwrap();
+        if let Some(signature) = signature {
+            assert_eq!(
+                native
+                    .get_type()
+                    .get_return_type()
+                    .unwrap()
+                    .print_to_string()
+                    .to_string(),
+                signature
+            );
+            assert_eq!(native.count_params(), 1);
+        } else {
+            assert!(native.get_type().get_return_type().is_none());
+            assert_eq!(native.count_params(), 2);
+            let attribute = native
+                .get_enum_attribute(
+                    AttributeLoc::Param(0),
+                    Attribute::get_named_enum_kind_id("sret"),
+                )
+                .unwrap();
+            let storage = attribute.get_type_value().into_struct_type();
+            assert_eq!(
+                storage
+                    .get_field_type_at_index(0)
+                    .unwrap()
+                    .into_array_type()
+                    .len(),
+                bytes
+            );
+            assert_eq!(
+                storage
+                    .get_field_type_at_index(1)
+                    .unwrap()
+                    .into_int_type()
+                    .get_bit_width(),
+                width
+            );
+            let entry = probe.get_first_basic_block().unwrap();
+            assert_eq!(
+                entry.get_first_instruction().unwrap().get_opcode(),
+                inkwell::values::InstructionOpcode::Alloca
+            );
+            let text = module.print_to_string().to_string();
+            assert!(
+                text.contains("call void @sx.fn.0.identity(ptr sret("),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            module
+                .get_functions()
+                .filter(|function| function.get_name().to_bytes().starts_with(b"sx.debug.call"))
+                .count(),
+            0,
+            "shared bodies must not acquire a second execution wrapper"
+        );
+    }
+}
+
+#[test]
+fn shared_debug_calls_emit_one_body_per_consumer_format() {
+    let context = Context::create();
+    let module = context.create_module("shared_debug_calls");
+    let builder = context.create_builder();
+    let mut sources = siox::diag::SourceMap::new();
+    let text = "fn bump(value: integer, unused: integer) -> integer {\n let local = value + 1;\n return local;\n}\n";
+    let file = sources.add("shared.siox", text);
+    let span = Span::new(file, 0..text.len() as u32);
+    let source = siox::ir::ProcessValueInline {
+        name: "bump".into(),
+        function: span,
+        call: span,
+        result_span: span,
+        result_layout: None,
+        aggregate: None,
+        branches: Vec::new(),
+        parameters: vec![
+            siox::ir::ProcessValueBinding {
+                name: "value".into(),
+                span,
+                scope: None,
+                layout: None,
+                value: Some(ProcessValueId(0)),
+                fields: Vec::new(),
+            },
+            siox::ir::ProcessValueBinding {
+                name: "unused".into(),
+                span,
+                scope: None,
+                layout: None,
+                value: Some(ProcessValueId(1)),
+                fields: Vec::new(),
+            },
+            siox::ir::ProcessValueBinding {
+                name: "aggregate".into(),
+                span,
+                scope: None,
+                layout: Some(siox::ir::SourceLayout {
+                    span,
+                    kind: siox::ir::LayoutKind::Struct {
+                        name: "Bundle".into(),
+                        view: None,
+                        fields: ["used", "unused"]
+                            .into_iter()
+                            .map(|name| siox::ir::LayoutField {
+                                name: name.into(),
+                                direction: None,
+                                layout: siox::ir::SourceLayout {
+                                    span,
+                                    kind: siox::ir::LayoutKind::Scalar {
+                                        width: 64,
+                                        domain: siox::ir::ScalarDomain::Integer,
+                                        nominal: None,
+                                        value_range: None,
+                                    },
+                                },
+                            })
+                            .collect(),
+                    },
+                }),
+                value: None,
+                fields: vec![
+                    ("used".into(), Some(ProcessValueId(0))),
+                    ("unused".into(), Some(ProcessValueId(1))),
+                ],
+            },
+        ],
+        locals: vec![siox::ir::ProcessValueBinding {
+            name: "local".into(),
+            span,
+            scope: None,
+            layout: None,
+            value: Some(ProcessValueId(3)),
+            fields: Vec::new(),
+        }],
+    };
+    let node = |kind| ProcessValue {
+        span,
+        ty: Some(siox::types::Ty::Integer),
+        bit_width: Some(64),
+        kind,
+    };
+    let design = Design {
+        process_ir: ProcessIr {
+            values: vec![
+                node(ProcessValueKind::Unary {
+                    operation: ProcessUnaryOp::Neg,
+                    operand: ProcessValueId(8),
+                }),
+                node(ProcessValueKind::ForeignCall {
+                    name: "must_not_run".into(),
+                    arguments: Vec::new(),
+                    float_arguments: Vec::new(),
+                    integer_arguments: Vec::new(),
+                    float_result: false,
+                    integer_result: true,
+                }),
+                node(ProcessValueKind::Number(ProcessNumber::Integer(vec![1]))),
+                node(ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::Add,
+                    left: ProcessValueId(0),
+                    right: ProcessValueId(7),
+                }),
+                node(ProcessValueKind::InlineCall {
+                    operand: ProcessValueId(3),
+                    source: Box::new(source),
+                }),
+                node(ProcessValueKind::Number(ProcessNumber::Integer(vec![2]))),
+                node(ProcessValueKind::Binary {
+                    operation: ProcessBinaryOp::Eq,
+                    left: ProcessValueId(0),
+                    right: ProcessValueId(2),
+                }),
+                node(ProcessValueKind::Select {
+                    condition: ProcessValueId(6),
+                    then_value: ProcessValueId(2),
+                    else_value: ProcessValueId(5),
+                }),
+                node(ProcessValueKind::Signal {
+                    signals: vec![SignalId(0)],
+                    state: ProcessSignalState::Current,
+                }),
+            ],
+            ..ProcessIr::default()
+        },
+        signals: vec![Signal {
+            path: "value".into(),
+            declaration_span: span,
+            width: 64,
+            real: false,
+            integer: true,
+            char: false,
+            range: None,
+            init: vec![0],
+            enum_type: None,
+        }],
+        ..Design::default()
+    };
+    let debug = DebugInfo::new(&context, &module, &sources, &design).unwrap();
+    let function = module.add_function(
+        "probe",
+        context
+            .void_type()
+            .fn_type(&[context.i64_type().into()], false),
+        None,
+    );
+    builder.position_at_end(context.append_basic_block(function, "entry"));
+    let input = function.get_first_param().unwrap().into_int_value();
+    let mut cache = ProcessValueCache::new(&[false; 5], &[true; 5]);
+    cache.debug = Some(&debug);
+    cache.emitted.insert((ProcessValueId(8), None, None), input);
+    cache.emitted.insert(
+        (ProcessValueId(0), None, None),
+        builder.build_int_neg(input, "argument").unwrap(),
+    );
+    // Different selected consumers must reuse the function definition, never
+    // recursively duplicate its body. Width formats remain distinct.
+    for width in [64, 128] {
+        for threshold in 0..8 {
+            let active = builder
+                .build_int_compare(
+                    IntPredicate::UGT,
+                    input,
+                    context.i64_type().const_int(threshold, false),
+                    "active",
+                )
+                .unwrap();
+            let value = process_value_at(
+                &context,
+                &module,
+                &builder,
+                &design,
+                ProcessValueId(4),
+                width,
+                false,
+                Some(active),
+                &HashMap::new(),
+                &mut cache,
+            )
+            .unwrap();
+            assert_eq!(value.get_type().get_bit_width(), width);
+        }
+    }
+    builder.build_return(None).unwrap();
+    debug.finish(&module, &design);
+    module.verify().unwrap();
+    let llvm = module.print_to_string().to_string();
+    let signatures = llvm
+        .lines()
+        .filter(|line| line.starts_with("define internal") && line.contains("@sx.debug.call.4"))
+        .collect::<Vec<_>>();
+    assert!(
+        signatures
+            .iter()
+            .any(|line| line.contains("i64 %") && line.contains("i65 %")),
+        "one body must retain distinct arithmetic/comparison argument formats: {llvm}"
+    );
+    assert!(
+        signatures
+            .iter()
+            .any(|line| line.contains("i128 %") && line.contains("i65 %")),
+        "widened arithmetic must not change the comparison argument format: {llvm}"
+    );
+    assert!(
+        !llvm.contains("@must_not_run"),
+        "metadata must not execute unused arguments: {llvm}"
+    );
+    assert!(llvm.contains("DW_OP_LLVM_fragment, 0, 64"), "{llvm}");
+    assert!(
+        !llvm.contains("DW_OP_LLVM_fragment, 64, 64"),
+        "unused aggregate fields must remain unavailable: {llvm}"
+    );
+    assert_eq!(
+        llvm.lines()
+            .filter(|line| {
+                line.starts_with("define internal") && line.contains("@sx.debug.call.4")
+            })
+            .count(),
+        2,
+        "{llvm}"
+    );
+    assert_eq!(
+        llvm.lines()
+            .filter(|line| line.contains(" = add i64 "))
+            .count(),
+        1,
+        "{llvm}"
+    );
+    assert_eq!(
+        llvm.lines()
+            .filter(|line| line.contains(" = add i128 "))
+            .count(),
+        1,
+        "{llvm}"
+    );
+}
+
+#[test]
 fn derived_hardware_keeps_shared_values_when_widening_arithmetic() {
     use siox::ir::{Driver, Expr, ProcessIr, ProcessValue};
     let span = siox::diag::Span::new(siox::diag::FileId(0), 0..1);
@@ -306,6 +934,225 @@ fn state_epoch_caches_preserve_signal_versions_widths_and_metadata_layouts() {
 }
 
 #[test]
+fn inactive_inline_debug_call_does_not_emit_its_body_or_frame() {
+    let context = Context::create();
+    let module = context.create_module("inactive_inline");
+    let builder = context.create_builder();
+    let function = module.add_function("probe", context.void_type().fn_type(&[], false), None);
+    builder.position_at_end(context.append_basic_block(function, "entry"));
+    let mut sources = siox::diag::SourceMap::new();
+    sources.add("inactive.siox", "fn inactive() {}\n");
+    let design = Design::default();
+    let debug = DebugInfo::new(&context, &module, &sources, &design).unwrap();
+    let mut cache = ProcessValueCache::new(&[], &[]);
+    cache.debug = Some(&debug);
+    let source = siox::ir::ProcessValueInline {
+        name: "inactive".into(),
+        function: span(),
+        call: span(),
+        result_span: span(),
+        result_layout: None,
+        aggregate: None,
+        branches: Vec::new(),
+        parameters: Vec::new(),
+        locals: Vec::new(),
+    };
+    let result = debug::inline_value(
+        &module,
+        &builder,
+        &design,
+        ProcessValueId(0),
+        ProcessValueId(0),
+        &source,
+        129,
+        false,
+        None,
+        Some(context.bool_type().const_zero()),
+        &HashMap::new(),
+        &mut cache,
+        |_, _, _, _| panic!("a compile-time-inactive call must not emit its body"),
+    )
+    .unwrap();
+    assert_eq!(result.get_type().get_bit_width(), 129);
+    assert!(result.is_const());
+    assert!(cache.value_frames.is_empty());
+    assert_eq!(function.count_basic_blocks(), 1);
+    let storage = builder
+        .build_alloca(context.bool_type(), "predicate")
+        .unwrap();
+    builder
+        .build_store(storage, context.bool_type().const_int(1, false))
+        .unwrap();
+    let predicate = builder
+        .build_load(context.bool_type(), storage, "predicate")
+        .unwrap()
+        .into_int_value();
+    let key = ProcessValueId(7);
+    cache.emitted.insert((key, None, None), result);
+    cache.contextual.insert((key, None, 129, false), result);
+    assert_eq!(
+        cache.emitted_value((key, Some(predicate), None)),
+        Some(result)
+    );
+    assert_eq!(
+        cache.contextual_value((key, Some(predicate), 129, false)),
+        Some(result)
+    );
+    assert!(cache
+        .contextual_value((key, Some(predicate), 128, false))
+        .is_none());
+    assert!(cache
+        .contextual_value((key, Some(predicate), 129, true))
+        .is_none());
+    cache.clear();
+    assert!(cache.emitted_value((key, Some(predicate), None)).is_none());
+    assert!(cache
+        .contextual_value((key, Some(predicate), 129, false))
+        .is_none());
+    for active in [context.bool_type().const_int(1, false), predicate] {
+        let result = debug::inline_value(
+            &module,
+            &builder,
+            &design,
+            ProcessValueId(0),
+            ProcessValueId(0),
+            &source,
+            129,
+            false,
+            None,
+            Some(active),
+            &HashMap::new(),
+            &mut cache,
+            |_, _, active, _| {
+                assert!(
+                    active.is_none(),
+                    "the selected arm already guarantees activity"
+                );
+                Some(
+                    context
+                        .custom_width_int_type(std::num::NonZeroU32::new(129).unwrap())
+                        .unwrap()
+                        .const_zero(),
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(result.get_type().get_bit_width(), 129);
+    }
+    builder.build_return(None).unwrap();
+    debug.finish(&module, &design);
+    module.verify().unwrap();
+}
+
+#[test]
+fn branch_cache_retains_values_not_replaced_keys_or_invalidated_reads() {
+    fn bind<'ctx>(
+        cache: &mut ProcessValueCache<'ctx, '_>,
+        id: u32,
+        value: IntValue<'ctx>,
+        layout: &SourceLayout,
+    ) {
+        let node = ProcessValueId(id);
+        cache.emitted.insert((node, None, None), value);
+        cache.contextual.insert((node, None, 64, false), value);
+        cache.metadata.insert((node, None, layout.clone()), value);
+        cache
+            .signals
+            .insert((SignalId(id), ProcessSignalState::Current, 64), value);
+        cache.evaluated_calls.insert((node, None), value);
+        for width in [64, 128] {
+            cache.source_results.insert(
+                (node, width, false, None),
+                (
+                    value,
+                    value
+                        .get_type()
+                        .get_context()
+                        .bool_type()
+                        .const_int(1, false),
+                ),
+            );
+        }
+    }
+    let context = Context::create();
+    let module = context.create_module("branch_cache");
+    let builder = context.create_builder();
+    let function = module.add_function("probe", context.void_type().fn_type(&[], false), None);
+    let entry = context.append_basic_block(function, "entry");
+    let arm = context.append_basic_block(function, "arm");
+    let join = context.append_basic_block(function, "join");
+    builder.position_at_end(entry);
+    let integer = context.i64_type();
+    let storage = builder.build_alloca(integer, "value").unwrap();
+    builder
+        .build_store(storage, integer.const_int(1, false))
+        .unwrap();
+    let load = || {
+        builder
+            .build_load(integer, storage, "read")
+            .unwrap()
+            .into_int_value()
+    };
+    let first = load();
+    let second = load();
+    let layout = SourceLayout {
+        span: span(),
+        kind: LayoutKind::Scalar {
+            width: 64,
+            domain: siox::ir::ScalarDomain::Integer,
+            nominal: None,
+            value_range: None,
+        },
+    };
+    let mut cache = ProcessValueCache::new(&[], &[]);
+    bind(&mut cache, 0, first, &layout);
+    bind(&mut cache, 1, second, &layout);
+    let dominating = cache.dominating_values();
+    builder.build_unconditional_branch(arm).unwrap();
+    builder.position_at_end(arm);
+    let replacement = load();
+    bind(&mut cache, 0, replacement, &layout);
+    bind(&mut cache, 2, replacement, &layout);
+    let branch_ready = builder
+        .build_int_compare(IntPredicate::EQ, replacement, first, "branch.ready")
+        .unwrap();
+    cache
+        .source_results
+        .insert((ProcessValueId(3), 64, false, None), (second, branch_ready));
+    builder.build_unconditional_branch(join).unwrap();
+    builder.position_at_end(join);
+    cache.retain_dominating(&dominating);
+    assert_eq!(cache.emitted.len(), 1);
+    assert_eq!(cache.contextual.len(), 1);
+    assert_eq!(cache.metadata.len(), 1);
+    assert_eq!(cache.signals.len(), 1);
+    assert_eq!(cache.evaluated_calls.len(), 1);
+    assert_eq!(cache.source_results.len(), 2);
+    for width in [64, 128] {
+        assert_eq!(
+            cache.source_results[&(ProcessValueId(1), width, false, None)].0,
+            second
+        );
+    }
+    assert_eq!(cache.emitted[&(ProcessValueId(1), None, None)], second);
+
+    // A foreign call can invalidate old state and reload an existing key.
+    // Pruning must not restore either the old read or that new definition.
+    cache.clear();
+    assert!(cache.source_results.is_empty());
+    bind(&mut cache, 1, load(), &layout);
+    cache.retain_dominating(&dominating);
+    assert!(cache.emitted.is_empty());
+    assert!(cache.contextual.is_empty());
+    assert!(cache.metadata.is_empty());
+    assert!(cache.signals.is_empty());
+    assert!(cache.evaluated_calls.is_empty());
+    assert!(cache.source_results.is_empty());
+    builder.build_return(None).unwrap();
+    module.verify().unwrap();
+}
+
+#[test]
 fn recursive_metadata_preflight_rejects_an_unsupported_leaf() {
     let (mut design, layout) = recursive_metadata_fixture(128);
     let array = field_slice(&layout, "payload").unwrap().layout.clone();
@@ -464,6 +1311,7 @@ fn scheduled_process(id: u32, schedules: &[(Option<u32>, ProcessValueId)]) -> Pr
         activation: ProcessActivation::TimeZero,
         region: ProcessRegion::Procedural,
         entry: ProcessBlockId(0),
+        inline_calls: Vec::new(),
         locals: Vec::new(),
         blocks: vec![ProcessBlock {
             id: ProcessBlockId(0),
@@ -573,6 +1421,7 @@ fn emits_runtime_discovery_metadata() {
                 activation: ProcessActivation::TimeZero,
                 region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
+                inline_calls: Vec::new(),
                 locals: vec![],
                 blocks: vec![ProcessBlock {
                     id: ProcessBlockId(0),
@@ -594,6 +1443,7 @@ fn emits_runtime_discovery_metadata() {
                 },
                 region: ProcessRegion::Procedural,
                 entry: ProcessBlockId(0),
+                inline_calls: Vec::new(),
                 locals: vec![],
                 blocks: vec![ProcessBlock {
                     id: ProcessBlockId(0),
@@ -632,7 +1482,7 @@ fn emits_runtime_discovery_metadata() {
         ..Design::default()
     };
     let llvm = crate::llvm::emit_module_ir(&design).unwrap();
-    assert!(llvm.contains("@sx_process_abi_version = constant i32 15"));
+    assert!(llvm.contains("@sx_process_abi_version = constant i32 16"));
     assert!(llvm.contains("define i8 @sx_process_commit()"));
     assert!(llvm.contains("define i8 @sx_process_changed(i32"));
     assert!(llvm.contains("define i8 @sx_process_storage_changed(i32"));
@@ -820,6 +1670,7 @@ fn fixed_and_empty_strings_are_executable_process_values() {
             activation: ProcessActivation::TimeZero,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
+            inline_calls: Vec::new(),
             locals: vec![],
             blocks: vec![
                 ProcessBlock {
@@ -856,6 +1707,14 @@ fn fixed_and_empty_strings_are_executable_process_values() {
         supported.values,
         [true, true, true, false, false, true, true]
     );
+    assert_eq!(
+        process_layout_attribute(&design, ProcessValueId(0), "length"),
+        Some(2)
+    );
+    assert_eq!(
+        process_layout_attribute(&design, ProcessValueId(3), "length"),
+        Some(0)
+    );
     let llvm = crate::llvm::emit_module_ir(&design).expect("fixed string Process values lower");
     assert!(llvm.contains("define internal i8 @sx.process.0(i32"));
     assert!(llvm.contains("br i1"), "{llvm}");
@@ -875,6 +1734,7 @@ fn process_entries_dispatch_control_only_cfgs() {
             activation: ProcessActivation::TimeZero,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
+            inline_calls: Vec::new(),
             locals: vec![],
             blocks: vec![
                 ProcessBlock {
@@ -943,6 +1803,7 @@ fn process_branch_reads_exact_width_state_and_operations() {
             activation: ProcessActivation::TimeZero,
             region: ProcessRegion::Procedural,
             entry: ProcessBlockId(0),
+            inline_calls: Vec::new(),
             locals: vec![],
             blocks: vec![
                 ProcessBlock {
@@ -1098,4 +1959,33 @@ fn unsupported_process_value_width_is_an_error_not_a_panic() {
         error.contains(&crate::llvm::emit::LLVM_MAX_INT_BITS.to_string()),
         "{error}"
     );
+}
+
+#[test]
+fn binary_logic_mapping_preserves_std_codes_and_wrapping() {
+    let context = Context::create();
+    let module = context.create_module("binary_codes");
+    let function = module.add_function("check", context.void_type().fn_type(&[], false), None);
+    let builder = context.create_builder();
+    builder.position_at_end(context.append_basic_block(function, "entry"));
+    for (width, low, high) in [(4, 13, 2), (8, 0, 1), (8, 2, 13), (8, 255, 0)] {
+        let encoding = siox::ir::LogicEncoding {
+            value_bits: [(low, false), (high, true)].into(),
+            binary: [low, high].into(),
+            ..siox::ir::LogicEncoding::default()
+        };
+        for (bit, expected) in [(false, low), (true, high)] {
+            let value = context.bool_type().const_int(u64::from(bit), false);
+            let mapped =
+                packed_discriminant(&context, &builder, &encoding, value, None, width).unwrap();
+            assert_eq!(mapped.get_zero_extended_constant(), Some(expected));
+            let unknown = mapped.get_type().const_int(9, false);
+            let retained =
+                packed_discriminant(&context, &builder, &encoding, value, Some(unknown), width)
+                    .unwrap();
+            assert_eq!(retained.get_zero_extended_constant(), Some(9));
+        }
+    }
+    builder.build_return(None).unwrap();
+    module.verify().unwrap();
 }

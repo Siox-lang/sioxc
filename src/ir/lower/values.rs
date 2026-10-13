@@ -395,7 +395,7 @@ impl<'a> Lowering<'a> {
             return None;
         };
         let (_, f) = self.suffix_impls.get(&suffix.text)?;
-        let body = f.body.as_ref()?;
+        f.body.as_ref()?;
         let mut env: HashMap<String, Val> = HashMap::new();
         if let Some(p) = f.params.iter().find(|p| !p.is_self) {
             if let Some(n) = &p.name {
@@ -415,7 +415,7 @@ impl<'a> Lowering<'a> {
                 .as_ref()
                 .map(|ty| self.source_layout(ty, &self.cur_env)),
         );
-        self.inline_block(&body.stmts, &env)
+        self.inline_source_function(f, ast::expr_span(e), &mut env, None)
     }
 
     /// Lower an expression to a single scalar in `env`.

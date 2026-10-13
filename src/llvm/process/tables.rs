@@ -319,6 +319,7 @@ pub(super) fn process_string(design: &Design, id: ProcessValueId) -> Option<&str
     let value = design.process_ir.values.get(id.0 as usize)?;
     match &value.kind {
         ProcessValueKind::String(value) => Some(value),
+        ProcessValueKind::InlineCall { operand, .. } => process_string(design, *operand),
         _ => None,
     }
 }

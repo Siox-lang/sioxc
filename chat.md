@@ -13484,6 +13484,956 @@ identity, not different contents). Clarify the audit's counter.siox as generic
 metadata input, not an object with an unbound width, and record that hash recipe
 in the local final commit. Execution input/compiler/corpus identities remain
 unchanged and all final gates are terminal. No push or LLVM dependency change.
+
+### 2026-10-06 — Codex — first compiler-backed LSP in its own repository
+
+The compiler and corpus Phase 1 commits were pushed at the user's request.
+The active LSP goal owns /home/max/siox-lsp: replace its invocation-only stub
+with stdio JSON-RPC, unsaved incremental buffers and compiler-backed editor
+features using the published compiler Git dependency without LLVM. Rust stdio
+tests and a real Neovim client pass. Own README/editor interoperability prose
+here to remove unsupported claims (rename, signature help, semantic tokens,
+workspace indexing and quick fixes). VS Code client verification is in flight.
+No compiler code/syntax or corpus source change. Preserve the 441 unrelated
+chat additions, AGENTS.md and .codex; do not sweep them into this work.
+
+### 2026-10-06 — Codex — contain verification-job OOMs before further LSP work
+
+User requests fixing repeated agent deaths first. Systemd records terminal
+scope OOM kills at 20:22 and 20:34; no evidence yet identifies a specific
+compiler/Codex leak. Own scripts/guarded-run.sh, its isolation regression and
+the testing resource policy in HOUSERULES.md. Launch heavy verification as
+separate user services with a cgroup memory limit, bounded Cargo/test threads,
+no core dumps and a shared nonblocking lock. Retain per-job logs and service
+exit status across terminal interruptions. Verify controlled low-limit OOM,
+ordinary failures and job serialization before running another real test.
+No system-wide limits, Codex configuration, compiler code or syntax changes.
+Preserve existing LSP/docs work and unrelated AGENTS/chat/.codex changes.
+
+Crash-containment verification: the launcher regression passes literal argument
+handling, disk TMPDIR, disabled session bus, exit-status retention, shared-job
+serialization and a deliberate 64 MiB OOM without incrementing the terminal
+scope's OOM counters. Use the native systemd task limit rather than an invented
+128-thread cap: real Electron needs more than 200 threads. No extra dependencies.
+
+Found substantial shared-host pressure outside the job's own limit: /tmp is
+tmpfs and held 6.7 GiB. Preserve 40 large compiler/audit binaries by moving them
+to ~/.cache/siox-jobs/artifacts and leaving symlinks at their original paths.
+All before/after SHA-256 hashes match; 2,855,798,776 bytes moved off tmpfs, which
+now holds about 4.0 GiB. No corpus/source files or other temporary directories
+were deleted. Guarded jobs now use disk-backed ~/.cache/siox-jobs/tmp.
+
+Final compiler gate siox-job-3000-1791313218252247777-3575517.service completed
+with SubState=exited, Result=success, ExecMainStatus=0: full cargo test --locked
+and the existing sibling corpus, 225 passed / 0 failed. MemoryPeak=515399680.
+The compiler-backed LSP's 10 Rust tests also passed in the isolated service.
+VS Code retry siox-job-3000-1791313574154014099-3602022.service stayed entirely
+in its protected cgroup, peaked at 949223424 bytes and exited 1 on a missing
+diagnostics timeout, not OOM; do not count editor integration as green yet.
+The terminal scope still has zero OOM events. Commit only these guard scripts,
+the HOUSERULES resource policy and this owned chat entry; no push. No confirmed
+compiler or Codex allocation leak, and detailed host kernel evidence remains
+unavailable without privileged access. Continue the separate LSP task afterward.
+
+### 2026-10-06 — Codex — first working server-only LSP complete
+
+The user's latest instruction removes VS Code/Neovim work from scope. Separate
+repository /home/max/siox-lsp is clean at local commit 1bd659f: real stdio LSP,
+compiler-backed analysis, unsaved buffers and the advertised language features.
+Final guarded service 3652265 fetched core/std at compiler lock revision
+53173bc679d639cfdfe31ffdb07eea4f9c3c9fcf and passed Rust 1.90 build, 14 unit/real
+binary protocol tests, Clippy -D warnings and formatting. No LLVM dependency;
+no second parser or language pipeline. Editor prototypes are not committed.
+Unsupported semantic queries and synchronous-analysis limits remain explicit
+in the LSP README/TODO; do not advertise rename, signature help or quick fixes.
+
+Own compiler README and docs/interoperability corrections only. Fresh compiler
+gate siox-job-3000-1791315097756155865-3634889.service is terminal success/exit 0:
+full cargo test --locked and 225 corpus programs passed, MemoryPeak=534097920.
+Commit these docs and only the two owned LSP chat entries; preserve 441 unrelated
+historical additions, AGENTS.md and .codex. No compiler/source/corpus changes
+and no push. The first working-server objective is fully verified locally.
+
+### 2026-10-07 — Codex — native GDB verification
+
+Own debugger verification and a minimal reusable native smoke check if useful.
+Test actual FIFO and wide-value corpus executables with installed GDB, without
+editor integration or a custom DAP. Check runtime/process breakpoints, machine
+stepping, backtraces and signal inspection, plus the explicit --debug rejection.
+Source DWARF remains a declared TODO; do not implement it under a testing request.
+Use guarded services and disk-backed artifacts. Preserve the 441 unrelated chat
+additions, AGENTS.md and .codex. No production code, syntax or corpus edits.
+
+Native GDB verification complete with installed GNU GDB 18.1 (Python enabled).
+Final job siox-job-3000-1791359980682243043-3851256.service exited successfully:
+SubState=exited, Result=success, ExecMainStatus=0, MemoryPeak=416133120 bytes.
+Full cargo test --locked and the existing 225-file native corpus passed, then
+the new scripts/test-gdb.sh passed on FIFO and wide_test. Graphify AST refresh
+completed; vendored C extraction warnings remain unrelated to debugger checks.
+
+The smoke check stops on timed waits, verifies the process/runtime backtrace,
+reads waveform metadata and calls sx_read_word with explicit native types,
+then stops at an entry obtained from sx_process_entries and executes stepi.
+FIFO at 11 ns reports occupancy 1 and front data 11. The wide case at time zero
+reports y as 128 bits with ABI words [0, 1], proving the carry into the high word.
+Both inferior runs exit 0 and produce byte-identical VCD to normal execution.
+GDB's Python assertion failures return nonzero, verified by an exploratory
+probe that sampled the wide fixture after the next stimulus had already changed
+its output; the final probe observes the intended carry before that change.
+
+Source debugging is not implemented: --debug rejects the build without leaving
+an executable, Siox source-line breakpoints fail, and source variable `head`
+is not a debugger symbol. Keep the native DWARF/inspection TODO open. The first
+assert-helper probe never hit because successful assertions bypass that helper;
+timed-wait and actual entry-table breakpoints cover execution reliably instead.
+LLDB is not installed and was not needed for the requested GDB-or-LLDB check.
+docs/testing.md documents reproduction and the boundary between native and
+source debugging. Commit only this owned entry, the script and that doc; leave
+other agents' 441 chat additions, AGENTS.md and .codex untouched. No push.
+
+### 2026-10-07 — Codex — direct LLVM DWARF implementation
+
+Own src/llvm debug metadata, Process entry source locations, native debug
+options, debug_info integration tests and debugger smoke/documentation updates.
+Implement --debug with LLVM DIBuilder in the canonical pipeline, including
+source lines and inspectable persistent signal/local storage. No generated C,
+new language syntax, DAP or editor work. Verify real GDB breakpoints/stepping,
+multiword values and waveform parity, then ordinary and debug native gates.
+Preserve unrelated AGENTS.md, .codex and the 441 chat additions; stage only
+owned changes and keep source/runtime behavior unchanged for ordinary builds.
+
+DWARF follow-through also owns ProcessLocal lexical extent metadata and its
+source-process lowering, plus hand-built IR fixture updates. Keep scope identity
+in canonical IR rather than parsing source or guessing binding lifetimes in
+LLVM. Source block scopes must preserve shadowed locals across suspensions.
+
+GDB probes found that native wide/real bitfields cannot faithfully expose
+non-byte-aligned packed struct members. Own a debug-only byte-aligned inspection
+buffer for these aggregates, refreshed at source stops by direct LLVM. Ordinary
+state, codegen, simulation and waveforms remain unchanged; no generated C.
+
+Direct LLVM DWARF is working in --debug/-g objects, LLVM text and native test
+executables. GDB verifies source breakpoints/next, named process frames,
+persistent/shadowed locals across await, loop indices, 3/81-bit signed values,
+std/user enum symbols, real/wide unaligned structs and labelled fixed arrays.
+Use existing physical state where debuggers can read it; only packed aggregates
+and wide non-byte-aligned signed scalars need read-only inspection buffers.
+No generated-C path, runtime ABI change, dependency or editor integration.
+
+Gate siox-job-3000-1791363640611599344-3998483.service completed successfully:
+SubState=exited, Result=success, ExecMainStatus=0, MemoryPeak=1611042816 bytes.
+Clippy --all-targets --all-features -D warnings, frontend-only check, focused
+default/bitpack DWARF tests, full default cargo test --locked, ordinary corpus
+225/0, debug corpus 225/0, FIFO/wide GDB smoke with VCD parity, and graphify AST
+refresh all passed. Earlier incomplete gates are not acceptance evidence.
+Additional full bitpack + debug-corpus gate 4036229 is running; inspect its
+terminal state rather than assuming its launcher exit means success.
+
+Document remaining inspection coverage in TODO/docs: wide unsigned padding,
+packed X/Z companions, dynamic string/array values and repeated inline-call
+scope/call-stack identity. Descending array labels are preserved as named
+elements; debug snapshots are refreshed only at Siox source boundaries.
+Preserve unrelated 441 chat additions, AGENTS.md and .codex when staging.
+
+The additional bitpack gate siox-job-3000-1791364278873503577-4036229.service
+also completed with SubState=exited, Result=success, ExecMainStatus=0 and
+MemoryPeak=1611517952 bytes: full cargo test --locked --features bitpack and
+the bitpack debug corpus, 225 passed / 0 failed. Commit the tested DWARF
+foundation and docs only; remaining inspection work keeps the DWARF goal
+active. No compiler push requested. The separate LSP main was pushed to
+3e4f312 under the user's explicit LSP-only request.
+
+### 2026-10-07 — Codex — DWARF wide padding and qualified process frames
+
+Own src/llvm/process/debug.rs, tests/debug_info.rs and associated TODO/testing
+documentation. Generalize the existing inspection mirror to unsigned wide
+non-byte-aligned values as well as signed ones, and verify storage, ports and
+process locals at 65/81/127/129 bits under default and bitpack layouts. Check
+qualified process frame names using actual GDB source/function breakpoints.
+Reuse direct LLVM debug support; no runtime ABI change or generated C. Preserve
+unrelated AGENTS.md, .codex and the 441 historical chat additions. Keep the full
+DWARF goal active for logic companions, dynamic values and inline identities.
+
+The focused default and bitpack GDB gates passed for all new wide checks and
+qualified T::stimulus frames (4065058, terminal success, peak 1082834944 bytes).
+Extend ownership to src/llvm/process/debug/logic.rs and emit.rs's debug finalize
+call for source-typed packed logic inspection. Reuse packed_discriminant and
+the existing storage/signal readers; include recursive aggregates, source
+index labels and std-derived enum symbols rather than raw companion nibbles.
+
+DWARF wide/logic inspection batch verified. Gate
+siox-job-3000-1791365280531269901-4075933.service is terminal success:
+SubState=exited, Result=success, ExecMainStatus=0, MemoryPeak=1612480512 bytes.
+Clippy all-targets/all-features -D warnings, frontend-only check, full default
+and bitpack cargo test --locked, ordinary/default-debug/bitpack-debug corpus
+(225/0 each), FIFO/wide GDB smoke with identical VCD, and graphify AST update
+all passed. Expanded GDB coverage includes qualified function breakpoints,
+65/81/127/129-bit signed and unsigned storage/ports/locals, all nine std logic
+states, hardware output companions, recursive structs/arrays and updates after
+await. No per-design C, new dependency, simulation ABI or ordinary-codegen change.
+
+Estimated implement DWARF completion: 85%. Remaining: dynamic string/array
+inspection and repeated inline-call scope/call-stack identity. Runtime strings
+are opaque Char[] handles, so the next inspection change must read their
+runtime-owned content safely rather than claiming an inline character layout.
+Source inlining needs canonical scope identity, not filename/span guessing in
+LLVM. Keep the goal active. Commit owned files only; no compiler push requested.
+
+### 2026-10-07 — Codex — DWARF dynamic string inspection
+
+Own runtime/process.c and process.h's read-only debug string query,
+src/llvm/process/debug.rs and debug/strings.rs, tests/debug_info.rs and related
+TODO/testing docs. Describe supported runtime-owned Char[] handles as borrowed
+content/length views, refreshed by the existing LLVM inspection helper. Query
+zero/invalid handles without changing runtime errors, allocating or invoking
+language IO. Verify Unicode, embedded NUL, empty content, repeated reads and
+test resets with native GDB plus ordinary/debug waveform parity. Preserve
+AGENTS.md, .codex and the unrelated 441 chat additions; no compiler push.
+
+The new string-local regression exposed an existing shared lowering bug:
+process_value_is_runtime_string recognizes reads/storage initializers but not
+typed process locals. Their length/index/equality paths are consequently sent
+to fixed-array lowering. Extend ownership to source_processes.rs for this
+root-cause recognition fix and entry.rs for temporary diagnostics (remove all
+diagnostic instrumentation before acceptance). Preserve source/runtime semantics.
+
+Focused gate 4159423 completed successfully (peak 1159782400 bytes): default
+and bitpack native/GDB tests and all-target/all-feature Clippy passed. Temporary
+entry/test diagnostics are removed. Actual root cause also needed local reads
+in cloned inline expressions to retain declaration-owned type metadata before
+the active CFG enters ProcessIr. Reuse the existing handle-layout recognition
+helper, moving it out of a closure rather than adding a second classifier.
+
+String views carry their source test root. The fixed read-only query checks the
+currently executing process root so reused handle numbers cannot display
+another test's content. GDB verifies unset handles, Unicode code points,
+embedded NUL/byte lengths, empty strings, reassignment/alias lifetime across
+await and cleanup/inactive views in a second test. No allocations or runtime
+error changes in inspection. Full default/bitpack + three corpus gates follow.
+
+Acceptance gate siox-job-3000-1791367253754253604-4163517.service failed during
+build_binary::native_formatting_preserves_wide_unicode_and_long_messages;
+SubState=failed, Result=exit-code, ExecMainStatus=101. Investigate the retained
+log ~/.cache/siox-jobs/siox-job-3000-1791367253754253604-4163517.log before a
+fresh gate. No acceptance/commit claimed. Preserve 441 unrelated chat additions
+when staging later, and keep the goal active for repeated inline-call scope/
+call-stack identity and remaining array coverage.
+
+The regression is fixed by following the active local's Declare initializer,
+not classifying an unconstrained string alias as a runtime handle. Literal
+empty strings intentionally use fixed storage. Gate 4172986 passed the existing
+wide/Unicode/empty formatting regression, default and bitpack GDB string tests,
+and all four runtime_file_io tests (peak 986136576 bytes). Retain this regression
+coverage and rerun a fresh full gate on the corrected snapshot before committing.
+
+Corrected acceptance job siox-job-3000-1791367569976590143-4176484.service is
+live now; log ~/.cache/siox-jobs/siox-job-3000-1791367569976590143-4176484.log.
+Poll this exact unit to its terminal state; do not restart on an observation
+timeout or edit compiler source while it runs. Success still requires exited /
+success / exit 0 and all three 225-file corpus summaries. On success, commit
+only owned dynamic-string/runtime/source-lowering/test/docs files and this
+dated chat entry, with a named implement DWARF completion estimate. Preserve
+the unrelated 441 chat additions, AGENTS.md and .codex. No compiler push.
+
+Acceptance job 4176484 completed: SubState=exited, Result=success,
+ExecMainStatus=0, MemoryPeak=1612652544 bytes. Formatting, all-target/all-feature
+Clippy, frontend-only check, full default and bitpack tests, ordinary/default
+debug/bitpack debug corpus (225/0 each), real GDB string inspection and FIFO/wide
+smoke with byte-identical VCD, and AST graph refresh passed. Graphify reports
+known vendored libfst parser limitations, unrelated to the compiler changes.
+Commit this verified batch only; estimated implement DWARF completion: 90%.
+Next: canonical inline-call identities and LLVM inlinedAt chains, including
+repeated/nested calls and suspension. Keep the full goal active.
+
+### 2026-10-07 — Codex — DWARF inline-call identity
+
+Own ir/process.rs, source_processes.rs and cfg_calls.rs, LLVM debug/entry,
+hand-built IR fixtures and debug_info tests. Preserve call-site/parent identity
+in canonical CFG metadata; no source parsing or renamed-local workaround in
+LLVM. Procedures need separate callee entry/caller resume blocks, including
+across await. Value-call normalization must retain scope ownership and roll
+it back on unsupported calls. Verify repeated/nested calls with real GDB.
+Preserve AGENTS.md, .codex and 441 unrelated chat additions. No compiler push.
+
+Inline CFG source frames now use canonical call/parent IDs and allocation
+ranges, with distinct callee entries and caller resumes. LLVM lexical scopes
+include the call identity and DILocation chains use inlinedAt. GDB verified
+procedures and returned CFG calls, nested/same-line/repeated calls, callee
+shadowing and restored caller locals after await; ordinary/debug VCD is equal.
+Unit validation rejects cyclic/forward parents and invalid ranges. The first
+focused gate 47861 stopped at Clippy type-complexity/single-range lint errors;
+named metadata aliases and explicit range collection fixed those, no bypass.
+Gate 49769 is terminal success (exit 0, peak 1610985472 bytes): strict Clippy,
+526 library tests and both complete default/bitpack debug_info tests passed.
+Remaining: expression-only inline frames, formal-parameter inspection and any
+additional runtime-sized array representations. Keep the DWARF goal active.
+
+Full acceptance job siox-job-3000-1791369035463179915-56175.service is live;
+log ~/.cache/siox-jobs/siox-job-3000-1791369035463179915-56175.log. Poll the exact
+unit to terminal success; do not restart on an observation timeout or change
+compiler source during verification. Require default/bitpack full suites,
+three 225/0 corpus runs and GDB/VCD parity before committing the inline batch.
+Stage only the owned IR/LLVM/test/TODO/docs files and this dated chat entry;
+preserve AGENTS.md, .codex and 441 unrelated chat additions. Include a named
+implement DWARF completion estimate, and do not push the compiler repository.
+
+Acceptance job 56175 finished with SubState=exited, Result=success,
+ExecMainStatus=0 and MemoryPeak=1612677120 bytes. Formatting/strict Clippy,
+frontend-only check, full default/bitpack suites, ordinary/default-debug/
+bitpack-debug corpora (225/0 each), real GDB inline/inspection tests and all
+FIFO/wide smoke/VCD checks passed. AST graph refreshed; known vendored libfst
+extractor warnings remain unrelated. Commit only this tested inline batch and
+owned log entry. Estimated implement DWARF completion: 94%; parameter/return
+metadata, expression-only inlines and remaining array coverage still need work.
+
+### 2026-10-07 — Codex — DWARF formal parameters
+
+Own canonical inline argument/result metadata, source_processes/cfg_calls,
+LLVM debug/parameters.rs and entry, debug_info and metadata validation tests.
+Reuse captured argument identities: parameters may alias caller state and
+must not become simulation copies. Retain real formal parameter/return types.
+LLVM-only probes 110970/114053 verified that direct global dbg.value/declare
+records lose locations, while a stack-held reference with DW_OP_deref keeps
+the true global value available as a formal argument. Use LLVM 22 record APIs
+directly (do not cast LLVMDbgRecordRef to InstructionValue). Preserve unrelated
+AGENTS.md/.codex/441 chat additions; no compiler push or editor work.
+
+Focused job 204825 finished exited/success/0 (peak 1611087872 bytes):
+default/bitpack GDB parameter tests and strict Clippy passed. True formal
+arguments retain constants and live mutable/indexed aliases across await,
+including struct, real and 81-bit projections. Extend ownership to
+debug/strings.rs to reuse its existing borrowed-content view for string
+parameters, and validate invalid argument/result IDs. No runtime copies,
+new dependencies or re-evaluation of user expressions for inspection.
+
+Jobs 213451 and 217617 completed exited/success/0 (peaks 1449811968 and
+1083744256 bytes): invalid binding validation, default/bitpack real GDB tests,
+strict Clippy, Unicode/embedded-NUL string parameters and mutated `self`
+receivers passed. Reused/deduplicated existing string inspection buffers;
+no new runtime API or source-expression evaluation. Full acceptance remains
+required before committing. Expression-only inline frames remain open.
+
+Full acceptance job siox-job-3000-1791381079431179320-220391.service is live;
+log ~/.cache/siox-jobs/siox-job-3000-1791381079431179320-220391.log. Default
+full suite passed; corpus runs are still in progress. Poll this exact unit,
+never restart solely on an observation timeout, and keep compiler sources
+unchanged while the gate verifies this snapshot. Require exited/success/0,
+full bitpack suite, three 225/0 corpus summaries and GDB/VCD parity before
+committing only owned parameter/string/debug/test/docs files and this dated
+entry. Preserve unrelated AGENTS.md, .codex and 441 chat additions. No compiler
+push. After this batch: preserve expression-only call/local provenance at
+value lowering, and audit zero-width/empty formal arguments (currently skipped
+without a physical LLVM frame) plus other supported argument representations.
+
+Acceptance job 220391 finished exited/success/0, peak 1612668928 bytes.
+Formatting, strict all-target/all-feature Clippy, frontend-only check, full
+default/bitpack suites, ordinary/default-debug/bitpack-debug corpora (225/0
+each), real GDB formal-argument/receiver/string inspection and all FIFO/wide
+GDB/VCD smoke checks passed. AST graph refreshed (known vendored libfst parser
+warnings remain unrelated). Commit only this verified batch. Estimated
+implement DWARF completion: 96%; expression-only frames, zero-storage argument
+inspection and remaining supported-representation audit are still open.
+
+### 2026-10-07 — Codex — DWARF zero-storage arguments
+
+Own debug/parameters.rs, debug/strings.rs and debug_info regression. Audit
+empty string arguments, which have no physical LLVM integer storage but still
+need a source formal variable/type. Reuse the string view ABI with constant
+empty contents; do not allocate runtime handles, read files or change argument
+evaluation. First demonstrate the omission with real GDB. Preserve unrelated
+AGENTS.md/.codex/441 chat additions. Previous batch is committed as ed4c9d3;
+do not push compiler commits without an explicit request.
+
+Regression 276405 failed before debugger inspection: both debug and ordinary
+native executables reject the empty argument's `length` attribute (ordinary
+probe 278207 confirms block 58 is incomplete). Extend ownership to the shared
+process_layout_attribute helper in value_types.rs: source literal character
+count is known even without a nonzero LLVM integer/layout. Fix that root once
+for support preflight and emission, then verify the actual DWARF omission.
+
+Probe 279296 now runs ordinary/debug native binaries successfully and fails
+exactly at GDB's missing `value` formal variable in check_empty. Reuse the
+runtime string DI type for literal arguments, backed by constant UTF-8/Char
+arrays (null pointers for empty contents), without runtime allocation or
+expression re-evaluation. Job 282633 passed both complete debugger suites,
+then strict Clippy caught two unnecessary borrows introduced by the layout
+refactor; remove those and add literal-length assertions to the existing
+fixed/empty string backend regression. Extend ownership to that test only.
+
+Focused job 285795 finished exited/success/0 (peak 782876672 bytes): strict
+Clippy and both complete debugger suites passed, including runtime/literal
+Unicode-NUL and empty arguments plus ordinary/debug native/VCD parity. Its
+bin-only backend test filter ran zero tests, so it is not unit-test evidence;
+run the actual lib test target in the next acceptance job. Literal-length
+handling is shared by support preflight and code emission. Full acceptance
+and graph refresh are required before a zero-storage batch commit.
+
+Full acceptance job siox-job-3000-1791382472955122018-291824.service is live;
+log ~/.cache/siox-jobs/siox-job-3000-1791382472955122018-291824.log. Poll this
+exact handle to terminal; no compiler source edits or concurrent heavy job
+while it runs. Require full default/bitpack suites, three 225/0 corpus runs,
+real GDB/VCD checks and graph refresh before committing only this owned batch
+and dated entry. Preserve AGENTS.md/.codex/441 unrelated chat additions.
+
+Next expression-inline work must cover both procedural value inlining and
+SourceValues hardware lowering, not only free functions in process CFGs.
+Read-only trace: inline_process_function/inline_value_statements erase local
+and parameter aliases; SourceValues::retain_reachable compacts/remaps value
+IDs. Preserve call-site/local provenance through both paths and rollback/
+compaction. Metadata-only operands must not become executable dependencies:
+hardware effect discovery follows process_value_dependencies, so retaining an
+otherwise-unused argument there could execute foreign/file calls in ordinary
+builds. Likewise pure Select/Match arms currently emit eagerly; source stepping
+must not stop in unselected calls or change simulation effects for inspection.
+
+Acceptance job 291824 finished exited/success/0, peak 1612836864 bytes.
+The actual library fixed/empty string test, formatting, strict Clippy,
+frontend-only check, full default/bitpack suites, three native corpora (225/0
+each), real GDB argument checks and FIFO/wide VCD parity passed. AST graph
+refreshed; vendored parser limitations remain unrelated. Commit this tested
+zero-storage/literal batch only. Estimated implement DWARF completion stays
+96%: expression-only inline provenance/emission is the main outstanding work,
+along with the remaining supported-representation completion audit.
+
+### 2026-10-07 — Codex — DWARF expression inlines
+
+Own the debug_info expression-call regression and subsequent canonical value
+provenance in ir/process.rs, procedural/source value inliners and LLVM value
+debug emission. First prove the missing source frames with real GDB, repeated
+same-line calls, nested calls and signature/local inspection. Preserve normal
+native execution and VCD parity. Do not force pure calls through persistent
+CFG return frames solely for debug metadata: source identity needs a distinct
+canonical value boundary without simulation copies. Compaction/reconstruction
+must preserve or explicitly invalidate non-executable bindings; never make
+discarded arguments executable dependencies. Untaken calls must not gain
+source stops or host/foreign effects. Cover both procedural and hardware
+value lowering before claiming the full goal complete. Preserve unrelated
+AGENTS.md/.codex/441 chat additions; compiler pushes remain unauthorized.
+
+Zero-storage batch committed as 5a48839 after full acceptance. Expression
+regression job 352835 is terminal failure (exit 101, peak 193601536 bytes):
+both native executables run successfully and their VCDs match, but GDB reports
+"No compiled code for line 4" for the pure bump return. No callee frame exists.
+The failing test is owned/uncommitted, not a passed gate; tightened its pending
+breakpoint assertion after observing that failure. Scratch source/binaries are
+in ~/.cache/siox-jobs/tmp/siox_dwarf_values_353120/. No heavy job remains live.
+
+Read-only scope trace: hardware pure bodies enter inline_block via calls.rs
+(free functions, methods and From), source_operators.rs, values.rs (suffixes)
+and resolution.rs. Procedural pure bodies share inline_process_function with
+operators/conversions, and inline_value_statements retains only alias IDs.
+SourceValues::reconstruct_metavalues remaps IDs before retain_reachable removes
+dead values. A call returning an existing operand can allocate no body value,
+so allocation ranges alone cannot identify that call; preserve a unique
+identity boundary without ordinary LLVM copies. Binding provenance must remain
+non-executable and survive/invalidate correctly through both remapping passes.
+
+Expression source-frame implementation now uses transparent InlineCall values
+with non-executable signature/local provenance. SourceValues reconstruction and
+reachability remap bindings separately; dropped bindings become None instead of
+keeping discarded foreign/host effects executable. CFG normalization updates
+binding aliases to already-captured operands. Ordinary emission forwards the
+consumer width and introduces no simulation copies for the boundary.
+
+Real GDB exposed two backend issues: Inkwell's deprecated location getter can
+turn absent locations into empty tuples, and SelectionDAG combines nested
+return arithmetic even at O0. Preserve raw metadata locations; use the existing
+read-only inspection buffers and dispatch-allocated references for bindings and
+debug-only return views. No argument/body reevaluation for inspection. Predicate
+guards keep unselected expression calls unreachable and preserve call dominance.
+
+Focused job 396286 passed the extended expression regression. Acceptance probe
+400405 passed strict Clippy and all three GDB/VCD tests in default and bitpack;
+525/526 lib tests passed, with one old internal array-shape assertion expecting
+a Select directly instead of its new source identity boundary. Update that
+assertion to verify the same executable Select through InlineCall, not weaken
+its implementation check. Add explicit SourceValues compaction/validation proof
+that metadata cannot retain a discarded foreign effect. Full gate still needed.
+Remaining goal work: actual hardware-inliner provenance, expression lexical/
+aggregate/string inspection and runtime-sized representation audit. Do not mark
+the full DWARF goal complete based on the procedural regression alone.
+
+Full gate 408926 passed Clippy/frontend-only/default tests up to
+testbench_methods, then delayed_dynamic_composites overflowed its test-thread
+stack. Probe 418130 is terminal and GDB proves a deep canonical bitwise
+reduction through process_value/process_binary/process_value_at, not an IR
+cycle. Extend ownership to binary.rs: reuse the value cache and operand emitter
+with an explicit work/value stack for equal-width bitwise chains. Preserve
+written operand order, checked/foreign activity, per-node debug bindings and
+source locations. Do not enlarge thread stacks or skip the failing test.
+The scheduled third corpus command used an ignored SIOXC_BITPACK variable;
+the actual representation switch is SIOXC_FEATURES=bitpack. No bitpack corpus
+claim from that command; run the correct gate after fixing the stack issue.
+
+Probe 422940 finished exited/success/0, peak 743362560 bytes. The previously
+overflowing native composite test and all three complete DWARF regressions
+passed after iterative bitwise emission. Preserve debug source identity and
+refresh already-emitted/cache-hit bindings without reevaluating operands.
+Extend the expression regression to inspect a caller local holding an inner
+call result at the caller's return stop, not just constants and leaf arithmetic.
+Run full default/bitpack suites and correctly configured native corpora next.
+
+Gate 425076 caught a checked-index activity regression in the new work-stack
+emitter before proceeding past lib tests (526/527 passed). Share the existing
+right-operand activity rule between recursive arithmetic and iterative bitwise
+emission, with separate left/right/finish phases, rather than treating a
+Boolean reduction as eager packed arithmetic. Normalize cached leaf widths too.
+Focused job 433771 finished exited/success/0, peak 810700800 bytes: the exact
+checked-index/range probe, all ten testbench_methods native tests and all three
+GDB/VCD regressions passed, including caller locals holding callee results.
+
+Continuation audit while acceptance job 437801 remains live: strict Clippy,
+frontend-only checking, both complete Rust suites and the ordinary corpus
+(225 passed / 0 failed) have passed. The two debug corpora, final native GDB
+smoke check and graph refresh are not yet acceptance evidence; keep polling
+the same service and do not edit compiler sources while it runs.
+
+Runtime-sized representation trace: llvm/process/names.rs only grants the
+64-bit handle ABI to unconstrained Char[]; source_processes.rs uses the same
+character-domain guard. Other unconstrained arrays have no supported native
+storage layout (places.rs rejects them); general runtime-owned arrays remain
+the existing LLVM host-service extension, not a hidden DWARF implementation
+requirement. Existing string storage/CFG tests cover that supported handle
+representation, but expression-frame string bindings still need real GDB
+coverage and borrowed-content views rather than packed handle inspection.
+
+Next owned subsystem after the current gate/commit: lower/calls.rs pure-body
+inlining and its conversion/operator/suffix callers, reusing Process InlineCall
+identity instead of allocation ranges. Preserve lazy aggregate leaves and
+discarded effects; do not turn debug-only bindings into executable roots.
+
+Gate 437801 was intentionally stopped, not accepted, during the default debug
+float_conformance compile. Both Rust suites and ordinary 225/0 remain partial
+evidence only. At the observation its cgroup peaked at 1634582528 bytes,
+memory.events recorded 178542 high-limit events with no OOM, and the compiler
+was sleeping in mem_cgroup_handle_over_high. A live GDB backtrace (detached
+cleanly) showed nested inline_value guards allocating source-frame bindings.
+The guard clears all shared SSA caches on entry and exit, causing dominating
+shared subgraphs to be emitted repeatedly. Own process/value_types.rs,
+debug/inline_values.rs and process/tests.rs for a dominance-safe cache fix:
+reuse pre-branch values inside the arm, then retain only SSA values that already
+dominated the branch. Never restore state caches invalidated by a foreign call,
+and never keep a branch-only replacement merely because its key existed before.
+
+Dominance probe 499842 failed to compile its new test because ScalarDomain was
+not imported; qualified the existing IR enum. Probe 501529 then passed that
+cache test and all three real GDB/native/VCD regressions, but ended exit 127
+before the float measurement because /usr/bin/time is absent. No float pass
+claimed; use the shell timer and guarded-service peak rather than add a tool.
+
+Float-only probe 505632 was stopped intentionally after it also reached the
+high-memory throttle: peak 1634766848 bytes, 66581 high-limit events, no OOM.
+Dominating-cache retention passes correctness probes but is not yet sufficient
+to accept the large debug compile. Next remove emission of compile-time-false
+debug call arms at the shared inline_value boundary, preserving the actual
+consumer width. Unreachable bodies need neither machine code nor source stops;
+do not drop frames/bindings for executed std or user calls.
+
+Probe 523135 passed both cache/constant-inactive units and all three debugger
+regressions, then failed with Result=oom-kill / ExecMainStatus=9 during the
+large float debug compile. User-journal records the kernel kill inside the
+guarded unit at 17:46:12; host memory is healthy afterward, and kernel journal
+entries are unavailable. No completed float result or resource improvement
+claimed. Trace the shared guard callback: recursion removes the predicate, but
+the emitter closure captures the original predicate and reapplies it to the
+entire callee body. Pass effective activity explicitly to all three emitters;
+inside a selected arm it is None. Add a direct check for dynamic and constant
+true guards as well as the inactive consumer-width check.
+
+Probe 540745 passes those units and all three GDB/native/VCD tests, but the
+float compile still reaches the high-memory throttle (observed peak
+1633214464 bytes); stopped deliberately before accepting it. A bounded live
+GDB sample, detached cleanly, shows contextual arithmetic emission, so do not
+claim that removing the redundant predicates alone fixed resource growth.
+Next reuse already-dominating unconditional cached results in conditional
+consumers, and avoid repeated inspection stores for the same binding/SSA value
+within one basic block. Keep branch-only results and post-foreign reads out of
+that reuse. These are debug correctness/resource fixes, not permission to omit
+executed std frames or source bindings.
+
+Probe 566178 again passes the two units and all three GDB/native/VCD tests,
+including unconditional-cache fallback, but ends oom-kill/9 on float debug
+compilation (observed peak 1632989184 bytes). The full gate remains unproven.
+Audit metadata origins next: inline_value creates a new DISubprogram for every
+expansion of the same source function. Share the abstract function definition
+only when definition span and all return/binding debug types match; keep each
+call's inlinedAt location, reference storage and capture state distinct. Use
+the existing repeated/same-line/nested GDB checks to prove real values remain
+separate, and measure the same full float workload again.
+
+Probe 597103 passed strict Clippy, both cache/guard units and all three real
+GDB/native/VCD tests with shared function origins; float debug still ended
+oom-kill/9. Parent user/app slices have unlimited memory.max and the unit has
+the expected 2 GiB cap, so no parent-limit explanation was found. The reported
+terminal service peak (1170255872 bytes) is not a trustworthy whole-run upper
+bound after the kill; do not infer a successful resource reduction from it.
+Graph refresh completed: 5565 nodes / 14617 edges / 264 communities, with the
+known vendored libfst parser warnings. Use one explicitly bounded 4 GiB / 3 GiB
+high-limit diagnostic for this measured >2 GiB workload, never an unlimited
+build or a claim that the completed full gate is already green.
+
+Standalone float probe 618030 also failed oom-kill/9 under the explicitly
+bounded 4 GiB cap (observed peak 2588528640 bytes; no completed compiler output).
+Do not raise budgets further without understanding the expansion. Add a
+disk-cache-only diagnostic consumer of the existing public phase APIs: select
+the actual test hierarchy, lower once to Process IR, then emit ordinary/debug
+LLVM text for a reduced number of the same corpus operations. Count executable
+instructions separately from metadata and compare growth; this is a root-cause
+probe, not a substitute for the full 44-pair corpus acceptance requirement.
+
+### 2026-10-07 — Codex — DWARF float expansion diagnostic
+
+The external scratch consumer (job 672668) ended exit 101: lower_processes is
+intentionally crate-private. Do not widen the compiler API for instrumentation
+or use its independently resolved dependency lock as acceptance evidence.
+Own llvm/process/tests.rs for a temporary ignored in-crate probe using the
+root locked dependencies and existing frontend/test lowering/LLVM APIs. Compare
+reduced ordinary/debug instruction and metadata counts before native codegen;
+retain probe artifacts in disk-backed cache. Full corpus and hardware/string
+expression coverage remain required. Previous status-only turn was no progress;
+the safe next action is this measured diagnostic, not another memory increase.
+
+Probe 696015 completed success/0: one float operation has 807 arena values,
+80 InlineCalls and 1134 ordinary versus 15303 debug instructions. Probe 700935
+also completed success/0: three operations have 2651 values, 261 InlineCalls,
+4680 ordinary versus 860567 debug instructions (87 MB text, 13897 return
+buffers and 9532 guards). Only 2218 metadata definitions: the dominant problem
+is repeated executable expression emission, not distinct DWARF origins.
+Own process/debug{,/inline_values.rs}, values.rs and value_types.rs to compile
+each debug expression call once as a native source function per arena/consumer
+format. Pass live source operands through the function ABI; preserve selected
+execution and source arguments/locals, while ordinary emission stays unchanged.
+This reuses canonical Process values and LLVM emission, not a second frontend
+pipeline or generated C. Keep real GDB/native/VCD parity checks and add an
+instruction-growth regression. No acceptance claim until measured/full gates.
+
+Probe 923941 completed success/0 under the default 2 GiB cap: the inactive
+unit, reduced three-op LLVM probe and all three actual GDB/native/VCD tests
+pass. Three-op debug output is now 33659 instructions / 3.49 MB, emitted in
+1.12 s, versus 860567 / 87.16 MB / 29.84 s before native expression functions.
+This proves a measured reduction, not acceptance of the full float workload.
+
+Probe 929270 completed success/0: strict all-target/all-feature Clippy passed;
+the full float_conformance debug executable compiled in 63.153 s and ran its
+complete test successfully, with guarded peak 781631488 bytes under the usual
+2 GiB cap. Replace the temporary corpus-dependent ignored probe with a portable
+shared-call/consumer-width regression. Bitwise-chain emission must respect
+captured native parameters as well as the recursive scalar emitters. Update
+testing.md to describe real expression functions and retain the full goal's
+hardware, lexical and string/aggregate gaps. All packing/corpus gates pending.
+
+Gate 939441 ended exit 1, not accepted: both complete Rust suites and ordinary
+corpus 225/0 passed; default debug corpus is 224/1, failing only lfsr_test's
+last local packed-element xor (process 1 block 26). The bitpack corpus/GDB
+smoke commands were not reached. The native expression ABI exposes a shared
+renderer gap: process_value_in_layout treats every Index as an array slice,
+even when its base is Packed and the result is a source enum discriminant.
+Own the shared Index arm in values.rs; delegate packed projection to the
+existing scalar emitter rather than patch each debug caller or reinterpret a
+physical bit as an enum. Extend the actual GDB/native/VCD expression test with
+a direct Logic local, packed-element argument, and the existing xor shape.
+
+Probe 1018665 ended exit 101 on the added direct Logic local before the LFSR
+or bitpack probes ran. Its preflight support check mirrored the same array-only
+Index assumption. Update that shared support arm alongside emission, reusing
+the already-computed scalar support result for packed projections. Do not
+weaken array shape checks or skip the new ordinary-execution regression.
+
+Probe 1028813 completed success/0: the extended native/GDB/VCD expression test
+passes in both default and bitpack modes, and the actual full LFSR executable
+now passes with debug output. No diagnostic instrumentation or corpus-dependent
+ignored test remains. Rerun the complete current gate; previous suite/corpus
+results do not prove the latest shared packed-index support/emission change.
+
+Gate 1034636 was intentionally stopped (authoritative SubState=dead), not
+accepted, to close a code-audit invariant before committing: a binding can be
+retained elsewhere in the global arena without being an executable operand of
+this callee. The native debug ABI must not evaluate such a metadata-only
+argument. Walk the callee's semantic dependencies, stopping at source argument
+boundaries; only those arguments enter the native ABI. Extend the portable
+shared-call test with a retained but unused ForeignCall and require that no
+foreign call is emitted. Preserve source parameter metadata without making it
+an executable root. Both suites were green in that stopped run; corpus results
+are incomplete. Full gates remain required after this fix.
+
+Graph refresh completed: 5328 nodes / 14681 edges / 248 communities, AST-only
+with the known four vendored libfst parser warnings and seven no-symbol files.
+
+Probe 1072726 completed success/0: shared-body/width-format regression passes
+with a retained but unused ForeignCall (no emitted foreign call), all three
+actual GDB/native/VCD tests pass in both packing modes, and strict all-target /
+all-feature Clippy passes. Restart the full current gate and leave its handle
+for authoritative polling if this turn yields. Do not commit or claim complete
+until that gate succeeds; the full DWARF objective still includes hardware
+provenance, lexical/aggregate/string expression inspection and the supported
+runtime-sized representation audit. Also test source aliases used under
+different predicates for faithful call counts, not just compiled-body reuse.
+
+Gate 1082074 ended exit 101: 529 units passed, but the existing no-argument
+activity unit uses a callback-backed empty design and the new argument walker
+looked up its nonexistent operand. Skip dependency traversal when the candidate
+parameter set is empty; there are no argument roots to discover. This also
+avoids unnecessary walks for genuine nullary calls. Keep the no-argument unit
+and full gate; do not treat earlier focused passes as complete verification.
+
+### 2026-10-07 — Codex — DWARF remaining-path audit
+
+Gate 1088551 is authoritatively running; both full Rust suites and the ordinary
+corpus 225/0 have passed. No source changes while its debug corpora run.
+Read-only tracing confirms that hardware inline_block loses function identity
+at its seven entry paths, HardwareValueFacts::emit never receives DebugInfo,
+and Codegen::build emits hardware before DebugInfo is created. Preserve the
+bounded combinational helpers while sharing the existing Process emitter.
+The existing runtime-sized native value contract is Char[] handles only;
+general dynamic arrays remain the separate host-service extension in TODO.md.
+Expression argument emission currently chooses packed layout emission even
+for a runtime string handle, and expression bindings cannot allocate an
+inspection view for its unconstrained layout. Own debug/inline_values.rs,
+debug/strings.rs and the native debug_info regression for that next concrete
+gap, reusing the existing borrowed runtime string query and literal views.
+After acceptance of the current batch, add native/GDB/VCD expression coverage
+for runtime, literal and empty strings, aggregates and predicate-shared aliases.
+Hardware and lexical work still remain; do not claim the goal complete.
+
+Gate 1088551 remains SubState=running, with ordinary and default debug corpus
+summaries both 225/0. The bitpack debug corpus is now at fixed_test, with no
+failure markers; peak is 1611534336 bytes under the usual 2 GiB cap. Its GDB
+smoke command is still pending. Re-poll the same service/log after a turn
+interruption; no rerun, commit or acceptance claim from launcher/running status.
+
+Audit correction before editing: process_value_width_in_layout already uses
+the arena's ABI bit_width for aggregate/unconstrained layouts, and its Local
+and Storage arms can load Char[] handles correctly. The proven string gap is
+the expression binding/return inspection path (inspection_bits and copy_fields
+require packed_width); do not bypass the shared argument emitter without a
+failing native regression. Reuse existing string views, preserve typed handle
+widths, and let real execution/GDB evidence determine any additional fix.
+
+Gate 1088551 completed SubState=exited / Result=success / ExecMainStatus=0.
+Formatting, strict all-target/all-feature Clippy, frontend-only check, both full
+Rust suites, ordinary/default-debug/bitpack-debug corpora (225/0 each), and
+native GDB stepping/inspection plus VCD parity smoke checks passed. Guarded
+peak was 1611534336 bytes. Commit only the owned expression identity/native
+frame, dominance cache, iterative reduction, packed-index fix, regressions and
+documentation batch plus owned log tail. Preserve AGENTS.md, .codex/ and the
+unrelated pre-marker chat additions. No compiler push. The full DWARF goal
+remains active; estimated completion stays 96% with hardware, lexical,
+expression-string/aggregate inspection and predicate-shared call counts open.
+
+Local commit f7f8adb contains the accepted expression-frame batch; verified its
+stat and preserved unrelated work. Own process/debug/inline_values.rs,
+debug/strings.rs, process/entry.rs, process/value_types.rs and tests/debug_info.rs
+for borrowed expression-string inspection. First extend the actual native/GDB/
+VCD regression with runtime/literal/empty string formals and aliases, plus an
+aggregate parameter/local. Reuse the existing runtime query, literal views and
+normalized aggregate copies; add no ordinary-build storage or dependencies.
+
+Probe 1192731 ended exit 101 before GDB: the extended native fixture's block 0
+is unsupported. A --test/--emit ir diagnostic was correctly rejected by the
+CLI (1195806, exit 1); ordinary --emit ir excludes the test process (1197049,
+success/0), so neither isolates this failure. Temporarily own blocks.rs for
+preflight instruction/value diagnostics under the guarded native probe. Remove
+the instrumentation after locating the actual root; do not weaken preflight.
+
+Probe 1202518 located the emission failure at literal count("μ\\0🙂"), not
+preflight: a compile-time string operand was incorrectly materialized through
+an unconstrained layout by the native debug ABI. Skip literal string ABI inputs;
+the callee retains the IR constant and source inspection uses its constant view.
+Temporary blocks/entry diagnostics have been removed. Probe 1219568 proves all
+three string results now execute correctly, but exposes an aggregate conversion
+bug. Probe 1223206's ordinary executable fails the same aggregate assertion;
+its success status belongs only to the final GDB diagnostic, not the simulation.
+The return is real's bit pattern plus the integer tag: frontend real detection
+does not consult a projected field's retained SourceLayout. Own the shared
+process_value_is_real helper in source_processes.rs; recover the declared
+domain through process_value_source_layout. Keep the aggregate fixture and
+verify both ordinary/debug execution rather than avoiding its conversion.
+
+Probe 1226693 now proves ordinary/debug execution and VCD parity for all added
+cases, but GDB stops first in T::stimulus on count's return line. CFG extraction
+of StringLength retains the callee's span after moving the operation to the
+caller. Own cfg_calls.rs to give extracted caller instructions the source
+call-site span while keeping canonical value/body spans and native return
+metadata intact. The regression must see only the actual count frames at its
+return line; do not filter away a mislabeled caller stop in the test.
+
+Probe 1238437 completed success/0: the actual native/GDB expression test now
+passes all runtime/literal/empty string and aggregate stops, caller locations,
+ordinary/debug execution and VCD parity. Extend the same regression with a
+borrowed string returned through a native expression frame; this exercises
+passed-handle capture rather than only the CFG-normalized persistent mirror.
+Reuse the existing fixture and Python inspection checks. No source edits while
+the next guarded verification job is live; full acceptance gates remain due.
+
+Probe 1247945 failed the new borrowed-return native assertion before GDB.
+Independent ordinary compile/run probe 1249292 fails identically. The shared
+frontend representation classifier does not follow transparent InlineCall
+identities, so count on a returned runtime handle lowers a constant layout
+length instead of StringLength. Own the shared runtime-string classifier in
+source_processes.rs; preserve the literal/runtime distinction and fix length,
+indexing and equality together at their existing common helper.
+
+Probe 1250846 completed success/0: all three native/GDB/VCD regressions pass
+with default and bitpack builds, followed by strict all-target/all-feature
+Clippy. Peak 1298341888 bytes under the ordinary cap. Add downstream borrowed
+string index/literal-equality assertions and DWARF verification to that same
+test, and document the supported expression aggregate/string views and the
+remaining hardware/lexical/predicate-count work. The shared representation
+fix follows InlineCall without changing literal or empty-string storage.
+Refresh the ignored AST graph and launch the full gate before committing.
+
+Probe 1255860 failed because the new test used an unsupported escaped character
+literal, not because of native emission. Use the language's existing numeric
+Char conversion for the embedded NUL assertion; keep the Unicode/string checks.
+
+Probe 1257317 passes returned-handle length/indexing but fails embedded-NUL
+literal equality. Runtime StringEqualsUtf8 uses strlen on a literal whose
+explicit bytes include NUL; the comparison truncates its operand. Own
+runtime/process.c and process.h, the shared LLVM HostCall equality emitter,
+Process ABI constant/contract tests and affected architecture docs. Pass the
+existing literal byte length explicitly; bump the fixed runtime ABI rather
+than silently changing an old object's call contract. No new service or
+dependency, and keep the runnable ordinary/debug assertion.
+
+Probe 1263063 completed success/0: all three native/GDB/VCD regressions pass
+in default and bitpack builds, including borrowed return length/indexing,
+embedded-NUL literal equality and llvm-dwarfdump verification. Peak 937308160
+bytes. AST-only graph update completed (5346 nodes, 14715 edges); its known
+vendored libfst partial-extraction warnings and no-symbol files remain visible.
+Native Process ABI 16 carries the explicit literal UTF-8 length. Launch the
+full fmt/Clippy/frontend/default/bitpack/corpus/GDB gate on this source state;
+leave it unchanged while verification is live. Commit only owned files and the
+post-f7f8adb owned chat tail after successful terminal evidence. No push.
+
+Gate 1268018 is running: both complete Rust configurations have passed and
+ordinary corpus execution is underway, peak 1612169216 bytes. Re-poll this
+same unit/log after interruption; no source edits or gate restart.
+Read-only lexical audit: ProcessValueBinding retains declaration spans but
+not owning block extents; value_location selects only a function scope.
+process_select and layout Select emit both pure arms, so lexical metadata alone
+cannot prevent unselected branch stops. After this batch is accepted, add an
+actual native/GDB pure-if shadow/fallback regression, retain frontend block
+extents and use debug-only taken-arm emission while preserving ordinary code.
+Predicate-shared alias verification still needs an actual GDB call-count test,
+not the existing one-body-per-format structural test. Hardware provenance is
+also still open. None of these findings is a completion claim.
+
+Gate 1268018 ordinary corpus completed 225/0; default-debug corpus is live
+(through fixed_test), with no failure markers and peak still 1612169216 bytes.
+Scope-reuse refinement: lower_statements already fills unscoped locals after
+nested blocks return, preserving the smallest extent. Apply that existing
+pattern to expression bindings rather than an extra whole-AST scope walk;
+guard concatenated branch continuations with declaration containment so an
+outer declaration cannot acquire a branch's scope. Resolve's lexical lookup
+maps do not expose owning block extents in Resolved. Reuse DebugInfo's existing
+lexical_scope/location machinery for native expression frames after acceptance.
+
+Gate 1268018 ordinary and default-debug corpora are both complete at 225/0;
+bitpack-debug corpus is live, with final GDB smoke still pending. The slow
+default-debug float_test compiler was observed doing CPU work at roughly
+218 MiB RSS and then finished successfully; no timeout/OOM or evidence of a
+layout-lookup regression. Peak remains 1612169216 bytes. Keep the same handle
+and unchanged source state until terminal success; do not accept a partial gate.
+
+Gate 1268018 completed SubState=exited / Result=success / ExecMainStatus=0.
+Both full Rust configurations, fmt, strict all-target/all-feature Clippy,
+frontend-only check, ordinary/default-debug/bitpack-debug corpora (225/0 each),
+and final native GDB/VCD smoke checks passed. Peak 1612169216 bytes.
+Commit the owned expression aggregate/string inspection, caller provenance,
+real-field conversion and returned-string classification fixes, embedded-NUL
+equality ABI 16, regressions and docs plus only the post-f7f8adb owned chat tail.
+Preserve AGENTS.md, .codex/ and unrelated chat additions. No push. DWARF remains
+active: hardware provenance, branch scopes/taken-arm stops, predicate-shared
+call counts and literal/zero-storage string return-frame coverage remain open.
+
+### 2026-10-08 — Codex — DWARF expression branch scopes
+
+Local commit 9461942 contains the fully verified aggregate/string batch; its
+stat preserves the unrelated 441 chat additions, AGENTS.md and .codex/.
+Own tests/debug_info.rs for an actual GDB pure-if shadow/fallback regression,
+then ProcessValueBinding scope metadata, source_processes.rs and the shared
+native debug/select emitter for the root fixes. Reuse the existing smallest
+enclosing-local extent pattern and debugger lexical registry, not a new AST
+walk. Verify ordinary/debug native execution and byte-identical VCDs; fail on
+any unselected return stop or incorrect shadowed binding. Full goal remains
+active, including hardware provenance, shared-predicate counts and additional
+literal/zero-storage return-frame coverage. No push.
+
+Probe 1343114 proves ordinary/debug native results and VCD parity but fails at
+the first inner-return stop: GDB resolves the outer local and the inner view is
+unavailable. Add non-executable owning scopes to expression bindings using the
+existing nested-local pattern. Probe 1350304 then found formal parameters
+incorrectly placed in a signature-only file scope; keep formals in the native
+function scope and locals in their owning lexical scopes. Selected-arm emission
+and return-boundary attribution remain due; do not remove assertions.
+
+Probe 1353762 now resolves the proper inner scope and formal argument but
+finds its view unavailable at the return stop. Guarded disassembly probe
+1359593 confirms SelectionDAG schedules return arithmetic at 0x2856 before
+the initializer's inspection stores at 0x2865/0x2873, even at -O0. Add a
+debug-only block boundary after local capture so later source statements
+cannot precede the completed inspection view. Keep ordinary SSA/storage
+unchanged, avoid splitting parameter capture and retain capture deduplication
+across the new boundary. Taken-arm and return-location fixes still remain.
+
+Probe 1364946 now reads the correct shadowed value but stops at the untaken
+fallthrough return during the true call. Add shared debug-only selected-arm
+blocks and branch-specific result markers, and label the merged result with
+its conditional extent. Probe 1372522 passes the new branch regression and
+the two CFG/storage regressions, but its borrowed-string return loses lexical
+locals because the terminator uses the function root instead of its source
+scope. Use the existing location resolver for that terminator. Also keep
+layout selections on their common cache/capture path instead of returning
+early. Literal/alias return provenance still needs broader focused coverage.
+
+Probe 1377482 completed success/0: all four debugger regressions pass in
+default and bitpack, strict Clippy passes and AST graph update completed.
+Continue the owned branch batch with alias-return source-stop coverage:
+returning an existing local must retain the return expression's location,
+not its initializer's. Keep identical ordinary/debug results and VCD parity;
+do not accept a source breakpoint that merely lands on the wrong statement.
+
+Probe 1387378 failed because alias return lines had no executable range.
+Carry return-expression spans separately from their reused value IDs; branch
+metadata references existing selection IDs and is remapped/pruned without
+creating roots. Probe 1389679 passes all four default debugger tests.
+Expanded nested/alias/aggregate/match coverage hit an unrelated initializer
+binding issue: `let local = local + 20` resolves its RHS to the newly declared
+DefId, leaving a non-executable Definition. A temporary preflight trace proved
+this; removed it, and use `value + 30` for this debugger-focused shadow fixture.
+Outer-same-name initializer binding remains a separate resolver/language audit,
+not a claim of DWARF completion or permission to weaken return-stop checks.
+
+Probe 1396310 passes all four debugger tests in default/bitpack, including nine
+exact selected-return/caller stops for nested shadowing, identical argument
+returns, aggregate returns and match arms; DWARF verification and VCD parity
+pass. Strict Clippy rejected a redundant eighth selected_value argument;
+recover its arms from the existing selection node instead. Extend the existing
+SourceValues compaction test so discarded branch-location metadata cannot keep
+an unused foreign-call arm executable. Update architecture/testing/TODO to
+describe proven branch support and retain hardware/shared-predicate/string
+return-frame gaps. No completion claim or push.
+
+Probe 1400131 failed on a misplaced embedded-test insertion (unknown `unused`
+and `unused_selection`); no gate accepted. Corrected the fixture location.
+Probe 1402134 completed SubState=exited / Result=success / ExecMainStatus=0,
+peak 1612869632 bytes: source-binding/branch compaction regression, all four
+native/GDB/VCD/DWARF tests in default/bitpack, strict all-target/all-feature
+Clippy and AST graph update pass. Graph is 5366 nodes/14767 edges; known
+vendored partial-extraction/no-symbol warnings remain visible. Launch the
+complete acceptance gate on this source state and freeze source while live.
+Commit only owned branch files/docs and the Oct-08 owned chat tail after
+terminal success; preserve AGENTS.md, .codex/ and unrelated chat. No push.
+
+Gate 1408863 completed SubState=exited / Result=success / ExecMainStatus=0,
+peak 1612165120 bytes. Fmt, strict Clippy, frontend-only check, complete
+default/bitpack Rust suites, ordinary/default-debug/bitpack-debug corpus runs
+(225/0 each) and final GDB/VCD smoke pass. Commit the owned lexical scopes,
+inspection ordering boundaries, selected-arm/alias-return provenance and
+native regressions/docs; only the Oct-08 owned chat tail enters this commit.
+Hardware source-call provenance, actual shared-predicate call counts and
+literal/empty string return-frame coverage remain open. No push.
+
 ### 2026-10-07 — Claude — fixed-point division and resize
 
 `std::fixed`: `/` keeps the format (rounds toward minus infinity, quotient by
@@ -13605,6 +14555,326 @@ LoweringContext (`shared_functions`), `ir/process.rs` (functions, calls,
 Parameter, validation, dump) and `llvm/process/{values,value_types}.rs`.
 Shared functions have no DWARF subprogram yet.
 
+### 2026-10-08 — Codex — integrate upstream main with committed DWARF
+
+User requests pulling Claude's latest main (f272bac). Saved local history at
+backup/dwarf-before-main-20261008 and all tracked uncommitted work in retained
+stash 200e6f6; .codex remains untouched. Merge source scopes/return provenance
+with borrowed statement continuations, shared functions and fixed-point caller
+conversions. Keep the nonallocating dependency visitor and both coordination
+histories. Respect the reference-doc move; local DWARF documentation remains
+recoverable from the backup/stash for migration to siox-paper. Validate the
+integration before a merge commit, then restore the unfinished batch separately.
+
+Integration check 1781325 rejected one missing synthetic-call span; check
+1783548 rejected a newly needless borrow after combining source frames with
+borrowed function lookup. Corrected both. Stopped live gate 1784942 deliberately
+after two concurrent Rust builds stayed above memory.high; do not count it as
+successful. With one Cargo build job and the unchanged 2 GiB guard, gate
+1789428 completed SubState=exited / Result=success / ExecMainStatus=0, peak
+1612701696 bytes: strict Clippy, frontend-only check, full default/bitpack
+Rust suites (532/512 unit tests plus integrations), all eight committed GDB
+fixture runs and ordinary native corpus 225/0 pass. AST graph refresh completes
+with 5155 nodes/14563 edges/246 communities; known vendored parse warnings remain.
+Shared-call optimization retains the transparent source wrapper in ordinary
+builds; debug builds retain existing source frames until shared native bodies
+gain DWARF. Added #[inline(never)] to an existing native source-frame regression.
+Finalize only the integration merge; keep the unfinished hardware/exact-format
+batch and moved-document edits in stash 200e6f6 for adaptation to the new design.
+Restore unrelated AGENTS and 441 historical chat additions unstaged. No push.
+
+### 2026-10-08 — Codex — include upstream typed-local read fix
+
+Upstream main advanced to e51edbc while the first integration gate ran.
+Merge its single source_processes change as well: assign an unfinished CFG's
+local declaration type at read creation, removing the redundant family-From
+fallback. Preserve the restored unrelated AGENTS/chat/.codex work; rerun the
+merged native gates before finalizing this additional local merge. Stash
+200e6f6 and backup/dwarf-before-main-20261008 still preserve the unfinished
+DWARF batch; shared-function source metadata is the next integration task.
+
+The local-read conflict extends the already-present declaration-type fallback
+with upstream's layout-derived type fallback. Probe 1828558 stopped at fmt
+because the conflict was still present; no build or gate passed there. After
+resolution, gate 1829848 completed exited/success/0, peak 1288011776 bytes:
+strict checks, full default/bitpack Rust suites, eight GDB fixture runs and
+native corpus 225/0 pass. AST graph refresh is 5155 nodes/14562 edges/246
+communities with the same known vendored warnings. Finalize this second merge
+through e51edbc; retain the draft stash, backup branch and unrelated unstaged
+AGENTS/441 chat lines/.codex. No push and no DWARF completion claim.
+
+### 2026-10-08 — Codex — DWARF hardware expression calls
+
+Local commit ef222df contains the fully accepted branch batch (gate 1408863),
+and preserves unrelated chat/AGENTS/.codex changes. Own the next embedded
+native/GDB regression and hardware SourceValues call provenance, source binding
+metadata, and shared LLVM metadata/emission ordering. Hardware already delegates
+canonical values to the common Process emitter; reuse it. Preserve four-process
+bounded helpers, active predicates, scalar formats and unused aggregate-leaf
+laziness. First demonstrate the missing nested hardware call frames with actual
+debug/ordinary native results and VCD parity; no alternate pipeline or fake
+source stack, no push and no full-goal completion claim.
+
+Probe 1490330 completed failed/101 (not an accepted gate), peak 232173568
+bytes. Ordinary/debug hardware simulations, exact VCD parity and DWARF
+verification pass; GDB has no compiled code for either nested source return
+line and exits without a frame. Keep the failing regression while implementing
+the real fix: function-aware SourceValues provenance plus metadata available
+before hardware bodies, fed into the same canonical emitter. Current HEAD
+ef222df remains the fully accepted branch batch; this new regression is local
+and uncommitted. Hardware caller attribution must use owning source-process
+metadata across bounded helpers, not assign all writes one fabricated process.
+
+Probe 1504203 completed success/0, peak 932777984 bytes: scalar nested
+hardware source frames, locals, actual native results, exact VCD parity and
+DWARF verification pass. Continue the same owned hardware batch with an
+actual selected-return/shadowing regression, then reuse branch metadata already
+consumed by the shared canonical emitter. Aggregate hardware bindings and
+shared-predicate call counts remain incomplete; no completion claim or push.
+
+Probe 1515328 failed/101, peak 125071360 bytes. Native/VCD/DWARF checks pass
+but positive inputs stop at the untaken hardware fallback return. Return the
+source expression span alongside each hardware inlined value and record
+per-selection arm spans using the existing ProcessValueInline metadata.
+Stop lexical binding ownership at the nearest function boundary, including
+effectful frames with no expression provenance, and clear builder locations
+on entry to the separate settle function. Keep the failing GDB assertions.
+
+Probes 1516927/1519051 failed/101: selected locations now work, but the
+negative fallback local prints 18446744073709551611 with type bits instead
+of integer -5. Preserve declaration-owned inspection layouts on existing
+ProcessValueBinding metadata rather than overriding executable canonical
+formats or adding runtime casts to silence the debugger. Own the metadata
+field/constructor defaults in process.rs, source_processes.rs, source_values.rs
+and LLVM tests, with shared inline inspection consuming that layout.
+
+Probe 1520712 passed the selected positive/negative return and signed-local
+regression, success/0, peak 803950592 bytes. Expanding to shared helper owners,
+81-bit signed/unsigned, real bindings and clocked calls found a verifier error
+in probe 1523233: settle helper calls emitted before its later event-root
+metadata lacked !dbg. Declare generated native scheduler scopes at entry,
+use line zero for generated work and reuse them as actual parents of source
+hardware scopes. Ensure typed inspection fixture values are genuinely consumed;
+debug metadata must not execute otherwise-unused locals to make them visible.
+
+Probe 1525002 passes native/VCD/DWARF but its overly fixed inspection fixture
+fails on valid initial-delta zero arguments before port propagation. Compare
+locals with the actual captured formals on every stop and require observing
+the eventual 81-bit/real/negative values. Collect callback failures explicitly
+(GDB Python callback exceptions otherwise do not reliably fail its exit status).
+Probe 1527151 completed success/0: shared-helper owners, selected positive and
+negative returns, wide/real formal/local views and both clocked calls pass,
+alongside native assertions, byte-identical VCD and DWARF verification. Retain
+event-condition ownership from ProcessRegion even when it has no assignments.
+The hardware aggregate/call-count/string audit remains open; no push.
+
+Gate 1528507 failed/101 after four debugger regressions passed: the existing
+direct storage/string fixture's debug binary crashed. Probe 1530968 confirms
+SIGSEGV, not a hung job or memory kill. Retained-binary GDB probes
+1531464/1532197 locate the fault in sx_process_commit: movaps reads cur+122,
+an unaligned field of the packed state struct. Codegen::load/store leave ABI
+alignment defaults on packed member accesses. Fix those shared accessors to
+declare byte alignment (all slot_ptr callers use them), and add a structural
+wide-packed-alignment regression. Do not accept the hardware batch yet.
+
+Probe 1534296 failed at compilation (incorrect Inkwell trait method), not a
+test pass; use the existing inherent IntValue::as_instruction accessor.
+Probe 1534854 completed success/0, peak 1167323136 bytes: all five debugger
+regressions in default/bitpack, strict all-target/all-feature Clippy and
+frontend-only check pass. The debug native crash is fixed by byte-aligned
+packed state accessors. Add the structural odd-offset i129 regression,
+retain declared function-return layouts separately from executable formats,
+and forward hardware source width queries through provenance-only InlineCall
+nodes. Update docs/TODO with proven scalar hardware support and explicit
+remaining aggregate/call-count/literal-return gaps. Full acceptance still due.
+
+Probe 1540988 passed the new packed-alignment unit and four debugger fixtures
+but rejected the extra owner-name assertions: real GDB names include the
+elaborated namespace and a `(void)` signature suffix. Keep exact distinct
+instance/event-owner checks using those authoritative names, normalizing only
+the signature suffix; do not collapse the checks to shared assignment lines.
+Declared integer return type checks did not fail. This is not an accepted gate.
+
+Probe 1547008 completed success/0, peak 961839104 bytes: all five native/GDB
+regressions in default/bitpack, exact distinct instance/event-owner assertions,
+declared return type, strict Clippy and frontend-only check pass. AST-only
+graph refresh 1550025 completed success/0, peak 177213440 bytes: 5379 nodes,
+14815 edges, 262 communities. Known vendored partial-extraction/no-symbol
+warnings remain; visualization uses aggregated communities above 5000 nodes.
+Start the complete acceptance gate and freeze source. Only after terminal
+success may this owned scalar hardware batch be committed, preserving unrelated
+AGENTS.md/.codex and 441 chat additions; no push. Remaining full-goal audit:
+aggregate hardware parameter/local/return boundaries, source operator and
+synthetic Resolve formal types, actual shared-predicate call counts, and
+literal/zero-storage string returns bypassed by folded consumers. Scalar
+hardware coverage is evidence of progress, not DWARF completion.
+
+Gate 1551746 completed failed/1, peak 1536274432 bytes: full default/bitpack
+Rust suites and ordinary corpus (225/0) pass, but default debug corpus fails
+hardware_float_conformance_test, hardware_local_values_test,
+saturating_accumulator_test and signed_differential_test (221/4). Later bitpack
+debug corpus/GDB smoke commands did not run. Resume ownership of the shared
+source expression frame/argument emitter and canonical format queries to trace
+debug-only arithmetic differences; preserve the corpus assertions and normal
+evaluation boundaries. No commit or push until the complete gate passes.
+
+Probe 1617631 passed shared function-definition/format reuse but rejected two
+GDB fixtures after changing argument capture. Probes 1626136/1629101 exposed
+and corrected zero-instruction entry insertion, unique per-native-frame view
+names, and remaining unavailable aliases. Direct GDB probe 1632816 confirms
+native formals are correct while same-ID alias locals are unavailable at return
+stops; all four original failing debug corpus binaries now pass (success/0,
+peak 861962240 bytes). The root fix discovers exact consumer width/sign/layout
+requests through the existing emitter and replaces temporary SSA placeholders
+with typed formals, never minimum-width inspection casts or runtime buffers.
+Capture already-passed same-ID aliases at entry without late-statement block
+splits; add narrow signed triple-call native/VCD coverage before full acceptance.
+
+Probe 1640043 passed all five GDB/native/DWARF/VCD fixtures in default/bitpack,
+function reuse, strict Clippy and frontend-only checks (success/0, peak
+1611010048 bytes). Remove the obsolete single-format parameter map rather than
+keeping two competing parameter contracts. Probe 1649259 caught borrowed string
+views incorrectly treated as new snapshots merely because their IDs were
+potential formals; reuse their existing persistent borrowed view instead.
+Probe 1655020 completed success/0, peak 1610915840 bytes: all ten debugger runs,
+strict checks and the enhanced shared-call unit pass. That unit proves one
+body receives separate arithmetic/comparison native formats, and the hardware
+fixture asserts narrow signed triple-call results before/after input changes.
+Refresh the AST graph and rerun the complete acceptance gate with source frozen.
+Aggregate hardware frames, shared-predicate call counts and folded literal
+string-return frames remain open; no push or full-goal completion claim.
+
+Acceptance gate 1662062 was kernel OOM-killed (Result=oom-kill, status 9,
+peak 1633267712 bytes) during debug float_conformance_test compilation after
+both full Rust suites and ordinary corpus (225/0) passed. No accepted gate or
+commit. Resume source-emitter ownership to measure module emission separately
+from object lowering and identify argument-format instruction/metadata growth.
+Keep the standard 2 GiB guard, exact formats and all original assertions;
+do not hide the failure by raising limits or weakening debugger/native tests.
+
+Probe 1708243 completed success/0 but is not a meaningful float test profile:
+CLI --emit llvm-ir does not enable test-process lowering, so its 246-line
+module omits this test body. Temporarily own llvm/aot.rs to retain the actual
+debug test module and count emitted functions/instructions immediately before
+object emission. Remove the instrumentation after identifying the root cause.
+
+Stopped probe 1710562 deliberately to improve diagnostic granularity, not due
+to an expired observation: it grew to about 1.63 GiB and entered sustained
+memory.high pressure before reaching the module-dump marker. Its live cgroup
+showed high=156317, max=0, oom=0 and 13.76% pressure. The failure is during
+module emission, not proven machine-code lowering; add earlier native-function
+format counters under the same temporary trace flag. This probe is not a pass.
+
+Stopped trace probe 1717590 after observing 20600 completed native debug bodies
+at source value ID 115199; sustained emission pressure is not an accepted gate.
+Exact formats are still needed for contextual arithmetic, but atomic reads,
+explicit resizes and slices already own their executable widths. Normalize
+only their no-layout ABI requests to that boundary and use existing fit/sign
+helpers inside the callee. Keep distinct formats for contextual arithmetic
+and layout conversions; extend entry inspection with source-aware signed fits
+and make the multi-format unit use an actually contextual negated argument.
+
+Probe 1737339 passed the multi-format unit and all five default GDB fixtures,
+but still generated over 20600 native source functions and remained around
+1.63 GiB under memory.high pressure. Stopped deliberately after revalidating
+the live service; not an acceptance pass. Following provenance-only calls to
+fixed argument boundaries does not fix the remaining growth. Continue owning
+the shared expression emitter: test definition reuse for parameter-only
+primitive source bodies with identical execution/inspection contracts. Keep
+actual calls, exact consumer formats, source declarations and argument alias
+patterns distinct; do not merge arbitrary graphs or raise the memory guard.
+
+Probe 1765867 passed the multi-format unit and all five debugger fixtures but
+still reached 20300 bodies around value 113336 at 1.61 GiB. Stopped the live
+probe deliberately; the parameter-only primitive cache does not materially
+reduce this workload. Remove that unproven extra cache rather than retain its
+complexity. Expand temporary profiling with source function/parameter/local
+counts and a partial module dump before memory.high pressure, then identify
+the actual dominating body shapes. No acceptance or commit.
+
+### 2026-10-08 — Codex — user-requested main integration
+
+Fetched origin/main at f272bac (shared value functions/inline directives,
+dead-code/copy reductions, fixed-point operations and docs moved to siox-paper).
+Stopped live diagnostic probe 1771893 before changing its source snapshot;
+its partial module contains 5023 functions and 1418037 instructions, with
+add_words bodies around 39445 instructions. It is not an accepted gate.
+Protect the twelve local commits with a backup branch and tracked work with
+a retained stash before merging origin/main. Preserve unrelated AGENTS.md,
+441 chat additions and .codex. Resolve overlaps without discarding DWARF or
+reintroducing removed reference documents; no push is authorized.
+
+### 2026-10-08 — Codex — DWARF on shared Process functions
+
+Resume the full debugging goal after main integration. Restore hardware/source
+metadata and exact-format work from stash 200e6f6, preserving upstream borrowing,
+fixed-point conversions and typed-local reads. Keep removed reference docs in
+the retained stash for migration to siox-paper, not back in this repository.
+Own shared Process-function/debug emission and native regressions: reuse the
+existing source-body/inspection emitter directly on shared bodies, with typed
+Parameter SSA distinct from inline consumer-format discovery. Remove temporary
+profiling hooks before acceptance. Preserve unrelated AGENTS/441 chat lines and
+.codex; no commit until the complete gates pass, no push or completion claim.
+
+Probe 1878425 passed strict Clippy, the exact-consumer-format unit and all five
+default native/GDB fixtures, then failed with status 127 because /usr/bin/time
+is absent. Its float compilation never ran; this is not an accepted float or
+full gate. User-requested main pull is already up to date at origin e51edbc,
+with all local changes preserved. Continue the shared-function DWARF ownership:
+use Bash builtin time under the unchanged guard for the actual float build/run,
+then add native shared-body/frame regressions before complete acceptance.
+
+Float probe 1888927 completed exited/success/0: the real --test --debug native
+float build took 57.838 seconds, the simulation passed, and the service peaked
+at 909742080 bytes under the standard guard. The previous expanded debug body
+failed this workload with OOM; sharing now uses the existing canonical Process
+function body rather than a second fingerprint/cache scheme. This is focused
+evidence, not full acceptance. Extend branch/typed-formal/native-body reuse
+checks and preserve declaration-owned inspection types independently of ABI
+widths before default/bitpack corpus and debugger gates.
+
+Probe 1893588 completed exited/success/0 (peak 1387245568 bytes): strict Clippy,
+all ten default/bitpack debugger fixtures and exact-format unit pass. Repeated
+branch/shadowing and alias helpers now explicitly use #[inline(never)]; narrow
+integer arguments and aliases must inspect as their declared 64-bit integer,
+not the caller's constrained storage. Add native symbol-count coverage for
+shared definitions. Migrate the preserved DWARF architecture/testing reference
+sections to the clean sibling siox-paper checkout, respecting the docs move;
+do not recreate reference documents here. Then freeze source for full gates.
+
+Gate 1948134 failed/101 (peak 1427251200 bytes) at the new native symbol-count
+assertion, after strict/frontend checks and the 533-unit default suite passed.
+The fixture mixed declaration-backed operands with layout-free arithmetic:
+these are distinct existing shared-function signatures, so two bodies are
+valid. Bind the positive/negative inputs as declared integer locals, requiring
+one native body for repeated calls with the same executable/layout signature.
+Keep all branch/native/VCD/GDB expectations and the separate narrow-input
+formal-type checks. Later bitpack/corpus stages did not run; no acceptance.
+
+Probe 1955241 passed exited/success/0 (peak 136077312 bytes): corrected
+same-signature native body counts and all branch/formal/local/caller checks
+pass in default and bitpack. Reference sections are now in siox-paper; update
+the remaining multiprocess proposal's debugger link to their new location.
+Freeze source and rerun the complete default/bitpack/debug-corpus gate.
+
+Acceptance gate 1957374 completed SubState=exited / Result=success /
+ExecMainStatus=0, MemoryPeak=1610874880 bytes under the standard guard. Strict
+Clippy, frontend-only check, full default/bitpack Rust suites (533/512 unit
+tests plus integrations), all ten native GDB/DWARF/VCD fixtures, ordinary and
+default/bitpack-debug corpora (225/0 each), and all four final FIFO/wide GDB
+smoke runs pass. Graph AST refresh completes at 5177 nodes, 14662 edges and
+250 communities; the four vendored partial-parse/six no-symbol warnings remain.
+The focused float debug build/run separately passed in 57.838 seconds with
+909742080-byte service peak. Source definitions now share canonical Process
+bodies under debugging, rather than recreating the earlier OOM expansion.
+Reference architecture/testing documentation is migrated to siox-paper; no
+reference documents are recreated in the compiler checkout. Commit only owned
+source/TODO/proposal/coordination changes, leaving AGENTS, 441 historical chat
+lines and .codex unstaged. Keep the full DWARF goal active: aggregate hardware
+boundaries, actual shared-predicate call counts, folded literal/empty return
+frames, operator/constrained signature type audits, packed expression companions
+and real/string finish-ABI checks remain. No push is authorized.
+
 ### 2026-10-08 — Claude — print formatting: specs, built-in forms, Display
 
 Owner-requested (choices made by the owner: Rust-style specs, Rust `Debug`
@@ -13627,6 +14897,842 @@ struct form, a `Display` trait now).
 `source_processes.rs`, `llvm/process/instructions.rs` format emission,
 `llvm/process/support.rs`, and the runtime format functions.
 
+### 2026-10-08 — Codex — pull main print-format updates
+
+User requested integration of origin/main at 18f3e83. Preserve local main
+commits on backup/before-main-print-format-20261008 and tracked unfinished
+DWARF/shared changes in retained stash eaa23f1; leave .codex untouched.
+Only chat.md conflicted: retain both agents' entries. Compiler/runtime code
+merged automatically. Run the required guarded Rust/native/corpus gates before
+the merge commit, then restore the retained local edits. No push authorized.
+
+The initial gate 2057167 was deliberately stopped after stale corpus assertion
+messages failed the new brace syntax. The clean sibling siox-tests checkout
+fast-forwarded to 05278a8, including Claude's already-committed migrations.
+Gate 2072731 completed exited/success/0, peak 491655168 bytes: all default Rust
+tests (534 units plus integrations) and 228/0 native corpus simulations pass.
+Finalize the main merge without including the saved unfinished edits.
+
+### 2026-10-08 — Codex — DWARF alias execution counts
+
+Continue the full debugging goal after accepted batch 32a22cd and reference
+docs 1d809da. Own native expression/shared-call emission and debugger regressions:
+prove that one local call result consumed under distinct predicates executes
+once on paths selecting both uses. Count real GDB callee stops, retaining
+ordinary/debug native results and VCD parity, before choosing a root fix.
+Do not hoist unchecked effects, create metadata-only executable roots or
+weaken inactive-path/source-frame checks. Preserve unrelated AGENTS/441 chat
+lines and .codex. No push; full acceptance remains required before commit.
+
+Probe 2029707 failed/101 with the intended native GDB evidence: calls were
+[5, 5, -5, 20] rather than [5, -5, 20], while ordinary/debug native results,
+VCD and DWARF checks passed. Branch-only call SSA is discarded after a select.
+Retain readiness and exact-format results through SSA joins for multiply-used
+canonical source calls, using the same selected-path guard for inline and
+shared bodies. Keep cache epoch invalidation, argument evaluation laziness and
+consumer formats intact; no eager source-local hoisting or runtime buffers.
+
+Probe 2042031 completed exited/success/0 (peak 955805696 bytes): strict Clippy,
+all five default debugger fixtures and exact-format unit pass with the SSA
+readiness fix. Expand the alias regression across all four inline/shared
+callee/caller combinations, retaining negative/first-only/second-only paths
+and real breakpoint callback failures. This is focused progress, not complete
+default/bitpack/corpus acceptance or full-goal completion.
+
+### 2026-10-08 — Codex — DWARF alias acceptance after print-format merge
+
+Continue the full DWARF goal on merged main 33bdeeb and corpus 05278a8.
+Probe 2049324 completed exited/success/0 before integration (952078336-byte
+peak): all four inline/shared alias combinations pass default/bitpack GDB
+checks, and the debug float build/run passes in 57.492 seconds. This does not
+prove acceptance on the new main. Own the same shared emitter and tests:
+extend cache epoch/dominance checks for saved result/readiness pairs and retain
+an unselected nested-call regression. Then freeze source for strict/default/
+bitpack/native/debug-corpus and GDB gates. Preserve unrelated AGENTS, 441 chat
+lines and .codex; no push and no full-goal completion claim.
+
+Probe 2092983 completed exited/success/0 (peak 1612390400 bytes): strict Clippy,
+the enhanced dominance/epoch regression and all default/bitpack GDB fixtures
+pass on merged main. Four alias caller/callee variants count exactly one actual
+call for each selected source local and no outer untaken call. Update TODO and
+siox-paper architecture/testing with this bounded evidence, retaining aggregate,
+folded-string, formal-type, packed companion and finish-ABI gaps. Freeze source
+for the complete acceptance gate; no commit yet.
+
+Acceptance gate 2102618 completed SubState=exited / Result=success /
+ExecMainStatus=0, MemoryPeak=1320615936 bytes under the unchanged guard.
+Formatting, strict all-feature Clippy, frontend-only check, full default and
+bitpack Rust suites (534/513 units plus integrations), all sixteen native GDB
+fixture executions, and ordinary/default-debug/bitpack-debug corpora (228/0
+each) pass. All four final FIFO/wide GDB/VCD smoke checks pass. AST refresh
+completes at 5226 nodes, 14826 edges and 246 communities; the known four
+vendored partial-parse/six no-symbol warnings remain. Commit only the owned
+SSA readiness/emitter/tests/TODO and these DWARF coordination entries, with
+the architecture/testing notes in siox-paper. Retain unrelated AGENTS, 441
+historical chat additions and .codex. The full goal stays active: aggregate
+hardware boundaries, folded string returns, formal type audits, packed
+expression companions and real/string finish ABI remain. No push authorized.
+
+### 2026-10-08 — Codex — DWARF real return ABI probe
+
+Accepted alias batch bf30ea6 and docs 785284a are local, not pushed. Continue
+the full goal by owning native source-call return ABI and debugger regressions.
+Prove real-returning identity functions with actual GDB finish/history checks
+for inline/shared bodies, keeping ordinary/debug native results and VCD parity.
+Current LLVM bodies return integer bits while source metadata declares real;
+do not infer correctness from a valid DWARF file or an incidental floating
+register value. Preserve unrelated AGENTS/441 chat lines and .codex, and keep
+the unchanged guarded verification limits. No generated C or alternate path.
+
+Probe 2163771 failed/101 with direct evidence: at identity(value=3.5), GDB
+finish reported 0.0, although ordinary/debug native results and VCD matched.
+The native body used an integer return ABI but advertised real in DWARF.
+Use double at real source-call native boundaries and bitcast to/from the
+existing integer-bit emitter contract; share this boundary logic across
+inline and canonical shared bodies. Probe 2167726 passed exited/success/0,
+peak 1262850048 bytes: strict Clippy and all six default/bitpack debugger
+fixtures pass, including actual finish values 3.5 and 5.25. Extend to negative
+values and signed zero with DWARF verification before full acceptance.
+
+Probe 2173835 completed exited/success/0 (103673856-byte peak): the real
+finish regression passes positive/negative values and negative-zero sign
+checks in inline/shared bodies in default/bitpack, with DWARF verification
+and ordinary/debug native/VCD parity. Update TODO and reference notes to name
+this proven scalar return boundary while retaining string and normalized
+wide/aggregate ABI work. Freeze source for the full acceptance gate; no commit
+of this second batch yet, no push and no full-goal completion claim.
+
+Acceptance gate 2176125 completed exited/success/0, peak 1434497024 bytes.
+Formatting, strict Clippy, frontend-only check, full default/bitpack Rust
+suites (534/513 units plus integrations), all twenty native GDB fixture
+executions and ordinary/default-debug/bitpack-debug corpora (228/0 each) pass.
+All four FIFO/wide GDB/VCD smoke checks pass. AST refresh completes at 5233
+nodes, 14848 edges and 249 communities with the known vendor extraction
+warnings; hub-based labels refresh without API use. Commit only owned real
+return boundary/test/TODO and coordination changes, plus reference notes in
+siox-paper. Keep the full goal active: hardware aggregate bindings and call
+boundaries, folded string frames, formal-type audits, packed companions and
+string/normalized-wide/aggregate finish ABI remain. Preserve unrelated AGENTS,
+441 chat lines and .codex; no push authorized.
+
+### 2026-10-08 — Codex — DWARF hardware aggregate binding probe
+
+Real return batch b0b4c8a and reference notes a1775e9 are accepted and local.
+Continue owning hardware source-call metadata in source_bindings/source_values
+and native debugger tests. Add an integer/real/81-bit aggregate parameter and
+local to the existing hardware fixture, retaining native results, exact source
+owners, callback failures, DWARF verification and VCD parity. The current
+Val::Fields parameter/local branches omit bindings, and aggregate return
+wrapping is per leaf. Prove the missing binding before reusing the canonical
+whole-value representation; do not create metadata-only execution roots or
+reevaluate unused arguments. Preserve unrelated AGENTS/441 chat/.codex work;
+no push, no commit before complete gates, no full-goal completion claim.
+
+Probe 2241022 failed/101 with the intended evidence: native/VCD/DWARF checks
+pass, but the aggregate callback reports no symbol value. Preserve leaf IDs as
+non-executable binding metadata and emit LLVM variable fragments over their
+existing SSA captures. Do not pack all fields into a new executable root:
+that would evaluate otherwise-unused arguments. Keep pruned fields unavailable
+and retain their declared type/position. Whole aggregate-return call grouping
+remains a separate boundary task, not proven by this parameter/local fix.
+
+### 2026-10-08 — Codex — DWARF aggregate fragment verification
+
+The fresh origin/main pull is already up to date at 18f3e83; local work is
+preserved. Probe 2252295 is terminal failed/101: formatting and strict Clippy
+pass, but the hardware aggregate GDB callback fails an assertion after leaf
+fragment emission. Inspect the retained native artifact to identify the exact
+field discrepancy before changing debug layout or capture semantics. Continue
+owning these lowerer/debug files and the regression; preserve unrelated edits.
+No push and no claim of full DWARF completion.
+
+Probe 2258648 completed exited/success/0, peak 1389613056 bytes: strict
+Clippy, binding-pruning validation, native body/consumer-format checks and
+the hardware GDB regression pass. The retained native diagnostic showed
+correct tag/real/wide values; only the test's invented 16-byte ABI-padding
+expectation was wrong. Inspection uses byte-rounded logical widths (81 bits
+occupy 11 bytes), independently of native ABI padding. Extend the fixture to
+nested structs, sub-byte and signed wide leaves, descending arrays and negative
+ascending labels. Probe 2266027 passes exited/success/0 in default/bitpack,
+peak 1032650752 bytes. Actual GDB also requires unused members unavailable;
+IR remapping and native emission reject metadata-only foreign execution.
+Update TODO and siox-paper architecture/testing notes for this bounded binding
+coverage, keeping whole aggregate-return boundaries explicitly outstanding.
+Freeze source for full acceptance before committing; preserve unrelated work.
+
+Acceptance 2269400 is terminal failed/1, peak 1192407040 bytes. Full Rust
+default/bitpack suites and the ordinary 228/0 corpus pass, but the debug corpus
+is 227/1: trait_default_test hits LLVM's "fragment covers entire variable"
+verifier rule for one-field receivers. Do not commit or count this gate green.
+Omit the fragment operator when the captured leaf covers the whole declared
+inspection layout; retain ordinary variable location/type and leaf capture.
+Add a native/GDB one-field wrapper formal alongside the nested aggregate probe,
+then rerun the focused check and complete gates, including the failing corpus.
+
+Probe 2312592 is terminal exited/success/0, peak 667570176 bytes: strict
+Clippy, the nested aggregate/one-field GDB probe, native trait_default_test
+simulation and DWARF verification pass. Whole-leaf wrappers now use a normal
+variable location rather than LLVM's invalid entire-variable fragment.
+Restart complete acceptance on this exact source; no commit or push yet.
+
+Acceptance 2315177 is terminal exited/success/0, peak 1610928128 bytes.
+Formatting, strict Clippy, frontend-only check, full default/bitpack Rust
+suites (534/513 units plus integrations), all native GDB fixtures and ordinary/
+default-debug/bitpack-debug corpora (228/0 each) pass. All four final FIFO/wide
+GDB/VCD smoke checks pass. AST refresh completes at 5237 nodes, 14859 edges,
+243 communities; known four vendor parse and six no-symbol warnings remain,
+with hub-based labels and the large-graph community view refreshed without LLM.
+Commit only owned leaf-binding metadata, fragment/whole-variable emission,
+strengthened regressions, TODO and this coordination tail; separately commit
+siox-paper reference notes. Preserve unrelated AGENTS/441 chat lines/.codex.
+Full DWARF remains active: whole aggregate-return boundaries, folded string
+frames, formal-type audits, packed expression companions and string/wide/
+aggregate finish ABI remain. No push authorized.
+
+### 2026-10-08 — Codex — DWARF whole aggregate call-boundary probe
+
+Previous goal turn made verified progress: compiler ada5341 and documentation
+5839b05 commit leaf-backed aggregate inspection after acceptance 2315177.
+Continue owning source_bindings/source_values, canonical call metadata and the
+native source-frame emitter. Prove that one hardware call returning a two-field
+struct currently stops once per result leaf, then retain one source-call
+identity and faithfully shared return boundary. Reuse canonical Process IR;
+do not introduce a debugger-only evaluator, force unused result/argument fields
+or duplicate foreign effects. Preserve AGENTS/441 chat lines/.codex. Whole
+aggregate ABI finish remains a separate requirement, not inferred from frame
+counts. No push or commit before gates; full goal stays active.
+
+Resume after the requested pull: origin/main remains 18f3e83, with no incoming
+commits and all local/unowned work preserved. The pull-only turn yielded no
+DWARF progress; revalidate the open probe and implement the next safe action.
+Continue owning the shared source lowerer, Process call metadata, native debug
+emitter/cache and debugger regressions. Preserve each call expansion identity
+through pruning/remapping and reuse the existing exact-layout return/cache
+path. Jointly materialize retained pure leaves only when their declared widths
+match; never force pruned leaves, checked accesses or foreign/nested call stops.
+Effectful/conditionally demanded aggregate boundaries remain required work,
+not a redefinition of the full goal. No push or completion claim.
+
+Probe 2419961 failed/101 at Rust monomorphization, not at runtime: recursively
+creating a new closure type inside generic inline_value exceeded its recursion
+limit. Route aggregate packing through a non-generic helper that reuses the
+same native emitter. Probe 2423297 passes exited/success/0, peak 998817792:
+strict Clippy and actual native/GDB frames plus VCD/DWARF checks pass.
+Expanded probe 2424411 failed/101, peak 1546735616: pruning/remapping and
+native parity pass, but a masked-call count test observes legitimate separate
+hardware reevaluations after separate input/flag writes. Derive both independent
+consumer predicates from one input transition; do not hide genuine calls.
+Continue testing `finish` and inactive foreign-return fields before full gates.
+
+Probe 2428268 passes exited/success/0, peak 865931264 bytes: strict Clippy,
+IR identity/path remapping without effect retention, and actual native/GDB
+hardware regressions in default/bitpack. Fully retained pure typed leaves share
+one native boundary and exact-layout SSA result, including both/first-only/
+second-only consumers; the untaken call has no stop. The inactive retained
+abort() return leaf never executes. GDB `finish` returns both integer fields
+for positive, negative and zero inputs; ordinary/debug VCDs and DWARF checks
+agree. Preserve pure-group coverage holes rather than filling pruned fields
+with fake zeros. Update TODO and siox-paper architecture/testing notes with
+these exact limits. Freeze source for complete acceptance before any commit.
+Effectful/checked/nested/partial aggregate grouping, mixed real/wide return ABI,
+folded string frames, formal audits and packed companions remain required.
+
+Acceptance 2429375 is terminal exited/success/0, peak 1610874880 bytes.
+Formatting, strict all-feature Clippy, frontend-only compilation, full default/
+bitpack Rust suites (534/513 units plus integrations), all native GDB fixtures
+and ordinary/default-debug/bitpack-debug corpora (228/0 each) pass. All four
+FIFO/wide GDB/VCD smoke checks pass. AST refresh finishes at 5242 nodes,
+14890 edges and 259 communities, with the known four vendor partial-parse and
+six no-symbol warnings; community hub labels/large-graph HTML refresh without
+LLM/API use. Clarify the documented boundary as straight-line pure, not every
+pure branch-return shape. Commit only owned metadata, common native grouping/
+SSA readiness, regressions, TODO and this coordination tail; separately commit
+siox-paper notes. Preserve unowned AGENTS/441 chat lines/.codex and all backups.
+Full DWARF remains active: branch-return/effectful/checked/nested/partial
+aggregate grouping, folded string frames, formal audits, packed companions and
+string/normalized-wide/mixed-layout return ABI remain. No push authorized.
+
+### 2026-10-08 — Codex — DWARF aggregate branch-return probe
+
+Previous goal turn made verified progress: compiler 91f54d2 and docs a68a29d
+commit shared straight-line aggregate source frames after acceptance 2429375.
+Continue owning the native source selection/grouping emitter and regression.
+Prove nested hardware struct-return branches retain one selected source stop,
+exact caller lines and lexical locals, then reuse the existing selected-value
+SSA join emitter for a whole retained return. Preserve inactive effects and
+pruned fields; do not pack metadata-only operands or declare the full goal
+complete. Keep unrelated AGENTS/441 chat lines/.codex and backups. No push.
+
+Probe 2479628 failed/101 as expected: native outputs, DWARF/VCD and branch
+locals are correct, but selected returns stop twice per input (5/6/-6/0).
+Group existing pure Select leaves through the common selected-value SSA join,
+passing an arm index independently of aliased value IDs and capturing the
+whole packed return layout at the selected source boundary. Probe 2481639
+passes exited/success/0, peak 732241920, including strict Clippy and nested
+branch source/caller lines. Expanded probe 2492703 passes for independent
+field conditions and aliased aggregate locals. Probe 2496846 passes default/
+bitpack, peak 774672384: same-line independent field conditions, one selected
+stop per input, branch-private/shadowed locals and actual GDB finish values for
+straight-line, nested, independent and alias return bodies. Add a source match
+case using this same selection pipeline before full acceptance. Effectful/
+checked/nested-call and partial-result grouping remains open, not forced eager.
+
+Probe 2506480 passes exited/success/0, peak 183336960: strict Clippy and
+expanded hardware native/GDB coverage in default/bitpack, including match
+returns, shadowed locals, exact caller/return lines, selected return counts
+and finish values for all five return shapes (straight-line, nested, match,
+independent conditions and aliases). Strengthen fallback scope validation to
+require no visible branch-local symbol, not merely a failed memory read.
+Update TODO and siox-paper architecture/testing notes, keeping checked,
+effectful, nested-call and partial grouping plus other required DWARF work
+explicit. Freeze source for full acceptance before committing; no push.
+
+Acceptance 2518381 is terminal exited/success/0, peak 1581228032 bytes.
+Formatting, strict all-feature Clippy, frontend-only compilation, complete
+default/bitpack suites (534/513 units plus integrations), all six native DWARF
+fixtures in both modes and ordinary/default-debug/bitpack-debug corpora (228/0
+each) pass. All four FIFO/wide GDB inspection/stepping and VCD parity smokes
+pass. The exact fallback lookup proves the branch-private symbol is absent.
+AST refresh finishes at 5243 nodes, 14905 edges and 259 communities with the
+known four vendor partial-parse and six no-symbol warnings, without LLM/API
+work. Commit only owned grouping/selection code, regressions, TODO and this
+coordination tail; separately commit architecture/testing notes. Preserve
+unowned AGENTS/441 chat lines/.codex and all backups. The full DWARF goal
+remains active: demand-preserving effectful/checked/nested-call and partial
+aggregate grouping, folded string frames, formal audits, packed companions
+and remaining return ABIs are still required. No push authorized.
+
+### 2026-10-08 — Codex — DWARF folded string-return frames
+
+Previous goal turn made verified progress: compiler 6c84707 and docs 5d86533
+passed acceptance 2518381 for selected aggregate return frames. Continue owning
+native expression-call emission, string inspection and debugger regressions.
+Reproduce literal/empty echo_text calls bypassed by folded length consumers,
+then preserve the actual source call through the existing canonical emitter.
+Do not invent an i1 empty value, force metadata-only arguments/effects, add a
+debug evaluator or promise unverified string return ABIs. Preserve unrelated
+AGENTS/441 chat lines/.codex and backups; full DWARF remains active. No push.
+
+Probe 2583770 failed/101, peak 170168320: native/VCD/DWARF output passes but
+GDB reaches count directly instead of its literal echo_text argument frame.
+Preserve consumed literal arguments at the caller through common emission;
+use a void specialization for zero-storage empty returns. Probe 2593177 first
+failed at two test closures still using the old callback arity; update both.
+Probe 2594275 passes exited/success/0, peak 887177216, including strict Clippy
+and the literal/empty frame regression. Expanded probe 2597521 failed/101,
+peak 81801216: nested/selected calls stop correctly, but a direct folded length
+in an untaken branch emits an empty source stop. Reuse active_value to guard
+only that boundary, preserving the ordinary constant attribute result.
+
+Probe 2603687 failed/101, peak 743776256: strict Clippy, selected/nested calls
+and nonempty reuse pass, but an empty result shared by two count calls produces
+two echo_text stops. Route void calls through the existing call_value readiness
+join/cache as well. Its Boolean marker describes completed execution only;
+the native callee remains void and no empty string gains an integer payload.
+Keep the GDB finish history check to prove there is no fabricated return value.
+
+Probes 2607065 and 2612354 pass exited/success/0 in default/bitpack: nested
+literal/empty calls, exact caller/assignment lines, constant views, selected
+reuse across both/first-only/second-only/neither consumers and empty GDB finish
+without a history value. The same folded-operand bypass occurs in formatting
+and host-string arguments; reuse literal_value at those native consumption
+sites. Probe 2617747 rejects the attempted source file-path functions under
+the existing E-P003 literal-path rule, and rejects unavailable println syntax.
+Preserve that language constraint; use supported print! and warning formatting
+for the regression. Probe 2623524 passes exited/success/0, peak 610488320:
+strict Clippy and both native/GDB modes include print/warning frames, with no
+string stops for successful assertions or suppressed warnings. No computed
+file paths or new runtime representations are implemented. Update TODO and
+siox-paper architecture/testing notes and freeze source for full acceptance.
+Effectful/checked/nested-call/partial aggregate grouping, formal audits, packed
+companions and runtime/nonempty-literal string/wide/mixed return ABIs remain
+required DWARF work. No push or completion claim.
+
+Acceptance 2631262 is terminal exited/success/0, peak 1612468224 bytes.
+Formatting, strict all-feature Clippy, frontend-only compilation, full default/
+bitpack suites (534/513 units plus integrations), all six DWARF fixtures and
+ordinary/default-debug/bitpack-debug corpora (228/0 each) pass. All four FIFO/
+wide native GDB inspection/stepping and VCD parity smokes pass. The literal
+regression proves nested/selected frames, argument order, exact caller and
+assignment lines, Unicode/NUL/empty views, conditional reuse, diagnostic
+non-execution and empty finish with no returned history value in both modes.
+AST refresh finishes at 5251 nodes, 14932 edges and 257 communities with the
+known four vendor partial-parse and six no-symbol warnings, without LLM/API
+work. Correct duplicated TODO prose after the gate; no Rust source changed.
+Commit only owned native consumption/constant-argument/void-frame code,
+regressions, TODO and this coordination tail, with separate architecture/
+testing notes. Preserve AGENTS/441 historical chat lines/.codex and backups.
+Full DWARF remains active: effectful/checked/nested-call/partial aggregate
+grouping, formal audits, packed companions and runtime/nonempty-literal
+string, normalized-wide and mixed-layout return ABI checks remain. No push.
+
+### 2026-10-08 — Codex — DWARF wide scalar native return audit
+
+Previous DWARF turn made verified progress: acceptance 2631262 and commits
+94e3ad3/905e275 preserve folded literal and empty string source frames. The
+requested main pull found no new upstream commits. Continue owning native
+source return emission and debugger regressions. Reproduce GDB finish for
+non-byte-aligned wide signed/unsigned scalars and differing consumer widths;
+reuse the common emitter and keep declaration metadata independent of actual
+consumer evaluation formats. Do not introduce executable inspection roots or
+invent missing values. Preserve unrelated AGENTS/441 historical chat lines,
+.codex and backups. Full DWARF remains active; no push.
+
+Probe 2712767 is terminal failed/101, peak 147070976 bytes. Native output,
+VCD parity and DWARF verification pass; GDB finish on a correct signed[81]
+argument/local reports 0 instead of -2. Current upstream GDB amd64_classify
+only assigns integer classes to 1/2/4/8-byte basic integers, leaving an
+11-byte scalar in NO_CLASS; larger basic integers also hit a 16-byte assertion.
+Do not change source types or native values to appease that debugger bug.
+Continue the regression with print-finish disabled: verify stepping and
+declaration bindings at 81/129 bits, inline/shared bodies and narrow/wider
+consumers, while keeping automatic arbitrary-width return decoding explicitly
+open. Investigate any compiler-side loss of declared binding bits separately.
+
+Probe 2719013 confirms a GDB 18.1 AMD64 assertion for signed[129], even with
+print-finish disabled (failed/101, peak 124776448). Probe 2720402 passes
+exited/success/0 in both modes, peak 89763840: step out at the caller's actual
+return PC instead, preserving arbitrary-width declaration metadata and native
+values. Expanded narrow-callee probe 2723685 passes, peak 81707008.
+Generic probe 2725573 rejects explicit call templates under the existing
+read<T>-only rule; infer T from its typed argument. Probe 2726568 reaches a
+correct signed generic frame but its demangled name includes the argument
+type; compare the qualified name before that suffix. Probe 2729702 then
+finds signed[81](-18446744073709551617) differs from a typed assignment.
+Ordinary native probe 2731825 also fails, and isolated constructor probe
+2733538 fails before calling generic_identity. This is a pre-existing value
+conversion issue, not evidence of a DWARF/shared-frame error. Record it in TODO
+and use exact-width two's-complement literal bits to audit generic sharing.
+Also own architecture/testing documentation for these verified limitations
+and the precise width/consumer/signature coverage. No source-type/ABI workaround
+or compiler behavior change is justified by the debugger-only failure.
+
+Probe 2734630 passes native values/VCD/DWARF but rejects an assumed shared
+generic body count: these packed calls use SourceValues, not shared Process
+functions. Remove the unsupported sharing claim, not the declaration checks.
+Probe 2737786 proves a compiler metadata gap: native signed generic results
+are correct, yet the generic constructor argument is described as unsigned
+(its complete bits print positive). source_operand_layout recognizes stored
+values and free/method return declarations but omits constructor target types.
+Own source_bindings.rs in the shared IR lowerer now; reuse expr_to_type,
+normalize_layout_type and existing nominal registries to recover the constructor
+shape at that common boundary. Audit all its callers and full native gates.
+The apparent negative-constructor mismatch needs a semantic correction to the
+earlier note: raw resize explicitly zero-extends in source_processes.rs. Check
+documented constructor semantics before calling it a value-lowering bug.
+
+Probe 2744890 fails/101, peak 653176832: the attempted SourceValues constructor
+shape change does not fix this procedural call. Revert that owned change;
+these bindings come from process_binding_layout in source_processes.rs.
+Concrete declarations and stored/projection layouts are retained, but generic
+constructor arguments fall through because RawResize has a checked Ty and no
+stored layout. Own that shared IR metadata helper now: recover its already
+checked instantiated type through process_layout_for_type as the final
+inspection fallback. This adds neither an executable layout nor new roots.
+language.md section 3 conversions explicitly specifies raw zero-extension;
+remove the incorrect negative-constructor TODO and preserve those semantics.
+The exact-width two's-complement constructor remains the signed metadata probe.
+
+Probe 2749048 passes exited/success/0, peak 962457600: strict all-feature
+Clippy and the wide regression in both packing modes. The procedural helper
+fallback fixes both generic argument and local signed views while native/VCD
+results remain identical. Four width/inline-hint variants inspect 81/129-bit
+signed/unsigned values, positive/negative/zero data, 8-bit narrowing, 193-bit
+widening, a low-byte callee and inferred generic constructor types. Low-byte
+GDB finish is correct; arbitrary-width returns step out via the real return PC.
+These packed cases do not claim shared Process body eligibility or a debugger
+ABI workaround. Updated TODO and sibling architecture/testing notes preserve
+remaining work and document the GDB limitation. Freeze source for the full
+acceptance gate; no push and full DWARF remains active.
+
+Acceptance 2755037 is terminal exited/success/0, peak 1612697600 bytes.
+Formatting, strict all-feature Clippy, frontend-only compilation, full default/
+bitpack suites (534/513 units plus integrations), all seven DWARF regressions
+and ordinary/default-debug/bitpack-debug corpora (228/0 each) pass. All four
+FIFO/wide native GDB inspection/stepping and VCD parity smokes pass. The new
+81/129-bit regression verifies declared signed/unsigned generic constructor
+arguments and copied locals, zero/positive/negative values, narrowing/widening
+consumers and native results in both packing modes. Low-byte finish is checked;
+arbitrary-width GDB return decoding remains a documented debugger limitation,
+not claimed as passing. No Rust source changed after acceptance.
+AST refresh finishes at 5262 nodes, 14942 edges and 254 communities with the
+known four vendor partial-parse and six no-symbol warnings; no LLM/API work.
+Commit only the checked-type inspection fallback, regression, TODO and this
+coordination tail, with separate architecture/testing notes. Preserve unrelated
+AGENTS/441 historical chat lines/.codex and all backups. Full DWARF remains
+active: demand-preserving effectful/checked/nested-call/partial aggregate
+grouping, formal declaration-type audits, packed expression companions and
+runtime/nonempty-literal string, normalized-wide and mixed return ABI checks
+remain. Completion estimate remains 97%; no push.
+
+### 2026-10-08 — Codex — DWARF packed expression companions
+
+Previous goal turn completed acceptance 2755037 and commits becea98/f0f7808.
+Continue owning native source-frame metadata and tests/debug_info.rs. Reproduce
+packed expression parameter/local companion inspection using source-defined
+Logic symbols, then reuse the existing recursive inspection layout/copy code.
+Only already-consumed value/metadata planes may make a binding available; do
+not evaluate a source expression merely to inspect it or fabricate known zeros
+for an unavailable plane. Audit procedural and hardware expression callers and
+native argument demand before changing the common capture path. Preserve
+unrelated AGENTS/441 historical chat lines/.codex. Full DWARF remains active;
+no push.
+
+Probe 2819825 fails/101, peak 169930752: native/VCD results pass but the
+expression frame has no value$logic/copy$logic. Reuse the existing recursive
+Logic inspection layout and decoder, with captures at normal value/metadata
+emission. Probe 2825087 passes/0, peak 804552704, for scalar expression bindings.
+Expanded probe 2829653 passes strict Clippy but fails native hardware Logic
+index results. Independent ordinary build 2832089 fails identically (peak
+23859200): a packed struct-port element return loses its X discriminant before
+DWARF. Record that separate SourceValues value-lowering bug in TODO; do not
+claim the metadata change fixes it. The hardware companion regression instead
+uses the working tag projection to verify packed fields are unavailable when
+pruned. Add full procedural struct-plane inspection and an unconsumed-metadata
+case that must never appear as binary zeros. No extra expression/plane demand
+or native argument is introduced by the companion capture hooks.
+
+Probe 2835082 passes/0, peak 829210624, for recursive struct and partial hardware
+views in both modes. Probe 2839387 passes/0, peak 144556032, after adding 81-bit
+multiword states, descending arrays with negative labels and selected/untaken
+branches. Probe 2842159 passes strict Clippy and seven DWARF fixtures but fails
+the existing wide low-byte formal at its return stop. Disassembly probe 2846807
+confirms SelectionDAG reused the later packed extraction inside entry inspection
+stores, giving it the return source line before references became available.
+Separate discovered-native-input inspection from body emission with a common
+basic-block boundary; do not weaken the wide formal checks or change ABI demand.
+Probe 2849002 passes exited/success/0, peak 952139776: strict all-feature Clippy
+and all eight DWARF fixtures in default/bitpack modes. Missing companions retain
+their declarations without an invented null/zero location and GDB reports them
+optimized out. Full enum snapshots reuse existing std-owned decoding; buffers
+and fragment offsets are inspection-only. Own architecture/testing notes now;
+freeze source for full acceptance. Preserve remaining aggregate grouping,
+formal-type/plane-transport audits and string/wide/mixed return ABI work. No push.
+
+Acceptance 2856154 is terminal exited/success/0, peak 1612632064 bytes.
+Formatting, strict all-feature Clippy, frontend-only compilation, full default/
+bitpack suites (534/513 units plus integrations), all eight DWARF fixtures and
+ordinary/default-debug/bitpack-debug corpora (228/0 each) pass. All four FIFO/
+wide native GDB inspection/stepping and VCD parity smokes pass. Companion checks
+cover all nine std states, 9/81-bit snapshots, known binary values, recursive
+structs, negative descending array labels, selected/untaken branches and
+unavailable/pruned planes. The existing wide regression also verifies complete
+formal visibility before a narrow callee's return stop after the entry/body
+ordering fix. No Rust source changed after acceptance.
+AST refresh finishes at 5265 nodes, 14956 edges and 246 communities with the
+known four vendor partial-parse and six no-symbol warnings, without LLM/API
+work. Commit only consumed-plane inspection hooks, native frame setup/order,
+regression, TODO and this tail, with separate architecture/testing notes.
+Preserve AGENTS/441 historical chat lines/.codex and all backups. Full DWARF
+remains active: demand-preserving effectful/checked/nested-call/partial
+aggregate grouping, formal-type and further plane-transport audits, and
+runtime/nonempty-literal string, normalized-wide and mixed return ABI checks
+remain open. The independent hardware scalar packed-index bug is recorded in
+TODO, not fixed or counted as passing. Completion estimate remains 97%; no push.
+
+### 2026-10-08 — Codex — DWARF mixed aggregate native return ABI
+
+Previous goal turn completed acceptance 2856154 and commits 796332a/8004715.
+Own native source return encoding/decoding and tests/debug_info.rs. Reproduce
+GDB finish for a complete real/integer aggregate in both field orders before
+changing the shared boundary helpers. Reuse existing canonical packed-value
+emission, do not infer executable operands from inspection metadata or force
+unconsumed fields. Preserve remaining wide/string/partial return and formal
+audits, unrelated AGENTS/441 historical chat lines/.codex and backups. Full
+DWARF remains active; no push.
+
+Probe 2928329 is terminal failed/101, peak 151252992 bytes. Ordinary/debug
+native execution and VCD parity pass; actual GDB finish of {real, integer}
+returns gain=0 and tag=the real bit pattern. The shared source boundary still
+returns i128, incorrectly using integer registers instead of the declared
+floating/integer register classes. Own the common return type/encoder/decoder;
+preserve canonical bits, source DI types and actual operand demand. Verify both
+field orders, nested/array wrappers and all-real small aggregates. Larger,
+unaligned, normalized and partial ABI work remains open, not silently passed.
+
+### 2026-10-09 — Codex — DWARF mixed-return coverage and documentation
+
+Continue ownership of native return helpers and tests/debug_info.rs; also own
+the corresponding TODO and sibling architecture/testing notes. Probe 2975370
+decodes both mixed field orders correctly, then fails because independent
+signal writes produce an intermediate delta-cycle input, not the next settled
+tuple. Check each finish against its captured formals and separately require
+all settled tuples; no returned-field check is removed. Expanded probe 2977942
+passes exited/success/0, peak 83791872 bytes, for both field orders, a nested
+wrapper, a real array and a one-real wrapper under both inline hint settings.
+The helpers change only the return transport for complete 64-bit leaves in
+small native SysV aggregates; canonical evaluation widths, dependencies and
+source DI types are unchanged. Larger/unaligned/normalized/partial returns,
+string/wide return ABIs and remaining formal/plane/grouping audits stay open.
+No push; preserve unrelated AGENTS/441 historical chat lines/.codex and backups.
+
+Probe 2981642 fails/101 during test compilation (missing Parameter.function
+and an unnecessary import), before running checks. Corrected probe 2981803 is
+terminal exited/success/0, peak 860454912 bytes: strict all-feature Clippy,
+the canonical shared-function mixed/reversed/all-real boundary unit, and all
+nine DWARF integration fixtures in default/bitpack modes pass. The real array
+now returns distinct gain/-gain values, including opposite signed zeros, to
+verify both floating return slots independently. The unit checks actual shared
+native signatures, canonical i128 result width, module validity and absence
+of a second source-call wrapper; it does not claim frontend eligibility for
+every aggregate. Freeze Rust source for the full acceptance gate. No push;
+the complete DWARF objective and all explicitly remaining gaps stay active.
+
+Acceptance 2984800 is terminal exited/success/0, peak 1612460032 bytes.
+Formatting, Phase 1 artifacts, frontend-only check/Clippy, strict all-feature
+Clippy, complete default/bitpack suites (535/514 units plus integrations), all
+nine DWARF regressions and four ordinary/debug default/bitpack corpora pass
+(228/0 each). All four FIFO/wide native GDB inspection/stepping and VCD parity
+smokes pass. The ninth fixture verifies actual finish values for both mixed
+field orders, nested structs, distinct two-real arrays and one-real wrappers,
+including signed zero under both inline hints and packing modes. Shared-body
+unit coverage verifies the common native signature/result conversion without
+adding another wrapper. The frozen Rust diff hash remains
+b558ccf3ffcf6bcd8b79c6982d035ebedcabc66c; no source changed during acceptance.
+AST-only graph refresh finishes at 5268 nodes, 14969 edges and 250 communities
+with the known four vendor partial-parse and six no-symbol warnings; no LLM/API
+work. Commit only the common return helpers, their unit/native regressions,
+TODO and this owned tail, with separate architecture/testing notes. Preserve
+AGENTS/441 historical chat lines/.codex and backups. Completion estimate stays
+97%: larger/subword/unaligned/normalized/partial and string/wide return ABIs,
+demand-preserving aggregate grouping and formal/plane audits remain open.
+Full DWARF stays active; no push.
+
+### 2026-10-09 — Codex — DWARF memory-class aggregate returns
+
+Acceptance 2984800 completed and mixed-return commits e63ea3a/491e829 are local.
+Continue ownership of common native return transport and tests/debug_info.rs.
+Reproduce actual GDB finish for a three-word real/integer aggregate and a
+complete unsigned[81]/real struct whose declared inspection layout is
+byte-normalized. Check all source fields against captured formals, including
+intermediate hardware delta inputs, and require settled positive/negative/zero
+cases. First verify ordinary/debug execution and waveform parity; do not infer
+memory ABI correctness from local snapshots or silently retype source values.
+Reuse existing packed emission and inspection copying only after the failing
+probe establishes the boundary defect. Preserve unconsumed-field/effect rules,
+all remaining formal/plane/grouping and string/wide/partial work, unrelated
+AGENTS/441 historical chat lines/.codex and backups. Full DWARF active; no push.
+
+Probe 3031648 fails/101 during parsing: std registers x/o bit-string prefixes,
+not b. Probe 3032066 removes that prefix but fails in the debug native runner
+with incomplete Process lowering before ordinary execution/GDB; no compiler
+ABI conclusion follows from that fixture path. Use the same numeric 0b
+constructor pattern already covered by the wide-call regression. Corrected
+probe 3032495 is terminal failed/101, peak 74309632 bytes: ordinary/debug native
+assertions, VCD parity and DWARF verification pass, then GDB finish of the
+24-byte Triple attempts to read address 0x5 (its first integer value). The
+declared aggregate is memory-class while its native boundary still returns
+canonical integer bits in registers. The normalized Wide finish probe has
+not yet been reached and is not claimed as verified. Next implement a common
+caller-owned indirect return transport, preserving packed execution bits and
+reusing existing normalized inspection copying; keep source types and all
+operand-demand/effect rules intact. Larger ABI work remains active, not fixed.
+
+Probe 3033978 is terminal exited/success/0, peak 713768960 bytes. The common
+caller-owned sret transport passes actual GDB finish for Triple (24 bytes) and
+normalized unsigned[81]/real Wide (19 bytes), both inline hints, with native
+ordinary/debug results, VCD parity and DWARF verification. Own a shared-body
+ABI regression plus nested/signed/descending-array memory-return coverage in
+the same fixture, and the matching TODO/architecture/testing notes. Preserve
+the broad return/formal/plane/grouping gaps and unrelated work; no push.
+
+Expanded probe 3035254 fails/101 in a native nested-result assertion. Its
+first command targeted the binary rather than the library and ran zero unit
+tests; it is not counted as shared-boundary coverage. Probe 3035943 actually
+runs the library ABI unit successfully, then the ordinary native fixture fails
+the same assertion as debug. Probe 3036365 is terminal exited/success/0: the
+failed ordinary/debug VCD bytes match (nested=1.5, expected=3.0), and actual
+GDB finish returns every Nested field correctly, including descending negative
+array labels and opposite real signs. This is a hardware consumer indexing
+defect, not evidence against the memory-return transport. Keep that evidence
+and a separate IR TODO; use descending nonnegative array labels for the passing
+native acceptance fixture, without claiming negative-label consumer coverage.
+
+Probe 3036495 passes the actual shared ABI unit and positive nested native
+case, then fails the negative nested assertion. Diagnostic 3036752 records the
+same ordinary/debug failure and matching VCD; GDB finish returns data=-7 and
+all real fields correctly. The signed field/argument equality drives the
+negative multiplier despite matching returned bits. Isolate that existing
+signed-projection comparison defect; the fixture compares full 81-bit unsigned
+bit patterns to verify payload transport without claiming signed comparison
+coverage. Signed source GDB field checks remain unchanged and mandatory.
+
+Probe 3036870 still fails the negative case after unsigned comparison. The
+ordinary diagnostic 3037168 uses an explicit -100.0 unequal sentinel, proving
+the comparison takes the unequal branch (rather than a real-arithmetic sign
+error). Preserve the hardware integer-to-signed[81] constructor path in the
+separate TODO. Supply the ABI fixture's signed data through a declared 81-bit
+port and procedural stimulus, and restore direct signed field equality; this
+checks transport with a concrete operand format, not that constructor path.
+
+Probe 3037275 passes ordinary/debug native assertions, VCD and DWARF checks,
+then fails only the required settled negative signed tuple: procedural
+signed[81](-7) zero-extends the 64-bit pattern (GDB sees 18446744073709551609
+in both formal and returned field). This supplies stronger evidence for the
+existing widening defect, now recorded in TODO. Initialize the ABI fixture with
+the complete 81-bit two's-complement literal so the negative signed return is
+actually exercised; do not relax its required -7 source-field/formal checks.
+
+Probe 3085529 is terminal exited/success/0, peak 1101336576 bytes: the shared
+return ABI unit, expanded memory-return native/GDB fixture in default/bitpack
+and strict all-target/all-feature Clippy pass. The fixture checks 24/19/43-byte
+whole returns, nested signed[81] data, descending real arrays and signed zeros
+under both inline hints; all -7 settled source values remain required. Update
+TODO and sibling architecture/testing coverage, then freeze Rust for the full
+acceptance gate. Remaining subword/unaligned/partial/string/wide-basic ABI,
+formal/plane/grouping work and unrelated baseline IR defects remain open.
+Completion estimate remains 97%; full DWARF active, no push.
+
+Acceptance 3090184 is terminal exited/success/0, peak 1612025856 bytes.
+Formatting, Phase 1 artifacts, frontend-only checks/Clippy, strict all-feature
+Clippy, full default/bitpack suites (535/514 units plus integrations), all ten
+DWARF fixtures and four ordinary/debug default/bitpack corpora pass (228/0
+each). All four FIFO/wide native GDB/VCD smokes pass. The frozen Rust diff hash
+is unchanged at 19503d57d76478dba310e0592f710305dfc84d19. AST-only graph refresh
+completes at 5282 nodes, 15006 edges and 261 communities; known vendor partial
+parse/no-symbol warnings remain, no API/LLM work. Commit only the common
+memory-return helpers, their ABI/native regressions, TODO and this owned tail;
+commit sibling architecture/testing notes separately. Preserve unowned AGENTS,
+441 historical chat lines, .codex and backups. Full DWARF remains active at
+97%; subword/unaligned/partial/string/wide-basic return ABIs and formal/plane/
+grouping audits still need work. Do not count the independently recorded IR
+negative-label/widening defects as fixed. No push.
+
+### 2026-10-09 — Codex — DWARF native string return ABI
+
+Memory-return acceptance 3090184 passes and commits d96c196/07067b5 are local,
+not pushed. Own the common source return boundary and string inspection helpers
+plus tests/debug_info.rs. Reproduce actual GDB finish for a borrowed runtime
+Char[] return and nonempty literal return before changing transport. Reuse the
+existing read-only string view/query, not another runtime string service or
+new evaluation roots. Keep native handles/packed literal bits separate from
+inspection, preserve empty void specialization and source types, and check
+multi-root/call/cleanup ownership as the transport grows. The temporary probe
+is under the disk-backed cache. Preserve unrelated AGENTS/441 chat lines/.codex
+and backups. Full DWARF remains active at 97%; other ABI/formal/plane/grouping
+work stays open. No push.
+
+Probe 3174848 is terminal failed/1, peak 38535168 bytes. Ordinary/debug native
+assertions, VCD parity and llvm-dwarfdump verification pass. The runtime echo
+formal exposes the correct borrowed Char[] view (3 code points, 7 UTF-8 bytes),
+then GDB finish attempts to read address 0x1: the executable returns a runtime
+handle while its source return type describes a 32-byte borrowed view. This
+establishes the string return boundary defect, not a runtime read/content
+failure. Reproduce the nonempty literal specialization separately before
+extending the common caller-owned memory transport. No string fix claimed yet.
+
+Literal probe 3176056 is terminal failed/1, peak 35950592 bytes. Ignoring the
+runtime invocation reaches the nonempty literal echo; its formal has the
+correct 3-code-point/7-byte view, then finish reads address 0x3bc (the first
+packed Unicode code point). Both runtime-handle and packed-literal returns
+therefore need the same source-view/canonical-payload separation. Extend the
+existing SourceReturn carrier and existing strings.rs helpers, preserve literal
+empty void specialization, and verify actual return views plus native use and
+multi-root cleanup. Do not infer executable handles from the borrowed view or
+reexecute read/format operations. Compiler memory batch is committed; only
+this string ownership/probe tail and unrelated work are dirty. No push.
+
+Probe 3178699 is terminal exited/success/0, peak 801177600 bytes: the first
+shared-carrier implementation builds and returns actual runtime/literal Char[]
+views through GDB finish without changing native assertions, VCD bytes or
+DWARF validity. Add mandatory content/UTF-8/NUL checks, two roots with different
+runtime strings, reuse across await and exact call counts for both inline hints
+and packing modes. Empty literal specializations must stay void without a new
+history value. Fixed Char[N] declarations stay arrays. Reuse pointer-capable
+capture_string and constant views; no runtime service/allocator changes.
+
+Resume 2026-10-09: origin/main is already contained in local main; pull leaves
+the uncommitted string changes untouched. Own src/llvm/process/tests.rs for a
+small structural check: literal/runtime string carriers keep exact canonical
+payload widths, while explicitly declared Char[1] stays a fixed array. Focused
+native/GDB string regressions and strict Clippy passed in job 3179248; full
+acceptance for this batch remains required before committing. No push.
+
+Structural probe 3190586 exits successfully but selected the binary's zero-test
+target; count only its strict Clippy stage. Corrected probe 3191215 is terminal
+exited/success/0, peak 1182429184 bytes, and actually runs the new library unit
+in default and bitpack. The unit checks fixed Char[1] classification, 32-byte
+borrowed-view prefixes, i32/i64/i193 payload widths, metadata-only i64 handle
+narrowing and valid caller/callee LLVM. Extend the native/GDB regression with
+one-character literal returns to exercise its i32 carrier's alignment at run
+time; exact call counts and empty-return history checks remain mandatory.
+Update sibling architecture/testing and compiler TODO without closing the
+remaining formal/plane/grouping/ABI work or claiming shared-string eligibility.
+
+Probe 3194855 is terminal exited/success/0, peak 796844032 bytes. The actual
+library boundary unit and expanded native/GDB string fixture pass in default
+and bitpack, including one-character i32 literal returns, embedded NUL/UTF-8,
+two roots, post-await reuse, exact stop counts and empty history behavior.
+Freeze Rust now and run complete CI-local, both debug corpora, native GDB/VCD
+smokes and AST-only graph refresh before committing. Full DWARF remains active
+at an estimated 97%; independent IR defects and remaining ABI/formal/plane/
+grouping requirements remain open. No push.
+
+Acceptance 3197327 is terminal exited/success/0, peak 1057255424 bytes.
+Formatting, Phase 1 artifacts, frontend-only checks/Clippy, strict all-feature
+Clippy and complete default/bitpack suites pass (536/515 units plus integrations,
+all eleven DWARF fixtures in each mode). All four ordinary/debug default/bitpack
+corpora pass 228/0, and four FIFO/wide native GDB/VCD smokes pass. Frozen Rust
+hash remains 1d71cc5a26b64e78e6b89d0a49823b426cba859e. AST-only graph refresh
+finishes with 5297 nodes, 15034 edges and 263 communities; known vendor partial
+parses/no-symbol warnings remain, no API/LLM extraction. Commit only the owned
+string transport, boundary/native tests, TODO and this string log tail, with
+sibling architecture/testing notes separately. Preserve unowned AGENTS, 441
+historical chat lines, .codex and backups. Full DWARF remains active at 97%,
+with subword/unaligned/partial/wide-basic ABI and formal/plane/grouping gaps
+still open. Next, run the isolated 12-byte Char/real diagnostic prepared under
+the disk-backed cache, not another concurrent verification job. No push.
+
+### 2026-10-09 — Codex — DWARF small aggregate return ABI
+
+String-return acceptance 3197327 passes; compiler commit 4638017 and sibling
+docs commit a8d7c02 are local, not pushed. Preserve unowned AGENTS/historical
+chat/.codex and the newly dirty sibling docs/language.md and docs/std.md. Own
+src/llvm/process/debug/inline_values.rs, src/llvm/process/tests.rs and
+tests/debug_info.rs for small aggregate native returns. First reproduce actual
+GDB finish for 12-byte Char/real structs in both field orders, independently
+of native results/VCD/DWARF validity. The isolated probe is under the disk-backed
+cache and job 3320655; reuse the existing return boundary and normalized copy
+helpers if evidence confirms the classifier/transport gap. Keep declaration
+types, consumer demand and canonical execution bits intact. Other full DWARF
+ABI/formal/plane/grouping requirements and independent IR defects stay open.
+Completion estimate remains 97%; no push.
+
+Probe 3320655 is terminal failed/1, peak 614154240 bytes. Ordinary/debug native
+assertions, VCD parity and DWARF verification pass, then GDB finish for Head
+tries to read 0x3bb (the Char code point) as a memory-return pointer. Tail finish
+returns gain=956.5/marker=0 instead of the captured gain=1.5/marker=955. The
+common classifier misses both small unaligned memory and mixed subword slots.
+Reuse the memory carrier for naturally unaligned source members, coalesce
+adjacent byte-aligned integer leaves into eightbytes, and make the common
+encoder/decoder advance by actual slot widths. Source types and canonical
+execution bits stay unchanged; normalized subword register/odd-basic/partial
+layouts remain separate open work.
+
+Probe 3330826 is terminal exited/success/0, peak 896786432 bytes: actual shared
+ABI unit, the isolated ordinary/debug native/GDB probe and strict Clippy pass.
+Head and Tail finish return every Char/real field correctly, including negative
+zero. Expanded focused job 3338044 passes the shared unit, permanent mixed
+native/GDB fixture and strict Clippy in default/bitpack (peak 905814016 bytes).
+Final focused job 3347329 is terminal exited/success/0, peak 1121513472 bytes:
+the fixture additionally checks normalized unsigned[3]/real memory returns
+with a 9-byte source prefix/i67 payload, nested Char/real alignment, Char[2]
+tails and adjacent byte fields under both inline hints and packing modes. All
+transient returns and required settled negative/signed-zero cases remain
+mandatory. Unit coverage includes 8/16/32-bit leaves, coalesced i16/i48 slots,
+small memory signatures and exact canonical widths. Update TODO and sibling
+architecture/testing notes, then freeze Rust for full acceptance before commit.
+The sibling documentation work has since advanced to 0d180aa and its tracked
+files are clean; preserve that agent's changes. No push by this agent.
+
+Full acceptance runs in siox-job-3000-1791537618095772700-3360896.service,
+with retained stage logs under dwarf-small-return-acceptance-3360902. Rust is
+frozen at c7a8507a3ab3bfc08417939f5183fb27dbde0054. The service is confirmed
+running; formatting/artifacts/frontend-only checks, both complete suites and
+strict Clippy have passed. All four corpora, native GDB/VCD smokes and AST-only
+graph refresh still need terminal success before commit. Do not restart this
+live handle or edit Rust while the gate is running. Full DWARF remains active;
+preserve remaining ABI/formal/plane/grouping gaps and unrelated work. No push.
 ### 2026-10-09 — Claude — bit methods; function bodies with loops in hardware
 
 Owner-requested: Rust's integer methods on `unsigned`/`signed` (`count_ones`,
@@ -13669,6 +15775,149 @@ Process path (`lower_process_raw_resize`, named conversion).
 **Codex:** touches `inline_block` (now a wrapper over `inline_block_body`),
 `inline_effects`, `source_bindings.rs`, `expressions.rs`.
 
+### 2026-10-09 — Codex — merge main integer-method updates
+
+Owner requested pulling main. Merge origin/main ad5e9d6 (PR #41) into local
+main without rebasing or discarding the existing DWARF commits. Own the merge
+conflict in src/ir/lower/calls.rs: preserve source-local debug capture alongside
+Claude's function-local reassignment, constant loops and return-free branches.
+Retain both agents' coordination entries. Shared uncommitted chat is saved in
+a named stash and will be restored after the merge; AGENTS, TODO, unfinished
+LLVM/debug tests and .codex remain untouched. Verify the combined worktree
+through the guarded runner before committing only the merge. No push.
+
+Pull verification 3443382: formatting, frontend checks, build and strict Clippy
+pass. Default 536 units and bitpack 515 units pass, but both integration suites
+stop at bit_methods_agree_in_hardware_and_testbench: hardware output is correct;
+the native testbench fails with "direct Process IR lowering is incomplete for
+process 1 block 5". Ordinary corpora are still running. The merge is resolved
+but intentionally uncommitted: the house-rule acceptance gate is not green.
+All 492 pre-existing uncommitted chat lines have been restored without staging
+them; a named backup ref retains the chat stash. Unfinished LLVM/debug Rust
+diff remains c7a8507a3ab3bfc08417939f5183fb27dbde0054. No push. Asked the owner
+whether to investigate/fix this additional integration failure or leave the
+merge pending; no unrelated fixes or goal-status changes made.
+
+Goal continuation: merge gate 3443382 is now terminal failed/1, peak
+1612636160 bytes. Both ordinary corpora pass 228/0; both integration suites
+stop at the new integer-method fixture. The debug corpora/GDB smokes were
+not run because CI-local failed. Keep the full implement-DWARF goal active,
+not blocked by this first compatibility failure. Run the isolated ordinary/
+debug native probe and inspect the failing Process block before choosing any
+fix; no feature deletion or relaxed native assertions. Preserve pending
+merge staging and all other agents' unstaged work. No push.
+
+Probe 3488295 is terminal failed/1, peak 1113874432 bytes: the new methods'
+native ordinary/debug behavior fails identically, with valid DWARF. Sequential
+calls isolate rotate_right after rotate_left succeeds. Inspection 3495801 and
+3499019 shows CFG normalization correctly replaces the deferred rotate_left
+call by a concrete i8 local, but rebuilds the enclosing InlineCall with its
+old unknown width. LLVM consequently rejects the print block. Own the shared
+normalization rebuild in source_processes/cfg_calls.rs; reuse source_value_width
+only for a previously unknown native width, preserving known consumer widths.
+The existing integer-method fixture is the regression. This is merge
+compatibility work, not a new loop interpreter or relaxed support check.
+
+The same terminal probe 3499019 reproduces the next DWARF return-ABI gap:
+ordinary/debug native assertions, VCD parity and DWARF validity pass, while
+GDB finish on Pair { unsigned[3], unsigned[3] } returns 29/84 for 5/3, and
+Mixed { real, unsigned[3], unsigned[3] } returns zero fields. Those complete
+sub-byte layouts need normalized register packing without changing canonical
+execution bits or declaration types. Retain remaining formal/plane/grouping/
+wide/partial work and independent IR defects. Full DWARF stays active; no push.
+
+Focused merge-compatibility gate 3501893 is terminal exited/success/0, peak
+1409806336 bytes: both new integer-method tests pass in default and bitpack,
+with strict all-target/all-feature Clippy. Full acceptance is still required
+before finalizing the merge. Own src/llvm/process/debug.rs, debug/inline_values.rs,
+functions.rs and the existing boundary/native tests for normalized sub-byte
+register returns. Reuse the common return classifier/codecs and signed-layout
+metadata; register the exact source-layout packing plan only on final native
+functions, not deleted drafts. Encode/decode fields in SSA while preserving
+canonical payload widths and declared DI types. No executable inspection-buffer
+reads, additional runtime services, dependencies or wrapper pipeline. Keep the
+previous small-return changes separate from the upstream merge's staging.
+
+Pull handoff: focused return gate 3526398 is terminal failed/101, peak
+94760960 bytes. Signed sub-byte pairs, real tails and nested structs pass GDB
+finish; the new array fixture creates three source-return locations and fails
+the complete-array finish assertion. Preserve that assertion and investigate
+demand-preserving aggregate grouping separately; do not claim complete array
+support. To finish the owner's main pull, temporarily save only the unfinished
+DWARF source/tests and TODO changes, verify the resolved upstream merge plus
+its shared width-propagation fix against the committed DWARF baseline, then
+restore every saved edit. Foreign AGENTS/chat/.codex and sibling docs remain
+untouched. Full DWARF goal remains active. No push.
+
+Merge audit: compare the staged tree with a fresh git merge-tree result,
+not just the previously resolved index. That audit found additional upstream
+local-type scope, packed-local element assignment, generic-conversion/range
+inference and regression-test hunks absent from the prior resolution. Explicitly
+stop gate 3534787 before changing Rust; its partial successes are not full
+acceptance. Own restoring those incoming hunks in ir/lower.rs, collect.rs,
+calls.rs, expressions.rs, source_bindings.rs, source_processes.rs and
+tests/bit_methods.rs, keeping the existing tuple return/debug local capture.
+Re-run the complete frozen merge gate. Preserve all unrelated saved work.
+
+Audit clarification: origin/main advanced concurrently via fetch -q at 12:26
+local time to 802d1e3, PR #42 (4fe0b2c), while the original MERGE_HEAD still
+named PR #41's ad5e9d6. The apparent omissions were the newly landed follow-up,
+not deleted hunks from the original PR. The fresh merge-tree comparison now
+covers both upstream PRs. Advance MERGE_HEAD conditionally from ad5e9d6 to
+802d1e3 (a verified descendant) so the merge records the complete incoming
+history. Frozen source hash is 06b45be85f9314a505fbdb3f3d8908d4a3cf72a07919e06324b57322ebcd934d.
+Guarded acceptance 3569194 verifies this complete tree. No Rust edits while it
+runs, no foreign work staged, and no push.
+
+Complete pull acceptance 3569194 is terminal exited/success/0, peak
+1612779520 bytes. Formatting/artifacts/frontend checks, 536 default and 515
+bitpack units plus complete integrations (three upstream bit-method tests and
+eleven committed DWARF fixtures in each mode), strict all-feature Clippy,
+four 228-program corpora and four native FIFO/wide GDB/VCD smokes pass.
+Commit only the merge of origin/main 802d1e3 (PRs #41/#42), preserving the
+existing source debug tuple/local capture and shared unknown-width inference.
+Restore the six saved unfinished DWARF/TODO files byte-for-byte afterward;
+their new complete-array finish regression remains failing and uncommitted.
+Keep foreign AGENTS, historical chat and .codex untouched, refresh the AST-only
+graph, and retain backup refs. Full DWARF goal remains active. No push.
+
+Pull result / DWARF handoff: local merge d13932e has parents 4638017 and
+802d1e3; only upstream PRs #41/#42, their debug-aware conflict resolution,
+shared unknown-width fix and this merge log were committed. The six saved
+DWARF/TODO files match their named backup blobs exactly after restoration;
+492 earlier uncommitted chat lines and foreign AGENTS/.codex remain unstaged.
+AST-only graph gate 3677450 is terminal exited/success/0, peak 177651712 bytes,
+with 5322 nodes / 15148 edges / 242 communities. No LLM naming or dependency
+changes. Separately, origin/main advanced via another fetch to c3ffa01 while
+acceptance was running: PR #43 Debug formatting and PR #44 std::mem are not
+yet merged locally. Review/integrate that newer snapshot before touching
+overlapping lowering work; do not claim main is fully current. Full DWARF
+remains roughly 97%, with the preserved packed-array finish regression and
+formal/plane/grouping/remaining ABI tasks still open. No push.
+
+### 2026-10-09 — Codex — DWARF complete-array return continuation
+
+Previous goal turn made progress: merge d13932e and guarded full acceptance
+3569194 are complete, and all saved unfinished return work was restored exactly.
+Continue the full DWARF goal, not just the passing ABI subset. First integrate
+the newer known main snapshot (PRs #43/#44) while preserving foreign chat and
+AGENTS plus the unfinished debug source/tests. Own any overlapping lowerer
+merge and debug/inline_values aggregate grouping/boundary work. Trace why the
+new SubArray finish fixture creates three native returns before choosing the
+shared fix. No assertion relaxation, fabricated pruned fields, eager checked
+effects, extra execution wrapper or inspection-buffer reads. Preserve remaining
+formal/plane/wide/partial requirements and run guarded native tests. No push.
+
+Array probe 3687478 is terminal exited/success/0, peak 861675520 bytes:
+native simulation and DWARF validation pass, while the three retained array
+fields contain two nested std::bits::add boundaries. The purity gate excludes
+all InlineCall nodes, so those fields never share a complete native return.
+Extend pure nested grouping only after proving every use crosses a joint-demand
+value; independently selected fields and separate execution roots must reject
+the group. Reuse the existing Process instruction/terminator operand walkers
+(crate-private visibility only in ir/process.rs), not a second root catalogue.
+Checked/effectful bodies and partial layouts remain excluded. Keep source call
+frames and exact canonical bits; add a small joint-demand proof regression.
 ### 2026-10-09 — Claude — `{:?}` Debug placeholders
 
 Branch `feat/debug-format`: `FormatKind::Debug` (`?`). `lower_format_value`
@@ -13676,6 +15925,111 @@ skips the `Display` impl and quotes strings/characters; the runtime's
 `sx_runtime_format_notation` flags gain bit 2 (a Debug real keeps `.0`).
 **Codex:** touches `lower_format_value`, `llvm/process/instructions.rs`
 format notation flags, `runtime/process.c` real formatting.
+
+### 2026-10-09 — Codex — DWARF selector proof review
+
+Previous goal turn was a verified wait: focused gate 3789957 is now terminal
+exited/success/0, peak 1603293184 bytes. Joint-demand units and actual mixed/
+sub-byte array GDB finish pass in default and bitpack; upstream Debug/mem
+integrations and strict all-feature Clippy pass. Own the existing debug return
+batch and crate-private operand walker visibility in ir/process.rs. Keep the
+constant selector proof local to debug code instead of broadening mathematical
+IR constant evaluation for this feature. Add dynamic whole-value versus split
+field demand, invalid checks and wrapping-selector rejection coverage, then
+freeze the combined pending merge/return tree for full acceptance. Preserve
+foreign AGENTS/chat/.codex changes and the remaining formal/plane/partial ABI
+requirements. No push.
+
+Return review gate 3822665 is terminal exited/success/0, peak 1610870784
+bytes. The selector proof is now debug-local; no new mathematical IR folding
+behavior remains. Joint-demand units cover valid/invalid checks, unknown runtime
+conditions, split fields, separate function roots and unsupported signed/
+arithmetic selectors. Actual native/GDB finish passes complete sub-byte arrays
+consumed in opposite orders on selected branches in both packing modes and
+both inline hints. Strict Clippy passes. TODO and current sibling documentation
+now distinguish this support from the remaining effectful/checked/partial,
+formal-type, plane and basic-scalar ABI work. Freeze Rust for full acceptance
+of the pending c3ffa01 merge plus owned return batch. origin/main has since
+advanced to 52d7c49 (PR #45); that later snapshot is not part of this frozen
+gate and is not claimed merged. No push.
+
+Full gate 3836471 is live; stage logs are retained under
+/home/max/.cache/siox-jobs/tmp/dwarf-register-return-acceptance.LenW0R.
+Frozen source/runtime/std/test/script hash is
+2c5575e045066f9cbcd32d63bb25c529bae306e1bafb5d6114bf07a990fb8613.
+It runs CI-local, both debug corpora, native FIFO/wide GDB/VCD smokes and an
+AST-only graph refresh. Re-poll this exact service after an interruption;
+do not restart it or edit Rust before it is terminal. The pending merge and
+owned return changes are not yet committed; all foreign changes remain intact.
+
+Read-only next-gap audit: inline_source_operator deliberately keeps scalar
+operands out of executable SourceShapeFrame.values to avoid recursive operator
+dispatch. It retains their shapes only in return_shapes, while
+inline_source_function takes formal inspection layouts from source_bound_layout.
+The retained array probe's LLVM confirms std::bits::add self/rhs appear as
+anonymous bits[3]/bits[1]/bits[2], not the declared Self specialization. Next
+verify this on current emitted metadata/GDB and transport declaration-owned
+formal layouts separately from executable shape lookup. Do not put packed
+operator operands into execution shape frames as a debugger fix. Suffix/From/
+generic signatures and other planes still require their own audits.
+
+Continuation audit: 3836471 remains live with both full test suites, strict
+Clippy and the 228-program ordinary corpus passing. The staged c3ffa01 merge
+matches a fresh merge-tree result for every non-chat file; only the expected
+chat union differs. Sibling siox-paper commit fea7bb0, made concurrently by
+another agent, already includes the owned architecture/testing DWARF updates
+alongside its language change. Its worktree is clean; preserve that history
+and do not create a duplicate documentation commit. Clarification for the
+formal audit: bits.siox declares `rhs: unsigned` (an unsized family), not
+literally Self. The next inspection must distinguish explicit Self, an unsized
+family's actual argument width, and concrete declaration types. All seven
+inline_source_function call sites (including suffix, From and Resolve) need
+review before changing its metadata fallback. No Rust edits during the gate.
+
+### 2026-10-09 — Codex — Debug and mem merge acceptance
+
+Guarded acceptance 3836471 is terminal exited/success/0, peak 1612554240
+bytes. The frozen tree passes formatting/artifact/frontend checks, 537 default
+and 516 bitpack units, all integrations including eleven DWARF fixtures in
+each mode, strict Clippy, four 228-program corpora and four FIFO/wide native
+GDB/VCD smokes. Its source hash remains
+2c5575e045066f9cbcd32d63bb25c529bae306e1bafb5d6114bf07a990fb8613.
+The staged upstream c3ffa01 merge matches merge-tree outside the expected chat
+union. Commit PRs #43/#44 first, then the separately owned normalized-return
+and pure nested-call grouping batch. Keep the 441 historical chat insertions,
+foreign AGENTS/.codex changes and later origin/main 52d7c49 outside these
+commits. AST-only refresh succeeds: 5334 nodes, 15174 edges, 245 communities;
+known vendored C extraction warnings remain. Full DWARF remains active with
+formal types, companion planes, checked/effectful/partial returns and remaining
+basic/mixed ABI layouts still open. No push.
+
+### 2026-10-09 — Codex — normalized aggregate return acceptance
+
+Merge b705a5e records only upstream PRs #43/#44 and its acceptance log.
+Commit the separately owned small/sub-byte return ABI and complete pure nested
+aggregate grouping now, under the same successful frozen gate 3836471. The
+source codec preserves exact canonical payloads, while signed byte padding and
+SysV slots describe the native source return. Joint-demand analysis reuses
+Process execution-root walkers and does not alter general IR constant folding.
+The eleven native DWARF fixtures in both packing modes include the expanded
+GDB finish cases, selected array order, signed fields and signed zero. Keep
+the full goal active: the next probes cover declaration-owned operator/suffix/
+conversion formals and small arrays with struct strides not divisible by their
+natural alignment, alongside remaining checked/effectful/partial and plane
+work. The docs are already included in sibling fea7bb0. No push.
+
+### 2026-10-09 — Codex — DWARF formal and alignment continuation
+
+Previous goal turn completed guarded acceptance 3836471 and local commits
+b705a5e / 17670d2. Before touching operator/formal lowering, integrate the
+known newer main snapshot 52d7c49 (PR #45: remainder, body-sized array returns,
+Logic equality and composite format remapping). Own overlapping IR/lowerer
+merge resolution, then the declaration-owned formal inspection path and the
+small struct-array return-alignment probe. Preserve all upstream semantics and
+debug metadata; audit the merge against merge-tree. Save only shared chat
+changes to a named backup during the merge, restore them afterward, and retain
+foreign AGENTS/.codex plus the 441 historical chat insertions. No push; full
+DWARF remains active.
 
 ### 2026-10-09 — Claude — `%` (core `Rem`), unsized vector returns
 
@@ -13698,6 +16052,1050 @@ Owner-requested, branch `feat/rem-operator`.
 **Codex:** touches syntax lexer/parser/ast, both IR BinOp enums, llvm
 `process/binary.rs`, `cfg_calls.rs` Runtime normalization, `calls.rs`.
 
+Formal/alignment probe 3964496 finished failed/1 only at the probe's premature
+function-entry parameter assertion; both sets of six upstream bit-method tests
+and eleven DWARF tests passed, as did ordinary/debug native assertions, VCD
+parity and DWARF verification. Corrected source-return stop 4053542 is terminal
+exited/success/0, peak 64843776 bytes: GDB decodes the complete 10-byte array
+of five-byte structs correctly through the existing i80 return. Do not change
+the ABI classifier based on the unconfirmed stride hypothesis.
+
+Current IR/LLVM does confirm the formal-type gap: std::bits::add self/rhs have
+no inspection layouts and become anonymous bits. Own source_bindings.rs and
+the seven inline_source_function call sites for explicit inspection-only
+parameter shapes plus concrete declaration fallback. Preserve the operator's
+kernel execution shapes and argument widths; specialize an unsized packed
+formal using its existing operand width and std-owned family/element metadata.
+Keep the pending PR #45 merge staged separately from this DWARF work. No push.
+
+### 2026-10-09 — Codex — formal-type debugger evidence
+
+The previous status-only turn made no implementation progress. Revalidated
+failed job 4067539, then probes 4077036 and 4077433 both exited/success/0.
+The live IR and DWARF already retain Packed unsigned[8] for both add formals;
+GDB's C++ type-name canonicalization displays unsigned int [8], still an
+integer type of one byte, not an array. The RHS literal is context-sized to
+the LHS width by literal_aware_width, independently of its canonical i1 node.
+Correct the test's spelling/width assumptions rather than alter sound metadata.
+Continue owning source_bindings/source_operators and their call sites for
+declaration-owned parameter coverage, including suffix and conversion probes.
+Preserve the separately staged PR #45 merge and foreign edits; no push.
+
+### 2026-10-09 — Codex — declaration-owned formal coverage
+
+Guarded 4078429 exited/success/0 (peak 996810752 bytes): all eleven DWARF
+fixtures and six upstream bit-method fixtures pass in default and bitpack,
+strict all-target/all-feature Clippy passes, and the separate struct-array
+probe passes native assertions, ordinary/debug VCD parity, DWARF verification
+and real GDB finish. Expanded hardware formal checks also pass in both modes
+under 4085857 and 4091082: integer/real suffixes, integer conversion formals,
+signed constrained/generic parameters and a custom packed rhs declared Self.
+Preserve contextual packed widths separately from kernel execution shapes;
+resolve the packed Self family using the receiver. GDB's C++ display inserts
+spaces/canonicalizes unsigned, so assert integer type codes and byte sizes as
+well as normalized names. Own docs/architecture.md and docs/testing.md in
+the sibling siox-paper checkout for this metadata rule and tested coverage.
+Full acceptance and the pending PR #45 merge commit remain to be completed.
+
+Frozen acceptance is now running as
+siox-job-3000-1791569541440237695-4093523.service; poll this exact unit rather
+than relaunching it. Log: /home/max/.cache/siox-jobs/siox-job-3000-1791569541440237695-4093523.log;
+per-stage evidence: /home/max/.cache/siox-jobs/tmp/dwarf-formal-acceptance.w61rHz.
+Source hash: 3f9659c19c30c90c66c423a49c80507ede69bb34f46996b0221239f8ac9374ca;
+corpus HEAD remains 05278a8d5f31a626ef393ff5a435f12519d6c818 (clean).
+The gate runs CI-local, both debug corpora, native GDB/VCD smoke and AST-only
+graph refresh. Do not edit Rust while it is live. Staged PR #45 still matches
+merge-tree e0f8f03f outside chat; own DWARF edits remain unstaged. Preserve the
+441 foreign historical chat insertions and foreign AGENTS/.codex changes.
+
+### 2026-10-10 — Codex — PR 45 merge acceptance
+
+Guarded acceptance 4093523 is terminal exited/success/0, peak 1612705792
+bytes. Frozen source hash 3f9659c19c30c90c66c423a49c80507ede69bb34f46996b0221239f8ac9374ca
+is unchanged. Formatting, artifact/frontend checks, 537/516 default/bitpack
+units, all integrations (eleven native DWARF fixtures per mode), strict Clippy,
+four 228-program corpora and four native FIFO/wide GDB/VCD smokes pass.
+AST-only refresh succeeds with 5355 nodes, 15255 edges and 249 communities;
+known vendored C/header partial extraction warnings remain. Staged PR #45
+snapshot 52d7c49 matches merge-tree outside chat. Commit that captured merge
+first, then the separately owned declaration-formal batch. Keep later main
+updates, foreign AGENTS/.codex and 441 historical chat insertions outside these
+commits. Full DWARF remains active; no push.
+
+### 2026-10-10 — Codex — formal inspection acceptance
+
+Merge 5d68493 contains only captured PR #45 and its acceptance record.
+Commit the declaration-owned formal inspection changes under the same frozen
+successful gate 4093523. Native parameter formats are unchanged; packed
+operators carry contextual inspection widths/families independently from
+kernel-word dispatch. GDB checks actual constrained/generic, suffix/conversion
+and custom packed Self parameter values, alongside the mixed-return operator
+type regression. Sibling architecture/testing docs describe this separation
+and the remaining Resolve/composite-conversion audit. Next: retain known
+receiver/source/target layouts in Resolve and From without changing execution
+shapes, and verify actual native values/return boundaries. Full goal stays
+active with companion-plane, demand and remaining ABI requirements. No push.
+
+### 2026-10-10 — Codex — Resolve and conversion signatures
+
+The completed acceptance is recorded in 5d68493/be27dc2 and sibling docs
+6b07786; no verification job remains live. Own source_bindings.rs, layout.rs,
+calls.rs, resolution.rs and source_operators.rs for receiver/source/target
+inspection metadata. SourceShapeFrame.return_layout also governs return
+lowering, so a debugger-only concrete return must not replace it. Extend the
+existing inspection override with a result layout, reuse stored nominal layouts
+and enum representation tables, and pass known resolved signal layouts at
+Resolve boundaries. Keep executable kernel shapes and source dependencies
+unchanged. Test actual custom Resolve formals and From return values/ABI;
+unsized fixed-family conversions retain their caller-known formats. Preserve
+foreign edits and leave later upstream snapshots for a separate merge. No push.
+
+Resolve/From metadata builds and the prior hardware fixture pass (459).
+Expanded probe 7280 exposed sum=-2 for two enum High=1 inputs. Isolated ordinary
+native probe 8920 also fails sum>0 without DWARF; record that independent
+kernel-width/carry defect under IR rather than change execution for debugging.
+Use direct enum equality for the Resolve type/value regression. Also own
+llvm/process/debug/inline_values.rs: earlier function-entry evidence shows
+reference setup advertised as a source stop before parameter initialization.
+Mark inspection-only entry instructions line zero and assert live values at
+function-name breakpoints, not just their types. Keep body/source locations.
+
+### 2026-10-10 — Codex — signature and entry-stop probe acceptance
+
+Guarded 15426 exited/success/0 (peak 1085063168 bytes): all eleven DWARF
+fixtures pass in default and bitpack, strict all-target/all-feature Clippy
+passes. Hardware native/GDB coverage now exercises every custom-enum Resolve
+input pair, Count's Self return as a real struct, and ufixed source/target
+formats through actual finish values. Function-name stops read live std/custom
+operator and fixed-family parameters after line-zero reference/native-input
+setup. SourceCallInspection is metadata-only; executable return shaping remains
+on SourceShapeFrame. Update owned sibling architecture/testing docs and freeze
+the batch for full acceptance. Remaining audits include non-enum Resolve and
+composite/generic conversions, plus packed formal companions whose range is
+unknown: the current logic view cannot decode source-labelled elements without
+that range and must not advertise an ordinary binary value as an enum view.
+
+Frozen full acceptance is running as
+siox-job-3000-1791627693396275021-26023.service; re-poll this exact handle.
+Log: /home/max/.cache/siox-jobs/siox-job-3000-1791627693396275021-26023.log;
+stages: /home/max/.cache/siox-jobs/tmp/dwarf-signature-entry-acceptance.6H6M4p.
+Source hash: af23eb84dad8c29eac292c7bc93d573be9b8bfd7019580591e4653fda86bab4d.
+Corpus checkout is still clean at 05278a8d5f31a626ef393ff5a435f12519d6c818.
+The source/entry batch and its sibling docs are uncommitted pending this gate;
+do not edit Rust while it runs. Previous committed baseline is be27dc2, with
+captured upstream merge 5d68493 and sibling docs 6b07786. Keep the 441 foreign
+historical chat lines plus AGENTS/.codex outside any commit. No push; full
+DWARF goal remains active.
+
+### 2026-10-10 — Codex — signature and entry-stop full acceptance
+
+Guarded 26023 is terminal exited/success/0 (peak 1612611584 bytes).
+Frozen source hash af23eb84dad8c29eac292c7bc93d573be9b8bfd7019580591e4653fda86bab4d
+is unchanged. Default/bitpack full tests (eleven native DWARF fixtures each),
+frontend/artifact checks, strict Clippy, four 228-program corpus runs and four
+FIFO/wide GDB/VCD smokes pass. AST-only refresh completes with 5357 nodes,
+15262 edges and 243 communities; existing vendored C extraction warnings remain.
+Commit only the owned signature/entry batch and sibling architecture/testing
+documentation. Keep foreign AGENTS/.codex and 441 historical chat lines out.
+Next own llvm/process/debug/logic.rs, inline_values.rs and tests/debug_info.rs
+for range-less packed companion inspection: retain declared source ranges,
+distinguish physical bit positions when no range is known, and only normalize
+fully known literals, never manufacture discarded values or metadata planes.
+Full DWARF remains active; no push.
+
+### 2026-10-10 — Codex — range-less logic companions
+
+Compiler signature/entry batch is committed as 1b5cc55; sibling docs as 3fac992.
+Guarded 334521 passed the native mixed-aggregate regression with range-less
+operator rhs companions checked at function entry. Physical LSB-first positions
+are exposed under $logic.bits, distinct from declared source index labels.
+Inspection constants now use LLVM arbitrary-width integers instead of the
+64-bit host helper. Full default/bitpack debugger fixtures and Clippy are
+running under 339513; its first --bin filter selected zero tests, so explicitly
+run the new constant unit through --lib before counting it as covered.
+Also own sibling architecture/testing docs and the TODO update for this batch.
+No change to runtime value dependencies or additional metadata-plane requests.
+
+Guarded 339513 is terminal exited/success/0 (peak 1195716608 bytes): eleven
+DWARF fixtures per packing mode and strict all-target/all-feature Clippy pass.
+The corrected library unit invocation 349086 also exited/success/0, actually
+running inspection_constants_preserve_full_words_and_negation (one passed,
+537 filtered). Freeze this batch for full acceptance. Source hash:
+6a8dbcba4d40b26f379ea76c1d408fa02e5398087533a619616d7dde8d02fe03.
+
+Full acceptance is live as siox-job-3000-1791647432524728332-351631.service;
+poll that exact unit, do not restart it or edit Rust while it runs.
+Log: /home/max/.cache/siox-jobs/siox-job-3000-1791647432524728332-351631.log.
+The gate runs CI-local, both debug corpora, native GDB/VCD smokes and AST-only
+graph refresh. Owned pending files are logic.rs, inline_values.rs, debug_info.rs,
+TODO and this chat tail; sibling architecture/testing docs are also pending.
+Keep foreign AGENTS/.codex and 441 historical chat lines outside commits.
+After acceptance commit this batch, then continue the remaining full DWARF
+requirements: non-enum Resolve/composite conversions, demand-preserving
+checked/effectful/partial aggregate boundaries, companion transports and ABI
+edge cases. No push or completion claim.
+
+### 2026-10-10 — Codex — next partial-return audit (read-only)
+
+351631 remains live; source edits are frozen. Traced the next concrete ABI
+gap: aggregate_returns deliberately leaves incomplete groups leaf-backed;
+source_return_type falls back to a direct leaf integer when the full declared
+layout width differs, but inline_body still describes the full result_layout
+in its subroutine type. Thus a partial native boundary can advertise a full
+aggregate ABI it does not implement. Existing risky_pair coverage proves the
+untaken abort leaf is not evaluated, but does not call GDB finish there.
+After the current gate, add a native/GDB partial-return probe to establish
+the actual failure, then preserve missing-field unavailability without making
+the pruned/effectful fields executable dependencies. This is source evidence,
+not yet a reproduced GDB result or a completed fix.
+
+For that audit, distinguish a real native whole-result boundary from a source
+inline frame over partial evaluation. GDB's current primary documentation
+states that inline frames support arguments/locals/step/finish, but finish
+cannot locate their return values:
+https://sourceware.org/gdb/current/onlinedocs/gdb.html/Inline-Functions.html
+Existing CFG debug frames already use inlined-at metadata in debug.rs. This
+is a possible metadata-only route for genuinely partial evaluations, not a
+decision to retag their source return type or add an execution wrapper. First
+reproduce the current leaf/full-result mismatch and test actual stepping,
+call counts and unavailable fields before selecting a representation.
+
+Prepared (not executed) the isolated reproduction in
+/home/max/.cache/siox-jobs/tmp/dwarf-partial-return-20261010/partial.siox
+and inspect.py. Its native assertions exercise retained positive/negative
+integer fields; the pruned right field calls abort. GDB checks the retained
+finish value and requires the discarded field to be unavailable. These scratch
+diagnostic files do not change the frozen compiler or corpus source. Run them
+under the next guarded job only after 351631 is terminal; do not overlap jobs.
+
+### 2026-10-10 — Codex — physical logic inspection acceptance
+
+351631 is terminal exited/success/0, peak 1610874880 bytes. The frozen source
+hash 6a8dbcba4d40b26f379ea76c1d408fa02e5398087533a619616d7dde8d02fe03
+is unchanged. Full default/bitpack tests, all eleven debugger fixtures each,
+strict Clippy/frontend/artifact checks, four 228-program corpora and four native
+FIFO/wide GDB/VCD smokes pass. Graph refresh: 5360 nodes, 15273 edges, 244
+communities; known vendored extraction warnings remain. Commit only the owned
+logic-view/constant changes, tests, TODO and this tail; sibling docs separately.
+No push. Next own inline_values.rs and debug_info.rs for the partial-return
+native/GDB reproduction and demand-preserving fix. The scratch probe now tests
+both left-only and right-only returns with an abort in the discarded field.
+
+### 2026-10-10 — Codex — reproduced partial-return ABI mismatch
+
+Committed accepted logic batch 77289f4 and sibling docs e70e171. Guarded
+604985's ordinary/debug executables and VCD parity passed, as did dwarfdump;
+GDB failed exactly the partial-result assertions. Left-only finish returned
+{left=6,right=<register garbage>}; right-only returned {left=7,right=<garbage>}
+instead of retaining right=7. Negative inputs reproduce the same mismatch.
+Own inline_values.rs, its inline_body callers and debug_info.rs to represent
+un-grouped aggregate leaf evaluation as an actual inline source frame, not
+a native full-result ABI. Reuse fragmented bindings for a $return view with
+only the retained field available. Preserve source types, lazy/checked/effectful
+execution, source call sites and ordinary/debug native parity; do not fabricate
+full values or add a second execution wrapper. Keep the full objective open.
+
+Native/GDB probe 605193 passed assertions, VCD parity and dwarfdump after the
+metadata change. Corrected snapshot script 605780 passed all four actual
+left/right positive/negative cases: $return and caller pair retain only the
+demanded field; finish emits no invented whole result. 605859 exposed an
+over-broad classification of complete one-field wrappers; retain their native
+ABI when a leaf covers the whole inspection layout. Rerun 607977 passes all
+twelve default debugger fixtures and is continuing with bitpack/Clippy.
+Own sibling architecture/testing docs and TODO for this distinction. Missing
+fields remain unavailable, and whole-value demand grouping is still separate
+unfinished work; this fix does not claim an eager full return for partial calls.
+
+607977 exited/success/0 (peak 1010147328 bytes): all twelve debugger fixtures
+pass in default/bitpack and strict Clippy passes. Expanded mixed integer/real
+partial-return coverage then passed in both modes under 612524, also with
+strict Clippy (peak 985427968). The fixture covers both retained positions,
+positive/negative data, all four caller/callee inline settings, real native
+assertions/VCD parity and actual GDB fragment/caller values and call counts.
+The baseline and fixed isolated executables each have six text symbols named
+sx.debug.call.*; the extra two symbols are inspection buffers, not functions.
+Freeze source hash 9906359b3b53698b41228b882786feb09387573f5060d6c5b7ba916e3f7bc4ec
+for full acceptance. The corpus checkout remains clean at 05278a8d; later
+upstream compiler/corpus updates are not silently mixed into this batch.
+
+Full acceptance is live as siox-job-3000-1791668289212278393-614815.service.
+Log: /home/max/.cache/siox-jobs/siox-job-3000-1791668289212278393-614815.log.
+Poll this exact unit; no Rust edits or overlapping heavy jobs while it runs.
+Owned pending code: inline_values.rs and debug_info.rs, plus TODO/chat and
+sibling architecture/testing docs. Preserve foreign AGENTS/.codex and 441
+historical chat insertions. Commit only after terminal success and hash check.
+Latest committed baseline is 77289f4 (docs e70e171). Full DWARF still needs
+demand-preserving aggregate grouping, remaining signature/companion transport
+and ABI audits; do not equate the partial-view fix with full completion.
+
+While 614815 runs, prepared narrow.siox beside the isolated partial probe.
+It consumes only eight bits from a partial integer return, using 256 and -257
+inputs. The numeric inspection path fits captured values to declaration width,
+whereas RawResize normally emits its operand at the natural width first;
+source inspection alone does not prove this case loses bits. After acceptance,
+run native/GDB checks before deciding whether another fix is needed. The scratch
+probe is not part of the frozen hash and has not yet been executed.
+
+### 2026-10-11 — Codex — partial-return full acceptance
+
+614815 is terminal exited/success/0, peak 1611063296 bytes. Source hash
+9906359b3b53698b41228b882786feb09387573f5060d6c5b7ba916e3f7bc4ec is unchanged.
+All full default/bitpack tests, twelve debugger fixtures per mode, strict Clippy,
+frontend/artifact checks, four 228-program corpora and four FIFO/wide native
+GDB/VCD smokes pass. Graph refresh completed with 5361 nodes, 15276 edges and
+238 communities; existing vendored extractor warnings remain. Commit the owned
+partial source-frame/return-fragment batch and its sibling docs only. Preserve
+foreign AGENTS/.codex and 441 historical chat lines; no push. Next run the
+prepared narrow-consumer diagnostic, then continue the remaining full goal.
+
+### 2026-10-11 — Codex — conversion and Resolve signature follow-through
+
+Previous turn verified terminal evidence rather than changing code: composite
+probe 733670 exited/success/0, including ordinary/debug native assertions,
+VCD parity, dwarfdump and actual GDB mixed integer/real From results. Narrow
+partial-consumer probe 726604 and signed Number Resolve probe 729353 also
+passed; neither needs a speculative compiler fix. Generic From probe 730722
+was rejected by the ordinary frontend before DWARF, so it is not evidence of
+a debugger regression or supported generic-constructor coverage.
+
+Own tests/debug_info.rs and TODO for permanent supported-signature coverage,
+then audit packed return companion transport in the existing shared debug
+emitter. Keep foreign AGENTS/.codex and historical chat edits untouched.
+No verification job is running. Full aggregate grouping and remaining ABI /
+companion audits stay open; no push or completion claim.
+
+Signature regression 740137 passed default/bitpack, both inline hints. Packed
+nested-return probe 743828 passed actual stops/call counts: the numeric-only
+echo frame correctly has unavailable logic companions; its consuming caller
+retains all source states once metadata is used. The first probe script used
+closing-brace lines and stopped nowhere; it is not debugger-coverage evidence.
+
+Odd-sized aggregate probe 744962 passes native execution/VCD/dwarfdump but GDB
+finish errors on a three-byte unsigned[17] field's alignment. Primary GDB source
+(gnu.googlesource.com/binutils-gdb, gdb/amd64-tdep.c and gdb/gdbtypes.c) confirms
+both unknown non-power-of-two alignment and unsupported basic integer classes.
+Own debug.rs / debug/inline_values.rs metadata and tests to use the existing
+inline source-frame representation for unsupported small aggregate return ABIs.
+Keep original source types and native payloads; expose the already-computed
+whole result at its return point, not a fabricated native history value or an
+extra wrapper. Do not claim to fix GDB's arbitrary-width scalar classifier.
+
+Odd-return reproduction 753379 passed actual GDB snapshot/finish/caller values,
+native assertions, VCD parity and dwarfdump after using nullable entry-owned
+inspection references. A direct global dbg.declare had no machine location;
+reuse the local reference mechanism instead. The permanent fixture additionally
+rejects stale snapshots on repeated entry. GDB's C++ canonical spelling expands
+`unsigned` to `unsigned int`; compare source field/formal types directly. Finish
+can stop before the caller assignment has completed, so the test observes its
+normal capture before checking that binding (without forcing any computation).
+
+763747 is terminal exited/success/0, peak 770306048 bytes. The odd-sized fixture
+passes for 17/33/65/81-bit fields plus an 8-bit sibling, both inline hints and
+procedural/hardware callers. All fourteen bitpack debugger fixtures and strict
+all-target/all-feature Clippy pass. Default suite 759913 had thirteen passes
+and only the overly-early caller inspection failure; the corrected default
+odd-sized fixture now passes. Full acceptance must rerun both complete suites.
+The packed fixture now includes nested numeric/metadata return transport with
+exact call counts and GDB finish values; signature probes are permanent too.
+
+Freeze source hash f4cb8c6adf987acca81023475287ae9344eaace106c71f773d0ef5f374a4b9a4
+for acceptance. Corpus remains clean at 05278a8d; do not mix moving upstream
+into the batch. Own sibling architecture/testing doc additions alongside TODO.
+Remaining full-goal work still includes demand-preserving grouping of checked,
+effectful and independently selected partial/nested aggregates, other supported
+signature/metadata-plane transports, and native return ABI audits. No push.
+
+Full acceptance launched as siox-job-3000-1791709835673167633-770600.service.
+Log: /home/max/.cache/siox-jobs/siox-job-3000-1791709835673167633-770600.log.
+Poll this exact service until terminal; no Rust edits or overlapping heavy jobs.
+Pending owned compiler files: debug/inline_values.rs, tests/debug_info.rs, TODO
+and this appended chat tail. Sibling docs: architecture.md and testing.md.
+Preserve foreign AGENTS/.codex and 441 historical chat insertions. Commit only
+after full terminal success and unchanged source hash; the goal remains active.
+
+### 2026-10-11 — Codex — odd-return / signature full acceptance
+
+770600 is terminal exited/success/0, peak 1610874880 bytes. Frozen source hash
+f4cb8c6adf987acca81023475287ae9344eaace106c71f773d0ef5f374a4b9a4 is unchanged.
+Full default/bitpack suites, fourteen debugger fixtures per mode, strict Clippy,
+frontend/artifact checks, four 228-program corpora and four native FIFO/wide
+GDB/VCD smokes pass. AST graph refresh completed: 5363 nodes, 15284 edges,
+251 communities, with existing vendored extractor warnings. Commit only the
+owned inline-frame/snapshot change, signature/packed/odd-sized regressions,
+TODO and appended chat tail; sibling architecture/testing docs separately.
+No push. Next own aggregate_returns / joint_aggregate_demand and their callers
+for checked/effectful source boundaries, after tracing actual evaluation order.
+The full DWARF objective stays active.
+
+### 2026-10-11 — Codex — checked/effectful aggregate ordering
+
+Own debug/inline_values.rs aggregate_returns / joint_aggregate_demand and
+tests/debug_info.rs for the next DWARF batch. First reproduce foreign-call
+and checked-index aggregate field evaluation order in ordinary/debug binaries;
+only group when executable demand and observable ordering are preserved.
+Division is total in the common emitter, so its conservative exclusion also
+needs review. Preserve foreign AGENTS/.codex and historical chat insertions.
+No guarded job is running; HEAD a2cd7bf is the verified baseline. No push.
+
+The changing-input native probe exposes a shared DWARF function-cache bug:
+compatibility hardware emission builds a body with captured foreign calls,
+then procedural CFG emission reuses it despite having a different execution
+context. Foreign results become stale after the input changes. Own debug.rs
+cache-key typing as well: separate native specializations by that existing
+emitter flag rather than introducing execution wrappers or a new runtime.
+An independent ordinary-build probe also latches aggregate-return array checks
+from an untaken hardware call; record that lowering gap rather than claim it
+is a DWARF-only regression. Current probes use valid initial indices for parity.
+
+Focused regression 1127794 passed the order/demand unit, the new native/GDB
+fixture and strict all-target/all-feature Clippy. Expanded regression 1136365
+passed default and bitpack, including an effectful sibling beside a pure group
+leader. Effect-free bodies still share their native cache entry; only bodies
+whose retained executable pieces contain runtime effects distinguish helper
+capture from direct CFG execution. Actual source calls, return fragments,
+transient input values, foreign stdout order/counts, VCD bytes, first bounds
+diagnostics and untaken abort fields are checked under both inline hints.
+Record the independently reproduced inactive aggregate bounds-prefix issue in
+TODO's IR section; it is not fixed by this DWARF transport batch. Own sibling
+architecture/testing doc updates too. Full goal still needs independently
+demanded/selected grouping, remaining supported signatures/companions and ABIs.
+Launch a frozen full acceptance next; preserve all foreign dirt and do not push.
+
+Frozen source hash 4cbd8037fb4b6cd163e76a3db38628aea06f58952258e6802d6fc5e170234152.
+Full acceptance is live as siox-job-3000-1791729520149903661-1139935.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791729520149903661-1139935.log.
+Poll this exact unit until terminal; no Rust edits or overlapping heavy jobs.
+Own pending debug.rs, debug/inline_values.rs, debug_info.rs, TODO and this chat
+tail, plus sibling architecture/testing docs. Corpus is clean at 05278a8d.
+Commit only after full terminal success and unchanged hash. Goal remains active.
+
+1139935 failed the mixed-return debugger fixture in both default/bitpack:
+the effectful ordering proof was also applied to effect-free nested calls,
+rejecting the existing SubArray consumer's opposite pure branch orders and
+turning its supported whole native return into partial inline frames. Fourteen
+other debugger fixtures pass per mode; strict Clippy passes. Stopped this owned
+failed gate during ordinary corpus rather than waste the remaining stages;
+do not claim corpus/graph/smoke acceptance from it. Correct the classification:
+effect-free nested calls still need joint demand, while checks/effects also
+need observable order proof. Re-run the unchanged mixed-return regression and
+the effectful fixture, then a new complete frozen gate. No commit yet.
+
+1166581 is terminal exited/success/0, peak 1209143296 bytes. All fifteen DWARF
+fixtures pass in default/bitpack, including the unchanged opposite-order pure
+SubArray ABI check; strict all-target/all-feature Clippy passes. Checks/effects
+retain the new order proof, while effect-free nested calls retain their existing
+joint-demand proof. The new regression still checks whole checked/foreign
+returns, intervening-effect fragments, short circuit, pure-leader/effectful
+sibling cache keys, changing inputs and native diagnostic/output parity. Freeze
+the corrected source and launch a new complete gate; the cancelled 1139935 run
+is not acceptance evidence. Full goal remains active, no push.
+
+Corrected frozen hash ea3df29260b95f45310fba13a5933a70e3ca011d2058a7938235a4a77bba7356.
+Acceptance is live as siox-job-3000-1791730012479261720-1175773.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791730012479261720-1175773.log.
+Poll this service to terminal; no Rust edits or overlapping jobs. Commit only
+after all full suites/corpora/native GDB smokes and graph refresh pass, followed
+by a source-hash check. Preserve foreign AGENTS/.codex and historical chat edits.
+
+While 1175773 runs, read the existing wide-scalar fixture and effect cache
+lifetimes. Prepared reused_effect.siox in the disk-cache probe directory, not
+in the frozen source hash. It reuses a foreign-returning field on both sides
+of another foreign call. The common ForeignCall cache survives state clears,
+but a native source body's effect cache is local to that body; verify actual
+stdout parity before claiming repeated effect transport works. This is a
+pending probe, not a confirmed failure. Wide scalar finish currently uses the
+real caller PC to avoid GDB's unsupported classifier; any inline-frame extension
+must keep genuinely narrowed result bits unavailable rather than fabricate a
+wide snapshot. No compiler edits or extra jobs during the current full gate.
+
+### 2026-10-11 — Codex — ordered checked/effectful full acceptance
+
+1175773 is terminal exited/success/0, peak 1612709888 bytes. Frozen hash
+ea3df29260b95f45310fba13a5933a70e3ca011d2058a7938235a4a77bba7356 is unchanged.
+Both full suites, fifteen DWARF fixtures per packing mode, strict Clippy,
+frontend/artifact checks, four 228-program corpora and four native FIFO/wide
+GDB/VCD smokes pass. AST graph refresh: 5367 nodes, 15303 edges, 252 communities;
+existing vendored extractor warnings persist. Commit only owned debug cache/
+ordering code, regression, TODO and appended chat tail; sibling architecture/
+testing docs separately. Preserve foreign AGENTS/.codex and 441 historical
+chat insertions. No push. Next execute the prepared repeated-effect probe before
+choosing any additional cache/transport change. The full DWARF goal stays active.
+
+### 2026-10-11 — Codex — committed batch and repeated-effect diagnosis
+
+Committed compiler c07b7a3 and sibling docs 57ab3ec after 1175773 full success.
+No push. New isolated native probe 1264136 is terminal failed/exit-code/1:
+ordinary/debug assertions and VCD bytes match, but stdout differs. The source
+uses `pair.left + putchar(value + 2) + pair.left + pair.right`; ordinary prints
+ACBKML, debug prints ACABKMKL. This confirms the predicted effect-cache boundary
+gap: body-owned foreign captures are not carried into the caller's persistent
+effect cache, so a cleared source-result entry reexecutes that foreign field.
+Record it in TODO and continue with the shared cache/inline-body callers next.
+Do not call the passing aggregate fixture or the 98% engineering estimate full
+DWARF completion. Compiler sources remain at the verified frozen hash; no job
+is running. Preserve foreign AGENTS/.codex and 441 historical chat insertions.
+
+### 2026-10-11 — Codex — shared effect-cache source frames
+
+Resuming the confirmed repeated-effect bug. Own debug/inline_values.rs,
+its inline_body caller in functions.rs if needed, debug_info.rs regression and
+TODO updates. Reuse the common emitter's captured effects by retaining effectful
+expression source frames in the caller rather than separating their execution
+into a debug-only body cache. Keep real source types, lazy argument consumption,
+fragmented returns and read-only inspection; do not preserve stale pure loads
+or introduce an effect runtime. Verify actual stdout order/counts, changing
+epochs and GDB frames before broad gates. No live guarded jobs at ownership
+start; preserve foreign AGENTS/.codex and historical chat insertions. No push.
+
+Isolated reused-effect stdout/VCD now match with in-place effectful source
+frames. Focused ordered aggregate native/GDB test 1291709 passes. Own the
+common values.rs cache-hit capture if the new reused-fragment regression needs
+it, and debug.rs to remove the now-redundant native effect-context cache key.
+Inline reference resets must precede the source frame's visible machine range;
+initialize/reset read-only return snapshots at each source entry. Extend the
+regression to actual reused effects, consumer formats, host calls and loops
+before claiming acceptance. Full gate and remaining DWARF scope are pending.
+
+### 2026-10-11 — Codex — shared-cache focused verification
+
+1317471 is terminal exited/success/0. New reused-effect regression and existing
+ordered aggregate regression pass native output/VCD, DWARF verification and GDB
+under both inline hints. Cached foreign results now populate new inspection
+bindings without executing again. The new fixture covers mixed widths, changed
+epochs, seeded host draws, repeated CFG calls and both retained partial fields.
+Inline source-entry reference reset uses the caller's range; completion keeps
+the callee's range long enough to inspect the final snapshot. No execution
+runtime/storage was introduced; obsolete native effect-context cache keys removed.
+The normalized procedural loop's native pure-tail boundary has unavailable
+value/saved entry bindings while actual finish values are correct; record that
+signature/pruning audit rather than force metadata dependencies. Own matching
+sibling architecture/testing updates. Full suites/corpora/bitpack are next;
+do not claim acceptance or complete the goal from the focused checks. No push.
+
+Frozen hash 5f6f9baa186f745e93db5143549275b5670fded22f5b9fa03320ea2ec6366112.
+Full gate 1319987 hit the existing hand-built inactive-inline unit: its synthetic
+ID is not in the empty design's effect-fact table. The new unconditional table
+index panicked (the old context-key expression short-circuited that lookup).
+Stopped the owned failed gate during subsequent stages; it is not acceptance.
+Use the existing optional-fact query pattern, keeping the same unit unchanged.
+Re-run focused full DWARF default/bitpack and strict Clippy before a fresh gate.
+No live job now; no compiler commit yet. Preserve all foreign work.
+
+1328976 is terminal exited/success/0, peak 984514560 bytes. The unchanged
+inactive-inline synthetic-ID unit, all sixteen DWARF fixtures in default and
+bitpack, and strict all-target/all-feature Clippy pass. Freeze the corrected
+source for a new full suite/corpus/native-smoke gate; the cancelled 1319987 run
+is not acceptance. Compiler goal remains active; no push.
+
+### 2026-10-11 — Codex — shared effect-cache full acceptance
+
+1339082 is terminal exited/success/0, peak 1612697600 bytes. Frozen source hash
+39955b3c49451d522994a1866104443c54565232d07da53737d4a418de355e69 is unchanged.
+Both full suites, sixteen DWARF fixtures per packing mode, strict Clippy,
+frontend/artifact checks, four 228-program corpora and four native FIFO/wide
+GDB/VCD smokes pass. AST graph refresh: 5368 nodes, 15306 edges, 252 communities;
+existing vendored extractor warnings persist. Commit only owned frame/cache/
+capture code, regression, TODO and appended chat tail; sibling architecture/
+testing docs separately. Preserve foreign AGENTS/.codex and 441 historical chat
+insertions. No push. Full goal remains active: independently demanded/selected
+grouping, normalized pure-tail formal/signature transport, companion planes and
+remaining wide/partial ABI work still require evidence and implementation.
+Static ELF inspection confirms the procedural probe's normal `formats` frame is
+a retained debug pure-tail body, not proof of entry visibility for the whole
+effect-normalized function. Continue that source-binding audit without forcing
+an expression or treating an unavailable reference as a manufactured zero.
+
+### 2026-10-11 — Codex — normalized source-binding transport audit
+
+Own cfg_calls.rs/source-value inspection remapping, inline_values.rs and the
+effect-reuse DWARF regression as needed. Trace the actual normalized test IR
+and native frame before choosing a fix for unavailable value/saved bindings.
+Reuse executable captures; do not introduce inspection-only evaluation roots,
+ABI inputs or stale aliases. No guarded jobs running at ownership start.
+Preserve foreign AGENTS/.codex and historical chat changes. No push.
+
+Normalized IR probe 1434185 and native GDB step probe 1435739 passed: the loop
+formal is genuinely absent from the pure tail; saved becomes 110 after its
+existing captured character result is read. No extra transport is warranted.
+Own the shared capture_binding width guard and native-input inspection selection:
+new narrow-binding regression 1438820 fails because a consumed 8-bit format
+fabricates value=8 for an actual 81-bit source argument 2^80+8. Keep unconsumed
+bits unavailable, retain known literals/sound natural-width extension, and
+prefer a full-width already-consumed input format at entry when one exists.
+
+Both focused regressions pass in 1445416; all seventeen DWARF fixtures in
+default/bitpack and strict Clippy are now running in that same guarded unit.
+Own matching sibling architecture/testing docs. Record actual normalized
+pruning and consumed-local visibility, not an unimplemented transport fix.
+
+1445416 is terminal exited/success/0, peak 880267264 bytes. Both focused
+regressions, all seventeen DWARF fixtures in each packing mode and strict
+all-target/all-feature Clippy pass. Freeze compiler source hash
+98808331c4c17f6728dea72303a3656455b89e6a9a9186b5a023dd74fe8a0f5f
+for full suite/corpus/native-smoke acceptance. No Rust edits during that gate.
+
+Full acceptance unit siox-job-3000-1791736850317053668-1454815.service is still
+running: fmt/frontend checks, both full suites, strict Clippy and both ordinary
+228-program corpora passed. The default debug corpus has reached hardware-local
+cases; debug bitpack/native smokes/AST refresh remain pending. Poll this same
+unit; do not restart after a terminal interruption. Source hash is unchanged.
+Retained stage logs: /home/max/.cache/siox-jobs/tmp/dwarf-binding-width-acceptance.9LRr3h.
+After the gate, run the prepared narrow_integer_expression scratch native/GDB
+probe to check the sound natural-width-extension exception before committing.
+No compiler/docs commit yet; leave the goal active and preserve foreign work.
+
+### 2026-10-11 — Codex — narrow-binding full acceptance
+
+1454815 is terminal exited/success/0, peak 1612054528 bytes. Frozen hash
+98808331c4c17f6728dea72303a3656455b89e6a9a9186b5a023dd74fe8a0f5f
+is unchanged. Both full suites, seventeen DWARF fixtures per packing mode,
+strict Clippy/frontend/artifact checks, four 228-program corpora and four
+FIFO/wide native GDB/VCD smokes pass. AST graph refresh: 5369 nodes, 15308
+edges, 240 communities; existing vendored extraction warnings remain.
+Additional narrowed integer-product native/GDB probe 1541670 is terminal
+exited/success/0: numeric assertions and ordinary/debug VCD match; omitted
+formal/local bits stay unavailable rather than displaying low bytes as whole
+integers. No broader remap or extra argument transport was required. Commit
+only owned capture selection/width guard, regressions, TODO and appended chat
+tail; sibling architecture/testing docs separately. No push; full DWARF goal
+stays active. Next reuse the existing inline-return inspection path for wide
+basic scalars without changing source types or exposing fabricated return bits.
+
+### 2026-10-11 — Codex — wide scalar return source frames
+
+Committed compiler 81e8015 and sibling docs a1ecc6f after full 1454815 and
+additional 1541670 success. No push. Own inline_values.rs, wide-return and
+narrow-binding regression updates, TODO and sibling architecture/testing docs.
+Reuse the existing odd-return inline frame over the same native body for
+unsupported odd-byte-sized scalar returns. Keep declared types and executable
+ABI unchanged, expose only actual complete result bits, and check GDB finish
+without fabricated history values. All guarded jobs terminal at ownership
+start; preserve foreign AGENTS/.codex and 441 historical chat insertions.
+
+1639806 is terminal exited/success/0, peak 1105059840 bytes. All seventeen
+DWARF fixtures pass in default and bitpack, plus strict all-target/all-feature
+Clippy. Wide source coverage now includes 81/127/128/129/256 bits, complete
+read-only return snapshots, unavailable narrowed results, entry resets and
+inline-source finish. A byte declaration consumed through a private 193-bit
+payload also keeps a truthful source frame. Ordinary register-return integer
+frames remain unchanged: wrapping every carry temporary above 64 bits was an
+overreach, caught by existing tests; only the hidden-memory payload case above
+128 bits needs that extra classification. Update matching TODO/docs and freeze
+the source for full suite/corpus/native smoke acceptance. No push; goal active.
+
+Full acceptance unit siox-job-3000-1791750177449754373-1690209.service is
+confirmed running. Frozen compiler source hash:
+cc7e13aee66354a7aa4f2e425d00623b59d70b73d4bbff902069f80aa227d892.
+Stage logs: /home/max/.cache/siox-jobs/tmp/dwarf-wide-return-acceptance.CHPI8t.
+Fmt, artifact checks, frontend check/Clippy and build have passed; the full
+default suite is live. Both full suites, strict Clippy, four corpora, four
+native GDB/VCD smokes and AST refresh must finish successfully before commit.
+Poll this same unit; do not restart it after observation interruptions or edit
+Rust during the gate. No commit/push yet; preserve foreign work. Next audit
+smaller private native return payloads against their declared scalar widths
+with an actual executable/GDB probe, not an inferred ABI fix.
+
+1690209 remains authoritatively running. Both full suites and strict Clippy
+have passed; the ordinary corpus is progressing through hardware cases. No
+Rust changes during verification. Prepared narrow_source_return.siox/.py in
+/home/max/.cache/siox-jobs/tmp/dwarf-partial-return-20261010: a dynamic 32-bit
+identity consumed as eight bits checks whether native finish falsely reports
+the low byte as a complete source return. Run ordinary/debug native assertions,
+VCD parity and this GDB probe only after the current guarded gate terminates.
+If it reproduces, trace the exact returned operand and existing consumer-format
+SSA before a shared-root fix; do not manufacture omitted bits or force another
+evaluation. The probe is diagnostic, not evidence of a failure yet.
+
+### 2026-10-11 — Codex — wide-return full acceptance
+
+1690209 is terminal exited/success/0, peak 1612632064 bytes. Frozen compiler
+hash cc7e13aee66354a7aa4f2e425d00623b59d70b73d4bbff902069f80aa227d892
+is unchanged. Both full suites, seventeen DWARF fixtures per packing mode,
+strict Clippy/frontend/artifact checks, four 228-program corpora and four
+FIFO/wide native GDB/VCD smokes pass. AST refresh: 5369 nodes, 15308 edges,
+240 communities; existing vendored extractor warnings persist. Commit only
+owned inline-frame classification/result-layout guard, return regressions,
+TODO and this appended tail; sibling architecture/testing docs separately.
+Preserve foreign AGENTS/.codex and 441 historical chat insertions. No push;
+the full goal stays active. Then run the prepared 32-to-8-bit return probe.
+
+Committed compiler acf4700 and sibling docs ca76cdf after full acceptance;
+no push. Diagnostic native/GDB jobs 1814632, 1817718 and 1820648 are terminal
+exited/success/0. The tightened assertion reads gdb.history directly because
+finish's printed history text is not reliably captured by to_string. Direct,
+contextual and high-unknown-bit 32-bit identities consumed at eight bits retain
+full native returns (65537/131074, or 65540/131077 for the contextual input),
+with ordinary/debug numeric assertions and VCD parity. No smaller-return ABI
+fix is warranted by these probes. The canonical shared body retains the source
+width; consumer truncation belongs to its caller. Leave this verified route
+alone. Next audit demand-preserving separately selected/partial nested-call
+grouping and remaining companion/signature transports against their real
+emitted frames. No guarded jobs live; preserve foreign work. Goal stays active.
+
+### 2026-10-11 — Codex — selected nested partial-return inspection
+
+Own inline_values.rs selected/partial frame capture and tests/debug_info.rs
+as needed, with matching TODO/docs after evidence. Diagnostic
+selected_nested_partial.siox/.py live in the disk-backed
+/home/max/.cache/siox-jobs/tmp/dwarf-partial-return-20261010 directory.
+1829608 failed in ordinary hardware lowering because the nested leaf had an
+unused standalone foreign-call statement; use a demanded foreign result, as
+existing hardware fixtures do. Corrected 1831028 compiles/runs ordinary and
+debug with matching numeric assertions, effect output BLMCMDNN and VCD. GDB
+hits inline partial frames but the script never reads a retained $return
+fragment before leaving one frame. Trace actual capture/ranges and validate
+the probe before a fix. No live guarded jobs; no Rust changes yet. Preserve
+foreign AGENTS/.codex/historical chat; no push. Goal active.
+
+1835568 reproduced only the probe's premature exit: instruction/ELF tracing
+shows lazy caller-owned argument reads leave the partial inline range before
+the captured foreign result and return fragment execute. Corrected 1839584 is
+terminal exited/success/0, peak 36184064 bytes: all eight expected fragments
+are inspectable, with exact BLMCMDNN effect order and VCD parity. No emitter
+fix is warranted from this case. Own a permanent selected/nested/partial
+regression with both hints, discontiguous-range stepping, nullable entry
+references, pruned abort fields, caller fragments and actual history-count
+checks. Do not rely on finish's empty captured output as proof of no history.
+
+1843953 caught another probe-timing assumption: source finish reaches the
+caller assignment before its existing fragment store. Wait through that store
+instead of claiming early availability. Corrected 1847679 is terminal
+exited/success/0, peak 98451456 bytes. New eighteenth regression passes both
+packing modes and both hints, including exact eight-fragment/effect order,
+fresh entry references, pruned abort fields, consumed formals/caller fragments
+and no new native history slot. Strict Clippy passes. No production compiler
+change was necessary for this audited case. Update matching TODO/docs, freeze
+tests and run complete acceptance before committing only the owned regression
+and appended log/docs. Remaining whole-return grouping and companion/signature
+audits still keep the full goal active; no push.
+
+Full acceptance unit siox-job-3000-1791752673714994050-1852419.service is
+confirmed running, with retained stage logs at
+/home/max/.cache/siox-jobs/tmp/dwarf-selected-partial-acceptance.hNu03a.
+Frozen source/test hash:
+6478fe004793dd4275cada856e43d299ffdd7babaa195e099500be2d61dbab8c.
+Fmt/artifact/frontend/build stages passed; the full default suite is live.
+Poll this unit, do not restart after an interrupted observation, and keep Rust
+unchanged through both full suites, strict Clippy, four corpora, four native
+GDB/VCD smokes and AST refresh. Test/TODO/sibling architecture/testing edits
+remain uncommitted. Only owned chat additions after line 15000 may be staged;
+441 historical insertions and AGENTS/.codex belong to others. Goal active.
+
+1852419 is confirmed live: both full suites (eighteen DWARF fixtures per mode)
+and strict Clippy passed; ordinary corpus acceptance is running. Compiler/test
+hash remains frozen. Prepared return_logic_companion.siox/.py in the existing
+disk-backed dwarf-partial-return-20261010 diagnostic directory: an 81-bit
+known-binary complete return first checks its numeric $return snapshot, then
+its source-enum $return$logic view. The capture_result path currently creates
+only the numeric snapshot, but this is not yet a reproduced failure. Run the
+probe under guarded-run only after 1852419 terminates; inspect existing actual
+numeric/metadata values or binary proof before implementing any companion.
+No extra metadata evaluation, stale views or modified executable payloads.
+First commit the independently selected partial regression/docs after its full
+gate succeeds; keep unrelated foreign changes out of that commit. No push.
+
+### 2026-10-11 — Codex — selected-partial full acceptance and companion audit
+
+1852419 is terminal exited/success/0, peak 1456009216 bytes. Frozen hash
+6478fe004793dd4275cada856e43d299ffdd7babaa195e099500be2d61dbab8c is unchanged.
+Both full suites include eighteen DWARF fixtures; strict Clippy, frontend and
+artifact checks, four 228-program corpora and four native GDB/VCD smokes pass.
+AST refresh produced 5370 nodes, 15310 edges and 237 communities, with existing
+vendored extractor warnings. Commit only owned selected-partial regression,
+TODO and appended chat tail, then matching sibling docs. No production fix
+was needed for that audited path. Next own inline_values.rs return companion
+capture if the prepared executable/GDB probe proves a gap; preserve demand,
+actual emitted planes and std-owned enum values. Goal remains active; no push.
+User also requested graphify cleanup if needed: inspect generated artifacts
+and stale output before changing anything; preserve curated data and history.
+
+Committed compiler ff7acdb and sibling docs 266b193. Probe 1975110 exhausted
+its short instruction budget before the return stores; corrected 1976167
+reaches the complete numeric 81-bit snapshot and fails specifically because
+$return$logic is absent. Both ordinary/debug binaries already pass numeric
+assertions and VCD parity. Own a shared capture_result companion using the
+existing ValueBinding logic capture and independently reset nullable reference;
+only complete already-emitted bits and cached planes/binary proof qualify.
+Extend existing wide-return regression, including narrowed consumers and
+repeated signed/unsigned/template invocations; no new executable dependency.
+Graphify is 24 MB and ignored, so no cache/history purge is warranted; refresh
+stale community labels with its native command after the code gate.
+
+1979838 compiled the shared observer reuse and verified all widths up to 129
+bits before the 256-bit companion exceeded the probe's fixed 2000-instruction
+budget. Its numeric snapshot was already readable while enum mirror writes
+were still executing; scale the observer budget with source width rather than
+claim premature availability or change the emitter. Corrected 1984721 is live:
+default wide-return regression passes (64.99s), bitpack build/check continues,
+then strict Clippy and native graphify cluster refresh. No Rust edits while
+live. Prepared return_missing_metadata.siox/.py in the diagnostic cache to
+check that a genuine X plane unconsumed inside the source frame stays absent
+instead of being invented from numeric bits. This probe is not evidence yet.
+
+1984721 is terminal exited/success/0, peak 899293184 bytes. Extended complete
+return companions pass default/bitpack wide fixtures across 81/127/128/129/256
+bits and both hints; strict Clippy passes. Native graphify cluster refresh
+preserves 5370 nodes/15310 edges and refreshes 237 community names/report/HTML
+without deleting cache or history (24 MB total, ignored by Git).
+1994797 proves the original 81-bit known-binary GDB companion is fixed with
+VCD parity, then fails in ordinary procedural lowering of a packed X argument;
+that baseline unsupported path is not a DWARF regression. The supported
+hardware-port variant, 1996241, is terminal exited/success/0: real X survives
+native assertions and VCD parity while the unconsumed return plane stays
+unavailable in GDB. Permanent nineteenth fixture 1999843 passes both hints
+and both packing modes, exited/success/0, peak 100749312 bytes. Update matching
+TODO and sibling architecture/testing docs. Freeze Rust for complete default/
+bitpack acceptance, four corpora, native smokes and AST update before committing
+only owned changes. Foreign AGENTS/.codex and 441 historical chat additions
+remain untouched. Signature/companion and whole-return audits keep goal active.
+
+Full return-companion acceptance is confirmed live as
+siox-job-3000-1791754959478476633-2002602.service; poll that exact unit/log,
+do not restart after an observation interruption. Frozen source/test hash:
+66af926e0b255d74b8426ef39660493510aca1cb5c2299e61d2977caf68fc45f.
+Only this owned appended tail (after line 15000), inline_values.rs, debug_info.rs
+and TODO may be staged after a terminal successful gate; sibling docs separately.
+No push. Check graph freshness after the included AST-only update; native
+cluster-only refresh cannot incorporate the new source before that update.
+
+2002602 remains confirmed live: the full default suite passes all nineteen
+DWARF fixtures (89.40s), and bitpack validation is running. Hash remains frozen.
+Prepared generic_aggregate_return.siox/.py in the diagnostic cache for the next
+signature audit: a generic identity over a struct containing a 3-bit tag, real
+and descending 81-bit signed array, plus a procedural generic real return.
+Check ordinary/debug native assertions, VCD parity, concrete source formals/
+return types and actual GDB finish values before inferring a signature fix.
+Do not run it concurrently with acceptance. Probe is not evidence yet. Keep
+the goal active and commit only the accepted return-companion batch first.
+
+2002602 remains live after both complete suites pass; nineteen DWARF fixtures
+pass in default and bitpack. Strict all-target Clippy/corpus stages continue.
+No source change or restart. Generic composite/real signature scratch probe is
+ready for the next available guarded slot after acceptance/owned commits.
+
+2002602 is still authoritatively running and has completed the ordinary
+228-program corpus with zero failures. Bitpack corpus is now live; both
+debug corpora, native smokes and AST refresh still follow. Preserve the frozen
+source and poll the same unit. No commit/push until the full gate is terminal.
+
+2002602 has completed both ordinary 228-program corpora with zero failures
+and remains confirmed live for debug corpus acceptance. Both full suites and
+strict Clippy already passed. Do not restart it or mutate frozen Rust; run the
+prepared generic signature probe only after terminal acceptance/owned commits.
+
+### 2026-10-12 — Codex — return-companion full acceptance
+
+2002602 is terminal exited/success/0, peak 1612681216 bytes. Frozen hash
+66af926e0b255d74b8426ef39660493510aca1cb5c2299e61d2977caf68fc45f is unchanged.
+Both full suites with nineteen DWARF fixtures per mode, strict frontend/all-
+target Clippy, artifact checks, four 228-program corpora and four FIFO/wide
+native GDB/VCD smokes pass. AST refresh: 5371 nodes, 15315 edges, 254 communities;
+existing vendored extractor warnings persist. Refresh the changed community
+labels using the native cluster command in the next guarded job; preserve
+curated history and ignored caches. Commit only owned inline_values.rs,
+debug_info.rs, TODO and appended chat tail, plus sibling docs separately.
+Then run the prepared generic aggregate/real signature probe. Preserve foreign
+AGENTS/.codex and 441 historical chat additions. No push. Goal stays active.
+
+### 2026-10-12 — Codex — generic composite/real signature coverage
+
+Committed compiler 9fed2c3 and sibling docs 31e26fc after full acceptance.
+2134078 is terminal exited/success/0, peak 107622400 bytes: generic identity
+over a 31-byte struct with a 3-bit tag, real and descending signed[81] array
+retains concrete Packet formals/results and all actual GDB memory-return fields
+across input epochs. A procedural generic real returns 6.25 correctly through
+native history. Ordinary/debug assertions and VCD parity pass. Native graphify
+cluster refresh also preserves 5371 nodes/15315 edges and updates 254 labels.
+No signature fix is warranted by this probe. Own an extension of the existing
+large-return fixture for these specializations, both hints and packing modes,
+including signed zero real returns; update matching TODO/docs after evidence.
+No live jobs; preserve foreign work and leave the full goal active. No push.
+
+2140271 is terminal exited/success/0, peak 188461056 bytes. The existing
+large-return fixture now covers concrete generic Packet formals/results with
+descending signed[81] array fields and generic real positive/negative/signed-
+zero returns, across all three input epochs, both hints and both packing modes.
+Native assertions, GDB history fields/types, DWARF verification and VCD parity
+pass; strict Clippy passes. No production compiler changes. Update matching
+TODO/docs and freeze test hash
+2508bf65481b1c6bd91d71f8c20c6e6134f631e63726a3c23253b364c0a7b572.
+Run complete CI acceptance (both suites, two ordinary corpora and AST/label
+refresh) before this regression-only commit. The unchanged compiler's four
+debug/ordinary corpora and four native smokes already passed in 2002602;
+this fixture additionally runs its own emitted debug/ordinary binaries/GDB.
+Other supported signature/companion and partial-demand audits remain active.
+
+Generic-return CI acceptance is confirmed live as
+siox-job-3000-1791757110096844734-2149076.service. Poll this exact unit/log;
+do not restart after an interrupted observation. Tests stay frozen at
+2508bf65481b1c6bd91d71f8c20c6e6134f631e63726a3c23253b364c0a7b572.
+After terminal success, stage only owned large-return regression, TODO and
+appended chat tail (after line 15000); docs separately. No production changes
+or push. Preserve foreign AGENTS/.codex and 441 historical chat additions.
+
+### 2026-10-12 — Codex — generic-return acceptance and joint-partial probe
+
+2149076 is terminal exited/success/0, peak 833495040 bytes. Frozen test hash
+2508bf65481b1c6bd91d71f8c20c6e6134f631e63726a3c23253b364c0a7b572 is unchanged.
+Both full suites (nineteen DWARF fixtures each), strict Clippy and both ordinary
+228-program corpora pass. AST/label refresh preserves 5371 nodes, 15315 edges,
+254 communities; existing vendored extractor warnings remain. Commit only
+owned generic-return test extension, TODO and appended chat; sibling docs
+separately. No production signature fix, and no push.
+Prepared joint_partial_return.siox/.py in the existing diagnostic cache for
+the next named TODO gap: two jointly consumed nested-call fields with an unused
+middle abort field. The probe counts source stops and inspects retained return
+fragments at completion; missing fields must stay unavailable. It is not yet
+evidence of a failure. Run it after the accepted regression/docs commits, then
+trace the aggregate coverage/demand proof before any production edit. Goal active.
+
+Committed compiler ed03b34 and sibling docs 0149462 after generic acceptance.
+Joint-partial probe 2214433 passed ordinary/debug assertions and VCD parity,
+but disabled its breakpoint during same-line source finish and missed sibling
+stops. Corrected 2226116 keeps that breakpoint live during finish and observes
+four truthful single-field partial frames: left=2/right=12, then left=4/right=14.
+The demanded sum should share one partial source boundary per epoch without
+evaluating the discarded middle abort field. aggregate_returns currently
+rejects the group at its full-coverage gate, before the existing joint-demand
+proof can justify grouping the retained subset. This is a reproduced remaining
+grouping gap, not a numeric simulation failure. No live jobs or Rust edits.
+Next own debug.rs/inline_values.rs and regressions: keep a compact private
+carrier for retained fields only, preserve full declared source types on inline
+frames with LLVM return fragments, and reuse existing demand/order/cache proof.
+Do not zero-fill missing fields, claim a full native return ABI, force a discarded
+operand or split effectful execution out of the common cache. Preserve the
+independent selected-partial regression and native/VCD parity. Goal stays active;
+no push. Foreign AGENTS/.codex and 441 historical chat additions remain untouched.
+
+### 2026-10-12 — Codex — joint partial-return grouping implementation
+
+Own debug.rs AggregateReturn and inline_values.rs grouping/fragment capture.
+Extend the existing group proof to nonoverlapping retained subsets only with
+joint demand; retain uninterrupted effect/check order when required. Compact
+the private carrier instead of filling absent source regions. Partial groups
+stay in the caller's common emitter/cache via the existing inline source frame,
+whose synthetic $return uses the original field paths and declared layout.
+Reuse the existing aggregate builder and nullable fragment observer; do not
+advertise a full native return ABI or add an execution wrapper. Preserve the
+independent selected-partial cases. No live guarded job; foreign work untouched.
+
+2250748 passes the original joint-partial native/GDB probe with two combined
+source frames instead of four leaf frames; assertions/VCD match and the middle
+abort field stays unavailable. New carrier unit rejects overlaps and independent
+uses and proves 128 retained bits rather than a padded 192-bit source result.
+2272040 and 2279194 pass that unit, joint/independent regressions in both packing
+modes, all twenty default DWARF fixtures and strict Clippy. New coverage includes
+pure/foreign nested calls, forward/reverse first-use order, fresh entry references
+and direct finish history-slot checks.
+2290280 then exposed a real selected-join capture gap: aggregate_result builds
+the whole selected carrier without emitting the original selector IDs, leaving
+their source fragments absent. Completion now observes those IDs from the
+already-computed joined bits while the frame is live; no selector/effect repeats.
+2293164 passes both positive and fallback native/GDB cases with three combined
+frames and VCD parity. Extended permanent selected/plain, pure/foreign, forward/
+reverse and both-hint coverage passes both modes in 2296122, terminal success/0,
+peak 862851072 bytes; strict Clippy passes. Update matching TODO/docs and freeze
+Rust for full suites, four corpora, native smokes and graph refresh before commit.
+The full goal remains active; no push, and preserve all foreign changes.
+
+Full joint-partial acceptance is confirmed live as
+siox-job-3000-1791760022111950112-2302449.service; poll that exact unit/log,
+do not restart after an observation interruption. Frozen source/test hash:
+2aaa2369da571dfa78e7b4f69b034a80bf1c5b9667ec7a08023b12dd2e6fdd25.
+Only owned debug.rs/inline_values.rs, debug_info.rs, TODO and appended chat
+tail after line 15000 may be staged after terminal success; sibling docs
+separately. Foreign AGENTS/.codex and 441 historical chat additions are untouched.
+Source remains frozen through full default/bitpack suites, four 228-program
+corpora, four native GDB/VCD smokes and AST/community refresh. Goal active.
+
+2302449 remains confirmed live. All twenty default DWARF fixtures pass
+(96.31s); remaining full-suite/bitpack/corpus stages continue. Frozen hash
+2aaa2369da571dfa78e7b4f69b034a80bf1c5b9667ec7a08023b12dd2e6fdd25 is unchanged.
+No Rust edits, restart or commit while the acceptance handle is live.
+
+2302449 remains live after both full suites pass all twenty DWARF fixtures
+(default 96.31s, bitpack 95.64s). Strict Clippy/corpus stages continue. Frozen
+hash is unchanged. Poll the same handle; no Rust mutation or commit yet.
+
+### 2026-10-12 — Codex — joint-partial full acceptance
+
+2302449 is terminal exited/success/0, peak 1612701696 bytes. Frozen hash
+2aaa2369da571dfa78e7b4f69b034a80bf1c5b9667ec7a08023b12dd2e6fdd25 is unchanged.
+Both complete suites with twenty DWARF fixtures per mode, strict Clippy,
+frontend/artifact gates, four 228-program corpora and four FIFO/wide native
+GDB/VCD smokes pass. AST/community refresh: 5373 nodes, 15327 edges,
+247 communities; existing vendored extractor warnings persist. Commit only
+owned group/fragment implementation, carrier proof, native regressions, TODO
+and this appended chat tail, then matching sibling architecture/testing docs.
+No push. Remaining supported mixed/partial and companion/signature audits
+keep the full goal active. Preserve AGENTS/.codex and 441 historical chat additions.
+
+Committed compiler e8a6b6c and sibling docs cc92d80 after full acceptance;
+no push. Prepared mixed_partial_return.siox/.py in the existing disk cache:
+descending signed[81] array fields, an unused middle abort and real/signed-zero
+data. 2526381 compiled and ran ordinary/debug with numeric assertions and VCD
+parity, then exhausted the GDB probe without observing all requested fragments
+in one frame. Do not infer a compiler bug yet: first inspect the actual group
+demand/coverage and frame fragments, including the caller's boolean equality
+consumer. The probe assumes joint grouping; that assumption needs evidence.
+No live guarded jobs or uncommitted Rust. Goal remains active; preserve foreign
+AGENTS/.codex and 441 historical chat additions. Next tighten the diagnostic
+and continue supported mixed/partial and companion/signature completion audits.
+
+### 2026-10-12 — Codex — mixed partial-demand comparison audit
+
+Own inline_values.rs demand proof and corresponding regressions if warranted.
+The mixed probe's packed equality reaches MetaCompare, which always evaluates
+its ordinary `inner` comparison but currently propagates no demand in
+joint_aggregate_demand. Trace supports forwarding only that inner result;
+metadata-only operands are not a proof of numeric evaluation. Test this shared
+proof adjustment against the existing mixed native/GDB probe before retaining
+it. No live guarded jobs; preserve foreign work and do not infer that every
+comparison/consumer now justifies grouping. Full goal stays active; no push.
+
+2581572 did not establish joint grouping even after forwarding MetaCompare's
+inner demand. Removed that unproven production change completely. Corrected
+2590011 instead follows each existing partial frame, keeps sibling breakpoints
+live during finish and reads whichever actual fragment is retained. It passes
+numeric assertions/VCD parity with descending signed[81] array elements and
+real data, including negative zero; the unused abort field stays unavailable.
+Tightened 2622740 passes every initial/changed/zero field combination and VCD
+parity, terminal exited/success/0. Thus the earlier failure was the probe's
+unsupported assumption that this comparison consumer justified one joint frame;
+there is no verified capture/ABI bug here. No uncommitted Rust or live jobs.
+Preserve separate-fragment semantics and audit other supported transports
+without weakening demand proof. Full goal active; no push, foreign work untouched.
+
+### 2026-10-12 — Codex — permanent mixed partial-return regression
+
+Own tests/debug_info.rs coverage for the verified mixed_partial_return probe.
+Retain separate source frames for actual descending signed[81] array leaves
+and real/signed-zero fragments; the discarded abort field must stay unavailable.
+Reuse the existing native/GDB/VCD verification pattern, with both inline hints
+and packing modes. No production change is justified by the diagnostic.
+Preserve foreign AGENTS/.codex/chat additions and sibling docs/language.md.
+Full DWARF goal active; no push. Previous turn made verified diagnostic progress.
+
+2657166 is terminal exited/success/0, peak 647380992 bytes. The permanent
+mixed-fragment fixture passes both hints/default/bitpack, with exact sets of
+nine epoch-specific array/real fragments, source type size, pruned abort,
+native assertions, VCD equality and dwarfdump verification. No production fix.
+Updated TODO and sibling testing coverage; replaced stale testing claims that
+already-covered checked/joint partial cases still needed implementation.
+Freeze Rust for full CI suites, both ordinary corpora and graph AST refresh.
+
+2659524 is terminal exited/success/0, peak 1470701568 bytes. Full default and
+bitpack suites pass, including all 21 DWARF fixtures (97.54s/98.43s), strict
+frontend/all-targets Clippy and both 228-program corpora with zero failures.
+Frozen source/test hash remains
+16487f0fe3d1d60e0d6c4d680593bc2198571d298e0d1f4bf713130af4976cf8.
+AST/community refresh reports 5374 nodes, 15329 edges and 251 communities;
+existing vendored extractor warnings persist. Commit only owned test/TODO/chat
+tail and sibling testing docs. Preserve foreign changes; no push.
+The full goal remains active: next audit the separate CFG formal-parameter
+inspection path in debug/parameters.rs, which does not currently create a
+formal-name $logic companion. Establish native/probe evidence before fixing it;
+expression companions already covered are not proof for suspended CFG aliases.
 ### 2026-10-09 — Claude — enum vector elements take any value
 
 Owner: "we don't care if something is 'X' unless the resolver says so — that's
@@ -13944,6 +17342,217 @@ are removed; promotion inlines std's `From<S> for T` (hardware
 **Codex:** touches ir/functions.rs, ir/lower/{calls,operators,source_processes}.rs,
 types/{expressions,mod}.rs, resolve.rs, core/convert.siox.
 
+### 2026-10-12 — Codex — CFG formal companion audit
+
+Own debug/parameters.rs and focused native regression if a gap is reproduced.
+Trace captured formal aliases through parameters/declare_parameters and existing
+logic mirrors; first compile/run a suspended packed-parameter diagnostic without
+changing production Rust. Previous turn committed verified mixed-fragment
+coverage (1b7c36c, docs bd1c625), so it made authoritative progress.
+No live guarded jobs. Preserve foreign AGENTS/chat/.codex; no push.
+
+2716950 reproduces the gap after ordinary/debug native assertions and VCD
+parity: suspended `value` is readable, `value$logic` is absent. 2719884 verifies
+the shared formal-location fix with the existing recursive logic copy/readers,
+native GDB source states, DWARF validity and unchanged VCD. Companions are
+debug-only nullable snapshots over captured places/constants, not new ABI
+arguments or source evaluations. Missing either plane clears the reference.
+Expanded the existing suspended-call fixture with aggregate/receiver/wide
+companions, nested mutable parent aliases, negative-label indexed arrays and
+binary literals. Corrected an initially mis-targeted test struct edit; no
+unrelated fixture changes remain. 2725436 is terminal exited/success/0, peak
+884137984 bytes: extended native/GDB regression passes default/bitpack and strict
+Clippy. Update matching TODO/architecture/testing and freeze Rust for full suites,
+four corpora, native smokes and AST/community refresh. Goal active; no push.
+
+Full acceptance launched as
+siox-job-3000-1791790586357096719-2732208.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791790586357096719-2732208.log.
+Frozen source/test hash:
+d091a14748e9e364883dbdcfc01cac4f10f0844446b4447e9a053c31d12ba9e0.
+Poll this exact unit to terminal exited/success/0 before committing; no restarts
+or Rust edits merely because observation is interrupted. Owned changes are
+parameters.rs, the existing suspended-call fixture, TODO and this appended chat
+tail; sibling architecture/testing docs separately. Preserve foreign12 AGENTS,
+441 historical chat additions and .codex. Goal remains active; no push.
+
+### 2026-10-12 — Codex — acceptance corpus drift
+
+2732208 remains running; both full suites and strict Clippy have passed on the
+unchanged frozen hash. The sibling corpus was externally fast-forwarded from
+05278a8 to f8234fe at 2026-10-12 09:42:16 +0200 during this acceptance run.
+It now requires numeric-format/promotion features absent from local compiler
+main (ahead46/behind39, origin/main 7c659f2). Default corpus currently reports
+11 ordinary failures, including new numeric_ladder/numeric_promotion and migrated
+fixed/float comparisons. These fail before DWARF emission; do not amend them to
+match an older compiler, clone a stale corpus, or claim a passing acceptance.
+Requested direction to integrate latest compiler main while preserving owned
+DWARF changes. No merge/pull, commit or further Rust edit without that direction;
+poll the existing acceptance handle, never restart merely after interruption.
+Goal active; this is the first corpus-drift blocker audit, not a blocked status.
+
+2732208 is now terminal failed/exit-code/1, peak 1612832768 bytes. Both complete
+suites passed all 21 DWARF fixtures (97.69s default, 109.28s bitpack), along
+with strict Clippy/frontend/artifact gates. Both current ordinary corpora finish
+227 passed/12 failed; therefore debug corpora, native smokes and graph refresh
+were not reached. This is a failed acceptance, not a compiler-wide pass.
+Frozen source/test hash d091a14748e9e364883dbdcfc01cac4f10f0844446b4447e9a053c31d12ba9e0
+is unchanged; no live jobs remain. Remote changes do not touch debug/parameters
+directly, but integrate 39 upstream compiler changes before retesting the current
+corpus rather than inventing fixes for absent numeric-format/promotion features.
+Still awaiting the requested integration choice; preserve all pending work,
+do not commit against the red gate or silently merge. Second consecutive
+corpus-drift/authority audit; goal active, not complete or blocked yet.
+
+### 2026-10-12 — Codex — third acceptance blocker audit
+
+Revalidated main 1b7c36c (ahead46/behind39), corpus f8234fe and unchanged frozen
+hash d091a14748e9e364883dbdcfc01cac4f10f0844446b4447e9a053c31d12ba9e0.
+2732208 remains terminal failed/exit-code/1; no live jobs. Both ordinary corpora
+still report 227 passed/12 failed from the compiler/corpus feature mismatch.
+No integration approval has arrived. The current DWARF patch and focused/full
+suite evidence are preserved, but the mandatory corpus gate cannot be completed
+without aligning compiler main or explicit alternate direction. Do not downgrade
+the corpus, waive the gate, silently merge, or repeat obsolete-compiler tests.
+Same blocker has persisted across three consecutive goal turns; mark the goal
+blocked pending the requested integration choice. Not complete; no commit/push.
+
+### 2026-10-12 — Codex — resumed goal, fresh blocker audit 1
+
+The goal was resumed, so restart the blocker counter rather than immediately
+marking it blocked again. Revalidated local main 1b7c36c (ahead46/behind39),
+clean sibling corpus f8234fe and terminal failed acceptance 2732208; no live jobs.
+Read-only git ls-remote confirms upstream main is still 7c659f2, matching the
+local remote ref. Both current corpus modes remain 227 passed/12 failed.
+Integration approval is still missing; a generic goal continuation is not that
+choice. Preserve the pending CFG companion fix and docs; do not merge upstream,
+commit against failed acceptance, downgrade the corpus or restart unchanged tests.
+Goal active, first fresh audit only. Await explicit integration direction.
+
+Fresh resumed blocker audit 2: main/corpus and terminal failed acceptance are
+unchanged, no live jobs, no integration choice received. Previous turn made
+no implementation progress; safe read-only revalidation confirms the same
+authority/corpus blocker. Preserve the patch; no redundant tests or merge.
+
+Fresh resumed blocker audit 3: confirmed main 1b7c36c, corpus f8234fe, unchanged
+frozen source hash and failed terminal acceptance 2732208; no live jobs or
+integration choice. Same mandatory corpus/authority blocker recurred on all
+three resumed turns. Mark goal blocked again; preserve pending DWARF changes.
+Completion remains unproven. Await explicit integration direction; no commit/push.
+
+### 2026-10-12 — Codex — authorized latest-main integration
+
+User explicitly requests merging latest main. Own integration and conflict
+resolution in IR/lowering, LLVM and related tests/docs as required; preserve
+both committed histories and all uncommitted work. Temporarily stash only the
+five dirty tracked files (AGENTS, TODO, chat, parameters.rs, debug_info.rs) in
+a named preservation stash. Foreign AGENTS12 and historical chat441 are not
+ours to commit; .codex and sibling docs remain untouched. Keep a pre-merge
+branch backup, resolve overlap with both designs intact, restore saved edits
+and run guarded full acceptance before any commit. No push requested.
+
+Fetched latest origin/main 0fa7091 (41 upstream commits). Preserved HEAD at
+codex/pre-main-dwarf-20261012 and dirty tracked edits in stash
+82d00debd9c7b424cf6c61f6864d7f78e4e37a14; leave that safety copy until accepted.
+Resolved four merge conflicts while retaining both log histories, upstream
+multi-argument format conversion/constant-branch pruning and source inspection
+boundaries. Restored all saved edits; AGENTS matches the saved bytes exactly.
+Unstaged foreign AGENTS12 and historical chat441 only, preserving them in the
+worktree. Merge remains uncommitted pending acceptance; sibling docs untouched.
+2953482 exposed nine compile integration errors from new upstream calls to
+source-aware helpers. Added actual call spans, retained selected return spans
+for guarded match chains, and made branch-span recording optional outside
+inline function frames. 2960858 passes the merged build and both suspended
+formal companion/conversion-signature native/GDB regressions, terminal
+exited/success/0, peak 1136013312 bytes. Freeze Rust for full acceptance.
+
+Initial merged acceptance 2976313 hit an upstream unit-test caller lacking the
+fourth reconstruct_metavalues argument. Cancelled that conclusively failed run
+to fix the call, not because of an observation timeout: unit is terminal dead,
+and its log proves failed cargo test despite systemd stop reporting success.
+Pass None like the adjacent table/ordinary-bit unit tests; no encoding exists
+in this fixture. Re-run full acceptance on the corrected frozen source. Use the
+actual sibling corpus, now externally advanced to f285f7d (signed-widen test).
+
+Corrected acceptance is live as
+siox-job-3000-1791796249531317181-2989909.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791796249531317181-2989909.log;
+stage logs /home/max/.cache/siox-jobs/tmp/dwarf-main-merge-acceptance.b0KAg4.
+Frozen source/test/core hash:
+3d27a8e3e1109852b09d7f078b841e9c5ce76f91bc0366088bdde0ce329326d4.
+Keep merge HEAD 0fa7091 and source frozen; poll this exact handle. Full acceptance
+must pass before merge commit. Foreign AGENTS12/chat441 and .codex stay excluded.
+
+2989909 is terminal failed/oom-kill/9, not accepted. Both complete suites
+passed all 21 DWARF fixtures (110.99s/107.12s), strict Clippy and the default
+239-program corpus passed. Bitpack corpus stopped after float_division native
+success; neither that file's printer roundtrip nor the next float_sqrt command
+was identified as the killed process. Unit limit was 2 GiB, high 1536 MiB;
+systemd's retained sampled peak is 1612402688. No source hash change.
+3132781 failed because GNU time is unavailable; use stdlib resource metrics.
+3140045 proves the isolated bitpack float_sqrt native compile/run passes,
+terminal exited/success/0, peak 546869248, child maxrss 540856 KiB. Therefore do
+not call float_sqrt a verified compiler defect. Parent cgroup limits are max.
+Retry full acceptance with explicit bounded 3 GiB/max and 2500 MiB/high after
+the verified 2 GiB OOM, retaining per-stage logs. No compiler limit or code
+changes; no commit/push until the complete gate passes.
+
+Bounded 3 GiB retry is live as
+siox-job-3000-1791798296892611558-3172968.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791798296892611558-3172968.log;
+stage logs /home/max/.cache/siox-jobs/tmp/dwarf-main-merge-acceptance-3g.utEqTc.
+Frozen source/test/core hash remains
+3d27a8e3e1109852b09d7f078b841e9c5ce76f91bc0366088bdde0ce329326d4.
+Poll this exact handle without restarting after an observation interruption.
+
+3172968 passed local CI completely, including both full suites, strict Clippy
+and both 239-program ordinary corpora, then OOM-killed while compiling the
+default debug float_sqrt test. It is not a passing full DWARF acceptance.
+3354612 is a bounded, deliberately interrupted GDB diagnostic (not a compile
+pass): repeated process_select/selected_value recursion widens loop operands
+and loses branch-local shared DAG values. SourceMap line scanning is sampled
+above that recursion, not established as the memory root cause.
+Own selection guards in value_types.rs/values.rs and debug/inline_values.rs.
+Keep recorded return scopes and activity-sensitive branch arms; pure synthesized
+loop muxes can use the existing shared SSA selection path. Validate against the
+actual float_sqrt program and selected-source-stop regressions before retaining.
+
+First selection-guard trial 3392396 was stopped as an inconclusive diagnostic,
+not accepted: it still grew above 1.6 GiB without producing an executable.
+Source trace explains the missing distinction: global activity flags include
+the original caller expressions of captured native formals. Those calls/checks
+do not execute inside the callee again, but their inherited flags still force
+branches and per-arm cache keys on pure loop muxes. Cut traversal at actual
+native parameters (except payload-free source literals), preserve fresh source
+calls/checks and recorded return arms, and allow proven pure selections to
+share inactive-independent SSA keys. Validate before retaining the refinement.
+
+3441067 proves the refined guard: debug float_sqrt compiles/runs within the
+original 2 GiB cap, child maxrss 783612 KiB, with native assertions and DWARF
+verification. Selected branch/shadowing and checked/effectful regressions pass.
+Added permanent restoring-root loop/SSA structural regression with a nested
+caller-owned identity input; it passes. 3458195 then passes 21/22 bitpack DWARF
+fixtures but reveals a real GDB enum return ABI issue (High reads 255 instead
+of 1). Pure SSA selection exposes unspecified upper bits from a native i1
+return. Reuse existing Register return normalization for exact sub-byte scalar
+layouts, keeping signed extension and caller decoding in the common codec.
+No fake bits/inspection-derived operand formats; validate before full acceptance.
+
+3477853 is terminal exited/success/0, peak 1610874880: the sub-byte Register
+codec fixes the bitpack enum finish regression, the permanent loop/SSA fixture
+passes, and strict Clippy passes. Additional selection/ABI code and the new
+fixture remain uncommitted pending their own full acceptance.
+Finalize the user's authorized latest-main merge separately: the staged
+source/test/core hash is exactly
+3d27a8e3e1109852b09d7f078b841e9c5ce76f91bc0366088bdde0ce329326d4,
+matching the snapshot that passed complete local CI in 3172968 (both full
+suites/21 DWARF fixtures, strict Clippy and both 239-program ordinary corpora).
+The subsequent extra debug-corpus OOM is recorded above, not claimed green.
+This merge includes upstream 0fa7091, conflict/call-span integration, and the
+previously verified CFG formal companion work. Do not sweep the later untested
+changes into it. Preserve foreign AGENTS12/chat441/.codex, backup branch/stash
+and sibling doc edits. No push; full DWARF completion remains unproven.
+
 ### 2026-10-12 — Claude — integer local returned as a family
 
 Branch `fix/small-lowering-bugs`. `narrow_to_type` (source_processes.rs)
@@ -13970,6 +17579,272 @@ bound is not constant is legal for simulation and warns (W-P019
   `Reactive` procedural CFG sensitive to every signal it reads
   (`procedural_sensitivity`). Reactive from the start, so writes do not settle.
 **Codex:** `Design` gained `procedural_items` (struct literals need it).
+
+### 2026-10-12 — Codex — resumed DWARF validation and final upstream sync
+
+User authorized latest-main integration and goal is active again. Graph refresh
+3503191 completed exited/success/0, 5512 nodes/15799 edges/258 communities.
+959bac3 integrated fetched 0fa7091 and verified CFG formal companions; docs
+0ab47cf matches it. Two upstream commits landed during verification, now
+bdda008: retain the family's actual-width layout for returned integer locals
+and suppress a cascading projection failure after diagnostics. Integrate this
+small follow-up too, preserving both histories and the uncommitted selection/
+sub-byte ABI fixes and 22nd regression. Temporarily stash shared chat only;
+AGENTS12/.codex and sibling repos stay untouched. Full frozen acceptance follows.
+
+### 2026-10-12 — Codex — latest main frozen at c127af6
+
+Before validation, a read-only remote check found c127af6, including the
+hardware-loop simulation follow-up. Restarted the uncommitted merge against
+that fetched tip and preserved all local tracked changes in safety stash
+b7f2e841eb9d91169c540d73b787924185150307. Restored the DWARF selection guard,
+sub-byte return codec and 22nd regression without staging them for this merge.
+Kept both chat histories; foreign AGENTS12 and historical chat441 stay unstaged.
+Validate the combined worktree with full local CI, then both debug corpora
+and native debugger smokes. No push; full DWARF acceptance remains unproven.
+
+Acceptance is live as siox-job-3000-1791818501710265372-3709483.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791818501710265372-3709483.log.
+Frozen source/test/core hash:
+ea9def3c01f8751eb7eeca9cdd718cc5f2e43a8f7e4dfb833f56895598606731.
+Use the measured 3 GiB gate budget (prior whole-corpus 2 GiB OOM); keep one
+Cargo job. Poll this exact live handle and do not edit Rust during acceptance.
+
+3709483 is terminal failed/exit-code/1: the new upstream hardware-loop
+LoweringContext initializer omits the three source-debug context fields.
+The other five initializers already use None/empty source stacks. Add those
+same defaults to the procedural hardware context; no runtime behavior change.
+The failed build skipped corpus instead of exercising stale binaries.
+
+Corrected frozen acceptance: siox-job-3000-1791818801977310698-3730900.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791818801977310698-3730900.log.
+Source/test/core hash:
+a18900b7c88beae172b827d84630c15515af24370521e54ad16df0fdb2cbea8b.
+Poll this job; no Rust changes while it is live.
+
+Own sibling siox-paper/docs/{architecture,testing}.md for the selection/return
+codec description and restoring-root regression. These documentation-only
+updates do not change the frozen compiler or current acceptance inputs.
+
+3730900 is terminal exited/success/0, peak 2623414272 bytes. Complete local CI
+passed: both full suites (22 DWARF fixtures each), strict frontend/all-target
+Clippy, formatting/artifact gates and both ordinary 239-program corpora.
+Both debug corpora also passed 239/0, including float_sqrt. Native FIFO/wide
+GDB source breakpoints, inspection, stepping and ordinary/debug VCD parity
+passed. Graph update/clustering completed: 5520 nodes/15829 edges/253 communities;
+existing third_party/libfst extraction warnings remain, not compiler failures.
+Working and staged source/test/core hashes both match the frozen accepted
+a18900b7c88beae172b827d84630c15515af24370521e54ad16df0fdb2cbea8b.
+
+Commit the authorized c127af6 integration together with the now-verified owned
+selection/return-codec fixes and 22nd regression. This avoids committing an
+intermediate source snapshot different from the full accepted gate. Message
+names both the upstream integration and local DWARF changes; AGENTS12,
+historical chat441 and .codex remain outside the commit. Companion docs get a
+separate commit. No push requested. Goal stays active: remaining signature/
+companion transport audits are not proved by this finite accepted corpus.
+
+### 2026-10-12 — Codex — numeric-family signature audit
+
+Previous turn made authoritative progress: compiler 6c73cdc and docs dd65321,
+full accepted job 3730900 (four corpora, both suites/22 DWARF fixtures, GDB).
+No live jobs. Own tests/debug_info.rs for a concrete remaining signature gap:
+std float format conversion and float/sfixed round trips are compiled by the
+corpus but not checked for actual formal/return types and finish values.
+Reuse native ordinary/debug/VCD/GDB fixtures; do not add an abstraction or
+change production LLVM without a reproduced fault. Preserve foreign edits.
+
+3897949 stopped at formatting only; corrected the single wrapping difference.
+3898937 is terminal exited/success/0, peak 367722496: the new conversion audit
+passes ordinary/debug assertions, VCD equality, DWARF verification and actual
+GDB argument/finish types/values under both wrapper inline hints. No production
+fix is justified. Tighten GDB evidence to require each positive/negative
+conversion separately in procedural and hardware caller stacks, then bitpack.
+
+3904522 found the procedural source types are namespace-qualified, so the first
+probe matched hardware only. Normalize qualified type spelling in the test,
+not compiler types. 3910186 then reproduces a real shared-function entry fault:
+std float32-to-float16 formal reference is NULL at the function breakpoint.
+3914975/3918472 are bounded diagnostic jobs, not accepted tests. Native
+disassembly proves sx.fn.6.from receives the full i32 in edi, yet GDB stops
+at +7 before reference reset/copy/publish (+14..+51). This is not pruning.
+inline_body already separates draft native input inspection from its body,
+but only when debug_arguments is Some; shared Process functions instead bind
+existing cache.parameters and therefore skip that boundary. Own the common
+debug/inline_values.rs entry guard: every native source body needs the existing
+debug.arguments.available boundary after setup, without a new argument or
+reevaluation. Retain test requirements for both hardware/procedural contexts.
+
+3924227 disproves the block-boundary-only fix: shared input stops are still
+early. Trace the sibling value emitters: layout reads already return captured
+native inputs before applying their declaration span, but process_value_at
+applies the declaration span first and process_value reaches Parameter after
+its location guard. Those are references to captured inputs, not executable
+declarations. Match the layout emitter's existing fast-path ordering in the
+two scalar emitters, retaining the consumer's actual source location. Recheck
+the full regression; do not call the first attempted fix accepted.
+
+3939549 and 3957651 still reproduce the early stop. Temporary diagnostic test
+3950404/3962548 produced the exact TestExecutable IR on disk, not just the
+hardware-only CLI dump. Its shared input setup and reference publication are
+already line zero. The binary snapshot uses select(bit, high, low), which LLVM
+-O0 lowers to actual conditional branches. LLVM DwarfDebug::findPrologueEndLoc
+stops at initial control flow and chooses an early scope-line fallback; moving
+locations or adding a fall-through block cannot fix that. Verified against the
+official LLVM DwarfDebug.cpp implementation and native disassembly.
+Remove the temporary diagnostic test and all unsuccessful production edits.
+Own process/logic.rs packed_discriminant: express its binary mapping as
+low + zext(bit) * (high - low), using the same std-derived codes and LLVM
+integer wrapping. No branch before source entry, no fake enum values, no
+new input or execution demand. Preserve the existing metadata selection.
+
+3975113 stopped at formatting only; 3976837 is terminal exited/success/0,
+peak 1280028672: the branch-free mapping fixes the full GDB entry/finish audit
+in default and bitpack under both hints and caller contexts, and strict Clippy
+passes. All unsuccessful location/fast-path edits and temporary diagnostic
+code are removed. Add a constant-code regression for arbitrary reversed std
+codes, width wrapping and unchanged nonbinary metadata forwarding.
+
+The exact IR diagnostic also found a concrete remaining provenance audit:
+shared std float32-to-float16 conversion returns an inspection layout with
+range 0..15 instead of the target format's 5..-10. Numeric finish is correct;
+this fixture does not inspect returned logical labels. Check wide fixed-family
+return companions next before claiming that every format transport is done.
+
+3987987 found a one-line wrapping difference in the new unit's formatter gate.
+Cancelled the conclusively failed run, not an observation interruption; its
+stop status is not acceptance. Apply the exact formatter output and require a
+standalone format check before the retained full-CI run so failure exits early.
+
+Frozen acceptance is live as siox-job-3000-1791823205927388896-3992561.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791823205927388896-3992561.log.
+Poll this handle; no Rust edits while it runs. Own sibling architecture/testing
+documentation for the binary mapping and numeric-family signature regression;
+these doc updates do not modify acceptance inputs. No push.
+
+Frozen source/test/core hash:
+d372d1b8437a0c3727bd167dab9eac6e15123a78e790c290211939adc732b715.
+TODO/companion docs now name the actual remaining target-format range audit,
+rather than treating the newly verified numeric signatures as still untested.
+
+3992561 is terminal exited/success/0, peak 1935474688 bytes. Complete local
+CI passed: default/bitpack full suites with 23 DWARF fixtures each, the
+reordered-code/wrapping unit, strict Clippy and formatter/artifact gates.
+All four current ordinary/debug corpora passed 239/0. Native FIFO/wide GDB
+breakpoints, source inspection/stepping and VCD parity passed. AST/community
+refresh completed (5522 nodes, 264 communities); existing libfst parser
+warnings remain unrelated to compiler validation. Frozen source/test/core
+hash d372d1b8437a0c3727bd167dab9eac6e15123a78e790c290211939adc732b715
+is unchanged. Commit only the branch-free mapping, two regressions, TODO and
+owned appended log; preserve foreign AGENTS12/chat441/.codex. Companion docs
+separately. No push; the explicit target-format return-range audit remains.
+
+### 2026-10-12 — Codex — target-format return-range regression
+
+Previous turn committed accepted compiler 63d6194 and docs 990b3b9. No live
+jobs. Own tests/debug_info.rs, then IR source-process lowering only if the
+failure is reproduced. Check sfixed<8,4> to sfixed<81,4> return snapshots and
+logical labels 76..-4 through procedural/hardware callers, both wrapper hints
+and changing positive/negative inputs. Ordinary execution must pass first;
+do not manufacture companion planes or weaken unavailable-bit checks.
+Preserve foreign AGENTS12/chat441/.codex. No push.
+
+4161215 passes ordinary/debug native assertions and DWARF verification, but
+leaves the sfixed81 frame before a whole return snapshot appears. That method
+actually emits only its 64-bit kernel word; padding it for inspection would
+violate the established unavailable-bit contract. Keep that absence truthful.
+Use a complete 81-bit Word family conversion instead: binary Bit storage,
+unchanged raw bits, source range 76..-4 to target 72..-8. It tests logical
+return labels without demanding an unconsumed plane or extending missing bits;
+force both inline hints to cover actual shared Process copies as well.
+
+1255/7833/18649 are failed ordinary-language probes, not DWARF evidence:
+the generic Bit-backed form loses bounds in checking, and the indexed custom
+From constructor reaches an incomplete ordinary Process block. Remove these
+probes; do not fix unrelated language boundaries under this goal. Extend the
+already-passing numeric-family fixture instead. Its debug compile uses the
+compiler API to inspect actual source-call and used shared-function return
+layouts before the same native/GDB/VCD checks. Require the known target
+float16 5..-10, float32 8..-23 and sfixed8 3..-4 ranges independently of
+whether a return companion plane was consumed. No generated fake values.
+
+44098 confirms the original concrete failure in canonical IR: used
+std::float::from value1786 returns range0..31, expected8..-23. Own the common
+inline_with_self_format return descriptor and matching shared Process copy.
+Reuse its already-known explicit target layout; do not change executable
+value widths, materialize missing bits or alter argument requests. Add the
+target shape to shared signatures only for methods returning their Self family,
+so different target ranges cannot overwrite one shared return description;
+kernel-number helpers continue sharing across formats.
+
+52532 is terminal exited/success/0, peak 1030205440: canonical return ranges,
+native assertions, GDB entry/finish checks and VCD/DWARF parity pass default
+and bitpack under both wrapper hints. Strengthen the same fixture with two
+16-bit targets (binary16 M10 and bfloat16 M7) from the same binary32 input;
+require both target ranges and both actual return bit patterns separately in
+procedural/hardware stacks. This tests the shared-signature separation rather
+than merely observing a single metadata overwrite.
+
+67419/76998/85444 exposed test provenance assumptions, not a production
+regression: one conversion has the std float type-field span rather than an
+explicit constructor span. Check actual call-site lines when available, valid
+target formats for declaration-derived spans, and independently require both
+used shared binary32-to-16-bit function ranges. 98546 is terminal
+exited/success/0, peak 1141551104: binary16 and bfloat16 layouts and actual
+finish patterns pass in both packing modes, both hints and caller contexts;
+strict Clippy passes. No failed wide/custom probes remain. Freeze Rust for
+full acceptance before committing this metadata/signature change. No push.
+
+Frozen acceptance: siox-job-3000-1791828977283331750-116642.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791828977283331750-116642.log.
+Source/test/core hash:
+5b29df4680466b53b223725e9282daea0cb86710997a5effd71cec66d7a693fd.
+Poll this exact job; do not edit Rust while it runs. Own companion
+architecture/testing documentation for explicit return ranges and same-width
+format separation. TODO/docs updates do not change acceptance inputs.
+
+### 2026-10-12 — Codex — DWARF acceptance checklist
+
+Continuation confirmed; acceptance job116642 is authoritatively running.
+Default tests passed; bitpack tests are still active. Source remains frozen.
+Own a short companion docs/dwarf-audit.md checklist mapping the documented
+source-debugging contract to named permanent checks. Distinguish truthful
+unavailable values and debugger limitations from unfinished implementation;
+do not treat optional-tool test success alone as evidence of GDB execution.
+Both GDB and llvm-dwarfdump are installed on this host. Preserve foreign edits.
+
+Job116642 now passed both full suites (23 DWARF checks per packing mode),
+formatter, artifact checks and strict Clippy. The exact service remains live,
+currently compiling the ordinary corpus float_sqrt_test; no restart or source
+edit. New companion dwarf-audit.md records the finite documented acceptance
+requirements, named checks and explicit supported limits; testing.md links it.
+Commit/acceptance remain pending all four corpus runs, native GDB smoke and
+graph refresh. Verify the same source hash and terminal service status first.
+
+### 2026-10-12 — Codex — DWARF TODO closure review
+
+Job116642 remains live; both ordinary corpora passed 239/0. Debug corpora,
+GDB smoke and graph refresh remain. Own only the native-debugging TODO item:
+move its completed history to the existing companion testing/audit documents,
+retaining concrete pending acceptance steps and the no-new-demand invariant.
+The audit checks the actual Direct/Register/Memory return variants and packed,
+literal/runtime-string views; wide/odd/partial source frames have permanent
+checks, so open-ended transport-audit wording is no longer a concrete task.
+Foreign companion docs/language.md is now dirty; preserve it, do not stage it.
+
+Job116642 is terminal exited/success/0, peak 2607013888 bytes. Both full suites
+passed all 23 DWARF fixtures, strict Clippy/artifact/format gates passed, and
+all four ordinary/debug default/bitpack corpora passed 239/0. GDB smoke logs
+prove FIFO/wide breakpoints, inspection, stepping and VCD parity in both build
+modes. Source/test/core hash remains
+5b29df4680466b53b223725e9282daea0cb86710997a5effd71cec66d7a693fd.
+AST/community refresh completed (5523 nodes, 242 communities); existing libfst
+graph-extraction warnings are not compiler faults. The finite requirement
+review includes every backend return variant and documented supported layout;
+truthful pruning/unavailable snapshots and GDB classifier limits remain explicit.
+Record acceptance in companion dwarf-audit.md, remove the completed native
+TODO history, then commit only owned production/regression/TODO/appended log.
+Companion architecture/testing/audit commits separately; no push.
 
 ### 2026-10-12 — Claude — generic struct value parameters size port fields
 
@@ -14015,3 +17890,180 @@ Branch `fix/diagnostic-spans-and-roots`.
   ir/lower/diagnostics.rs) skips W-P019 deferral, E-P017 for unsized arrays,
   and the projection error (`Design::parametric`).
 **Codex:** `Design` gained `parametric: bool` (struct literals need it).
+
+### 2026-10-12 — Claude — merged main into feature/native-dwarf (#72)
+
+User asked to resolve #72's conflicts and merge it. Only TODO.md (kept the
+branch's five open hardware-lowering entries; main's side was empty) and this
+log (both appends kept) conflicted. Code auto-merged with #68–#71; fmt, both
+clippy gates, build and tests passed locally on the merged tree before push.
+**Codex:** pull `feature/native-dwarf` before pushing to it again.
+
+### 2026-10-12 — Claude — #72 CI is red on LLVM 22; handing back to Codex
+
+The user asked me to merge #72, then to leave the fix to Codex. Not merged.
+After the main merge (e94a6a7) the PR is mergeable and GitHub CI ran for the
+first time (run 38307691076). The frontend job passes. The LLVM job fails in
+"Test default backend":
+- `tests/debug_info.rs`: 16 of 23 tests FAILED, then the test binary died
+  with SIGSEGV (signal 11), so the harness never printed the failure bodies.
+  Failing: complete_source_returns_do_not_invent_missing_logic_planes,
+  direct_dwarf_supports_source_steps_and_persistent_values,
+  expression_branches_preserve_shadowing_and_selected_source_stops,
+  effectful_source_frames_share_actual_cached_results,
+  expression_inline_calls_keep_source_frames_and_value_bindings,
+  hardware_expression_calls_keep_source_frames,
+  large_aggregate_returns_match_the_debugger_finish_abi,
+  mixed_partial_returns_keep_wide_array_and_real_fragments,
+  narrow_source_consumers_do_not_fabricate_binding_bits,
+  odd_sized_aggregate_returns_keep_inspectable_source_frames,
+  packed_expression_bindings_expose_logic_companions,
+  repeated_inline_calls_keep_locals_and_source_frames_across_await,
+  source_real_returns_match_the_debugger_finish_abi,
+  source_string_returns_match_the_debugger_finish_abi,
+  wide_source_returns_keep_declared_bindings (+1 earlier in the log).
+  Passing: conversion_and_non_enum_resolve_keep_source_signatures,
+  checked_and_effectful_aggregates_preserve_demand_and_order,
+  independently_selected_nested_partial_returns_keep_source_fragments,
+  mixed_aggregate_returns_match_the_debugger_finish_abi,
+  pure_loop_muxes_keep_shared_debug_ssa,
+  partial_aggregate_returns_keep_only_demanded_fragments,
+  jointly_demanded_partial_returns_share_source_fragments.
+- Locally the same merged tree passes everything through clippy all-targets
+  (fmt, frontend check/clippy, build, test, test bitpack). The difference is
+  the toolchain: inkwell's `llvm22-1` here links the system **LLVM 23.1**
+  (`/usr/lib/libLLVM.so.23.1`; no LLVM 22 installed) with GDB 18.1 and
+  llvm-dwarfdump 23. CI links the pinned **LLVM 22** (apt.llvm.org) with
+  Ubuntu's GDB. So the DWARF path has only been verified against LLVM 23.
+- Reproducing: Arch has `extra/llvm22` 22.1.8 alongside 23 (needs sudo), then
+  build with `LLVM_SYS_221_PREFIX` pointing at it. Running the test binary
+  with `--test-threads=1 --nocapture` should show which test segfaults and
+  the assertion bodies the crash swallowed.
+- Not caused by the main merge as far as I can tell: code auto-merged, only
+  TODO.md/chat.md conflicted. I could not get CI on the pre-merge tip (a76a029):
+  GitHub runs no PR CI while a PR conflicts with main, which is also why #72
+  never had checks before. Probe PR #73 is closed and its branch deleted.
+
+Review notes, none blocking:
+- Debug metadata (`InlineCall` wrappers, inline-call ranges, source bindings)
+  is built on every compile, not only with `-g`. Measured ~7% more Process IR
+  values on a small design (80 → 86); constant folding unaffected there.
+- `arena_constant_integer` (ir/process.rs) does not look through
+  `InlineCall { operand, .. }`. One-line robustness fix; no regression seen.
+- HOUSERULES' guarded-run defaults to `MemoryMax=2G`, below CLAUDE.md's
+  budgets (~8G release build / LLVM emit, ~12G full ci-local), and its
+  host-wide flock serializes every agent's jobs.
+
+### 2026-10-12 — Codex — align LLVM 23 bindings and verification
+
+Owner requests fixing the LLVM 22 CI/bindings versus actual local LLVM 23
+toolchain mismatch. Own Cargo.toml/Cargo.lock, .cargo/config.toml, CI and build
+documentation. Use the previously probed exact Inkwell c8234a0 commit with
+llvm23-1-prefer-dynamic; released tag 0.10.0 still lacks LLVM 23 features.
+Enable llvm-sys strict-version checking, install/select LLVM/Clang 23 in CI,
+and verify the pinned Rust 1.90 frontend/native/bitpack/corpus/debug gates.
+Do not merge latest main or change language semantics under this task. Preserve
+foreign AGENTS12/chat441/.codex. Companion README/simulation docs separately.
+
+Focused job399714 stopped before compilation because the manually migrated
+lockfile omitted Inkwell internals' new syn3 dependency. Cargo's offline targeted
+update added syn3 only, preserving existing versions. Job401316 is terminal
+exited/success/0, peak824119296: Rust1.90 locked all-target/all-feature checking
+passes with LLVM23 bindings and the actual LLVM23.1.1 installation. No Rust
+API edits needed. The official apt LLVM23 package index provides23.1.2 for
+Ubuntu Noble, matching the strict23.1 requirement. Freeze source/config for full
+default/bitpack native and debug corpus acceptance before scoped commits.
+
+Full gate: siox-job-3000-1791839858088072048-406157.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791839858088072048-406157.log.
+Frozen source/config/build/README hash (includes .cargo strict configuration):
+3d4928781cbb008bc12a1db112b6bbd03aa37b71840331a4e89ebe6845d4ff72.
+Poll this exact service; no source/config changes while it runs. Documentation
+outside the frozen inputs can be completed without changing verification.
+
+Both full suites (23 DWARF fixtures each) and strict Clippy passed. The first
+ordinary corpus is still progressing after the slow numeric cases. Its measured
+duration projects the four-run gate beyond the default one-hour limit. Systemd
+does not accept RuntimeMaxUSec through live set-property on this host; a
+job-specific runtime drop-in and daemon-reload raised this same service's limit
+to two hours. MainPID406184 is unchanged, MemoryMax stays3GiB, and no source or
+verification restart occurred. The repository launcher defaults are unchanged.
+
+### 2026-10-13 — Codex — LLVM 23 alignment accepted
+
+Job406157 is terminal exited/success/0, peak 2621702144 bytes. Both complete
+test suites passed all 23 DWARF fixtures, strict frontend/all-target Clippy and
+format/artifact gates passed, and all four ordinary/debug default/bitpack
+corpora passed 239/0. GDB FIFO/wide smoke checks prove source breakpoints,
+inspection, stepping and VCD parity in both build modes. Rebuilt sioxc links
+libLLVM.so.23.1; the actual local toolchain is LLVM/Clang 23.1.1. AST/community
+refresh completed (5523 nodes, 242 communities), with existing libfst parser
+warnings only. Frozen source/config/build/README hash remains
+3d4928781cbb008bc12a1db112b6bbd03aa37b71840331a4e89ebe6845d4ff72.
+Commit only Cargo/lock, strict config, LLVM23 CI, README and this appended log;
+preserve foreign AGENTS12/chat441/.codex. Companion build/simulation/debug audit
+documentation separately. This is local CI-equivalent verification, not a
+claim that the new GitHub workflow has run. No push requested for this change.
+
+### 2026-10-13 — Codex — push LLVM 23 fix onto current PR #72
+
+Owner requests pushing and running GitHub CI. PR #72 now contains Claude's
+e94a6a7 main integration and 0063f83 findings; preserve both commits. Apply the
+already accepted 74cd66c LLVM fix in isolated /home/max/siox-llvm23-ci, resolving
+only the append-only chat conflict by retaining both sides. Relative to the PR
+head there are no Rust, std, runtime or test edits. Original shared worktree and
+foreign AGENTS/chat/.codex remain untouched. Validate the rebased patch locally
+before a fast-forward PR-branch push, then monitor the exact new GitHub run.
+Companion docs 7336739 are already pushed to siox-paper/main.
+
+Frozen PR-integration source/config/build/README hash:
+c13349428a29840a88005ce466714bc1796761ab7703761e9f7e0ad15d31c6bb.
+Local gate: siox-job-3000-1791867617135150905-713873.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791867617135150905-713873.log.
+Use the retained stage directory printed in that log. One Cargo job, measured
+3GiB cap, two-hour bound from launch. Reuse the original target cache (the
+isolated target symlink also preserves the GDB script's compiler path). Source
+is frozen during this job. GitHub CI remains pending the new fast-forward push.
+
+Job713873 is terminal exited/success/0, peak2210426880 bytes. Both full suites
+passed23 DWARF fixtures each, strict Clippy/format/artifact gates passed, and
+both current239-program corpora passed239/0. Native FIFO/wide GDB smoke checks
+passed source stepping/inspection and VCD parity. Frozen integration hash stays
+c13349428a29840a88005ce466714bc1796761ab7703761e9f7e0ad15d31c6bb.
+Commit the LLVM setup patch onto the preserved PR head, then perform the owner-
+authorized fast-forward push and monitor GitHub CI on that exact new SHA.
+
+### 2026-10-13 — Codex — update CI to stable GDB 18.1
+
+Owner requests updating CI's debugger after run38353377727 failed11/23 DWARF
+fixtures with Ubuntu GDB15.1. Latest official stable release is18.1, matching
+the accepted local debugger. Own only CI and this appended log in the isolated
+PR worktree; preserve foreign shared-worktree changes. Build the checksum-pinned
+official release with Python support, cache its install and select it before
+all native tests. Add a fail-fast Python wide-integer/API check; do not narrow
+source types, skip debugger tests or change compiler/test semantics. Verify the
+workflow recipe and existing debugger fixtures before committing.
+
+Verification job: siox-job-3000-1791871443637801798-890200.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791871443637801798-890200.log.
+It executes the workflow's actual source-build and preflight blocks, then both
+23-fixture DWARF suites and native GDB smoke under the new install. Source
+archive SHA512 passed; YAML/bash parsing and actionlint1.7.12 passed. Compiler,
+std, runtime, unit tests and corpus inputs are unchanged from accepted job713873.
+Do not restart this live job after an observation interruption.
+
+Job890200 built/installed the exact18.1 archive successfully but preflight
+rejected the C expression parser's unsigned __int128 spelling (syntax error,
+not an integer-conversion error). Remove that extra C expression rather than
+adding a separate compiled C fixture; the existing Siox wide DWARF tests check
+the actual conversion. Keep version/Python/API preflight and verify the retained
+fresh install plus both complete suites; no source-build restart is needed.
+
+Job960556 is terminal exited/success/0, peak2521534464 bytes. Version/Python/API
+preflight passed, both complete Rust1.90 suites passed all23 DWARF fixtures each
+(108.68s/108.79s), and the native FIFO/wide GDB smoke passed source stepping,
+inspection and VCD parity. Compiler/test/corpus sources remain unchanged; the
+full239/0 default/bitpack corpus gate from job713873 still applies. Pin the
+native runner to its current Ubuntu24.04 image so a cached debugger cannot
+outlive that image's Python ABI. Final actionlint/YAML/bash/diff checks before
+the scoped commit; hosted verification follows the ongoing PR push/CI task.

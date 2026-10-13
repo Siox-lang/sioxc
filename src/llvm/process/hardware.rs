@@ -13,6 +13,7 @@ pub(in crate::llvm) struct HardwareValueCache<'ctx> {
     contextual: HashMap<(ProcessValueId, Option<IntValue<'ctx>>, u32, bool), IntValue<'ctx>>,
     metadata: HashMap<(ProcessValueId, Option<IntValue<'ctx>>, SourceLayout), IntValue<'ctx>>,
     signals: HashMap<(SignalId, ProcessSignalState, u32), IntValue<'ctx>>,
+    source_results: debug::ValueResults<'ctx>,
 }
 
 impl HardwareValueCache<'_> {
@@ -21,6 +22,7 @@ impl HardwareValueCache<'_> {
         self.contextual.clear();
         self.metadata.clear();
         self.signals.clear();
+        self.source_results.clear();
     }
 }
 
@@ -153,14 +155,19 @@ impl HardwareValueFacts {
         active: Option<IntValue<'ctx>>,
         index_sites: &HashMap<IndexSite, u32>,
         values: &mut HardwareValueCache<'ctx>,
+        debug: Option<&DebugInfo<'ctx, '_>>,
+        source_location: Option<inkwell::debug_info::DILocation<'ctx>>,
     ) -> Option<IntValue<'ctx>> {
         let mut cache = ProcessValueCache::new(&self.activity_sensitive, &self.supported.meta_free);
         cache.hardware_calls = true;
+        cache.debug = debug;
+        cache.source_location = source_location;
         cache.evaluated_calls = std::mem::take(&mut values.evaluated_calls);
         cache.emitted = std::mem::take(&mut values.emitted);
         cache.contextual = std::mem::take(&mut values.contextual);
         cache.metadata = std::mem::take(&mut values.metadata);
         cache.signals = std::mem::take(&mut values.signals);
+        cache.source_results = std::mem::take(&mut values.source_results);
         let result = process_value_at(
             context,
             module,
@@ -178,6 +185,7 @@ impl HardwareValueFacts {
         values.contextual = cache.contextual;
         values.metadata = cache.metadata;
         values.signals = cache.signals;
+        values.source_results = cache.source_results;
         result
     }
 }
