@@ -146,8 +146,12 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   expands in the CFG like any call; it used to fall back silently to a raw
   resize. In hardware such a body is still rejected (E-P017 on the loop's
   index), not silently resized.
-- 🔴 **Host-service extensions.** Add general runtime-owned dynamic arrays
-  and runtime-computed file-path arguments. Keep allocation, persistent state
+- 🟡 **Host-service extensions.** Add general runtime-owned dynamic arrays.
+  Runtime-computed file paths are done: a testbench `read`/`exists` path may
+  be any string (fixed `Char[N]` values are formatted, runtime strings pass
+  their UTF-8), resolved against the source directory by
+  `sx_runtime_source_path` as a literal is at compile time. Hardware reads
+  still take a literal. Keep allocation, persistent state
   and host contact behind the fixed runtime ABI; LLVM emits value semantics,
   not another host-service implementation. Current RNG, UTF-8/string, fixed
   binary-read and file-probe services are implemented and verified; their

@@ -725,12 +725,19 @@ impl<'a> Checker<'a> {
             }
             "exists" | "read" => {
                 let Some(argument) = args.first() else { return };
-                if !matches!(argument, Expr::StrLit { .. }) {
+                // A testbench resolves any string path when it runs; a
+                // hardware read happens at compile time and its lowering asks
+                // for a literal.
+                let string = matches!(argument, Expr::StrLit { .. })
+                    || matches!(self.type_of(argument, sym), Ty::Array {
+                        elem, family: None, ..
+                    } if matches!(elem.as_ref(), Ty::Char));
+                if !string {
                     self.error_with_help(
                         codes::TYPE_MISMATCH,
                         expr_span(argument),
-                        format!("`{function}` needs a literal file path"),
-                        format!("write `{function}(\"path/to/file\")`"),
+                        format!("`{function}` needs a file path string"),
+                        format!("write `{function}(\"path/to/file\")`, or pass a `string`"),
                     );
                 }
             }

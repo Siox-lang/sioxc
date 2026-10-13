@@ -84,6 +84,8 @@ uint8_t sx_runtime_read_utf8_fixed(const char *path, uint64_t *words,
                                    uint32_t character_capacity);
 uint8_t sx_runtime_read_binary(const char *path, uint64_t *words,
                                uint32_t word_count, uint32_t byte_capacity);
+const char *sx_runtime_source_path(const char *directory, const char *path);
+const char *sx_runtime_string_utf8(uint64_t handle);
 uint64_t sx_runtime_file_exists(const char *path);
 uint64_t sx_runtime_string_length(uint64_t handle);
 uint64_t sx_runtime_string_index(uint64_t handle, uint64_t index);

@@ -364,6 +364,29 @@ uint8_t sx_runtime_read_binary(const char *path, uint64_t *words,
     return 1;
 }
 
+/* A path computed when the test runs, resolved as a literal one is at
+ * compile time: relative to the source's directory, absolute unchanged. The
+ * result stays valid until the next call. */
+static int sx_fail(const char *message);
+
+const char *sx_runtime_source_path(const char *directory, const char *path) {
+    static char *joined;
+    if (!path || path[0] == '/' || !directory || !directory[0]) return path;
+    size_t directory_length = strlen(directory);
+    size_t path_length = strlen(path);
+    char *grown = realloc(joined, directory_length + path_length + 2);
+    if (!grown) {
+        sx_fail("cannot allocate a file path");
+        return path;
+    }
+    joined = grown;
+    memcpy(joined, directory, directory_length);
+    size_t cursor = directory_length;
+    if (joined[cursor - 1] != '/') joined[cursor++] = '/';
+    memcpy(joined + cursor, path, path_length + 1);
+    return joined;
+}
+
 uint64_t sx_runtime_file_exists(const char *path) {
     if (!path) return 0;
     FILE *file = fopen(path, "rb");
@@ -397,6 +420,12 @@ void sx_runtime_debug_string(uint32_t root, uint64_t handle, uint64_t *length,
     *data = string->values;
     *byte_length = (uint64_t)string->byte_length;
     *utf8 = string->utf8;
+}
+
+/* A runtime string's UTF-8 text, for a file path read from a fixture. */
+const char *sx_runtime_string_utf8(uint64_t handle) {
+    sx_runtime_string *string = sx_runtime_string_for(handle);
+    return string ? string->utf8 : 0;
 }
 
 uint64_t sx_runtime_string_length(uint64_t handle) {
