@@ -1,0 +1,51 @@
+// Simulation-throughput workload for scripts/bench.py: an LFSR feeding a
+// FIFO and a wide accumulator, clocked for a million cycles. It is a benchmark,
+// not a regression; the corpus lives in siox-tests.
+module throughput_test;
+
+use std::bits::unsigned;
+
+entity Datapath {
+    clk: Bit in,
+    sum: unsigned[96] out,
+    level: unsigned[5] out,
+    parity: Logic out
+}
+impl Datapath {
+    let lfsr: unsigned[32] = 1;
+    let mem: unsigned[32][16];
+    let head: unsigned[4] = 0;
+    let tail: unsigned[4] = 0;
+    let count: unsigned[5] = 0;
+    let acc: unsigned[96] = 0;
+
+    if clk.rising() {
+        lfsr = (lfsr << 1) or (((lfsr >> 31) xor (lfsr >> 21)) and 1);
+        if lfsr[3] == '1' {
+            if count < 16 { mem[tail] = lfsr; tail = tail + 1; count = count + 1; }
+        } else if count > 0 {
+            acc = acc + unsigned[96](mem[head]);
+            head = head + 1;
+            count = count - 1;
+        }
+    }
+
+    sum = acc;
+    level = count;
+    parity = lfsr[0] xor lfsr[7];
+}
+
+#[test]
+entity ThroughputTest {}
+impl ThroughputTest {
+    let clk: Bit = '0';
+    let sum: unsigned[96];
+    let level: unsigned[5];
+    let parity: Logic;
+    let dut: Datapath = { .clk = clk, .sum = sum, .level = level, .parity = parity };
+    for i in 0..1000000 {
+        clk = '1'; await 1ns; clk = '0'; await 1ns;
+    }
+    assert!(level <= 16, "the FIFO never overfills");
+    assert!(sum != 0, "the accumulator moved");
+}

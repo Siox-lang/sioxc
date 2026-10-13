@@ -77,6 +77,11 @@ the [ingress invariants](https://github.com/Siox-lang/siox-paper/blob/main/docs/
 when extending the IR; executable extensions and optimization measurements are
 listed under LLVM and Output below.
 
+- 🔴 **Nested `xor` in hardware.** `y = a xor b xor c` (or
+  `(a xor b) xor c`) on `unsigned[8]` ports fails E-P017 ("cannot derive a
+  digital scheduler expression from Invalid"); one `xor`, `and`/`or` chains
+  and `xor` mixed with `or` all lower. Found 2026-10-13 writing the benchmark
+  workload; reproduces on current main.
 - 🔴 **Hardware scalar packed-index metavalues.** A pure source function
   returning a `Logic` element from a packed struct port currently loses the
   discriminant in hardware lowering (`copy.data[6]` on `"01XZUWLH-"` returns
@@ -148,10 +153,15 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   signal writes, old/assignment snapshots, state across suspension and packed
   X/Z companion planes. Verify native results and waveform parity, and report
   measured compile-memory/runtime effects rather than instruction counts alone.
-- 🔴 **Optimization measurements.** Maintain repeatable object-size,
-  compile-memory, compile-time, and simulation-throughput benchmarks for
-  default, `bitpack`, and host-SIMD builds. Structural simplifications alone
-  are not evidence of a speedup. Indexed packed writes now use one update per
+- 🟡 **Optimization measurements.** `scripts/bench.py` measures compile
+  time, compile memory, binary size and simulation run time for default,
+  `bitpack` and host-SIMD builds, over the corpus's compile outliers plus a
+  million-cycle workload, and compares two runs (`--compare`). Report its
+  before/after numbers with any optimization: structural simplifications
+  alone are not evidence of a speedup. The 2026-10-13 baseline: the worst
+  outlier, `float_sqrt_test`, compiles for 75–80 s at 0.5 GB into a 2.5 MB
+  binary; the workload runs at about 1.1 µs a cycle (1.5 µs
+  with `bitpack`). Indexed packed writes now use one update per
   value/companion plane rather than enumerating bits; retain structural and
   native range/X/Z regressions plus measured LLVM instruction/memory evidence
   when extending canonical value sharing. Persisted packed reads now use a
