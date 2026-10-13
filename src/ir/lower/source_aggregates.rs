@@ -170,7 +170,11 @@ impl Lowering<'_> {
                 LayoutKind::Array { .. } | LayoutKind::Struct { .. },
             ) => {
                 let scrutinee_value = self.bind_source_expression(
-                    self.lower_scalar_env(scrutinee, env),
+                    if self.is_tuple_scrutinee(scrutinee) {
+                        Expr::Const(0)
+                    } else {
+                        self.lower_scalar_env(scrutinee, env)
+                    },
                     ast::expr_span(scrutinee),
                 );
                 let exhaustive = !arms.iter().any(|arm| pattern_has_wildcard(&arm.pattern));
@@ -267,12 +271,15 @@ impl Lowering<'_> {
 
 impl Lowering<'_> {
     /// `(q, r) = e;`: each named position of the target takes its part of the
-    /// value, leaf by leaf; `_` takes nothing. `None` when a position is not a
-    /// signal place or the value has no tuple shape here.
+    /// value, leaf by leaf; `_` takes nothing. A position that is a block
+    /// local is stored at once (under `cond`); the signal leaves are returned
+    /// for the caller to drive. `None` when a position is no place or the
+    /// value has no tuple shape here.
     pub(super) fn tuple_assign_leaves(
         &self,
         target: &ast::Expr,
         value: &ast::Expr,
+        cond: &Option<Expr>,
     ) -> Option<Vec<(SignalId, Expr)>> {
         let env = HashMap::new();
         let source_layout = self
@@ -281,9 +288,8 @@ impl Lowering<'_> {
         let Val::Fields(fields) = self.lower_shaped_source(value, &env, &source_layout) else {
             return None;
         };
-        let values = fields.into_iter().collect::<HashMap<_, _>>();
         let mut leaves = Vec::new();
-        self.tuple_target_leaves(target, &source_layout, "", &values, &mut leaves)?;
+        self.tuple_target_leaves(target, &source_layout, "", &fields, cond, &mut leaves)?;
         Some(leaves)
     }
 
@@ -291,6 +297,18 @@ impl Lowering<'_> {
     /// shape a tuple literal on the right is read through.
     fn tuple_target_layout(&self, target: &ast::Expr) -> Option<SourceLayout> {
         let ast::Expr::Tuple { elems, span } = target else {
+            if let Some((scope_index, name, suffix)) = self.block_local_path(target) {
+                if suffix.is_empty() {
+                    let ty = self
+                        .block_scopes
+                        .borrow()
+                        .get(scope_index)?
+                        .get(&name)?
+                        .ty
+                        .clone();
+                    return Some(self.source_layout(&ty, &self.cur_env));
+                }
+            }
             let path = self
                 .folded_elem_path(target)
                 .or_else(|| expr_path(target))?;
@@ -323,15 +341,10 @@ impl Lowering<'_> {
         target: &ast::Expr,
         source: &SourceLayout,
         prefix: &str,
-        values: &HashMap<String, Expr>,
+        values: &[(String, Expr)],
+        cond: &Option<Expr>,
         out: &mut Vec<(SignalId, Expr)>,
     ) -> Option<()> {
-        let join = |prefix: &str, rest: &str| match (prefix.is_empty(), rest.is_empty()) {
-            (true, _) => rest.to_string(),
-            (false, true) => prefix.to_string(),
-            (false, false) if rest.starts_with('[') => format!("{prefix}{rest}"),
-            (false, false) => format!("{prefix}.{rest}"),
-        };
         match target {
             ast::Expr::Tuple { elems, .. } => {
                 let LayoutKind::Struct { fields, .. } = &source.kind else {
@@ -343,8 +356,9 @@ impl Lowering<'_> {
                     self.tuple_target_leaves(
                         elem,
                         &field.layout,
-                        &join(prefix, &name),
+                        &join_leaf(prefix, &name),
                         values,
+                        cond,
                         out,
                     )?;
                 }
@@ -352,18 +366,78 @@ impl Lowering<'_> {
             ast::Expr::Path(path)
                 if matches!(path.segments.as_slice(), [only] if only.text == "_") => {}
             place => {
+                if let Some((scope_index, name, suffix)) = self.block_local_path(place) {
+                    if suffix.is_empty() {
+                        return self.store_tuple_part(scope_index, name, place, prefix, values, cond);
+                    }
+                }
                 let path = self
                     .folded_elem_path(place)
                     .or_else(|| expr_path(place))?;
                 let layout = self.persisted_layout(&path)?;
+                let values = values.iter().cloned().collect::<HashMap<_, _>>();
                 for (from, to) in aggregate_leaf_pairs(source, layout)? {
-                    let signal = *self.locals.get(&join(&path, &to))?;
-                    let value = values.get(&join(prefix, &from))?.clone();
+                    let signal = *self.locals.get(&join_leaf(&path, &to))?;
+                    let value = values.get(&join_leaf(prefix, &from))?.clone();
                     out.push((signal, self.coerce_to_target(signal, value)));
                 }
             }
         }
         Some(())
+    }
+
+    /// Store the part of a tuple value at `prefix` into a block local.
+    fn store_tuple_part(
+        &self,
+        scope_index: usize,
+        name: String,
+        place: &ast::Expr,
+        prefix: &str,
+        values: &[(String, Expr)],
+        cond: &Option<Expr>,
+    ) -> Option<()> {
+        let previous = self
+            .block_scopes
+            .borrow()
+            .get(scope_index)?
+            .get(&name)?
+            .clone();
+        let part = match values.iter().find(|(path, _)| path == prefix) {
+            Some((_, value)) => Val::Scalar(value.clone()),
+            None => Val::Fields(
+                values
+                    .iter()
+                    .filter_map(|(path, value)| {
+                        let rest = path.strip_prefix(prefix)?;
+                        let rest = match rest.strip_prefix('.') {
+                            Some(field) => field,
+                            None if rest.starts_with('[') => rest,
+                            None => return None,
+                        };
+                        Some((rest.to_string(), value.clone()))
+                    })
+                    .collect(),
+            ),
+        };
+        let span = ast::expr_span(place);
+        let next = match cond {
+            Some(condition) => {
+                self.source_select_value(condition.clone(), part, previous.value, span)
+            }
+            None => part,
+        };
+        self.store_block_local(scope_index, name, next, previous.ty, span);
+        Some(())
+    }
+}
+
+/// `prefix` and `rest` as one leaf path: `0.a`, `0[1]`.
+fn join_leaf(prefix: &str, rest: &str) -> String {
+    match (prefix.is_empty(), rest.is_empty()) {
+        (true, _) => rest.to_string(),
+        (false, true) => prefix.to_string(),
+        (false, false) if rest.starts_with('[') => format!("{prefix}{rest}"),
+        (false, false) => format!("{prefix}.{rest}"),
     }
 }
 

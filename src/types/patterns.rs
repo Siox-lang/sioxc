@@ -481,7 +481,7 @@ impl<'a> Checker<'a> {
                 self.error_with_help(
                     codes::TYPE_MISMATCH,
                     span,
-                    format!("a {} value is matched by a tuple pattern", self.ty_display(&ty)),
+                    format!("a {} value needs a tuple pattern", self.ty_display(&ty)),
                     "write one pattern per position, `(p1, p2, ..)`".to_string(),
                 );
             }

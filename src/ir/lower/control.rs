@@ -122,7 +122,7 @@ impl<'a> Lowering<'a> {
                     );
                 }
                 if matches!(target, ast::Expr::Tuple { .. }) {
-                    match self.tuple_assign_leaves(target, value) {
+                    match self.tuple_assign_leaves(target, value, &cond) {
                         Some(leaves) => {
                             for (target, expression) in leaves {
                                 self.hardware.drivers.push(Driver {
@@ -420,7 +420,11 @@ impl<'a> Lowering<'a> {
             ast::Stmt::Match(m) => {
                 // Combinational match: each arm becomes conditional drivers
                 // guarded by `scrutinee == variant` with first-match priority.
-                let scrut = self.lower_expr(&m.scrutinee);
+                let scrut = if self.is_tuple_scrutinee(&m.scrutinee) {
+                    Expr::Const(0)
+                } else {
+                    self.lower_expr(&m.scrutinee)
+                };
                 // A match naming every variant of its scrutinee's enum is as
                 // complete as one ending in `_`, so a signal every arm assigns
                 // is driven on every path and is not a latch. Only the wildcard
@@ -492,7 +496,11 @@ impl<'a> Lowering<'a> {
     /// arm's value is the base `els`, and each earlier arm wraps it under its
     /// `scrutinee == pattern` guard.
     pub(super) fn lower_match_expr(&self, scrutinee: &ast::Expr, arms: &[ast::MatchArm]) -> Expr {
-        let scrut = self.lower_expr(scrutinee);
+        let scrut = if self.is_tuple_scrutinee(scrutinee) {
+            Expr::Const(0)
+        } else {
+            self.lower_expr(scrutinee)
+        };
         // Every match needs a base case. With no `_`, the last arm is it: its
         // guard is redundant when the arms cover the scrutinee, and when they
         // do not this is at least a defined value rather than an `Unknown` no
@@ -531,7 +539,11 @@ impl<'a> Lowering<'a> {
         arms: &[ast::MatchArm],
         env: &HashMap<String, Val>,
     ) -> Val {
-        let scrut = self.lower_scalar_env(scrutinee, env);
+        let scrut = if self.is_tuple_scrutinee(scrutinee) {
+            Expr::Const(0)
+        } else {
+            self.lower_scalar_env(scrutinee, env)
+        };
         let exhaustive = !arms.iter().any(|a| pattern_has_wildcard(&a.pattern));
         let mut result: Option<Val> = None;
         for (i, arm) in arms.iter().enumerate().rev() {
@@ -550,6 +562,16 @@ impl<'a> Lowering<'a> {
             }
         }
         result.unwrap_or(Val::Scalar(Expr::Unknown))
+    }
+
+    /// Whether a `match` scrutinee is a tuple, which is never lowered as one
+    /// value: its arms read it position by position (`arm_match_cond`).
+    pub(super) fn is_tuple_scrutinee(&self, scrutinee: &ast::Expr) -> bool {
+        matches!(scrutinee, ast::Expr::Tuple { .. })
+            || matches!(
+                self.expr_types.get(&ast::expr_span(scrutinee)),
+                Some(crate::types::Ty::Tuple(_))
+            )
     }
 
     /// The condition selecting one match arm, built from its pattern and the
@@ -835,7 +857,7 @@ impl<'a> Lowering<'a> {
                         );
                     }
                     if matches!(target, ast::Expr::Tuple { .. }) {
-                        match self.tuple_assign_leaves(target, value) {
+                        match self.tuple_assign_leaves(target, value, &cond) {
                             // A registered tuple: one next-state update per leaf.
                             Some(leaves) => out.extend(leaves.into_iter().map(|(sig, expr)| {
                                 NextUpdate {
@@ -988,7 +1010,11 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 ast::Stmt::Match(m) => {
-                    let scrut = self.lower_expr(&m.scrutinee);
+                    let scrut = if self.is_tuple_scrutinee(&m.scrutinee) {
+                    Expr::Const(0)
+                } else {
+                    self.lower_expr(&m.scrutinee)
+                };
                     let mut remaining = cond.clone();
                     for arm in &m.arms {
                         let mc = self.arm_match_cond(

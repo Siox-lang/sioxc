@@ -1327,6 +1327,34 @@ pub fn expr_span(e: &Expr) -> Span {
     }
 }
 
+/// The base name of [`position_type`]'s marker, which no source can spell.
+pub const TUPLE_POSITION: &str = "(.)";
+
+/// Position `index` of the tuple type `whole`, before aliases are expanded:
+/// `let (q, r): Pair<A, B> = e;` declares `q` as position 0 of `Pair<A, B>`.
+/// The marker `(.)<whole, index>` is replaced by the element once `whole` is
+/// a written tuple (`syntax::imports`).
+pub fn position_type(whole: &Type, index: usize) -> Type {
+    let span = type_span(whole);
+    Type::Generic {
+        base: Box::new(Type::Path(Path {
+            segments: vec![Ident {
+                text: TUPLE_POSITION.to_string(),
+                span,
+            }],
+            span,
+        })),
+        args: vec![
+            GenericArg::PositionalType(whole.clone()),
+            GenericArg::Positional(Expr::Int {
+                text: index.to_string(),
+                span,
+            }),
+        ],
+        span,
+    }
+}
+
 /// The source extent of a pattern; `_` carries none.
 pub fn pattern_span(p: &Pattern) -> Option<Span> {
     match p {

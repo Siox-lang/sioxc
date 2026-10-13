@@ -1793,25 +1793,21 @@ impl<'a> Parser<'a> {
                 })
             }
             LetPattern::Tuple(elems, tuple_span) => {
-                let types = match whole {
-                    Some(Type::Tuple { elems: types, .. }) if types.len() == elems.len() => {
-                        Some(types)
-                    }
-                    Some(other) => {
-                        self.error_at(
-                            type_span(other),
-                            "this type is not a tuple of the pattern's size",
-                        );
-                        None
-                    }
-                    None => None,
-                };
+                let arity = elems.len();
                 let elems = elems
                     .into_iter()
                     .enumerate()
                     .map(|(index, elem)| {
-                        let ty = types.and_then(|types| types.get(index));
-                        self.declare_let_pattern(elem, ty, span, lets)
+                        // A written tuple type gives each position its own
+                        // type; any other (an alias, `Pair<A, B>`) is read
+                        // once aliases are expanded (`position_type`).
+                        let ty = whole.map(|whole| match whole {
+                            Type::Tuple { elems: types, .. } if types.len() == arity => {
+                                types[index].clone()
+                            }
+                            other => position_type(other, index),
+                        });
+                        self.declare_let_pattern(elem, ty.as_ref(), span, lets)
                     })
                     .collect();
                 Expr::Tuple {
