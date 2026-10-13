@@ -181,20 +181,12 @@ pub(super) fn emit_buffered_read_value<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
-    design: &Design,
-    path: ProcessValueId,
+    path: PointerValue<'ctx>,
     width: u32,
     runtime_name: &str,
     capacity: u32,
     span: siox::diag::Span,
 ) -> Option<IntValue<'ctx>> {
-    let text = process_string(design, path)?;
-    let path = private_string(
-        context,
-        module,
-        &format!("sx.host.buffered.path.{}.{}", path.0, runtime_name),
-        text,
-    );
     let i8 = context.i8_type();
     let i32 = context.i32_type();
     let i64 = context.i64_type();
@@ -397,4 +389,94 @@ pub(super) fn process_empty_string_comparison(
         ProcessBinaryOp::Ne => Some(false),
         _ => None,
     }
+}
+
+/// A host file path: a literal, already resolved against the source
+/// directory, as a constant; or a string computed when the test runs,
+/// formatted and then resolved by the runtime the same way.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn host_path<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    path: ProcessValueId,
+    name: &str,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<PointerValue<'ctx>> {
+    if let Some(text) = process_string(design, path) {
+        debug::literal_value(module, builder, design, path, index_sites, cache)?;
+        return Some(private_string(context, module, name, text));
+    }
+    let pointer = context.ptr_type(AddressSpace::default());
+    let call_pointer = |name: &str, arguments: &[inkwell::values::BasicMetadataValueEnum<'ctx>]| {
+        let function = module.get_function(name).unwrap_or_else(|| {
+            let parameters = arguments
+                .iter()
+                .map(|argument| match argument {
+                    inkwell::values::BasicMetadataValueEnum::IntValue(value) => {
+                        value.get_type().into()
+                    }
+                    _ => pointer.into(),
+                })
+                .collect::<Vec<_>>();
+            module.add_function(
+                name,
+                pointer.fn_type(&parameters, false),
+                Some(Linkage::External),
+            )
+        });
+        match builder
+            .build_call(function, arguments, "pv.host.path")
+            .ok()?
+            .try_as_basic_value()
+        {
+            inkwell::values::ValueKind::Basic(value) => Some(value.into_pointer_value()),
+            _ => None,
+        }
+    };
+    let directory = private_string(
+        context,
+        module,
+        "sx.host.source_directory",
+        &design.base_dir.to_string_lossy(),
+    );
+    // A string read from a fixture keeps its UTF-8 text in the runtime.
+    if dynamic_string_value(design, path) {
+        let handle = process_value_at(
+            context,
+            module,
+            builder,
+            design,
+            path,
+            64,
+            false,
+            None,
+            index_sites,
+            cache,
+        )?;
+        let text = call_pointer("sx_runtime_string_utf8", &[handle.into()])?;
+        return call_pointer("sx_runtime_source_path", &[directory.into(), text.into()]);
+    }
+    let formatted = emit_process_format(
+        context,
+        module,
+        builder,
+        design,
+        ProcessId(u32::MAX),
+        siox::ir::ProcessBlockId(path.0),
+        0,
+        &[ProcessFormatPart::Value {
+            value: path,
+            kind: ProcessDisplayKind::String,
+            spec: Default::default(),
+        }],
+        index_sites,
+        cache,
+    )?;
+    call_pointer(
+        "sx_runtime_source_path",
+        &[directory.into(), formatted.into()],
+    )
 }

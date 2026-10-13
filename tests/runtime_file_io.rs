@@ -337,3 +337,57 @@ fn runtime_string_indices_are_checked_against_the_loaded_length() {
         "runtime string failure was not actionable:\n{output}"
     );
 }
+
+/// A testbench path may be computed: a string local, an element of a
+/// string array, or a string read from a fixture. Each resolves against the
+/// source directory as a literal does, whatever directory the test runs in.
+#[cfg(feature = "llvm")]
+#[test]
+fn computed_paths_resolve_against_the_source_directory() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let dir = std::env::temp_dir().join(format!("siox_computed_paths_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("word.bin"), 42u64.to_le_bytes()).unwrap();
+    std::fs::write(dir.join("wore.bin"), 7u64.to_le_bytes()).unwrap();
+    std::fs::write(dir.join("list.txt"), "wore.bin").unwrap();
+    let binary = dir.join("paths");
+    let source = r#"
+module computed_paths;
+#[test] entity T {}
+impl T {
+    check: process {
+        let name: string = "word.bin";
+        assert!(exists(name), "a string local names a fixture");
+        let missing: Char[8] = "gone.bin";
+        assert!(exists(missing) == false, "a missing computed path is not found");
+        let names: Char[8][2] = ["word.bin", "wore.bin"];
+        let total: integer = 0;
+        for fixture in names { total = total + read<integer>(fixture); }
+        let listed: string = read<string>("list.txt");
+        print!("first={} total={} listed={}\n", read<integer>(name), total, read<integer>(listed));
+    }
+}
+"#;
+    let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+        CompileRequest::new(
+            SourceInput::memory(dir.join("paths.siox"), source),
+            Emit::TestExecutable,
+        )
+        .with_output(&binary),
+    );
+    assert!(
+        compilation.succeeded(),
+        "{} {:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    // Run from elsewhere: the paths are the source's, not the caller's.
+    let run = Command::new(&binary)
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    let report = text(&run);
+    assert!(run.status.success(), "{report}");
+    assert!(report.contains("first=42 total=49 listed=7"), "{report}");
+}

@@ -6585,13 +6585,16 @@ fn lower_process_file_call(
     else {
         return None;
     };
-    let [ast::Expr::StrLit {
-        text: path,
-        span: path_span,
-    }] = args.as_slice()
-    else {
+    let [argument] = args.as_slice() else {
         return None;
     };
+    // Inside an expression (`total + read<integer>(path)`) there is no
+    // contextual type; the requested one is the result's.
+    let requested = match type_args.as_slice() {
+        [ast::GenericArg::PositionalType(requested)] => process_declared_type(requested, context),
+        _ => None,
+    };
+    let return_type = return_type.or(requested.as_ref());
     let direct_string = matches!(type_args.as_slice(), [ast::GenericArg::PositionalType(requested)]
             if type_leaf(requested) == Some("string"));
     let operation = if builtin_callee_is(callee, "read", context) {
@@ -6612,21 +6615,31 @@ fn lower_process_file_call(
     } else {
         return None;
     };
-    let path = context
-        .design
-        .base_dir
-        .join(path)
-        .to_string_lossy()
-        .into_owned();
-    let path_type = crate::types::Ty::Array {
-        elem: Box::new(crate::types::Ty::Char),
-        family: None,
-        len: u32::try_from(path.chars().count()).ok()?,
-        low: 0,
+    let path = match argument {
+        ast::Expr::StrLit {
+            text: path,
+            span: path_span,
+        } => {
+            let path = context
+                .design
+                .base_dir
+                .join(path)
+                .to_string_lossy()
+                .into_owned();
+            let path_type = crate::types::Ty::Array {
+                elem: Box::new(crate::types::Ty::Char),
+                family: None,
+                len: u32::try_from(path.chars().count()).ok()?,
+                low: 0,
+            };
+            let path_kind = ProcessValueKind::String(path);
+            let path_width = source_value_width(&path_kind, Some(&path_type), process, context);
+            push_value(*path_span, Some(path_type), path_width, path_kind, context)
+        }
+        // Computed when the test runs; the backend resolves it against the
+        // source directory as the literal above is.
+        _ => value_ref(argument, process, context),
     };
-    let path_kind = ProcessValueKind::String(path);
-    let path_width = source_value_width(&path_kind, Some(&path_type), process, context);
-    let path = push_value(*path_span, Some(path_type), path_width, path_kind, context);
     let kind = ProcessValueKind::HostCall {
         operation,
         arguments: vec![path],
