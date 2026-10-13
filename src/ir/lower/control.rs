@@ -859,15 +859,15 @@ impl<'a> Lowering<'a> {
                     if matches!(target, ast::Expr::Tuple { .. }) {
                         match self.tuple_assign_leaves(target, value, &cond) {
                             // A registered tuple: one next-state update per leaf.
-                            Some(leaves) => out.extend(leaves.into_iter().map(|(sig, expr)| {
-                                NextUpdate {
+                            Some(leaves) => {
+                                out.extend(leaves.into_iter().map(|(sig, expr)| NextUpdate {
                                     span: self.cur_span,
                                     target: sig,
                                     cond: cond.clone(),
                                     expr,
                                     meta: None,
-                                }
-                            })),
+                                }))
+                            }
                             None => self.report_bad_assign_target(target),
                         }
                         continue;
@@ -1011,10 +1011,10 @@ impl<'a> Lowering<'a> {
                 }
                 ast::Stmt::Match(m) => {
                     let scrut = if self.is_tuple_scrutinee(&m.scrutinee) {
-                    Expr::Const(0)
-                } else {
-                    self.lower_expr(&m.scrutinee)
-                };
+                        Expr::Const(0)
+                    } else {
+                        self.lower_expr(&m.scrutinee)
+                    };
                     let mut remaining = cond.clone();
                     for arm in &m.arms {
                         let mc = self.arm_match_cond(

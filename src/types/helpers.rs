@@ -241,7 +241,9 @@ pub(super) fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
             Integer,
         ) => true,
         (Named(a), Named(b)) => a == b,
-        (Tuple(a), Tuple(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| compatible(a, b)),
+        (Tuple(a), Tuple(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| compatible(a, b))
+        }
         // All indexed collections use the same shape. Nominal families do not
         // gate assignment; their behavior lives in trait implementations.
         // A binary point does: a fixed or float format keeps its fraction at

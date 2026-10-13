@@ -890,7 +890,10 @@ fn pattern(p: &Pattern) -> String {
         },
         Pattern::CharLit { ch, .. } => format!("'{ch}'"),
         Pattern::Tuple { elems, .. } => {
-            format!("({})", elems.iter().map(pattern).collect::<Vec<_>>().join(", "))
+            format!(
+                "({})",
+                elems.iter().map(pattern).collect::<Vec<_>>().join(", ")
+            )
         }
     }
 }
@@ -926,7 +929,10 @@ pub fn type_str(t: &Type) -> String {
         // `Stream Source`: the backing type leads, the view follows it.
         Type::View { view, target, .. } => format!("{} {}", type_str(target), path(view)),
         Type::Tuple { elems, .. } => {
-            format!("({})", elems.iter().map(type_str).collect::<Vec<_>>().join(", "))
+            format!(
+                "({})",
+                elems.iter().map(type_str).collect::<Vec<_>>().join(", ")
+            )
         }
     }
 }

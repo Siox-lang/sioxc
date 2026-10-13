@@ -121,9 +121,18 @@ pub struct Typed {
     /// Each operand of a mixed numeric operation that widens, keyed by its
     /// span, to the type it widens to (spec 3.17, ``From``).
     promotions: HashMap<Span, Ty>,
+    /// Each tuple `match` whose arms cover every combination without a `_`,
+    /// by the match's span: its last arm needs no condition.
+    covered_tuple_matches: HashSet<Span>,
 }
 
 impl Typed {
+    /// Whether the tuple `match` at `span` covers its scrutinee without a
+    /// `_` arm.
+    pub fn covers_tuple_match(&self, span: Span) -> bool {
+        self.covered_tuple_matches.contains(&span)
+    }
+
     /// The type an operand widens to in a mixed numeric operation.
     pub fn promotion(&self, span: Span) -> Option<&Ty> {
         self.promotions.get(&span)
@@ -421,6 +430,8 @@ struct Checker<'a> {
     view_dirs: HashMap<String, HashMap<String, Direction>>,
     /// Persistent Stage-4 facts keyed by the AST expression's stable span.
     expr_types: std::cell::RefCell<HashMap<Span, Ty>>,
+    /// Tuple matches proven covered; handed on in [`Typed`].
+    covered_tuple_matches: HashSet<Span>,
     /// Struct literals are reached both from their contextual consumer and
     /// from the ordinary expression walk. Keep structural/privacy diagnostics
     /// single-shot while still checking the consumer's expected type on every

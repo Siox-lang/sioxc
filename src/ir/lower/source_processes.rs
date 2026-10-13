@@ -846,8 +846,10 @@ fn process_aggregate_layout_for_type(
     span: crate::diag::Span,
     context: &LoweringContext<'_>,
 ) -> Option<crate::ir::SourceLayout> {
-    let aggregate = matches!(ty, crate::types::Ty::Array { .. } | crate::types::Ty::Tuple(_))
-        || matches!(ty, crate::types::Ty::Named(definition)
+    let aggregate = matches!(
+        ty,
+        crate::types::Ty::Array { .. } | crate::types::Ty::Tuple(_)
+    ) || matches!(ty, crate::types::Ty::Named(definition)
             if context.resolved.kind_of(*definition) == Some(crate::resolve::DefKind::Struct));
     aggregate.then(|| process_layout_for_type(ty, span, context))?
 }
@@ -2308,7 +2310,15 @@ fn lower_statement(
             after,
             span,
             ..
-        } => lower_tuple_assign(target, value, after.as_ref(), *span, context, process, block),
+        } => lower_tuple_assign(
+            target,
+            value,
+            after.as_ref(),
+            *span,
+            context,
+            process,
+            block,
+        ),
         Stmt::Assign {
             target,
             value,
@@ -3394,9 +3404,11 @@ fn lower_format_composite(
 ) -> Option<()> {
     let span = context.process_ir.values[value.0 as usize].span;
     match &layout.kind {
-        LayoutKind::Struct { name, view: None, fields }
-            if crate::types::tuple_struct_arity(name).is_some() =>
-        {
+        LayoutKind::Struct {
+            name,
+            view: None,
+            fields,
+        } if crate::types::tuple_struct_arity(name).is_some() => {
             parts.push(ProcessFormatPart::Text("(".to_owned()));
             for (index, field) in fields.iter().enumerate() {
                 if index > 0 {
@@ -4305,7 +4317,10 @@ fn lower_tuple_assign(
 ) -> Option<ProcessBlockId> {
     // Each position's type: the target's where it names one, the value's
     // where the target is `_`.
-    fn merge(target: Option<&crate::types::Ty>, value: Option<&crate::types::Ty>) -> Option<crate::types::Ty> {
+    fn merge(
+        target: Option<&crate::types::Ty>,
+        value: Option<&crate::types::Ty>,
+    ) -> Option<crate::types::Ty> {
         match (target, value) {
             (Some(crate::types::Ty::Tuple(targets)), value) => {
                 let values = match value {
@@ -4607,10 +4622,9 @@ fn capture_scrutinee(
     block: ProcessBlockId,
 ) -> MatchScrutinee {
     match scrutinee {
-        MatchScrutinee::Value(value, ty) => MatchScrutinee::Value(
-            capture_process_operand(value, context, process, block),
-            ty,
-        ),
+        MatchScrutinee::Value(value, ty) => {
+            MatchScrutinee::Value(capture_process_operand(value, context, process, block), ty)
+        }
         MatchScrutinee::Tuple(parts) => MatchScrutinee::Tuple(
             parts
                 .into_iter()
@@ -4634,7 +4648,8 @@ fn scrutinee_condition(
         (ast::Pattern::Or { alts, .. }, _) => {
             let mut any = None;
             for alternative in alts {
-                let condition = scrutinee_condition(alternative, scrutinee, span, process, context)?;
+                let condition =
+                    scrutinee_condition(alternative, scrutinee, span, process, context)?;
                 any = Some(match any {
                     Some(any) => bool_binary(ProcessBinaryOp::Or, any, condition, span, context),
                     None => condition,
@@ -4674,7 +4689,13 @@ fn scrutinee_condition(
                     MatchScrutinee::Value(field, Some(ty.clone()))
                 })
                 .collect();
-            scrutinee_condition(pattern, &MatchScrutinee::Tuple(parts), span, process, context)
+            scrutinee_condition(
+                pattern,
+                &MatchScrutinee::Tuple(parts),
+                span,
+                process,
+                context,
+            )
         }
         (pattern, MatchScrutinee::Value(value, ty)) => {
             pattern_condition(pattern, *value, ty.as_ref(), span, process, context)
@@ -5168,9 +5189,13 @@ fn lower_guarded_match(
     let mut test = block;
     let mut tails = Vec::new();
     let mut fell_through = true;
-    for arm in &statement.arms {
+    // A tuple match the checker proved covered has no fall-through: its
+    // last arm is what remains.
+    let covered = context.typed.covers_tuple_match(statement.span);
+    for (index, arm) in statement.arms.iter().enumerate() {
         let body = process.push_block();
-        if pattern_has_wildcard(&arm.pattern) {
+        let last = covered && index + 1 == statement.arms.len();
+        if last || pattern_has_wildcard(&arm.pattern) {
             process.blocks[test.0 as usize].terminator = ProcessTerminator::Goto(body);
             fell_through = false;
         } else {

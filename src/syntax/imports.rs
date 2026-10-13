@@ -1327,7 +1327,9 @@ impl Rewriter<'_> {
                     {
                         let index: usize = text.parse().unwrap_or(usize::MAX);
                         let whole = match whole {
-                            Type::Path(p) => self.plain_alias(p, env, sink).unwrap_or(whole.clone()),
+                            Type::Path(p) => {
+                                self.plain_alias(p, env, sink).unwrap_or(whole.clone())
+                            }
                             other => other.clone(),
                         };
                         match whole {

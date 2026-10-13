@@ -162,7 +162,10 @@ impl<'a> Checker<'a> {
             Pattern::Tuple { span, .. } => self.error(
                 codes::TYPE_MISMATCH,
                 *span,
-                format!("a tuple pattern cannot match a {} value", self.ty_display(ty)),
+                format!(
+                    "a tuple pattern cannot match a {} value",
+                    self.ty_display(ty)
+                ),
             ),
             Pattern::Path(path) if path.segments.len() == 2 => {
                 let qualifier = &path.segments[0];
@@ -326,12 +329,18 @@ impl<'a> Checker<'a> {
             for arm in arms {
                 self.check_tuple_pattern(elems, &arm.pattern, sym);
             }
-            if let Some(missing) = self.tuple_arms_missing(elems, arms) {
+            let missing = self.tuple_arms_missing(elems, arms);
+            if missing.is_none() && !arms.iter().any(|arm| pattern_covers(&arm.pattern).1) {
+                self.covered_tuple_matches.insert(span);
+            }
+            if let Some(missing) = missing {
                 self.sink.emit(
-                    Diagnostic::warning(format!("non-exhaustive match: `{missing}` is not covered"))
-                        .with_code(codes::NON_EXHAUSTIVE_MATCH)
-                        .at(span)
-                        .help("add the missing arms, or a `_` wildcard"),
+                    Diagnostic::warning(format!(
+                        "non-exhaustive match: `{missing}` is not covered"
+                    ))
+                    .with_code(codes::NON_EXHAUSTIVE_MATCH)
+                    .at(span)
+                    .help("add the missing arms, or a `_` wildcard"),
                 );
             }
             return;
@@ -451,17 +460,21 @@ impl<'a> Checker<'a> {
                     self.check_tuple_pattern(elems, alternative, sym);
                 }
             }
-            Pattern::Tuple { elems: positions, span } if positions.len() != elems.len() => self
-                .error(
-                    codes::TYPE_MISMATCH,
-                    *span,
-                    format!(
-                        "this pattern has {} positions, but the matched tuple has {}",
-                        positions.len(),
-                        elems.len()
-                    ),
+            Pattern::Tuple {
+                elems: positions,
+                span,
+            } if positions.len() != elems.len() => self.error(
+                codes::TYPE_MISMATCH,
+                *span,
+                format!(
+                    "this pattern has {} positions, but the matched tuple has {}",
+                    positions.len(),
+                    elems.len()
                 ),
-            Pattern::Tuple { elems: positions, .. } => {
+            ),
+            Pattern::Tuple {
+                elems: positions, ..
+            } => {
                 for (ty, position) in elems.iter().zip(positions) {
                     match ty {
                         Ty::Tuple(inner) => self.check_tuple_pattern(inner, position, sym),
@@ -521,7 +534,10 @@ impl<'a> Checker<'a> {
                 .zip(&domains)
                 .map(|(index, domain)| domain[*index].as_deref())
                 .collect();
-            if !arms.iter().any(|arm| tuple_pattern_covers(&arm.pattern, &values)) {
+            if !arms
+                .iter()
+                .any(|arm| tuple_pattern_covers(&arm.pattern, &values))
+            {
                 let shown = values
                     .iter()
                     .zip(elems)

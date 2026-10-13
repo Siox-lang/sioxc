@@ -363,17 +363,22 @@ impl Lowering<'_> {
                     )?;
                 }
             }
-            ast::Expr::Path(path)
-                if matches!(path.segments.as_slice(), [only] if only.text == "_") => {}
+            ast::Expr::Path(path) if matches!(path.segments.as_slice(), [only] if only.text == "_") =>
+                {}
             place => {
                 if let Some((scope_index, name, suffix)) = self.block_local_path(place) {
                     if suffix.is_empty() {
-                        return self.store_tuple_part(scope_index, name, place, prefix, values, cond);
+                        return self.store_tuple_part(
+                            scope_index,
+                            name,
+                            place,
+                            prefix,
+                            values,
+                            cond,
+                        );
                     }
                 }
-                let path = self
-                    .folded_elem_path(place)
-                    .or_else(|| expr_path(place))?;
+                let path = self.folded_elem_path(place).or_else(|| expr_path(place))?;
                 let layout = self.persisted_layout(&path)?;
                 let values = values.iter().cloned().collect::<HashMap<_, _>>();
                 for (from, to) in aggregate_leaf_pairs(source, layout)? {

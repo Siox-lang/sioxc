@@ -631,7 +631,9 @@ impl Checker<'_> {
     /// The first element type, through nested tuples, that has no equality.
     fn first_without_equality(&self, ty: &Ty) -> Option<Ty> {
         match ty {
-            Ty::Tuple(elems) => elems.iter().find_map(|elem| self.first_without_equality(elem)),
+            Ty::Tuple(elems) => elems
+                .iter()
+                .find_map(|elem| self.first_without_equality(elem)),
             Ty::Integer | Ty::Real | Ty::Char | Ty::Error => None,
             Ty::Array {
                 family: Some(_), ..

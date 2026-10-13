@@ -61,7 +61,9 @@ impl<'a> Checker<'a> {
             }
             Type::Generic { base, .. } => self.ast_ty(base),
             Type::View { view, .. } => self.path_ty(view),
-            Type::Tuple { elems, .. } => Ty::Tuple(elems.iter().map(|elem| self.ast_ty(elem)).collect()),
+            Type::Tuple { elems, .. } => {
+                Ty::Tuple(elems.iter().map(|elem| self.ast_ty(elem)).collect())
+            }
         }
     }
 
