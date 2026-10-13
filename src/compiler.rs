@@ -649,6 +649,7 @@ impl Compiler {
             &hierarchy,
             result.test_plan.as_ref(),
             &mut design,
+            &mut result.diagnostics,
         );
         result.stats.signals = Some(design.signals.len());
         result.stats.drivers = Some(design.drivers.len());

@@ -475,6 +475,10 @@ pub mod codes {
     /// implementation) that is not a shape fact: its value reads something
     /// other than `self`'s attributes and constants, or its name is taken.
     pub const INVALID_TYPE_ATTR: &str = "E-P037";
+    /// A testbench function that calls itself, directly or through others.
+    /// Calls expand at their call sites and have no frame, so the expansion
+    /// cannot end; this replaced a run-time "lowering is incomplete" failure.
+    pub const RECURSIVE_CALL: &str = "E-P038";
 
     // Warnings
     // W-P001 retired: parallel drivers are legal when their type implements
