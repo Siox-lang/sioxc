@@ -164,7 +164,13 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   before/after numbers with any optimization: structural simplifications
   alone are not evidence of a speedup. The 2026-10-13 baseline: the worst
   outlier, `float_sqrt_test`, compiled for 75–80 s at 0.5 GB into a 2.5 MB
-  binary, until shared select arms expanded once (4.8 s, 83 MB, 341 KB); the
+  binary, until shared select arms expanded once (4.8 s, 83 MB, 341 KB).
+  `hardware_local_values_test` compiled for 19 s because companion planes
+  of a value both selection arms read were built once per arm, doubling at
+  each block-local write; they are now built once (a reduced case went from
+  20.9 s to 2.6 s; eight chained writes overflowed the stack before). Still
+  open: companion lowering is roughly quadratic in a chain of writes to one
+  local (50 writes 15 s, 200 writes 280 s), and recurses once per write. The
   workload runs at about 1.1 µs a cycle (1.5 µs
   with `bitpack`). Indexed packed writes now use one update per
   value/companion plane rather than enumerating bits; retain structural and
