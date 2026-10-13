@@ -2871,6 +2871,7 @@ fn inline_process_procedure_call(
             .as_ref()
             .and_then(|ty| process_declared_type(ty, context));
         let argument = value_ref_with_type(argument, process, context, parameter_type.as_ref());
+        give_literal_parameter_layout(parameter, argument, process, context);
         bindings.push((definition, argument));
     }
     if !context.inline_functions.insert(function.span) {
@@ -7072,6 +7073,47 @@ fn operand_source_layout(
     }
 }
 
+/// A literal argument (`hi(0xA5)`) has a type but no layout of its own, so
+/// the body could not slice or index it as the parameter (`x[7..4]`); it
+/// takes the parameter's declared layout, written ranges included. A place
+/// or computed argument keeps its own.
+fn give_literal_parameter_layout(
+    parameter: &ast::FnParam,
+    argument: ProcessValueId,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) {
+    let literal = context
+        .process_ir
+        .values
+        .get(argument.0 as usize)
+        .is_some_and(|value| {
+            matches!(
+                value.kind,
+                ProcessValueKind::Number(_) | ProcessValueKind::BitString { .. }
+            )
+        });
+    if !literal || process_value_source_layout(argument, context.process_ir).is_some() {
+        return;
+    }
+    let layout = process_binding_layout(
+        parameter.ty.as_ref(),
+        parameter.span,
+        argument,
+        process,
+        context,
+    );
+    if let (Some(layout), Some(slot)) = (
+        layout,
+        context
+            .process_ir
+            .value_layouts
+            .get_mut(argument.0 as usize),
+    ) {
+        *slot = Some(layout);
+    }
+}
+
 /// Inspection belongs to the source declaration, not the caller's narrower
 /// storage or the executable consumer format. Generic/unsized declarations
 /// retain their instantiated operand layout without changing value lowering.
@@ -7174,6 +7216,7 @@ fn expand_process_function(
     for (parameter, argument) in parameters.into_iter().zip(arguments.iter().copied()) {
         let name = parameter.name.as_ref()?;
         let definition = context.resolved.declared(name.span)?;
+        give_literal_parameter_layout(parameter, argument, process, context);
         bindings.insert(definition, argument);
     }
     if !context.inline_functions.insert(function.span) {
