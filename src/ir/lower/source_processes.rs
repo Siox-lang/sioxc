@@ -248,6 +248,7 @@ fn type_leaf(ty: &ast::Type) -> Option<&str> {
         ast::Type::Path(path) => path.segments.last().map(|segment| segment.text.as_str()),
         ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => type_leaf(base),
         ast::Type::View { target, .. } => type_leaf(target),
+        ast::Type::Tuple { .. } => None,
     }
 }
 
@@ -443,8 +444,26 @@ fn process_declared_type_inner(
                 }),
             }
         }
+        ast::Type::Generic { base, args, .. } if tuple_type_base(base).is_some() => args
+            .iter()
+            .map(|arg| process_declared_type_inner(&arg.as_type()?, context, aliases))
+            .collect::<Option<Vec<_>>>()
+            .map(crate::types::Ty::Tuple),
         ast::Type::Generic { base, .. } => process_declared_type_inner(base, context, aliases),
         ast::Type::View { target, .. } => process_declared_type_inner(target, context, aliases),
+        // Rewritten to `(,)<..>` before lowering (`types::lower_tuples`).
+        ast::Type::Tuple { .. } => None,
+    }
+}
+
+/// The arity of a lowered tuple type's base, `(,)` in `(,)<A, B>`.
+fn tuple_type_base(base: &ast::Type) -> Option<usize> {
+    match base {
+        ast::Type::Path(path) => match path.segments.as_slice() {
+            [name] => crate::types::tuple_struct_arity(&name.text),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -537,6 +556,15 @@ fn process_type_from_layout(
             family: None,
             low: 0,
         }),
+        LayoutKind::Struct { name, fields, .. }
+            if crate::types::tuple_struct_arity(name).is_some() =>
+        {
+            fields
+                .iter()
+                .map(|field| process_type_from_layout(&field.layout, resolved))
+                .collect::<Option<Vec<_>>>()
+                .map(crate::types::Ty::Tuple)
+        }
         LayoutKind::Struct { name, .. } => nominal_type_from_name(name, resolved),
         LayoutKind::Opaque { .. } => None,
     }
@@ -793,6 +821,21 @@ fn process_layout_for_type(
                 return None;
             }
         }
+        crate::types::Ty::Tuple(elems) => LayoutKind::Struct {
+            name: crate::types::tuple_struct_name(elems.len()),
+            view: None,
+            fields: elems
+                .iter()
+                .enumerate()
+                .map(|(index, elem)| {
+                    Some(crate::ir::LayoutField {
+                        name: index.to_string(),
+                        direction: None,
+                        layout: process_layout_for_type(elem, span, context)?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+        },
         crate::types::Ty::Void | crate::types::Ty::Error => return None,
     };
     Some(crate::ir::SourceLayout { span, kind })
@@ -803,7 +846,7 @@ fn process_aggregate_layout_for_type(
     span: crate::diag::Span,
     context: &LoweringContext<'_>,
 ) -> Option<crate::ir::SourceLayout> {
-    let aggregate = matches!(ty, crate::types::Ty::Array { .. })
+    let aggregate = matches!(ty, crate::types::Ty::Array { .. } | crate::types::Ty::Tuple(_))
         || matches!(ty, crate::types::Ty::Named(definition)
             if context.resolved.kind_of(*definition) == Some(crate::resolve::DefKind::Struct));
     aggregate.then(|| process_layout_for_type(ty, span, context))?
@@ -1861,6 +1904,7 @@ fn declaration_type_definition(
             declaration_type_definition(base, resolved)
         }
         ast::Type::View { target, .. } => declaration_type_definition(target, resolved),
+        ast::Type::Tuple { .. } => None,
     }
 }
 
@@ -1933,7 +1977,7 @@ fn process_connection_is_static(expression: &ast::Expr, resolved: &Resolved) -> 
                         .is_some_and(|value| process_connection_is_static(value, resolved))
                 })
         }
-        ast::Expr::Concat { parts, .. } => parts
+        ast::Expr::Concat { parts, .. } | ast::Expr::Tuple { elems: parts, .. } => parts
             .iter()
             .all(|part| process_connection_is_static(part, resolved)),
         ast::Expr::Array { elems, .. } => elems
@@ -2259,6 +2303,13 @@ fn lower_statement(
             Some(block)
         }
         Stmt::Assign {
+            target: target @ ast::Expr::Tuple { .. },
+            value,
+            after,
+            span,
+            ..
+        } => lower_tuple_assign(target, value, after.as_ref(), *span, context, process, block),
+        Stmt::Assign {
             target,
             value,
             after,
@@ -2275,59 +2326,15 @@ fn lower_statement(
                     return Some(block);
                 }
             }
-            let source_semantics = assignment_semantics(target, process, context);
-            let target_type = context.typed.expr_type(ast::expr_span(target)).cloned();
-            let source_target = target;
-            let target = value_ref(source_target, process, context);
-            let target_type = target_type
-                .filter(|ty| !matches!(ty, crate::types::Ty::Error))
-                .or_else(|| process_value_type(target, context));
-            let semantics =
-                process_place_assignment(target, context.process_ir).unwrap_or(source_semantics);
-            let settle = after.is_none()
-                && matches!(process.activation, ProcessActivation::TimeZero)
-                && (assignment_drives_design_value(target, context.process_ir)
-                    || assignment_drives_design_source(source_target, process, context));
-            let value = value_ref_with_type(value, process, context, target_type.as_ref());
-            let instruction = match after {
-                Some(delay) => ProcessInstruction::Schedule {
-                    driver_context: matches!(
-                        semantics,
-                        ProcessAssignment::StagedSignal | ProcessAssignment::PerPlace
-                    )
-                    .then_some(process.id.0),
-                    target,
-                    value,
-                    delay: value_ref(delay, process, context),
-                    span: *span,
-                },
-                None => ProcessInstruction::Assign {
-                    semantics,
-                    driver_context: matches!(
-                        semantics,
-                        ProcessAssignment::StagedSignal | ProcessAssignment::PerPlace
-                    )
-                    .then_some(process.id.0),
-                    target,
-                    value,
-                    span: *span,
-                },
-            };
-            process.blocks[block.0 as usize]
-                .instructions
-                .push(instruction);
-            if settle {
-                let resume = process.push_block();
-                process.blocks[block.0 as usize].terminator = ProcessTerminator::Suspend {
-                    operation: ProcessSuspendOp::Settle,
-                    arguments: Vec::new(),
-                    resume,
-                    span: *span,
-                };
-                Some(resume)
-            } else {
-                Some(block)
-            }
+            assign_process_value(
+                target,
+                AssignedValue::Source(value),
+                after.as_ref(),
+                *span,
+                context,
+                process,
+                block,
+            )
         }
         Stmt::Expr(ast::Expr::Call {
             callee, args, span, ..
@@ -3806,7 +3813,7 @@ fn process_display_kind_for_type(
                 })?;
             Some(ProcessDisplayKind::Enum(key))
         }
-        crate::types::Ty::Void | crate::types::Ty::Error => None,
+        crate::types::Ty::Tuple(_) | crate::types::Ty::Void | crate::types::Ty::Error => None,
     }
 }
 
@@ -4190,6 +4197,195 @@ fn lower_if(
     Some(join)
 }
 
+/// The value of an assignment: source to lower against the target's type, or
+/// a value already lowered (one position of a tuple).
+enum AssignedValue<'e> {
+    Source(&'e ast::Expr),
+    Lowered(ProcessValueId),
+}
+
+/// Assign `value` to the place `target` names: a staged signal write, an
+/// immediate local store, or a scheduled one with `after`; a write that
+/// drives the design at time zero settles before the process continues.
+fn assign_process_value(
+    target: &ast::Expr,
+    value: AssignedValue<'_>,
+    after: Option<&ast::Expr>,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
+    let source_semantics = assignment_semantics(target, process, context);
+    let target_type = context.typed.expr_type(ast::expr_span(target)).cloned();
+    let source_target = target;
+    let target = value_ref(source_target, process, context);
+    let target_type = target_type
+        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+        .or_else(|| process_value_type(target, context));
+    let semantics =
+        process_place_assignment(target, context.process_ir).unwrap_or(source_semantics);
+    let settle = after.is_none()
+        && matches!(process.activation, ProcessActivation::TimeZero)
+        && (assignment_drives_design_value(target, context.process_ir)
+            || assignment_drives_design_source(source_target, process, context));
+    let value = match value {
+        AssignedValue::Source(value) => {
+            value_ref_with_type(value, process, context, target_type.as_ref())
+        }
+        AssignedValue::Lowered(value) => value,
+    };
+    let driver_context = matches!(
+        semantics,
+        ProcessAssignment::StagedSignal | ProcessAssignment::PerPlace
+    )
+    .then_some(process.id.0);
+    let instruction = match after {
+        Some(delay) => ProcessInstruction::Schedule {
+            driver_context,
+            target,
+            value,
+            delay: value_ref(delay, process, context),
+            span,
+        },
+        None => ProcessInstruction::Assign {
+            semantics,
+            driver_context,
+            target,
+            value,
+            span,
+        },
+    };
+    process.blocks[block.0 as usize]
+        .instructions
+        .push(instruction);
+    if settle {
+        let resume = process.push_block();
+        process.blocks[block.0 as usize].terminator = ProcessTerminator::Suspend {
+            operation: ProcessSuspendOp::Settle,
+            arguments: Vec::new(),
+            resume,
+            span,
+        };
+        Some(resume)
+    } else {
+        Some(block)
+    }
+}
+
+/// `(q, r) = e;` in a process: `e` is evaluated once into a hidden local of
+/// the tuple's type, then each named position is assigned its part, so
+/// `(a, b) = (b, a);` swaps.
+fn lower_tuple_assign(
+    target: &ast::Expr,
+    value: &ast::Expr,
+    after: Option<&ast::Expr>,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
+    // Each position's type: the target's where it names one, the value's
+    // where the target is `_`.
+    fn merge(target: Option<&crate::types::Ty>, value: Option<&crate::types::Ty>) -> Option<crate::types::Ty> {
+        match (target, value) {
+            (Some(crate::types::Ty::Tuple(targets)), value) => {
+                let values = match value {
+                    Some(crate::types::Ty::Tuple(values)) => values.iter().map(Some).collect(),
+                    _ => vec![None; targets.len()],
+                };
+                targets
+                    .iter()
+                    .zip(values)
+                    .map(|(target, value)| merge(Some(target), value))
+                    .collect::<Option<Vec<_>>>()
+                    .map(crate::types::Ty::Tuple)
+            }
+            (Some(crate::types::Ty::Error) | None, value) => value.cloned(),
+            (Some(target), _) => Some(target.clone()),
+        }
+    }
+    let ty = merge(
+        context.typed.expr_type(ast::expr_span(target)),
+        context.typed.expr_type(ast::expr_span(value)),
+    )?;
+    let layout = process_layout_for_type(&ty, span, context)?;
+    let local = ProcessLocalId(process.locals.len() as u32);
+    process.locals.push(ProcessLocal {
+        id: local,
+        name: crate::syntax::pretty::expr_string(target),
+        source: None,
+        span,
+        scope: None,
+        ty: Some(ty.clone()),
+        layout: Some(layout),
+    });
+    let initializer = value_ref_with_type(value, process, context, Some(&ty));
+    process.blocks[block.0 as usize]
+        .instructions
+        .push(ProcessInstruction::Declare {
+            local,
+            initializer: Some(initializer),
+            span,
+        });
+    let whole = push_value(
+        span,
+        Some(ty.clone()),
+        ty.bit_width(),
+        ProcessValueKind::Local {
+            process: process.id,
+            local,
+        },
+        context,
+    );
+    assign_tuple_parts(target, whole, &ty, after, span, context, process, block)
+}
+
+/// Assign each named position of a tuple target its part of `whole`.
+#[allow(clippy::too_many_arguments)]
+fn assign_tuple_parts(
+    target: &ast::Expr,
+    whole: ProcessValueId,
+    ty: &crate::types::Ty,
+    after: Option<&ast::Expr>,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    mut block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
+    let (ast::Expr::Tuple { elems, .. }, crate::types::Ty::Tuple(types)) = (target, ty) else {
+        return None;
+    };
+    for (index, (position, ty)) in elems.iter().zip(types).enumerate() {
+        if matches!(position, ast::Expr::Path(path)
+            if matches!(path.segments.as_slice(), [only] if only.text == "_"))
+        {
+            continue;
+        }
+        let kind = ProcessValueKind::Field {
+            base: whole,
+            field: index.to_string(),
+        };
+        let width = source_value_width(&kind, Some(ty), process, context);
+        let part = push_value(span, Some(ty.clone()), width, kind, context);
+        block = match position {
+            ast::Expr::Tuple { .. } => {
+                assign_tuple_parts(position, part, ty, after, span, context, process, block)?
+            }
+            place => assign_process_value(
+                place,
+                AssignedValue::Lowered(part),
+                after,
+                span,
+                context,
+                process,
+                block,
+            )?,
+        };
+    }
+    Some(block)
+}
+
 /// Lower a `match` into one block per arm plus a join block. A statement
 /// match with no wildcard arm can fall through, so the terminator keeps a
 /// continuation block for that case.
@@ -4285,9 +4481,10 @@ fn lower_pattern(
         },
         ast::Pattern::CharLit { ch, .. } => character_number(*ch, scrutinee_type, context)
             .map_or(ProcessPattern::Char(*ch), ProcessPattern::Number),
-        // Expression bounds lower as guards (`lower_guarded_match`); reaching
-        // here is a fail-closed unsupported pattern.
-        ast::Pattern::Bounds { .. } => ProcessPattern::Path {
+        // Expression bounds and tuples lower as guards
+        // (`lower_guarded_match`); reaching here is a fail-closed unsupported
+        // pattern.
+        ast::Pattern::Bounds { .. } | ast::Pattern::Tuple { .. } => ProcessPattern::Path {
             definition: None,
             segments: Vec::new(),
         },
@@ -4317,7 +4514,115 @@ fn match_needs_guards(
         })
         .and_then(|owner| context.functions.get_associated(&owner, "matches"))
         .is_some();
-    arms.iter().any(|arm| guarded(&arm.pattern, matches))
+    matches!(scrutinee_type, Some(crate::types::Ty::Tuple(_)))
+        || arms.iter().any(|arm| guarded(&arm.pattern, matches))
+}
+
+/// A `match` scrutinee lowered once: a value, or a tuple literal's
+/// positions, which are matched one by one and never built.
+enum MatchScrutinee {
+    Value(ProcessValueId, Option<crate::types::Ty>),
+    Tuple(Vec<MatchScrutinee>),
+}
+
+fn lower_scrutinee(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> MatchScrutinee {
+    if let ast::Expr::Tuple { elems, .. } = expression {
+        return MatchScrutinee::Tuple(
+            elems
+                .iter()
+                .map(|elem| lower_scrutinee(elem, process, context))
+                .collect(),
+        );
+    }
+    let ty = context.typed.expr_type(ast::expr_span(expression)).cloned();
+    MatchScrutinee::Value(value_ref(expression, process, context), ty)
+}
+
+/// Evaluate every value of a scrutinee once, in `block`, before the arms
+/// read it.
+fn capture_scrutinee(
+    scrutinee: MatchScrutinee,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> MatchScrutinee {
+    match scrutinee {
+        MatchScrutinee::Value(value, ty) => MatchScrutinee::Value(
+            capture_process_operand(value, context, process, block),
+            ty,
+        ),
+        MatchScrutinee::Tuple(parts) => MatchScrutinee::Tuple(
+            parts
+                .into_iter()
+                .map(|part| capture_scrutinee(part, context, process, block))
+                .collect(),
+        ),
+    }
+}
+
+/// The condition `pattern` puts on a scrutinee: a tuple pattern is all of
+/// its positions' conditions, a position of a tuple value read as `.i`.
+fn scrutinee_condition(
+    pattern: &ast::Pattern,
+    scrutinee: &MatchScrutinee,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    match (pattern, scrutinee) {
+        (ast::Pattern::Wildcard, _) => Some(bool_value(true, span, context)),
+        (ast::Pattern::Or { alts, .. }, _) => {
+            let mut any = None;
+            for alternative in alts {
+                let condition = scrutinee_condition(alternative, scrutinee, span, process, context)?;
+                any = Some(match any {
+                    Some(any) => bool_binary(ProcessBinaryOp::Or, any, condition, span, context),
+                    None => condition,
+                });
+            }
+            any
+        }
+        (ast::Pattern::Tuple { elems, .. }, MatchScrutinee::Tuple(parts))
+            if elems.len() == parts.len() =>
+        {
+            let mut all = None;
+            for (position, part) in elems.iter().zip(parts) {
+                let condition = scrutinee_condition(position, part, span, process, context)?;
+                all = Some(match all {
+                    Some(all) => bool_binary(ProcessBinaryOp::And, all, condition, span, context),
+                    None => condition,
+                });
+            }
+            all
+        }
+        (
+            ast::Pattern::Tuple { .. },
+            MatchScrutinee::Value(value, Some(crate::types::Ty::Tuple(types))),
+        ) => {
+            let parts = types
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| {
+                    let kind = ProcessValueKind::Field {
+                        base: *value,
+                        field: index.to_string(),
+                    };
+                    let width = source_value_width(&kind, Some(ty), process, context);
+                    let field = push_value(span, Some(ty.clone()), width, kind, context);
+                    MatchScrutinee::Value(field, Some(ty.clone()))
+                })
+                .collect();
+            scrutinee_condition(pattern, &MatchScrutinee::Tuple(parts), span, process, context)
+        }
+        (pattern, MatchScrutinee::Value(value, ty)) => {
+            pattern_condition(pattern, *value, ty.as_ref(), span, process, context)
+        }
+        _ => None,
+    }
 }
 
 /// A packed vector's element layout, its element type's `Match::matches`
@@ -4449,6 +4754,9 @@ fn pattern_condition(
 ) -> Option<ProcessValueId> {
     match pattern {
         ast::Pattern::Wildcard => Some(bool_value(true, span, context)),
+        // A tuple pattern reaches here only against a non-tuple value; the
+        // checker rejected it (`scrutinee_condition` takes the rest).
+        ast::Pattern::Tuple { .. } => None,
         ast::Pattern::Or { alts, .. } => {
             let mut any = None;
             for alternative in alts {
@@ -4639,13 +4947,22 @@ fn pattern_condition(
         // value the decoded pattern names.
         ast::Pattern::Path(path) => {
             let value = match lower_pattern(pattern, scrutinee_type, context) {
-                ProcessPattern::Number(number) => push_value(
-                    span,
-                    scrutinee_type.cloned(),
-                    None,
-                    ProcessValueKind::Number(number),
-                    context,
-                ),
+                // The variant's number at the scrutinee's width, as a
+                // character pattern's is below.
+                ProcessPattern::Number(number) => {
+                    let width = context
+                        .process_ir
+                        .values
+                        .get(scrutinee.0 as usize)
+                        .and_then(|value| value.bit_width);
+                    push_value(
+                        span,
+                        scrutinee_type.cloned(),
+                        width,
+                        ProcessValueKind::Number(number),
+                        context,
+                    )
+                }
                 _ => value_ref_with_type(
                     &ast::Expr::Path(path.clone()),
                     process,
@@ -4771,22 +5088,24 @@ fn lower_guarded_match(
     process: &mut ProcessCfg,
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
-    let scrutinee = value_ref(&statement.scrutinee, process, context);
-    let scrutinee = capture_process_operand(scrutinee, context, process, block);
-    if statement.arms.iter().any(|arm| {
-        matches!(
-            arm.pattern,
-            ast::Pattern::BitPattern { .. } | ast::Pattern::Or { .. }
-        )
-    }) {
-        match_metavalue_warning(
-            scrutinee,
-            scrutinee_type,
-            statement.span,
-            process,
-            context,
-            block,
-        );
+    let scrutinee = lower_scrutinee(&statement.scrutinee, process, context);
+    let scrutinee = capture_scrutinee(scrutinee, context, process, block);
+    if let MatchScrutinee::Value(value, _) = &scrutinee {
+        if statement.arms.iter().any(|arm| {
+            matches!(
+                arm.pattern,
+                ast::Pattern::BitPattern { .. } | ast::Pattern::Or { .. }
+            )
+        }) {
+            match_metavalue_warning(
+                *value,
+                scrutinee_type,
+                statement.span,
+                process,
+                context,
+                block,
+            );
+        }
     }
     let mut test = block;
     let mut tails = Vec::new();
@@ -4797,14 +5116,8 @@ fn lower_guarded_match(
             process.blocks[test.0 as usize].terminator = ProcessTerminator::Goto(body);
             fell_through = false;
         } else {
-            let condition = pattern_condition(
-                &arm.pattern,
-                scrutinee,
-                scrutinee_type,
-                arm.span,
-                process,
-                context,
-            )?;
+            let condition =
+                scrutinee_condition(&arm.pattern, &scrutinee, arm.span, process, context)?;
             let next = process.push_block();
             process.blocks[test.0 as usize].terminator = ProcessTerminator::Branch {
                 condition,
@@ -4980,12 +5293,23 @@ fn apply_process_declared_ranges(
                 apply_process_declared_ranges(element, base, context, aliases)?;
             }
         }
+        // A tuple's positions take their element types' ranges.
+        ast::Type::Generic { base, args, .. } if tuple_type_base(base).is_some() => {
+            if let LayoutKind::Struct { fields, .. } = &mut layout.kind {
+                for (field, arg) in fields.iter_mut().zip(args) {
+                    if let Some(ty) = arg.as_type() {
+                        apply_process_declared_ranges(&mut field.layout, &ty, context, aliases)?;
+                    }
+                }
+            }
+        }
         ast::Type::Generic { base, .. } => {
             apply_process_declared_ranges(layout, base, context, aliases)?;
         }
         ast::Type::View { target, .. } => {
             apply_process_declared_ranges(layout, target, context, aliases)?;
         }
+        ast::Type::Tuple { .. } => {}
     }
     Some(())
 }
@@ -5110,6 +5434,7 @@ fn process_type_key(ty: &crate::types::Ty, context: &LoweringContext<'_>) -> Opt
             ..
         } => Some(context.functions.canonical_type_key(family)),
         crate::types::Ty::Array { family: None, .. }
+        | crate::types::Ty::Tuple(_)
         | crate::types::Ty::Void
         | crate::types::Ty::Error => None,
     }
@@ -7733,7 +8058,8 @@ fn inline_pattern_condition(
         }
         ast::Pattern::BitPattern { .. }
         | ast::Pattern::Range { .. }
-        | ast::Pattern::Bounds { .. } => return None,
+        | ast::Pattern::Bounds { .. }
+        | ast::Pattern::Tuple { .. } => return None,
     };
     let scrutinee_node = context.process_ir.values.get(scrutinee.0 as usize)?;
     let candidate = push_value(
@@ -8458,10 +8784,10 @@ fn value_ref_with_type_inner(
             scrutinee, arms, ..
         } => {
             let scrutinee_type = context.typed.expr_type(ast::expr_span(scrutinee)).cloned();
-            let scrutinee = value_ref(scrutinee, process, context);
             // Arms that are conditions (`match_needs_guards`) fold into a
             // first-match chain of selects, last arm innermost.
             if match_needs_guards(arms, scrutinee_type.as_ref(), context) {
+                let scrutinee = lower_scrutinee(scrutinee, process, context);
                 // Without a `_`, the arms are taken to cover the scrutinee
                 // (the checker says when they do not): the last one is the
                 // fallback rather than a value no arm produces.
@@ -8479,10 +8805,9 @@ fn value_ref_with_type_inner(
                     result = if last || pattern_has_wildcard(&arm.pattern) {
                         value
                     } else {
-                        let Some(condition) = pattern_condition(
+                        let Some(condition) = scrutinee_condition(
                             &arm.pattern,
-                            scrutinee,
-                            scrutinee_type.as_ref(),
+                            &scrutinee,
                             arm.span,
                             process,
                             context,
@@ -8497,6 +8822,7 @@ fn value_ref_with_type_inner(
                 }
                 return result.0;
             }
+            let scrutinee = value_ref(scrutinee, process, context);
             let arms = arms
                 .iter()
                 .map(|arm| {
@@ -8660,6 +8986,10 @@ fn value_ref_with_type_inner(
                 spread: None,
             }
         }
+        // A tuple is a value only as a `match` scrutinee or an assignment
+        // target, which are lowered position by position; everywhere else it
+        // was rewritten to a struct literal before lowering.
+        ast::Expr::Tuple { .. } => ProcessValueKind::Invalid,
         ast::Expr::Concat { parts, .. } => ProcessValueKind::Concat(
             parts
                 .iter()

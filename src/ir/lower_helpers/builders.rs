@@ -125,7 +125,8 @@ pub(in crate::ir) fn source_type_span(ty: &ast::Type) -> crate::diag::Span {
         ast::Type::Path(path) => path.span,
         ast::Type::Indexed { span, .. }
         | ast::Type::Generic { span, .. }
-        | ast::Type::View { span, .. } => *span,
+        | ast::Type::View { span, .. }
+        | ast::Type::Tuple { span, .. } => *span,
     }
 }
 
@@ -152,6 +153,9 @@ pub(in crate::ir) fn type_width_at(
     seen: &mut HashSet<String>,
 ) -> u32 {
     match t {
+        ast::Type::Tuple { elems, .. } => elems.iter().fold(0u32, |total, elem| {
+            total.saturating_add(type_width_at(elem, env, fns, structs, ranges, seen))
+        }),
         ast::Type::Path(_) => match fns.type_head_key(t).as_deref() {
             Some("integer") | Some("real") => 64, // native kernel word / f64 bits
             Some("Char") => 32,                   // symbol storage (implementation detail)

@@ -121,6 +121,24 @@ impl<'a> Lowering<'a> {
                         .at(*span),
                     );
                 }
+                if matches!(target, ast::Expr::Tuple { .. }) {
+                    match self.tuple_assign_leaves(target, value) {
+                        Some(leaves) => {
+                            for (target, expression) in leaves {
+                                self.hardware.drivers.push(Driver {
+                                    span: self.cur_span,
+                                    target,
+                                    cond: cond.clone(),
+                                    expr: expression,
+                                    meta: None,
+                                    ctx: self.cur_ctx,
+                                });
+                            }
+                        }
+                        None => self.report_bad_assign_target(target),
+                    }
+                    return;
+                }
                 if self.lower_source_index_assign(target, value, cond.clone(), None) {
                     return;
                 }
@@ -635,6 +653,38 @@ impl<'a> Lowering<'a> {
                     (None, None) => Expr::Const(1),
                 })
             }
+            // `(p1, p2)`: every position matches its part of the scrutinee —
+            // a tuple literal's own element, or `scrutinee.i`. A position
+            // that is `_` adds nothing; all of them `_` is a wildcard.
+            ast::Pattern::Tuple { elems, span } => {
+                let mut all: Option<Expr> = None;
+                for (index, position) in elems.iter().enumerate() {
+                    let part = match scrutinee {
+                        ast::Expr::Tuple { elems: parts, .. } => parts.get(index)?.clone(),
+                        whole => {
+                            // An empty span: no typed expression lives there,
+                            // so the part is typed by its own path.
+                            let at = crate::diag::Span::new(span.file, span.start..span.start);
+                            ast::Expr::Field {
+                                base: Box::new(whole.clone()),
+                                field: ast::Ident {
+                                    text: index.to_string(),
+                                    span: at,
+                                },
+                                span: at,
+                            }
+                        }
+                    };
+                    let value = self.lower_scalar_env(&part, env);
+                    if let Some(condition) = self.arm_match_cond(position, &part, &value, env) {
+                        all = Some(match all {
+                            Some(all) => self.source_binary(BinOp::And, &all, &condition, *span),
+                            None => condition,
+                        });
+                    }
+                }
+                all
+            }
             // `A | B`: matches if any alternative matches (their conditions
             // OR-ed; a wildcard alternative makes the whole arm unconditional).
             ast::Pattern::Or { alts, span } => {
@@ -781,6 +831,22 @@ impl<'a> Lowering<'a> {
                             .with_code(crate::diag::codes::TYPE_MISMATCH)
                             .at(*span),
                         );
+                    }
+                    if matches!(target, ast::Expr::Tuple { .. }) {
+                        match self.tuple_assign_leaves(target, value) {
+                            // A registered tuple: one next-state update per leaf.
+                            Some(leaves) => out.extend(leaves.into_iter().map(|(sig, expr)| {
+                                NextUpdate {
+                                    span: self.cur_span,
+                                    target: sig,
+                                    cond: cond.clone(),
+                                    expr,
+                                    meta: None,
+                                }
+                            })),
+                            None => self.report_bad_assign_target(target),
+                        }
+                        continue;
                     }
                     if self.lower_source_index_assign(target, value, cond.clone(), Some(out)) {
                         continue;

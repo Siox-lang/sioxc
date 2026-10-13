@@ -528,6 +528,19 @@ impl<'a> Checker<'a> {
                 Ty::Error => true,
                 _ => false,
             },
+            // `(a, b)` fills a tuple position by position, each element read
+            // through its own target type (`('1', 3)` into `(Bit, unsigned[4])`).
+            Expr::Tuple { elems, .. } => match lhs {
+                Ty::Tuple(types) => {
+                    types.len() == elems.len()
+                        && types
+                            .iter()
+                            .zip(elems)
+                            .all(|(ty, elem)| self.assignable(ty, elem, sym))
+                }
+                Ty::Error => true,
+                _ => false,
+            },
             // A name-less positional struct literal lexes as concatenation.
             // It is structurally assignable to a named struct when its arity
             // matches; field-value checks are contextualized during lowering.

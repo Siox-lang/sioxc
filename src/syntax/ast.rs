@@ -845,6 +845,14 @@ pub enum Pattern {
         /// The pattern's extent.
         span: Span,
     },
+    /// `(p1, p2, ..)` — matches a tuple when every position matches its
+    /// pattern, the conjunction of the positions' conditions.
+    Tuple {
+        /// One pattern per position.
+        elems: Vec<Pattern>,
+        /// Opening through closing parenthesis.
+        span: Span,
+    },
     /// A character literal (`'0'`, `'Z'`) naming a variant of a char-valued
     /// enum — `Logic` above all. Like the expression form it has no intrinsic
     /// value: the variant it selects comes from the scrutinee's type.
@@ -1040,6 +1048,14 @@ pub enum Expr {
         /// Type name through the closing brace.
         span: Span,
     },
+    /// `(a, b, ..)` — a tuple value, two or more elements. A parenthesized
+    /// single expression stays grouping.
+    Tuple {
+        /// The element values, in order.
+        elems: Vec<Expr>,
+        /// Opening through closing parenthesis.
+        span: Span,
+    },
     /// Bit concatenation `{a, b, c}` — the first element is the most significant.
     Concat {
         /// The concatenated parts, most significant first.
@@ -1190,6 +1206,14 @@ pub enum Type {
         /// Base type through the closing angle bracket.
         span: Span,
     },
+    /// `(A, B)` — a tuple: an anonymous struct whose fields are its
+    /// positions `0`, `1`, ... Always two or more elements; `(T)` is `T`.
+    Tuple {
+        /// The element types, in order.
+        elems: Vec<Type>,
+        /// Opening through closing parenthesis.
+        span: Span,
+    },
     /// A named view applied to a backing struct: `Source Stream<T>`.
     View {
         /// The view supplying each field's direction.
@@ -1296,9 +1320,35 @@ pub fn expr_span(e: &Expr) -> Span {
         | Expr::Binary { span, .. }
         | Expr::Call { span, .. }
         | Expr::Construct { span, .. }
+        | Expr::Tuple { span, .. }
         | Expr::Concat { span, .. }
         | Expr::Array { span, .. } => *span,
         Expr::Path(p) => p.span,
+    }
+}
+
+/// The source extent of a pattern; `_` carries none.
+pub fn pattern_span(p: &Pattern) -> Option<Span> {
+    match p {
+        Pattern::Wildcard => None,
+        Pattern::Path(path) => Some(path.span),
+        Pattern::BitPattern { span, .. }
+        | Pattern::Or { span, .. }
+        | Pattern::Range { span, .. }
+        | Pattern::Bounds { span, .. }
+        | Pattern::CharLit { span, .. }
+        | Pattern::Tuple { span, .. } => Some(*span),
+    }
+}
+
+/// The source extent of a type.
+pub fn type_span(t: &Type) -> Span {
+    match t {
+        Type::Path(p) => p.span,
+        Type::Indexed { span, .. }
+        | Type::Generic { span, .. }
+        | Type::View { span, .. }
+        | Type::Tuple { span, .. } => *span,
     }
 }
 

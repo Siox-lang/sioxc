@@ -1054,7 +1054,9 @@ impl Expander<'_> {
                     self.expr(spread, depth);
                 }
             }
-            Expr::Concat { parts: items, .. } | Expr::Array { elems: items, .. } => {
+            Expr::Concat { parts: items, .. }
+            | Expr::Array { elems: items, .. }
+            | Expr::Tuple { elems: items, .. } => {
                 for item in items {
                     self.expr(item, depth);
                 }

@@ -120,6 +120,10 @@ pub(in crate::ir) fn subst_type_values(
             target: Box::new(subst_type_values(target, map)),
             span: *span,
         },
+        ast::Type::Tuple { elems, span } => ast::Type::Tuple {
+            elems: elems.iter().map(|elem| subst_type_values(elem, map)).collect(),
+            span: *span,
+        },
         ast::Type::Path(_) => ty.clone(),
     }
 }
@@ -599,6 +603,10 @@ pub(in crate::ir) fn subst_type(t: &ast::Type, var: &str, val: i64) -> ast::Type
         ast::Type::View { view, target, span } => ast::Type::View {
             view: view.clone(),
             target: Box::new(subst_type(target, var, val)),
+            span: *span,
+        },
+        ast::Type::Tuple { elems, span } => ast::Type::Tuple {
+            elems: elems.iter().map(|elem| subst_type(elem, var, val)).collect(),
             span: *span,
         },
         ast::Type::Path(_) => t.clone(),

@@ -563,7 +563,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Expr::Concat { parts, .. } => {
+            Expr::Concat { parts, .. } | Expr::Tuple { elems: parts, .. } => {
                 for p in parts {
                     self.check_expr(p, sym);
                 }

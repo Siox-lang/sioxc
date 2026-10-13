@@ -199,6 +199,7 @@ impl<'a> Checker<'a> {
             return true;
         }
         match self.type_of(scrutinee, names) {
+            Ty::Tuple(elems) => self.tuple_arms_missing(&elems, arms).is_none(),
             Ty::Named(id) => {
                 let Some(enum_name) = self.definition_key(id) else {
                     return false;
@@ -373,6 +374,23 @@ impl<'a> Checker<'a> {
                 if let Some(v) = &l.value {
                     self.check_init(l.ty.as_ref(), v, sym);
                     self.check_expr(v, sym);
+                }
+            }
+            // `(q, r) = e;` writes each named position; `_` writes nothing.
+            Stmt::Assign {
+                target: target @ Expr::Tuple { .. },
+                value,
+                after,
+                ..
+            } => {
+                for leaf in tuple_target_leaves(target) {
+                    self.check_write_target(leaf, dirs);
+                    self.check_expr(leaf, sym);
+                }
+                self.check_assignment(target, value, sym);
+                self.check_expr(value, sym);
+                if let Some(delay) = after {
+                    self.check_expr(delay, sym);
                 }
             }
             Stmt::Assign {
@@ -630,5 +648,15 @@ impl<'a> Checker<'a> {
                 ),
             );
         }
+    }
+}
+
+/// The places a tuple assignment target writes, nested tuples flattened and
+/// `_` positions left out.
+pub(super) fn tuple_target_leaves(target: &Expr) -> Vec<&Expr> {
+    match target {
+        Expr::Tuple { elems, .. } => elems.iter().flat_map(tuple_target_leaves).collect(),
+        Expr::Path(path) if path.segments.len() == 1 && path.segments[0].text == "_" => Vec::new(),
+        place => vec![place],
     }
 }

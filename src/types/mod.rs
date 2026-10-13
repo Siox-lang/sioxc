@@ -38,6 +38,7 @@ mod members;
 mod operators;
 mod patterns;
 mod statements;
+mod tuples;
 
 use helpers::*;
 
@@ -73,6 +74,9 @@ pub enum Ty {
         /// `ufixed<8, 2>` are different types.
         low: i64,
     },
+    /// A tuple `(A, B, ..)`: an anonymous struct whose fields are its
+    /// positions. Two tuples are the same type when their elements are.
+    Tuple(Vec<Ty>),
     /// A declared function or method with no return type. Unlike `Error`, this
     /// is known and must be rejected anywhere a value is required.
     Void,
@@ -96,6 +100,9 @@ impl Ty {
                     elem.bit_width()?.checked_mul(*len)
                 }
             }
+            Ty::Tuple(elems) => elems
+                .iter()
+                .try_fold(0u32, |total, elem| total.checked_add(elem.bit_width()?)),
             Ty::Named(_) | Ty::Void | Ty::Error => None,
         }
     }
@@ -139,6 +146,7 @@ impl Typed {
 }
 
 pub use expand::expand_type_attrs;
+pub use tuples::{lower_tuples, tuple_struct_arity, tuple_struct_name};
 
 /// Type-check resolved modules.
 ///

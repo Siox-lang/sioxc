@@ -14,7 +14,30 @@ impl<'a> Checker<'a> {
         field: &Ident,
         sym: &HashMap<String, Ty>,
     ) {
-        let Some(head) = self.ty_head(&self.type_of(base, sym)) else {
+        let base_ty = self.type_of(base, sym);
+        if let Ty::Tuple(elems) = &base_ty {
+            if !field
+                .text
+                .parse::<usize>()
+                .is_ok_and(|index| index < elems.len())
+            {
+                self.error_with_help(
+                    codes::UNKNOWN_NAME,
+                    field.span,
+                    format!(
+                        "`{}` has no position `{}`",
+                        self.ty_display(&base_ty),
+                        field.text
+                    ),
+                    format!(
+                        "a tuple's positions are `.0` to `.{}`",
+                        elems.len().saturating_sub(1)
+                    ),
+                );
+            }
+            return;
+        }
+        let Some(head) = self.ty_head(&base_ty) else {
             return;
         };
         // `s.ready()` parses as a call over a *field* node, so a method name

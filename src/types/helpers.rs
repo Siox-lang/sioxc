@@ -72,6 +72,7 @@ pub(super) fn type_head_span(ty: &Type) -> Option<Span> {
         Type::Path(p) => p.segments.first().map(|s| s.span),
         Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head_span(base),
         Type::View { view, .. } => Some(view.span),
+        Type::Tuple { .. } => None,
     }
 }
 
@@ -81,6 +82,7 @@ pub(super) fn type_head_name(ty: &Type) -> Option<&str> {
         Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
         Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head_name(base),
         Type::View { view, .. } => view.segments.last().map(|i| i.text.as_str()),
+        Type::Tuple { .. } => None,
     }
 }
 
@@ -239,6 +241,7 @@ pub(super) fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
             Integer,
         ) => true,
         (Named(a), Named(b)) => a == b,
+        (Tuple(a), Tuple(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| compatible(a, b)),
         // All indexed collections use the same shape. Nominal families do not
         // gate assignment; their behavior lives in trait implementations.
         // A binary point does: a fixed or float format keeps its fraction at
@@ -315,6 +318,10 @@ pub(super) fn ty_name(t: &Ty) -> String {
             ..
         } => format!("{name}[{len}]"),
         Ty::Array { .. } => "an array".to_string(),
+        Ty::Tuple(elems) => format!(
+            "({})",
+            elems.iter().map(ty_name).collect::<Vec<_>>().join(", ")
+        ),
         Ty::Void => "no value".to_string(),
         Ty::Error => "<unknown>".to_string(),
     }

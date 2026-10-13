@@ -265,6 +265,108 @@ impl Lowering<'_> {
     }
 }
 
+impl Lowering<'_> {
+    /// `(q, r) = e;`: each named position of the target takes its part of the
+    /// value, leaf by leaf; `_` takes nothing. `None` when a position is not a
+    /// signal place or the value has no tuple shape here.
+    pub(super) fn tuple_assign_leaves(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+    ) -> Option<Vec<(SignalId, Expr)>> {
+        let env = HashMap::new();
+        let source_layout = self
+            .source_operand_layout(value, &env)
+            .or_else(|| self.tuple_target_layout(target))?;
+        let Val::Fields(fields) = self.lower_shaped_source(value, &env, &source_layout) else {
+            return None;
+        };
+        let values = fields.into_iter().collect::<HashMap<_, _>>();
+        let mut leaves = Vec::new();
+        self.tuple_target_leaves(target, &source_layout, "", &values, &mut leaves)?;
+        Some(leaves)
+    }
+
+    /// The layout a tuple target stands for, built from its positions; the
+    /// shape a tuple literal on the right is read through.
+    fn tuple_target_layout(&self, target: &ast::Expr) -> Option<SourceLayout> {
+        let ast::Expr::Tuple { elems, span } = target else {
+            let path = self
+                .folded_elem_path(target)
+                .or_else(|| expr_path(target))?;
+            return self.persisted_layout(&path).cloned();
+        };
+        Some(SourceLayout {
+            span: *span,
+            kind: LayoutKind::Struct {
+                name: crate::types::tuple_struct_name(elems.len()),
+                view: None,
+                fields: elems
+                    .iter()
+                    .enumerate()
+                    .map(|(index, elem)| {
+                        Some(crate::ir::LayoutField {
+                            name: index.to_string(),
+                            direction: None,
+                            layout: self.tuple_target_layout(elem)?,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?,
+            },
+        })
+    }
+
+    /// Pair each leaf of a tuple target with its value, `source` being the
+    /// layout of the part of the value at `prefix`.
+    fn tuple_target_leaves(
+        &self,
+        target: &ast::Expr,
+        source: &SourceLayout,
+        prefix: &str,
+        values: &HashMap<String, Expr>,
+        out: &mut Vec<(SignalId, Expr)>,
+    ) -> Option<()> {
+        let join = |prefix: &str, rest: &str| match (prefix.is_empty(), rest.is_empty()) {
+            (true, _) => rest.to_string(),
+            (false, true) => prefix.to_string(),
+            (false, false) if rest.starts_with('[') => format!("{prefix}{rest}"),
+            (false, false) => format!("{prefix}.{rest}"),
+        };
+        match target {
+            ast::Expr::Tuple { elems, .. } => {
+                let LayoutKind::Struct { fields, .. } = &source.kind else {
+                    return None;
+                };
+                for (index, elem) in elems.iter().enumerate() {
+                    let name = index.to_string();
+                    let field = fields.iter().find(|field| field.name == name)?;
+                    self.tuple_target_leaves(
+                        elem,
+                        &field.layout,
+                        &join(prefix, &name),
+                        values,
+                        out,
+                    )?;
+                }
+            }
+            ast::Expr::Path(path)
+                if matches!(path.segments.as_slice(), [only] if only.text == "_") => {}
+            place => {
+                let path = self
+                    .folded_elem_path(place)
+                    .or_else(|| expr_path(place))?;
+                let layout = self.persisted_layout(&path)?;
+                for (from, to) in aggregate_leaf_pairs(source, layout)? {
+                    let signal = *self.locals.get(&join(&path, &to))?;
+                    let value = values.get(&join(prefix, &from))?.clone();
+                    out.push((signal, self.coerce_to_target(signal, value)));
+                }
+            }
+        }
+        Some(())
+    }
+}
+
 fn reindex_aggregate_value(
     value: Val,
     source: &SourceLayout,

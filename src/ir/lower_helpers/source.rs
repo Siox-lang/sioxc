@@ -189,6 +189,7 @@ pub(in crate::ir) fn type_head_name(t: &ast::Type) -> Option<&str> {
         ast::Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
         ast::Type::Generic { base, .. } | ast::Type::Indexed { base, .. } => type_head_name(base),
         ast::Type::View { view, .. } => view.segments.last().map(|s| s.text.as_str()),
+        ast::Type::Tuple { .. } => None,
     }
 }
 
@@ -200,6 +201,7 @@ pub(in crate::ir) fn type_def_id(ty: &ast::Type, resolved: &Resolved) -> Option<
             type_def_id(base, resolved)
         }
         ast::Type::View { view, .. } => resolved.resolved(view.span),
+        ast::Type::Tuple { .. } => None,
     }
 }
 

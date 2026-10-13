@@ -351,6 +351,14 @@ impl<'a> Checker<'a> {
                 family: None,
                 ..
             } => format!("{}[{len}]", self.ty_display(elem)),
+            Ty::Tuple(elems) => format!(
+                "({})",
+                elems
+                    .iter()
+                    .map(|elem| self.ty_display(elem))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             _ => ty_name(t),
         }
     }

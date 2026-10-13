@@ -180,6 +180,7 @@ fn type_def_id(ty: &Type, resolved: &Resolved) -> Option<DefId> {
         Type::Path(path) => resolved.resolved(path.span),
         Type::Generic { base, .. } | Type::Indexed { base, .. } => type_def_id(base, resolved),
         Type::View { view, .. } => resolved.resolved(view.span),
+        Type::Tuple { .. } => None,
     }
 }
 

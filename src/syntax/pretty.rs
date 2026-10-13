@@ -889,6 +889,9 @@ fn pattern(p: &Pattern) -> String {
             ),
         },
         Pattern::CharLit { ch, .. } => format!("'{ch}'"),
+        Pattern::Tuple { elems, .. } => {
+            format!("({})", elems.iter().map(pattern).collect::<Vec<_>>().join(", "))
+        }
     }
 }
 
@@ -922,6 +925,9 @@ pub fn type_str(t: &Type) -> String {
         }
         // `Stream Source`: the backing type leads, the view follows it.
         Type::View { view, target, .. } => format!("{} {}", type_str(target), path(view)),
+        Type::Tuple { elems, .. } => {
+            format!("({})", elems.iter().map(type_str).collect::<Vec<_>>().join(", "))
+        }
     }
 }
 
@@ -1171,6 +1177,10 @@ fn expr_inner(e: &Expr) -> (String, u8) {
         Expr::Concat { parts, .. } => {
             let p = parts.iter().map(expr).collect::<Vec<_>>().join(", ");
             (format!("{{ {p} }}"), POSTFIX_PREC)
+        }
+        Expr::Tuple { elems, .. } => {
+            let e = elems.iter().map(expr).collect::<Vec<_>>().join(", ");
+            (format!("({e})"), u8::MAX)
         }
         Expr::Array { elems, .. } => {
             let p = elems.iter().map(expr).collect::<Vec<_>>().join(", ");

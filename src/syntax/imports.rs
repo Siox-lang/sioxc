@@ -1092,6 +1092,11 @@ impl Rewriter<'_> {
                     self.expr(bound, env, sink);
                 }
             }
+            Pattern::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.pattern(elem, env, sink);
+                }
+            }
             Pattern::Wildcard
             | Pattern::BitPattern { .. }
             | Pattern::Range { .. }
@@ -1219,7 +1224,9 @@ impl Rewriter<'_> {
                     self.expr(spread, env, sink);
                 }
             }
-            Expr::Concat { parts: items, .. } | Expr::Array { elems: items, .. } => {
+            Expr::Concat { parts: items, .. }
+            | Expr::Array { elems: items, .. }
+            | Expr::Tuple { elems: items, .. } => {
                 for item in items {
                     self.expr(item, env, sink);
                 }
@@ -1334,6 +1341,11 @@ impl Rewriter<'_> {
             Type::View { view, target, .. } => {
                 self.path(view, env, sink);
                 self.ty(target, env, sink);
+            }
+            Type::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.ty(elem, env, sink);
+                }
             }
         }
     }
@@ -1516,6 +1528,11 @@ fn qualify_home(ty: &mut Type, home: &str, params: &[String], index: &Index) {
             qualify(view);
             qualify_home(target, home, params, index);
         }
+        Type::Tuple { elems, .. } => {
+            for elem in elems {
+                qualify_home(elem, home, params, index);
+            }
+        }
     }
 }
 
@@ -1543,6 +1560,11 @@ fn qualify_with_scope(ty: &mut Type, home: &str, env: &Env, index: &Index) {
             qualify_with_scope(base, home, env, index)
         }
         Type::View { target, .. } => qualify_with_scope(target, home, env, index),
+        Type::Tuple { elems, .. } => {
+            for elem in elems {
+                qualify_with_scope(elem, home, env, index);
+            }
+        }
     }
 }
 
@@ -1605,6 +1627,11 @@ fn substitute_type(ty: &mut Type, bindings: &HashMap<String, GenericArg>) {
             }
         }
         Type::View { target, .. } => substitute_type(target, bindings),
+        Type::Tuple { elems, .. } => {
+            for elem in elems {
+                substitute_type(elem, bindings);
+            }
+        }
     }
 }
 
