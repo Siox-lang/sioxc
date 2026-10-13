@@ -17,3 +17,8 @@ module std::fs;
 //                          reads occur during compilation; #[test] reads occur
 //                          in the generated executable.
 //   exists(path)           runtime path probe in a #[test] (never fails)
+//
+// A relative path is the source file's directory's. A #[test] path may be any
+// string computed when the test runs (a string local, an element of a string
+// array, a string read from a fixture); a hardware/top read happens at
+// compile time and takes a literal.

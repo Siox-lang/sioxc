@@ -1184,7 +1184,17 @@ pub(super) fn process_value<'ctx>(
                     (
                         "sx_runtime_read_utf8",
                         i64.fn_type(&[pointer.into()], false),
-                        vec![string_argument(*path, cache)?],
+                        vec![host_path(
+                            context,
+                            module,
+                            builder,
+                            design,
+                            *path,
+                            &format!("sx.host.string.{}", path.0),
+                            index_sites,
+                            cache,
+                        )?
+                        .into()],
                     )
                 }
                 ProcessHostValueOp::ReadUtf8Fixed | ProcessHostValueOp::ReadBinary => {
@@ -1200,13 +1210,21 @@ pub(super) fn process_value<'ctx>(
                         } else {
                             ("sx_runtime_read_binary", width.div_ceil(8))
                         };
-                    debug::literal_value(module, builder, design, *path, index_sites, cache)?;
-                    return emit_buffered_read_value(
+                    let path = host_path(
                         context,
                         module,
                         builder,
                         design,
                         *path,
+                        &format!("sx.host.buffered.path.{}.{}", path.0, runtime_name),
+                        index_sites,
+                        cache,
+                    )?;
+                    return emit_buffered_read_value(
+                        context,
+                        module,
+                        builder,
+                        path,
                         width,
                         runtime_name,
                         capacity,
@@ -1220,7 +1238,17 @@ pub(super) fn process_value<'ctx>(
                     (
                         "sx_runtime_file_exists",
                         i64.fn_type(&[pointer.into()], false),
-                        vec![string_argument(*path, cache)?],
+                        vec![host_path(
+                            context,
+                            module,
+                            builder,
+                            design,
+                            *path,
+                            &format!("sx.host.string.{}", path.0),
+                            index_sites,
+                            cache,
+                        )?
+                        .into()],
                     )
                 }
                 ProcessHostValueOp::StringLength => {
