@@ -1721,7 +1721,9 @@ fn fixed_and_empty_strings_are_executable_process_values() {
 }
 
 /// Resume dispatch preserves CFG block identity and emits the stable
-/// control-only status values before executable instruction coverage.
+/// control-only status values before executable instruction coverage. It
+/// enters only at the initial block or a suspension's resume block, so a
+/// block reached by branching (or not at all) is no entry of its own.
 #[test]
 fn process_entries_dispatch_control_only_cfgs() {
     let process_ir = ProcessIr {
@@ -1776,7 +1778,7 @@ fn process_entries_dispatch_control_only_cfgs() {
     })
     .unwrap();
     assert!(llvm.contains("i32 0, label %bb0"), "{llvm}");
-    assert!(llvm.contains("i32 3, label %bb3"), "{llvm}");
+    assert!(!llvm.contains("i32 3, label %bb3"), "{llvm}");
     let body = |label: &str| {
         llvm.split_once(label)
             .map(|(_, rest)| rest.split_once("\n\n").map_or(rest, |(block, _)| block))
@@ -1988,4 +1990,107 @@ fn binary_logic_mapping_preserves_std_codes_and_wrapping() {
     }
     builder.build_return(None).unwrap();
     module.verify().unwrap();
+}
+
+/// A chain of guarded writes: each branch block dominates everything after
+/// it, and a pure value read by two guarded writes is shared, so it is
+/// emitted once in the entry rather than in each write's own block. A value
+/// read by one write, or one that reads a local, stays in its block.
+#[test]
+fn guarded_writes_share_pure_values_through_dominators() {
+    let span = span();
+    let node = |kind| ProcessValue {
+        span,
+        ty: None,
+        bit_width: Some(8),
+        kind,
+    };
+    let binary = |operation, left: u32, right: u32| ProcessValueKind::Binary {
+        operation,
+        left: ProcessValueId(left),
+        right: ProcessValueId(right),
+    };
+    let signal = |id: u32| ProcessValueKind::Signal {
+        signals: vec![SignalId(id)],
+        state: ProcessSignalState::Current,
+    };
+    let values = vec![
+        node(signal(0)),                                                 // 0: a
+        node(ProcessValueKind::Number(ProcessNumber::Integer(vec![1]))), // 1
+        node(binary(ProcessBinaryOp::Add, 0, 1)),                        // 2: shared a + 1
+        node(binary(ProcessBinaryOp::Add, 2, 1)),                        // 3: first write only
+        node(binary(ProcessBinaryOp::Mul, 2, 2)),                        // 4: second write only
+        node(signal(1)),                                                 // 5: first target
+        node(signal(2)),                                                 // 6: second target
+        node(signal(3)),                                                 // 7: guard
+        node(ProcessValueKind::Local {
+            process: ProcessId(0),
+            local: ProcessLocalId(0),
+        }), // 8: a local
+        node(binary(ProcessBinaryOp::Add, 8, 2)),                        // 9: reads the local
+    ];
+    let assign = |target: u32, value: u32| ProcessInstruction::Assign {
+        semantics: ProcessAssignment::StagedSignal,
+        driver_context: None,
+        target: ProcessValueId(target),
+        value: ProcessValueId(value),
+        span,
+    };
+    let block = |id: u32, instructions, terminator| ProcessBlock {
+        id: ProcessBlockId(id),
+        instructions,
+        terminator,
+    };
+    let branch = |then_block: u32, else_block: u32| ProcessTerminator::Branch {
+        condition: ProcessValueId(7),
+        then_block: ProcessBlockId(then_block),
+        else_block: ProcessBlockId(else_block),
+    };
+    let mut process = scheduled_process(0, &[]);
+    process.region = ProcessRegion::Combinational;
+    process.blocks = vec![
+        block(0, Vec::new(), branch(1, 2)),
+        block(
+            1,
+            vec![assign(5, 3)],
+            ProcessTerminator::Goto(ProcessBlockId(2)),
+        ),
+        block(2, Vec::new(), branch(3, 4)),
+        block(
+            3,
+            vec![assign(6, 4), assign(6, 9)],
+            ProcessTerminator::Goto(ProcessBlockId(4)),
+        ),
+        block(
+            4,
+            Vec::new(),
+            ProcessTerminator::Return {
+                value: None,
+                span: Some(span),
+            },
+        ),
+    ];
+    let mut design = Design::default();
+    design.process_ir.values = values;
+
+    assert_eq!(
+        immediate_dominators(&process),
+        vec![None, Some(0), Some(0), Some(2), Some(2)]
+    );
+    let free = place_free_process_values(&design);
+    assert!(free[2] && !free[8] && !free[9]);
+    let activity = vec![false; design.process_ir.values.len()];
+    let shared = shared_pure_values(&design, &process, &free, &activity);
+    assert!(shared.contains(&ProcessValueId(2)), "{shared:?}");
+    assert!(
+        shared.contains(&ProcessValueId(7)),
+        "both branches read the guard"
+    );
+    for single in [3, 4, 9] {
+        assert!(!shared.contains(&ProcessValueId(single)), "{shared:?}");
+    }
+    assert!(
+        shared.windows(2).all(|pair| pair[0].0 > pair[1].0),
+        "operands come after their users: {shared:?}"
+    );
 }
