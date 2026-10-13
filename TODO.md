@@ -136,7 +136,8 @@ listed under LLVM and Output below.
 Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
-- 🔴 **Runtime recursion and non-packed conversions.** Extend the currently
+- 🔴 **Runtime recursion and non-packed conversions.** Design:
+  [runtime calls with frames](docs/proposals/runtime-calls.md). Extend the currently
   supported inline-call and packed-value contract only with explicit frame,
   ownership, conversion and suspension semantics. Recursive runtime calls are
   rejected today; unsupported forms must fail before argument/callee effects
