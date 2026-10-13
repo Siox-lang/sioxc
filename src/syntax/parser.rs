@@ -28,6 +28,54 @@ enum LetPattern {
     Tuple(Vec<LetPattern>, Span),
 }
 
+/// Declare each name in a tuple `let` and return the assignment target
+/// that stands for the whole pattern.
+fn declare_let_pattern(pattern: LetPattern, whole: Option<&Type>, lets: &mut Vec<LetDecl>) -> Expr {
+    match pattern {
+        LetPattern::Name(name, ty) => {
+            // A missing type is reported by the checker, as for any
+            // `let`; the declaration's span is the name's, which is how
+            // it tells a tuple position from a whole `let`.
+            if name.text != "_" {
+                lets.push(LetDecl {
+                    attrs: Vec::new(),
+                    name: name.clone(),
+                    ty: ty.or_else(|| whole.cloned()),
+                    value: None,
+                    span: name.span,
+                });
+            }
+            Expr::Path(Path {
+                span: name.span,
+                segments: vec![name],
+            })
+        }
+        LetPattern::Tuple(elems, tuple_span) => {
+            let arity = elems.len();
+            let elems = elems
+                .into_iter()
+                .enumerate()
+                .map(|(index, elem)| {
+                    // A written tuple type gives each position its own
+                    // type; any other (an alias, `Pair<A, B>`) is read
+                    // once aliases are expanded (`position_type`).
+                    let ty = whole.map(|whole| match whole {
+                        Type::Tuple { elems: types, .. } if types.len() == arity => {
+                            types[index].clone()
+                        }
+                        other => position_type(other, index),
+                    });
+                    declare_let_pattern(elem, ty.as_ref(), lets)
+                })
+                .collect();
+            Expr::Tuple {
+                elems,
+                span: tuple_span,
+            }
+        }
+    }
+}
+
 /// A statement in implementation-member position.
 fn impl_item_of(statement: Stmt) -> ImplItem {
     match statement {
@@ -1729,7 +1777,7 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::Semi, "after a `let`");
         let span = start.to(self.prev_span());
         let mut lets = Vec::new();
-        let target = self.declare_let_pattern(pattern, whole.as_ref(), span, &mut lets);
+        let target = declare_let_pattern(pattern, whole.as_ref(), &mut lets);
         let mut stmts: Vec<Stmt> = lets.into_iter().map(Stmt::Let).collect();
         stmts.push(Stmt::Assign {
             label: None,
@@ -1761,60 +1809,6 @@ impl<'a> Parser<'a> {
         let name = self.parse_ident();
         let ty = self.eat(TokenKind::Colon).then(|| self.parse_type());
         LetPattern::Name(name, ty)
-    }
-
-    /// Declare each name in a tuple `let` and return the assignment target
-    /// that stands for the whole pattern.
-    fn declare_let_pattern(
-        &mut self,
-        pattern: LetPattern,
-        whole: Option<&Type>,
-        span: Span,
-        lets: &mut Vec<LetDecl>,
-    ) -> Expr {
-        match pattern {
-            LetPattern::Name(name, ty) => {
-                // A missing type is reported by the checker, as for any
-                // `let`; the declaration's span is the name's, which is how
-                // it tells a tuple position from a whole `let`.
-                if name.text != "_" {
-                    lets.push(LetDecl {
-                        attrs: Vec::new(),
-                        name: name.clone(),
-                        ty: ty.or_else(|| whole.cloned()),
-                        value: None,
-                        span: name.span,
-                    });
-                }
-                Expr::Path(Path {
-                    span: name.span,
-                    segments: vec![name],
-                })
-            }
-            LetPattern::Tuple(elems, tuple_span) => {
-                let arity = elems.len();
-                let elems = elems
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, elem)| {
-                        // A written tuple type gives each position its own
-                        // type; any other (an alias, `Pair<A, B>`) is read
-                        // once aliases are expanded (`position_type`).
-                        let ty = whole.map(|whole| match whole {
-                            Type::Tuple { elems: types, .. } if types.len() == arity => {
-                                types[index].clone()
-                            }
-                            other => position_type(other, index),
-                        });
-                        self.declare_let_pattern(elem, ty.as_ref(), span, lets)
-                    })
-                    .collect();
-                Expr::Tuple {
-                    elems,
-                    span: tuple_span,
-                }
-            }
-        }
     }
 
     /// Parse the rest of a function once its name has been consumed.
