@@ -237,6 +237,9 @@ impl<'a> Lowering<'a> {
                 if let Some(Val::Scalar(value)) = self.block_local_value(e) {
                     return value;
                 }
+                if let Some(Val::Scalar(value)) = self.computed_field(e, &HashMap::new()) {
+                    return value;
+                }
                 // `p'old.valid` / `xs'old[0]`: a struct or array is stored as
                 // leaf signals, so there is no one signal to take the previous
                 // value of. The attribute belongs on the leaf, and

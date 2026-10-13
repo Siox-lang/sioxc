@@ -179,6 +179,9 @@ impl<'a> Lowering<'a> {
                 if let Some(value) = self.block_local_value(e) {
                     return value;
                 }
+                if let Some(value) = self.computed_field(e, env) {
+                    return value;
+                }
                 if let ast::Expr::Path(p) = base.as_ref() {
                     if p.segments.len() == 1 {
                         if let Some(Val::Fields(fs)) = env.get(&p.segments[0].text) {
@@ -532,6 +535,45 @@ impl<'a> Lowering<'a> {
 
     /// Lower a system attribute. `clk.rising()`/`falling`/`edge` expand into
     /// `Event`/`Old`/`Current` so the scheduler needs no special knowledge.
+    /// `f(x).0`, `f(x).a.b`: a field of a value a call computes, read from
+    /// that value's leaves. A call has no signal to name a field of.
+    pub(super) fn computed_field(
+        &self,
+        e: &ast::Expr,
+        env: &HashMap<String, Val>,
+    ) -> Option<Val> {
+        let mut names = Vec::new();
+        let mut base = e;
+        while let ast::Expr::Field { base: inner, field, .. } = base {
+            names.push(field.text.as_str());
+            base = inner;
+        }
+        if names.is_empty() || !matches!(base, ast::Expr::Call { .. }) {
+            return None;
+        }
+        names.reverse();
+        let path = names.join(".");
+        let Val::Fields(fields) = self.lower_val_env(base, env) else {
+            return None;
+        };
+        if let Some((_, value)) = fields.iter().find(|(name, _)| *name == path) {
+            return Some(Val::Scalar(value.clone()));
+        }
+        let part: Vec<(String, Expr)> = fields
+            .into_iter()
+            .filter_map(|(name, value)| {
+                let rest = name.strip_prefix(&path)?;
+                let rest = match rest.strip_prefix('.') {
+                    Some(field) => field,
+                    None if rest.starts_with('[') => rest,
+                    None => return None,
+                };
+                Some((rest.to_string(), value))
+            })
+            .collect();
+        (!part.is_empty()).then_some(Val::Fields(part))
+    }
+
     pub(super) fn persisted_layout(&self, local_path: &str) -> Option<&SourceLayout> {
         self.out
             .source_layouts
