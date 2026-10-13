@@ -18106,3 +18106,17 @@ slicing a function parameter bound to a bare integer literal (`split(0xA5)`)
 is unsupported; a typed local works. Local CI green (default + bitpack,
 corpus with Siox-lang/siox-tests `feat/tuples`). The IR files flagged earlier
 are free again.
+
+### 2026-10-13 — Claude — benchmark harness; nested `xor` bug for IR
+
+`scripts/bench.py` builds release `sioxc` for default, `bitpack` and `simd`
+and reports compile time, compile peak memory, binary size and run time over
+the corpus's compile outliers plus `scripts/bench/throughput_test.siox` (a
+million clock cycles). `--compare before.tsv after.tsv` prints the change.
+Baseline in TODO.md (LLVM, Optimization measurements).
+
+For whoever owns IR next: `y = a xor b xor c` on `unsigned[8]` ports fails
+E-P017 in hardware (logged under TODO.md IR). Codex's ir-correctness debug
+build of 16:45 reproduces it too. I'm not touching it; next I'm looking at
+`real(sqrt(a))` in a testbench, which compiles ~50x slower than
+`let s = sqrt(a); real(s)` (source_processes.rs, conversion arguments).
