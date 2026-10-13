@@ -537,14 +537,13 @@ impl<'a> Lowering<'a> {
     /// `Event`/`Old`/`Current` so the scheduler needs no special knowledge.
     /// `f(x).0`, `f(x).a.b`: a field of a value a call computes, read from
     /// that value's leaves. A call has no signal to name a field of.
-    pub(super) fn computed_field(
-        &self,
-        e: &ast::Expr,
-        env: &HashMap<String, Val>,
-    ) -> Option<Val> {
+    pub(super) fn computed_field(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Option<Val> {
         let mut names = Vec::new();
         let mut base = e;
-        while let ast::Expr::Field { base: inner, field, .. } = base {
+        while let ast::Expr::Field {
+            base: inner, field, ..
+        } = base
+        {
             names.push(field.text.as_str());
             base = inner;
         }

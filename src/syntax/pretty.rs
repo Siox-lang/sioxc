@@ -16,6 +16,7 @@ pub fn print_module(module: &Module) -> String {
         out: String::new(),
         indent: 0,
         lints: module.lints.iter().map(|d| (d.clone(), false)).collect(),
+        pending: Vec::new(),
     };
     MACRO_ARGS.with(|args| args.borrow_mut().clone_from(&module.macro_args));
     p.module(module);
@@ -97,6 +98,9 @@ struct Printer {
     /// The module's lint directives, each printed once before the item or
     /// statement whose extent it governs.
     lints: Vec<(crate::diag::lints::LintDirective, bool)>,
+    /// Value-less `let`s held back in case the statement after them is the
+    /// tuple assignment of a tuple `let` (see [`Printer::tuple_let`]).
+    pending: Vec<LetDecl>,
 }
 
 impl Printer {
@@ -398,16 +402,20 @@ impl Printer {
         for item in &i.items {
             self.impl_item(item);
         }
+        self.flush_lets();
         self.indent -= 1;
         self.line("}");
     }
 
     /// Print one member of an impl body.
     fn impl_item(&mut self, item: &ImplItem) {
+        if !matches!(item, ImplItem::Let(_) | ImplItem::Stmt(_)) {
+            self.flush_lets();
+        }
         self.lint_directives(impl_item_span(item), false);
         match item {
             ImplItem::Const(c) => self.const_decl(c),
-            ImplItem::Let(l) => self.line(&format!("{};", let_decl(l))),
+            ImplItem::Let(l) => self.stmt(&Stmt::Let(l.clone())),
             ImplItem::Fn(f) => self.fn_decl(f),
             ImplItem::ModeField { dir, name, .. } => {
                 self.line(&format!("{} {};", dir_str(*dir), name.text));
@@ -418,6 +426,7 @@ impl Printer {
                 for statement in &process.body.stmts {
                     self.stmt(statement);
                 }
+                self.flush_lets();
                 self.indent -= 1;
                 self.line("}");
             }
@@ -508,6 +517,7 @@ impl Printer {
                 for s in &body.stmts {
                     self.stmt(s);
                 }
+                self.flush_lets();
                 self.indent -= 1;
                 self.line("}");
             }
@@ -523,6 +533,27 @@ impl Printer {
 
     /// Print one statement.
     fn stmt(&mut self, s: &Stmt) {
+        match s {
+            Stmt::Let(l) if l.value.is_none() && l.attrs.is_empty() => {
+                self.pending.push(l.clone());
+                return;
+            }
+            Stmt::Assign {
+                label: None,
+                target: target @ Expr::Tuple { .. },
+                value,
+                after: None,
+                ..
+            } => {
+                if let Some(line) = self.tuple_let(target, value) {
+                    self.pending.clear();
+                    self.line(&line);
+                    return;
+                }
+            }
+            _ => {}
+        }
+        self.flush_lets();
         self.lint_directives(stmt_span(s), false);
         match s {
             Stmt::Use(u) => self.line(&using_text(u)),
@@ -605,12 +636,94 @@ impl Printer {
         self.line("}");
     }
 
+    /// Print the held-back `let`s as they are.
+    fn flush_lets(&mut self) {
+        for l in std::mem::take(&mut self.pending) {
+            self.lint_directives(l.span, false);
+            self.line(&format!("{};", let_decl(&l)));
+        }
+    }
+
+    /// `let (q, r): Pair<A, B> = e;` as written. The parser splits it into
+    /// `let`s and the tuple assignment, and a name typed through the whole
+    /// pattern's type carries a position marker (`position_type`) that only
+    /// a written tuple type can spell; print the group back as one `let`.
+    /// `None` when the held `let`s are not exactly the target's names, or
+    /// none of them carries a marker (then the split form is the source).
+    fn tuple_let(&self, target: &Expr, value: &Expr) -> Option<String> {
+        fn whole(ty: &Type) -> Option<&Type> {
+            match ty {
+                Type::Generic { base, args, .. }
+                    if matches!(base.as_ref(), Type::Path(p)
+                        if matches!(p.segments.as_slice(), [only] if only.text == TUPLE_POSITION)) =>
+                {
+                    match args.first() {
+                        Some(GenericArg::PositionalType(inner)) => whole(inner).or(Some(inner)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+        let mut names = Vec::new();
+        fn leaves<'e>(e: &'e Expr, out: &mut Vec<&'e str>) {
+            match e {
+                Expr::Tuple { elems, .. } => elems.iter().for_each(|elem| leaves(elem, out)),
+                Expr::Path(p) => {
+                    if let [only] = p.segments.as_slice() {
+                        if only.text != "_" {
+                            out.push(&only.text);
+                        }
+                    }
+                }
+                _ => out.push(""),
+            }
+        }
+        leaves(target, &mut names);
+        let declared: Vec<&str> = self.pending.iter().map(|l| l.name.text.as_str()).collect();
+        if declared != names {
+            return None;
+        }
+        let whole_ty = self
+            .pending
+            .iter()
+            .find_map(|l| l.ty.as_ref().and_then(whole))?;
+        fn pattern_text(e: &Expr, pending: &[LetDecl]) -> String {
+            match e {
+                Expr::Tuple { elems, .. } => format!(
+                    "({})",
+                    elems
+                        .iter()
+                        .map(|elem| pattern_text(elem, pending))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                other => {
+                    let name = expr(other);
+                    match pending.iter().find(|l| l.name.text == name) {
+                        Some(LetDecl { ty: Some(ty), .. }) if whole(ty).is_none() => {
+                            format!("{name}: {}", type_str(ty))
+                        }
+                        _ => name,
+                    }
+                }
+            }
+        }
+        Some(format!(
+            "let {}: {} = {};",
+            pattern_text(target, &self.pending),
+            type_str(whole_ty),
+            expr(value)
+        ))
+    }
+
     /// Print a block's statements at one deeper indentation, without the braces.
     fn block_body(&mut self, b: &Block) {
         self.indent += 1;
         for s in &b.stmts {
             self.stmt(s);
         }
+        self.flush_lets();
         self.indent -= 1;
     }
 }

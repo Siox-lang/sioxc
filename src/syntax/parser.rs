@@ -4370,6 +4370,16 @@ mod tests {
         );
     }
 
+    /// A tuple `let` typed through an alias prints back as written: its
+    /// names' types are position markers no source can spell.
+    #[test]
+    fn tuple_let_through_an_alias_round_trips() {
+        let src =
+            "module m;\n\nfn f() {\n    let (u, (v: Bit, _)): Pair<A, B> = g();\n    h(u);\n}\n";
+        let m = parse_ok(src);
+        assert_eq!(crate::syntax::pretty::print_module(&m), src);
+    }
+
     /// Anything but a function, or any mode but `always`/`never`, is an error.
     #[test]
     fn inline_directive_misuse_is_reported() {
