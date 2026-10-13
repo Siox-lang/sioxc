@@ -1639,7 +1639,9 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>) -> EType {
         }
         // Bus-mode and generic types don't carry a simple scalar width; keep a
         // rendered form for display and skip width checking on them.
-        Type::Generic { .. } | Type::View { .. } => EType::Other(render_concrete(t, env)),
+        Type::Generic { .. } | Type::View { .. } | Type::Tuple { .. } => {
+            EType::Other(render_concrete(t, env))
+        }
     }
 }
 
@@ -1705,6 +1707,14 @@ fn render_concrete(t: &Type, env: &HashMap<String, i64>) -> String {
                 .collect::<Vec<_>>()
                 .join("::"),
             render_concrete(target, env)
+        ),
+        Type::Tuple { elems, .. } => format!(
+            "({})",
+            elems
+                .iter()
+                .map(|elem| render_concrete(elem, env))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     }
 }
@@ -1846,6 +1856,7 @@ fn type_head_name(ty: &Type) -> Option<&str> {
         Type::Path(p) => p.segments.first().map(|s| s.text.as_str()),
         Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head_name(base),
         Type::View { view, .. } => view.segments.last().map(|i| i.text.as_str()),
+        Type::Tuple { .. } => None,
     }
 }
 
@@ -1856,6 +1867,7 @@ fn type_def_id(ty: &Type, resolved: &Resolved) -> Option<DefId> {
         Type::Path(path) => resolved.resolved(path.span),
         Type::Generic { base, .. } | Type::Indexed { base, .. } => type_def_id(base, resolved),
         Type::View { view, .. } => resolved.resolved(view.span),
+        Type::Tuple { .. } => None,
     }
 }
 

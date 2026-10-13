@@ -1092,6 +1092,11 @@ impl Rewriter<'_> {
                     self.expr(bound, env, sink);
                 }
             }
+            Pattern::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.pattern(elem, env, sink);
+                }
+            }
             Pattern::Wildcard
             | Pattern::BitPattern { .. }
             | Pattern::Range { .. }
@@ -1219,7 +1224,9 @@ impl Rewriter<'_> {
                     self.expr(spread, env, sink);
                 }
             }
-            Expr::Concat { parts: items, .. } | Expr::Array { elems: items, .. } => {
+            Expr::Concat { parts: items, .. }
+            | Expr::Array { elems: items, .. }
+            | Expr::Tuple { elems: items, .. } => {
                 for item in items {
                     self.expr(item, env, sink);
                 }
@@ -1310,6 +1317,37 @@ impl Rewriter<'_> {
                 for arg in args.iter_mut() {
                     self.generic_arg(arg, env, sink);
                 }
+                // `(.)<T, i>`: position `i` of the tuple `T`, now that `T`'s
+                // generic aliases are expanded; a plain alias expands here.
+                if matches!(base.as_ref(), Type::Path(p)
+                    if matches!(p.segments.as_slice(), [only] if only.text == TUPLE_POSITION))
+                {
+                    if let [GenericArg::PositionalType(whole), GenericArg::Positional(Expr::Int { text, .. })] =
+                        args.as_slice()
+                    {
+                        let index: usize = text.parse().unwrap_or(usize::MAX);
+                        let whole = match whole {
+                            Type::Path(p) => {
+                                self.plain_alias(p, env, sink).unwrap_or(whole.clone())
+                            }
+                            other => other.clone(),
+                        };
+                        match whole {
+                            Type::Tuple { elems, .. } if index < elems.len() => {
+                                *ty = elems[index].clone();
+                            }
+                            other => sink.emit(
+                                Diagnostic::error(format!(
+                                    "`{}` is not a tuple with a position {index}",
+                                    crate::syntax::pretty::type_str(&other)
+                                ))
+                                .with_code(codes::TYPE_MISMATCH)
+                                .at(*span),
+                            ),
+                        }
+                    }
+                    return;
+                }
                 if let Type::Path(p) = base.as_mut() {
                     if let Some((key, alias)) = self.generic_alias(p, env) {
                         let site = p.clone();
@@ -1334,6 +1372,11 @@ impl Rewriter<'_> {
             Type::View { view, target, .. } => {
                 self.path(view, env, sink);
                 self.ty(target, env, sink);
+            }
+            Type::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.ty(elem, env, sink);
+                }
             }
         }
     }
@@ -1516,6 +1559,11 @@ fn qualify_home(ty: &mut Type, home: &str, params: &[String], index: &Index) {
             qualify(view);
             qualify_home(target, home, params, index);
         }
+        Type::Tuple { elems, .. } => {
+            for elem in elems {
+                qualify_home(elem, home, params, index);
+            }
+        }
     }
 }
 
@@ -1543,6 +1591,11 @@ fn qualify_with_scope(ty: &mut Type, home: &str, env: &Env, index: &Index) {
             qualify_with_scope(base, home, env, index)
         }
         Type::View { target, .. } => qualify_with_scope(target, home, env, index),
+        Type::Tuple { elems, .. } => {
+            for elem in elems {
+                qualify_with_scope(elem, home, env, index);
+            }
+        }
     }
 }
 
@@ -1569,19 +1622,10 @@ fn substitute_type(ty: &mut Type, bindings: &HashMap<String, GenericArg>) {
     match ty {
         Type::Path(p) => {
             if let [only] = &p.segments[..] {
-                match bindings.get(&only.text) {
-                    Some(GenericArg::PositionalType(t))
-                    | Some(GenericArg::NamedType { ty: t, .. }) => {
-                        *ty = t.clone();
-                    }
-                    Some(GenericArg::Positional(Expr::Path(path)))
-                    | Some(GenericArg::Named {
-                        value: Expr::Path(path),
-                        ..
-                    }) => {
-                        *ty = Type::Path(path.clone());
-                    }
-                    _ => {}
+                // A type argument, also one spelled as an expression
+                // (`unsigned[8]`), takes the parameter's place.
+                if let Some(argument) = bindings.get(&only.text).and_then(GenericArg::as_type) {
+                    *ty = argument;
                 }
             }
         }
@@ -1605,6 +1649,11 @@ fn substitute_type(ty: &mut Type, bindings: &HashMap<String, GenericArg>) {
             }
         }
         Type::View { target, .. } => substitute_type(target, bindings),
+        Type::Tuple { elems, .. } => {
+            for elem in elems {
+                substitute_type(elem, bindings);
+            }
+        }
     }
 }
 

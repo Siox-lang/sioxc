@@ -528,6 +528,19 @@ impl<'a> Checker<'a> {
                 Ty::Error => true,
                 _ => false,
             },
+            // `(a, b)` fills a tuple position by position, each element read
+            // through its own target type (`('1', 3)` into `(Bit, unsigned[4])`).
+            Expr::Tuple { elems, .. } => match lhs {
+                Ty::Tuple(types) => {
+                    types.len() == elems.len()
+                        && types
+                            .iter()
+                            .zip(elems)
+                            .all(|(ty, elem)| self.assignable(ty, elem, sym))
+                }
+                Ty::Error => true,
+                _ => false,
+            },
             // A name-less positional struct literal lexes as concatenation.
             // It is structurally assignable to a named struct when its arity
             // matches; field-value checks are contextualized during lowering.
@@ -572,6 +585,68 @@ impl<'a> Checker<'a> {
             // explicit `integer(value)` conversion because it truncates.
             _ if matches!(lhs, Ty::Real) && matches!(self.type_of(value, sym), Ty::Integer) => true,
             _ => compatible(lhs, &self.type_of(value, sym)),
+        }
+    }
+}
+
+impl Checker<'_> {
+    /// `l == r` on tuples: the same size, and each position comparable — the
+    /// right one assignable to the left one (a literal reads through it, as
+    /// `p == (4, '1')`), and the left one a type with equality.
+    pub(super) fn check_tuple_equality(
+        &mut self,
+        left: &Ty,
+        right: &Ty,
+        rhs: &Expr,
+        span: Span,
+        sym: &HashMap<String, Ty>,
+    ) {
+        let comparable = matches!(left, Ty::Tuple(_)) && self.assignable(left, rhs, sym);
+        if !comparable && !matches!(right, Ty::Error) {
+            self.error(
+                codes::TYPE_MISMATCH,
+                span,
+                format!(
+                    "cannot compare {} with {}",
+                    self.ty_display(left),
+                    self.ty_display(right)
+                ),
+            );
+            return;
+        }
+        if let Some(position) = self.first_without_equality(left) {
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                span,
+                format!(
+                    "{} has no `==`: its position of type {} cannot be compared",
+                    self.ty_display(left),
+                    self.ty_display(&position)
+                ),
+                "give that type an `Eq` implementation, or compare the other positions".to_string(),
+            );
+        }
+    }
+
+    /// The first element type, through nested tuples, that has no equality.
+    fn first_without_equality(&self, ty: &Ty) -> Option<Ty> {
+        match ty {
+            Ty::Tuple(elems) => elems
+                .iter()
+                .find_map(|elem| self.first_without_equality(elem)),
+            Ty::Integer | Ty::Real | Ty::Char | Ty::Error => None,
+            Ty::Array {
+                family: Some(_), ..
+            } => None,
+            Ty::Named(_) if self.enum_operand_name(ty).is_some() => None,
+            Ty::Named(_)
+                if self
+                    .type_kind_name(ty)
+                    .is_some_and(|name| self.has_impl("Eq", &name)) =>
+            {
+                None
+            }
+            other => Some(other.clone()),
         }
     }
 }

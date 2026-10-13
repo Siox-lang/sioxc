@@ -2,7 +2,7 @@
 
 Status: **proposal**. Nothing here is implemented. It supersedes language
 §3.8's "Phase 1 should avoid Rust-style payload enums" once accepted, and
-builds on [tuples](tuples.md).
+builds on tuples ([language §3.7a](https://github.com/Siox-lang/siox-paper/blob/main/docs/language.md#37a-tuples-are-anonymous-structs)).
 
 ## Problem
 

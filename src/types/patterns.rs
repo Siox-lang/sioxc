@@ -159,6 +159,14 @@ impl<'a> Checker<'a> {
                     self.check_pattern_domain(ty, alternative);
                 }
             }
+            Pattern::Tuple { span, .. } => self.error(
+                codes::TYPE_MISMATCH,
+                *span,
+                format!(
+                    "a tuple pattern cannot match a {} value",
+                    self.ty_display(ty)
+                ),
+            ),
             Pattern::Path(path) if path.segments.len() == 2 => {
                 let qualifier = &path.segments[0];
                 let qualifier_key = self
@@ -268,6 +276,13 @@ impl<'a> Checker<'a> {
     /// `match s { '0' => .. }` on `enum State { Idle, Run }` selected the arm,
     /// because `State::Idle` and `'0'` are both 0.
     pub(super) fn check_char_patterns(&mut self, ty: &Ty, arms: &[MatchArm]) {
+        for arm in arms {
+            self.check_char_pattern(ty, &arm.pattern);
+        }
+    }
+
+    /// [`Self::check_char_patterns`] for one pattern.
+    fn check_char_pattern(&mut self, ty: &Ty, pattern: &Pattern) {
         let variants = match ty {
             Ty::Named(id) => self
                 .definition_key(*id)
@@ -275,9 +290,7 @@ impl<'a> Checker<'a> {
             _ => None,
         };
         let mut bad: Vec<(char, Span)> = Vec::new();
-        for arm in arms {
-            collect_char_patterns(&arm.pattern, &mut bad);
-        }
+        collect_char_patterns(pattern, &mut bad);
         for (ch, span) in bad {
             match &variants {
                 None => self.error(
@@ -312,6 +325,26 @@ impl<'a> Checker<'a> {
         sym: &HashMap<String, Ty>,
     ) {
         let ty = self.type_of(scrutinee, sym);
+        if let Ty::Tuple(elems) = &ty {
+            for arm in arms {
+                self.check_tuple_pattern(elems, &arm.pattern, sym);
+            }
+            let missing = self.tuple_arms_missing(elems, arms);
+            if missing.is_none() && !arms.iter().any(|arm| pattern_covers(&arm.pattern).1) {
+                self.covered_tuple_matches.insert(span);
+            }
+            if let Some(missing) = missing {
+                self.sink.emit(
+                    Diagnostic::warning(format!(
+                        "non-exhaustive match: `{missing}` is not covered"
+                    ))
+                    .with_code(codes::NON_EXHAUSTIVE_MATCH)
+                    .at(span)
+                    .help("add the missing arms, or a `_` wildcard"),
+                );
+            }
+            return;
+        }
         self.check_pattern_domains(&ty, arms);
         for arm in arms {
             self.check_pattern_bounds(&ty, &arm.pattern, sym);
@@ -408,13 +441,133 @@ impl<'a> Checker<'a> {
                         ),
                 );
             }
-            Pattern::Or { alts, .. } => {
+            Pattern::Or { alts, .. } | Pattern::Tuple { elems: alts, .. } => {
                 for a in alts {
                     self.check_pattern_form(a);
                 }
             }
             _ => {}
         }
+    }
+
+    /// Check a pattern against a tuple's element types: a tuple pattern of
+    /// the same size, each position checked as a pattern over its element.
+    fn check_tuple_pattern(&mut self, elems: &[Ty], pattern: &Pattern, sym: &HashMap<String, Ty>) {
+        match pattern {
+            Pattern::Wildcard => {}
+            Pattern::Or { alts, .. } => {
+                for alternative in alts {
+                    self.check_tuple_pattern(elems, alternative, sym);
+                }
+            }
+            Pattern::Tuple {
+                elems: positions,
+                span,
+            } if positions.len() != elems.len() => self.error(
+                codes::TYPE_MISMATCH,
+                *span,
+                format!(
+                    "this pattern has {} positions, but the matched tuple has {}",
+                    positions.len(),
+                    elems.len()
+                ),
+            ),
+            Pattern::Tuple {
+                elems: positions, ..
+            } => {
+                for (ty, position) in elems.iter().zip(positions) {
+                    match ty {
+                        Ty::Tuple(inner) => self.check_tuple_pattern(inner, position, sym),
+                        _ => {
+                            self.check_pattern_domain(ty, position);
+                            self.check_pattern_bounds(ty, position, sym);
+                            self.check_char_pattern(ty, position);
+                        }
+                    }
+                }
+            }
+            _ => {
+                let Some(span) = pattern_span(pattern) else {
+                    return;
+                };
+                let ty = Ty::Tuple(elems.to_vec());
+                self.error_with_help(
+                    codes::TYPE_MISMATCH,
+                    span,
+                    format!("a {} value needs a tuple pattern", self.ty_display(&ty)),
+                    "write one pattern per position, `(p1, p2, ..)`".to_string(),
+                );
+            }
+        }
+    }
+
+    /// The first combination of a tuple's values that no arm matches, when
+    /// one exists. Enum positions (`Bool`, `Logic`, a `State`) are spelled
+    /// out variant by variant; any other position is covered only by `_`.
+    /// A domain too large to spell out needs an arm that matches anything.
+    pub(super) fn tuple_arms_missing(&self, elems: &[Ty], arms: &[MatchArm]) -> Option<String> {
+        const LIMIT: usize = 4096;
+        // Each position's values; `None` stands for "a value only `_` covers".
+        let domains: Vec<Vec<Option<String>>> = elems
+            .iter()
+            .map(|ty| match self.enum_variant_names(ty) {
+                Some(variants) => variants.into_iter().map(Some).collect(),
+                None => vec![None],
+            })
+            .collect();
+        let total = domains
+            .iter()
+            .try_fold(1usize, |total, domain| total.checked_mul(domain.len()))
+            .filter(|total| *total <= LIMIT);
+        let Some(total) = total else {
+            let anything = vec![None; elems.len()];
+            let shown = vec!["_"; elems.len()].join(", ");
+            return (!arms
+                .iter()
+                .any(|arm| tuple_pattern_covers(&arm.pattern, &anything)))
+            .then(|| format!("({shown})"));
+        };
+        let mut combination = vec![0usize; domains.len()];
+        for _ in 0..total {
+            let values: Vec<Option<&str>> = combination
+                .iter()
+                .zip(&domains)
+                .map(|(index, domain)| domain[*index].as_deref())
+                .collect();
+            if !arms
+                .iter()
+                .any(|arm| tuple_pattern_covers(&arm.pattern, &values))
+            {
+                let shown = values
+                    .iter()
+                    .zip(elems)
+                    .map(|(value, ty)| match (value, ty) {
+                        (Some(variant), _) if variant.starts_with('\'') => (*variant).to_string(),
+                        (Some(variant), ty) => match self.type_kind_name(ty) {
+                            Some(name) => format!("{}::{variant}", self.key_leaf(&name)),
+                            None => (*variant).to_string(),
+                        },
+                        (None, _) => "_".to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Some(format!("({shown})"));
+            }
+            for (index, domain) in combination.iter_mut().zip(&domains).rev() {
+                *index += 1;
+                if *index < domain.len() {
+                    break;
+                }
+                *index = 0;
+            }
+        }
+        None
+    }
+
+    /// The variant names of an enum type, `'0'`-quoted for a character enum.
+    fn enum_variant_names(&self, ty: &Ty) -> Option<Vec<String>> {
+        let Ty::Named(id) = ty else { return None };
+        self.enum_variants.get(&self.definition_key(*id)?).cloned()
     }
 
     /// An integer constant expression's value: literals, named constants and
@@ -490,7 +643,10 @@ impl<'a> Checker<'a> {
                 true
             }
             Pattern::Or { alts, .. } => alts.iter().all(|a| self.pattern_intervals(a, out)),
-            Pattern::Path(_) | Pattern::BitPattern { .. } | Pattern::CharLit { .. } => false,
+            Pattern::Path(_)
+            | Pattern::BitPattern { .. }
+            | Pattern::CharLit { .. }
+            | Pattern::Tuple { .. } => false,
         }
     }
 
@@ -637,7 +793,39 @@ impl<'a> Checker<'a> {
             Ty::Array {
                 family: Some(name), ..
             } => Some(name.clone()),
-            Ty::Array { .. } | Ty::Void | Ty::Error => None,
+            Ty::Array { .. } | Ty::Tuple(_) | Ty::Void | Ty::Error => None,
+        }
+    }
+}
+
+/// Whether `pattern` matches the tuple whose positions hold `values`, where
+/// `None` is a value only a wildcard matches.
+fn tuple_pattern_covers(pattern: &Pattern, values: &[Option<&str>]) -> bool {
+    match pattern {
+        Pattern::Wildcard => true,
+        Pattern::Or { alts, .. } => alts.iter().any(|alt| tuple_pattern_covers(alt, values)),
+        Pattern::Tuple { elems, .. } => {
+            elems.len() == values.len()
+                && elems
+                    .iter()
+                    .zip(values)
+                    .all(|(position, value)| position_covers(position, *value))
+        }
+        _ => false,
+    }
+}
+
+/// Whether one position's pattern matches `value` (see
+/// [`tuple_pattern_covers`]).
+fn position_covers(pattern: &Pattern, value: Option<&str>) -> bool {
+    match pattern {
+        Pattern::Wildcard => true,
+        Pattern::Or { alts, .. } => alts.iter().any(|alt| position_covers(alt, value)),
+        Pattern::Tuple { elems, .. } => elems.iter().all(|elem| position_covers(elem, None)),
+        _ => {
+            let Some(value) = value else { return false };
+            let (variants, _) = pattern_covers(pattern);
+            variants.iter().any(|variant| variant == value)
         }
     }
 }

@@ -385,6 +385,7 @@ fn type_head_path(t: &Type) -> Option<&Path> {
         Type::Path(path) => Some(path),
         Type::Generic { base, .. } | Type::Indexed { base, .. } => type_head_path(base),
         Type::View { view, .. } => Some(view),
+        Type::Tuple { .. } => None,
     }
 }
 
@@ -1624,6 +1625,7 @@ impl<'a> Resolver<'a> {
                 backing: None,
             }),
             Type::Generic { base, .. } | Type::Indexed { base, .. } => self.impl_owner(base),
+            Type::Tuple { .. } => None,
             Type::View { view, target, .. } => Some(ImplOwner {
                 nominal: self.out.resolved(view.span)?,
                 backing: Some(self.type_definition(target)?),
@@ -1638,6 +1640,7 @@ impl<'a> Resolver<'a> {
             Type::Path(path) => self.out.resolved(path.span),
             Type::Generic { base, .. } | Type::Indexed { base, .. } => self.type_definition(base),
             Type::View { view, .. } => self.out.resolved(view.span),
+            Type::Tuple { .. } => None,
         }
     }
 
@@ -1900,6 +1903,11 @@ impl<'a> Resolver<'a> {
                 self.resolve_type_path(view);
                 self.resolve_type(target);
             }
+            Type::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.resolve_type(elem);
+                }
+            }
         }
     }
 
@@ -2064,7 +2072,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(spread);
                 }
             }
-            Expr::Concat { parts, .. } => {
+            Expr::Concat { parts, .. } | Expr::Tuple { elems: parts, .. } => {
                 for p in parts {
                     self.resolve_expr(p);
                 }
@@ -2085,7 +2093,7 @@ impl<'a> Resolver<'a> {
     fn resolve_pattern(&mut self, pattern: &Pattern) {
         match pattern {
             Pattern::Path(p) => self.resolve_value_path(p),
-            Pattern::Or { alts, .. } => {
+            Pattern::Or { alts, .. } | Pattern::Tuple { elems: alts, .. } => {
                 for a in alts {
                     self.resolve_pattern(a);
                 }
@@ -2497,6 +2505,7 @@ impl<'a> Resolver<'a> {
             Type::View { target, .. } => {
                 return self.struct_type_id(target, structs, aliases, seen_aliases);
             }
+            Type::Tuple { .. } => return None,
         };
         if structs.contains_key(&id) {
             return Some(id);
@@ -2518,6 +2527,7 @@ impl<'a> Resolver<'a> {
                 return self.public_impl_target(base);
             }
             Type::View { view, .. } => view,
+            Type::Tuple { .. } => return false,
         };
         self.out.resolved(path.span).is_some_and(|id| {
             self.out.def(id).is_some_and(|definition| {
@@ -2571,6 +2581,11 @@ impl<'a> Resolver<'a> {
             Type::View { view, target, .. } => {
                 self.check_public_path(view, context);
                 self.check_public_type(target, context);
+            }
+            Type::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.check_public_type(elem, context);
+                }
             }
         }
     }

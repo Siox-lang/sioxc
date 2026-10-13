@@ -252,6 +252,25 @@ impl<'a> Checker<'a> {
                     );
                     return;
                 }
+                // A tuple compares position by position and has no other
+                // operator.
+                let (left, right) = (self.type_of(lhs, sym), self.type_of(rhs, sym));
+                if matches!(left, Ty::Tuple(_)) || matches!(right, Ty::Tuple(_)) {
+                    if !matches!(op, BinOp::Eq | BinOp::Ne) {
+                        self.error_with_help(
+                            codes::TYPE_MISMATCH,
+                            *span,
+                            format!(
+                                "a tuple has no `{}` operator",
+                                crate::syntax::pretty::bin_op(op)
+                            ),
+                            "tuples compare with `==` and `!=`, position by position".to_string(),
+                        );
+                    } else {
+                        self.check_tuple_equality(&left, &right, rhs, *span, sym);
+                    }
+                    return;
+                }
                 // Mixed numbers: each operand that is not already of the
                 // promoted type widens to it (spec 3.17).
                 if !matches!(
@@ -563,7 +582,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Expr::Concat { parts, .. } => {
+            Expr::Concat { parts, .. } | Expr::Tuple { elems: parts, .. } => {
                 for p in parts {
                     self.check_expr(p, sym);
                 }

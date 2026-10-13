@@ -917,7 +917,7 @@ fn connection_value_is_static(expression: &ast::Expr, resolved: &Resolved) -> bo
                         .is_some_and(|value| connection_value_is_static(value, resolved))
                 })
         }
-        ast::Expr::Concat { parts, .. } => parts
+        ast::Expr::Concat { parts, .. } | ast::Expr::Tuple { elems: parts, .. } => parts
             .iter()
             .all(|part| connection_value_is_static(part, resolved)),
         ast::Expr::Array { elems, .. } => elems

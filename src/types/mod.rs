@@ -38,6 +38,7 @@ mod members;
 mod operators;
 mod patterns;
 mod statements;
+mod tuples;
 
 use helpers::*;
 
@@ -73,6 +74,9 @@ pub enum Ty {
         /// `ufixed<8, 2>` are different types.
         low: i64,
     },
+    /// A tuple `(A, B, ..)`: an anonymous struct whose fields are its
+    /// positions. Two tuples are the same type when their elements are.
+    Tuple(Vec<Ty>),
     /// A declared function or method with no return type. Unlike `Error`, this
     /// is known and must be rejected anywhere a value is required.
     Void,
@@ -96,6 +100,9 @@ impl Ty {
                     elem.bit_width()?.checked_mul(*len)
                 }
             }
+            Ty::Tuple(elems) => elems
+                .iter()
+                .try_fold(0u32, |total, elem| total.checked_add(elem.bit_width()?)),
             Ty::Named(_) | Ty::Void | Ty::Error => None,
         }
     }
@@ -114,9 +121,18 @@ pub struct Typed {
     /// Each operand of a mixed numeric operation that widens, keyed by its
     /// span, to the type it widens to (spec 3.17, ``From``).
     promotions: HashMap<Span, Ty>,
+    /// Each tuple `match` whose arms cover every combination without a `_`,
+    /// by the match's span: its last arm needs no condition.
+    covered_tuple_matches: HashSet<Span>,
 }
 
 impl Typed {
+    /// Whether the tuple `match` at `span` covers its scrutinee without a
+    /// `_` arm.
+    pub fn covers_tuple_match(&self, span: Span) -> bool {
+        self.covered_tuple_matches.contains(&span)
+    }
+
     /// The type an operand widens to in a mixed numeric operation.
     pub fn promotion(&self, span: Span) -> Option<&Ty> {
         self.promotions.get(&span)
@@ -139,6 +155,7 @@ impl Typed {
 }
 
 pub use expand::expand_type_attrs;
+pub use tuples::{lower_tuples, tuple_struct_arity, tuple_struct_name};
 
 /// Type-check resolved modules.
 ///
@@ -413,6 +430,8 @@ struct Checker<'a> {
     view_dirs: HashMap<String, HashMap<String, Direction>>,
     /// Persistent Stage-4 facts keyed by the AST expression's stable span.
     expr_types: std::cell::RefCell<HashMap<Span, Ty>>,
+    /// Tuple matches proven covered; handed on in [`Typed`].
+    covered_tuple_matches: HashSet<Span>,
     /// Struct literals are reached both from their contextual consumer and
     /// from the ordinary expression walk. Keep structural/privacy diagnostics
     /// single-shot while still checking the consumer's expected type on every
