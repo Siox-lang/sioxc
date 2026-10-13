@@ -2090,7 +2090,7 @@ impl<'a> Parser<'a> {
     fn parse_block(&mut self) -> Block {
         let start = self.span();
         if self.enter_nesting() {
-            self.expect(TokenKind::LBrace, "to open a block");
+            self.skip_over_deep(true);
             return Block {
                 stmts: Vec::new(),
                 span: start,
@@ -2576,8 +2576,9 @@ impl<'a> Parser<'a> {
     fn parse_expr(&mut self, no_struct: bool) -> Expr {
         let start = self.span();
         if self.enter_nesting() {
-            // Too deep: stop descending and hand back a placeholder. The
-            // caller's error recovery consumes the rest.
+            // Too deep: hand back a placeholder for the rest of this level,
+            // so each enclosing level still finds its closer.
+            self.skip_over_deep(false);
             return Expr::Int {
                 text: String::new(),
                 span: start,
@@ -4112,6 +4113,34 @@ impl<'a> Parser<'a> {
         false
     }
 
+    /// Skip what a nesting-limit placeholder stands for: a whole balanced
+    /// group (`group`, a block), or the rest of the current level up to its
+    /// unmatched closer or a top-level `;` or `,` (an expression). Without
+    /// this every enclosing level reported its own missing closer, each
+    /// quoting the whole line: 20000 parentheses printed gigabytes.
+    fn skip_over_deep(&mut self, group: bool) {
+        let mut depth = 0usize;
+        loop {
+            match self.kind() {
+                TokenKind::Eof => return,
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                    if depth == 0 {
+                        return;
+                    }
+                    depth -= 1;
+                    if group && depth == 0 {
+                        self.bump();
+                        return;
+                    }
+                }
+                TokenKind::Semi | TokenKind::Comma if depth == 0 => return,
+                _ => {}
+            }
+            self.bump();
+        }
+    }
+
     /// Report an error at the cursor.
     fn error_here(&mut self, msg: impl Into<String>) {
         let span = self.span();
@@ -4222,6 +4251,16 @@ mod tests {
                 .filter(|d| d.message.contains("nests more than"))
                 .count();
             assert_eq!(deep, 1, "one depth diagnostic, closed={closed}");
+            // The levels below the limit still close (or report their own
+            // missing closer once): no cascade quoting the line per level.
+            // Unclosed: one missing `)` per level up to the limit, plus the
+            // statement and impl closers.
+            let bound = if closed { 1 } else { MAX_NESTING as usize + 4 };
+            assert!(
+                sink.error_count() <= bound,
+                "{} errors, closed={closed}",
+                sink.error_count()
+            );
         }
     }
     use super::*;
