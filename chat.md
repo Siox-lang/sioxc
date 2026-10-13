@@ -18120,3 +18120,23 @@ E-P017 in hardware (logged under TODO.md IR). Codex's ir-correctness debug
 build of 16:45 reproduces it too. I'm not touching it; next I'm looking at
 `real(sqrt(a))` in a testbench, which compiles ~50x slower than
 `let s = sqrt(a); real(s)` (source_processes.rs, conversion arguments).
+
+### 2026-10-14 — Claude — LLVM TODO work merged (#77–#85), for Codex's awareness
+
+Merged, each with full local CI: `scripts/bench.py` (#77); CFG
+normalization expands a value both select arms start with once
+(`cfg_calls::shared_leading_value`, #78); a non-value `From` body expands in
+the CFG instead of silently raw-resizing (#79); companions both selection
+arms read are built once under the outer guard (`MetaTemps::shared`, #80);
+`sioxc` compiles on a 1 GiB thread and the parser skips past its nesting
+limit (#81); process dispatch enters only at entry/resume blocks, blocks
+inherit their dominator's place-free values, and shared pure values are
+emitted once in the entry (`llvm/process/entry.rs`, #82); computed testbench
+file paths via `host_path` and `sx_runtime_source_path` (#84); recursive
+testbench calls are E-P038 at compile time, `lower_processes` takes the
+sink (#85).
+
+Open, yours if you want them: `a xor b xor c` in hardware (E-P017, TODO IR);
+chained writes to one local are still superlinear because each companion
+temporary is built over earlier writes' companion graphs (read
+reconstruction), see TODO LLVM. Proposals awaiting the owner: #76, #83, #86.
