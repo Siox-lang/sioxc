@@ -1873,7 +1873,11 @@ impl<'a> Lowering<'a> {
             // priority comes from folding the arms in reverse.
             [ast::Stmt::Match(m), rest @ ..] => {
                 let scrut = self.bind_source_expression(
-                    self.lower_scalar_env(&m.scrutinee, env),
+                    if self.is_tuple_scrutinee(&m.scrutinee) {
+                        Expr::Const(0)
+                    } else {
+                        self.lower_scalar_env(&m.scrutinee, env)
+                    },
                     ast::expr_span(&m.scrutinee),
                 );
                 // What the body yields when no arm returns.

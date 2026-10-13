@@ -121,6 +121,24 @@ impl<'a> Lowering<'a> {
                         .at(*span),
                     );
                 }
+                if matches!(target, ast::Expr::Tuple { .. }) {
+                    match self.tuple_assign_leaves(target, value, &cond) {
+                        Some(leaves) => {
+                            for (target, expression) in leaves {
+                                self.hardware.drivers.push(Driver {
+                                    span: self.cur_span,
+                                    target,
+                                    cond: cond.clone(),
+                                    expr: expression,
+                                    meta: None,
+                                    ctx: self.cur_ctx,
+                                });
+                            }
+                        }
+                        None => self.report_bad_assign_target(target),
+                    }
+                    return;
+                }
                 if self.lower_source_index_assign(target, value, cond.clone(), None) {
                     return;
                 }
@@ -402,7 +420,11 @@ impl<'a> Lowering<'a> {
             ast::Stmt::Match(m) => {
                 // Combinational match: each arm becomes conditional drivers
                 // guarded by `scrutinee == variant` with first-match priority.
-                let scrut = self.lower_expr(&m.scrutinee);
+                let scrut = if self.is_tuple_scrutinee(&m.scrutinee) {
+                    Expr::Const(0)
+                } else {
+                    self.lower_expr(&m.scrutinee)
+                };
                 // A match naming every variant of its scrutinee's enum is as
                 // complete as one ending in `_`, so a signal every arm assigns
                 // is driven on every path and is not a latch. Only the wildcard
@@ -474,7 +496,11 @@ impl<'a> Lowering<'a> {
     /// arm's value is the base `els`, and each earlier arm wraps it under its
     /// `scrutinee == pattern` guard.
     pub(super) fn lower_match_expr(&self, scrutinee: &ast::Expr, arms: &[ast::MatchArm]) -> Expr {
-        let scrut = self.lower_expr(scrutinee);
+        let scrut = if self.is_tuple_scrutinee(scrutinee) {
+            Expr::Const(0)
+        } else {
+            self.lower_expr(scrutinee)
+        };
         // Every match needs a base case. With no `_`, the last arm is it: its
         // guard is redundant when the arms cover the scrutinee, and when they
         // do not this is at least a defined value rather than an `Unknown` no
@@ -513,7 +539,11 @@ impl<'a> Lowering<'a> {
         arms: &[ast::MatchArm],
         env: &HashMap<String, Val>,
     ) -> Val {
-        let scrut = self.lower_scalar_env(scrutinee, env);
+        let scrut = if self.is_tuple_scrutinee(scrutinee) {
+            Expr::Const(0)
+        } else {
+            self.lower_scalar_env(scrutinee, env)
+        };
         let exhaustive = !arms.iter().any(|a| pattern_has_wildcard(&a.pattern));
         let mut result: Option<Val> = None;
         for (i, arm) in arms.iter().enumerate().rev() {
@@ -532,6 +562,16 @@ impl<'a> Lowering<'a> {
             }
         }
         result.unwrap_or(Val::Scalar(Expr::Unknown))
+    }
+
+    /// Whether a `match` scrutinee is a tuple, which is never lowered as one
+    /// value: its arms read it position by position (`arm_match_cond`).
+    pub(super) fn is_tuple_scrutinee(&self, scrutinee: &ast::Expr) -> bool {
+        matches!(scrutinee, ast::Expr::Tuple { .. })
+            || matches!(
+                self.expr_types.get(&ast::expr_span(scrutinee)),
+                Some(crate::types::Ty::Tuple(_))
+            )
     }
 
     /// The condition selecting one match arm, built from its pattern and the
@@ -634,6 +674,40 @@ impl<'a> Lowering<'a> {
                     (None, Some(le)) => le,
                     (None, None) => Expr::Const(1),
                 })
+            }
+            // `(p1, p2)`: every position matches its part of the scrutinee —
+            // a tuple literal's own element, or `scrutinee.i`. A position
+            // that is `_` adds nothing; all of them `_` is a wildcard.
+            ast::Pattern::Tuple { elems, span } => {
+                let mut all: Option<Expr> = None;
+                for (index, position) in elems.iter().enumerate() {
+                    let part = match scrutinee {
+                        ast::Expr::Tuple { elems: parts, .. } => parts.get(index)?.clone(),
+                        whole => {
+                            // An empty span, one per position: no typed
+                            // expression lives there, so the part is typed by
+                            // its own path.
+                            let at = (span.start + index as u32).min(span.end);
+                            let at = crate::diag::Span::new(span.file, at..at);
+                            ast::Expr::Field {
+                                base: Box::new(whole.clone()),
+                                field: ast::Ident {
+                                    text: index.to_string(),
+                                    span: at,
+                                },
+                                span: at,
+                            }
+                        }
+                    };
+                    let value = self.lower_scalar_env(&part, env);
+                    if let Some(condition) = self.arm_match_cond(position, &part, &value, env) {
+                        all = Some(match all {
+                            Some(all) => self.source_binary(BinOp::And, &all, &condition, *span),
+                            None => condition,
+                        });
+                    }
+                }
+                all
             }
             // `A | B`: matches if any alternative matches (their conditions
             // OR-ed; a wildcard alternative makes the whole arm unconditional).
@@ -782,6 +856,22 @@ impl<'a> Lowering<'a> {
                             .at(*span),
                         );
                     }
+                    if matches!(target, ast::Expr::Tuple { .. }) {
+                        match self.tuple_assign_leaves(target, value, &cond) {
+                            // A registered tuple: one next-state update per leaf.
+                            Some(leaves) => {
+                                out.extend(leaves.into_iter().map(|(sig, expr)| NextUpdate {
+                                    span: self.cur_span,
+                                    target: sig,
+                                    cond: cond.clone(),
+                                    expr,
+                                    meta: None,
+                                }))
+                            }
+                            None => self.report_bad_assign_target(target),
+                        }
+                        continue;
+                    }
                     if self.lower_source_index_assign(target, value, cond.clone(), Some(out)) {
                         continue;
                     }
@@ -920,7 +1010,11 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 ast::Stmt::Match(m) => {
-                    let scrut = self.lower_expr(&m.scrutinee);
+                    let scrut = if self.is_tuple_scrutinee(&m.scrutinee) {
+                        Expr::Const(0)
+                    } else {
+                        self.lower_expr(&m.scrutinee)
+                    };
                     let mut remaining = cond.clone();
                     for arm in &m.arms {
                         let mc = self.arm_match_cond(

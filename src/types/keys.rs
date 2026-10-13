@@ -93,6 +93,7 @@ impl<'a> Checker<'a> {
                 self.path_key(view)?,
                 self.type_key(target)?
             )),
+            Type::Tuple { .. } => None,
         }
     }
 
@@ -107,7 +108,7 @@ impl<'a> Checker<'a> {
         match ty {
             Type::Path(path) => self.trait_key(path),
             Type::Generic { base, .. } => self.trait_type_key(base),
-            Type::Indexed { .. } | Type::View { .. } => None,
+            Type::Indexed { .. } | Type::View { .. } | Type::Tuple { .. } => None,
         }
     }
 

@@ -542,7 +542,9 @@ impl Reads<'_> {
                     self.fold_expr(spread, scope, sink);
                 }
             }
-            Expr::Concat { parts: items, .. } | Expr::Array { elems: items, .. } => {
+            Expr::Concat { parts: items, .. }
+            | Expr::Array { elems: items, .. }
+            | Expr::Tuple { elems: items, .. } => {
                 for item in items {
                     self.fold_expr(item, scope, sink);
                 }
@@ -675,7 +677,7 @@ fn type_name(ty: &Type) -> Option<&str> {
     match ty {
         Type::Path(path) => path.segments.last().map(|s| s.text.as_str()),
         Type::Generic { base, .. } => type_name(base),
-        Type::Indexed { .. } | Type::View { .. } => None,
+        Type::Indexed { .. } | Type::View { .. } | Type::Tuple { .. } => None,
     }
 }
 

@@ -234,7 +234,14 @@ impl<'a> Checker<'a> {
             .with_code(codes::MISSING_TYPE_ANNOTATION)
             .at(l.span);
         // Point at the clean form for the common instance case.
-        if let Some(Expr::Construct { ty: Some(t), .. }) = &l.value {
+        if l.span == l.name.span {
+            // A position of a tuple `let`.
+            diag = diag.help(format!(
+                "write `{}: <type>` in the tuple, or give the whole tuple a type: \
+                 `let (..): (A, B) = ..;`",
+                l.name.text
+            ));
+        } else if let Some(Expr::Construct { ty: Some(t), .. }) = &l.value {
             if let Some(head) = type_head_name(t) {
                 diag = diag.help(format!("write `let {}: {} = {{ .. }};`", l.name.text, head));
             }

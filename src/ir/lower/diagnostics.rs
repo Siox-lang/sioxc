@@ -359,6 +359,13 @@ impl<'a> Lowering<'a> {
                      packed-vector slice bounds must be constant, and a custom container needs \
                      an `IndexAssign` implementation",
                 )
+        } else if matches!(target, ast::Expr::Tuple { .. }) {
+            crate::diag::Diagnostic::error(format!("`{text}` cannot be assigned to"))
+                .with_code(crate::diag::codes::INVALID_ASSIGN_TARGET)
+                .help(
+                    "each position of a tuple target is a signal or a field of one, or `_`; \
+                     a local declared inside a block is not yet supported here",
+                )
         } else {
             crate::diag::Diagnostic::error(format!("`{text}` cannot be assigned to"))
                 .with_code(crate::diag::codes::INVALID_ASSIGN_TARGET)
@@ -541,7 +548,9 @@ impl<'a> Lowering<'a> {
                     self.collect_bad_indices(s, out);
                 }
             }
-            E::Concat { parts: es, .. } | E::Array { elems: es, .. } => {
+            E::Concat { parts: es, .. }
+            | E::Array { elems: es, .. }
+            | E::Tuple { elems: es, .. } => {
                 for x in es {
                     self.collect_bad_indices(x, out);
                 }

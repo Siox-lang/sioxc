@@ -761,6 +761,7 @@ impl<'a> FunctionIndex<'a> {
                 self.view_path_key(view)?,
                 self.type_head_key(target)?
             )),
+            ast::Type::Tuple { elems, .. } => Some(crate::types::tuple_struct_name(elems.len())),
         }
     }
 }

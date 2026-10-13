@@ -20,6 +20,70 @@ use crate::syntax::ast::*;
 use crate::syntax::token::{Token, TokenKind};
 use std::collections::HashMap;
 
+/// One position of a tuple `let` before it is declared.
+enum LetPattern {
+    /// `name` or `name: T`; `_` binds nothing.
+    Name(Ident, Option<Type>),
+    /// A nested `(..)`, with its span.
+    Tuple(Vec<LetPattern>, Span),
+}
+
+/// Declare each name in a tuple `let` and return the assignment target
+/// that stands for the whole pattern.
+fn declare_let_pattern(pattern: LetPattern, whole: Option<&Type>, lets: &mut Vec<LetDecl>) -> Expr {
+    match pattern {
+        LetPattern::Name(name, ty) => {
+            // A missing type is reported by the checker, as for any
+            // `let`; the declaration's span is the name's, which is how
+            // it tells a tuple position from a whole `let`.
+            if name.text != "_" {
+                lets.push(LetDecl {
+                    attrs: Vec::new(),
+                    name: name.clone(),
+                    ty: ty.or_else(|| whole.cloned()),
+                    value: None,
+                    span: name.span,
+                });
+            }
+            Expr::Path(Path {
+                span: name.span,
+                segments: vec![name],
+            })
+        }
+        LetPattern::Tuple(elems, tuple_span) => {
+            let arity = elems.len();
+            let elems = elems
+                .into_iter()
+                .enumerate()
+                .map(|(index, elem)| {
+                    // A written tuple type gives each position its own
+                    // type; any other (an alias, `Pair<A, B>`) is read
+                    // once aliases are expanded (`position_type`).
+                    let ty = whole.map(|whole| match whole {
+                        Type::Tuple { elems: types, .. } if types.len() == arity => {
+                            types[index].clone()
+                        }
+                        other => position_type(other, index),
+                    });
+                    declare_let_pattern(elem, ty.as_ref(), lets)
+                })
+                .collect();
+            Expr::Tuple {
+                elems,
+                span: tuple_span,
+            }
+        }
+    }
+}
+
+/// A statement in implementation-member position.
+fn impl_item_of(statement: Stmt) -> ImplItem {
+    match statement {
+        Stmt::Let(declaration) => ImplItem::Let(declaration),
+        other => ImplItem::Stmt(other),
+    }
+}
+
 /// Lightweight declaration pass used before the full Pratt parse. It finds
 /// `impl CustomOperator<"symbol", ...>` blocks with a precedence without parsing their
 /// bodies, producing the operator table needed to group expressions.
@@ -182,9 +246,10 @@ pub struct Parser<'a> {
     last: usize,
     /// The argument tokens of every `name!(…)` read so far.
     macro_args: MacroArgTable,
-    /// The declarations after the first of a group `let a, b: T = v;`,
-    /// waiting for the loop collecting items or statements to take them.
-    grouped_lets: Vec<LetDecl>,
+    /// The statements after the first of a group `let a, b: T = v;` or a
+    /// tuple `let (q: A, r: B) = e;`, waiting for the loop collecting items
+    /// or statements to take them.
+    grouped_lets: Vec<Stmt>,
 }
 
 impl<'a> Parser<'a> {
@@ -278,7 +343,7 @@ impl<'a> Parser<'a> {
                 );
             }
             stmts.push(self.parse_stmt());
-            stmts.extend(self.grouped_lets.drain(..).map(Stmt::Let));
+            stmts.append(&mut self.grouped_lets);
             self.close_lint_scope(statement_start);
             if self.pos == before {
                 self.bump();
@@ -296,7 +361,7 @@ impl<'a> Parser<'a> {
             if let Some(item) = self.parse_impl_item() {
                 items.push(item);
             }
-            items.extend(self.grouped_lets.drain(..).map(ImplItem::Let));
+            items.extend(self.grouped_lets.drain(..).map(impl_item_of));
             self.close_lint_scope(item_start);
             if self.pos == before {
                 self.bump();
@@ -1475,7 +1540,7 @@ impl<'a> Parser<'a> {
             if let Some(it) = self.parse_impl_item() {
                 items.push(it);
             }
-            items.extend(self.grouped_lets.drain(..).map(ImplItem::Let));
+            items.extend(self.grouped_lets.drain(..).map(impl_item_of));
             self.close_lint_scope(item_start);
             if self.pos == before {
                 self.bump();
@@ -1541,6 +1606,12 @@ impl<'a> Parser<'a> {
             TokenKind::Let => {
                 let start = self.span();
                 self.bump();
+                if self.at(TokenKind::LParen) {
+                    if let Some(attr) = attrs.first() {
+                        self.error_at(attr.span, "a tuple `let` takes no attributes");
+                    }
+                    return Some(impl_item_of(self.parse_let_tuple(start)));
+                }
                 let name = self.parse_ident();
                 let declaration = self.parse_let_rest(attrs, start, name);
                 let name = declaration.name.text.clone();
@@ -1683,13 +1754,61 @@ impl<'a> Parser<'a> {
             span: start.to(self.prev_span()),
         };
         // Each further name's diagnostics point at it, not at the `let`.
-        self.grouped_lets
-            .extend(others.into_iter().map(|name| LetDecl {
+        self.grouped_lets.extend(others.into_iter().map(|name| {
+            Stmt::Let(LetDecl {
                 span: name.span.to(declaration.span),
                 name,
                 ..declaration.clone()
-            }));
+            })
+        }));
         declaration
+    }
+
+    /// Parse `let (q: A, r: B) = e;` after its `let`. Every name declares a
+    /// type, by itself or through a tuple type on the whole pattern
+    /// (`let (q, r): (A, B) = e;`), as every `let` does. It is the
+    /// declarations followed by the tuple assignment `(q, r) = e;`: the first
+    /// statement is returned and the rest wait in `grouped_lets`.
+    fn parse_let_tuple(&mut self, start: Span) -> Stmt {
+        let pattern = self.parse_let_pattern();
+        let whole = self.eat(TokenKind::Colon).then(|| self.parse_type());
+        self.expect(TokenKind::Eq, "to give a tuple `let` its value");
+        let value = self.parse_expr(false);
+        self.expect(TokenKind::Semi, "after a `let`");
+        let span = start.to(self.prev_span());
+        let mut lets = Vec::new();
+        let target = declare_let_pattern(pattern, whole.as_ref(), &mut lets);
+        let mut stmts: Vec<Stmt> = lets.into_iter().map(Stmt::Let).collect();
+        stmts.push(Stmt::Assign {
+            label: None,
+            target,
+            value,
+            after: None,
+            span,
+        });
+        let first = stmts.remove(0);
+        self.grouped_lets.append(&mut stmts);
+        first
+    }
+
+    /// One position of a tuple `let`: `_`, `name`, `name: T`, or a nested
+    /// `(..)`.
+    fn parse_let_pattern(&mut self) -> LetPattern {
+        if self.at(TokenKind::LParen) {
+            let open = self.bump();
+            let mut elems = vec![self.parse_let_pattern()];
+            if !self.at(TokenKind::Comma) {
+                self.error_here("a tuple `let` names two or more positions");
+            }
+            while self.eat(TokenKind::Comma) && !self.at(TokenKind::RParen) {
+                elems.push(self.parse_let_pattern());
+            }
+            self.expect(TokenKind::RParen, "to close a tuple `let`");
+            return LetPattern::Tuple(elems, open.span.to(self.prev_span()));
+        }
+        let name = self.parse_ident();
+        let ty = self.eat(TokenKind::Colon).then(|| self.parse_type());
+        LetPattern::Name(name, ty)
     }
 
     /// Parse the rest of a function once its name has been consumed.
@@ -1997,7 +2116,7 @@ impl<'a> Parser<'a> {
                 );
             }
             stmts.push(self.parse_stmt());
-            stmts.extend(self.grouped_lets.drain(..).map(Stmt::Let));
+            stmts.append(&mut self.grouped_lets);
             self.close_lint_scope(statement_start);
             if self.pos == before {
                 self.bump();
@@ -2022,6 +2141,9 @@ impl<'a> Parser<'a> {
             TokenKind::Let => {
                 let start = self.span();
                 self.bump();
+                if self.at(TokenKind::LParen) {
+                    return self.parse_let_tuple(start);
+                }
                 let name = self.parse_ident();
                 Stmt::Let(self.parse_let_after_name(start, name))
             }
@@ -2282,6 +2404,20 @@ impl<'a> Parser<'a> {
     /// Parse one pattern with no alternatives: a wildcard, path, bit pattern,
     /// range, or character literal.
     fn parse_pattern_atom(&mut self) -> Pattern {
+        // `(p1, p2, ..)`; a parenthesized bound without a comma, `(N - 1)`,
+        // stays a range bound.
+        if self.at(TokenKind::LParen) && self.paren_holds_comma() {
+            let open = self.bump();
+            let mut elems = vec![self.parse_pattern()];
+            while self.eat(TokenKind::Comma) && !self.at(TokenKind::RParen) {
+                elems.push(self.parse_pattern());
+            }
+            self.expect(TokenKind::RParen, "to close a tuple pattern");
+            return Pattern::Tuple {
+                elems,
+                span: open.span.to(self.prev_span()),
+            };
+        }
         match self.kind() {
             TokenKind::Ident if self.cur_text() == "_" => {
                 self.bump();
@@ -2736,12 +2872,40 @@ impl<'a> Parser<'a> {
             match self.kind() {
                 TokenKind::Dot => {
                     self.bump();
-                    let field = self.parse_ident();
-                    e = Expr::Field {
-                        base: Box::new(e),
-                        field,
-                        span: start.to(self.prev_span()),
+                    // A tuple position: `t.0`. The lexer reads `t.0.1` as
+                    // `t` `.` `0.1`, so a real splits into two positions.
+                    let fields = match self.kind() {
+                        TokenKind::Int | TokenKind::Float
+                            if self
+                                .cur_text()
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || b == b'.') =>
+                        {
+                            let text = self.cur_text().to_string();
+                            let t = self.bump();
+                            let mut offset = t.span.start;
+                            text.split('.')
+                                .map(|digits| {
+                                    let len = digits.len() as u32;
+                                    let span = Span::new(t.span.file, offset..offset + len);
+                                    offset += len + 1;
+                                    Ident {
+                                        text: digits.to_string(),
+                                        span,
+                                    }
+                                })
+                                .collect()
+                        }
+                        _ => vec![self.parse_ident()],
                     };
+                    for field in fields {
+                        let span = start.to(field.span);
+                        e = Expr::Field {
+                            base: Box::new(e),
+                            field,
+                            span,
+                        };
+                    }
                 }
                 // `sig'event` — a VHDL-style attribute accessor (spec 3.9). The
                 // tick is exclusively for attributes; `::` is namespace/type
@@ -3097,11 +3261,23 @@ impl<'a> Parser<'a> {
                 let text = unescape(raw.trim_matches('"'));
                 Expr::StrLit { text, span: t.span }
             }
+            // `(e)` groups; `(a, b, ..)` is a tuple.
             TokenKind::LParen => {
-                self.bump();
+                let open = self.bump();
                 let inner = self.parse_expr(false);
-                self.expect(TokenKind::RParen, "to close a parenthesized expression");
-                inner
+                if !self.at(TokenKind::Comma) {
+                    self.expect(TokenKind::RParen, "to close a parenthesized expression");
+                    return inner;
+                }
+                let mut elems = vec![inner];
+                while self.eat(TokenKind::Comma) && !self.at(TokenKind::RParen) {
+                    elems.push(self.parse_expr(false));
+                }
+                self.expect(TokenKind::RParen, "to close a tuple");
+                Expr::Tuple {
+                    elems,
+                    span: open.span.to(self.prev_span()),
+                }
             }
             // `builtin # assert(…)`: a compiler primitive, for `core`'s macro
             // bodies (siox-paper/docs/language.md §3.30). It reads as the bang call the compiler
@@ -3371,9 +3547,28 @@ impl<'a> Parser<'a> {
     /// and index brackets.
     fn parse_type_core(&mut self) -> Type {
         let start = self.span();
-        let path = self.parse_path();
-        let mut ty = Type::Path(path);
-        if self.at(TokenKind::Lt) {
+        // `(A, B)` is a tuple; `(T)` is `T`. Either may be indexed after:
+        // `(Bit, Bit)[4]`.
+        let mut ty = if self.eat(TokenKind::LParen) {
+            let first = self.parse_type();
+            if self.at(TokenKind::Comma) {
+                let mut elems = vec![first];
+                while self.eat(TokenKind::Comma) && !self.at(TokenKind::RParen) {
+                    elems.push(self.parse_type());
+                }
+                self.expect(TokenKind::RParen, "to close a tuple type");
+                Type::Tuple {
+                    elems,
+                    span: start.to(self.prev_span()),
+                }
+            } else {
+                self.expect(TokenKind::RParen, "to close a parenthesized type");
+                first
+            }
+        } else {
+            Type::Path(self.parse_path())
+        };
+        if matches!(ty, Type::Path(_)) && self.at(TokenKind::Lt) {
             let args = self.parse_generic_args();
             ty = Type::Generic {
                 base: Box::new(ty),
@@ -3567,6 +3762,28 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse an identifier, accepting `self` since it may head a path.
+    /// Whether the parenthesis at the cursor holds a comma at its own depth,
+    /// which makes it a tuple rather than a grouping.
+    fn paren_holds_comma(&self) -> bool {
+        let mut depth = 0usize;
+        let mut pos = self.pos;
+        loop {
+            match self.kind_at(pos) {
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return false;
+                    }
+                }
+                TokenKind::Comma if depth == 1 => return true,
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            pos += 1;
+        }
+    }
+
     fn parse_ident(&mut self) -> Ident {
         if self.at(TokenKind::Ident) || self.at(TokenKind::SelfKw) || self.at(TokenKind::Super) {
             let t = self.bump();
@@ -4096,6 +4313,70 @@ mod tests {
             })
             .collect();
         assert_eq!(modes, [Inline::Always, Inline::Hint]);
+        assert_eq!(crate::syntax::pretty::print_module(&m), src);
+    }
+
+    /// Tuple types, values, patterns and positions print back as written;
+    /// `(T)` and `(e)` stay grouping.
+    #[test]
+    fn tuples_round_trip() {
+        let src = "module m;\n\nfn f(p: (Bit, (unsigned[4], Bit)), g: (Bit)) -> (Bit, Bit)[2] {\n    match (p.0, p.1.1) {\n        ('1', _) | (_, '0') => {\n            return [(p.0, (g)), (p.1.1, '0')];\n        }\n        _ => {\n            return [('0', '0'), ('1', '1')];\n        }\n    }\n}\n";
+        let m = parse_ok(src);
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        assert!(matches!(&f.params[0].ty, Some(Type::Tuple { elems, .. }) if elems.len() == 2));
+        assert!(matches!(&f.params[1].ty, Some(Type::Path(_))));
+        let printed = crate::syntax::pretty::print_module(&m);
+        assert_eq!(
+            printed,
+            src.replace("(g)", "g").replace("g: (Bit)", "g: Bit")
+        );
+    }
+
+    /// `t.0.1` lexes its positions as one real; they read as two positions.
+    #[test]
+    fn nested_tuple_positions_split() {
+        let m = parse_ok("module m;\nfn f(t: ((Bit, Bit), Bit)) -> Bit { return t.0.1; }\n");
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        let Some(Stmt::Return {
+            value: Some(Expr::Field { base, field, .. }),
+            ..
+        }) = f.body.as_ref().and_then(|body| body.stmts.first())
+        else {
+            panic!("expected a field return")
+        };
+        assert_eq!(field.text, "1");
+        assert!(matches!(base.as_ref(), Expr::Field { field, .. } if field.text == "0"));
+    }
+
+    /// A tuple `let` is its declarations and then the tuple assignment; a
+    /// whole-tuple type gives each name its position's type.
+    #[test]
+    fn tuple_let_declares_then_assigns() {
+        let m = parse_ok(
+            "module m;\nfn f() {\n    let (q: Bit, (r, _)): (Bit, (Logic, Bit)) = g();\n}\n",
+        );
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        assert_eq!(f.body.as_ref().map(|body| body.stmts.len()), Some(3));
+        let printed = crate::syntax::pretty::print_module(&m);
+        assert!(
+            printed.contains("    let q: Bit;\n    let r: Logic;\n    (q, (r, _)) = g();\n"),
+            "{printed}"
+        );
+    }
+
+    /// A tuple `let` typed through an alias prints back as written: its
+    /// names' types are position markers no source can spell.
+    #[test]
+    fn tuple_let_through_an_alias_round_trips() {
+        let src =
+            "module m;\n\nfn f() {\n    let (u, (v: Bit, _)): Pair<A, B> = g();\n    h(u);\n}\n";
+        let m = parse_ok(src);
         assert_eq!(crate::syntax::pretty::print_module(&m), src);
     }
 

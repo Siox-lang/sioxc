@@ -14,6 +14,7 @@ impl<'a> Checker<'a> {
                 .kind_of(*id)
                 .is_some_and(|kind| matches!(kind, DefKind::Struct | DefKind::Enum)),
             Ty::Array { elem, .. } => self.is_digital_ty(elem),
+            Ty::Tuple(elems) => elems.iter().all(|elem| self.is_digital_ty(elem)),
             _ => true,
         }
     }
@@ -247,6 +248,9 @@ impl<'a> Checker<'a> {
             // A name-less struct literal (`ty: None`) takes its type from the
             // assignment target, which `type_of` does not see here.
             Expr::Construct { ty, .. } => ty.as_ref().map(|t| self.ast_ty(t)).unwrap_or(Ty::Error),
+            Expr::Tuple { elems, .. } => {
+                Ty::Tuple(elems.iter().map(|elem| self.type_of(elem, sym)).collect())
+            }
             // A concatenation is an anonymous packed Logic array of unknown width.
             Expr::Concat { .. } => Ty::Array {
                 elem: Box::new(self.ty_from_head("Logic")),
@@ -440,6 +444,15 @@ impl<'a> Checker<'a> {
             // 8-bit field in silence.
             Expr::Field { base, field, .. } => {
                 let recv = self.type_of(base, sym);
+                // A tuple position, `t.0`.
+                if let Ty::Tuple(elems) = &recv {
+                    return field
+                        .text
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|index| elems.get(index).cloned())
+                        .unwrap_or(Ty::Error);
+                }
                 match self
                     .ty_head(&recv)
                     .and_then(|head| self.field_decl_ty(&head, &field.text))

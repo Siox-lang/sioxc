@@ -9,6 +9,7 @@ mod declarations;
 mod matches;
 mod operators;
 mod statements;
+mod tuples;
 mod visibility;
 mod writes;
 

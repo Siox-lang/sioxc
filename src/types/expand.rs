@@ -331,6 +331,11 @@ fn walk_type(ty: &mut Type, f: &mut impl FnMut(&mut Expr) -> bool) {
             }
         }
         Type::View { target, .. } => walk_type(target, f),
+        Type::Tuple { elems, .. } => {
+            for elem in elems {
+                walk_type(elem, f);
+            }
+        }
     }
 }
 
@@ -420,7 +425,9 @@ fn walk_expr(e: &mut Expr, f: &mut impl FnMut(&mut Expr) -> bool) {
                 walk_expr(spread, f);
             }
         }
-        Expr::Concat { parts: items, .. } | Expr::Array { elems: items, .. } => {
+        Expr::Concat { parts: items, .. }
+        | Expr::Array { elems: items, .. }
+        | Expr::Tuple { elems: items, .. } => {
             for item in items {
                 walk_expr(item, f);
             }
