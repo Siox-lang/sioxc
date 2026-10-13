@@ -618,12 +618,23 @@ impl<'a> Checker<'a> {
                             family: Some(_),
                             ..
                         } if len > 0
+                    )
+                    // `read<unsigned[16][]>`: as many elements as the file holds.
+                    || matches!(
+                        &requested,
+                        Ty::Array {
+                            elem,
+                            len: 0,
+                            family: None,
+                            ..
+                        } if matches!(elem.as_ref(), Ty::Integer)
+                            || matches!(elem.as_ref(), Ty::Array { len, family: Some(_), .. } if *len > 0)
                     );
                 if !supported {
                     self.error(
                         codes::TYPE_MISMATCH,
                         type_head_span(requested_type).unwrap_or(expr_span(callee)),
-                        "`read<T>` needs `string`, `integer`, or a sized packed numeric type constructible from `integer`"
+                        "`read<T>` needs `string`, `integer`, a sized packed numeric type constructible from `integer`, or an unsized array of one (`T[]`)"
                             .to_string(),
                     );
                 }

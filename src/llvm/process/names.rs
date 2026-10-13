@@ -99,20 +99,31 @@ pub(super) fn runtime_handle_width(ty: Option<&siox::types::Ty>) -> Option<u32> 
 }
 
 pub(super) fn runtime_handle_layout(layout: Option<&SourceLayout>) -> Option<u32> {
-    matches!(
-        layout.map(|layout| &layout.kind),
-        Some(LayoutKind::Array {
-            range: None,
-            element,
-        }) if matches!(
-            element.kind,
-            LayoutKind::Scalar {
-                domain: siox::ir::ScalarDomain::Character,
-                ..
-            }
-        )
-    )
-    .then_some(64)
+    runtime_handle_element_width(layout).map(|_| 64)
+}
+
+/// The element width of a runtime-owned string (32-bit code points) or array
+/// (packed elements up to 64 bits) held as a handle.
+pub(super) fn runtime_handle_element_width(layout: Option<&SourceLayout>) -> Option<u32> {
+    let Some(LayoutKind::Array {
+        range: None,
+        element,
+    }) = layout.map(|layout| &layout.kind)
+    else {
+        return None;
+    };
+    if matches!(
+        element.kind,
+        LayoutKind::Scalar {
+            domain: siox::ir::ScalarDomain::Character,
+            ..
+        }
+    ) {
+        return Some(32);
+    }
+    element
+        .packed_width()
+        .filter(|width| (1..=64).contains(width))
 }
 
 pub(super) fn initializer_can_raise_host_error(
@@ -127,6 +138,7 @@ pub(super) fn initializer_can_raise_host_error(
             .map(|value| &value.kind),
         Some(ProcessValueKind::HostCall {
             operation: ProcessHostValueOp::ReadUtf8
+                | ProcessHostValueOp::ReadArray
                 | ProcessHostValueOp::ReadUtf8Fixed
                 | ProcessHostValueOp::ReadBinary,
             ..

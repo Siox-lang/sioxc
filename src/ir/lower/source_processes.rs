@@ -6539,6 +6539,7 @@ fn lower_process_host_call(
             Some(crate::types::Ty::Integer)
         }
         ProcessHostValueOp::ReadUtf8
+        | ProcessHostValueOp::ReadArray
         | ProcessHostValueOp::ReadUtf8Fixed
         | ProcessHostValueOp::ReadBinary
         | ProcessHostValueOp::FileExists
@@ -6605,6 +6606,8 @@ fn lower_process_file_call(
                 }
                 _ => ProcessHostValueOp::ReadUtf8,
             }
+        } else if runtime_array_element(return_type).is_some() {
+            ProcessHostValueOp::ReadArray
         } else if return_type.is_some() {
             ProcessHostValueOp::ReadBinary
         } else {
@@ -6640,9 +6643,27 @@ fn lower_process_file_call(
         // source directory as the literal above is.
         _ => value_ref(argument, process, context),
     };
+    let mut arguments = vec![path];
+    if operation == ProcessHostValueOp::ReadArray {
+        // One element consumes ceil(width / 8) bytes, as a fixed read does.
+        let element = runtime_array_element(return_type)?;
+        let width = process_layout_for_type(element, *span, context)?.packed_width()?;
+        if width == 0 || width > 64 {
+            return None;
+        }
+        let bytes =
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![u64::from(width.div_ceil(8))]));
+        arguments.push(push_value(
+            *span,
+            Some(crate::types::Ty::Integer),
+            Some(64),
+            bytes,
+            context,
+        ));
+    }
     let kind = ProcessValueKind::HostCall {
         operation,
-        arguments: vec![path],
+        arguments,
     };
     let ty = return_type.cloned().or_else(|| match operation {
         ProcessHostValueOp::ReadUtf8 => Some(crate::types::Ty::Array {
@@ -6658,14 +6679,41 @@ fn lower_process_file_call(
     Some(push_value(*span, ty, width, kind, context))
 }
 
+/// The element type of a runtime-sized array request (`unsigned[16][]`), not
+/// a string: `Char[]` is read as UTF-8.
+fn runtime_array_element(ty: Option<&crate::types::Ty>) -> Option<&crate::types::Ty> {
+    match ty? {
+        crate::types::Ty::Array {
+            elem,
+            len: 0,
+            family: None,
+            ..
+        } if !matches!(elem.as_ref(), crate::types::Ty::Char) => Some(elem),
+        _ => None,
+    }
+}
+
+/// A runtime-owned string or array is held as a 64-bit handle: an
+/// unconstrained array of characters, or of packed elements up to 64 bits.
 fn runtime_handle_width(layout: Option<&SourceLayout>) -> Option<u32> {
-    matches!(
-        layout.map(|layout| &layout.kind),
-        Some(LayoutKind::Array { range: None, element }) if matches!(
-            element.kind,
-            LayoutKind::Scalar { domain: crate::ir::ScalarDomain::Character, .. }
-        )
-    )
+    let Some(LayoutKind::Array {
+        range: None,
+        element,
+    }) = layout.map(|layout| &layout.kind)
+    else {
+        return None;
+    };
+    let character = matches!(
+        element.kind,
+        LayoutKind::Scalar {
+            domain: crate::ir::ScalarDomain::Character,
+            ..
+        }
+    );
+    (character
+        || element
+            .packed_width()
+            .is_some_and(|width| (1..=64).contains(&width)))
     .then_some(64)
 }
 
@@ -6682,7 +6730,7 @@ fn process_value_is_runtime_string(
             process_value_is_runtime_string(*operand, process, context)
         }
         ProcessValueKind::HostCall {
-            operation: ProcessHostValueOp::ReadUtf8,
+            operation: ProcessHostValueOp::ReadUtf8 | ProcessHostValueOp::ReadArray,
             ..
         } => true,
         ProcessValueKind::Storage(storage) => context

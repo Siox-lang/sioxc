@@ -391,3 +391,85 @@ impl T {
     assert!(run.status.success(), "{report}");
     assert!(report.contains("first=42 total=49 listed=7"), "{report}");
 }
+
+/// `read<T[]>` loads a whole binary file into a runtime-sized array: as many
+/// elements as the file holds, with `'length`, checked indexing, iteration
+/// (also across `await`), and `T[]` parameters.
+#[cfg(feature = "llvm")]
+#[test]
+fn runtime_sized_arrays_read_index_iterate_and_check_bounds() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let dir = std::env::temp_dir().join(format!("siox_runtime_arrays_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let words: Vec<u8> = [1u16, 2, 3, 4, 500]
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
+    std::fs::write(dir.join("words.bin"), words).unwrap();
+    std::fs::write(dir.join("bytes.bin"), [0xff, 0x80, 0x05]).unwrap();
+    std::fs::write(dir.join("odd.bin"), [1, 2, 3]).unwrap();
+    let compile = |name: &str, body: &str| {
+        let binary = dir.join(name);
+        let source = format!(
+            "module {name};\nuse std::bits::{{unsigned, signed}};\n\
+             fn total(xs: unsigned[16][]) -> integer {{\n\
+                 let sum: integer = 0;\n\
+                 for x in xs {{ sum = sum + integer(x); }}\n\
+                 return sum;\n\
+             }}\n\
+             #[test] entity T {{}}\n\
+             impl T {{ check: process {{ {body} }} }}\n"
+        );
+        let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+            CompileRequest::new(
+                SourceInput::memory(dir.join(format!("{name}.siox")), source),
+                Emit::TestExecutable,
+            )
+            .with_output(&binary),
+        );
+        assert!(
+            compilation.succeeded(),
+            "{} {:?}",
+            compilation.render_diagnostics(),
+            compilation.failure
+        );
+        text(&Command::new(&binary).output().unwrap())
+    };
+
+    let report = compile(
+        "arrays",
+        "let words: unsigned[16][] = read<unsigned[16][]>(\"words.bin\");\n\
+         let bytes: signed[8][] = read<signed[8][]>(\"bytes.bin\");\n\
+         let steps: integer = 0;\n\
+         for b in bytes { await 1ns; steps = steps + 1; }\n\
+         print!(\"n={} total={} first={} last={} byte={} steps={}\\n\",\n\
+             words'length, total(words), words[0], words[4], bytes[0], steps);",
+    );
+    assert!(
+        report.contains("n=5 total=510 first=1 last=500 byte=-1 steps=3"),
+        "{report}"
+    );
+
+    let report = compile(
+        "bounds",
+        "let words: unsigned[16][] = read<unsigned[16][]>(\"words.bin\");\n\
+         let past: unsigned[16] = words[5];\n\
+         print!(\"unreachable {}\\n\", past);",
+    );
+    assert!(
+        report.contains("index 5 is outside declared range 0..4"),
+        "{report}"
+    );
+    assert!(!report.contains("unreachable"), "{report}");
+
+    let report = compile(
+        "partial",
+        "let words: unsigned[16][] = read<unsigned[16][]>(\"odd.bin\");\n\
+         print!(\"unreachable {}\\n\", words'length);",
+    );
+    assert!(
+        report.contains("3 bytes is not a whole number of 2-byte elements"),
+        "{report}"
+    );
+}

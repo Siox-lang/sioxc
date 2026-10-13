@@ -106,11 +106,15 @@ static size_t sx_format_len;
 static size_t sx_format_cap;
 static uint64_t sx_random_state = UINT64_C(0x9E3779B97F4A7C15);
 
+/* A runtime-owned string, or (with `elements`) a runtime-sized array of
+ * packed values up to 64 bits read by `read<T[]>`. Both are addressed by
+ * handle and indexed by the same services. */
 typedef struct {
     uint32_t *values;
     size_t length;
     char *utf8;
     size_t byte_length;
+    uint64_t *elements;
 } sx_runtime_string;
 
 static sx_runtime_string *sx_strings;
@@ -162,6 +166,7 @@ static void sx_clear_strings(void) {
     for (size_t index = 0; index < sx_string_count; ++index) {
         free(sx_strings[index].values);
         free(sx_strings[index].utf8);
+        free(sx_strings[index].elements);
     }
     free(sx_strings);
     sx_strings = 0;
@@ -275,8 +280,82 @@ uint64_t sx_runtime_read_utf8(const char *path) {
         sx_string_capacity = capacity;
     }
     sx_strings[sx_string_count] = (sx_runtime_string){
-        values, count, bytes, length
+        values, count, bytes, length, 0
     };
+    return (uint64_t)++sx_string_count;
+}
+
+/* `read<T[]>(path)`: the whole file as little-endian elements of
+ * `element_bytes` each (1..8); a trailing partial element is an error. */
+uint64_t sx_runtime_read_array(const char *path, uint64_t element_bytes) {
+    if (!path || element_bytes == 0 || element_bytes > 8) {
+        sx_set_error("read<T[]>: invalid element size");
+        return 0;
+    }
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        sx_set_error("read<T[]>(\"%s\"): cannot open file", path);
+        return 0;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        sx_set_error("read<T[]>(\"%s\"): cannot determine file length", path);
+        return 0;
+    }
+    long end = ftell(file);
+    if (end < 0 || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        sx_set_error("read<T[]>(\"%s\"): cannot determine file length", path);
+        return 0;
+    }
+    size_t length = (size_t)end;
+    if (length % element_bytes != 0) {
+        fclose(file);
+        sx_set_error("read<T[]>(\"%s\"): %zu bytes is not a whole number of "
+                     "%u-byte elements", path, length, (unsigned)element_bytes);
+        return 0;
+    }
+    size_t count = length / element_bytes;
+    unsigned char *bytes = malloc(length ? length : 1);
+    uint64_t *elements = calloc(count ? count : 1, sizeof(uint64_t));
+    if (!bytes || !elements) {
+        free(bytes);
+        free(elements);
+        fclose(file);
+        sx_set_error("read<T[]>(\"%s\"): out of memory", path);
+        return 0;
+    }
+    size_t read = fread(bytes, 1, length, file);
+    fclose(file);
+    if (read != length) {
+        free(bytes);
+        free(elements);
+        sx_set_error("read<T[]>(\"%s\"): short read", path);
+        return 0;
+    }
+    for (size_t element = 0; element < count; ++element) {
+        uint64_t value = 0;
+        for (size_t byte = 0; byte < element_bytes; ++byte) {
+            value |= (uint64_t)bytes[element * element_bytes + byte] << (8 * byte);
+        }
+        elements[element] = value;
+    }
+    free(bytes);
+    if (sx_string_count == sx_string_capacity) {
+        size_t capacity = sx_string_capacity ? sx_string_capacity * 2 : 4;
+        sx_runtime_string *grown =
+            capacity > SIZE_MAX / sizeof(sx_runtime_string)
+                ? 0
+                : realloc(sx_strings, capacity * sizeof(sx_runtime_string));
+        if (!grown) {
+            free(elements);
+            sx_set_error("read<T[]>(\"%s\"): out of memory", path);
+            return 0;
+        }
+        sx_strings = grown;
+        sx_string_capacity = capacity;
+    }
+    sx_strings[sx_string_count] = (sx_runtime_string){0, count, 0, 0, elements};
     return (uint64_t)++sx_string_count;
 }
 
@@ -416,6 +495,8 @@ void sx_runtime_debug_string(uint32_t root, uint64_t handle, uint64_t *length,
         || sx_process_roots[sx_current_process] != root
         || !handle || handle > sx_string_count) return;
     const sx_runtime_string *string = &sx_strings[handle - 1];
+    /* A runtime array has no code points to show; it reads as empty here. */
+    if (string->elements) return;
     *length = (uint64_t)string->length;
     *data = string->values;
     *byte_length = (uint64_t)string->byte_length;
@@ -442,7 +523,7 @@ uint64_t sx_runtime_string_index(uint64_t handle, uint64_t index) {
                      (unsigned long long)string->length);
         return 0;
     }
-    return string->values[index];
+    return string->elements ? string->elements[index] : string->values[index];
 }
 
 uint64_t sx_runtime_string_equals_utf8(uint64_t handle, const char *text,
@@ -929,7 +1010,7 @@ uint64_t sx_runtime_string_index_at(uint64_t handle, uint64_t index,
         sx_append_error_location(sx_source_location(file, offset));
         return 0;
     }
-    return string->values[index];
+    return string->elements ? string->elements[index] : string->values[index];
 }
 
 uint8_t sx_runtime_assert(uint8_t condition, const char *message,

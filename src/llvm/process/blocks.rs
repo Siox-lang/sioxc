@@ -200,7 +200,8 @@ pub(super) fn block_is_supported(
                         || process_value_meta_supported(design, *iterable, layout, values))
             });
             let dynamic_string = dynamic_string_value(design, *iterable)
-                && local_width(design, process.id, *local) == Some(32)
+                && local_width(design, process.id, *local)
+                    == runtime_handle_element_width(process_value_layout(design, *iterable))
                 && value(*iterable);
             range || array || dynamic_string
         }
