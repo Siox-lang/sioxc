@@ -274,6 +274,9 @@ fn normalize_value(
             else_value,
         } => {
             let condition = normalize_value(*condition, false, block, process, context, memo)?;
+            if let Some(shared) = shared_leading_value(&[*then_value, *else_value], context) {
+                normalize_value(shared, false, block, process, context, memo)?;
+            }
             let result = result_local(&node, value, process, context);
             declare_result(result, process, *block, context);
             let then_block = process.push_block();
@@ -301,6 +304,10 @@ fn normalize_value(
         }
         ProcessValueKind::Match { scrutinee, arms } => {
             let scrutinee = normalize_value(*scrutinee, false, block, process, context, memo)?;
+            let values = arms.iter().map(|arm| arm.value).collect::<Vec<_>>();
+            if let Some(shared) = shared_leading_value(&values, context) {
+                normalize_value(shared, false, block, process, context, memo)?;
+            }
             let result = result_local(&node, value, process, context);
             declare_result(result, process, *block, context);
             let join = process.push_block();
@@ -426,6 +433,58 @@ fn normalize_value(
     };
     memo.insert(value, result);
     Some(result)
+}
+
+/// A call-holding value that every arm evaluates before anything else of
+/// its own, if they share one. Expanding it once ahead of the branch runs
+/// nothing earlier than before, and the arms find it in the memo. Expanded
+/// per arm instead, a chain of selections over the previous link (std's
+/// `pow2`: `p1 = if c { p0 * 4.0 } else { p0 }`) doubled at every link.
+fn shared_leading_value(
+    arms: &[ProcessValueId],
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let (first, rest) = arms.split_first()?;
+    let rest = rest
+        .iter()
+        .map(|arm| leading_values(*arm, context))
+        .collect::<Vec<_>>();
+    leading_values(*first, context)
+        .into_iter()
+        .find(|value| rest.iter().all(|chain| chain.contains(value)))
+}
+
+/// `value`, the call-holding operand it expands first, that operand's, and
+/// so on: [`normalize_value`] expands operands in dependency order, so each
+/// of these starts the expansion of the one before.
+fn leading_values(
+    mut value: ProcessValueId,
+    context: &mut LoweringContext<'_>,
+) -> Vec<ProcessValueId> {
+    let mut chain = Vec::new();
+    while has_call(value, context) {
+        chain.push(value);
+        let kind = &context.process_ir.values[value.0 as usize].kind;
+        // These branch or call on their own; what they run first is theirs.
+        if matches!(
+            kind,
+            ProcessValueKind::Call { .. }
+                | ProcessValueKind::Select { .. }
+                | ProcessValueKind::Match { .. }
+                | ProcessValueKind::Invalid
+        ) {
+            break;
+        }
+        let dependencies = crate::ir::process_value_dependencies(kind);
+        let Some(next) = dependencies
+            .into_iter()
+            .find(|dependency| has_call(*dependency, context))
+        else {
+            break;
+        };
+        value = next;
+    }
+    chain
 }
 
 fn result_local(
