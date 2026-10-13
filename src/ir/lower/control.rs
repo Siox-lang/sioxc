@@ -662,9 +662,11 @@ impl<'a> Lowering<'a> {
                     let part = match scrutinee {
                         ast::Expr::Tuple { elems: parts, .. } => parts.get(index)?.clone(),
                         whole => {
-                            // An empty span: no typed expression lives there,
-                            // so the part is typed by its own path.
-                            let at = crate::diag::Span::new(span.file, span.start..span.start);
+                            // An empty span, one per position: no typed
+                            // expression lives there, so the part is typed by
+                            // its own path.
+                            let at = (span.start + index as u32).min(span.end);
+                            let at = crate::diag::Span::new(span.file, at..at);
                             ast::Expr::Field {
                                 base: Box::new(whole.clone()),
                                 field: ast::Ident {

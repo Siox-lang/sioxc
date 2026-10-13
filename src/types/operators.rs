@@ -589,6 +589,66 @@ impl<'a> Checker<'a> {
     }
 }
 
+impl Checker<'_> {
+    /// `l == r` on tuples: the same size, and each position comparable — the
+    /// right one assignable to the left one (a literal reads through it, as
+    /// `p == (4, '1')`), and the left one a type with equality.
+    pub(super) fn check_tuple_equality(
+        &mut self,
+        left: &Ty,
+        right: &Ty,
+        rhs: &Expr,
+        span: Span,
+        sym: &HashMap<String, Ty>,
+    ) {
+        let comparable = matches!(left, Ty::Tuple(_)) && self.assignable(left, rhs, sym);
+        if !comparable && !matches!(right, Ty::Error) {
+            self.error(
+                codes::TYPE_MISMATCH,
+                span,
+                format!(
+                    "cannot compare {} with {}",
+                    self.ty_display(left),
+                    self.ty_display(right)
+                ),
+            );
+            return;
+        }
+        if let Some(position) = self.first_without_equality(left) {
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                span,
+                format!(
+                    "{} has no `==`: its position of type {} cannot be compared",
+                    self.ty_display(left),
+                    self.ty_display(&position)
+                ),
+                "give that type an `Eq` implementation, or compare the other positions".to_string(),
+            );
+        }
+    }
+
+    /// The first element type, through nested tuples, that has no equality.
+    fn first_without_equality(&self, ty: &Ty) -> Option<Ty> {
+        match ty {
+            Ty::Tuple(elems) => elems.iter().find_map(|elem| self.first_without_equality(elem)),
+            Ty::Integer | Ty::Real | Ty::Char | Ty::Error => None,
+            Ty::Array {
+                family: Some(_), ..
+            } => None,
+            Ty::Named(_) if self.enum_operand_name(ty).is_some() => None,
+            Ty::Named(_)
+                if self
+                    .type_kind_name(ty)
+                    .is_some_and(|name| self.has_impl("Eq", &name)) =>
+            {
+                None
+            }
+            other => Some(other.clone()),
+        }
+    }
+}
+
 /// The `operator_sigs` key for a comparison: `Eq` impls register as `==`
 /// (covering `!=`), `Ord` impls as `<` (covering `<=`, `>`, `>=`).
 pub(super) fn comparison_symbol(op: &BinOp) -> &'static str {

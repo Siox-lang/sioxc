@@ -3381,8 +3381,9 @@ fn is_composite_layout(layout: &crate::ir::SourceLayout) -> bool {
 }
 
 /// Print a composite value, Rust `Debug` style: `Name { field: value, .. }`
-/// for a struct or view, `[a, b]` for an array, and a logic vector's symbols
-/// in declared order (`01XZ`). Numeric leaves inside take `spec`.
+/// for a struct or view, `(a, b)` for a tuple, `[a, b]` for an array, and a
+/// logic vector's symbols in declared order (`01XZ`). Numeric leaves inside
+/// take `spec`.
 fn lower_format_composite(
     value: ProcessValueId,
     layout: &crate::ir::SourceLayout,
@@ -3393,6 +3394,23 @@ fn lower_format_composite(
 ) -> Option<()> {
     let span = context.process_ir.values[value.0 as usize].span;
     match &layout.kind {
+        LayoutKind::Struct { name, view: None, fields }
+            if crate::types::tuple_struct_arity(name).is_some() =>
+        {
+            parts.push(ProcessFormatPart::Text("(".to_owned()));
+            for (index, field) in fields.iter().enumerate() {
+                if index > 0 {
+                    parts.push(ProcessFormatPart::Text(", ".to_owned()));
+                }
+                let kind = ProcessValueKind::Field {
+                    base: value,
+                    field: field.name.clone(),
+                };
+                let member = push_projection(span, kind, &field.layout, process, context);
+                lower_format_value(None, member, spec, parts, process, context)?;
+            }
+            parts.push(ProcessFormatPart::Text(")".to_owned()));
+        }
         LayoutKind::Struct { name, view, fields } => {
             let shown = view.as_deref().unwrap_or(name);
             let shown = shown.rsplit("::").next().unwrap_or(shown);
@@ -4305,11 +4323,44 @@ fn lower_tuple_assign(
             (Some(target), _) => Some(target.clone()),
         }
     }
-    let ty = merge(
+    // A position the checker could not type (a generic call's `T` under a
+    // `_`) is read from the lowered value's own layout instead.
+    fn complete(ty: &crate::types::Ty) -> bool {
+        match ty {
+            crate::types::Ty::Tuple(elems) => elems.iter().all(complete),
+            crate::types::Ty::Error => false,
+            _ => true,
+        }
+    }
+    let checked = merge(
         context.typed.expr_type(ast::expr_span(target)),
         context.typed.expr_type(ast::expr_span(value)),
-    )?;
-    let layout = process_layout_for_type(&ty, span, context)?;
+    )
+    .filter(complete);
+    let initializer = value_ref_with_type(value, process, context, checked.as_ref());
+    let layout = checked
+        .as_ref()
+        .and_then(|ty| process_layout_for_type(ty, span, context))
+        .or_else(|| operand_source_layout(initializer, process, context));
+    let ty = checked.or_else(|| {
+        layout
+            .as_ref()
+            .and_then(|layout| process_type_from_layout(layout, context.resolved))
+    });
+    let (Some(ty), Some(layout)) = (ty, layout) else {
+        // Fail closed: validation rejects the invalid value, rather than the
+        // rest of the process silently disappearing.
+        let invalid = unsupported_process_value(span, None, context);
+        process.blocks[block.0 as usize]
+            .instructions
+            .push(ProcessInstruction::Runtime {
+                operation: ProcessRuntimeOp::Call("<tuple assignment>".to_string()),
+                arguments: vec![invalid],
+                format: None,
+                span,
+            });
+        return Some(block);
+    };
     let local = ProcessLocalId(process.locals.len() as u32);
     process.locals.push(ProcessLocal {
         id: local,
@@ -4320,7 +4371,6 @@ fn lower_tuple_assign(
         ty: Some(ty.clone()),
         layout: Some(layout),
     });
-    let initializer = value_ref_with_type(value, process, context, Some(&ty));
     process.blocks[block.0 as usize]
         .instructions
         .push(ProcessInstruction::Declare {
@@ -4328,10 +4378,14 @@ fn lower_tuple_assign(
             initializer: Some(initializer),
             span,
         });
+    let width = process.locals[local.0 as usize]
+        .layout
+        .as_ref()
+        .and_then(SourceLayout::packed_width);
     let whole = push_value(
         span,
         Some(ty.clone()),
-        ty.bit_width(),
+        width,
         ProcessValueKind::Local {
             process: process.id,
             local,
@@ -4366,7 +4420,9 @@ fn assign_tuple_parts(
             base: whole,
             field: index.to_string(),
         };
-        let width = source_value_width(&kind, Some(ty), process, context);
+        let width = process_layout_for_type(ty, span, context)
+            .and_then(|layout| layout.packed_width())
+            .or_else(|| source_value_width(&kind, Some(ty), process, context));
         let part = push_value(span, Some(ty.clone()), width, kind, context);
         block = match position {
             ast::Expr::Tuple { .. } => {
@@ -4611,7 +4667,9 @@ fn scrutinee_condition(
                         base: *value,
                         field: index.to_string(),
                     };
-                    let width = source_value_width(&kind, Some(ty), process, context);
+                    let width = process_layout_for_type(ty, span, context)
+                        .and_then(|layout| layout.packed_width())
+                        .or_else(|| source_value_width(&kind, Some(ty), process, context));
                     let field = push_value(span, Some(ty.clone()), width, kind, context);
                     MatchScrutinee::Value(field, Some(ty.clone()))
                 })

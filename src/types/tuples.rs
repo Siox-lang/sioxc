@@ -6,7 +6,8 @@
 //!
 //! A tuple stays a tuple in the two places that are not values: a `match`
 //! scrutinee, whose positions are matched one by one and never built, and an
-//! assignment target `(q, r) = e;`, which writes each position.
+//! assignment target `(q, r) = e;`, which writes each position. A tuple
+//! comparison `l == r` becomes `l.0 == r.0 and l.1 == r.1`.
 
 use std::collections::BTreeSet;
 
@@ -16,8 +17,12 @@ use crate::syntax::ast::*;
 /// Rewrite every tuple type and tuple value in `modules`, and append the
 /// module declaring the structs they now name. Nothing changes when the
 /// source has no tuples.
-pub fn lower_tuples(modules: &mut Vec<Module>) {
-    let mut lower = Lower::default();
+pub fn lower_tuples(modules: &mut Vec<Module>, typed: &super::Typed) {
+    let mut lower = Lower {
+        typed,
+        arities: BTreeSet::new(),
+        span: None,
+    };
     for module in modules.iter_mut() {
         for item in &mut module.items {
             lower.item(item);
@@ -88,15 +93,16 @@ pub fn tuple_struct_arity(name: &str) -> Option<usize> {
         .filter(|arity| *arity >= 2)
 }
 
-#[derive(Default)]
-struct Lower {
+struct Lower<'t> {
+    /// The checked types, which say which comparisons are of tuples.
+    typed: &'t super::Typed,
     /// Every tuple arity met.
     arities: BTreeSet<usize>,
     /// A span to give the generated declarations: the first tuple's.
     span: Option<Span>,
 }
 
-impl Lower {
+impl Lower<'_> {
     fn note(&mut self, arity: usize, span: Span) {
         self.arities.insert(arity);
         self.span.get_or_insert(span);
@@ -338,6 +344,31 @@ impl Lower {
                 }
             }
             Expr::Unary { rhs, .. } => self.expr(rhs),
+            Expr::Binary {
+                op: op @ (BinOp::Eq | BinOp::Ne),
+                lhs,
+                rhs,
+                span,
+            } if matches!(
+                self.typed.expr_type(expr_span(lhs)),
+                Some(super::Ty::Tuple(_))
+            ) =>
+            {
+                let Some(ty) = self.typed.expr_type(expr_span(lhs)).cloned() else {
+                    return;
+                };
+                let mut offset = 0;
+                let equal = tuple_equality(lhs, rhs, &ty, *span, &mut offset);
+                *e = match op {
+                    BinOp::Eq => equal,
+                    _ => Expr::Unary {
+                        op: UnOp::Not,
+                        rhs: Box::new(equal),
+                        span: *span,
+                    },
+                };
+                self.expr(e);
+            }
             Expr::Binary { lhs, rhs, .. } => {
                 self.expr(lhs);
                 self.expr(rhs);
@@ -428,6 +459,58 @@ impl Lower {
             }
         }
     }
+}
+
+/// `l == r` over a tuple type, position by position: each position of a
+/// tuple literal is its element, any other operand's is `.i`. Each piece
+/// gets a distinct empty span inside `span`, so nothing keyed by span takes
+/// two of them for one.
+fn tuple_equality(lhs: &Expr, rhs: &Expr, ty: &super::Ty, span: Span, offset: &mut u32) -> Expr {
+    let super::Ty::Tuple(elems) = ty else {
+        return Expr::Binary {
+            op: BinOp::Eq,
+            lhs: Box::new(lhs.clone()),
+            rhs: Box::new(rhs.clone()),
+            span: fresh(span, offset),
+        };
+    };
+    let position = |operand: &Expr, index: usize, offset: &mut u32| match operand {
+        Expr::Tuple { elems, .. } => elems[index].clone(),
+        whole => {
+            let at = fresh(span, offset);
+            Expr::Field {
+                base: Box::new(whole.clone()),
+                field: Ident {
+                    text: index.to_string(),
+                    span: at,
+                },
+                span: at,
+            }
+        }
+    };
+    let mut all: Option<Expr> = None;
+    for (index, elem) in elems.iter().enumerate() {
+        let left = position(lhs, index, offset);
+        let right = position(rhs, index, offset);
+        let equal = tuple_equality(&left, &right, elem, span, offset);
+        all = Some(match all {
+            Some(all) => Expr::Binary {
+                op: BinOp::And,
+                lhs: Box::new(all),
+                rhs: Box::new(equal),
+                span: fresh(span, offset),
+            },
+            None => equal,
+        });
+    }
+    all.expect("a tuple has two or more positions")
+}
+
+/// A new empty span inside `span`.
+fn fresh(span: Span, offset: &mut u32) -> Span {
+    *offset += 1;
+    let at = span.start.saturating_add(*offset).min(span.end);
+    Span::new(span.file, at..at)
 }
 
 #[cfg(test)]

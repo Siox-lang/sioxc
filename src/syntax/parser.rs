@@ -3555,26 +3555,28 @@ impl<'a> Parser<'a> {
     /// and index brackets.
     fn parse_type_core(&mut self) -> Type {
         let start = self.span();
-        // `(A, B)` is a tuple; `(T)` is `T`.
-        if self.eat(TokenKind::LParen) {
+        // `(A, B)` is a tuple; `(T)` is `T`. Either may be indexed after:
+        // `(Bit, Bit)[4]`.
+        let mut ty = if self.eat(TokenKind::LParen) {
             let first = self.parse_type();
-            if !self.at(TokenKind::Comma) {
+            if self.at(TokenKind::Comma) {
+                let mut elems = vec![first];
+                while self.eat(TokenKind::Comma) && !self.at(TokenKind::RParen) {
+                    elems.push(self.parse_type());
+                }
+                self.expect(TokenKind::RParen, "to close a tuple type");
+                Type::Tuple {
+                    elems,
+                    span: start.to(self.prev_span()),
+                }
+            } else {
                 self.expect(TokenKind::RParen, "to close a parenthesized type");
-                return first;
+                first
             }
-            let mut elems = vec![first];
-            while self.eat(TokenKind::Comma) && !self.at(TokenKind::RParen) {
-                elems.push(self.parse_type());
-            }
-            self.expect(TokenKind::RParen, "to close a tuple type");
-            return Type::Tuple {
-                elems,
-                span: start.to(self.prev_span()),
-            };
-        }
-        let path = self.parse_path();
-        let mut ty = Type::Path(path);
-        if self.at(TokenKind::Lt) {
+        } else {
+            Type::Path(self.parse_path())
+        };
+        if matches!(ty, Type::Path(_)) && self.at(TokenKind::Lt) {
             let args = self.parse_generic_args();
             ty = Type::Generic {
                 base: Box::new(ty),

@@ -386,15 +386,36 @@ impl<'a> Checker<'a> {
         let Some(declared) = declared else {
             return Ty::Void;
         };
-        if let Type::Path(path) = declared {
-            if path.segments.len() == 1 {
+        let declared = declared.clone();
+        self.call_return_type(&declared, function, args, sym)
+    }
+
+    /// One declared return type at a call site: a bare generic parameter
+    /// (`T`) takes the type of the argument it was declared for, also as a
+    /// position of a returned tuple (`-> (T, T)`).
+    fn call_return_type(
+        &self,
+        declared: &Type,
+        function: DefId,
+        args: &[Expr],
+        sym: &HashMap<String, Ty>,
+    ) -> Ty {
+        match declared {
+            Type::Tuple { elems, .. } => Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|elem| self.call_return_type(elem, function, args, sym))
+                    .collect(),
+            ),
+            Type::Path(path) if path.segments.len() == 1 => {
                 let parameter_name = &path.segments[0].text;
-                if let Some((generics, params)) = self.generic_fns.get(&function) {
-                    let is_generic = generics
-                        .iter()
-                        .any(|parameter| parameter.name.text == *parameter_name);
-                    if is_generic {
-                        return params
+                match self.generic_fns.get(&function) {
+                    Some((generics, params))
+                        if generics
+                            .iter()
+                            .any(|parameter| parameter.name.text == *parameter_name) =>
+                    {
+                        params
                             .iter()
                             .zip(args)
                             .find_map(|(parameter, argument)| {
@@ -403,12 +424,13 @@ impl<'a> Checker<'a> {
                                     .filter(|ty| Self::is_direct_type_param(ty, parameter_name))
                                     .map(|_| self.type_of(argument, sym))
                             })
-                            .unwrap_or(Ty::Error);
+                            .unwrap_or(Ty::Error)
                     }
+                    _ => self.ast_ty(declared),
                 }
             }
+            _ => self.ast_ty(declared),
         }
-        self.ast_ty(declared)
     }
 
     /// Return contracts for compiler/runtime-provided functions which have no
