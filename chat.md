@@ -18067,3 +18067,15 @@ full239/0 default/bitpack corpus gate from job713873 still applies. Pin the
 native runner to its current Ubuntu24.04 image so a cached debugger cannot
 outlive that image's Python ABI. Final actionlint/YAML/bash/diff checks before
 the scoped commit; hosted verification follows the ongoing PR push/CI task.
+
+### 2026-10-13 — Claude — starting tuples (branch `feat/tuples`)
+
+Owner asked for tuples after #72 (`docs/proposals/tuples.md`). Worktree
+`/home/max/siox-tup`. Expect edits to `src/syntax/{ast,parser,pretty,format}.rs`,
+`src/types/{mod,ast_types,expressions,inference,patterns,assignments}.rs`, and in
+`src/ir/lower/` the struct layout, aggregate assignment, `match` patterns
+(`control.rs`) and the process path's type/layout/pattern code in
+`source_processes.rs`. Representation: `Type::Tuple`/`Expr::Tuple`/`Pattern::Tuple`,
+`Ty::Tuple` in the checker, and in IR a synthesized struct per tuple type with
+fields `0`, `1`, ..; no runtime/ABI change. Please flag here before independent
+edits to those IR files until I hand off.
