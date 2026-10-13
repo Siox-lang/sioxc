@@ -333,7 +333,7 @@ fn delayed_dynamic_composites_keep_scalar_masks_and_packed_metadata() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn recursive_value_call_fails_before_argument_or_callee_effects() {
+fn recursive_value_call_is_rejected_before_any_effect() {
     use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
     let source = r#"module recursive_value;
         extern "C" { fn putchar(value: integer) -> integer; }
@@ -357,21 +357,15 @@ fn recursive_value_call_fails_before_argument_or_callee_effects() {
         )
         .with_output(&binary),
     );
+    // A recursive call is a compile-time error (E-P038): no executable is
+    // built, so neither the argument's nor the callee's effect can run.
+    let rendered = compilation.render_diagnostics();
+    assert!(!compilation.succeeded(), "{rendered}");
     assert!(
-        compilation.succeeded(),
-        "{}\n{:?}",
-        compilation.render_diagnostics(),
-        compilation.failure
+        rendered.contains("E-P038") && rendered.contains("`recurse` calls itself"),
+        "{rendered}"
     );
-    let output = Command::new(&binary).output().unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        !stdout.contains('@') && !stdout.contains('$'),
-        "call effects escaped the failed inline: {stdout}"
-    );
-    assert!(stdout.contains("direct Process IR lowering is incomplete"));
-    let _ = std::fs::remove_file(binary);
+    assert!(!binary.exists(), "no executable for a rejected program");
 }
 
 #[cfg(feature = "llvm")]

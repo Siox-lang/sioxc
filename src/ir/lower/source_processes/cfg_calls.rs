@@ -641,6 +641,11 @@ fn inline_call(
     let body = function.body.as_ref()?;
     function.ret.as_ref()?;
     if context.inline_functions.contains(&function.span) {
+        context.recursive_calls.borrow_mut().push((
+            function.name.text.clone(),
+            context.process_ir.values[call.0 as usize].span,
+            function.span,
+        ));
         return None;
     }
     let parameters = function

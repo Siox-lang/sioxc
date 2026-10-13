@@ -75,6 +75,9 @@ struct LoweringContext<'a> {
     cfg_call_cache: Vec<bool>,
     /// Shared function bodies by signature, across every process lowered.
     shared_functions: &'a std::cell::RefCell<SharedFunctions>,
+    /// Functions found calling themselves, with a call that does: reported
+    /// once each when lowering ends.
+    recursive_calls: &'a std::cell::RefCell<Vec<(String, crate::diag::Span, crate::diag::Span)>>,
 }
 
 /// A shared value-function body per signature; `None` marks a signature whose
@@ -1139,6 +1142,7 @@ pub fn lower(
     hierarchy: &Hierarchy,
     plan: Option<&TestPlan>,
     design: &mut Design,
+    sink: &mut crate::diag::DiagnosticSink,
 ) -> Result<(), String> {
     // Hardware CFGs already exist from source hardware lowering. Retain their
     // arena and ownership; lowering stimulus must never reconstruct hardware
@@ -1150,6 +1154,7 @@ pub fn lower(
     let constants = source_constants(modules, resolved);
     let type_aliases = source_type_aliases(modules, resolved);
     let shared_functions = std::cell::RefCell::new(SharedFunctions::new());
+    let recursive_calls = std::cell::RefCell::new(Vec::new());
     let functions = process_functions(modules, resolved);
     let constant_integers = module_constant_integers(modules, &functions);
 
@@ -1261,6 +1266,7 @@ pub fn lower(
                 inline_value_branches: Vec::new(),
                 cfg_call_cache: Vec::new(),
                 shared_functions: &shared_functions,
+                recursive_calls: &recursive_calls,
             };
             let mut block = ProcessBlockId(0);
             for declaration in initializers {
@@ -1325,6 +1331,7 @@ pub fn lower(
                             inline_value_branches: Vec::new(),
                             cfg_call_cache: Vec::new(),
                             shared_functions: &shared_functions,
+                            recursive_calls: &recursive_calls,
                         };
                         lower_process(
                             id,
@@ -1382,6 +1389,7 @@ pub fn lower(
                             inline_value_branches: Vec::new(),
                             cfg_call_cache: Vec::new(),
                             shared_functions: &shared_functions,
+                            recursive_calls: &recursive_calls,
                         };
                         lower_process(
                             id,
@@ -1456,6 +1464,7 @@ pub fn lower(
                     inline_value_branches: Vec::new(),
                     cfg_call_cache: Vec::new(),
                     shared_functions: &shared_functions,
+                    recursive_calls: &recursive_calls,
                 };
                 lower_legacy_process(
                     id,
@@ -1549,6 +1558,7 @@ pub fn lower(
                 inline_value_branches: Vec::new(),
                 cfg_call_cache: Vec::new(),
                 shared_functions: &shared_functions,
+                recursive_calls: &recursive_calls,
             };
             lower_process(
                 id,
@@ -1575,6 +1585,24 @@ pub fn lower(
             test.processes.push(id);
         }
         process_ir.processes.push(process);
+    }
+
+    let mut reported = std::collections::HashSet::new();
+    for (name, call, function) in recursive_calls.into_inner() {
+        if reported.insert(function) {
+            sink.emit(
+                crate::diag::Diagnostic::error(format!(
+                    "`{name}` calls itself, directly or through other calls; a testbench call cannot recurse yet"
+                ))
+                .with_code(crate::diag::codes::RECURSIVE_CALL)
+                .at(call)
+                .label(function, "this function")
+                .help(
+                    "a call expands where it is made and has no frame of its own; \
+                     write the recursion as a loop",
+                ),
+            );
+        }
     }
 
     // Backends look calls up by value (`ProcessIr::call_of`).
@@ -10148,6 +10176,7 @@ mod tests {
             inline_value_branches: Vec::new(),
             cfg_call_cache: vec![],
             shared_functions: &std::cell::RefCell::new(SharedFunctions::new()),
+            recursive_calls: &std::cell::RefCell::new(Vec::new()),
         };
 
         let result = inherit_receiver_layout(ProcessValueId(1), ProcessValueId(0), &mut context);
@@ -10260,6 +10289,7 @@ mod tests {
             &hierarchy,
             Some(&plan),
             &mut design,
+            &mut sink,
         )
         .expect("hardware scheduler view derives from Process IR");
         assert!(design
@@ -10655,6 +10685,7 @@ mod tests {
             &hierarchy,
             Some(&plan),
             &mut design,
+            &mut sink,
         )
         .expect("hardware scheduler view derives from Process IR");
 
@@ -10759,6 +10790,7 @@ mod tests {
             &hierarchy,
             Some(&plan),
             &mut design,
+            &mut sink,
         )
         .expect("hardware scheduler view derives from Process IR");
         let link = design
@@ -10817,8 +10849,16 @@ mod tests {
         assert_eq!(hardware.processes.len(), 1);
         design.drivers.clear();
         design.event_blocks.clear();
-        lower(&modules, &resolved, &typed, &hierarchy, None, &mut design)
-            .expect("hardware scheduler view derives from Process IR");
+        lower(
+            &modules,
+            &resolved,
+            &typed,
+            &hierarchy,
+            None,
+            &mut design,
+            &mut DiagnosticSink::new(),
+        )
+        .expect("hardware scheduler view derives from Process IR");
         assert_eq!(design.process_ir, hardware);
         assert_eq!(design.drivers.len(), 1);
         assert!(design.process_ir.tests.is_empty());
@@ -10888,6 +10928,7 @@ mod tests {
             &hierarchy,
             Some(&plan),
             &mut design,
+            &mut sink,
         )
         .expect("hardware scheduler view derives from Process IR");
 
@@ -10965,6 +11006,7 @@ mod tests {
             &hierarchy,
             Some(&plan),
             &mut design,
+            &mut sink,
         )
         .expect("hardware scheduler view derives from Process IR");
 
