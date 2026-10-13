@@ -17953,3 +17953,82 @@ Review notes, none blocking:
 - HOUSERULES' guarded-run defaults to `MemoryMax=2G`, below CLAUDE.md's
   budgets (~8G release build / LLVM emit, ~12G full ci-local), and its
   host-wide flock serializes every agent's jobs.
+
+### 2026-10-12 — Codex — align LLVM 23 bindings and verification
+
+Owner requests fixing the LLVM 22 CI/bindings versus actual local LLVM 23
+toolchain mismatch. Own Cargo.toml/Cargo.lock, .cargo/config.toml, CI and build
+documentation. Use the previously probed exact Inkwell c8234a0 commit with
+llvm23-1-prefer-dynamic; released tag 0.10.0 still lacks LLVM 23 features.
+Enable llvm-sys strict-version checking, install/select LLVM/Clang 23 in CI,
+and verify the pinned Rust 1.90 frontend/native/bitpack/corpus/debug gates.
+Do not merge latest main or change language semantics under this task. Preserve
+foreign AGENTS12/chat441/.codex. Companion README/simulation docs separately.
+
+Focused job399714 stopped before compilation because the manually migrated
+lockfile omitted Inkwell internals' new syn3 dependency. Cargo's offline targeted
+update added syn3 only, preserving existing versions. Job401316 is terminal
+exited/success/0, peak824119296: Rust1.90 locked all-target/all-feature checking
+passes with LLVM23 bindings and the actual LLVM23.1.1 installation. No Rust
+API edits needed. The official apt LLVM23 package index provides23.1.2 for
+Ubuntu Noble, matching the strict23.1 requirement. Freeze source/config for full
+default/bitpack native and debug corpus acceptance before scoped commits.
+
+Full gate: siox-job-3000-1791839858088072048-406157.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791839858088072048-406157.log.
+Frozen source/config/build/README hash (includes .cargo strict configuration):
+3d4928781cbb008bc12a1db112b6bbd03aa37b71840331a4e89ebe6845d4ff72.
+Poll this exact service; no source/config changes while it runs. Documentation
+outside the frozen inputs can be completed without changing verification.
+
+Both full suites (23 DWARF fixtures each) and strict Clippy passed. The first
+ordinary corpus is still progressing after the slow numeric cases. Its measured
+duration projects the four-run gate beyond the default one-hour limit. Systemd
+does not accept RuntimeMaxUSec through live set-property on this host; a
+job-specific runtime drop-in and daemon-reload raised this same service's limit
+to two hours. MainPID406184 is unchanged, MemoryMax stays3GiB, and no source or
+verification restart occurred. The repository launcher defaults are unchanged.
+
+### 2026-10-13 — Codex — LLVM 23 alignment accepted
+
+Job406157 is terminal exited/success/0, peak 2621702144 bytes. Both complete
+test suites passed all 23 DWARF fixtures, strict frontend/all-target Clippy and
+format/artifact gates passed, and all four ordinary/debug default/bitpack
+corpora passed 239/0. GDB FIFO/wide smoke checks prove source breakpoints,
+inspection, stepping and VCD parity in both build modes. Rebuilt sioxc links
+libLLVM.so.23.1; the actual local toolchain is LLVM/Clang 23.1.1. AST/community
+refresh completed (5523 nodes, 242 communities), with existing libfst parser
+warnings only. Frozen source/config/build/README hash remains
+3d4928781cbb008bc12a1db112b6bbd03aa37b71840331a4e89ebe6845d4ff72.
+Commit only Cargo/lock, strict config, LLVM23 CI, README and this appended log;
+preserve foreign AGENTS12/chat441/.codex. Companion build/simulation/debug audit
+documentation separately. This is local CI-equivalent verification, not a
+claim that the new GitHub workflow has run. No push requested for this change.
+
+### 2026-10-13 — Codex — push LLVM 23 fix onto current PR #72
+
+Owner requests pushing and running GitHub CI. PR #72 now contains Claude's
+e94a6a7 main integration and 0063f83 findings; preserve both commits. Apply the
+already accepted 74cd66c LLVM fix in isolated /home/max/siox-llvm23-ci, resolving
+only the append-only chat conflict by retaining both sides. Relative to the PR
+head there are no Rust, std, runtime or test edits. Original shared worktree and
+foreign AGENTS/chat/.codex remain untouched. Validate the rebased patch locally
+before a fast-forward PR-branch push, then monitor the exact new GitHub run.
+Companion docs 7336739 are already pushed to siox-paper/main.
+
+Frozen PR-integration source/config/build/README hash:
+c13349428a29840a88005ce466714bc1796761ab7703761e9f7e0ad15d31c6bb.
+Local gate: siox-job-3000-1791867617135150905-713873.service;
+log /home/max/.cache/siox-jobs/siox-job-3000-1791867617135150905-713873.log.
+Use the retained stage directory printed in that log. One Cargo job, measured
+3GiB cap, two-hour bound from launch. Reuse the original target cache (the
+isolated target symlink also preserves the GDB script's compiler path). Source
+is frozen during this job. GitHub CI remains pending the new fast-forward push.
+
+Job713873 is terminal exited/success/0, peak2210426880 bytes. Both full suites
+passed23 DWARF fixtures each, strict Clippy/format/artifact gates passed, and
+both current239-program corpora passed239/0. Native FIFO/wide GDB smoke checks
+passed source stepping/inspection and VCD parity. Frozen integration hash stays
+c13349428a29840a88005ce466714bc1796761ab7703761e9f7e0ad15d31c6bb.
+Commit the LLVM setup patch onto the preserved PR head, then perform the owner-
+authorized fast-forward push and monitor GitHub CI on that exact new SHA.

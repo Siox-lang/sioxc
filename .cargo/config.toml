@@ -2,3 +2,7 @@
 # builds, tests and clippy are unaffected. See docs/rustdoc-header.html.
 [build]
 rustdocflags = ["--html-in-header", "docs/rustdoc-header.html"]
+
+[env]
+# Reject other LLVM major/minor versions instead of silently accepting newer ones.
+LLVM_SYS_231_STRICT_VERSIONING = "1"

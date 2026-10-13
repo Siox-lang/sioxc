@@ -45,7 +45,8 @@ jobs:
     name: LLVM, native, bitpack, and corpus
     runs-on: ubuntu-latest
     env:
-      LLVM_SYS_221_PREFIX: /usr/lib/llvm-22
+      LLVM_SYS_231_PREFIX: /usr/lib/llvm-23
+      LLVM_SYS_231_STRICT_VERSIONING: "1"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -65,13 +66,15 @@ jobs:
         with:
           components: clippy
 
-      - name: Install LLVM 22 and Clang
+      - name: Install LLVM 23 and Clang
         run: |
           wget -q https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
-          sudo ./llvm.sh 22
-          sudo apt-get install -y clang-22 llvm-22-dev libpolly-22-dev gdb
-          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+          sudo ./llvm.sh 23
+          sudo apt-get install -y clang-23 llvm-23-dev libpolly-23-dev gdb
+          echo "/usr/lib/llvm-23/bin" >> "$GITHUB_PATH"
+          llvm-config-23 --version
+          clang-23 --version
 
       - uses: Swatinem/rust-cache@v2
 
