@@ -631,6 +631,17 @@ pub(super) struct MetaTemps {
     /// A shared arithmetic body must not be recursively re-expanded here.
     pub(super) source_meta:
         HashMap<(ProcessValueId, u32, u32, Option<ProcessValueId>), Option<Expr>>,
+    /// Per enclosing selection, innermost last: the values both its arms
+    /// read, with the activity it was entered under. Such a value's companion
+    /// is built once under that activity rather than once per arm.
+    pub(super) shared: Vec<SharedArms>,
+}
+
+/// The values both arms of a selection read, with its entry activity.
+pub(super) struct SharedArms {
+    pub(super) values: std::collections::HashSet<ProcessValueId>,
+    pub(super) cond: Option<Expr>,
+    pub(super) guard: Option<ProcessValueId>,
 }
 
 impl MetaTemps {
@@ -646,6 +657,7 @@ impl MetaTemps {
             cond: None,
             guard: None,
             source_meta: HashMap::new(),
+            shared: Vec::new(),
         }
     }
 
@@ -663,6 +675,7 @@ impl MetaTemps {
             cond: None,
             guard: None,
             source_meta: HashMap::new(),
+            shared: Vec::new(),
         }
     }
 }
