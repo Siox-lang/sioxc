@@ -77,6 +77,13 @@ the [ingress invariants](https://github.com/Siox-lang/siox-paper/blob/main/docs/
 when extending the IR; executable extensions and optimization measurements are
 listed under LLVM and Output below.
 
+- 🔴 **Type inference is quadratic on long operator chains.**
+  `Checker::type_of` records each expression's type but never reads it back,
+  so every level of a left-deep chain re-infers the whole chain below it:
+  `y = x + x + … + x` takes 1.9 s at 1000 terms, 6.7 s at 2000 and 28 s at
+  4000 (`--emit metadata`). A span-keyed memo must respect that one span can
+  be checked under different symbol tables (generic bodies). Found
+  2026-10-13 while probing stack depth.
 - 🔴 **Nested `xor` in hardware.** `y = a xor b xor c` (or
   `(a xor b) xor c`) on `unsigned[8]` ports fails E-P017 ("cannot derive a
   digital scheduler expression from Invalid"); one `xor`, `and`/`or` chains
