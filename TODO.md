@@ -169,8 +169,12 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   of a value both selection arms read were built once per arm, doubling at
   each block-local write; they are now built once (a reduced case went from
   20.9 s to 2.6 s; eight chained writes overflowed the stack before). Still
-  open: companion lowering is roughly quadratic in a chain of writes to one
-  local (50 writes 15 s, 200 writes 280 s), and recurses once per write. The
+  open: a chain of writes to one local compiles in roughly quadratic time
+  (40 writes 24 s, 200 writes 280 s). The process IR is linear, but each
+  hoisted companion temporary is its own combinational process, helpers
+  hold four processes with a fresh value cache each, and so every
+  temporary re-emits the value chain below it (1.08 M emissions for 37 k
+  values at 40 writes). Companion lowering also recurses once per write. The
   workload runs at about 1.1 µs a cycle (1.5 µs
   with `bitpack`). Indexed packed writes now use one update per
   value/companion plane rather than enumerating bits; retain structural and
