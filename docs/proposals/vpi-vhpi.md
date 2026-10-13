@@ -1,235 +1,241 @@
-# VPI and VHPI: the simulator's procedural interfaces
+# Co-simulation with VHDL and Verilog, and the simulator interfaces
 
 Status: **proposal**. Nothing here is implemented.
 
 ## Problem
 
-A siox test executable can only be driven by its own `#[test]` processes.
-The verification tools hardware teams already use reach a simulator through
-its standard C interface instead:
+A siox design can only run in its own executable, driven by its own `#[test]`
+processes. Two things a hardware team needs are missing:
 
-- **VPI** (IEEE 1364 / IEEE 1800 §36–38): the Verilog/SystemVerilog interface,
-  used by cocotb's Verilog path, Icarus/Verilator-style plugins and most
-  custom C models;
-- **VHPI** (IEEE 1076-2019 §17–23): the VHDL interface, used by cocotb's VHDL
-  path (nvc, GHDL, Riviera, Questa) and by VHDL foreign models.
+1. **Mixing languages.** Putting a siox block into a VHDL or Verilog design
+   (or a VHDL/Verilog block into a siox design's verification) and simulating
+   them together. Today the only foreign-HDL feature is the `extern entity`
+   black box, which simulates nothing.
+2. **Verification tools.** cocotb, Python models and existing C plugins drive
+   a simulator through its standard C interface, which siox does not offer.
 
-Both expose the same things: an object model of the elaborated design
-(instances, signals, ports, names, types), reading and writing values, and
-callbacks on simulation events and phases. Supporting them lets cocotb
-testbenches, Python models and existing C plugins drive siox designs
-unchanged, and it is the base for the nvc co-simulation in
-[interoperability.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/interoperability.md#working-with-nvc)
-(items 2 and 4 there).
+Both go through the same two IEEE interfaces, used in opposite directions:
+
+- **VPI** (IEEE 1364 / IEEE 1800 §36–38), the Verilog/SystemVerilog interface;
+- **VHPI** (IEEE 1076-2019 §17–23), the VHDL interface.
+
+For (1) siox is a *client*: a siox block runs as a plugin inside a VHDL or
+Verilog simulator and talks to the rest of the design through that
+simulator's VPI or VHPI. For (2) siox is a *server*: its own executable
+implements VPI and VHPI so tools can attach to it.
 
 ## Decision
 
-Implement both as **thin front-ends over one simulator-interface core** in the
-fixed C runtime (`runtime/`). The core owns the object model, value access,
-callbacks and the scheduler hooks; `runtime/vpi.c` and `runtime/vhpi.c` only
-translate handles, property codes and value formats. Nothing is generated per
-design: the core reads the immutable tables the design object already exports
-for waveforms, plus a few new ones.
+One runtime refactor serves both, then the client direction first:
 
-Build **VPI first**. It is the smaller standard, cocotb's best-trodden path,
-and its 4-state values are a strict subset of siox's (interoperability rule 1
-gives the mapping). VHPI follows on the same core and adds the exact nine-value
-`Logic`.
+1. **A steppable runtime.** Split the test runner's loop into calls an outside
+   scheduler can drive (start, apply inputs, settle, advance time, read
+   outputs). The `--test` executable becomes one driver of it.
+2. **Co-simulation (siox as client).** `sioxc` builds a siox top as a shared
+   library plus a wrapper module/entity in Verilog and VHDL. The host
+   simulator instantiates the wrapper like any other block; the library,
+   loaded as the host's VPI or VHPI plugin, steps the siox runtime from the
+   host's callbacks. VHDL first on **nvc**, Verilog second on **Icarus**.
+3. **Simulator interfaces (siox as server).** The siox executable implements
+   VPI, then VHPI, over the same runtime hooks; cocotb is the first client.
 
-No language change, no compiler-owned runner, no new dependency (`dlopen` is
-in libc).
+The interoperability boundary rules
+([interoperability.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/interoperability.md#foreign-hdls))
+govern every value crossing: rule 1 for logic values (exact through VHPI,
+`To_X01Z` into 4-state VPI), rule 11 for names.
 
-## What exists to build on
+No language change, no new Rust dependency, nothing generated per design
+beyond tables and the wrapper text; `dlopen` and the plugin entry points are
+libc and C.
 
-| Existing piece | Role for VPI/VHPI |
-| --- | --- |
-| `sx_wave_scope_*`, `sx_wave_signal_*` tables | Instance tree, signal names, scopes, widths, kinds, metavalue companions: the read side of the object model |
-| `sx_wave_symbol_*` tables | Enum symbols (`Logic`, user enums): value strings and enum values |
-| `sx_read_word(signal, word)` | Reading a signal's value plane (and companion) |
-| `sx_process_commit` / `sx_process_changed(signal)` | Which signals changed in a delta: value-change callbacks |
-| The `sx_runtime_run_test` loop | Phase boundaries: processes ran, events applied, commit, settled point, time advance |
-| `sx_insert_event` | Timed events: `cbAfterDelay` / `vhpiCbAfterDelay` |
-| `runtime/main.c` | Executable options: plugin loading joins `-o` and the test filter |
+## Hosts
 
-## The core (`runtime/sim.c`, `runtime/sim.h`)
+What the host simulators offer decides the shape of the client side.
 
-**Object model.** Built once at startup from the tables:
-
-- a root region for each elaborated root, child regions for instances
-  (`sx_wave_scope_parents`), and a region for each struct/tuple/view value
-  (a VPI `vpiStructVar`-like object, a VHPI record);
-- a signal object for each storage leaf, with its scope, name, width, kind
-  (`Bit`, `Logic`, packed vector, integer, real, enum) and direction for
-  ports;
-- arrays as indexable objects over their element leaves.
-
-Full names use the standard separators at the front-end (`top.u0.q` for VPI,
-`:top:u0:q` for VHPI); the core stores the scope chain. Names are reported as
-written; siox is case-sensitive, which VPI expects and VHPI's `vhpiCaseNameP`
-carries (`vhpiNameP` is the upper-cased VHDL form).
-
-**Values.** One internal form: value words plus, for metavalue-carrying
-signals, the discriminant companion. Front-ends convert:
-
-| siox | VPI | VHPI |
-| --- | --- | --- |
-| `Logic` element | `vpi0/1/X/Z`, `'L'`→0, `'H'`→1, `'U'/'W'/'-'`→X (rule 1) | `vhpiU..vhpiDontCare`, exact (table maps siox discriminants `'0'=0,'1'=1,'Z'=2,'X'=3,'U'=4,..` to VHPI's `U=0,X=1,'0'=2,..`) |
-| `Bit`, packed vector | `vpiScalarVal`, `vpiVectorVal`, `vpiIntVal`, binary/hex strings | `vhpiLogicVal`/`vhpiEnumVal`, `vhpiLogicVecVal`, `vhpiIntVal` |
-| `integer`, `real` | `vpiIntVal`, `vpiRealVal` | `vhpiIntVal`/`vhpiLongIntVal`, `vhpiRealVal` |
-| enum | `vpiIntVal`, `vpiStringVal` (symbol) | `vhpiEnumVal`, `vhpiStrVal` |
-
-The discriminant mapping is a table in the runtime, generated from std's
-`ULogic` declaration order rather than hard-coded twice.
-
-**Writes.** A new design-object entry, `sx_deposit(signal, words, meta)`,
-stores a value into a signal's storage and marks it changed, so the next
-commit propagates it like any write. On top of it:
-
-- *deposit* (`vpiNoDelay`/`vpiInertialDelay` with no driver, VHPI
-  `vhpiDepositPropagate`): the value holds until the design drives the signal
-  again;
-- *force* / *release* (`vpiForceFlag`/`vpiReleaseFlag`, `vhpiForcePropagate`
-  /`vhpiRelease`): a force table the commit consults before publishing a
-  signal, so design drivers cannot overwrite a forced value until released;
-- delayed puts (`vpiTransportDelay`, `vhpi_schedule_transaction` later):
-  ordinary scheduled events.
-
-A deposit is not a driver, so it does not take part in `Logic` resolution;
-that is the standard behavior and the one nvc implements.
-
-**Callbacks.** Each maps onto an existing loop boundary:
-
-| Callback | VPI | VHPI | Where in the loop |
+| Host | Interface | What it offers (checked) | Consequence |
 | --- | --- | --- | --- |
-| start / end of simulation | `cbStartOfSimulation`, `cbEndOfSimulation` | `vhpiCbStartOfSimulation`, `vhpiCbEndOfSimulation` | before reset; after the last test |
-| value change | `cbValueChange` | `vhpiCbValueChange` | after each commit, per changed signal |
-| read/write sync | `cbReadWriteSynch` | `vhpiCbEndOfProcesses` | after processes ran, before the commit |
-| read-only sync | `cbReadOnlySynch` | `vhpiCbLastKnownDeltaCycle` | at the settled point where waveforms sample |
-| next time step | `cbNextSimTime` | `vhpiCbNextTimeStep` | when `sx_now` advances |
-| timer | `cbAfterDelay` | `vhpiCbAfterDelay` | a new event kind in the event wheel |
+| nvc 1.23 | VHPI | value-change, end-of-processes, next-time-step, after-delay and end-of-elaboration callbacks; `vhpi_put_value` deposit/force with propagate; port/signal iteration. **No** foreign architectures, **no** `vhpi_schedule_transaction` (source, `src/vhpi/vhpi-model.c`) | the siox block is an empty VHDL shell whose outputs the plugin deposits: no `inout` resolution, outputs one host delta after inputs |
+| nvc 1.23 | VPI | system tasks only: no `vpi_register_cb`, `vpi_get_time` or `vpi_control`, `vpi_handle_by_name` missing (`src/vpi/vpi-model.c`) | not a Verilog host |
+| Icarus Verilog | VPI | the standard callbacks and `vpi_put_value` cocotb relies on (to be confirmed in step 1) | the Verilog host |
+| Questa, Riviera-PRO, Xcelium, VCS | VHPI/VPI | full standards, VHPI foreign architectures (Questa, likely Riviera) | later; with a foreign architecture siox outputs become real drivers |
+| Verilator | VPI (limited) | cycle-based, own eval loop, VPI on `public` signals | separate integration, later |
 
-A read-only callback may not write (the standard's rule; the core rejects
-it). A write from a value-change or read/write callback is visible in the next
-delta, as a process write would be.
+nvc is the reference simulator already and runs VHDL with Verilog mixed in,
+so an nvc design can contain VHDL, Verilog and, through this, siox.
 
-**Time.** siox time is an unsigned 64-bit femtosecond count. VPI reports it as
-`vpiSimTime` with the precision `vpiTimePrecision = -15`; VHPI as
-`vhpiTimeT` in femtoseconds (`vhpiResolutionLimitP`).
+## Part 1: the steppable runtime (shared)
 
-**Control.** `vpi_control(vpiFinish/vpiStop)` and `vhpi_control(vhpiFinish
-/vhpiStop)` end the run the way `finish`/`stop` do; `vhpiReset` is not
-supported.
+Today `sx_runtime_run_test` owns time and the whole loop. Split it into a
+small C API in `runtime/process.c`, with the test runner rewritten on top and
+no change in behavior:
 
-## Front-ends
+```c
+int      sx_sim_start(uint32_t root);           /* reset, initialize, settle at t=0 */
+int      sx_sim_settle(void);                   /* deltas at the current time to a fixed point */
+int      sx_sim_advance(uint64_t time_fs);      /* apply events due up to time_fs, set now */
+int      sx_sim_next_due(uint64_t *time_fs);    /* earliest pending event, if any */
+void     sx_sim_finish(void);
+uint32_t sx_sim_port_count(void);               /* the root's ports, from a new table */
+const sx_port *sx_sim_port(uint32_t index);     /* name, direction, width, kind, signal */
+void     sx_sim_read(uint32_t signal, uint64_t *words, uint64_t *meta);
+void     sx_sim_write(uint32_t signal, const uint64_t *words, const uint64_t *meta);
+```
 
-`runtime/vpi.c` implements the VPI subset cocotb's `VpiImpl` uses:
-`vpi_handle`, `vpi_handle_by_name`, `vpi_handle_by_index`, `vpi_iterate` /
-`vpi_scan` (modules, nets, regs, ports, struct members), `vpi_get`
-(`vpiType`, `vpiSize`, `vpiDirection`, ...), `vpi_get_str` (`vpiName`,
-`vpiFullName`, `vpiType`), `vpi_get_value`, `vpi_put_value`,
-`vpi_register_cb`, `vpi_remove_cb`, `vpi_get_time`, `vpi_control`,
-`vpi_chk_error`, `vpi_release_handle`/`vpi_free_object`, `vpi_get_vlog_info`
-(product "siox"), and `vpi_printf`.
+`sx_sim_write` needs one new design-object entry, `sx_deposit(signal, words,
+meta)`, which stores a value into a signal and marks it changed so the next
+commit propagates it as any write; it bumps the runtime ABI. The root's ports
+need one new table (name, direction, signal, width, kind); the waveform tables
+already carry names, scopes, widths, kinds, enum symbols and metavalue
+companions.
 
-`runtime/vhpi.c` implements the matching VHPI subset cocotb's `VhpiImpl`
-uses: `vhpi_handle` (`vhpiRootInst`), `vhpi_handle_by_name`,
-`vhpi_handle_by_index`, `vhpi_iterator` / `vhpi_scan` (internal regions,
-signal/port/generic declarations, indexed and selected names), `vhpi_get`,
-`vhpi_get_str`, `vhpi_get_phys`, `vhpi_get_value`, `vhpi_put_value`,
-`vhpi_register_cb`, `vhpi_remove_cb`, `vhpi_get_cb_info`, `vhpi_get_time`,
-`vhpi_control`, `vhpi_check_error`, `vhpi_release_handle`, `vhpi_printf`.
+**One run per library.** Emitted design state is object-owned globals
+([multiprocess.md](multiprocess.md), "Ownership and ABI migration"), so one
+loaded library holds one siox instance. The first version rejects a second
+instance of the same wrapper with a clear error; several instances follow when
+per-run design frames exist.
 
-Both lists are what cocotb calls today; confirm them against cocotb's
-`share/lib/gpi/VpiImpl.cpp`/`VhpiImpl.cpp` before starting, and add what a
-second client needs only when it appears. Unsupported calls set the
-standard's error record (`vpi_chk_error`, `vhpi_check_error`) instead of
-crashing.
+## Part 2: co-simulation (siox inside a host)
 
-**Headers.** Plugins are compiled against the standard headers, so every
-constant (object types, properties, value formats, callback reasons) must
-have the standard's value. Use the IEEE-published machine-readable
-`vpi_user.h`/`sv_vpi_user.h` and `vhpi_user.h` if their licence allows
-redistribution in an MIT/Apache project; otherwise write our own headers from
-the standards' tables. Resolve this before any code (see open questions).
+**Build.** `sioxc --cosim --top Top -o top` (flag names open) writes:
 
-## Running a design under a plugin
+- `top.so`: the design object, the runtime and both bridges, exporting
+  `vlog_startup_routines` (VPI) and a `vhpi_startup_routines`/bootstrap
+  function (VHPI);
+- `top.vhd`: `entity Top is port (..); end; architecture siox of Top is begin
+  end;`, an empty shell the plugin fills;
+- `top.v`: `module Top(..); endmodule`, outputs declared `reg` so a deposit
+  holds.
 
-Two things the executable cannot do yet:
+**Wrapper ports.** Flattened by rule 11 (`bus.valid` → `bus_valid`,
+`down[2].ready` → `down_2_ready`, tuples by position: `pair_0`), with types:
 
-1. **Load plugins.** New options: `--vpi <lib.so>` runs the library's
-   `vlog_startup_routines`; `--vhpi <lib.so>[:<entry>]` runs its
-   `vhpi_startup_routines` or the named bootstrap function, as nvc's
-   `--load` and Questa's `-foreign` do. Loading happens before reset, so
-   `cbStartOfSimulation` is seen.
-2. **Run a design with no testbench.** cocotb supplies the stimulus, so the
-   executable must elaborate a design top with no `#[test]` entity and run
-   until the plugin finishes it or no event or callback remains. This is a
-   build mode: `sioxc --sim --top Top -o top-sim` (name open), producing the
-   same native executable with one root and no foreground process. `--test`
-   keeps its meaning.
+| siox | VHDL | Verilog |
+| --- | --- | --- |
+| `Logic` / `Bit` | `std_logic` / `bit` | `wire` / `reg` 1 bit |
+| `Logic[N]`, `unsigned[N]`, `signed[N]` | `std_logic_vector`, `unsigned`, `signed` `(N-1 downto 0)` | `[N-1:0]` (`signed` for `signed`) |
+| enum | its VHDL enumeration (generated in a package) | `[W-1:0]` of its discriminant |
+| `integer` | `integer` when its range fits, else `signed(63 downto 0)` | `[63:0]` signed |
+| `real` | `real` | `real` |
 
-cocotb then needs a small simulator recipe (its runner/Makefile entry for
-siox: build with `sioxc --sim`, run with `--vpi $(cocotb-config --lib-name-path
-vpi siox)`); that belongs upstream in cocotb once the interface works.
+**The bridge**, per host:
 
-## Fit with the rest of the runtime
+1. At start of simulation (nvc: end of elaboration) find the wrapper
+   instance, resolve each port to a host handle, `sx_sim_start`, deposit the
+   initial outputs, register value-change callbacks on the inputs and a timer
+   at `sx_sim_next_due`.
+2. An input change marks the block dirty and registers one read/write-sync
+   callback (`cbReadWriteSynch`, `vhpiCbEndOfProcesses`) for that host delta,
+   so several inputs changing together are evaluated once.
+3. At that callback or at the timer: `sx_sim_advance(host now)`, write every
+   input (converted by rule 1), `sx_sim_settle`, read the outputs and deposit
+   the changed ones (`vpi_put_value(.., vpiNoDelay)`,
+   `vhpi_put_value(.., vhpiDepositPropagate)`), re-arm the timer.
 
-- **Determinism.** Callbacks run on the coordinator at loop boundaries, in
-  registration order; plugin writes enter the same commit path as process
-  writes. Waveforms show deposited and forced values like any other.
-- **Multiprocess.** [multiprocess.md](multiprocess.md) keeps one coordinator
-  that owns time, commit and host effects; callbacks are host effects and run
-  there, between epochs, never on a worker.
-- **Debugging.** DWARF source debugging is unaffected; a plugin and gdb can
-  attach to the same run.
-- **The reverse direction** (siox as a VHPI plugin inside nvc) reuses the
-  value mapping and naming of this core but not the object model, and is a
-  separate step.
+The siox block thus behaves like any process in the host: inputs settle, the
+block evaluates all its own deltas, outputs appear in the next host delta.
+Clocks generated inside siox, `after` delays and `await` in siox code all
+become host timers. Host time units convert to femtoseconds; a siox event
+between two host ticks is reported once and rounded up.
+
+**Not in the first version:** `inout` ports (a deposit is not a driver, and
+nvc rejects `inout` across its own mixed-language boundary too), several
+instances of one wrapper, and VHDL foreign architectures (not in nvc).
+
+**The other way round** — a VHDL or Verilog block inside a siox design's own
+testbench — is the same co-simulation with the host on top: the siox
+testbench is ported to a host-language top level that instantiates both, or
+the siox side is exported to HDL (interoperability item 3). It needs no
+mechanism beyond this one.
+
+## Part 3: the simulator interfaces (siox as server)
+
+The siox executable implements VPI and then VHPI for tools that drive a
+design (cocotb first).
+
+- **Object model** from the waveform tables: regions per instance and per
+  struct/tuple/view value, a signal object per storage leaf, arrays as
+  indexable objects. Names as written; VPI full names `top.u0.q`, VHPI
+  `:top:u0:q`.
+- **Values** through the same conversions as Part 2: 4-state VPI by rule 1,
+  exact nine-value `Logic` through VHPI (a runtime table maps siox's
+  discriminants to VHPI's order, generated from std's `ULogic` declaration).
+- **Writes**: deposit through `sx_deposit`; force/release through a force
+  table the commit consults; delayed puts as scheduled events.
+- **Callbacks** at the loop boundaries Part 1 exposes:
+
+  | Callback | VPI | VHPI | Where |
+  | --- | --- | --- | --- |
+  | start / end of simulation | `cbStartOfSimulation`, `cbEndOfSimulation` | `vhpiCbStartOfSimulation`, `vhpiCbEndOfSimulation` | before reset; after the run |
+  | value change | `cbValueChange` | `vhpiCbValueChange` | after a commit, per changed signal |
+  | read/write sync | `cbReadWriteSynch` | `vhpiCbEndOfProcesses` | after processes, before the commit |
+  | read-only sync | `cbReadOnlySynch` | `vhpiCbLastKnownDeltaCycle` | at the settled point |
+  | next time step | `cbNextSimTime` | `vhpiCbNextTimeStep` | when time advances |
+  | timer | `cbAfterDelay` | `vhpiCbAfterDelay` | a new event kind |
+
+- **Calls**: the subsets cocotb's `VpiImpl`/`VhpiImpl` use (handles by name and
+  index, iteration, `get`/`get_str`, values, callbacks, time, control, error
+  checks, `vpi_get_vlog_info` reporting "siox"); confirm against cocotb's
+  sources first, grow on demand; unsupported calls set the standard error
+  record.
+- **Running**: `--vpi <lib.so>` and `--vhpi <lib.so>[:entry]` load plugins
+  before reset; a design-only build (`sioxc --sim --top Top`, name open) runs
+  a top with no `#[test]` until the plugin finishes it. cocotb then needs a
+  small simulator recipe, upstreamed once this works.
+
+## Headers
+
+Plugins and hosts use the standard headers, so every constant (object types,
+properties, value formats, callback reasons) must have the standard's value.
+Use the IEEE-published `vpi_user.h`/`sv_vpi_user.h` and `vhpi_user.h` if their
+licence allows redistribution in an MIT/Apache project; otherwise write our
+own from the standards' tables. nvc's copies are GPL-3 and are not used.
 
 ## Delivery order
 
-1. **Settle the headers and the subset.** Licence question answered; the exact
-   cocotb call lists recorded; a minimal C plugin (print the hierarchy, read a
-   signal at each time step) written as the first acceptance test.
-2. **Read-only core + VPI.** Object model, names, `vpi_get_value`,
-   `vpi_get_time`, plugin loading, start/end-of-simulation callbacks. The
-   C plugin walks a corpus design and reads values.
-3. **Callbacks.** Value change, read/write and read-only sync, next time step,
-   timers, removal; the C plugin drives a clock with `cbAfterDelay`.
-4. **Writes.** `sx_deposit` in the design object (ABI bump), deposit, force,
-   release; the C plugin toggles inputs and checks outputs.
-5. **Design-only executable** (`sioxc --sim`) and **cocotb**: run cocotb's own
-   simulator-agnostic tests that apply to a non-Verilog design, plus a siox
-   corpus design driven by a cocotb test.
-6. **VHPI front-end** over the same core, exact `Logic`; cocotb's VHPI path.
-7. Later, when wanted: `vhpi_schedule_transaction` and drivers, VHPI foreign
-   architectures, siox-in-nvc co-simulation.
+1. **Facts.** Header licence settled; Icarus's VPI checked for the callbacks
+   and puts the bridge uses; cocotb's call lists recorded; two minimal C test
+   plugins written (one VPI, one VHPI) for later steps.
+2. **Steppable runtime.** `sx_sim_*` with the test runner on top. Gate: full
+   CI with identical results and waveforms.
+3. **Ports and deposit.** The root port table, `sx_deposit` (ABI bump),
+   `sx_sim_read`/`sx_sim_write`; unit-tested from C.
+4. **VHDL co-simulation on nvc.** VHDL wrapper, VHPI bridge, `sioxc --cosim`.
+   Milestone: a siox counter inside a VHDL testbench on nvc, its results
+   equal to the same siox design's own test.
+5. **Verilog co-simulation on Icarus.** Verilog wrapper, VPI bridge.
+   Milestone: the same design inside a Verilog testbench.
+6. **VPI server and cocotb.** Plugin loading, design-only build, the VPI
+   object model and callbacks. Milestone: a corpus design driven by a cocotb
+   test.
+7. **VHPI server.** The same core with exact `Logic`; cocotb's VHPI path.
+8. **Later:** several instances (per-run frames), `inout`, foreign
+   architectures on hosts that have them, Verilator, commercial hosts.
 
-Each step is usable on its own; steps 2–5 are the cocotb milestone.
+Steps 2–4 are the first usable result: siox and VHDL in one simulation.
 
 ## Acceptance gates
 
-- A C plugin in the repository's tests, compiled with the system C compiler
-  that already builds the runtime, run against corpus designs in default and
-  `bitpack` builds: hierarchy and names, values (including X/Z and every
-  `Logic` symbol through VHPI), each callback reason, deposit/force/release.
-- The same plugin's output compared with nvc for VHPI (and Icarus for VPI)
-  on an equivalent VHDL/Verilog design where one exists, as the logic tables
-  are compared with nvc today.
-- cocotb: at least one corpus design under a cocotb test, in CI once cocotb is
-  available there.
-- No change to `--test` executables that load no plugin: same results,
-  same waveforms, no measurable overhead (callbacks cost nothing when none
-  are registered).
+- Steps 2–3 change nothing for existing executables: full CI identical,
+  waveforms byte for byte, no measurable cost when nothing is attached.
+- Co-simulation: each corpus design used in a co-simulation test gives the
+  same port values, cycle for cycle, as its own siox test; run in default and
+  `bitpack` builds; CI installs nvc and Icarus.
+- Server: the C test plugins check hierarchy, names, values (every `Logic`
+  symbol through VHPI, X/Z through VPI), each callback reason, deposit, force
+  and release; compared with nvc and Icarus on an equivalent HDL design where
+  one exists.
+- cocotb: at least one corpus design under a cocotb test in CI.
 
 ## Open questions
 
-1. **Headers.** Can the IEEE `vpi_user.h`/`vhpi_user.h` be redistributed
-   under the project's licence, or do we write our own from the standards'
-   constant tables?
-2. **Flag names.** `--sim` for the design-only build, `--vpi`/`--vhpi` (or
-   one `--load` as nvc) for plugins.
-3. **Name case for VHPI.** Report `vhpiNameP` upper-cased as VHDL tools do
-   (with the exact case in `vhpiCaseNameP`), or as written?
-4. **Struct and tuple values through VPI.** Expose them as
-   `vpiStructVar` members (SystemVerilog VPI) or only their leaves?
+1. **Headers.** Redistribute the IEEE headers, or write our own from the
+   standards' constant tables?
+2. **Flag names.** `--cosim`, `--sim`, `--vpi`/`--vhpi` (or one `--load` as
+   nvc).
+3. **Several instances.** Wait for per-run design frames, or load one copy of
+   the library per instance (`dlmopen`) in the meantime?
+4. **Wrapper types.** Enums as generated VHDL enumerations or as plain
+   vectors; `integer` as VHDL `integer` (32-bit in most tools) or always
+   64-bit `signed`.
+5. **VHPI name case** (server): report `vhpiNameP` upper-cased as VHDL tools
+   do, with the exact case in `vhpiCaseNameP`?

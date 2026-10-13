@@ -56,8 +56,9 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
 - 🔴 **Incremental/query interface.** Add demand-driven caching only when the
   LSP or future project tool needs incremental multi-file recomputation; keep
   the current explicit phase products as the public boundary.
-- 🔴 **VPI and VHPI.** The standard simulator interfaces in the runtime, so
-  cocotb and C plugins can drive a design: one core, VPI first. See
+- 🔴 **Co-simulation with VHDL and Verilog; VPI and VHPI.** A steppable
+  runtime, then siox blocks inside VHDL (nvc) and Verilog (Icarus) designs as
+  their VHPI/VPI plugin, then VPI/VHPI served by siox for cocotb. See
   [the proposal](docs/proposals/vpi-vhpi.md).
 - 🔴 **Payload enums.** Tagged-union variants, binding patterns,
   `Option`/`Result` and `checked_*`; builds on tuples. See
