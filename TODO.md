@@ -212,7 +212,11 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   guarded companion above 8192 nodes now binds to a temporary (40 writes
   24 s → 10 s, 200 writes 280 s → 65 s). Lower limits are faster on chains
   but bind large unchained companions too: at 2048,
-  `hardware_aggregate_writes_test` took 27 s against 16 s. Companion lowering also recurses once per write. The
+  `hardware_aggregate_writes_test` took 27 s against 16 s. Companion lowering also recurses once per write.
+  That test's remaining time was LLVM instruction selection (13.3 of
+  16.5 s) of wide-integer IR for baseline x86-64; x86_64 objects now target
+  the x86-64-v2 level (SSE4.2, POPCNT) and it compiles in 7.4 s, the
+  corpus in 85 s instead of 95 s, with run time unchanged. The
   workload runs at about 1.1 µs a cycle (1.5 µs
   with `bitpack`). Indexed packed writes now use one update per
   value/companion plane rather than enumerating bits; retain structural and
