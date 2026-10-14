@@ -292,6 +292,7 @@ pub(super) fn emit_source_locations<'ctx>(
                         | ProcessHostValueOp::ArrayStore
                         | ProcessHostValueOp::ArrayCopy
                         | ProcessHostValueOp::ArrayPush
+                        | ProcessHostValueOp::ReadSymbols
                         | ProcessHostValueOp::ReadUtf8Fixed
                         | ProcessHostValueOp::ReadBinary,
                     ..

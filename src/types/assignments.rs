@@ -413,6 +413,19 @@ impl<'a> Checker<'a> {
     /// explicit conversion. Integer and logic *literals* are polymorphic; an
     /// `Error` type on either side suppresses the check.
     /// Whether `id` is an enum declaring the character variant `ch`.
+    /// An enum whose every variant is a character literal (`Bit`, `Logic`).
+    pub(super) fn is_char_enum(&self, id: crate::resolve::DefId) -> bool {
+        let Some(key) = self.definition_key(id) else {
+            return false;
+        };
+        self.enum_variants.get(&key).is_some_and(|vars| {
+            !vars.is_empty()
+                && vars
+                    .iter()
+                    .all(|v| v.len() == 3 && v.starts_with('\'') && v.ends_with('\''))
+        })
+    }
+
     pub(super) fn enum_has_char_variant(&self, id: crate::resolve::DefId, ch: char) -> bool {
         let Some(key) = self.definition_key(id) else {
             return false;

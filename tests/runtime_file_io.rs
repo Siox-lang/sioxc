@@ -409,6 +409,9 @@ fn runtime_sized_arrays_read_index_iterate_and_check_bounds() {
     std::fs::write(dir.join("words.bin"), words).unwrap();
     std::fs::write(dir.join("bytes.bin"), [0xff, 0x80, 0x05]).unwrap();
     std::fs::write(dir.join("odd.bin"), [1, 2, 3]).unwrap();
+    std::fs::write(dir.join("logic.txt"), "UX01 ZWLH-\n10\n").unwrap();
+    std::fs::write(dir.join("bits.txt"), "0110").unwrap();
+    std::fs::write(dir.join("bad.txt"), "01q").unwrap();
     let compile = |name: &str, body: &str| {
         let binary = dir.join(name);
         let source = format!(
@@ -540,12 +543,42 @@ fn runtime_sized_arrays_read_index_iterate_and_check_bounds() {
          print!(\"{}\\n\", xs[5]);",
     );
     assert!(report.contains("empty=0"), "{report}");
+
     assert!(
         report.contains("xs=5 25 ys=6 99 ws=1 3 rs=6 7 big=100000 99999"),
         "{report}"
     );
     assert!(
         report.contains("index 5 is outside declared range 0..4"),
+        "{report}"
+    );
+    assert!(!report.contains("unreachable"), "{report}");
+    // A character enum (`Logic`, `Bit`) reads as text, one element per
+    // symbol, whitespace skipped; X/Z values survive writes and pushes.
+    let report = compile(
+        "symbols",
+        "let ls: Logic[] = read<Logic[]>(\"logic.txt\");\n\
+         print!(\"n={} {} {} {} {}\\n\", ls'length, ls[0], ls[1], ls[8], ls[10]);\n\
+         ls[2] = 'Z';\n\
+         ls.push('H');\n\
+         let unknown: integer = 0;\n\
+         for l in ls { if l == 'X' or l == 'U' { unknown = unknown + 1; } }\n\
+         let bs: Bit[] = read<Bit[]>(\"bits.txt\");\n\
+         bs[0] = '1';\n\
+         let ks: Logic[];\n\
+         ks.push('X');\n\
+         print!(\"ls2={} ls11={} unknown={} bs={} {} ks={} and={}\\n\", \
+             ls[2], ls[11], unknown, bs[0], bs[3], ks[0], ls[3] and ls[7]);\n\
+         let bad: Logic[] = read<Logic[]>(\"bad.txt\");\n\
+         print!(\"unreachable\\n\");",
+    );
+    assert!(report.contains("n=11 'U' 'X' '-' '0'"), "{report}");
+    assert!(
+        report.contains("ls2='Z' ls11='H' unknown=2 bs='1' '0' ks='X' and='1'"),
+        "{report}"
+    );
+    assert!(
+        report.contains("'q' at byte 3 is not one of \"01ZXUWLH-\""),
         "{report}"
     );
     assert!(!report.contains("unreachable"), "{report}");

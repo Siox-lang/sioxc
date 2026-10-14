@@ -513,6 +513,10 @@ pub enum ProcessHostValueOp {
     ArrayStore,
     /// A runtime array's own copy, for assignment: arrays are values.
     ArrayCopy,
+    /// Read a text file of a character enum's symbols (`read<Logic[]>`) into
+    /// a runtime array of codes: the path, and the symbols in code order.
+    /// Whitespace is skipped.
+    ReadSymbols,
     /// Append one element to a runtime array (the handle, the value); the
     /// result is the array's handle, a new one when it was empty (zero).
     ArrayPush,
@@ -1988,6 +1992,7 @@ impl ProcessIr {
                         ProcessHostValueOp::StringIndex
                         | ProcessHostValueOp::StringEqualsUtf8
                         | ProcessHostValueOp::ReadArray
+                        | ProcessHostValueOp::ReadSymbols
                         | ProcessHostValueOp::ArrayPush => 2,
                         ProcessHostValueOp::ArrayStore => 3,
                     } =>

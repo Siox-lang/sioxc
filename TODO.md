@@ -164,9 +164,12 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   An element may be a fixed array (`unsigned[8][2][]`, its packed bits,
   inner index 0 lowest); writing part of one (`xs[i][j] = v`) updates the
   element. `xs.push(v)` grows one as a Rust `Vec` does (doubling); an
-  unset `T[]` or `[]` is the empty array (handle zero). Still open: `Logic`
-  elements (a binary file has no X/Z encoding) and runtime arrays of runtime
-  arrays; `read` rejects those at compile time.
+  unset `T[]` or `[]` is the empty array (handle zero). A character enum
+  element (`Logic[]`, `Bit[]`) reads as text, one symbol per element with
+  whitespace skipped (VHDL textio style): an element holds its symbol's
+  position, converted to and from the enum's values by selects over its own
+  discriminants, so X/Z values survive. Still open: runtime arrays of
+  runtime arrays (`T[][]`), which `read` rejects at compile time.
   Runtime-computed file paths are done: a testbench `read`/`exists` path may
   be any string (fixed `Char[N]` values are formatted, runtime strings pass
   their UTF-8), resolved against the source directory by

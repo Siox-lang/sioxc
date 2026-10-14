@@ -382,6 +382,54 @@ uint64_t sx_runtime_read_array(const char *path, uint64_t element_bytes) {
     return handle;
 }
 
+/* `read<Logic[]>(path)`: a text file of a character enum's symbols, one
+ * element per symbol, whitespace skipped (as VHDL textio reads a
+ * std_logic_vector). An element holds its symbol's position in `alphabet`;
+ * the compiler maps positions to the enum's values. */
+uint64_t sx_runtime_read_symbols(const char *path, const char *alphabet) {
+    if (!path || !alphabet) {
+        sx_set_error("read<T[]>: invalid symbol read");
+        return 0;
+    }
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        sx_set_error("read<T[]>(\"%s\"): cannot open file", path);
+        return 0;
+    }
+    size_t count = 0, capacity = 64;
+    uint64_t *elements = malloc(capacity * sizeof(uint64_t));
+    size_t offset = 0;
+    int byte;
+    while (elements && (byte = fgetc(file)) != EOF) {
+        ++offset;
+        if (byte == ' ' || byte == '\t' || byte == '\n' || byte == '\r') continue;
+        const char *symbol = byte ? strchr(alphabet, byte) : 0;
+        if (!symbol) {
+            fclose(file);
+            free(elements);
+            sx_set_error("read<T[]>(\"%s\"): '%c' at byte %zu is not one of \"%s\"",
+                         path, byte, offset, alphabet);
+            return 0;
+        }
+        if (count == capacity) {
+            uint64_t *grown = realloc(elements, 2 * capacity * sizeof(uint64_t));
+            if (!grown) {
+                free(elements);
+                elements = 0;
+                break;
+            }
+            elements = grown;
+            capacity *= 2;
+        }
+        elements[count++] = (uint64_t)(symbol - alphabet);
+    }
+    fclose(file);
+    uint64_t handle = elements ? sx_runtime_array_add(elements, count, 1) : 0;
+    if (!handle) sx_set_error("read<T[]>(\"%s\"): out of memory", path);
+    else sx_strings[handle - 1].capacity = capacity;
+    return handle;
+}
+
 /* `ys = xs` for a runtime array: arrays are values, so the target gets its
  * own elements and a later element write to one leaves the other alone.
  * ponytail: a copy is never freed (no handle lifetime yet); copying in a
