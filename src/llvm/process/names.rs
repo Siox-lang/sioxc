@@ -121,9 +121,7 @@ pub(super) fn runtime_handle_element_width(layout: Option<&SourceLayout>) -> Opt
     ) {
         return Some(32);
     }
-    element
-        .packed_width()
-        .filter(|width| (1..=64).contains(width))
+    element.packed_width().filter(|width| *width > 0)
 }
 
 pub(super) fn initializer_can_raise_host_error(

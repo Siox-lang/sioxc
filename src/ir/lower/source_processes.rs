@@ -6659,7 +6659,7 @@ fn lower_process_file_call(
         // One element consumes ceil(width / 8) bytes, as a fixed read does.
         let element = runtime_array_element(return_type)?;
         let width = process_layout_for_type(element, *span, context)?.packed_width()?;
-        if width == 0 || width > 64 {
+        if width == 0 {
             return None;
         }
         let bytes =
@@ -6721,11 +6721,7 @@ fn runtime_handle_width(layout: Option<&SourceLayout>) -> Option<u32> {
             ..
         }
     );
-    (character
-        || element
-            .packed_width()
-            .is_some_and(|width| (1..=64).contains(&width)))
-    .then_some(64)
+    (character || element.packed_width().is_some_and(|width| width > 0)).then_some(64)
 }
 
 fn process_value_is_runtime_string(
