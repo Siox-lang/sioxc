@@ -94,3 +94,35 @@ fn a_repeated_non_recursive_call_is_not_recursion() {
         compilation.render_diagnostics()
     );
 }
+
+#[cfg(feature = "llvm")]
+#[test]
+fn recursion_too_deep_for_the_stack_fails_the_test() {
+    let (compilation, binary) = compile(
+        "deep",
+        "module r;\n\
+         fn depth(n: integer) -> integer { if n == 0 { return 0; } return 1 + depth(n - 1); }\n\
+         #[test] entity T {}\n\
+         impl T { check: process {\n\
+             let k: integer = 10000; await 1ns; print!(\"small={}\\n\", depth(k));\n\
+             let big: integer = 100000000; print!(\"big={}\\n\", depth(big));\n\
+         } }\n",
+    );
+    assert!(
+        compilation.succeeded(),
+        "{} {:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    let output = std::process::Command::new(&binary).output().unwrap();
+    let report = String::from_utf8_lossy(&output.stdout).to_string()
+        + &String::from_utf8_lossy(&output.stderr);
+    // A failed test, with the function named: not a crash of the executable.
+    assert_eq!(output.status.code(), Some(1), "{report}");
+    assert!(report.contains("small=10000"), "{report}");
+    assert!(
+        report.contains("recursion in `depth` is too deep for the native stack"),
+        "{report}"
+    );
+    assert!(!report.contains("big="), "{report}");
+}
