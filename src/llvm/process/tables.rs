@@ -562,3 +562,146 @@ pub(super) fn emit_wide_handle_element<'ctx>(
     }
     Some(result)
 }
+
+/// Push `bits` on the current process's frame stack as words
+/// (`sx_runtime_frame_push`).
+pub(super) fn emit_frame_words<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    bits: IntValue<'ctx>,
+) -> Option<()> {
+    let i32 = context.i32_type();
+    let i64 = context.i64_type();
+    let pointer = context.ptr_type(AddressSpace::default());
+    let width = bits.get_type().get_bit_width();
+    let word_count = super::super::words_for(width);
+    let buffer = builder
+        .build_array_alloca(
+            i64,
+            i32.const_int(u64::from(word_count), false),
+            "pv.frame.words",
+        )
+        .ok()?;
+    for word in 0..word_count {
+        let offset = word.checked_mul(64)?;
+        let part = if offset == 0 {
+            bits
+        } else {
+            builder
+                .build_right_shift(
+                    bits,
+                    bits.get_type().const_int(u64::from(offset), false),
+                    false,
+                    "pv.frame.shift",
+                )
+                .ok()?
+        };
+        let slot = unsafe {
+            builder
+                .build_in_bounds_gep(
+                    i64,
+                    buffer,
+                    &[i32.const_int(u64::from(word), false)],
+                    "pv.frame.slot",
+                )
+                .ok()?
+        };
+        builder.build_store(slot, fit(builder, part, 64)?).ok()?;
+    }
+    let runtime = module
+        .get_function("sx_runtime_frame_push")
+        .unwrap_or_else(|| {
+            module.add_function(
+                "sx_runtime_frame_push",
+                i64.fn_type(&[pointer.into(), i32.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    builder
+        .build_call(
+            runtime,
+            &[
+                buffer.into(),
+                i32.const_int(u64::from(word_count), false).into(),
+            ],
+            "",
+        )
+        .ok()?;
+    Some(())
+}
+
+/// Pop `width` bits saved last on the current process's frame stack
+/// (`sx_runtime_frame_pop`).
+pub(super) fn emit_frame_pop<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    width: u32,
+) -> Option<IntValue<'ctx>> {
+    let i32 = context.i32_type();
+    let i64 = context.i64_type();
+    let pointer = context.ptr_type(AddressSpace::default());
+    let word_count = super::super::words_for(width);
+    let buffer = builder
+        .build_array_alloca(
+            i64,
+            i32.const_int(u64::from(word_count), false),
+            "pv.frame.words",
+        )
+        .ok()?;
+    let runtime = module
+        .get_function("sx_runtime_frame_pop")
+        .unwrap_or_else(|| {
+            module.add_function(
+                "sx_runtime_frame_pop",
+                i64.fn_type(&[pointer.into(), i32.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    builder
+        .build_call(
+            runtime,
+            &[
+                buffer.into(),
+                i32.const_int(u64::from(word_count), false).into(),
+            ],
+            "",
+        )
+        .ok()?;
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    let mut result = ty.const_zero();
+    for word in 0..word_count {
+        let slot = unsafe {
+            builder
+                .build_in_bounds_gep(
+                    i64,
+                    buffer,
+                    &[i32.const_int(u64::from(word), false)],
+                    "pv.frame.slot",
+                )
+                .ok()?
+        };
+        let part = builder
+            .build_load(i64, slot, "pv.frame.word")
+            .ok()?
+            .into_int_value();
+        let part = fit(builder, part, width)?;
+        let shift = word.checked_mul(64)?;
+        let part = if shift == 0 {
+            part
+        } else {
+            builder
+                .build_left_shift(
+                    part,
+                    ty.const_int(u64::from(shift), false),
+                    "pv.frame.shift",
+                )
+                .ok()?
+        };
+        result = builder.build_or(result, part, "pv.frame.value").ok()?;
+    }
+    Some(result)
+}

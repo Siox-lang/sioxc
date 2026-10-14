@@ -476,8 +476,9 @@ pub mod codes {
     /// other than `self`'s attributes and constants, or its name is taken.
     pub const INVALID_TYPE_ATTR: &str = "E-P037";
     /// A testbench function that calls itself, directly or through others,
-    /// with a body that needs a frame (a loop, a mutated local, an effect).
-    /// A body that is one value recurses through its shared native copy.
+    /// and can keep no frame: it writes a parameter, or saves a local with
+    /// an X/Z plane. Other recursion runs (a shared native copy for a body
+    /// that is one value, a runtime frame stack otherwise).
     pub const RECURSIVE_CALL: &str = "E-P038";
 
     // Warnings

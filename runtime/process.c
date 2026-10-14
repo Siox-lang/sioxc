@@ -1494,6 +1494,81 @@ static int sx_apply_due_events(uint8_t *ready, uint8_t *suspended,
     return 0;
 }
 
+/* Per-process stacks of saved activations for recursive testbench
+ * functions expanded with a frame (see the compiler's cfg_calls). */
+typedef struct {
+    uint64_t *words;
+    size_t length;
+    size_t capacity;
+} sx_frame_stack;
+
+static sx_frame_stack *sx_frame_stacks;
+static size_t sx_frame_stack_count;
+
+/* Saved words per process before recursion counts as runaway (1 GiB). */
+#define SX_FRAME_STACK_LIMIT ((size_t)1 << 27)
+
+static void sx_clear_frames(void) {
+    for (size_t index = 0; index < sx_frame_stack_count; ++index)
+        free(sx_frame_stacks[index].words);
+    free(sx_frame_stacks);
+    sx_frame_stacks = 0;
+    sx_frame_stack_count = 0;
+}
+
+static sx_frame_stack *sx_current_frames(void) {
+    if (sx_current_process >= sx_process_count) {
+        sx_set_error("a frame stack is used outside a process");
+        return 0;
+    }
+    if (!sx_frame_stacks) {
+        sx_frame_stacks = calloc(sx_process_count ? sx_process_count : 1,
+                                 sizeof(sx_frame_stack));
+        if (!sx_frame_stacks) {
+            sx_set_error("cannot allocate frame stacks");
+            return 0;
+        }
+        sx_frame_stack_count = sx_process_count;
+    }
+    return &sx_frame_stacks[sx_current_process];
+}
+
+uint64_t sx_runtime_frame_push(const uint64_t *words, uint32_t count) {
+    sx_frame_stack *stack = sx_current_frames();
+    if (!stack) return 0;
+    if (stack->length + count > SX_FRAME_STACK_LIMIT) {
+        sx_set_error("recursion in a testbench function is too deep");
+        return 0;
+    }
+    if (stack->length + count > stack->capacity) {
+        size_t capacity = stack->capacity ? stack->capacity * 2 : 256;
+        while (capacity < stack->length + count) capacity *= 2;
+        uint64_t *grown = realloc(stack->words, capacity * sizeof(uint64_t));
+        if (!grown) {
+            sx_set_error("cannot allocate a recursion frame");
+            return 0;
+        }
+        stack->words = grown;
+        stack->capacity = capacity;
+    }
+    memcpy(stack->words + stack->length, words, (size_t)count * sizeof(uint64_t));
+    stack->length += count;
+    return 0;
+}
+
+uint64_t sx_runtime_frame_pop(uint64_t *words, uint32_t count) {
+    sx_frame_stack *stack = sx_current_frames();
+    memset(words, 0, (size_t)count * sizeof(uint64_t));
+    if (!stack) return 0;
+    if (stack->length < count) {
+        sx_set_error("a recursion frame stack underflowed");
+        return 0;
+    }
+    stack->length -= count;
+    memcpy(words, stack->words + stack->length, (size_t)count * sizeof(uint64_t));
+    return 0;
+}
+
 /* Native stack bounds for recursive value functions, set per test. */
 static char *sx_stack_base;
 static size_t sx_stack_room;
@@ -1530,6 +1605,7 @@ int sx_runtime_run_test(uint32_t test) {
     sx_stack_room = stack_size - stack_size / 4;
     sx_clear_events();
     sx_clear_strings();
+    sx_clear_frames();
     sx_clear_error();
     sx_now = 0;
     sx_sequence = 0;

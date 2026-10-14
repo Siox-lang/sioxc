@@ -1,9 +1,9 @@
-//! A testbench call expands where it is made. A pure recursive function
-//! (one value, built from `if`/`return` and operators) is shared instead: its
-//! recursive calls call the shared native copy, each evaluated only where its
-//! selection reaches it. Recursion that needs a frame of its own (a loop or a
-//! mutated local in the body) is a compile-time error naming the function and
-//! the call, not a run-time "lowering is incomplete".
+//! Recursion in testbenches. A pure recursive function (one value, built from
+//! `if`/`return` and operators) calls its shared native copy. Any other is
+//! expanded once with a runtime frame stack: a recursive call saves the
+//! activation's locals, jumps back to the body, and restores them on return.
+//! A function that writes a parameter or keeps a local with an X/Z plane
+//! cannot keep a frame, and is a compile-time error naming it.
 
 #[cfg(feature = "llvm")]
 fn compile(name: &str, source: &str) -> (siox::compiler::Compilation, std::path::PathBuf) {
@@ -56,25 +56,118 @@ fn pure_recursive_functions_run() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn recursion_that_needs_a_frame_is_a_compile_error() {
-    let (compilation, _) = compile(
+fn recursion_with_loops_locals_effects_and_await_runs_in_frames() {
+    let (compilation, binary) = compile(
         "framed",
         "module r;\n\
+         extern \"C\" { fn putchar(value: integer) -> integer; }\n\
          fn total(n: integer) -> integer {\n\
              if n <= 0 { return 0; }\n\
              let s: integer = 0;\n\
              for i in 0..1 { s = s + i; }\n\
              return s + total(n - 1);\n\
          }\n\
+         fn fibl(n: integer) -> integer {\n\
+             if n < 2 { return n; }\n\
+             let a: integer = fibl(n - 1);\n\
+             let b: integer = fibl(n - 2);\n\
+             return a + b;\n\
+         }\n\
+         fn noisy(n: integer) -> integer {\n\
+             if n == 0 { return 0; }\n\
+             let printed: integer = putchar(48 + n);\n\
+             return 1 + noisy(n - 1);\n\
+         }\n\
+         fn countdown(n: integer) -> integer {\n\
+             if n == 0 { return 0; }\n\
+             await 1ns;\n\
+             let below: integer = countdown(n - 1);\n\
+             return below + n;\n\
+         }\n\
          #[test] entity T {}\n\
-         impl T { check: process { let k: integer = 3; await 1ns; print!(\"{}\", total(k)); } }\n",
+         impl T { check: process {\n\
+             let k: integer = 3; await 1ns;\n\
+             let n: integer = noisy(k + 1);\n\
+             print!(\"|total={} fibl={} noisy={} countdown={}\", total(k), fibl(10), n, countdown(k + 1));\n\
+         } }\n",
     );
-    let rendered = compilation.render_diagnostics();
-    assert!(!compilation.succeeded(), "{rendered}");
     assert!(
-        rendered.contains("E-P038") && rendered.contains("`total` calls itself"),
-        "{rendered}"
+        compilation.succeeded(),
+        "{} {:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
     );
+    let output = std::process::Command::new(&binary).output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Each activation's effect runs once, outermost first.
+    assert!(
+        stdout.contains("4321|total=3 fibl=55 noisy=4 countdown=10"),
+        "{stdout}"
+    );
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn recursion_that_cannot_keep_a_frame_is_a_compile_error() {
+    for (name, source, function) in [
+        (
+            // A written parameter would have to reach the caller's place.
+            "writes",
+            "module r;\n\
+             fn bump(n: integer) -> integer {\n\
+                 if n <= 0 { return 0; }\n\
+                 n = n - 1;\n\
+                 for i in 0..1 { n = n + 0; }\n\
+                 return 1 + bump(n);\n\
+             }\n\
+             #[test] entity T {}\n\
+             impl T { check: process { let k: integer = 3; await 1ns; print!(\"{}\", bump(k)); } }\n",
+            "bump",
+        ),
+        (
+            // An `unsigned` local carries an X/Z plane a frame does not save.
+            "planes",
+            "module r;\nuse std::bits::unsigned;\n\
+             fn ones(n: integer) -> integer {\n\
+                 if n <= 0 { return 0; }\n\
+                 let v: unsigned[8] = 3;\n\
+                 for i in 0..1 { v = v + 1; }\n\
+                 return integer(v) + ones(n - 1);\n\
+             }\n\
+             #[test] entity T {}\n\
+             impl T { check: process { let k: integer = 2; await 1ns; print!(\"{}\", ones(k)); } }\n",
+            "ones",
+        ),
+    ] {
+        let (compilation, _) = compile(name, source);
+        let rendered = compilation.render_diagnostics();
+        assert!(!compilation.succeeded(), "{name}: {rendered}");
+        assert!(
+            rendered.contains("E-P038") && rendered.contains(&format!("`{function}` calls itself")),
+            "{name}: {rendered}"
+        );
+    }
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn an_unused_effectful_let_still_runs() {
+    let (compilation, binary) = compile(
+        "effect",
+        "module r;\n\
+         extern \"C\" { fn putchar(value: integer) -> integer; }\n\
+         fn twice(n: integer) -> integer { let printed: integer = putchar(65); return n + n; }\n\
+         #[test] entity T {}\n\
+         impl T { check: process { let k: integer = 4; await 1ns; print!(\"|r={}\", twice(k)); } }\n",
+    );
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let output = std::process::Command::new(&binary).output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("A|r=8"), "{stdout}");
 }
 
 #[cfg(feature = "llvm")]

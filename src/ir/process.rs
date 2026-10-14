@@ -498,6 +498,12 @@ pub enum ProcessHostValueOp {
     StringIndex,
     /// Compare a runtime-owned string handle with a retained UTF-8 literal.
     StringEqualsUtf8,
+    /// Save one value of a recursive function's activation on the current
+    /// process's runtime frame stack. Its result is zero.
+    FramePush,
+    /// Restore the value saved last on the current process's frame stack,
+    /// at this value's width.
+    FramePop,
 }
 
 /// One normalized piece of a runtime message.
@@ -1955,13 +1961,16 @@ impl ProcessIr {
                     arguments,
                 } if arguments.len()
                     != match operation {
-                        ProcessHostValueOp::Random | ProcessHostValueOp::Uniform => 0,
+                        ProcessHostValueOp::Random
+                        | ProcessHostValueOp::Uniform
+                        | ProcessHostValueOp::FramePop => 0,
                         ProcessHostValueOp::RandomRange => 2,
                         ProcessHostValueOp::ReadUtf8
                         | ProcessHostValueOp::ReadUtf8Fixed
                         | ProcessHostValueOp::ReadBinary
                         | ProcessHostValueOp::FileExists
-                        | ProcessHostValueOp::StringLength => 1,
+                        | ProcessHostValueOp::StringLength
+                        | ProcessHostValueOp::FramePush => 1,
                         ProcessHostValueOp::StringIndex
                         | ProcessHostValueOp::StringEqualsUtf8
                         | ProcessHostValueOp::ReadArray => 2,
