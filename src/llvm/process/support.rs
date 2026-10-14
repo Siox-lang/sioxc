@@ -718,6 +718,14 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                                 .is_some()
                     }
                     (ProcessHostValueOp::FramePop, []) => value.bit_width.is_some(),
+                    (ProcessHostValueOp::FrameRestore, [place]) => matches!(
+                        design
+                            .process_ir
+                            .values
+                            .get(place.0 as usize)
+                            .map(|place| &place.kind),
+                        Some(ProcessValueKind::Local { .. })
+                    ),
                     (ProcessHostValueOp::StringEqualsUtf8, [handle, literal]) => {
                         scalar(*handle) && process_string(design, *literal).is_some()
                     }

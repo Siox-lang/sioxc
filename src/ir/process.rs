@@ -504,6 +504,10 @@ pub enum ProcessHostValueOp {
     /// Restore the value saved last on the current process's frame stack,
     /// at this value's width.
     FramePop,
+    /// Restore a local saved by `FramePush` of it: its value and, when it has
+    /// one, its X/Z companion plane, written straight into the local's state.
+    /// The result is the restored value.
+    FrameRestore,
 }
 
 /// One normalized piece of a runtime message.
@@ -1970,7 +1974,8 @@ impl ProcessIr {
                         | ProcessHostValueOp::ReadBinary
                         | ProcessHostValueOp::FileExists
                         | ProcessHostValueOp::StringLength
-                        | ProcessHostValueOp::FramePush => 1,
+                        | ProcessHostValueOp::FramePush
+                        | ProcessHostValueOp::FrameRestore => 1,
                         ProcessHostValueOp::StringIndex
                         | ProcessHostValueOp::StringEqualsUtf8
                         | ProcessHostValueOp::ReadArray => 2,

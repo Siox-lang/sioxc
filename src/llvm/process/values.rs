@@ -1296,8 +1296,44 @@ pub(super) fn process_value<'ctx>(
                         cache,
                     )?;
                     emit_frame_words(context, module, builder, bits)?;
+                    // A local's X/Z plane goes with it, after the value.
+                    if let ProcessValueKind::Local { process, local } =
+                        design.process_ir.values.get(saved.0 as usize)?.kind
+                    {
+                        let name = local_meta_name(process, local);
+                        if let Some(meta_width) = state_global_width(module, &name) {
+                            let meta = state_value(context, module, builder, &name, meta_width)?;
+                            emit_frame_words(context, module, builder, meta)?;
+                        }
+                    }
                     emit_host_read_check(context, module, builder, value.span)?;
                     return fit(builder, context.i64_type().const_zero(), width);
+                }
+                ProcessHostValueOp::FrameRestore => {
+                    let [place] = arguments.as_slice() else {
+                        return None;
+                    };
+                    let ProcessValueKind::Local { process, local } =
+                        design.process_ir.values.get(place.0 as usize)?.kind
+                    else {
+                        return None;
+                    };
+                    let meta_name = local_meta_name(process, local);
+                    if let Some(meta_width) = state_global_width(module, &meta_name) {
+                        let meta = emit_frame_pop(context, module, builder, meta_width)?;
+                        store_state(module, builder, &meta_name, meta_width, meta)?;
+                    }
+                    let local_width = local_width(design, process, local)?;
+                    let restored = emit_frame_pop(context, module, builder, local_width)?;
+                    store_state(
+                        module,
+                        builder,
+                        &local_state_name(process, local),
+                        local_width,
+                        restored,
+                    )?;
+                    emit_host_read_check(context, module, builder, value.span)?;
+                    return fit(builder, restored, width);
                 }
                 ProcessHostValueOp::FramePop => {
                     let restored = emit_frame_pop(context, module, builder, width)?;

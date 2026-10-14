@@ -2,8 +2,9 @@
 //! `if`/`return` and operators) calls its shared native copy. Any other is
 //! expanded once with a runtime frame stack: a recursive call saves the
 //! activation's locals, jumps back to the body, and restores them on return.
-//! A function that writes a parameter or keeps a local with an X/Z plane
-//! cannot keep a frame, and is a compile-time error naming it.
+//! A frame saves each local with its X/Z plane. A function that writes a
+//! parameter cannot keep one (parameters are copies in a frame), and is a
+//! compile-time error naming it.
 
 #[cfg(feature = "llvm")]
 fn compile(name: &str, source: &str) -> (siox::compiler::Compilation, std::path::PathBuf) {
@@ -108,45 +109,61 @@ fn recursion_with_loops_locals_effects_and_await_runs_in_frames() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn recursion_that_cannot_keep_a_frame_is_a_compile_error() {
-    for (name, source, function) in [
-        (
-            // A written parameter would have to reach the caller's place.
-            "writes",
-            "module r;\n\
-             fn bump(n: integer) -> integer {\n\
-                 if n <= 0 { return 0; }\n\
-                 n = n - 1;\n\
-                 for i in 0..1 { n = n + 0; }\n\
-                 return 1 + bump(n);\n\
-             }\n\
-             #[test] entity T {}\n\
-             impl T { check: process { let k: integer = 3; await 1ns; print!(\"{}\", bump(k)); } }\n",
-            "bump",
-        ),
-        (
-            // An `unsigned` local carries an X/Z plane a frame does not save.
-            "planes",
-            "module r;\nuse std::bits::unsigned;\n\
-             fn ones(n: integer) -> integer {\n\
-                 if n <= 0 { return 0; }\n\
-                 let v: unsigned[8] = 3;\n\
-                 for i in 0..1 { v = v + 1; }\n\
-                 return integer(v) + ones(n - 1);\n\
-             }\n\
-             #[test] entity T {}\n\
-             impl T { check: process { let k: integer = 2; await 1ns; print!(\"{}\", ones(k)); } }\n",
-            "ones",
-        ),
-    ] {
-        let (compilation, _) = compile(name, source);
-        let rendered = compilation.render_diagnostics();
-        assert!(!compilation.succeeded(), "{name}: {rendered}");
-        assert!(
-            rendered.contains("E-P038") && rendered.contains(&format!("`{function}` calls itself")),
-            "{name}: {rendered}"
-        );
-    }
+fn recursion_that_writes_a_parameter_is_a_compile_error() {
+    // A written parameter would have to reach the caller's place, and a
+    // frame's parameters are copies.
+    let (compilation, _) = compile(
+        "writes",
+        "module r;\n\
+         fn bump(n: integer) -> integer {\n\
+             if n <= 0 { return 0; }\n\
+             n = n - 1;\n\
+             for i in 0..1 { n = n + 0; }\n\
+             return 1 + bump(n);\n\
+         }\n\
+         #[test] entity T {}\n\
+         impl T { check: process { let k: integer = 3; await 1ns; print!(\"{}\", bump(k)); } }\n",
+    );
+    let rendered = compilation.render_diagnostics();
+    assert!(!compilation.succeeded(), "{rendered}");
+    assert!(
+        rendered.contains("E-P038") && rendered.contains("`bump` calls itself"),
+        "{rendered}"
+    );
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn frames_save_x_z_planes() {
+    let (compilation, binary) = compile(
+        "planes",
+        "module r;\nuse std::bits::unsigned;\n\
+         fn ones(n: integer) -> integer {\n\
+             if n <= 0 { return 0; }\n\
+             let v: unsigned[8] = 3;\n\
+             for i in 0..1 { v = v + 1; }\n\
+             return integer(v) + ones(n - 1);\n\
+         }\n\
+         fn keepx(n: integer) -> Logic {\n\
+             let l: Logic = if n == 2 { 'X' } else { 'Z' };\n\
+             if n == 0 { return '1'; }\n\
+             for i in 0..0 { l = l; }\n\
+             let below: Logic = keepx(n - 1);\n\
+             return l;\n\
+         }\n\
+         #[test] entity T {}\n\
+         impl T { check: process { let k: integer = 2; await 1ns; print!(\"|ones={} keepx={}\", ones(k), keepx(k)); } }\n",
+    );
+    assert!(
+        compilation.succeeded(),
+        "{} {:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    let output = std::process::Command::new(&binary).output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The outer activation's `'X'` survives inner ones holding `'Z'`.
+    assert!(stdout.contains("|ones=10 keepx='X'"), "{stdout}");
 }
 
 #[cfg(feature = "llvm")]

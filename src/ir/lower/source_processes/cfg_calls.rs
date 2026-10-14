@@ -954,40 +954,30 @@ fn recursive_frame_call(
     for local in saved.iter().rev() {
         let target = local_value(*local, process, context);
         let node = context.process_ir.values[target.0 as usize].clone();
-        let popped = push_value(
+        // Value and X/Z plane go straight back into the local's state.
+        let restored = push_value(
             span,
             node.ty.clone(),
             node.bit_width,
             ProcessValueKind::HostCall {
-                operation: ProcessHostValueOp::FramePop,
-                arguments: Vec::new(),
+                operation: ProcessHostValueOp::FrameRestore,
+                arguments: vec![target],
             },
             context,
         );
-        context.process_ir.value_layouts[popped.0 as usize] =
-            context.process_ir.value_layouts[target.0 as usize].clone();
-        assign_result(target, popped, process, continuation, context);
+        frame_copy(restored, process, context, continuation);
     }
     *block = continuation;
     Some(result)
 }
 
-/// Whether a local can be saved as its value bits alone: a kernel number,
-/// character, bit vector or enum other than `Logic`, with no X/Z plane.
+/// Whether a local can be saved: it has a packed width (its X/Z plane, if
+/// any, is saved alongside), or is a kernel local known by its type.
 fn frame_saveable(local: &ProcessLocal) -> bool {
-    if local.layout.is_none() {
+    match local.layout.as_ref() {
+        Some(layout) => layout.packed_width().is_some_and(|width| width > 0),
         // A loop cursor or other kernel local declared by its type alone.
-        return frame_kernel_width(local).is_some();
-    }
-    match local.layout.as_ref().map(|layout| &layout.kind) {
-        Some(LayoutKind::Scalar { domain, width, .. }) => {
-            *width > 0
-                && match domain {
-                    crate::ir::ScalarDomain::Enum(name) => !name.ends_with("Logic"),
-                    _ => true,
-                }
-        }
-        _ => false,
+        None => frame_kernel_width(local).is_some(),
     }
 }
 

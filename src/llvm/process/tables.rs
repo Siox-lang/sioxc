@@ -705,3 +705,11 @@ pub(super) fn emit_frame_pop<'ctx>(
     }
     Some(result)
 }
+
+/// The bit width of an integer state global, when it exists.
+pub(super) fn state_global_width(module: &Module<'_>, name: &str) -> Option<u32> {
+    match module.get_global(name)?.get_value_type() {
+        inkwell::types::AnyTypeEnum::IntType(ty) => Some(ty.get_bit_width()),
+        _ => None,
+    }
+}
