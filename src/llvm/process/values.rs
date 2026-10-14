@@ -1335,6 +1335,39 @@ pub(super) fn process_value<'ctx>(
                     emit_host_read_check(context, module, builder, value.span)?;
                     return fit(builder, restored, width);
                 }
+                ProcessHostValueOp::ArrayStore => {
+                    let [handle, index, stored] = arguments.as_slice() else {
+                        return None;
+                    };
+                    let handle = scalar_argument(*handle, cache)?.into_int_value();
+                    let index = scalar_argument(*index, cache)?.into_int_value();
+                    let stored_width = design.process_ir.values.get(stored.0 as usize)?.bit_width?;
+                    let bits = process_value_at(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        *stored,
+                        stored_width,
+                        false,
+                        active,
+                        index_sites,
+                        cache,
+                    )?;
+                    emit_array_store(context, module, builder, handle, index, bits)?;
+                    emit_host_read_check(context, module, builder, value.span)?;
+                    return fit(builder, context.i64_type().const_zero(), width);
+                }
+                ProcessHostValueOp::ArrayCopy => {
+                    let [handle] = arguments.as_slice() else {
+                        return None;
+                    };
+                    (
+                        "sx_runtime_array_copy",
+                        i64.fn_type(&[i64.into()], false),
+                        vec![scalar_argument(*handle, cache)?],
+                    )
+                }
                 ProcessHostValueOp::FramePop => {
                     let restored = emit_frame_pop(context, module, builder, width)?;
                     emit_host_read_check(context, module, builder, value.span)?;
@@ -1418,7 +1451,9 @@ pub(super) fn process_value<'ctx>(
             };
             if matches!(
                 operation,
-                ProcessHostValueOp::ReadUtf8 | ProcessHostValueOp::ReadArray
+                ProcessHostValueOp::ReadUtf8
+                    | ProcessHostValueOp::ReadArray
+                    | ProcessHostValueOp::ArrayCopy
             ) {
                 emit_host_read_check(context, module, builder, value.span)?;
             }

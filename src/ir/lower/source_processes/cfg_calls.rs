@@ -1075,8 +1075,9 @@ fn local_value(
     value
 }
 
-/// A fresh local initialized with `value`: a parameter's own copy.
-fn frame_copy(
+/// A fresh local initialized with `value`: a parameter's own copy, or an
+/// effect's place to be evaluated.
+pub(super) fn frame_copy(
     value: ProcessValueId,
     process: &mut ProcessCfg,
     context: &mut LoweringContext<'_>,
