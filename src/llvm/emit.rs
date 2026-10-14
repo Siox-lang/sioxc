@@ -1410,6 +1410,31 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .add_function("sx_process_commit", byte.fn_type(&[], false), None);
         self.builder
             .position_at_end(self.ctx.append_basic_block(commit, "entry"));
+        // `old` is the state immediately before this commit, for every
+        // signal; nothing changed until a staged write says so. Copying and
+        // clearing whole planes once replaces per-signal stores, which made
+        // the commit about half of a simulation's run time.
+        for (to, from) in [
+            ("old", Some("cur")),
+            ("event", None),
+            ("sx.process.changed", None),
+        ] {
+            let to = self.module.get_global(to).expect("state plane");
+            let size = to.get_value_type().size_of().expect("sized state plane");
+            match from {
+                Some(from) => {
+                    let from = self.module.get_global(from).expect("state plane");
+                    self.builder
+                        .build_memcpy(to.as_pointer_value(), 1, from.as_pointer_value(), 1, size)
+                        .unwrap();
+                }
+                None => {
+                    self.builder
+                        .build_memset(to.as_pointer_value(), 1, byte.const_zero(), size)
+                        .unwrap();
+                }
+            }
+        }
         let mut any_changed = self.ctx.bool_type().const_zero();
         for signal in 0..self.n {
             let id = SignalId(signal);
@@ -1428,13 +1453,17 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     "process.has_write",
                 )
                 .unwrap();
+            // Only a staged write has anything to commit.
+            let skipped = self.builder.get_insert_block().unwrap();
+            let write = self.ctx.append_basic_block(commit, "process.write");
+            let done = self.ctx.append_basic_block(commit, "process.next.signal");
+            self.builder
+                .build_conditional_branch(valid, write, done)
+                .unwrap();
+            self.builder.position_at_end(write);
+            let valid = self.ctx.bool_type().const_all_ones();
             let previous = self.load("cur", id);
-            let pending = self.load("pending", id);
-            let next = self
-                .builder
-                .build_select(valid, pending, previous, "process.next")
-                .unwrap()
-                .into_int_value();
+            let next = self.load("pending", id);
             let changed = self
                 .builder
                 .build_int_compare(IntPredicate::NE, previous, next, "process.changed")
@@ -1564,9 +1593,7 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     .unwrap();
             }
 
-            // `old` is the state immediately before this commit. Event is one
-            // bit regardless of the signal's packed width.
-            self.store("old", id, previous);
+            // Event is one bit regardless of the signal's packed width.
             self.store("cur", id, next);
             self.store("event", id, self.zext(changed));
             self.builder
@@ -1580,9 +1607,24 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             self.builder
                 .build_store(valid_ptr, byte.const_zero())
                 .unwrap();
+            let written = self.builder.get_insert_block().unwrap();
+            self.builder.build_unconditional_branch(done).unwrap();
+            self.builder.position_at_end(done);
+            let phi = self
+                .builder
+                .build_phi(self.ctx.bool_type(), "process.changed.any")
+                .unwrap();
+            phi.add_incoming(&[
+                (&changed, written),
+                (&self.ctx.bool_type().const_zero(), skipped),
+            ]);
             any_changed = self
                 .builder
-                .build_or(any_changed, changed, "process.any_changed")
+                .build_or(
+                    any_changed,
+                    phi.as_basic_value().into_int_value(),
+                    "process.any_changed",
+                )
                 .unwrap();
         }
         let storage_changed = self
