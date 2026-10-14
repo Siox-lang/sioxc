@@ -806,7 +806,7 @@ pub(super) fn emit_schedule_call<'ctx>(
     let metadata_words = site.metadata_width.map_or(0, super::super::words_for);
     let word_count = value_words.checked_add(metadata_words)?;
     let array = i64.array_type(word_count);
-    let words = builder.build_alloca(array, "process.schedule.words").ok()?;
+    let words = entry_words(context, builder, word_count, "process.schedule.words")?;
     for word in 0..word_count {
         let (captured, word_in_plane) = if word < value_words {
             (captured, word)

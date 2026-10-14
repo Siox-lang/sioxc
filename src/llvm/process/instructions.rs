@@ -31,7 +31,7 @@ pub(super) fn emit_format_integer<'ctx>(
     let pointer = context.ptr_type(AddressSpace::default());
     let word_count = super::super::words_for(width);
     let array = i64.array_type(word_count);
-    let words = builder.build_alloca(array, "process.format.words").ok()?;
+    let words = entry_words(context, builder, word_count, "process.format.words")?;
     for word in 0..word_count {
         let offset = word.checked_mul(super::super::ABI_WORD_BITS)?;
         let part = if offset == 0 {

@@ -1505,8 +1505,8 @@ typedef struct {
 static sx_frame_stack *sx_frame_stacks;
 static size_t sx_frame_stack_count;
 
-/* Saved words per process before recursion counts as runaway (1 GiB). */
-#define SX_FRAME_STACK_LIMIT ((size_t)1 << 27)
+/* Saved words per process before recursion counts as runaway (32 MiB). */
+#define SX_FRAME_STACK_LIMIT ((size_t)1 << 22)
 
 static void sx_clear_frames(void) {
     for (size_t index = 0; index < sx_frame_stack_count; ++index)

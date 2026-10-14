@@ -1623,9 +1623,9 @@ pub fn lower(
                 .at(call)
                 .label(function, "this function")
                 .help(
-                    "a recursive testbench function keeps one frame per call, with copies of its \
-                     parameters, so it cannot write a parameter back to the caller's place; \
-                     use a local copy, or write the recursion as a loop",
+                    "a recursive testbench function keeps one frame per call and copies a written \
+                     parameter back to its argument on return, which this version does for a \
+                     local argument only; pass a local, or write the recursion as a loop",
                 ),
             );
         }

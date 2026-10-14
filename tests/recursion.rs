@@ -2,9 +2,9 @@
 //! `if`/`return` and operators) calls its shared native copy. Any other is
 //! expanded once with a runtime frame stack: a recursive call saves the
 //! activation's locals, jumps back to the body, and restores them on return.
-//! A frame saves each local with its X/Z plane. A function that writes a
-//! parameter cannot keep one (parameters are copies in a frame), and is a
-//! compile-time error naming it.
+//! A frame saves each local with its X/Z plane and copies written parameters
+//! back to local arguments on return, as a plain call writes through them.
+//! Writing back to a signal or storage argument is a compile-time error.
 
 #[cfg(feature = "llvm")]
 fn compile(name: &str, source: &str) -> (siox::compiler::Compilation, std::path::PathBuf) {
@@ -109,10 +109,10 @@ fn recursion_with_loops_locals_effects_and_await_runs_in_frames() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn recursion_that_writes_a_parameter_is_a_compile_error() {
-    // A written parameter would have to reach the caller's place, and a
-    // frame's parameters are copies.
-    let (compilation, _) = compile(
+fn written_parameters_reach_their_arguments_through_recursion() {
+    // As in a plain call, a written parameter reaches the caller's local:
+    // a frame copies it back on return.
+    let (compilation, binary) = compile(
         "writes",
         "module r;\n\
          fn bump(n: integer) -> integer {\n\
@@ -121,8 +121,47 @@ fn recursion_that_writes_a_parameter_is_a_compile_error() {
              for i in 0..1 { n = n + 0; }\n\
              return 1 + bump(n);\n\
          }\n\
+         fn shuffle(a: integer, b: integer, depth: integer) -> integer {\n\
+             if depth == 0 { return a; }\n\
+             let t: integer = a;\n\
+             a = b;\n\
+             b = t + 1;\n\
+             return shuffle(a, b, depth - 1);\n\
+         }\n\
          #[test] entity T {}\n\
-         impl T { check: process { let k: integer = 3; await 1ns; print!(\"{}\", bump(k)); } }\n",
+         impl T { check: process {\n\
+             let k: integer = 3; let x: integer = 10; let y: integer = 20; await 1ns;\n\
+             let r: integer = bump(k);\n\
+             let s: integer = shuffle(x, y, 3);\n\
+             print!(\"|r={} k={} s={} x={} y={}\", r, k, s, x, y);\n\
+         } }\n",
+    );
+    assert!(
+        compilation.succeeded(),
+        "{} {:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    let output = std::process::Command::new(&binary).output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The values the same calls give when parameters alias the arguments.
+    assert!(stdout.contains("|r=3 k=0 s=21 x=21 y=12"), "{stdout}");
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn a_written_parameter_on_storage_is_a_compile_error() {
+    let (compilation, _) = compile(
+        "storage",
+        "module r;\n\
+         fn bump(n: integer) -> integer {\n\
+             if n <= 0 { return 0; }\n\
+             n = n - 1;\n\
+             for i in 0..1 { n = n + 0; }\n\
+             return 1 + bump(n);\n\
+         }\n\
+         #[test] entity T {}\n\
+         impl T { let counter: integer = 3; check: process { await 1ns; print!(\"{}\", bump(counter)); } }\n",
     );
     let rendered = compilation.render_diagnostics();
     assert!(!compilation.succeeded(), "{rendered}");

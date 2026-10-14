@@ -617,6 +617,9 @@ pub(super) struct FrameState {
     pub(super) result: ProcessValueId,
     pub(super) first_local: usize,
     pub(super) sites: Vec<ProcessBlockId>,
+    /// Which parameters the body writes: each call copies them back to its
+    /// argument when that is a local, as a plain call writes through.
+    pub(super) written: Vec<bool>,
 }
 
 /// Expand a call; a function found recursive is expanded again with a frame
@@ -764,11 +767,13 @@ fn inline_call_once(
     let framed = receiver.is_none() && context.frame_functions.contains(&function.span);
     let frame_first_local = process.locals.len();
     let mut frame_parameters = Vec::new();
+    let mut frame_arguments = Vec::new();
     let mut bindings = HashMap::new();
     for (parameter, argument) in parameters.iter().zip(arguments) {
         let definition = context.resolved.declared(parameter.name.as_ref()?.span)?;
         let argument = normalize_value(*argument, true, block, process, context, memo)?;
         let argument = if framed {
+            frame_arguments.push(argument);
             let copy = frame_copy(argument, process, context, *block);
             frame_parameters.push(copy);
             copy
@@ -846,15 +851,31 @@ fn inline_call_once(
             result,
             first_local: frame_first_local,
             sites: vec![resume],
+            written: Vec::new(),
         });
     }
     let first_body_block = entry.0 as usize;
     let tail = lower_statements(&body.stmts, context, process, entry);
     // Before normalization adds the recursive sites' own argument bindings.
-    let writes_parameter = framed
-        && context.frames.last().is_some_and(|frame| {
-            writes_local(&frame.parameters, first_body_block, process, context)
-        });
+    let mut writes_parameter = false;
+    if framed {
+        let parameters = context.frames.last()?.parameters.clone();
+        let written = parameters
+            .iter()
+            .map(|parameter| writes_local(&[*parameter], first_body_block, process, context))
+            .collect::<Vec<_>>();
+        // The first call writes back too, which only a local can take here;
+        // an expression argument has no place, as in a plain call.
+        writes_parameter = written
+            .iter()
+            .zip(&frame_arguments)
+            .any(|(written, argument)| {
+                *written
+                    && local_place(*argument, context).is_none()
+                    && process_place_assignment(*argument, context.process_ir).is_some()
+            });
+        context.frames.last_mut()?.written = written;
+    }
     finish_inline_call(scope, entry, first_local, process);
     let body_end = process.blocks.len();
     let mut supported = tail.is_none();
@@ -880,6 +901,19 @@ fn inline_call_once(
         // a copy cannot: such a function keeps no frame.
         supported &= !writes_parameter;
         frame_dispatch(dispatch, &frame.sites, node.span, process, context);
+        // The first call's written parameters reach its arguments on return.
+        for ((parameter, argument), written) in frame
+            .parameters
+            .iter()
+            .zip(&frame_arguments)
+            .zip(&frame.written)
+        {
+            if *written {
+                if let Some(target) = local_place(*argument, context) {
+                    assign_result(target, *parameter, process, resume, context);
+                }
+            }
+        }
     }
     context.inline_return_blocks.pop();
     context.inline_return_types.pop();
@@ -933,8 +967,10 @@ fn recursive_frame_call(
     }
     // Arguments read the caller's activation, so they are taken first.
     let mut values = Vec::with_capacity(arguments.len());
+    let mut places = Vec::with_capacity(arguments.len());
     for argument in arguments {
-        let value = normalize_value(*argument, false, block, process, context, memo)?;
+        let value = normalize_value(*argument, true, block, process, context, memo)?;
+        places.push(local_place(value, context));
         values.push(capture_process_operand(value, context, process, *block));
     }
     for local in &saved {
@@ -951,6 +987,16 @@ fn recursive_frame_call(
     process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(entry);
     let continuation = process.push_block();
     context.frames[frame].sites.push(continuation);
+    // The callee's written parameters, taken before the caller's activation
+    // comes back, then written to the caller's argument locals.
+    let written = context.frames[frame].written.clone();
+    let mut write_back = Vec::new();
+    for ((parameter, place), written) in parameters.iter().zip(&places).zip(&written) {
+        if let (true, Some(place)) = (*written, place) {
+            let taken = frame_copy(*parameter, process, context, continuation);
+            write_back.push((*place, taken));
+        }
+    }
     for local in saved.iter().rev() {
         let target = local_value(*local, process, context);
         let node = context.process_ir.values[target.0 as usize].clone();
@@ -967,8 +1013,21 @@ fn recursive_frame_call(
         );
         frame_copy(restored, process, context, continuation);
     }
+    for (place, taken) in write_back {
+        assign_result(place, taken, process, continuation, context);
+    }
     *block = continuation;
     Some(result)
+}
+
+/// `value` when it is a plain local: a place a written parameter can be
+/// copied back to.
+fn local_place(value: ProcessValueId, context: &LoweringContext<'_>) -> Option<ProcessValueId> {
+    matches!(
+        context.process_ir.values[value.0 as usize].kind,
+        ProcessValueKind::Local { .. }
+    )
+    .then_some(value)
 }
 
 /// Whether a local can be saved: it has a packed width (its X/Z plane, if

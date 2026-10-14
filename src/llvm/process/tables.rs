@@ -191,13 +191,7 @@ pub(super) fn emit_buffered_read_value<'ctx>(
     let i32 = context.i32_type();
     let i64 = context.i64_type();
     let word_count = super::super::words_for(width);
-    let buffer = builder
-        .build_array_alloca(
-            i64,
-            i32.const_int(u64::from(word_count), false),
-            "pv.buffered.words",
-        )
-        .ok()?;
+    let buffer = entry_words(context, builder, word_count, "pv.buffered.words")?;
     let runtime = module.get_function(runtime_name).unwrap_or_else(|| {
         module.add_function(
             runtime_name,
@@ -496,13 +490,7 @@ pub(super) fn emit_wide_handle_element<'ctx>(
     let i64 = context.i64_type();
     let pointer = context.ptr_type(AddressSpace::default());
     let word_count = super::super::words_for(width);
-    let buffer = builder
-        .build_array_alloca(
-            i64,
-            i32.const_int(u64::from(word_count), false),
-            "pv.element.words",
-        )
-        .ok()?;
+    let buffer = entry_words(context, builder, word_count, "pv.element.words")?;
     let runtime = module
         .get_function("sx_runtime_array_index_words")
         .unwrap_or_else(|| {
@@ -576,13 +564,7 @@ pub(super) fn emit_frame_words<'ctx>(
     let pointer = context.ptr_type(AddressSpace::default());
     let width = bits.get_type().get_bit_width();
     let word_count = super::super::words_for(width);
-    let buffer = builder
-        .build_array_alloca(
-            i64,
-            i32.const_int(u64::from(word_count), false),
-            "pv.frame.words",
-        )
-        .ok()?;
+    let buffer = entry_words(context, builder, word_count, "pv.frame.words")?;
     for word in 0..word_count {
         let offset = word.checked_mul(64)?;
         let part = if offset == 0 {
@@ -643,13 +625,7 @@ pub(super) fn emit_frame_pop<'ctx>(
     let i64 = context.i64_type();
     let pointer = context.ptr_type(AddressSpace::default());
     let word_count = super::super::words_for(width);
-    let buffer = builder
-        .build_array_alloca(
-            i64,
-            i32.const_int(u64::from(word_count), false),
-            "pv.frame.words",
-        )
-        .ok()?;
+    let buffer = entry_words(context, builder, word_count, "pv.frame.words")?;
     let runtime = module
         .get_function("sx_runtime_frame_pop")
         .unwrap_or_else(|| {
@@ -712,4 +688,25 @@ pub(super) fn state_global_width(module: &Module<'_>, name: &str) -> Option<u32>
         inkwell::types::AnyTypeEnum::IntType(ty) => Some(ty.get_bit_width()),
         _ => None,
     }
+}
+
+/// A word buffer in the function's entry block. An `alloca` where it is used
+/// would take new stack on every pass through a loop, and a frame recursion
+/// is a loop: it overflowed the native stack.
+pub(super) fn entry_words<'ctx>(
+    context: &'ctx Context,
+    builder: &Builder<'ctx>,
+    count: u32,
+    name: &str,
+) -> Option<PointerValue<'ctx>> {
+    let function = builder.get_insert_block()?.get_parent()?;
+    let entry = function.get_first_basic_block()?;
+    let at_entry = context.create_builder();
+    match entry.get_first_instruction() {
+        Some(first) => at_entry.position_before(&first),
+        None => at_entry.position_at_end(entry),
+    }
+    at_entry
+        .build_alloca(context.i64_type().array_type(count), name)
+        .ok()
 }
