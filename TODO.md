@@ -171,7 +171,9 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   discriminants, so X/Z values survive. Not expressible yet: a runtime
   array of runtime arrays. An index on an unconstrained array fills its hole
   (`string[5]` is `Char[5]`), so `integer[][]` is `integer[]`; nesting them
-  needs new syntax, a language decision. Fixed-array elements work.
+  needs new syntax, a language decision
+  ([proposal](docs/proposals/nested-runtime-arrays.md)). Fixed-array
+  elements work.
   Runtime-computed file paths are done: a testbench `read`/`exists` path may
   be any string (fixed `Char[N]` values are formatted, runtime strings pass
   their UTF-8), resolved against the source directory by
