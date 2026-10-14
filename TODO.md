@@ -184,14 +184,13 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   `hardware_local_values_test` compiled for 19 s because companion planes
   of a value both selection arms read were built once per arm, doubling at
   each block-local write; they are now built once (a reduced case went from
-  20.9 s to 2.6 s; eight chained writes overflowed the stack before). Still
-  open: a chain of writes to one local compiles in superlinear time (40
-  writes 16 s, down from 24 s once process blocks share dominating values
-  and guarded writes share pure values). Each companion temporary is built
-  over the companion graphs of several earlier writes rather than their
-  temporaries (read reconstruction resolves `local[j]` to the write that
-  last set element j), so the temporaries' drivers still grow with the
-  chain. Companion lowering also recurses once per write. The
+  20.9 s to 2.6 s; eight chained writes overflowed the stack before). A chain of
+  guarded writes to one local carried every earlier write's companion
+  selection inline (each companion temporary spanned the whole chain); a
+  guarded companion above 8192 nodes now binds to a temporary (40 writes
+  24 s → 10 s, 200 writes 280 s → 65 s). Lower limits are faster on chains
+  but bind large unchained companions too: at 2048,
+  `hardware_aggregate_writes_test` took 27 s against 16 s. Companion lowering also recurses once per write. The
   workload runs at about 1.1 µs a cycle (1.5 µs
   with `bitpack`). Indexed packed writes now use one update per
   value/companion plane rather than enumerating bits; retain structural and
