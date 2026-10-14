@@ -136,10 +136,16 @@ listed under LLVM and Output below.
 Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
-- 🔴 **Runtime recursion and non-packed conversions.** Extend the currently
+- 🟡 **Runtime recursion and non-packed conversions.** A pure recursive
+  testbench function (one value: `if`/`return` over operators and calls
+  without effects) runs through its shared native copy, each recursive call
+  evaluated only on its selected path; other recursion is E-P038. Recursion
+  needing a frame (loops, mutated locals, effects) and a depth guard
+  (deep recursion can exhaust the native stack) remain: proposal sioxc#83.
+  Extend the currently
   supported inline-call and packed-value contract only with explicit frame,
-  ownership, conversion and suspension semantics. Recursive runtime calls are
-  rejected today; unsupported forms must fail before argument/callee effects
+  ownership, conversion and suspension semantics. Other recursive runtime
+  calls are rejected at compile time; unsupported forms must fail before argument/callee effects
   or staged writes become observable. Keep the existing native transactional
   failure regressions when adding these capabilities. A testbench `From`
   body that is not one value expression (a loop, a statement `if`) now

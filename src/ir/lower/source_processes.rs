@@ -78,6 +78,10 @@ struct LoweringContext<'a> {
     /// Functions found calling themselves, with a call that does: reported
     /// once each when lowering ends.
     recursive_calls: &'a std::cell::RefCell<Vec<(String, crate::diag::Span, crate::diag::Span)>>,
+    /// Recursive calls of pure value functions: each is a call of the
+    /// function's shared copy, evaluated where its selection reaches it, so
+    /// CFG normalization leaves it alone.
+    self_calls: &'a std::cell::RefCell<std::collections::HashSet<ProcessValueId>>,
 }
 
 /// A shared value-function body per signature; `None` marks a signature whose
@@ -1155,6 +1159,7 @@ pub fn lower(
     let type_aliases = source_type_aliases(modules, resolved);
     let shared_functions = std::cell::RefCell::new(SharedFunctions::new());
     let recursive_calls = std::cell::RefCell::new(Vec::new());
+    let self_calls = std::cell::RefCell::new(std::collections::HashSet::new());
     let functions = process_functions(modules, resolved);
     let constant_integers = module_constant_integers(modules, &functions);
 
@@ -1267,6 +1272,7 @@ pub fn lower(
                 cfg_call_cache: Vec::new(),
                 shared_functions: &shared_functions,
                 recursive_calls: &recursive_calls,
+                self_calls: &self_calls,
             };
             let mut block = ProcessBlockId(0);
             for declaration in initializers {
@@ -1332,6 +1338,7 @@ pub fn lower(
                             cfg_call_cache: Vec::new(),
                             shared_functions: &shared_functions,
                             recursive_calls: &recursive_calls,
+                            self_calls: &self_calls,
                         };
                         lower_process(
                             id,
@@ -1390,6 +1397,7 @@ pub fn lower(
                             cfg_call_cache: Vec::new(),
                             shared_functions: &shared_functions,
                             recursive_calls: &recursive_calls,
+                            self_calls: &self_calls,
                         };
                         lower_process(
                             id,
@@ -1465,6 +1473,7 @@ pub fn lower(
                     cfg_call_cache: Vec::new(),
                     shared_functions: &shared_functions,
                     recursive_calls: &recursive_calls,
+                    self_calls: &self_calls,
                 };
                 lower_legacy_process(
                     id,
@@ -1559,6 +1568,7 @@ pub fn lower(
                 cfg_call_cache: Vec::new(),
                 shared_functions: &shared_functions,
                 recursive_calls: &recursive_calls,
+                self_calls: &self_calls,
             };
             lower_process(
                 id,
@@ -1592,14 +1602,15 @@ pub fn lower(
         if reported.insert(function) {
             sink.emit(
                 crate::diag::Diagnostic::error(format!(
-                    "`{name}` calls itself, directly or through other calls; a testbench call cannot recurse yet"
+                    "`{name}` calls itself, directly or through other calls, and its body needs a frame"
                 ))
                 .with_code(crate::diag::codes::RECURSIVE_CALL)
                 .at(call)
                 .label(function, "this function")
                 .help(
-                    "a call expands where it is made and has no frame of its own; \
-                     write the recursion as a loop",
+                    "a testbench function recurses when its body is one value: `if`/`return` \
+                     over operators and calls without effects; loops, mutated locals and \
+                     effects need a frame, so write the recursion as a loop",
                 ),
             );
         }
@@ -6998,11 +7009,19 @@ fn inline_process_function(
         context,
         return_type,
     )?;
-    let share = match function.inline {
-        ast::Inline::Always | ast::Inline::Hint => false,
-        ast::Inline::Never => true,
-        ast::Inline::Auto => context.process_ir.values.len() - first_value > SHARE_ABOVE_VALUES,
-    };
+    // A recursive call cannot be expanded: the expansion left it a call.
+    // Such a function is always shared, and its calls call the shared copy.
+    let mut recursive = self_calls(
+        function,
+        first_value..context.process_ir.values.len(),
+        context,
+    );
+    let share = !recursive.is_empty()
+        || match function.inline {
+            ast::Inline::Always | ast::Inline::Hint => false,
+            ast::Inline::Never => true,
+            ast::Inline::Auto => context.process_ir.values.len() - first_value > SHARE_ABOVE_VALUES,
+        };
     let operands = receiver
         .into_iter()
         .chain(arguments.iter().copied())
@@ -7014,6 +7033,7 @@ fn inline_process_function(
     {
         return Some(result);
     }
+    let body = context.process_ir.values.len();
     let Some(shared) = shared_process_function(
         function,
         &operands,
@@ -7024,6 +7044,11 @@ fn inline_process_function(
     ) else {
         return Some(result);
     };
+    recursive.extend(self_calls(
+        function,
+        body..context.process_ir.values.len(),
+        context,
+    ));
     let width = |value: ProcessValueId| context.process_ir.values[value.0 as usize].bit_width;
     let callee = &context.process_ir.functions[shared.0 as usize];
     if width(callee.result) == width(result) {
@@ -7032,8 +7057,46 @@ fn inline_process_function(
             function: shared,
             arguments: operands,
         });
+        for (value, arguments) in recursive {
+            context.process_ir.calls.push(crate::ir::ProcessCall {
+                value,
+                function: shared,
+                arguments,
+            });
+            context.self_calls.borrow_mut().insert(value);
+        }
     }
     Some(result)
+}
+
+/// The calls of `function` itself among the values in `range`: recursion,
+/// which expanding `function` left as calls. Free functions only.
+fn self_calls(
+    function: &ast::FnDecl,
+    range: std::ops::Range<usize>,
+    context: &LoweringContext<'_>,
+) -> Vec<(ProcessValueId, Vec<ProcessValueId>)> {
+    let Some(definition) = context.resolved.declared(function.name.span) else {
+        return Vec::new();
+    };
+    range
+        .filter_map(|index| match &context.process_ir.values[index].kind {
+            ProcessValueKind::Call {
+                callee,
+                type_arguments,
+                arguments,
+                bang: false,
+            } if type_arguments.is_empty()
+                && matches!(
+                    context.process_ir.values[callee.0 as usize].kind,
+                    ProcessValueKind::Definition(called) if called == definition
+                ) =>
+            {
+                Some((ProcessValueId(index as u32), arguments.clone()))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// The shared copy of `function` for these operands' types, built once per
@@ -7132,7 +7195,7 @@ fn shared_process_function(
         context,
         return_type,
     )
-    .filter(|result| standalone_body(first_value, *result, context));
+    .filter(|result| standalone_body(function, first_value, *result, context));
     let shared = match result {
         Some(result) => {
             context
@@ -7258,24 +7321,39 @@ fn process_binding_layout(
 /// Whether the values built from `first` on (one function body over its
 /// parameters, with any bodies it shares in turn) compute `result` from
 /// those values alone, without state, effects or run-time checks.
-fn standalone_body(first: usize, result: ProcessValueId, context: &LoweringContext<'_>) -> bool {
+fn standalone_body(
+    function: &ast::FnDecl,
+    first: usize,
+    result: ProcessValueId,
+    context: &LoweringContext<'_>,
+) -> bool {
+    // Its own recursive calls become calls of the shared copy being built.
+    let recursive = self_calls(function, first..context.process_ir.values.len(), context)
+        .into_iter()
+        .map(|(value, _)| value.0 as usize)
+        .collect::<std::collections::HashSet<_>>();
     (result.0 as usize) >= first
-        && context.process_ir.values[first..].iter().all(|value| {
-            !matches!(
-                value.kind,
-                ProcessValueKind::Signal { .. }
-                    | ProcessValueKind::Storage(_)
-                    | ProcessValueKind::StorageState { .. }
-                    | ProcessValueKind::Local { .. }
-                    | ProcessValueKind::ForeignCall { .. }
-                    | ProcessValueKind::HostCall { .. }
-                    | ProcessValueKind::Call { .. }
-                    | ProcessValueKind::CheckedIndex { .. }
-                    | ProcessValueKind::Invalid
-            ) && !crate::ir::process::any_process_value_dependency(&value.kind, |dependency| {
-                (dependency.0 as usize) < first
+        && context.process_ir.values[first..]
+            .iter()
+            .enumerate()
+            .all(|(offset, value)| {
+                recursive.contains(&(first + offset))
+                    || !matches!(
+                        value.kind,
+                        ProcessValueKind::Signal { .. }
+                            | ProcessValueKind::Storage(_)
+                            | ProcessValueKind::StorageState { .. }
+                            | ProcessValueKind::Local { .. }
+                            | ProcessValueKind::ForeignCall { .. }
+                            | ProcessValueKind::HostCall { .. }
+                            | ProcessValueKind::Call { .. }
+                            | ProcessValueKind::CheckedIndex { .. }
+                            | ProcessValueKind::Invalid
+                    ) && !crate::ir::process::any_process_value_dependency(
+                        &value.kind,
+                        |dependency| (dependency.0 as usize) < first,
+                    )
             })
-        })
 }
 
 /// Expand one already-selected Siox function over already-lowered operands.
@@ -10238,6 +10316,7 @@ mod tests {
             cfg_call_cache: vec![],
             shared_functions: &std::cell::RefCell::new(SharedFunctions::new()),
             recursive_calls: &std::cell::RefCell::new(Vec::new()),
+            self_calls: &std::cell::RefCell::new(std::collections::HashSet::new()),
         };
 
         let result = inherit_receiver_layout(ProcessValueId(1), ProcessValueId(0), &mut context);

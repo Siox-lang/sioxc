@@ -825,11 +825,9 @@ pub(super) fn activity_sensitive_process_values(design: &Design) -> Vec<bool> {
             ProcessValueKind::Match { scrutinee, arms } => {
                 has(&checked, *scrutinee) || arms.iter().any(|arm| has(&checked, arm.value))
             }
-            ProcessValueKind::Call {
-                callee, arguments, ..
-            } => std::iter::once(*callee)
-                .chain(arguments.iter().copied())
-                .any(|value| has(&checked, value)),
+            // A call runs only where its selection reaches it: a recursive
+            // call evaluated on an unselected path would never end.
+            ProcessValueKind::Call { .. } => true,
             ProcessValueKind::Construct { fields, spread, .. } => fields
                 .iter()
                 .filter_map(|field| field.value)

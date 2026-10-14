@@ -637,27 +637,12 @@ pub(super) fn process_value<'ctx>(
     let ty = context
         .custom_width_int_type(std::num::NonZeroU32::new(width)?)
         .ok()?;
-    // A large function body, expanded here, may call its shared copy.
-    if let Some(call) = design.process_ir.call_of(id) {
-        if let Some(result) = shared_call(
-            context,
-            module,
-            builder,
-            design,
-            call,
-            active,
-            index_sites,
-            cache,
-        ) {
-            cache.emitted.insert(cache_key, result);
-            debug::capture_value(builder, design, cache, id, result);
-            return Some(result);
-        }
-    }
     if let Some(active) = active.filter(|_| {
         matches!(
             value.kind,
-            ProcessValueKind::ForeignCall { .. } | ProcessValueKind::HostCall { .. }
+            ProcessValueKind::ForeignCall { .. }
+                | ProcessValueKind::HostCall { .. }
+                | ProcessValueKind::Call { .. }
         )
     }) {
         if let Some(value) = cache.evaluated_calls.get(&(id, Some(active))).copied() {
@@ -703,6 +688,25 @@ pub(super) fn process_value<'ctx>(
         cache.evaluated_calls.insert((id, Some(active)), result);
         cache.emitted.insert(cache_key, result);
         return Some(result);
+    }
+    // A large function body, expanded here, may call its shared copy; a
+    // recursive call is that call itself. Under a selection's activity it
+    // ran inside the guarded branch above.
+    if let Some(call) = design.process_ir.call_of(id) {
+        if let Some(result) = shared_call(
+            context,
+            module,
+            builder,
+            design,
+            call,
+            active,
+            index_sites,
+            cache,
+        ) {
+            cache.emitted.insert(cache_key, result);
+            debug::capture_value(builder, design, cache, id, result);
+            return Some(result);
+        }
     }
     if cache.hardware_calls
         && cache.evaluating_hardware_call != Some(id)

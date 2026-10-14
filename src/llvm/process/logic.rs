@@ -148,8 +148,10 @@ pub(super) fn meta_free_process_values(design: &Design) -> Vec<bool> {
             | ProcessValueKind::Definition(_)
             | ProcessValueKind::Intrinsic(_)
             | ProcessValueKind::Range { .. }
-            | ProcessValueKind::Call { .. }
             | ProcessValueKind::Invalid => false,
+            // A recursive call of a shared value function over binary
+            // arguments; the shared body's own result is checked at the call.
+            ProcessValueKind::Call { arguments, .. } => arguments.iter().all(|value| free(*value)),
         };
         facts.push(meta_free);
     }

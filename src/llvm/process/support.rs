@@ -895,8 +895,15 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
             | ProcessValueKind::Definition(_)
             | ProcessValueKind::Intrinsic(_)
             | ProcessValueKind::Range { .. }
-            | ProcessValueKind::Call { .. }
             | ProcessValueKind::Invalid => false,
+            // A recursive call of a shared value function: a native call.
+            ProcessValueKind::Call { arguments, .. } => {
+                design
+                    .process_ir
+                    .call_of(siox::ir::ProcessValueId(index as u32))
+                    .is_some()
+                    && arguments.iter().all(|argument| has(&supported, *argument))
+            }
         };
         supported.values.push(packed_width && shape);
     }

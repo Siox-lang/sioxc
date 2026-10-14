@@ -475,9 +475,9 @@ pub mod codes {
     /// implementation) that is not a shape fact: its value reads something
     /// other than `self`'s attributes and constants, or its name is taken.
     pub const INVALID_TYPE_ATTR: &str = "E-P037";
-    /// A testbench function that calls itself, directly or through others.
-    /// Calls expand at their call sites and have no frame, so the expansion
-    /// cannot end; this replaced a run-time "lowering is incomplete" failure.
+    /// A testbench function that calls itself, directly or through others,
+    /// with a body that needs a frame (a loop, a mutated local, an effect).
+    /// A body that is one value recurses through its shared native copy.
     pub const RECURSIVE_CALL: &str = "E-P038";
 
     // Warnings
