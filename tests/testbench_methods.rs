@@ -333,7 +333,7 @@ fn delayed_dynamic_composites_keep_scalar_masks_and_packed_metadata() {
 
 #[cfg(feature = "llvm")]
 #[test]
-fn recursive_value_call_is_rejected_before_any_effect() {
+fn unending_recursion_runs_out_of_frames() {
     use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
     let source = r#"module recursive_value;
         extern "C" { fn putchar(value: integer) -> integer; }
@@ -357,15 +357,23 @@ fn recursive_value_call_is_rejected_before_any_effect() {
         )
         .with_output(&binary),
     );
-    // A recursive call is a compile-time error (E-P038): no executable is
-    // built, so neither the argument's nor the callee's effect can run.
-    let rendered = compilation.render_diagnostics();
-    assert!(!compilation.succeeded(), "{rendered}");
+    // The recursion never ends (`key` stays 64), so its frames run out:
+    // the test fails with a message, after the effects of the calls made.
     assert!(
-        rendered.contains("E-P038") && rendered.contains("`recurse` calls itself"),
-        "{rendered}"
+        compilation.succeeded(),
+        "{}\n{:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
     );
-    assert!(!binary.exists(), "no executable for a rejected program");
+    let output = Command::new(&binary).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("recursion in a testbench function is too deep"),
+        "{}",
+        stdout.chars().take(400).collect::<String>()
+    );
+    let _ = std::fs::remove_file(binary);
 }
 
 #[cfg(feature = "llvm")]

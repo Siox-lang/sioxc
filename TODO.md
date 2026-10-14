@@ -140,10 +140,11 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   runs: a pure function (one value) calls its shared native copy, guarded
   against exhausting the native stack; any other is expanded once with a
   per-process runtime frame stack (locals saved per call, `await` allowed),
-  limited to 1 GiB of saved words. Frames save locals with their X/Z
-  planes. Still E-P038: a recursive function that writes a parameter
-  (parameters are copies in a frame, so write-back is an open language
-  question, sioxc#83). Extend the currently
+  limited to 32 MiB of saved words. Frames save locals with their X/Z
+  planes and copy written parameters back to local arguments on return, as a
+  plain call writes through them (copy-in/copy-out; the same variable passed
+  twice is where this differs from aliasing). Still E-P038: a recursive
+  function writing a parameter whose argument is a signal or storage. Extend the currently
   supported inline-call and packed-value contract only with explicit frame,
   ownership, conversion and suspension semantics. Other recursive runtime
   calls are rejected at compile time; unsupported forms must fail before argument/callee effects
