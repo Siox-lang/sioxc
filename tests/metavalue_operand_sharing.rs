@@ -148,3 +148,51 @@ fn resolved_multi_driver_contributions_are_hoisted_not_duplicated() {
          a resolved driver contribution is being copied per element again"
     );
 }
+
+/// `terms` additions of one 16-element input that can carry a metavalue
+/// (its parent drives it from one), in one driver: `y = (a + 1) + (a + 2) + ...`.
+fn lower_repeated(terms: usize) -> Design {
+    let sum = (1..=terms)
+        .map(|term| format!("(a + {term})"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let source = format!(
+        "module m;\n\
+         use std::bits::unsigned;\n\
+         entity E {{ a: unsigned[16] in, y: unsigned[16] out, }}\n\
+         impl E {{ y = {sum}; }}\n\
+         entity Top {{ y: unsigned[16] out, }}\n\
+         impl Top {{\n\
+         let src: unsigned[16] = \"00000000X1000000\";\n\
+         let e: E = {{ .a = src, .y = y }};\n\
+         }}\n"
+    );
+    let compilation =
+        Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(CompileRequest::new(
+            SourceInput::memory("/virtual/repeated.siox", &source),
+            Emit::Ir,
+        ));
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    compilation.design.expect("digital IR")
+}
+
+/// An arithmetic result is all-unknown when an operand has an unknown
+/// element, tested element by element. One driver builds that test once per
+/// operand read: each further `a + n` added a copy of `a`'s 16-element test,
+/// which made procedure-heavy designs compile for seconds longer. Asserted
+/// as growth per term (789 nodes with the copy, 531 without: the rest is the
+/// addition and its own result plane), not a golden size.
+#[test]
+fn an_operand_unknown_test_is_built_once_per_driver() {
+    let (few, many) = (nodes(&lower_repeated(2)), nodes(&lower_repeated(8)));
+    let per_term = (many - few) / 6;
+    assert!(
+        per_term < 650,
+        "each further use of the operand added {per_term} arena nodes ({few} -> {many}): \
+         its element-wise unknown test is being rebuilt per operation"
+    );
+}
