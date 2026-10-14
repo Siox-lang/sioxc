@@ -186,7 +186,9 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` operations, constants/conversions, ABI rules, formatting,
   and a software fallback before exposing a language feature.
-- 🔴 **Unnecessary-copy reduction (deferred; not a Phase 1 blocker).** Audit
+- 🟡 **Unnecessary-copy reduction (not a Phase 1 blocker).** Started: the
+  process commit no longer copies each signal field by field (see
+  Optimization measurements). Audit
   generated IR, LLVM and native code for redundant copies/materializations,
   separately from compiler-internal cloning. Measure copy counts and bytes on
   representative aggregate/multiword designs before changing anything; prefer
@@ -220,8 +222,11 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   element-wise unknown test (arithmetic, comparisons) is now built once per
   driver/signal rather than per operation: `hardware_procedure_places_test`
   7.4 → 4.7 s and 143 → 78 MB, `hardware_aggregate_writes_test` 7.5 → 6.1 s. The
-  workload runs at about 1.1 µs a cycle (1.5 µs
-  with `bitpack`). Indexed packed writes now use one update per
+  workload runs at about 0.75 µs a cycle, with or without `bitpack`
+  (1.1 / 1.5 µs before the process commit copied `old` and cleared the
+  event and changed planes in bulk and committed written signals only:
+  it had stored five fields of every signal per delta, about 44% of run
+  time). Indexed packed writes now use one update per
   value/companion plane rather than enumerating bits; retain structural and
   native range/X/Z regressions plus measured LLVM instruction/memory evidence
   when extending canonical value sharing. Persisted packed reads now use a
