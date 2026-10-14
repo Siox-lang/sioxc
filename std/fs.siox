@@ -13,8 +13,9 @@ module std::fs;
 //                          runtime-sized array of T (`integer` or a packed
 //                          numeric of any width): ceil(T'length / 8) bytes
 //                          per element, a trailing partial element is an
-//                          error. 'length, checked indexing, `for` and `T[]`
-//                          parameters work; the elements are read-only.
+//                          error. 'length, checked indexing, `for`, `T[]`
+//                          parameters, element writes and `xs.push(v)` work;
+//                          assigning the array copies it.
 //   read<T>(path)          reads those integers and constructs T from each one,
 //                          e.g. `let rom: unsigned[16][256] =
 //                          read<unsigned[16]>("rom.bin");`. Each value consumes

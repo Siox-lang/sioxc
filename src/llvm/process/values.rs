@@ -1358,6 +1358,28 @@ pub(super) fn process_value<'ctx>(
                     emit_host_read_check(context, module, builder, value.span)?;
                     return fit(builder, context.i64_type().const_zero(), width);
                 }
+                ProcessHostValueOp::ArrayPush => {
+                    let [handle, pushed] = arguments.as_slice() else {
+                        return None;
+                    };
+                    let handle = scalar_argument(*handle, cache)?.into_int_value();
+                    let pushed_width = design.process_ir.values.get(pushed.0 as usize)?.bit_width?;
+                    let bits = process_value_at(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        *pushed,
+                        pushed_width,
+                        false,
+                        active,
+                        index_sites,
+                        cache,
+                    )?;
+                    let appended = emit_array_push(context, module, builder, handle, bits)?;
+                    emit_host_read_check(context, module, builder, value.span)?;
+                    return fit(builder, appended, width);
+                }
                 ProcessHostValueOp::ArrayCopy => {
                     let [handle] = arguments.as_slice() else {
                         return None;

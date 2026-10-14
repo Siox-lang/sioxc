@@ -519,6 +519,35 @@ fn runtime_sized_arrays_read_index_iterate_and_check_bounds() {
         report.contains("index 5 is outside declared range 0..4"),
         "{report}"
     );
+
+    // `push` grows a runtime array, as a Rust `Vec`: an unset or `[]` one is
+    // empty, a parameter pushes onto the caller's, a copy grows on its own.
+    let report = compile(
+        "growable",
+        "let xs: integer[];\n\
+         print!(\"empty={}\\n\", xs'length);\n\
+         for i in 1..5 { xs.push(i * i); }\n\
+         let ys: integer[] = xs;\n\
+         ys.push(99);\n\
+         let ws: unsigned[16][] = [];\n\
+         ws.push(3);\n\
+         let rs: unsigned[16][] = read<unsigned[16][]>(\"words.bin\");\n\
+         rs.push(7);\n\
+         let big: integer[];\n\
+         for i in 0..99999 { big.push(i); }\n\
+         print!(\"xs={} {} ys={} {} ws={} {} rs={} {} big={} {}\\n\", xs'length, xs[4], \
+             ys'length, ys[5], ws'length, ws[0], rs'length, rs[5], big'length, big[99999]);\n\
+         print!(\"{}\\n\", xs[5]);",
+    );
+    assert!(report.contains("empty=0"), "{report}");
+    assert!(
+        report.contains("xs=5 25 ys=6 99 ws=1 3 rs=6 7 big=100000 99999"),
+        "{report}"
+    );
+    assert!(
+        report.contains("index 5 is outside declared range 0..4"),
+        "{report}"
+    );
     assert!(!report.contains("unreachable"), "{report}");
 }
 

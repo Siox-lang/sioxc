@@ -626,6 +626,46 @@ pub(super) fn emit_frame_words<'ctx>(
     Some(())
 }
 
+/// `xs.push(bits)` on a runtime array (`sx_runtime_array_push`): the
+/// array's handle afterwards.
+pub(super) fn emit_array_push<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    handle: IntValue<'ctx>,
+    bits: IntValue<'ctx>,
+) -> Option<IntValue<'ctx>> {
+    let i32 = context.i32_type();
+    let i64 = context.i64_type();
+    let pointer = context.ptr_type(AddressSpace::default());
+    let (buffer, word_count) = word_buffer(context, builder, bits)?;
+    let runtime = module
+        .get_function("sx_runtime_array_push")
+        .unwrap_or_else(|| {
+            module.add_function(
+                "sx_runtime_array_push",
+                i64.fn_type(&[i64.into(), pointer.into(), i32.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    match builder
+        .build_call(
+            runtime,
+            &[
+                fit(builder, handle, 64)?.into(),
+                buffer.into(),
+                i32.const_int(u64::from(word_count), false).into(),
+            ],
+            "pv.push",
+        )
+        .ok()?
+        .try_as_basic_value()
+    {
+        inkwell::values::ValueKind::Basic(value) => Some(value.into_int_value()),
+        _ => None,
+    }
+}
+
 /// `xs[index] = bits` on a runtime array (`sx_runtime_array_store`).
 pub(super) fn emit_array_store<'ctx>(
     context: &'ctx Context,
