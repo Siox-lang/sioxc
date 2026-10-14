@@ -2,6 +2,13 @@
 
 use super::*;
 
+/// A guarded companion graph larger than this binds to a temporary. Lower
+/// limits bind many large but unchained companions (aggregate writes), whose
+/// extra temporaries cost more than they save: 2048 compiled
+/// `hardware_aggregate_writes_test` in 27 s against 16 s, 8192 in 16 s while a
+/// 200-write chain still compiles in 65 s against 280 s.
+const BIND_COMPANION_ABOVE: usize = 8192;
+
 impl<'a> Lowering<'a> {
     /// Elaborate the std-owned `LogicEncoding` behaviour and ordinary logic
     /// operator implementations into data. VHDL's `std_logic_1164` keeps its
@@ -399,10 +406,12 @@ impl<'a> Lowering<'a> {
                     return result;
                 }
                 let merge = self.source_values.borrow().merge_meta.get(value).cloned();
+                let mut guarded = false;
                 let meta = match merge {
                     Some(merge) => Some(self.merged_meta(&merge, width, temps)),
                     None => {
                         let node = self.source_node(*value);
+                        guarded = matches!(node, Expr::Select { .. });
                         self.lower_meta_ir(&node, width, temps)
                     }
                 };
@@ -410,6 +419,19 @@ impl<'a> Lowering<'a> {
                     match self.bind_source_value(Val::Scalar(expression), temps.anchor, None) {
                         Val::Scalar(expression) => expression,
                         Val::Fields(_) => unreachable!(),
+                    }
+                });
+                // A guarded write's companion selects between the new value's
+                // and the previous one's, so a chain of guarded writes to one
+                // local grows by a write's companion each time. Once it is
+                // large, bind it to a temporary: the next write reads one
+                // signal, where inline every write carried the whole chain
+                // back to the first and each temporary re-emitted it.
+                let meta = meta.map(|expression| {
+                    if guarded && self.companion_exceeds(&expression, BIND_COMPANION_ABOVE) {
+                        materialize(expression, width * 4, temps)
+                    } else {
+                        expression
                     }
                 });
                 temps.source_meta.insert(key, meta.clone());
@@ -684,6 +706,29 @@ impl<'a> Lowering<'a> {
             acc = arena.binary(BinOp::Or, &acc, &nibble, temps.anchor);
         }
         Some(acc)
+    }
+
+    /// Whether the arena graph under `expression` holds more than `limit`
+    /// nodes; the walk stops at the limit.
+    fn companion_exceeds(&self, expression: &Expr, limit: usize) -> bool {
+        let Expr::Canonical { value, .. } = expression else {
+            return false;
+        };
+        let arena = self.source_values.borrow();
+        let mut seen = std::collections::HashSet::new();
+        let mut pending = vec![*value];
+        while let Some(id) = pending.pop() {
+            if seen.insert(id) {
+                if seen.len() > limit {
+                    return true;
+                }
+                crate::ir::process::for_each_process_value_dependency(
+                    &arena.ir.values[id.0 as usize].kind,
+                    |dependency| pending.push(dependency),
+                );
+            }
+        }
+        false
     }
 
     /// The values with companions that both arms of a selection read.
