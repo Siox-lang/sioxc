@@ -604,7 +604,83 @@ fn assign_result(
         });
 }
 
+/// One recursive function expanded once for all its activations. Its
+/// locals are the current activation's; a recursive call saves them on the
+/// process's runtime frame stack with the number of its call site, binds the
+/// arguments and jumps to `entry`. A `return` jumps to the dispatch, which
+/// pops the site number and continues there, where the caller's locals are
+/// restored.
+pub(super) struct FrameState {
+    pub(super) function: crate::diag::Span,
+    pub(super) entry: ProcessBlockId,
+    pub(super) parameters: Vec<ProcessValueId>,
+    pub(super) result: ProcessValueId,
+    pub(super) first_local: usize,
+    pub(super) sites: Vec<ProcessBlockId>,
+}
+
+/// Expand a call; a function found recursive is expanded again with a frame
+/// stack. A failed attempt leaves nothing behind.
 fn inline_call(
+    call: ProcessValueId,
+    callee: ProcessValueId,
+    arguments: &[ProcessValueId],
+    block: &mut ProcessBlockId,
+    process: &mut ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    memo: &mut HashMap<ProcessValueId, ProcessValueId>,
+) -> Option<ProcessValueId> {
+    let start_block = *block;
+    let original = process.blocks[block.0 as usize].clone();
+    let (blocks, locals, inline_calls) = (
+        process.blocks.len(),
+        process.locals.len(),
+        process.inline_calls.len(),
+    );
+    let values = context.process_ir.values.len();
+    let recursions = context.recursive_calls.borrow().len();
+    let saved_memo = memo.clone();
+    if let Some(result) = inline_call_once(call, callee, arguments, block, process, context, memo) {
+        return Some(result);
+    }
+    let recursive = context.recursive_calls.borrow()[recursions..]
+        .iter()
+        .map(|(_, _, function)| *function)
+        .collect::<Vec<_>>();
+    let &function = recursive.first()?;
+    if context.frame_functions.contains(&function) {
+        return None;
+    }
+    // Roll back and expand once more, now with a frame stack for it.
+    let rollback = |process: &mut ProcessCfg, context: &mut LoweringContext<'_>| {
+        process.blocks.truncate(blocks);
+        process.locals.truncate(locals);
+        process.inline_calls.truncate(inline_calls);
+        process.blocks[start_block.0 as usize] = original.clone();
+        truncate_process_values(context, values);
+    };
+    rollback(process, context);
+    *block = start_block;
+    *memo = saved_memo.clone();
+    context.frame_functions.insert(function);
+    let framed = inline_call_once(call, callee, arguments, block, process, context, memo);
+    context.frame_functions.remove(&function);
+    match framed {
+        Some(result) => {
+            // The plain attempt's recursion is solved; drop its reports.
+            context.recursive_calls.borrow_mut().truncate(recursions);
+            Some(result)
+        }
+        None => {
+            rollback(process, context);
+            *block = start_block;
+            *memo = saved_memo;
+            None
+        }
+    }
+}
+
+fn inline_call_once(
     call: ProcessValueId,
     callee: ProcessValueId,
     arguments: &[ProcessValueId],
@@ -648,6 +724,17 @@ fn inline_call(
     let body = function.body.as_ref()?;
     function.ret.as_ref()?;
     if context.inline_functions.contains(&function.span) {
+        if let Some(frame) = context
+            .frames
+            .iter()
+            .rposition(|frame| frame.function == function.span)
+        {
+            if let Some(result) =
+                recursive_frame_call(frame, call, arguments, block, process, context, memo)
+            {
+                return Some(result);
+            }
+        }
         context.recursive_calls.borrow_mut().push((
             function.name.text.clone(),
             context.process_ir.values[call.0 as usize].span,
@@ -672,11 +759,22 @@ fn inline_call(
         }
         None => None,
     };
+    // With a frame stack each activation has its own parameters: copies,
+    // not aliases of the caller's places.
+    let framed = receiver.is_none() && context.frame_functions.contains(&function.span);
+    let frame_first_local = process.locals.len();
+    let mut frame_parameters = Vec::new();
     let mut bindings = HashMap::new();
     for (parameter, argument) in parameters.iter().zip(arguments) {
         let definition = context.resolved.declared(parameter.name.as_ref()?.span)?;
         let argument = normalize_value(*argument, true, block, process, context, memo)?;
-        let argument = capture_process_argument(argument, context, process, *block);
+        let argument = if framed {
+            let copy = frame_copy(argument, process, context, *block);
+            frame_parameters.push(copy);
+            copy
+        } else {
+            capture_process_argument(argument, context, process, *block)
+        };
         bindings.insert(definition, argument);
     }
     let mut node = context.process_ir.values[call.0 as usize].clone();
@@ -721,19 +819,42 @@ fn inline_call(
     }
     declare_result(result, process, *block, context);
     let resume = process.push_block();
+    let dispatch = framed.then(|| process.push_block());
     let previous_scope = context.inline_scope;
     let scope = begin_inline_call(function, node.span, receiver, &bindings, process, context);
     process.inline_calls[scope as usize].result = Some(result);
     let first_local = process.locals.len();
     let entry = process.push_block();
+    if framed {
+        // The first activation's return continues here, at site 0.
+        let site = frame_number(0, node.span, context);
+        frame_push(site, process, context, *block);
+    }
     process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(entry);
     context.inline_functions.insert(function.span);
     context.value_bindings.push(bindings);
     context.inline_self_values.push(receiver);
     context.inline_return_types.push(node.ty);
-    context.inline_return_blocks.push((resume, Some(result)));
+    context
+        .inline_return_blocks
+        .push((dispatch.unwrap_or(resume), Some(result)));
+    if framed {
+        context.frames.push(FrameState {
+            function: function.span,
+            entry,
+            parameters: frame_parameters,
+            result,
+            first_local: frame_first_local,
+            sites: vec![resume],
+        });
+    }
     let first_body_block = entry.0 as usize;
     let tail = lower_statements(&body.stmts, context, process, entry);
+    // Before normalization adds the recursive sites' own argument bindings.
+    let writes_parameter = framed
+        && context.frames.last().is_some_and(|frame| {
+            writes_local(&frame.parameters, first_body_block, process, context)
+        });
     finish_inline_call(scope, entry, first_local, process);
     let body_end = process.blocks.len();
     let mut supported = tail.is_none();
@@ -753,6 +874,13 @@ fn inline_call(
                 )
             });
     }
+    if let Some(dispatch) = dispatch {
+        let frame = context.frames.pop()?;
+        // Writing a parameter would need it to reach the caller's place, which
+        // a copy cannot: such a function keeps no frame.
+        supported &= !writes_parameter;
+        frame_dispatch(dispatch, &frame.sites, node.span, process, context);
+    }
     context.inline_return_blocks.pop();
     context.inline_return_types.pop();
     context.inline_self_values.pop();
@@ -764,4 +892,276 @@ fn inline_call(
     }
     *block = resume;
     Some(result)
+}
+
+/// A recursive call inside its own frame expansion: save the activation,
+/// record where to continue, bind the arguments and start the body again.
+fn recursive_frame_call(
+    frame: usize,
+    call: ProcessValueId,
+    arguments: &[ProcessValueId],
+    block: &mut ProcessBlockId,
+    process: &mut ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    memo: &mut HashMap<ProcessValueId, ProcessValueId>,
+) -> Option<ProcessValueId> {
+    let span = context.process_ir.values[call.0 as usize].span;
+    let parameters = context.frames[frame].parameters.clone();
+    if parameters.len() != arguments.len() {
+        return None;
+    }
+    let result = context.frames[frame].result;
+    let local_of = |value: ProcessValueId, context: &LoweringContext<'_>| match context
+        .process_ir
+        .values[value.0 as usize]
+        .kind
+    {
+        ProcessValueKind::Local { local, .. } => Some(local),
+        _ => None,
+    };
+    let result_local = local_of(result, context)?;
+    // The activation: every local of the frame so far but its return slot.
+    let saved = (context.frames[frame].first_local..process.locals.len())
+        .map(|index| ProcessLocalId(index as u32))
+        .filter(|local| *local != result_local)
+        .collect::<Vec<_>>();
+    if !saved
+        .iter()
+        .all(|local| frame_saveable(&process.locals[local.0 as usize]))
+    {
+        return None;
+    }
+    // Arguments read the caller's activation, so they are taken first.
+    let mut values = Vec::with_capacity(arguments.len());
+    for argument in arguments {
+        let value = normalize_value(*argument, false, block, process, context, memo)?;
+        values.push(capture_process_operand(value, context, process, *block));
+    }
+    for local in &saved {
+        let value = local_value(*local, process, context);
+        frame_push(value, process, context, *block);
+    }
+    let site = context.frames[frame].sites.len() as u64;
+    let site = frame_number(site, span, context);
+    frame_push(site, process, context, *block);
+    for (parameter, value) in parameters.iter().zip(values) {
+        assign_result(*parameter, value, process, *block, context);
+    }
+    let entry = context.frames[frame].entry;
+    process.blocks[block.0 as usize].terminator = ProcessTerminator::Goto(entry);
+    let continuation = process.push_block();
+    context.frames[frame].sites.push(continuation);
+    for local in saved.iter().rev() {
+        let target = local_value(*local, process, context);
+        let node = context.process_ir.values[target.0 as usize].clone();
+        let popped = push_value(
+            span,
+            node.ty.clone(),
+            node.bit_width,
+            ProcessValueKind::HostCall {
+                operation: ProcessHostValueOp::FramePop,
+                arguments: Vec::new(),
+            },
+            context,
+        );
+        context.process_ir.value_layouts[popped.0 as usize] =
+            context.process_ir.value_layouts[target.0 as usize].clone();
+        assign_result(target, popped, process, continuation, context);
+    }
+    *block = continuation;
+    Some(result)
+}
+
+/// Whether a local can be saved as its value bits alone: a kernel number,
+/// character, bit vector or enum other than `Logic`, with no X/Z plane.
+fn frame_saveable(local: &ProcessLocal) -> bool {
+    if local.layout.is_none() {
+        // A loop cursor or other kernel local declared by its type alone.
+        return frame_kernel_width(local).is_some();
+    }
+    match local.layout.as_ref().map(|layout| &layout.kind) {
+        Some(LayoutKind::Scalar { domain, width, .. }) => {
+            *width > 0
+                && match domain {
+                    crate::ir::ScalarDomain::Enum(name) => !name.ends_with("Logic"),
+                    _ => true,
+                }
+        }
+        _ => false,
+    }
+}
+
+/// The width of a local known only by its kernel type.
+fn frame_kernel_width(local: &ProcessLocal) -> Option<u32> {
+    match local.ty.as_ref()? {
+        crate::types::Ty::Integer | crate::types::Ty::Real => Some(64),
+        crate::types::Ty::Char => Some(32),
+        _ => None,
+    }
+}
+
+/// A read of `local` as a value.
+fn local_value(
+    local: ProcessLocalId,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    let declared = &process.locals[local.0 as usize];
+    let layout = declared.layout.clone();
+    let width = layout
+        .as_ref()
+        .and_then(SourceLayout::packed_width)
+        .or_else(|| frame_kernel_width(declared));
+    let value = push_value(
+        declared.span,
+        declared.ty.clone(),
+        width,
+        ProcessValueKind::Local {
+            process: process.id,
+            local,
+        },
+        context,
+    );
+    context.process_ir.value_layouts[value.0 as usize] = layout;
+    value
+}
+
+/// A fresh local initialized with `value`: a parameter's own copy.
+fn frame_copy(
+    value: ProcessValueId,
+    process: &mut ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    block: ProcessBlockId,
+) -> ProcessValueId {
+    let node = context.process_ir.values[value.0 as usize].clone();
+    let copy = result_local(&node, value, process, context);
+    let ProcessValueKind::Local { local, .. } = context.process_ir.values[copy.0 as usize].kind
+    else {
+        unreachable!()
+    };
+    process.blocks[block.0 as usize]
+        .instructions
+        .push(ProcessInstruction::Declare {
+            local,
+            initializer: Some(value),
+            span: node.span,
+        });
+    copy
+}
+
+fn frame_number(
+    number: u64,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    push_value(
+        span,
+        Some(crate::types::Ty::Integer),
+        Some(64),
+        ProcessValueKind::Number(ProcessNumber::Integer(vec![number])),
+        context,
+    )
+}
+
+/// Save `value` on the frame stack, as an instruction in `block`.
+fn frame_push(
+    value: ProcessValueId,
+    process: &mut ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    block: ProcessBlockId,
+) {
+    let span = context.process_ir.values[value.0 as usize].span;
+    let pushed = push_value(
+        span,
+        Some(crate::types::Ty::Integer),
+        Some(64),
+        ProcessValueKind::HostCall {
+            operation: ProcessHostValueOp::FramePush,
+            arguments: vec![value],
+        },
+        context,
+    );
+    frame_copy(pushed, process, context, block);
+}
+
+/// Fill `dispatch`: pop the site number and continue at that site.
+fn frame_dispatch(
+    dispatch: ProcessBlockId,
+    sites: &[ProcessBlockId],
+    span: crate::diag::Span,
+    process: &mut ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) {
+    let popped = push_value(
+        span,
+        Some(crate::types::Ty::Integer),
+        Some(64),
+        ProcessValueKind::HostCall {
+            operation: ProcessHostValueOp::FramePop,
+            arguments: Vec::new(),
+        },
+        context,
+    );
+    let site = frame_copy(popped, process, context, dispatch);
+    let mut current = dispatch;
+    for (index, target) in sites.iter().enumerate() {
+        if index + 1 == sites.len() {
+            process.blocks[current.0 as usize].terminator = ProcessTerminator::Goto(*target);
+            break;
+        }
+        let number = frame_number(index as u64, span, context);
+        let condition = push_value(
+            span,
+            bool_type(context.resolved),
+            Some(1),
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Eq,
+                left: site,
+                right: number,
+            },
+            context,
+        );
+        let next = process.push_block();
+        process.blocks[current.0 as usize].terminator = ProcessTerminator::Branch {
+            condition,
+            then_block: *target,
+            else_block: next,
+        };
+        current = next;
+    }
+}
+
+/// Whether a block from `first` on assigns to one of `locals` (through a
+/// field, index or slice of it).
+fn writes_local(
+    locals: &[ProcessValueId],
+    first: usize,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> bool {
+    let root = |mut target: ProcessValueId| loop {
+        match &context.process_ir.values[target.0 as usize].kind {
+            ProcessValueKind::Local { local, .. } => return Some(*local),
+            ProcessValueKind::Field { base, .. }
+            | ProcessValueKind::Index { base, .. }
+            | ProcessValueKind::BitSlice { base, .. }
+            | ProcessValueKind::PackedSlice { base, .. } => target = *base,
+            _ => return None,
+        }
+    };
+    let written = locals
+        .iter()
+        .filter_map(|value| root(*value))
+        .collect::<Vec<_>>();
+    process.blocks[first..].iter().any(|block| {
+        block
+            .instructions
+            .iter()
+            .any(|instruction| match instruction {
+                ProcessInstruction::Assign { target, .. } => {
+                    root(*target).is_some_and(|local| written.contains(&local))
+                }
+                _ => false,
+            })
+    })
 }

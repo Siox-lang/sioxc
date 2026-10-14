@@ -1278,6 +1278,32 @@ pub(super) fn process_value<'ctx>(
                         ],
                     )
                 }
+                ProcessHostValueOp::FramePush => {
+                    let [saved] = arguments.as_slice() else {
+                        return None;
+                    };
+                    let saved_width = design.process_ir.values.get(saved.0 as usize)?.bit_width?;
+                    let bits = process_value_at(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        *saved,
+                        saved_width,
+                        false,
+                        active,
+                        index_sites,
+                        cache,
+                    )?;
+                    emit_frame_words(context, module, builder, bits)?;
+                    emit_host_read_check(context, module, builder, value.span)?;
+                    return fit(builder, context.i64_type().const_zero(), width);
+                }
+                ProcessHostValueOp::FramePop => {
+                    let restored = emit_frame_pop(context, module, builder, width)?;
+                    emit_host_read_check(context, module, builder, value.span)?;
+                    return Some(restored);
+                }
                 ProcessHostValueOp::StringLength => {
                     let [handle] = arguments.as_slice() else {
                         return None;

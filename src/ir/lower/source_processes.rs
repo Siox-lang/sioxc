@@ -82,6 +82,11 @@ struct LoweringContext<'a> {
     /// function's shared copy, evaluated where its selection reaches it, so
     /// CFG normalization leaves it alone.
     self_calls: &'a std::cell::RefCell<std::collections::HashSet<ProcessValueId>>,
+    /// Recursive functions being expanded with a frame stack, innermost last.
+    frames: Vec<cfg_calls::FrameState>,
+    /// Functions to expand with a frame stack: a plain expansion found them
+    /// recursive.
+    frame_functions: std::collections::HashSet<crate::diag::Span>,
 }
 
 /// A shared value-function body per signature; `None` marks a signature whose
@@ -1273,6 +1278,8 @@ pub fn lower(
                 shared_functions: &shared_functions,
                 recursive_calls: &recursive_calls,
                 self_calls: &self_calls,
+                frames: Vec::new(),
+                frame_functions: Default::default(),
             };
             let mut block = ProcessBlockId(0);
             for declaration in initializers {
@@ -1339,6 +1346,8 @@ pub fn lower(
                             shared_functions: &shared_functions,
                             recursive_calls: &recursive_calls,
                             self_calls: &self_calls,
+                            frames: Vec::new(),
+                            frame_functions: Default::default(),
                         };
                         lower_process(
                             id,
@@ -1398,6 +1407,8 @@ pub fn lower(
                             shared_functions: &shared_functions,
                             recursive_calls: &recursive_calls,
                             self_calls: &self_calls,
+                            frames: Vec::new(),
+                            frame_functions: Default::default(),
                         };
                         lower_process(
                             id,
@@ -1474,6 +1485,8 @@ pub fn lower(
                     shared_functions: &shared_functions,
                     recursive_calls: &recursive_calls,
                     self_calls: &self_calls,
+                    frames: Vec::new(),
+                    frame_functions: Default::default(),
                 };
                 lower_legacy_process(
                     id,
@@ -1569,6 +1582,8 @@ pub fn lower(
                 shared_functions: &shared_functions,
                 recursive_calls: &recursive_calls,
                 self_calls: &self_calls,
+                frames: Vec::new(),
+                frame_functions: Default::default(),
             };
             lower_process(
                 id,
@@ -1602,15 +1617,16 @@ pub fn lower(
         if reported.insert(function) {
             sink.emit(
                 crate::diag::Diagnostic::error(format!(
-                    "`{name}` calls itself, directly or through other calls, and its body needs a frame"
+                    "`{name}` calls itself, directly or through other calls, and cannot keep a frame"
                 ))
                 .with_code(crate::diag::codes::RECURSIVE_CALL)
                 .at(call)
                 .label(function, "this function")
                 .help(
-                    "a testbench function recurses when its body is one value: `if`/`return` \
-                     over operators and calls without effects; loops, mutated locals and \
-                     effects need a frame, so write the recursion as a loop",
+                    "a recursive testbench function keeps one frame per call when it writes none \
+                     of its parameters (they are copies, not the caller's places) and its \
+                     locals are kernel numbers, characters, bits or enums without X/Z; \
+                     otherwise write the recursion as a loop",
                 ),
             );
         }
@@ -6556,7 +6572,9 @@ fn lower_process_host_call(
         | ProcessHostValueOp::FileExists
         | ProcessHostValueOp::StringLength
         | ProcessHostValueOp::StringIndex
-        | ProcessHostValueOp::StringEqualsUtf8 => return None,
+        | ProcessHostValueOp::StringEqualsUtf8
+        | ProcessHostValueOp::FramePush
+        | ProcessHostValueOp::FramePop => return None,
     });
     let kind = ProcessValueKind::HostCall {
         operation,
@@ -7366,6 +7384,7 @@ fn expand_process_function(
     return_type: Option<&crate::types::Ty>,
 ) -> Option<ProcessValueId> {
     let body = function.body.as_ref()?;
+    let first_expanded = context.process_ir.values.len();
     if function.ret.is_none()
         || function.params.iter().any(|parameter| parameter.is_self) != receiver.is_some()
     {
@@ -7439,6 +7458,9 @@ fn expand_process_function(
     context.inline_functions.remove(&function.span);
     // ...and that argument's format: `abs(x)` on a `ufixed<8, 4>` is one.
     let (result, result_span) = result?;
+    if drops_effect(first_expanded, result, context) {
+        return None;
+    }
     let result = match (Some(result), generic_argument) {
         (Some(result), Some(argument)) => Some(inherit_receiver_layout(result, argument, context)),
         (result, _) => result,
@@ -8175,6 +8197,36 @@ fn inline_value_statements(
         Stmt::Match(statement) => inline_value_match(statement, rest, process, context),
         _ => None,
     }
+}
+
+/// Whether an expansion from `first` on built a foreign or host call that its
+/// `result` does not read. A value form keeps only what the result reads, so
+/// such an effect (`let printed = putchar(65);`, never used) would vanish;
+/// the statement order of a CFG expansion keeps it.
+fn drops_effect(first: usize, result: ProcessValueId, context: &LoweringContext<'_>) -> bool {
+    let values = &context.process_ir.values;
+    let effects = (first..values.len())
+        .filter(|index| {
+            matches!(
+                values[*index].kind,
+                ProcessValueKind::ForeignCall { .. } | ProcessValueKind::HostCall { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    if effects.is_empty() {
+        return false;
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = vec![result];
+    while let Some(id) = pending.pop() {
+        if (id.0 as usize) >= first && seen.insert(id.0 as usize) {
+            crate::ir::process::for_each_process_value_dependency(
+                &values[id.0 as usize].kind,
+                |dependency| pending.push(dependency),
+            );
+        }
+    }
+    effects.iter().any(|effect| !seen.contains(effect))
 }
 
 /// A shape attribute (`'length`, `'high`, ..) of a value whose layout is
@@ -10313,6 +10365,8 @@ mod tests {
             shared_functions: &std::cell::RefCell::new(SharedFunctions::new()),
             recursive_calls: &std::cell::RefCell::new(Vec::new()),
             self_calls: &std::cell::RefCell::new(std::collections::HashSet::new()),
+            frames: Vec::new(),
+            frame_functions: Default::default(),
         };
 
         let result = inherit_receiver_layout(ProcessValueId(1), ProcessValueId(0), &mut context);

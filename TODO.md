@@ -136,14 +136,14 @@ listed under LLVM and Output below.
 Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
-- 🟡 **Runtime recursion and non-packed conversions.** A pure recursive
-  testbench function (one value: `if`/`return` over operators and calls
-  without effects) runs through its shared native copy, each recursive call
-  evaluated only on its selected path; other recursion is E-P038. Recursion
-  too deep for the native stack fails the test, naming the function
-  (`sx_runtime_frame_room`). Recursion needing a frame (loops, mutated
-  locals, effects) remains: proposal sioxc#83.
-  Extend the currently
+- 🟡 **Runtime recursion and non-packed conversions.** Testbench recursion
+  runs: a pure function (one value) calls its shared native copy, guarded
+  against exhausting the native stack; any other is expanded once with a
+  per-process runtime frame stack (locals saved per call, `await` allowed),
+  limited to 1 GiB of saved words. Still E-P038: a recursive function that
+  writes a parameter (parameters are copies in a frame, so write-back is an
+  open language question, sioxc#83) or keeps a local with an X/Z plane
+  (`unsigned`, `Logic`: a frame saves value bits only). Extend the currently
   supported inline-call and packed-value contract only with explicit frame,
   ownership, conversion and suspension semantics. Other recursive runtime
   calls are rejected at compile time; unsupported forms must fail before argument/callee effects
