@@ -161,9 +161,11 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   services. Arrays are values: assigning one copies it (`sx_runtime_array_copy`;
   copies are never freed yet), a parameter writes through as any parameter
   does. `let xs: T[] = [a, b, c];` takes the literal's length, as VHDL does.
-  Still open: growable arrays (no API yet), `Logic` elements (a binary file
-  has no X/Z encoding) and arrays of arrays; `read` rejects those at compile
-  time.
+  An element may be a fixed array (`unsigned[8][2][]`, its packed bits,
+  inner index 0 lowest); writing part of one (`xs[i][j] = v`) updates the
+  element. Still open: growable arrays (no API yet), `Logic` elements (a
+  binary file has no X/Z encoding) and runtime arrays of runtime arrays;
+  `read` rejects those at compile time.
   Runtime-computed file paths are done: a testbench `read`/`exists` path may
   be any string (fixed `Char[N]` values are formatted, runtime strings pass
   their UTF-8), resolved against the source directory by
