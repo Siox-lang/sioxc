@@ -136,53 +136,14 @@ listed under LLVM and Output below.
 Owns exact-width native code generation and the object-side runtime ABI. Code:
 `src/llvm/`.
 
-- 🟡 **Runtime recursion and non-packed conversions.** Testbench recursion
-  runs: a pure function (one value) calls its shared native copy, guarded
-  against exhausting the native stack; any other is expanded once with a
-  per-process runtime frame stack (locals saved per call, `await` allowed),
-  limited to 32 MiB of saved words. Frames save locals with their X/Z
-  planes and copy written parameters back to local arguments on return, as a
-  plain call writes through them (copy-in/copy-out; the same variable passed
-  twice is where this differs from aliasing). Still E-P038: a recursive
-  function writing a parameter whose argument is a signal or storage. Extend the currently
-  supported inline-call and packed-value contract only with explicit frame,
-  ownership, conversion and suspension semantics. Other recursive runtime
-  calls are rejected at compile time; unsupported forms must fail before argument/callee effects
-  or staged writes become observable. Keep the existing native transactional
-  failure regressions when adding these capabilities. A testbench `From`
-  body that is not one value expression (a loop, a statement `if`) now
-  expands in the CFG like any call; it used to fall back silently to a raw
-  resize. In hardware such a body is still rejected (E-P017 on the loop's
-  index), not silently resized.
-- 🟡 **Host-service extensions.** Runtime-sized arrays exist for testbenches:
-  `read<T[]>(path)` for `integer` and packed numerics of any width, with
-  `'length`, checked indexing, iteration, `T[]` parameters and element
-  writes (`xs[i] = v`, in place), sharing the runtime string table and
-  services. Arrays are values: assigning one copies it (`sx_runtime_array_copy`;
-  copies are never freed yet), a parameter writes through as any parameter
-  does. `let xs: T[] = [a, b, c];` takes the literal's length, as VHDL does.
-  An element may be a fixed array (`unsigned[8][2][]`, its packed bits,
-  inner index 0 lowest); writing part of one (`xs[i][j] = v`) updates the
-  element. `xs.push(v)` grows one as a Rust `Vec` does (doubling); an
-  unset `T[]` or `[]` is the empty array (handle zero). A character enum
-  element (`Logic[]`, `Bit[]`) reads as text, one symbol per element with
-  whitespace skipped (VHDL textio style): an element holds its symbol's
-  position, converted to and from the enum's values by selects over its own
-  discriminants, so X/Z values survive. Runtime arrays nest: `[]` on an
-  unconstrained array nests (`integer[][]`, `string[]`) while a sized index
-  still fills its hole (`string[5]` is `Char[5]`). Elements are handles;
-  assigning or pushing copies every level, and a fixed array or string
-  literal becomes a runtime one where one is expected (`xs = [7, 8, 9]`,
-  `names.push("de")`).
-  Runtime-computed file paths are done: a testbench `read`/`exists` path may
-  be any string (fixed `Char[N]` values are formatted, runtime strings pass
-  their UTF-8), resolved against the source directory by
-  `sx_runtime_source_path` as a literal is at compile time. Hardware reads
-  still take a literal. Keep allocation, persistent state
-  and host contact behind the fixed runtime ABI; LLVM emits value semantics,
-  not another host-service implementation. Current RNG, UTF-8/string, fixed
-  binary-read and file-probe services are implemented and verified; their
-  behavior is documented in [interoperability.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/interoperability.md).
+- 🟡 **Runtime array and string lifetime.** Testbench runtime arrays
+  (`read<T[]>`, `push`, nesting) and strings live in the runtime's string
+  table and are never freed: every copy (`ys = xs`, a pushed array, a
+  string made from a fixed one) allocates for the rest of the test, so a
+  long loop that copies grows memory. Release needs ownership: a reference
+  count or scope-based release that keeps arrays values. Keep allocation,
+  persistent state and host contact behind the fixed runtime ABI; LLVM emits
+  value semantics, not another host-service implementation.
 - 🔴 **Quad precision (future, not advertised).** If a real use case requires
   it, add LLVM `fp128` operations, constants/conversions, ABI rules, formatting,
   and a software fallback before exposing a language feature.
