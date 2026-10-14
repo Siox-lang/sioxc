@@ -635,6 +635,10 @@ pub(super) struct MetaTemps {
     /// read, with the activity it was entered under. Such a value's companion
     /// is built once under that activity rather than once per arm.
     pub(super) shared: Vec<SharedArms>,
+    /// The unknown test of a signal's companion read as an arithmetic
+    /// operand, by (old state, companion, element count): built once per
+    /// driver instead of once per operation reading it.
+    pub(super) unknown_tests: HashMap<(bool, u32, u32), Expr>,
 }
 
 /// The values both arms of a selection read, with its entry activity.
@@ -658,6 +662,7 @@ impl MetaTemps {
             guard: None,
             source_meta: HashMap::new(),
             shared: Vec::new(),
+            unknown_tests: HashMap::new(),
         }
     }
 
@@ -676,6 +681,7 @@ impl MetaTemps {
             guard: None,
             source_meta: HashMap::new(),
             shared: Vec::new(),
+            unknown_tests: HashMap::new(),
         }
     }
 }

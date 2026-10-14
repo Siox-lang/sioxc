@@ -21,6 +21,9 @@ impl SourceValues {
         let mut mapped = Vec::with_capacity(old.values.len());
         // Element reads now carrying their whole value (discriminant).
         let mut elements = HashSet::new();
+        // Each signal plane's unknown test, built once for every comparison
+        // reading it (a 128-element operand is ~1400 nodes per test).
+        let mut unknown_tests = HashMap::new();
         for (index, mut value) in old.values.into_iter().enumerate() {
             // An element of a value with a literal's companion (`"01--"[0]`
             // inside a function) reads it, as an element of a signal reads
@@ -50,7 +53,14 @@ impl SourceValues {
                 inner,
             } = &value.kind
             {
-                let unknown = self.comparison_unknown(operands, span, meta_of, elems, encodings);
+                let unknown = self.comparison_unknown(
+                    operands,
+                    span,
+                    meta_of,
+                    elems,
+                    encodings,
+                    &mut unknown_tests,
+                );
                 value.kind = match unknown {
                     Some(unknown) if *not_equal => ProcessValueKind::Binary {
                         operation: ProcessBinaryOp::Or,
@@ -108,7 +118,14 @@ impl SourceValues {
                     left,
                     right,
                 } => self
-                    .comparison_unknown(&[left, right], span, meta_of, elems, encodings)
+                    .comparison_unknown(
+                        &[left, right],
+                        span,
+                        meta_of,
+                        elems,
+                        encodings,
+                        &mut unknown_tests,
+                    )
                     .map(|condition| {
                         let zero = self.meta_number(0, span);
                         ProcessValueKind::Select {
@@ -293,20 +310,37 @@ impl SourceValues {
         meta_of: &HashMap<u32, u32>,
         elems: &HashMap<u32, u32>,
         encodings: &HashMap<u32, LogicEncoding>,
+        tests: &mut HashMap<(SignalId, ProcessSignalState), ProcessValueId>,
     ) -> Option<ProcessValueId> {
         let mut result = None;
         for &operand in operands {
-            let Some((companion, meta)) = self.meta_companion(operand, span, meta_of) else {
-                continue;
-            };
-            let mut unknown = self.meta_number(0, span);
-            if let Some(encoding) = encodings.get(&companion) {
-                for index in 0..elems.get(&companion).copied().unwrap_or(0) {
-                    let nibble = self.meta_slice(meta, 4 * index + 3, 4 * index, span);
-                    let element = self.meta_members(nibble, &encoding.unknown, span);
-                    unknown = self.meta_binary(ProcessBinaryOp::Or, unknown, element, span);
+            let key = match &self.ir.values[operand.0 as usize].kind {
+                ProcessValueKind::Signal { signals, state } if signals.len() == 1 => {
+                    Some((signals[0], *state))
                 }
-            }
+                _ => None,
+            };
+            let unknown = match key.and_then(|key| tests.get(&key)) {
+                Some(&unknown) => unknown,
+                None => {
+                    let Some((companion, meta)) = self.meta_companion(operand, span, meta_of)
+                    else {
+                        continue;
+                    };
+                    let mut unknown = self.meta_number(0, span);
+                    if let Some(encoding) = encodings.get(&companion) {
+                        for index in 0..elems.get(&companion).copied().unwrap_or(0) {
+                            let nibble = self.meta_slice(meta, 4 * index + 3, 4 * index, span);
+                            let element = self.meta_members(nibble, &encoding.unknown, span);
+                            unknown = self.meta_binary(ProcessBinaryOp::Or, unknown, element, span);
+                        }
+                    }
+                    if let Some(key) = key {
+                        tests.insert(key, unknown);
+                    }
+                    unknown
+                }
+            };
             result = Some(match result {
                 Some(previous) => self.meta_binary(ProcessBinaryOp::Or, previous, unknown, span),
                 None => unknown,

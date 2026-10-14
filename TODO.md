@@ -216,7 +216,10 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   That test's remaining time was LLVM instruction selection (13.3 of
   16.5 s) of wide-integer IR for baseline x86-64; x86_64 objects now target
   the x86-64-v2 level (SSE4.2, POPCNT) and it compiles in 7.4 s, the
-  corpus in 85 s instead of 95 s, with run time unchanged. The
+  corpus in 85 s instead of 95 s, with run time unchanged. An operand's
+  element-wise unknown test (arithmetic, comparisons) is now built once per
+  driver/signal rather than per operation: `hardware_procedure_places_test`
+  7.4 → 4.7 s and 143 → 78 MB, `hardware_aggregate_writes_test` 7.5 → 6.1 s. The
   workload runs at about 1.1 µs a cycle (1.5 µs
   with `bitpack`). Indexed packed writes now use one update per
   value/companion plane rather than enumerating bits; retain structural and

@@ -462,13 +462,25 @@ impl<'a> Lowering<'a> {
                     // inline operand is deep-copied `operand_width` times.
                     // Bind it once and let the unroll read a leaf.
                     meta.map(|meta| {
+                        let leaf = match &meta {
+                            Expr::Current(signal) => Some((false, signal.0, operand_width)),
+                            Expr::Old(signal) => Some((true, signal.0, operand_width)),
+                            _ => None,
+                        };
+                        if let Some(test) = leaf.and_then(|leaf| temps.unknown_tests.get(&leaf)) {
+                            return test.clone();
+                        }
                         let meta = materialize(meta, operand_width * 4, temps);
-                        self.source_values.borrow_mut().unknown_elements(
+                        let test = self.source_values.borrow_mut().unknown_elements(
                             &meta,
                             operand_width,
                             encoding,
                             temps.anchor,
-                        )
+                        );
+                        if let Some(leaf) = leaf {
+                            temps.unknown_tests.insert(leaf, test.clone());
+                        }
+                        test
                     })
                 })
                 .reduce(|a, b| self.source_binary(BinOp::Or, &a, &b, anchor))?;
