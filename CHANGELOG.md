@@ -12,6 +12,45 @@ assertions, and VCD export — predates this changelog. See
 ## [Unreleased]
 
 ### Added
+- **Testbench recursion** (#85, #89, #90, #92–#94). A function whose body is
+  one value calls a shared native copy; any other recursive function keeps a
+  frame per call on a per-process runtime stack, so loops, locals with X/Z
+  planes, effects and `await` work inside it. Written parameters are copied
+  back to local arguments on return; writing a signal or storage argument is
+  `E-P038`. Runaway recursion fails the test with a message instead of
+  overflowing the stack.
+- **Runtime-sized arrays in testbenches** (#87, #91, #95–#98, #100):
+  `read<T[]>(path)` sizes an array to the file, for any packed element width
+  and fixed-array elements; `xs[i] = v`, `xs.push(v)`, `'length`, iteration
+  and `T[]` parameters. Arrays are values (assignment copies). `Logic[]`/`Bit[]`
+  read a text file of symbols, VHDL textio style. `integer[][]` and
+  `string[]` nest. Computed file paths for `read`/`exists` (#84).
+- **Tuples** (#74): `(a, b)` values, types, destructuring, matches and
+  returns, lowered through generic structs.
+- **Native source debugging** (#72): `sioxc --test -g` emits Siox source DWARF
+  for GDB, with optimization disabled.
+- **`print!` formatting** (#40, #43): Rust format specs, struct/array/vector
+  forms, `{:?}`, and `core::fmt::Display` with `write!`.
+- **Numbers in std** (#33, #56, #59–#65): fixed-point division and resize,
+  float division and square root, fixed ↔ float conversions,
+  `std::math::sqrt` for every number type, real math as compiler intrinsics,
+  and the promotion ladder `integer → unsigned/signed → fixed → float → real`
+  through `From` constructors; a binary point is part of a fixed/float type.
+- **std surface** (#41, #44, #45): Rust's integer methods on `unsigned`/
+  `signed`, `math::cmp`/`clamp`, `std::mem::swap`/`replace`, `%` as the core
+  `Rem` operator, `Logic[]` results and vector equality.
+- **Matching** (#47, #52): `std_match` bit patterns, expression and range
+  patterns, union coverage analysis with shared endpoints.
+- **Language conveniences** (#38, #53–#55): `#[inline]` and shared value
+  functions in simulation, `T<args>::f(x)` associated calls, type attributes
+  (`pub attr name: T = …;` in an implementation), group declarations
+  (`let a, b: T = v;`).
+- **Hardware bodies** (#42, #57, #67–#69): typed lets and element writes in
+  hardware functions, loops in functions called from operators, loops with a
+  non-constant bound simulate (`W-P019`), value parameters of a generic struct
+  size its fields, arrays of view ports.
+- **Benchmark harness** (#77): `scripts/bench.py` measures compile time,
+  memory, binary size and run time per build mode and compares two runs.
 - **Packed logic semantics are now owned by std source.**
   `std::logic::LogicEncoding`, modeled on VHDL `std_logic_1164` conversions,
   supplies each variant's value bit, binary/metavalue class, high-impedance
@@ -28,11 +67,6 @@ assertions, and VCD export — predates this changelog. See
   scope and cannot capture ports or implementation state. Public receiver
   methods and calls through instances remain rejected until their generated
   port and scheduling semantics are implemented.
-- **Native source debugging now fails explicitly until direct DWARF exists.**
-  `sioxc --test -g` no longer falls back to a generated-C test harness merely
-  to obtain `#line` metadata. It reports that source debug information is not
-  implemented for direct Process-to-LLVM lowering; ordinary optimized native
-  test builds are unchanged.
 - **An overwritten assignment is no longer range-checked.** A driver that a
   later unconditional one replaces never reaches the signal, but the check ran
   per driver, so `t = a + 5; t = 2;` failed a test with "`t` left its range
@@ -110,6 +144,22 @@ assertions, and VCD export — predates this changelog. See
   `auto-load safe-path` widened, so plain functions won instead.)
 
 ### Changed
+- **`[]` on an unconstrained array nests** (#100): `integer[][]` is an array
+  of `integer[]` and `string[]` an array of strings; a sized index still
+  fills the range (`string[5]` is `Char[5]`).
+- **Conversions are constructors** (#60, #65): `real(x)` replaces
+  `to_real()`, and the `Widen` trait is gone; promotion goes through `From`.
+- **Faster compiles** (#36, #37, #78, #80, #82, #88, #101, #102): borrowed
+  rather than copied lowering data, shared select arms and companions, pure
+  values shared across blocks, and an operand's unknown test built once per
+  driver. x86_64 objects target x86-64-v2 (SSE4.2, POPCNT). The corpus's
+  slowest test went from about 80 s to 6 s; the corpus compiles in about
+  80 s instead of 95 s.
+- **Faster simulation** (#103): the per-delta commit copies and clears state
+  planes in bulk and touches written signals only (benchmark 1.08 → 0.75 s,
+  1.42 → 0.75 s with `bitpack`).
+- **`sioxc` runs on a 1 GiB stack** (#81), and a parse that exceeds the
+  nesting limit reports one error instead of a cascade.
 - **Nominal arrays no longer require a `Vector` marker trait.** A declaration
   such as `struct Word(Logic[])` now inherits its array representation directly
   from `Logic[]`; derived nominal families retain that representation and
@@ -185,6 +235,17 @@ assertions, and VCD export — predates this changelog. See
   and native testbenches, including values wider than one ABI word.
 
 ### Fixed
+- Printing a runtime string (`read<string>`) printed nothing (#100).
+- A runtime array element write compiled and was dropped (#95).
+- Long testbench loops grew the native stack until the test crashed (#94).
+- A `From` body with a loop was silently replaced by a raw resize in
+  testbenches (#79).
+- `string[5]` and an unset `string` local failed to lower in a testbench
+  (#100).
+- `print!` of a typed local (#39), vector elements holding metavalues (#46),
+  a parameter bound to a literal argument (#75), user newtypes as testbench
+  locals (#58), integer locals returned as a family (#66), and gaps found by
+  the interface libraries (#70, #71).
 - **Nested metavalue expressions no longer exhaust compiler memory.** Packed
   logical and arithmetic lowering used to deep-copy an owned operand tree once
   per element at every nesting level, so dirty-vector IR grew as
