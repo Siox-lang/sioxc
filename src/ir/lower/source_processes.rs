@@ -1623,10 +1623,9 @@ pub fn lower(
                 .at(call)
                 .label(function, "this function")
                 .help(
-                    "a recursive testbench function keeps one frame per call when it writes none \
-                     of its parameters (they are copies, not the caller's places) and its \
-                     locals are kernel numbers, characters, bits or enums without X/Z; \
-                     otherwise write the recursion as a loop",
+                    "a recursive testbench function keeps one frame per call, with copies of its \
+                     parameters, so it cannot write a parameter back to the caller's place; \
+                     use a local copy, or write the recursion as a loop",
                 ),
             );
         }
@@ -6574,7 +6573,8 @@ fn lower_process_host_call(
         | ProcessHostValueOp::StringIndex
         | ProcessHostValueOp::StringEqualsUtf8
         | ProcessHostValueOp::FramePush
-        | ProcessHostValueOp::FramePop => return None,
+        | ProcessHostValueOp::FramePop
+        | ProcessHostValueOp::FrameRestore => return None,
     });
     let kind = ProcessValueKind::HostCall {
         operation,
