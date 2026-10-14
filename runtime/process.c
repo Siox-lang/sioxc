@@ -287,6 +287,28 @@ uint64_t sx_runtime_read_utf8(const char *path) {
     return (uint64_t)++sx_string_count;
 }
 
+/* Register a runtime array of `count` elements of `words` words each; it
+ * owns `elements`. Zero (and `elements` freed) when the table cannot grow. */
+static uint64_t sx_runtime_array_add(uint64_t *elements, size_t count,
+                                     size_t words) {
+    if (sx_string_count == sx_string_capacity) {
+        size_t capacity = sx_string_capacity ? sx_string_capacity * 2 : 4;
+        sx_runtime_string *grown =
+            capacity > SIZE_MAX / sizeof(sx_runtime_string)
+                ? 0
+                : realloc(sx_strings, capacity * sizeof(sx_runtime_string));
+        if (!grown) {
+            free(elements);
+            return 0;
+        }
+        sx_strings = grown;
+        sx_string_capacity = capacity;
+    }
+    sx_strings[sx_string_count] =
+        (sx_runtime_string){0, count, 0, 0, elements, words};
+    return (uint64_t)++sx_string_count;
+}
+
 /* `read<T[]>(path)`: the whole file as little-endian elements of
  * `element_bytes` each (1..8); a trailing partial element is an error. */
 uint64_t sx_runtime_read_array(const char *path, uint64_t element_bytes) {
@@ -346,23 +368,51 @@ uint64_t sx_runtime_read_array(const char *path, uint64_t element_bytes) {
         }
     }
     free(bytes);
-    if (sx_string_count == sx_string_capacity) {
-        size_t capacity = sx_string_capacity ? sx_string_capacity * 2 : 4;
-        sx_runtime_string *grown =
-            capacity > SIZE_MAX / sizeof(sx_runtime_string)
-                ? 0
-                : realloc(sx_strings, capacity * sizeof(sx_runtime_string));
-        if (!grown) {
-            free(elements);
-            sx_set_error("read<T[]>(\"%s\"): out of memory", path);
-            return 0;
-        }
-        sx_strings = grown;
-        sx_string_capacity = capacity;
+    uint64_t handle = sx_runtime_array_add(elements, count, words);
+    if (!handle) sx_set_error("read<T[]>(\"%s\"): out of memory", path);
+    return handle;
+}
+
+/* `ys = xs` for a runtime array: arrays are values, so the target gets its
+ * own elements and a later element write to one leaves the other alone.
+ * ponytail: a copy is never freed (no handle lifetime yet); copying in a
+ * long loop grows memory until arrays get ownership. */
+uint64_t sx_runtime_array_copy(uint64_t handle) {
+    sx_runtime_string *string = sx_runtime_string_for(handle);
+    if (!string) return 0;
+    if (!string->elements) return handle; /* strings are never written */
+    size_t words = string->length * string->element_words;
+    uint64_t *elements = malloc(words ? words * sizeof(uint64_t) : 1);
+    if (!elements) {
+        sx_set_error("runtime array copy: out of memory");
+        return 0;
     }
-    sx_strings[sx_string_count] =
-        (sx_runtime_string){0, count, 0, 0, elements, words};
-    return (uint64_t)++sx_string_count;
+    memcpy(elements, string->elements, words * sizeof(uint64_t));
+    uint64_t copy = sx_runtime_array_add(elements, string->length,
+                                         string->element_words);
+    if (!copy) sx_set_error("runtime array copy: out of memory");
+    return copy;
+}
+
+/* `xs[index] = value`: the element's `count` words, zero-extended. */
+void sx_runtime_array_store(uint64_t handle, uint64_t index,
+                            const uint64_t *words, uint32_t count) {
+    sx_runtime_string *string = sx_runtime_string_for(handle);
+    if (!string) return;
+    if (!string->elements) {
+        sx_set_error("a runtime string is not writable");
+        return;
+    }
+    if (index >= string->length) {
+        int64_t right = string->length ? (int64_t)string->length - 1 : -1;
+        sx_set_error("index %llu is outside declared range 0..%lld",
+                     (unsigned long long)index, (long long)right);
+        return;
+    }
+    uint64_t *element = string->elements + index * string->element_words;
+    size_t copy = count < string->element_words ? count : string->element_words;
+    memset(element, 0, string->element_words * sizeof(uint64_t));
+    memcpy(element, words, copy * sizeof(uint64_t));
 }
 
 uint8_t sx_runtime_read_utf8_fixed(const char *path, uint64_t *words,

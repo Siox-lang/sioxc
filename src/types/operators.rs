@@ -522,7 +522,8 @@ impl<'a> Checker<'a> {
                     family: None,
                     ..
                 } => {
-                    elems.len() as u32 == *len
+                    // An unconstrained `T[]` takes the literal's length.
+                    (*len == 0 || elems.len() as u32 == *len)
                         && elems.iter().all(|e| self.assignable(elem, e, sym))
                 }
                 Ty::Error => true,

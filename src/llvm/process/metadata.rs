@@ -289,6 +289,8 @@ pub(super) fn emit_source_locations<'ctx>(
                     operation: ProcessHostValueOp::StringIndex
                         | ProcessHostValueOp::ReadUtf8
                         | ProcessHostValueOp::ReadArray
+                        | ProcessHostValueOp::ArrayStore
+                        | ProcessHostValueOp::ArrayCopy
                         | ProcessHostValueOp::ReadUtf8Fixed
                         | ProcessHostValueOp::ReadBinary,
                     ..

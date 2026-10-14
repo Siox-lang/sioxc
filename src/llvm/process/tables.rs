@@ -551,17 +551,15 @@ pub(super) fn emit_wide_handle_element<'ctx>(
     Some(result)
 }
 
-/// Push `bits` on the current process's frame stack as words
-/// (`sx_runtime_frame_push`).
-pub(super) fn emit_frame_words<'ctx>(
+/// `bits` laid out as little-endian words in an entry-block buffer, with
+/// the word count.
+pub(super) fn word_buffer<'ctx>(
     context: &'ctx Context,
-    module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     bits: IntValue<'ctx>,
-) -> Option<()> {
+) -> Option<(PointerValue<'ctx>, u32)> {
     let i32 = context.i32_type();
     let i64 = context.i64_type();
-    let pointer = context.ptr_type(AddressSpace::default());
     let width = bits.get_type().get_bit_width();
     let word_count = super::super::words_for(width);
     let buffer = entry_words(context, builder, word_count, "pv.frame.words")?;
@@ -591,6 +589,21 @@ pub(super) fn emit_frame_words<'ctx>(
         };
         builder.build_store(slot, fit(builder, part, 64)?).ok()?;
     }
+    Some((buffer, word_count))
+}
+
+/// Push `bits` on the current process's frame stack as words
+/// (`sx_runtime_frame_push`).
+pub(super) fn emit_frame_words<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    bits: IntValue<'ctx>,
+) -> Option<()> {
+    let i32 = context.i32_type();
+    let i64 = context.i64_type();
+    let pointer = context.ptr_type(AddressSpace::default());
+    let (buffer, word_count) = word_buffer(context, builder, bits)?;
     let runtime = module
         .get_function("sx_runtime_frame_push")
         .unwrap_or_else(|| {
@@ -604,6 +617,45 @@ pub(super) fn emit_frame_words<'ctx>(
         .build_call(
             runtime,
             &[
+                buffer.into(),
+                i32.const_int(u64::from(word_count), false).into(),
+            ],
+            "",
+        )
+        .ok()?;
+    Some(())
+}
+
+/// `xs[index] = bits` on a runtime array (`sx_runtime_array_store`).
+pub(super) fn emit_array_store<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    handle: IntValue<'ctx>,
+    index: IntValue<'ctx>,
+    bits: IntValue<'ctx>,
+) -> Option<()> {
+    let i32 = context.i32_type();
+    let i64 = context.i64_type();
+    let pointer = context.ptr_type(AddressSpace::default());
+    let (buffer, word_count) = word_buffer(context, builder, bits)?;
+    let runtime = module
+        .get_function("sx_runtime_array_store")
+        .unwrap_or_else(|| {
+            module.add_function(
+                "sx_runtime_array_store",
+                context
+                    .void_type()
+                    .fn_type(&[i64.into(), i64.into(), pointer.into(), i32.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    builder
+        .build_call(
+            runtime,
+            &[
+                fit(builder, handle, 64)?.into(),
+                fit(builder, index, 64)?.into(),
                 buffer.into(),
                 i32.const_int(u64::from(word_count), false).into(),
             ],

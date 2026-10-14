@@ -508,6 +508,11 @@ pub enum ProcessHostValueOp {
     /// one, its X/Z companion plane, written straight into the local's state.
     /// The result is the restored value.
     FrameRestore,
+    /// Write one element of a runtime array in place: the handle, the index
+    /// and the element value. Its result is zero.
+    ArrayStore,
+    /// A runtime array's own copy, for assignment: arrays are values.
+    ArrayCopy,
 }
 
 /// One normalized piece of a runtime message.
@@ -1975,10 +1980,12 @@ impl ProcessIr {
                         | ProcessHostValueOp::FileExists
                         | ProcessHostValueOp::StringLength
                         | ProcessHostValueOp::FramePush
-                        | ProcessHostValueOp::FrameRestore => 1,
+                        | ProcessHostValueOp::FrameRestore
+                        | ProcessHostValueOp::ArrayCopy => 1,
                         ProcessHostValueOp::StringIndex
                         | ProcessHostValueOp::StringEqualsUtf8
                         | ProcessHostValueOp::ReadArray => 2,
+                        ProcessHostValueOp::ArrayStore => 3,
                     } =>
                 {
                     issues.push(format!(

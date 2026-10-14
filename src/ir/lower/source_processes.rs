@@ -2330,10 +2330,10 @@ fn lower_statement(
         Stmt::Let(declaration) => {
             let local = push_local(process, declaration, context);
             let target = process.locals[local.0 as usize].ty.clone();
-            let initializer = declaration
-                .value
-                .as_ref()
-                .map(|value| value_ref_with_type(value, process, context, target.as_ref()));
+            let initializer = declaration.value.as_ref().map(|value| {
+                let value = value_ref_with_type(value, process, context, target.as_ref());
+                runtime_array_copy(value, target.as_ref(), context)
+            });
             // A width-generic declaration (`let r: unsigned = v;` in a
             // function over `unsigned`) takes its shape from the initializer.
             if process.locals[local.0 as usize]
@@ -4320,6 +4320,31 @@ fn assign_process_value(
         }
         AssignedValue::Lowered(value) => value,
     };
+    // `xs[i] = v` on a runtime array writes the element in place.
+    if let ProcessValueKind::HostCall {
+        operation: ProcessHostValueOp::StringIndex,
+        arguments,
+    } = &context.process_ir.values[target.0 as usize].kind
+    {
+        let (handle, index) = (arguments[0], arguments[1]);
+        if after.is_none()
+            && runtime_array_element(process_value_type(handle, context).as_ref()).is_some()
+        {
+            let store = push_value(
+                span,
+                Some(crate::types::Ty::Integer),
+                Some(64),
+                ProcessValueKind::HostCall {
+                    operation: ProcessHostValueOp::ArrayStore,
+                    arguments: vec![handle, index, value],
+                },
+                context,
+            );
+            cfg_calls::frame_copy(store, process, context, block);
+            return Some(block);
+        }
+    }
+    let value = runtime_array_copy(value, target_type.as_ref(), context);
     let driver_context = matches!(
         semantics,
         ProcessAssignment::StagedSignal | ProcessAssignment::PerPlace
@@ -5470,6 +5495,24 @@ fn push_local(
         .filter(|ty| {
             !matches!(ty, crate::types::Ty::Array { len: 0, .. }) && is_concrete_type(ty, context)
         })
+        .or_else(|| match (&declared, declaration.value.as_ref()) {
+            // `let xs: T[] = [a, b, c];` takes the literal's length.
+            (
+                Some(crate::types::Ty::Array {
+                    elem,
+                    len: 0,
+                    family: None,
+                    low,
+                }),
+                Some(ast::Expr::Array { elems, .. }),
+            ) => Some(crate::types::Ty::Array {
+                elem: elem.clone(),
+                len: u32::try_from(elems.len()).ok()?,
+                family: None,
+                low: *low,
+            }),
+            _ => None,
+        })
         .or_else(|| {
             declaration
                 .value
@@ -6574,7 +6617,9 @@ fn lower_process_host_call(
         | ProcessHostValueOp::StringEqualsUtf8
         | ProcessHostValueOp::FramePush
         | ProcessHostValueOp::FramePop
-        | ProcessHostValueOp::FrameRestore => return None,
+        | ProcessHostValueOp::FrameRestore
+        | ProcessHostValueOp::ArrayStore
+        | ProcessHostValueOp::ArrayCopy => return None,
     });
     let kind = ProcessValueKind::HostCall {
         operation,
@@ -6708,6 +6753,44 @@ fn lower_process_file_call(
     Some(push_value(*span, ty, width, kind, context))
 }
 
+/// `value` assigned to a runtime array of type `ty`: its own copy, unless it
+/// is fresh from a read or a copy already.
+fn runtime_array_copy(
+    value: ProcessValueId,
+    ty: Option<&crate::types::Ty>,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    if runtime_array_element(ty).is_none() {
+        return value;
+    }
+    let mut fresh = value;
+    while let ProcessValueKind::InlineCall { operand, .. } =
+        context.process_ir.values[fresh.0 as usize].kind
+    {
+        fresh = operand;
+    }
+    if matches!(
+        context.process_ir.values[fresh.0 as usize].kind,
+        ProcessValueKind::HostCall {
+            operation: ProcessHostValueOp::ReadArray | ProcessHostValueOp::ArrayCopy,
+            ..
+        }
+    ) {
+        return value;
+    }
+    let span = context.process_ir.values[value.0 as usize].span;
+    push_value(
+        span,
+        ty.cloned(),
+        Some(64),
+        ProcessValueKind::HostCall {
+            operation: ProcessHostValueOp::ArrayCopy,
+            arguments: vec![value],
+        },
+        context,
+    )
+}
+
 /// The element type of a runtime-sized array request (`unsigned[16][]`), not
 /// a string: `Char[]` is read as UTF-8.
 fn runtime_array_element(ty: Option<&crate::types::Ty>) -> Option<&crate::types::Ty> {
@@ -6755,7 +6838,10 @@ fn process_value_is_runtime_string(
             process_value_is_runtime_string(*operand, process, context)
         }
         ProcessValueKind::HostCall {
-            operation: ProcessHostValueOp::ReadUtf8 | ProcessHostValueOp::ReadArray,
+            operation:
+                ProcessHostValueOp::ReadUtf8
+                | ProcessHostValueOp::ReadArray
+                | ProcessHostValueOp::ArrayCopy,
             ..
         } => true,
         ProcessValueKind::Storage(storage) => context

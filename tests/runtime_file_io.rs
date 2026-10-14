@@ -394,7 +394,7 @@ impl T {
 
 /// `read<T[]>` loads a whole binary file into a runtime-sized array: as many
 /// elements as the file holds, with `'length`, checked indexing, iteration
-/// (also across `await`), and `T[]` parameters.
+/// (also across `await`), `T[]` parameters and element writes.
 #[cfg(feature = "llvm")]
 #[test]
 fn runtime_sized_arrays_read_index_iterate_and_check_bounds() {
@@ -472,6 +472,33 @@ fn runtime_sized_arrays_read_index_iterate_and_check_bounds() {
         report.contains("3 bytes is not a whole number of 2-byte elements"),
         "{report}"
     );
+
+    // Elements are writable. Arrays are values: an assignment copies, while a
+    // parameter writes through to the caller's array as for any parameter.
+    let report = compile(
+        "writes",
+        "let xs: unsigned[16][] = read<unsigned[16][]>(\"words.bin\");\n\
+         xs[1] = 77;\n\
+         let ys: unsigned[16][] = xs;\n\
+         ys[0] = 9;\n\
+         let zs: unsigned[16][] = ys;\n\
+         zs = xs;\n\
+         zs[2] = 5;\n\
+         print!(\"xs={} {} {} ys={} {} {} zs={} {} {}\\n\", \
+             xs[0], xs[1], xs[2], ys[0], ys[1], ys[2], zs[0], zs[1], zs[2]);\n\
+         let lit: integer[] = [4, 5, 6];\n\
+         lit[1] = 50;\n\
+         print!(\"total={} lit={} {}\\n\", total(ys), lit'length, lit[1]);\n\
+         xs[5] = 1;\n\
+         print!(\"unreachable\\n\");",
+    );
+    assert!(report.contains("xs=1 77 3 ys=9 77 3 zs=1 77 5"), "{report}");
+    assert!(report.contains("total=593 lit=3 50"), "{report}");
+    assert!(
+        report.contains("index 5 is outside declared range 0..4"),
+        "{report}"
+    );
+    assert!(!report.contains("unreachable"), "{report}");
 }
 
 /// Elements wider than a word (`unsigned[128][]`, `unsigned[72][]`) come
@@ -503,6 +530,9 @@ fn runtime_arrays_hold_elements_wider_than_a_word() {
             for x in xs { if x != 0 { count = count + 1; } }\n\
             print!(\"n={} first={} last={:x} y0={:x} count={}\\n\", \
                 xs'length, xs[0], xs[2], ys[0], count);\n\
+            let one: unsigned[128] = 1;\n\
+            xs[1] = one << 120;\n\
+            print!(\"stored={}\\n\", xs[1] >> 120);\n\
             let past: unsigned[128] = xs[3];\n\
             print!(\"unreachable {}\\n\", past);\n\
         } }\n";
@@ -526,6 +556,7 @@ fn runtime_arrays_hold_elements_wider_than_a_word() {
         u128::MAX >> 1
     );
     assert!(report.contains(&expected), "{report}");
+    assert!(report.contains("stored=1"), "{report}");
     assert!(
         report.contains("index 3 is outside declared range 0..2"),
         "{report}"

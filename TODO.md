@@ -156,10 +156,14 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   index), not silently resized.
 - 🟡 **Host-service extensions.** Runtime-sized arrays exist for testbenches:
   `read<T[]>(path)` for `integer` and packed numerics of any width, with
-  `'length`, checked indexing, iteration and `T[]` parameters, sharing the
-  runtime string table and services. Still open: writable or growable
-  arrays, arrays built from literals, `Logic` elements, and arrays of
-  arrays.
+  `'length`, checked indexing, iteration, `T[]` parameters and element
+  writes (`xs[i] = v`, in place), sharing the runtime string table and
+  services. Arrays are values: assigning one copies it (`sx_runtime_array_copy`;
+  copies are never freed yet), a parameter writes through as any parameter
+  does. `let xs: T[] = [a, b, c];` takes the literal's length, as VHDL does.
+  Still open: growable arrays (no API yet), `Logic` elements (a binary file
+  has no X/Z encoding) and arrays of arrays; `read` rejects those at compile
+  time.
   Runtime-computed file paths are done: a testbench `read`/`exists` path may
   be any string (fixed `Char[N]` values are formatted, runtime strings pass
   their UTF-8), resolved against the source directory by
