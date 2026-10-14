@@ -1292,6 +1292,16 @@ pub(super) fn process_value<'ctx>(
                     let [handle, index] = arguments.as_slice() else {
                         return None;
                     };
+                    // An array element wider than a word comes through a buffer.
+                    if width > 64 {
+                        let handle = scalar_argument(*handle, cache)?.into_int_value();
+                        let index = scalar_argument(*index, cache)?.into_int_value();
+                        let element = emit_wide_handle_element(
+                            context, module, builder, handle, index, width,
+                        )?;
+                        emit_host_read_check(context, module, builder, value.span)?;
+                        return Some(element);
+                    }
                     (
                         "sx_runtime_string_index_at",
                         i64.fn_type(

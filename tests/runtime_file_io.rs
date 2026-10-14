@@ -473,3 +473,62 @@ fn runtime_sized_arrays_read_index_iterate_and_check_bounds() {
         "{report}"
     );
 }
+
+/// Elements wider than a word (`unsigned[128][]`, `unsigned[72][]`) come
+/// through a word buffer: indexing, iteration and bounds behave as for narrow
+/// elements.
+#[cfg(feature = "llvm")]
+#[test]
+fn runtime_arrays_hold_elements_wider_than_a_word() {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let dir = std::env::temp_dir().join(format!("siox_wide_arrays_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut wide = Vec::new();
+    for value in [(1u128 << 100) | 5, 7, u128::MAX >> 1] {
+        wide.extend_from_slice(&value.to_le_bytes());
+    }
+    std::fs::write(dir.join("w128.bin"), wide).unwrap();
+    let mut odd = Vec::new();
+    for value in [(0xABu128 << 64) | 0x0102_0304_0506_0708, 3] {
+        odd.extend_from_slice(&value.to_le_bytes()[..9]);
+    }
+    std::fs::write(dir.join("w72.bin"), odd).unwrap();
+    let binary = dir.join("wide");
+    let source = "module wide;\nuse std::bits::unsigned;\n#[test] entity T {}\n\
+        impl T { check: process {\n\
+            let xs: unsigned[128][] = read<unsigned[128][]>(\"w128.bin\");\n\
+            let ys: unsigned[72][] = read<unsigned[72][]>(\"w72.bin\");\n\
+            let count: integer = 0;\n\
+            for x in xs { if x != 0 { count = count + 1; } }\n\
+            print!(\"n={} first={} last={:x} y0={:x} count={}\\n\", \
+                xs'length, xs[0], xs[2], ys[0], count);\n\
+            let past: unsigned[128] = xs[3];\n\
+            print!(\"unreachable {}\\n\", past);\n\
+        } }\n";
+    let compilation = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std")).compile(
+        CompileRequest::new(
+            SourceInput::memory(dir.join("wide.siox"), source),
+            Emit::TestExecutable,
+        )
+        .with_output(&binary),
+    );
+    assert!(
+        compilation.succeeded(),
+        "{} {:?}",
+        compilation.render_diagnostics(),
+        compilation.failure
+    );
+    let report = text(&Command::new(&binary).output().unwrap());
+    let expected = format!(
+        "n=3 first={} last={:x} y0=ab0102030405060708 count=3",
+        (1u128 << 100) | 5,
+        u128::MAX >> 1
+    );
+    assert!(report.contains(&expected), "{report}");
+    assert!(
+        report.contains("index 3 is outside declared range 0..2"),
+        "{report}"
+    );
+    assert!(!report.contains("unreachable"), "{report}");
+}

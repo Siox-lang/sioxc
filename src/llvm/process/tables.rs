@@ -480,3 +480,85 @@ pub(super) fn host_path<'ctx>(
         &[directory.into(), formatted.into()],
     )
 }
+
+/// One element of a runtime array wider than a word, fetched through a word
+/// buffer (`sx_runtime_array_index_words`) and assembled into `width` bits.
+/// An out-of-range index sets the test's error; the caller checks it.
+pub(super) fn emit_wide_handle_element<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    handle: IntValue<'ctx>,
+    index: IntValue<'ctx>,
+    width: u32,
+) -> Option<IntValue<'ctx>> {
+    let i32 = context.i32_type();
+    let i64 = context.i64_type();
+    let pointer = context.ptr_type(AddressSpace::default());
+    let word_count = super::super::words_for(width);
+    let buffer = builder
+        .build_array_alloca(
+            i64,
+            i32.const_int(u64::from(word_count), false),
+            "pv.element.words",
+        )
+        .ok()?;
+    let runtime = module
+        .get_function("sx_runtime_array_index_words")
+        .unwrap_or_else(|| {
+            module.add_function(
+                "sx_runtime_array_index_words",
+                context
+                    .void_type()
+                    .fn_type(&[i64.into(), i64.into(), pointer.into(), i32.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    builder
+        .build_call(
+            runtime,
+            &[
+                fit(builder, handle, 64)?.into(),
+                fit(builder, index, 64)?.into(),
+                buffer.into(),
+                i32.const_int(u64::from(word_count), false).into(),
+            ],
+            "",
+        )
+        .ok()?;
+    let ty = context
+        .custom_width_int_type(std::num::NonZeroU32::new(width)?)
+        .ok()?;
+    let mut result = ty.const_zero();
+    for word in 0..word_count {
+        let slot = unsafe {
+            builder
+                .build_in_bounds_gep(
+                    i64,
+                    buffer,
+                    &[i32.const_int(u64::from(word), false)],
+                    "pv.element.word.ptr",
+                )
+                .ok()?
+        };
+        let part = builder
+            .build_load(i64, slot, "pv.element.word")
+            .ok()?
+            .into_int_value();
+        let part = fit(builder, part, width)?;
+        let shift = word.checked_mul(64)?;
+        let part = if shift == 0 {
+            part
+        } else {
+            builder
+                .build_left_shift(
+                    part,
+                    ty.const_int(u64::from(shift), false),
+                    "pv.element.shift",
+                )
+                .ok()?
+        };
+        result = builder.build_or(result, part, "pv.element.value").ok()?;
+    }
+    Some(result)
+}

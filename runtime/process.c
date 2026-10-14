@@ -116,6 +116,7 @@ typedef struct {
     char *utf8;
     size_t byte_length;
     uint64_t *elements;
+    size_t element_words;
 } sx_runtime_string;
 
 static sx_runtime_string *sx_strings;
@@ -281,7 +282,7 @@ uint64_t sx_runtime_read_utf8(const char *path) {
         sx_string_capacity = capacity;
     }
     sx_strings[sx_string_count] = (sx_runtime_string){
-        values, count, bytes, length, 0
+        values, count, bytes, length, 0, 0
     };
     return (uint64_t)++sx_string_count;
 }
@@ -289,7 +290,7 @@ uint64_t sx_runtime_read_utf8(const char *path) {
 /* `read<T[]>(path)`: the whole file as little-endian elements of
  * `element_bytes` each (1..8); a trailing partial element is an error. */
 uint64_t sx_runtime_read_array(const char *path, uint64_t element_bytes) {
-    if (!path || element_bytes == 0 || element_bytes > 8) {
+    if (!path || element_bytes == 0 || element_bytes > (UINT64_C(1) << 20)) {
         sx_set_error("read<T[]>: invalid element size");
         return 0;
     }
@@ -317,8 +318,12 @@ uint64_t sx_runtime_read_array(const char *path, uint64_t element_bytes) {
         return 0;
     }
     size_t count = length / element_bytes;
+    size_t words = (size_t)(element_bytes + 7) / 8;
     unsigned char *bytes = malloc(length ? length : 1);
-    uint64_t *elements = calloc(count ? count : 1, sizeof(uint64_t));
+    uint64_t *elements =
+        count > SIZE_MAX / sizeof(uint64_t) / words
+            ? 0
+            : calloc(count ? count * words : 1, sizeof(uint64_t));
     if (!bytes || !elements) {
         free(bytes);
         free(elements);
@@ -335,11 +340,10 @@ uint64_t sx_runtime_read_array(const char *path, uint64_t element_bytes) {
         return 0;
     }
     for (size_t element = 0; element < count; ++element) {
-        uint64_t value = 0;
         for (size_t byte = 0; byte < element_bytes; ++byte) {
-            value |= (uint64_t)bytes[element * element_bytes + byte] << (8 * byte);
+            elements[element * words + byte / 8] |=
+                (uint64_t)bytes[element * element_bytes + byte] << (8 * (byte % 8));
         }
-        elements[element] = value;
     }
     free(bytes);
     if (sx_string_count == sx_string_capacity) {
@@ -356,7 +360,8 @@ uint64_t sx_runtime_read_array(const char *path, uint64_t element_bytes) {
         sx_strings = grown;
         sx_string_capacity = capacity;
     }
-    sx_strings[sx_string_count] = (sx_runtime_string){0, count, 0, 0, elements};
+    sx_strings[sx_string_count] =
+        (sx_runtime_string){0, count, 0, 0, elements, words};
     return (uint64_t)++sx_string_count;
 }
 
@@ -524,7 +529,8 @@ uint64_t sx_runtime_string_index(uint64_t handle, uint64_t index) {
                      (unsigned long long)string->length);
         return 0;
     }
-    return string->elements ? string->elements[index] : string->values[index];
+    return string->elements ? string->elements[index * string->element_words]
+                            : string->values[index];
 }
 
 uint64_t sx_runtime_string_equals_utf8(uint64_t handle, const char *text,
@@ -1011,7 +1017,28 @@ uint64_t sx_runtime_string_index_at(uint64_t handle, uint64_t index,
         sx_append_error_location(sx_source_location(file, offset));
         return 0;
     }
-    return string->elements ? string->elements[index] : string->values[index];
+    return string->elements ? string->elements[index * string->element_words]
+                            : string->values[index];
+}
+
+/* One element of a runtime array wider than a word: its `count` words,
+ * zero-filled past the element, checked against the loaded length. The
+ * caller's read check adds the source location to a failure. */
+void sx_runtime_array_index_words(uint64_t handle, uint64_t index,
+                                  uint64_t *words, uint32_t count) {
+    sx_runtime_string *string;
+    memset(words, 0, (size_t)count * sizeof(uint64_t));
+    string = sx_runtime_string_for(handle);
+    if (!string || !string->elements) return;
+    if (index >= string->length) {
+        int64_t right = string->length ? (int64_t)string->length - 1 : -1;
+        sx_set_error("index %llu is outside declared range 0..%lld",
+                     (unsigned long long)index, (long long)right);
+        return;
+    }
+    size_t copy = count < string->element_words ? count : string->element_words;
+    memcpy(words, string->elements + index * string->element_words,
+           copy * sizeof(uint64_t));
 }
 
 uint8_t sx_runtime_assert(uint8_t condition, const char *message,

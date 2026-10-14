@@ -429,17 +429,21 @@ pub(super) fn emit_dynamic_string_loop<'ctx>(
         1,
         context.bool_type().const_int(1, false),
     )?;
-    let character = match builder
-        .build_call(
-            index_fn,
-            &[handle.into(), zero.into()],
-            "process.string.first.character",
-        )
-        .ok()?
-        .try_as_basic_value()
-    {
-        inkwell::values::ValueKind::Basic(value) => value.into_int_value(),
-        _ => return None,
+    let character = if element_width > 64 {
+        emit_wide_handle_element(context, module, builder, handle, zero, element_width)?
+    } else {
+        match builder
+            .build_call(
+                index_fn,
+                &[handle.into(), zero.into()],
+                "process.string.first.character",
+            )
+            .ok()?
+            .try_as_basic_value()
+        {
+            inkwell::values::ValueKind::Basic(value) => value.into_int_value(),
+            _ => return None,
+        }
     };
     store_state(
         module,
@@ -476,17 +480,21 @@ pub(super) fn emit_dynamic_string_loop<'ctx>(
         .ok()?;
     store_state(module, builder, &cursor_name, 64, cursor)?;
     let handle = state_value(context, module, builder, &iterable_name, 64)?;
-    let character = match builder
-        .build_call(
-            index_fn,
-            &[handle.into(), cursor.into()],
-            "process.string.character",
-        )
-        .ok()?
-        .try_as_basic_value()
-    {
-        inkwell::values::ValueKind::Basic(value) => value.into_int_value(),
-        _ => return None,
+    let character = if element_width > 64 {
+        emit_wide_handle_element(context, module, builder, handle, cursor, element_width)?
+    } else {
+        match builder
+            .build_call(
+                index_fn,
+                &[handle.into(), cursor.into()],
+                "process.string.character",
+            )
+            .ok()?
+            .try_as_basic_value()
+        {
+            inkwell::values::ValueKind::Basic(value) => value.into_int_value(),
+            _ => return None,
+        }
     };
     store_state(
         module,

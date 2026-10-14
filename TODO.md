@@ -154,11 +154,11 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   resize. In hardware such a body is still rejected (E-P017 on the loop's
   index), not silently resized.
 - 🟡 **Host-service extensions.** Runtime-sized arrays exist for testbenches:
-  `read<T[]>(path)` for `integer` and packed numerics up to 64 bits, with
+  `read<T[]>(path)` for `integer` and packed numerics of any width, with
   `'length`, checked indexing, iteration and `T[]` parameters, sharing the
   runtime string table and services. Still open: writable or growable
-  arrays, arrays built from literals, multiword and `Logic` elements, and
-  arrays of arrays.
+  arrays, arrays built from literals, `Logic` elements, and arrays of
+  arrays.
   Runtime-computed file paths are done: a testbench `read`/`exists` path may
   be any string (fixed `Char[N]` values are formatted, runtime strings pass
   their UTF-8), resolved against the source directory by

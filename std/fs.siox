@@ -11,7 +11,7 @@ module std::fs;
 //   read<integer>(path)    reads raw little-endian binary integers.
 //   read<T[]>(path)        in a #[test], reads the whole file into a
 //                          runtime-sized array of T (`integer` or a packed
-//                          numeric up to 64 bits): ceil(T'length / 8) bytes
+//                          numeric of any width): ceil(T'length / 8) bytes
 //                          per element, a trailing partial element is an
 //                          error. 'length, checked indexing, `for` and `T[]`
 //                          parameters work; the elements are read-only.
