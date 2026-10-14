@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 
 enum {
     SX_PROCESS_COMPLETED = 0,
@@ -1466,7 +1467,27 @@ static int sx_apply_due_events(uint8_t *ready, uint8_t *suspended,
     return 0;
 }
 
+/* Native stack bounds for recursive value functions, set per test. */
+static char *sx_stack_base;
+static size_t sx_stack_room;
+
+/* A recursive value function's prologue: whether the native stack has room
+ * for another frame. Recursion deep enough to exhaust it fails the test with
+ * the function's name instead of crashing the executable. */
+uint8_t sx_runtime_frame_room(const char *function) {
+    char here;
+    if (!sx_stack_base) return 1;
+    size_t used = sx_stack_base > &here ? (size_t)(sx_stack_base - &here)
+                                        : (size_t)(&here - sx_stack_base);
+    if (used < sx_stack_room) return 1;
+    sx_set_error("recursion in `%s` is too deep for the native stack", function);
+    return 0;
+}
+
 int sx_runtime_run_test(uint32_t test) {
+    char stack_base;
+    struct rlimit stack_limit;
+    size_t stack_size = (size_t)8 << 20;
     uint8_t *ready = 0, *next = 0, *stopped = 0, *suspended = 0,
             *settling = 0, *timed_ready = 0, *selected = 0;
     uint32_t *resume_blocks = 0;
@@ -1475,6 +1496,11 @@ int sx_runtime_run_test(uint32_t test) {
     int initializing = 1;
     int foreground_started = 0;
     int result = 0;
+    if (getrlimit(RLIMIT_STACK, &stack_limit) == 0
+        && stack_limit.rlim_cur != RLIM_INFINITY)
+        stack_size = (size_t)stack_limit.rlim_cur;
+    sx_stack_base = &stack_base;
+    sx_stack_room = stack_size - stack_size / 4;
     sx_clear_events();
     sx_clear_strings();
     sx_clear_error();

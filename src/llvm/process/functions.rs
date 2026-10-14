@@ -148,16 +148,40 @@ pub(super) fn shared_call<'ctx>(
                 )?;
                 arguments.push(value.into());
             }
-            debug::call_return(
+            let returned = debug::call_return(
                 context,
                 builder,
                 function,
                 &arguments,
                 "pv.shared",
                 cache.debug,
-            )
+            )?;
+            // A recursion too deep for the stack set the test's error; the
+            // calling process stops on it. Inside a shared body there is no
+            // failure block, and the check is a no-op.
+            if recursive_function(design, call.function) {
+                let span = design.process_ir.values.get(call.value.0 as usize)?.span;
+                emit_host_read_check(context, module, builder, span)?;
+            }
+            Some(returned)
         },
     )
+}
+
+/// Whether `function` calls itself: a recursive call of it is registered as
+/// a call whose value is still a `Call` node.
+pub(super) fn recursive_function(design: &Design, function: siox::ir::ProcessFunctionId) -> bool {
+    design.process_ir.calls.iter().any(|call| {
+        call.function == function
+            && matches!(
+                design
+                    .process_ir
+                    .values
+                    .get(call.value.0 as usize)
+                    .map(|value| &value.kind),
+                Some(ProcessValueKind::Call { .. })
+            )
+    })
 }
 
 /// The LLVM function for `shared`, emitted on first use: its parameters bind
@@ -217,6 +241,49 @@ fn shared_function<'ctx>(
             .get_nth_param(index as u32 + result.parameter_offset())?
             .into_int_value();
         body.parameters.insert(*parameter, argument);
+    }
+    // A recursive body first asks the runtime for stack room: recursion too
+    // deep for the native stack returns at once with the test's error set,
+    // which the calling process reports, instead of crashing the executable.
+    if recursive_function(design, shared.id) {
+        let name = private_string(
+            context,
+            module,
+            &format!("sx.fn.name.{}", shared.id.0),
+            &shared.name,
+        );
+        let room = module
+            .get_function("sx_runtime_frame_room")
+            .unwrap_or_else(|| {
+                module.add_function(
+                    "sx_runtime_frame_room",
+                    context
+                        .i8_type()
+                        .fn_type(&[context.ptr_type(AddressSpace::default()).into()], false),
+                    Some(Linkage::External),
+                )
+            });
+        let inkwell::values::ValueKind::Basic(room) = builder
+            .build_call(room, &[name.into()], "pv.frame.room")
+            .ok()?
+            .try_as_basic_value()
+        else {
+            return None;
+        };
+        let room = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                room.into_int_value(),
+                context.i8_type().const_zero(),
+                "pv.frame.ok",
+            )
+            .ok()?;
+        let enter = context.append_basic_block(function, "frame.enter");
+        let refuse = context.append_basic_block(function, "frame.refuse");
+        builder.build_conditional_branch(room, enter, refuse).ok()?;
+        builder.position_at_end(refuse);
+        result.emit_return(body.debug, &builder, int(shared.result)?.const_zero())?;
+        builder.position_at_end(enter);
     }
     let returned = if body.debug.is_some() {
         if let ProcessValueKind::InlineCall { operand, source } =
