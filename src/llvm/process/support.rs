@@ -706,6 +706,15 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                     }
                     (ProcessHostValueOp::StringLength, [handle])
                     | (ProcessHostValueOp::ArrayCopy, [handle]) => scalar(*handle),
+                    (ProcessHostValueOp::ReadSymbols, [path, alphabet]) => {
+                        process_string(design, *alphabet).is_some()
+                            && (process_string(design, *path).is_some()
+                                || has(&supported, *path)
+                                    && (dynamic_string_value(design, *path)
+                                        || process_value_layout(design, *path)
+                                            .and_then(process_fixed_string_layout)
+                                            .is_some()))
+                    }
                     (ProcessHostValueOp::ArrayPush, [handle, pushed]) => {
                         scalar(*handle)
                             && has(&supported, *pushed)

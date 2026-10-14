@@ -2795,6 +2795,7 @@ fn lower_call(
         if let Some(element) = runtime_array_element(ty.as_ref()).cloned() {
             let handle = value_ref(base, process, context);
             let pushed = value_ref_with_type(pushed, process, context, Some(&element));
+            let pushed = symbol_encode(pushed, &element, span, process, context).unwrap_or(pushed);
             let appended = push_value(
                 span,
                 ty,
@@ -4374,9 +4375,15 @@ fn assign_process_value(
             unreachable!()
         };
         let (handle, index) = (arguments[0], arguments[1]);
-        if after.is_none()
-            && runtime_array_element(process_value_type(handle, context).as_ref()).is_some()
-        {
+        let element_type =
+            runtime_array_element(process_value_type(handle, context).as_ref()).cloned();
+        if after.is_none() && element_type.is_some() {
+            let value = match element_type {
+                Some(element_type) if rest.is_none() => {
+                    symbol_encode(value, &element_type, span, process, context).unwrap_or(value)
+                }
+                _ => value,
+            };
             let value = match rest {
                 None => value,
                 Some(rest) => {
@@ -6692,7 +6699,8 @@ fn lower_process_host_call(
         | ProcessHostValueOp::FrameRestore
         | ProcessHostValueOp::ArrayStore
         | ProcessHostValueOp::ArrayCopy
-        | ProcessHostValueOp::ArrayPush => return None,
+        | ProcessHostValueOp::ArrayPush
+        | ProcessHostValueOp::ReadSymbols => return None,
     });
     let kind = ProcessValueKind::HostCall {
         operation,
@@ -6753,6 +6761,10 @@ fn lower_process_file_call(
                 }
                 _ => ProcessHostValueOp::ReadUtf8,
             }
+        } else if runtime_array_element(return_type)
+            .is_some_and(|element| runtime_symbols(element, *span, context).is_some())
+        {
+            ProcessHostValueOp::ReadSymbols
         } else if runtime_array_element(return_type).is_some() {
             ProcessHostValueOp::ReadArray
         } else if return_type.is_some() {
@@ -6791,6 +6803,22 @@ fn lower_process_file_call(
         _ => value_ref(argument, process, context),
     };
     let mut arguments = vec![path];
+    if operation == ProcessHostValueOp::ReadSymbols {
+        let symbols = runtime_symbols(runtime_array_element(return_type)?, *span, context)?;
+        let alphabet = symbols
+            .iter()
+            .map(|(symbol, _)| *symbol)
+            .collect::<String>();
+        let ty = crate::types::Ty::Array {
+            elem: Box::new(crate::types::Ty::Char),
+            family: None,
+            len: u32::try_from(symbols.len()).ok()?,
+            low: 0,
+        };
+        let kind = ProcessValueKind::String(alphabet);
+        let width = source_value_width(&kind, Some(&ty), process, context);
+        arguments.push(push_value(*span, Some(ty), width, kind, context));
+    }
     if operation == ProcessHostValueOp::ReadArray {
         // One element consumes ceil(width / 8) bytes, as a fixed read does.
         let element = runtime_array_element(return_type)?;
@@ -6826,12 +6854,137 @@ fn lower_process_file_call(
     Some(push_value(*span, ty, width, kind, context))
 }
 
+/// A character enum's symbols with their discriminants, in code order: the
+/// code a runtime array (`read<Logic[]>`) holds per element is the position.
+fn runtime_symbols(
+    element: &crate::types::Ty,
+    span: crate::diag::Span,
+    context: &LoweringContext<'_>,
+) -> Option<Vec<(char, u64)>> {
+    let layout = process_layout_for_type(element, span, context)?;
+    let name = symbol_enum(&layout, context)?;
+    let mut symbols = context
+        .design
+        .enum_syms
+        .get(&name)?
+        .iter()
+        .map(|(discriminant, symbol)| Some((symbol.chars().nth(1)?, *discriminant)))
+        .collect::<Option<Vec<_>>>()?;
+    symbols.sort_by_key(|(_, discriminant)| *discriminant);
+    Some(symbols)
+}
+
+/// The element a symbol code stands for: a select over the enum's values,
+/// so its X/Z plane is the constant's.
+fn symbol_decode(
+    code: ProcessValueId,
+    element: &crate::types::Ty,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let symbols = runtime_symbols(element, span, context)?;
+    let constant = |discriminant: u64, context: &mut LoweringContext<'_>| {
+        let kind = ProcessValueKind::Number(ProcessNumber::Integer(vec![discriminant]));
+        let width = source_value_width(&kind, Some(element), process, context);
+        push_value(span, Some(element.clone()), width, kind, context)
+    };
+    let (_, last) = *symbols.last()?;
+    let mut result = constant(last, context);
+    for (code_number, (_, discriminant)) in symbols.iter().enumerate().rev().skip(1) {
+        let number = push_value(
+            span,
+            Some(crate::types::Ty::Integer),
+            Some(64),
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![code_number as u64])),
+            context,
+        );
+        let condition = bool_binary(ProcessBinaryOp::Eq, code, number, span, context);
+        let then_value = constant(*discriminant, context);
+        let width = context.process_ir.values[then_value.0 as usize].bit_width;
+        result = push_value(
+            span,
+            Some(element.clone()),
+            width,
+            ProcessValueKind::Select {
+                condition,
+                then_value,
+                else_value: result,
+            },
+            context,
+        );
+    }
+    Some(result)
+}
+
+/// The symbol code of `value`, a character enum element: the position of
+/// the variant it equals.
+fn symbol_encode(
+    value: ProcessValueId,
+    element: &crate::types::Ty,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let symbols = runtime_symbols(element, span, context)?;
+    let code = |number: usize, context: &mut LoweringContext<'_>| {
+        push_value(
+            span,
+            Some(crate::types::Ty::Integer),
+            Some(64),
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![number as u64])),
+            context,
+        )
+    };
+    let mut result = code(symbols.len() - 1, context);
+    for (code_number, (_, discriminant)) in symbols.iter().enumerate().rev().skip(1) {
+        let kind = ProcessValueKind::Number(ProcessNumber::Integer(vec![*discriminant]));
+        let width = context.process_ir.values[value.0 as usize]
+            .bit_width
+            .or_else(|| source_value_width(&kind, Some(element), process, context));
+        let variant = push_value(span, Some(element.clone()), width, kind, context);
+        let condition = bool_binary(ProcessBinaryOp::Eq, value, variant, span, context);
+        let then_value = code(code_number, context);
+        result = push_value(
+            span,
+            Some(crate::types::Ty::Integer),
+            Some(64),
+            ProcessValueKind::Select {
+                condition,
+                then_value,
+                else_value: result,
+            },
+            context,
+        );
+    }
+    Some(result)
+}
+
 /// The runtime array element read (`StringIndex`) a place is rooted in, and
 /// the projection over it when the place is part of the element.
 fn runtime_element_place(
     target: ProcessValueId,
     context: &LoweringContext<'_>,
 ) -> Option<(ProcessValueId, Option<ProcessValueId>)> {
+    // A character enum element reads through `symbol_decode`, whose first
+    // condition compares the element's code.
+    if let ProcessValueKind::Select { condition, .. } =
+        &context.process_ir.values[target.0 as usize].kind
+    {
+        if let ProcessValueKind::Binary { left, .. } =
+            &context.process_ir.values[condition.0 as usize].kind
+        {
+            if matches!(
+                context.process_ir.values[left.0 as usize].kind,
+                ProcessValueKind::HostCall {
+                    operation: ProcessHostValueOp::StringIndex,
+                    ..
+                }
+            ) {
+                return Some((*left, None));
+            }
+        }
+    }
     let mut current = target;
     loop {
         match &context.process_ir.values[current.0 as usize].kind {
@@ -6888,7 +7041,9 @@ fn runtime_array_copy(
     if matches!(
         context.process_ir.values[fresh.0 as usize].kind,
         ProcessValueKind::HostCall {
-            operation: ProcessHostValueOp::ReadArray | ProcessHostValueOp::ArrayCopy,
+            operation: ProcessHostValueOp::ReadArray
+                | ProcessHostValueOp::ReadSymbols
+                | ProcessHostValueOp::ArrayCopy,
             ..
         }
     ) {
@@ -6972,7 +7127,8 @@ fn process_value_is_runtime_string(
                 ProcessHostValueOp::ReadUtf8
                 | ProcessHostValueOp::ReadArray
                 | ProcessHostValueOp::ArrayCopy
-                | ProcessHostValueOp::ArrayPush,
+                | ProcessHostValueOp::ArrayPush
+                | ProcessHostValueOp::ReadSymbols,
             ..
         } => true,
         ProcessValueKind::Storage(storage) => context
@@ -9138,6 +9294,20 @@ fn value_ref_with_type_inner(
                     let ty = ty
                         .filter(|ty| !matches!(ty, crate::types::Ty::Error))
                         .or(Some(crate::types::Ty::Char));
+                    // A character enum element is held as its symbol's code.
+                    if let Some(element) = ty.as_ref() {
+                        if runtime_symbols(element, index_span, context).is_some() {
+                            let code = push_value(
+                                index_span,
+                                Some(crate::types::Ty::Integer),
+                                Some(64),
+                                kind,
+                                context,
+                            );
+                            return symbol_decode(code, element, index_span, process, context)
+                                .unwrap_or(code);
+                        }
+                    }
                     let width = source_value_width(&kind, ty.as_ref(), process, context);
                     return push_value(index_span, ty, width, kind, context);
                 }

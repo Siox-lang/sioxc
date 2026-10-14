@@ -1358,6 +1358,29 @@ pub(super) fn process_value<'ctx>(
                     emit_host_read_check(context, module, builder, value.span)?;
                     return fit(builder, context.i64_type().const_zero(), width);
                 }
+                ProcessHostValueOp::ReadSymbols => {
+                    let [path, alphabet] = arguments.as_slice() else {
+                        return None;
+                    };
+                    (
+                        "sx_runtime_read_symbols",
+                        i64.fn_type(&[pointer.into(), pointer.into()], false),
+                        vec![
+                            host_path(
+                                context,
+                                module,
+                                builder,
+                                design,
+                                *path,
+                                &format!("sx.host.string.{}", path.0),
+                                index_sites,
+                                cache,
+                            )?
+                            .into(),
+                            string_argument(*alphabet, cache)?,
+                        ],
+                    )
+                }
                 ProcessHostValueOp::ArrayPush => {
                     let [handle, pushed] = arguments.as_slice() else {
                         return None;
@@ -1475,6 +1498,7 @@ pub(super) fn process_value<'ctx>(
                 operation,
                 ProcessHostValueOp::ReadUtf8
                     | ProcessHostValueOp::ReadArray
+                    | ProcessHostValueOp::ReadSymbols
                     | ProcessHostValueOp::ArrayCopy
             ) {
                 emit_host_read_check(context, module, builder, value.span)?;

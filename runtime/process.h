@@ -93,6 +93,7 @@ uint64_t sx_runtime_frame_pop(uint64_t *words, uint32_t count);
 void sx_runtime_array_index_words(uint64_t handle, uint64_t index,
                                   uint64_t *words, uint32_t count);
 uint64_t sx_runtime_array_copy(uint64_t handle);
+uint64_t sx_runtime_read_symbols(const char *path, const char *alphabet);
 uint64_t sx_runtime_array_push(uint64_t handle, const uint64_t *words,
                                uint32_t count);
 void sx_runtime_array_store(uint64_t handle, uint64_t index,
