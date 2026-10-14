@@ -51,17 +51,24 @@ pub(super) fn lower_loop_iterable(
 
 fn has_call(value: ProcessValueId, context: &mut LoweringContext<'_>) -> bool {
     while context.cfg_call_cache.len() < context.process_ir.values.len() {
-        let node = &context.process_ir.values[context.cfg_call_cache.len()];
-        let contains = matches!(
-            node.kind,
-            ProcessValueKind::Call { .. }
-                | ProcessValueKind::HostCall { .. }
-                | ProcessValueKind::ForeignCall { .. }
-                | ProcessValueKind::Invalid
-        ) || crate::ir::process::any_process_value_dependency(
-            &node.kind,
-            |dependency| context.cfg_call_cache[dependency.0 as usize],
-        );
+        let index = context.cfg_call_cache.len();
+        let node = &context.process_ir.values[index];
+        // A recursive call of a shared value function stays a call.
+        let self_call = context
+            .self_calls
+            .borrow()
+            .contains(&ProcessValueId(index as u32));
+        let contains = !self_call
+            && matches!(
+                node.kind,
+                ProcessValueKind::Call { .. }
+                    | ProcessValueKind::HostCall { .. }
+                    | ProcessValueKind::ForeignCall { .. }
+                    | ProcessValueKind::Invalid
+            )
+            || crate::ir::process::any_process_value_dependency(&node.kind, |dependency| {
+                context.cfg_call_cache[dependency.0 as usize]
+            });
         context.cfg_call_cache.push(contains);
     }
     context.cfg_call_cache[value.0 as usize]
