@@ -4320,16 +4320,35 @@ fn assign_process_value(
         }
         AssignedValue::Lowered(value) => value,
     };
-    // `xs[i] = v` on a runtime array writes the element in place.
-    if let ProcessValueKind::HostCall {
-        operation: ProcessHostValueOp::StringIndex,
-        arguments,
-    } = &context.process_ir.values[target.0 as usize].kind
-    {
+    // `xs[i] = v` on a runtime array writes the element in place; a write
+    // into part of one (`xs[i][j] = v`) updates a copy of the element first.
+    if let Some((element, rest)) = runtime_element_place(target, context) {
+        let ProcessValueKind::HostCall { arguments, .. } =
+            &context.process_ir.values[element.0 as usize].kind
+        else {
+            unreachable!()
+        };
         let (handle, index) = (arguments[0], arguments[1]);
         if after.is_none()
             && runtime_array_element(process_value_type(handle, context).as_ref()).is_some()
         {
+            let value = match rest {
+                None => value,
+                Some(rest) => {
+                    let copy = cfg_calls::frame_copy(element, process, context, block);
+                    let place = rebase_place(rest, element, copy, context);
+                    process.blocks[block.0 as usize].instructions.push(
+                        ProcessInstruction::Assign {
+                            semantics: ProcessAssignment::ImmediateLocal,
+                            driver_context: None,
+                            target: place,
+                            value,
+                            span,
+                        },
+                    );
+                    copy
+                }
+            };
             let store = push_value(
                 span,
                 Some(crate::types::Ty::Integer),
@@ -6751,6 +6770,49 @@ fn lower_process_file_call(
     });
     let width = source_value_width(&kind, ty.as_ref(), process, context);
     Some(push_value(*span, ty, width, kind, context))
+}
+
+/// The runtime array element read (`StringIndex`) a place is rooted in, and
+/// the projection over it when the place is part of the element.
+fn runtime_element_place(
+    target: ProcessValueId,
+    context: &LoweringContext<'_>,
+) -> Option<(ProcessValueId, Option<ProcessValueId>)> {
+    let mut current = target;
+    loop {
+        match &context.process_ir.values[current.0 as usize].kind {
+            ProcessValueKind::HostCall {
+                operation: ProcessHostValueOp::StringIndex,
+                ..
+            } => return Some((current, (current != target).then_some(target))),
+            ProcessValueKind::Field { base, .. }
+            | ProcessValueKind::Index { base, .. }
+            | ProcessValueKind::PackedSlice { base, .. } => current = *base,
+            _ => return None,
+        }
+    }
+}
+
+/// `place` with its root `from` replaced by `to`.
+fn rebase_place(
+    place: ProcessValueId,
+    from: ProcessValueId,
+    to: ProcessValueId,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    if place == from {
+        return to;
+    }
+    let mut node = context.process_ir.values[place.0 as usize].clone();
+    match &mut node.kind {
+        ProcessValueKind::Field { base, .. }
+        | ProcessValueKind::Index { base, .. }
+        | ProcessValueKind::PackedSlice { base, .. } => {
+            *base = rebase_place(*base, from, to, context);
+        }
+        _ => unreachable!("runtime_element_place walks only projections"),
+    }
+    push_value(node.span, node.ty, node.bit_width, node.kind, context)
 }
 
 /// `value` assigned to a runtime array of type `ty`: its own copy, unless it

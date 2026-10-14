@@ -499,6 +499,27 @@ fn runtime_sized_arrays_read_index_iterate_and_check_bounds() {
         "{report}"
     );
     assert!(!report.contains("unreachable"), "{report}");
+
+    // An element may be a fixed array: its packed bits, inner index 0 lowest.
+    // Writing part of one updates the element; a copy of it stays separate.
+    let report = compile(
+        "nested",
+        "let ns: unsigned[8][2][] = read<unsigned[8][2][]>(\"words.bin\");\n\
+         ns[1][0] = 7;\n\
+         let row: unsigned[8][2] = ns[2];\n\
+         row[1] = 9;\n\
+         ns[3] = row;\n\
+         print!(\"e4={} {} e1={} {} e2={} {} e3={} {}\\n\", ns[4][0], ns[4][1], \
+             ns[1][0], ns[1][1], ns[2][0], ns[2][1], ns[3][0], ns[3][1]);\n\
+         ns[5][0] = 1;\n\
+         print!(\"unreachable\\n\");",
+    );
+    assert!(report.contains("e4=244 1 e1=7 0 e2=3 0 e3=3 9"), "{report}");
+    assert!(
+        report.contains("index 5 is outside declared range 0..4"),
+        "{report}"
+    );
+    assert!(!report.contains("unreachable"), "{report}");
 }
 
 /// Elements wider than a word (`unsigned[128][]`, `unsigned[72][]`) come

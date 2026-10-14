@@ -602,6 +602,25 @@ impl<'a> Checker<'a> {
                 );
             } else if let Some(requested_type) = type_args[0].type_ref() {
                 let requested = self.ast_ty(requested_type);
+                // A runtime array's element: `integer`, a sized packed
+                // numeric, or a fixed array of them (`unsigned[8][4][]`).
+                fn element(ty: &Ty) -> bool {
+                    match ty {
+                        Ty::Integer => true,
+                        Ty::Array {
+                            len,
+                            family: Some(_),
+                            ..
+                        } => *len > 0,
+                        Ty::Array {
+                            elem,
+                            len,
+                            family: None,
+                            ..
+                        } => *len > 0 && element(elem),
+                        _ => false,
+                    }
+                }
                 let supported = matches!(requested, Ty::Integer)
                     || matches!(
                         requested,
@@ -627,14 +646,13 @@ impl<'a> Checker<'a> {
                             len: 0,
                             family: None,
                             ..
-                        } if matches!(elem.as_ref(), Ty::Integer)
-                            || matches!(elem.as_ref(), Ty::Array { len, family: Some(_), .. } if *len > 0)
+                        } if element(elem)
                     );
                 if !supported {
                     self.error(
                         codes::TYPE_MISMATCH,
                         type_head_span(requested_type).unwrap_or(expr_span(callee)),
-                        "`read<T>` needs `string`, `integer`, a sized packed numeric type constructible from `integer`, or an unsized array of one (`T[]`)"
+                        "`read<T>` needs `string`, `integer`, a sized packed numeric type constructible from `integer`, or an unsized array of one or of fixed arrays of one (`T[]`)"
                             .to_string(),
                     );
                 }
