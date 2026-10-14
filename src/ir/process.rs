@@ -513,6 +513,9 @@ pub enum ProcessHostValueOp {
     ArrayStore,
     /// A runtime array's own copy, for assignment: arrays are values.
     ArrayCopy,
+    /// Append one element to a runtime array (the handle, the value); the
+    /// result is the array's handle, a new one when it was empty (zero).
+    ArrayPush,
 }
 
 /// One normalized piece of a runtime message.
@@ -1984,7 +1987,8 @@ impl ProcessIr {
                         | ProcessHostValueOp::ArrayCopy => 1,
                         ProcessHostValueOp::StringIndex
                         | ProcessHostValueOp::StringEqualsUtf8
-                        | ProcessHostValueOp::ReadArray => 2,
+                        | ProcessHostValueOp::ReadArray
+                        | ProcessHostValueOp::ArrayPush => 2,
                         ProcessHostValueOp::ArrayStore => 3,
                     } =>
                 {

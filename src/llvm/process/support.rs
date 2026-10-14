@@ -706,6 +706,16 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                     }
                     (ProcessHostValueOp::StringLength, [handle])
                     | (ProcessHostValueOp::ArrayCopy, [handle]) => scalar(*handle),
+                    (ProcessHostValueOp::ArrayPush, [handle, pushed]) => {
+                        scalar(*handle)
+                            && has(&supported, *pushed)
+                            && design
+                                .process_ir
+                                .values
+                                .get(pushed.0 as usize)
+                                .and_then(|pushed| pushed.bit_width)
+                                .is_some()
+                    }
                     (ProcessHostValueOp::ArrayStore, [handle, index, stored]) => {
                         scalar(*handle)
                             && scalar(*index)

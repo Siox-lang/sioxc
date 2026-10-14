@@ -2330,10 +2330,21 @@ fn lower_statement(
         Stmt::Let(declaration) => {
             let local = push_local(process, declaration, context);
             let target = process.locals[local.0 as usize].ty.clone();
-            let initializer = declaration.value.as_ref().map(|value| {
-                let value = value_ref_with_type(value, process, context, target.as_ref());
-                runtime_array_copy(value, target.as_ref(), context)
-            });
+            let initializer = match declaration.value.as_ref() {
+                Some(value) => {
+                    let value = value_ref_with_type(value, process, context, target.as_ref());
+                    Some(runtime_array_copy(value, target.as_ref(), context))
+                }
+                // An unset runtime array is the empty one, handle zero.
+                None if runtime_array_element(target.as_ref()).is_some() => Some(push_value(
+                    declaration.span,
+                    target.clone(),
+                    Some(64),
+                    ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
+                    context,
+                )),
+                None => None,
+            };
             // A width-generic declaration (`let r: unsigned = v;` in a
             // function over `unsigned`) takes its shape from the initializer.
             if process.locals[local.0 as usize]
@@ -2773,6 +2784,40 @@ fn lower_call(
     process: &mut ProcessCfg,
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
+    // `xs.push(v)` on a runtime array: append, then keep the handle (a new
+    // one when the array was empty).
+    if let (ast::Expr::Field { base, field, .. }, [pushed]) = (callee, arguments) {
+        let ty = context
+            .typed
+            .expr_type(ast::expr_span(base))
+            .cloned()
+            .filter(|_| field.text == "push");
+        if let Some(element) = runtime_array_element(ty.as_ref()).cloned() {
+            let handle = value_ref(base, process, context);
+            let pushed = value_ref_with_type(pushed, process, context, Some(&element));
+            let appended = push_value(
+                span,
+                ty,
+                Some(64),
+                ProcessValueKind::HostCall {
+                    operation: ProcessHostValueOp::ArrayPush,
+                    arguments: vec![handle, pushed],
+                },
+                context,
+            );
+            let semantics = process_place_assignment(handle, context.process_ir)?;
+            process.blocks[block.0 as usize]
+                .instructions
+                .push(ProcessInstruction::Assign {
+                    semantics,
+                    driver_context: None,
+                    target: handle,
+                    value: appended,
+                    span,
+                });
+            return Some(block);
+        }
+    }
     let name = callee_name(callee);
     let lowered_arguments = arguments
         .iter()
@@ -5518,6 +5563,14 @@ fn push_local(
             // `let xs: T[] = [a, b, c];` takes the literal's length.
             (
                 Some(crate::types::Ty::Array {
+                    len: 0,
+                    family: None,
+                    ..
+                }),
+                Some(ast::Expr::Array { elems, .. }),
+            ) if elems.is_empty() => declared.clone(),
+            (
+                Some(crate::types::Ty::Array {
                     elem,
                     len: 0,
                     family: None,
@@ -6638,7 +6691,8 @@ fn lower_process_host_call(
         | ProcessHostValueOp::FramePop
         | ProcessHostValueOp::FrameRestore
         | ProcessHostValueOp::ArrayStore
-        | ProcessHostValueOp::ArrayCopy => return None,
+        | ProcessHostValueOp::ArrayCopy
+        | ProcessHostValueOp::ArrayPush => return None,
     });
     let kind = ProcessValueKind::HostCall {
         operation,
@@ -6840,6 +6894,20 @@ fn runtime_array_copy(
     ) {
         return value;
     }
+    // `[]`: the empty array, handle zero.
+    if matches!(
+        &context.process_ir.values[fresh.0 as usize].kind,
+        ProcessValueKind::Array(elements) if elements.is_empty()
+    ) {
+        let span = context.process_ir.values[value.0 as usize].span;
+        return push_value(
+            span,
+            ty.cloned(),
+            Some(64),
+            ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
+            context,
+        );
+    }
     let span = context.process_ir.values[value.0 as usize].span;
     push_value(
         span,
@@ -6903,7 +6971,8 @@ fn process_value_is_runtime_string(
             operation:
                 ProcessHostValueOp::ReadUtf8
                 | ProcessHostValueOp::ReadArray
-                | ProcessHostValueOp::ArrayCopy,
+                | ProcessHostValueOp::ArrayCopy
+                | ProcessHostValueOp::ArrayPush,
             ..
         } => true,
         ProcessValueKind::Storage(storage) => context
@@ -6914,6 +6983,19 @@ fn process_value_is_runtime_string(
             .is_some_and(|initializer| {
                 process_value_is_runtime_string(initializer, process, context)
             }),
+        // A runtime array local is one whatever it was initialized with (an
+        // unset one, `[]`, holds the empty array).
+        ProcessValueKind::Local {
+            process: owner,
+            local,
+        } if *owner == process.id
+            && process
+                .locals
+                .get(local.0 as usize)
+                .is_some_and(|local| runtime_array_element(local.ty.as_ref()).is_some()) =>
+        {
+            true
+        }
         ProcessValueKind::Local {
             process: owner,
             local,

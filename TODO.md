@@ -163,9 +163,10 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   does. `let xs: T[] = [a, b, c];` takes the literal's length, as VHDL does.
   An element may be a fixed array (`unsigned[8][2][]`, its packed bits,
   inner index 0 lowest); writing part of one (`xs[i][j] = v`) updates the
-  element. Still open: growable arrays (no API yet), `Logic` elements (a
-  binary file has no X/Z encoding) and runtime arrays of runtime arrays;
-  `read` rejects those at compile time.
+  element. `xs.push(v)` grows one as a Rust `Vec` does (doubling); an
+  unset `T[]` or `[]` is the empty array (handle zero). Still open: `Logic`
+  elements (a binary file has no X/Z encoding) and runtime arrays of runtime
+  arrays; `read` rejects those at compile time.
   Runtime-computed file paths are done: a testbench `read`/`exists` path may
   be any string (fixed `Char[N]` values are formatted, runtime strings pass
   their UTF-8), resolved against the source directory by

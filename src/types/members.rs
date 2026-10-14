@@ -183,6 +183,39 @@ impl<'a> Checker<'a> {
             return;
         };
         let recv = self.type_of(base, sym);
+        // A runtime array (`T[]`) grows by `push`, as a Rust `Vec` does.
+        if let Ty::Array {
+            elem,
+            len: 0,
+            family: None,
+            ..
+        } = &recv
+        {
+            if !matches!(elem.as_ref(), Ty::Char) {
+                match (field.text.as_str(), args) {
+                    ("push", [value]) => {
+                        if !self.assignable(elem, value, sym) {
+                            self.error(
+                                codes::TYPE_MISMATCH,
+                                expr_span(value),
+                                format!(
+                                    "cannot push {} onto {}",
+                                    self.ty_display(&self.type_of(value, sym)),
+                                    self.ty_display(&recv)
+                                ),
+                            );
+                        }
+                    }
+                    _ => self.error_with_help(
+                        codes::INVALID_METHOD_CALL,
+                        *span,
+                        format!("a runtime array has no method `{}`", field.text),
+                        "a runtime array has `push(value)`; its length is `xs'length`".to_string(),
+                    ),
+                }
+                return;
+            }
+        }
         let Some(head) = self.ty_head(&recv) else {
             return;
         };

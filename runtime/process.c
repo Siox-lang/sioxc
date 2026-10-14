@@ -117,6 +117,7 @@ typedef struct {
     size_t byte_length;
     uint64_t *elements;
     size_t element_words;
+    size_t capacity; /* elements allocated, for `push` */
 } sx_runtime_string;
 
 static sx_runtime_string *sx_strings;
@@ -282,7 +283,7 @@ uint64_t sx_runtime_read_utf8(const char *path) {
         sx_string_capacity = capacity;
     }
     sx_strings[sx_string_count] = (sx_runtime_string){
-        values, count, bytes, length, 0, 0
+        values, count, bytes, length, 0, 0, 0
     };
     return (uint64_t)++sx_string_count;
 }
@@ -305,8 +306,16 @@ static uint64_t sx_runtime_array_add(uint64_t *elements, size_t count,
         sx_string_capacity = capacity;
     }
     sx_strings[sx_string_count] =
-        (sx_runtime_string){0, count, 0, 0, elements, words};
+        (sx_runtime_string){0, count, 0, 0, elements, words, count};
     return (uint64_t)++sx_string_count;
+}
+
+/* Handle zero is the empty runtime array: an unset `T[]`, or `[]`. */
+static uint64_t sx_empty_word;
+static sx_runtime_string sx_empty_array = {0, 0, 0, 0, &sx_empty_word, 1, 0};
+
+static sx_runtime_string *sx_runtime_array_for(uint64_t handle) {
+    return handle ? sx_runtime_string_for(handle) : &sx_empty_array;
 }
 
 /* `read<T[]>(path)`: the whole file as little-endian elements of
@@ -378,6 +387,7 @@ uint64_t sx_runtime_read_array(const char *path, uint64_t element_bytes) {
  * ponytail: a copy is never freed (no handle lifetime yet); copying in a
  * long loop grows memory until arrays get ownership. */
 uint64_t sx_runtime_array_copy(uint64_t handle) {
+    if (!handle) return 0;
     sx_runtime_string *string = sx_runtime_string_for(handle);
     if (!string) return 0;
     if (!string->elements) return handle; /* strings are never written */
@@ -397,7 +407,7 @@ uint64_t sx_runtime_array_copy(uint64_t handle) {
 /* `xs[index] = value`: the element's `count` words, zero-extended. */
 void sx_runtime_array_store(uint64_t handle, uint64_t index,
                             const uint64_t *words, uint32_t count) {
-    sx_runtime_string *string = sx_runtime_string_for(handle);
+    sx_runtime_string *string = sx_runtime_array_for(handle);
     if (!string) return;
     if (!string->elements) {
         sx_set_error("a runtime string is not writable");
@@ -413,6 +423,51 @@ void sx_runtime_array_store(uint64_t handle, uint64_t index,
     size_t copy = count < string->element_words ? count : string->element_words;
     memset(element, 0, string->element_words * sizeof(uint64_t));
     memcpy(element, words, copy * sizeof(uint64_t));
+}
+
+/* `xs.push(value)`: append one element of `count` words, doubling the
+ * allocation as a Rust `Vec` does. Returns the handle, a new one for the
+ * empty array. */
+uint64_t sx_runtime_array_push(uint64_t handle, const uint64_t *words,
+                               uint32_t count) {
+    if (!handle) {
+        uint64_t *elements = malloc((count ? count : 1) * sizeof(uint64_t));
+        if (!elements) {
+            sx_set_error("push: out of memory");
+            return 0;
+        }
+        memcpy(elements, words, (size_t)count * sizeof(uint64_t));
+        uint64_t created = sx_runtime_array_add(elements, 1, count ? count : 1);
+        if (!created) sx_set_error("push: out of memory");
+        return created;
+    }
+    sx_runtime_string *string = sx_runtime_string_for(handle);
+    if (!string) return handle;
+    if (!string->elements) {
+        sx_set_error("a runtime string is not writable");
+        return handle;
+    }
+    if (string->length == string->capacity) {
+        size_t capacity = string->capacity ? string->capacity * 2 : 4;
+        uint64_t *grown =
+            capacity > SIZE_MAX / sizeof(uint64_t) / string->element_words
+                ? 0
+                : realloc(string->elements,
+                          capacity * string->element_words * sizeof(uint64_t));
+        if (!grown) {
+            sx_set_error("push: out of memory");
+            return handle;
+        }
+        string->elements = grown;
+        string->capacity = capacity;
+    }
+    uint64_t *element =
+        string->elements + string->length * string->element_words;
+    size_t copy = count < string->element_words ? count : string->element_words;
+    memset(element, 0, string->element_words * sizeof(uint64_t));
+    memcpy(element, words, copy * sizeof(uint64_t));
+    ++string->length;
+    return handle;
 }
 
 uint8_t sx_runtime_read_utf8_fixed(const char *path, uint64_t *words,
@@ -566,12 +621,12 @@ const char *sx_runtime_string_utf8(uint64_t handle) {
 }
 
 uint64_t sx_runtime_string_length(uint64_t handle) {
-    sx_runtime_string *string = sx_runtime_string_for(handle);
+    sx_runtime_string *string = sx_runtime_array_for(handle);
     return string ? (uint64_t)string->length : 0;
 }
 
 uint64_t sx_runtime_string_index(uint64_t handle, uint64_t index) {
-    sx_runtime_string *string = sx_runtime_string_for(handle);
+    sx_runtime_string *string = sx_runtime_array_for(handle);
     if (!string) return 0;
     if (index >= string->length) {
         sx_set_error("runtime string index %llu is out of bounds for length %llu",
@@ -1055,7 +1110,7 @@ void sx_runtime_note_location(uint32_t file, uint32_t offset) {
 
 uint64_t sx_runtime_string_index_at(uint64_t handle, uint64_t index,
                                     uint32_t file, uint32_t offset) {
-    sx_runtime_string *string = sx_runtime_string_for(handle);
+    sx_runtime_string *string = sx_runtime_array_for(handle);
     if (!string) {
         sx_append_error_location(sx_source_location(file, offset));
         return 0;
@@ -1078,7 +1133,7 @@ void sx_runtime_array_index_words(uint64_t handle, uint64_t index,
                                   uint64_t *words, uint32_t count) {
     sx_runtime_string *string;
     memset(words, 0, (size_t)count * sizeof(uint64_t));
-    string = sx_runtime_string_for(handle);
+    string = sx_runtime_array_for(handle);
     if (!string || !string->elements) return;
     if (index >= string->length) {
         int64_t right = string->length ? (int64_t)string->length - 1 : -1;
