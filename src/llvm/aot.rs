@@ -35,6 +35,16 @@ fn target_cpu_features() -> (String, String) {
                 .unwrap_or("")
                 .to_string(),
         )
+    } else if TargetMachine::get_default_triple()
+        .as_str()
+        .to_str()
+        .is_ok_and(|triple| triple.starts_with("x86_64"))
+    {
+        // The x86-64-v2 level (SSE4.2, POPCNT: every x86-64 CPU since about
+        // 2009) rather than baseline SSE2. Selecting the wide-integer IR of
+        // a large design for baseline x86-64 took 3.7x as long
+        // (`hardware_aggregate_writes_test`: 13.6 s against 3.7 s).
+        ("x86-64-v2".to_string(), String::new())
     } else {
         ("generic".to_string(), String::new())
     }
