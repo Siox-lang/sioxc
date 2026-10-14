@@ -126,6 +126,8 @@ static size_t sx_string_capacity;
 
 static void sx_set_error(const char *format, ...);
 static sx_runtime_string *sx_runtime_string_for(uint64_t handle);
+static uint64_t sx_runtime_string_register(char *bytes, uint32_t *values,
+                                           size_t length, const char *what);
 
 const char *sx_runtime_error(void) { return sx_error; }
 uint64_t sx_runtime_now(void) { return sx_now; }
@@ -250,6 +252,14 @@ uint64_t sx_runtime_read_utf8(const char *path) {
         sx_set_error("read<string>(\"%s\"): short read", path);
         return 0;
     }
+    return sx_runtime_string_register(bytes, values, length, path);
+}
+
+/* Decode `length` UTF-8 `bytes` (owned, with room for a NUL) into `values`
+ * (owned, `length` code points of room) and register the runtime string.
+ * `what` names the source in an error. */
+static uint64_t sx_runtime_string_register(char *bytes, uint32_t *values,
+                                           size_t length, const char *what) {
     bytes[length] = 0;
     size_t cursor = 0, count = 0;
     while (cursor < length) {
@@ -257,7 +267,7 @@ uint64_t sx_runtime_read_utf8(const char *path) {
                          &values[count]) < 0) {
             free(bytes);
             free(values);
-            sx_set_error("read<string>(\"%s\"): file is not valid UTF-8", path);
+            sx_set_error("read<string>(\"%s\"): file is not valid UTF-8", what);
             return 0;
         }
         ++count;
@@ -268,7 +278,7 @@ uint64_t sx_runtime_read_utf8(const char *path) {
             || capacity > SIZE_MAX / sizeof(sx_runtime_string)) {
             free(bytes);
             free(values);
-            sx_set_error("read<string>(\"%s\"): too many runtime strings", path);
+            sx_set_error("read<string>(\"%s\"): too many runtime strings", what);
             return 0;
         }
         sx_runtime_string *grown = realloc(
@@ -276,7 +286,7 @@ uint64_t sx_runtime_read_utf8(const char *path) {
         if (!grown) {
             free(bytes);
             free(values);
-            sx_set_error("read<string>(\"%s\"): out of memory", path);
+            sx_set_error("read<string>(\"%s\"): out of memory", what);
             return 0;
         }
         sx_strings = grown;
@@ -286,6 +296,22 @@ uint64_t sx_runtime_read_utf8(const char *path) {
         values, count, bytes, length, 0, 0, 0
     };
     return (uint64_t)++sx_string_count;
+}
+
+/* A runtime string of `text` (a fixed `Char[N]` assigned to a `string`
+ * element or local). */
+uint64_t sx_runtime_string_from_utf8(const char *text) {
+    size_t length = text ? strlen(text) : 0;
+    char *bytes = malloc(length + 1);
+    uint32_t *values = calloc(length ? length : 1, sizeof(uint32_t));
+    if (!bytes || !values) {
+        free(bytes);
+        free(values);
+        sx_set_error("runtime string: out of memory");
+        return 0;
+    }
+    memcpy(bytes, text ? text : "", length);
+    return sx_runtime_string_register(bytes, values, length, "<string>");
 }
 
 /* Register a runtime array of `count` elements of `words` words each; it
@@ -434,7 +460,7 @@ uint64_t sx_runtime_read_symbols(const char *path, const char *alphabet) {
  * own elements and a later element write to one leaves the other alone.
  * ponytail: a copy is never freed (no handle lifetime yet); copying in a
  * long loop grows memory until arrays get ownership. */
-uint64_t sx_runtime_array_copy(uint64_t handle) {
+uint64_t sx_runtime_array_copy(uint64_t handle, uint64_t depth) {
     if (!handle) return 0;
     sx_runtime_string *string = sx_runtime_string_for(handle);
     if (!string) return 0;
@@ -446,10 +472,40 @@ uint64_t sx_runtime_array_copy(uint64_t handle) {
         return 0;
     }
     memcpy(elements, string->elements, words * sizeof(uint64_t));
-    uint64_t copy = sx_runtime_array_add(elements, string->length,
-                                         string->element_words);
+    /* `integer[][]`: each element is a handle, copied in turn. The table
+     * may move while copying, so `string` is not used past here. */
+    size_t length = string->length, element_words = string->element_words;
+    for (size_t element = 0; depth && element < length; ++element)
+        elements[element] = sx_runtime_array_copy(elements[element], depth - 1);
+    uint64_t copy = sx_runtime_array_add(elements, length, element_words);
     if (!copy) sx_set_error("runtime array copy: out of memory");
     return copy;
+}
+
+/* A runtime array from a fixed array's packed bits: `count` elements of
+ * `width` bits each, element 0 in the lowest bits. */
+uint64_t sx_runtime_array_from(const uint64_t *words, uint64_t count,
+                               uint64_t width) {
+    size_t element_words = width ? (size_t)((width + 63) / 64) : 1;
+    if (count > SIZE_MAX / sizeof(uint64_t) / element_words) {
+        sx_set_error("runtime array: out of memory");
+        return 0;
+    }
+    uint64_t *elements =
+        calloc(count ? (size_t)count * element_words : 1, sizeof(uint64_t));
+    if (!elements) {
+        sx_set_error("runtime array: out of memory");
+        return 0;
+    }
+    for (uint64_t element = 0; element < count; ++element)
+        for (uint64_t bit = 0; bit < width; ++bit) {
+            uint64_t at = element * width + bit;
+            if (words[at / 64] >> (at % 64) & 1)
+                elements[element * element_words + bit / 64] |= UINT64_C(1) << (bit % 64);
+        }
+    uint64_t handle = sx_runtime_array_add(elements, (size_t)count, element_words);
+    if (!handle) sx_set_error("runtime array: out of memory");
+    return handle;
 }
 
 /* `xs[index] = value`: the element's `count` words, zero-extended. */
@@ -664,8 +720,9 @@ void sx_runtime_debug_string(uint32_t root, uint64_t handle, uint64_t *length,
 
 /* A runtime string's UTF-8 text, for a file path read from a fixture. */
 const char *sx_runtime_string_utf8(uint64_t handle) {
+    if (!handle) return ""; /* an unset `string` */
     sx_runtime_string *string = sx_runtime_string_for(handle);
-    return string ? string->utf8 : 0;
+    return string && string->utf8 ? string->utf8 : "";
 }
 
 uint64_t sx_runtime_string_length(uint64_t handle) {

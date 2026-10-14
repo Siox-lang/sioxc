@@ -361,6 +361,43 @@ pub(super) fn emit_process_format<'ctx>(
                     .ok()?;
             }
             ProcessDisplayKind::String => {
+                // A runtime string (`read<string>`, an element of `string[]`)
+                // is its handle's UTF-8 text. Its unconstrained layout used
+                // to read as an empty literal, printing nothing.
+                if process_string(design, *value).is_none() && dynamic_string_value(design, *value)
+                {
+                    let handle = process_value_at(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        *value,
+                        64,
+                        false,
+                        None,
+                        index_sites,
+                        cache,
+                    )?;
+                    let utf8 = module
+                        .get_function("sx_runtime_string_utf8")
+                        .unwrap_or_else(|| {
+                            module.add_function(
+                                "sx_runtime_string_utf8",
+                                pointer.fn_type(&[context.i64_type().into()], false),
+                                Some(Linkage::External),
+                            )
+                        });
+                    let text = match builder
+                        .build_call(utf8, &[handle.into()], "process.format.runtime")
+                        .ok()?
+                        .try_as_basic_value()
+                    {
+                        inkwell::values::ValueKind::Basic(text) => text.into_pointer_value(),
+                        _ => return None,
+                    };
+                    builder.build_call(append_text, &[text.into()], "").ok()?;
+                    continue;
+                }
                 if process_empty_string(design, *value) {
                     continue;
                 }

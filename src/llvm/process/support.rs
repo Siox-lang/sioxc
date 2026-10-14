@@ -37,6 +37,8 @@ pub(super) fn runtime_instruction_supported(
                 ..
             } => {
                 process_string(design, *value).is_some()
+                    || dynamic_string_value(design, *value)
+                        && values.get(value.0 as usize).copied().unwrap_or(false)
                     || process_empty_string(design, *value)
                     || values.get(value.0 as usize).copied().unwrap_or(false)
                         && process_value_layout(design, *value)
@@ -704,8 +706,28 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                                             .and_then(process_fixed_string_layout)
                                             .is_some()))
                     }
-                    (ProcessHostValueOp::StringLength, [handle])
-                    | (ProcessHostValueOp::ArrayCopy, [handle]) => scalar(*handle),
+                    (ProcessHostValueOp::StringLength, [handle]) => scalar(*handle),
+                    (ProcessHostValueOp::StringFrom, [fixed]) => {
+                        process_string(design, *fixed).is_some()
+                            || has(&supported, *fixed)
+                                && process_value_layout(design, *fixed)
+                                    .and_then(process_fixed_string_layout)
+                                    .is_some()
+                    }
+                    (ProcessHostValueOp::ArrayFrom, [fixed, count, element_width]) => {
+                        scalar(*count)
+                            && scalar(*element_width)
+                            && has(&supported, *fixed)
+                            && design
+                                .process_ir
+                                .values
+                                .get(fixed.0 as usize)
+                                .and_then(|fixed| fixed.bit_width)
+                                .is_some()
+                    }
+                    (ProcessHostValueOp::ArrayCopy, [handle, depth]) => {
+                        scalar(*handle) && scalar(*depth)
+                    }
                     (ProcessHostValueOp::ReadSymbols, [path, alphabet]) => {
                         process_string(design, *alphabet).is_some()
                             && (process_string(design, *path).is_some()
