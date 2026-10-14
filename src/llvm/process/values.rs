@@ -1403,14 +1403,67 @@ pub(super) fn process_value<'ctx>(
                     emit_host_read_check(context, module, builder, value.span)?;
                     return fit(builder, appended, width);
                 }
+                ProcessHostValueOp::StringFrom => {
+                    let [fixed] = arguments.as_slice() else {
+                        return None;
+                    };
+                    let text = emit_process_format(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        ProcessId(u32::MAX),
+                        siox::ir::ProcessBlockId(fixed.0),
+                        0,
+                        &[ProcessFormatPart::Value {
+                            value: *fixed,
+                            kind: ProcessDisplayKind::String,
+                            spec: Default::default(),
+                        }],
+                        index_sites,
+                        cache,
+                    )?;
+                    (
+                        "sx_runtime_string_from_utf8",
+                        i64.fn_type(&[pointer.into()], false),
+                        vec![text.into()],
+                    )
+                }
+                ProcessHostValueOp::ArrayFrom => {
+                    let [fixed, count, element_width] = arguments.as_slice() else {
+                        return None;
+                    };
+                    let fixed_width = design.process_ir.values.get(fixed.0 as usize)?.bit_width?;
+                    let bits = process_value_at(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        *fixed,
+                        fixed_width,
+                        false,
+                        active,
+                        index_sites,
+                        cache,
+                    )?;
+                    let count = scalar_argument(*count, cache)?.into_int_value();
+                    let element_width = scalar_argument(*element_width, cache)?.into_int_value();
+                    let made =
+                        emit_array_from(context, module, builder, bits, count, element_width)?;
+                    emit_host_read_check(context, module, builder, value.span)?;
+                    return fit(builder, made, width);
+                }
                 ProcessHostValueOp::ArrayCopy => {
-                    let [handle] = arguments.as_slice() else {
+                    let [handle, depth] = arguments.as_slice() else {
                         return None;
                     };
                     (
                         "sx_runtime_array_copy",
-                        i64.fn_type(&[i64.into()], false),
-                        vec![scalar_argument(*handle, cache)?],
+                        i64.fn_type(&[i64.into(), i64.into()], false),
+                        vec![
+                            scalar_argument(*handle, cache)?,
+                            scalar_argument(*depth, cache)?,
+                        ],
                     )
                 }
                 ProcessHostValueOp::FramePop => {

@@ -121,6 +121,10 @@ pub(super) fn runtime_handle_element_width(layout: Option<&SourceLayout>) -> Opt
     ) {
         return Some(32);
     }
+    // An element that is a runtime array itself is its handle.
+    if runtime_handle_element_width(Some(element)).is_some() {
+        return Some(64);
+    }
     element.packed_width().filter(|width| *width > 0)
 }
 
@@ -140,6 +144,8 @@ pub(super) fn initializer_can_raise_host_error(
                 | ProcessHostValueOp::ArrayCopy
                 | ProcessHostValueOp::ArrayPush
                 | ProcessHostValueOp::ReadSymbols
+                | ProcessHostValueOp::ArrayFrom
+                | ProcessHostValueOp::StringFrom
                 | ProcessHostValueOp::ReadUtf8Fixed
                 | ProcessHostValueOp::ReadBinary,
             ..

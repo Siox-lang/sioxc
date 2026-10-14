@@ -666,6 +666,46 @@ pub(super) fn emit_array_push<'ctx>(
     }
 }
 
+/// A runtime array made from a fixed array's packed `bits`
+/// (`sx_runtime_array_from`).
+pub(super) fn emit_array_from<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    bits: IntValue<'ctx>,
+    count: IntValue<'ctx>,
+    element_width: IntValue<'ctx>,
+) -> Option<IntValue<'ctx>> {
+    let i64 = context.i64_type();
+    let pointer = context.ptr_type(AddressSpace::default());
+    let (buffer, _) = word_buffer(context, builder, bits)?;
+    let runtime = module
+        .get_function("sx_runtime_array_from")
+        .unwrap_or_else(|| {
+            module.add_function(
+                "sx_runtime_array_from",
+                i64.fn_type(&[pointer.into(), i64.into(), i64.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    match builder
+        .build_call(
+            runtime,
+            &[
+                buffer.into(),
+                fit(builder, count, 64)?.into(),
+                fit(builder, element_width, 64)?.into(),
+            ],
+            "pv.from",
+        )
+        .ok()?
+        .try_as_basic_value()
+    {
+        inkwell::values::ValueKind::Basic(value) => Some(value.into_int_value()),
+        _ => None,
+    }
+}
+
 /// `xs[index] = bits` on a runtime array (`sx_runtime_array_store`).
 pub(super) fn emit_array_store<'ctx>(
     context: &'ctx Context,

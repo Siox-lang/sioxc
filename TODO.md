@@ -168,10 +168,12 @@ Owns exact-width native code generation and the object-side runtime ABI. Code:
   element (`Logic[]`, `Bit[]`) reads as text, one symbol per element with
   whitespace skipped (VHDL textio style): an element holds its symbol's
   position, converted to and from the enum's values by selects over its own
-  discriminants, so X/Z values survive. Not expressible yet: a runtime
-  array of runtime arrays. An index on an unconstrained array fills its hole
-  (`string[5]` is `Char[5]`), so `integer[][]` is `integer[]`; nesting them
-  needs new syntax, a language decision. Fixed-array elements work.
+  discriminants, so X/Z values survive. Runtime arrays nest: `[]` on an
+  unconstrained array nests (`integer[][]`, `string[]`) while a sized index
+  still fills its hole (`string[5]` is `Char[5]`). Elements are handles;
+  assigning or pushing copies every level, and a fixed array or string
+  literal becomes a runtime one where one is expected (`xs = [7, 8, 9]`,
+  `names.push("de")`).
   Runtime-computed file paths are done: a testbench `read`/`exists` path may
   be any string (fixed `Char[N]` values are formatted, runtime strings pass
   their UTF-8), resolved against the source directory by

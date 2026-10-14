@@ -36,16 +36,17 @@ impl<'a> Checker<'a> {
                         family: None,
                         low: 0,
                     },
-                    // An index on an *unconstrained* array fills its hole
-                    // rather than nesting: `string[5]` is `Char[5]`, not
-                    // `Char[0][5]` (`type string = Char[]`, std::text). The
-                    // lowerer already did this; the checker rejected the form.
+                    // A sized index on an *unconstrained* array fills its
+                    // hole rather than nesting: `string[5]` is `Char[5]`, not
+                    // `Char[0][5]` (`type string = Char[]`, std::text). An
+                    // unsized one nests: `integer[][]` is an array of
+                    // runtime arrays, `string[]` an array of strings.
                     Ty::Array {
                         elem,
                         len: 0,
                         family: None,
                         ..
-                    } => Ty::Array {
+                    } if index.is_some() => Ty::Array {
                         elem,
                         len: width,
                         family: None,

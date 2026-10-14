@@ -448,6 +448,19 @@ fn process_declared_type_inner(
                     family: Some(family),
                     low: 0,
                 }),
+                // A sized index fills an unconstrained array's hole
+                // (`string[5]` is `Char[5]`); `[]` nests (`integer[][]`).
+                crate::types::Ty::Array {
+                    elem,
+                    len: 0,
+                    family: None,
+                    ..
+                } if index.is_some() => Some(crate::types::Ty::Array {
+                    elem,
+                    len: length,
+                    family: None,
+                    low: 0,
+                }),
                 element => Some(crate::types::Ty::Array {
                     elem: Box::new(element),
                     len: length,
@@ -2335,14 +2348,25 @@ fn lower_statement(
                     let value = value_ref_with_type(value, process, context, target.as_ref());
                     Some(runtime_array_copy(value, target.as_ref(), context))
                 }
-                // An unset runtime array is the empty one, handle zero.
-                None if runtime_array_element(target.as_ref()).is_some() => Some(push_value(
-                    declaration.span,
-                    target.clone(),
-                    Some(64),
-                    ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
-                    context,
-                )),
+                // An unset runtime array or string is the empty one, handle
+                // zero.
+                None if matches!(
+                    target,
+                    Some(crate::types::Ty::Array {
+                        len: 0,
+                        family: None,
+                        ..
+                    })
+                ) =>
+                {
+                    Some(push_value(
+                        declaration.span,
+                        target.clone(),
+                        Some(64),
+                        ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
+                        context,
+                    ))
+                }
                 None => None,
             };
             // A width-generic declaration (`let r: unsigned = v;` in a
@@ -2794,7 +2818,19 @@ fn lower_call(
             .filter(|_| field.text == "push");
         if let Some(element) = runtime_array_element(ty.as_ref()).cloned() {
             let handle = value_ref(base, process, context);
-            let pushed = value_ref_with_type(pushed, process, context, Some(&element));
+            let literal = literal_type(pushed, Some(&element));
+            let pushed = value_ref_with_type(
+                pushed,
+                process,
+                context,
+                literal.as_ref().or(Some(&element)),
+            );
+            let pushed = if literal.is_some() {
+                cfg_calls::frame_copy(pushed, process, context, block)
+            } else {
+                pushed
+            };
+            let pushed = runtime_array_copy(pushed, Some(&element), context);
             let pushed = symbol_encode(pushed, &element, span, process, context).unwrap_or(pushed);
             let appended = push_value(
                 span,
@@ -2806,6 +2842,27 @@ fn lower_call(
                 },
                 context,
             );
+            // `rows[i].push(v)`: the inner array's handle goes back into
+            // the outer one (it is new when the inner array was empty).
+            if let ProcessValueKind::HostCall {
+                operation: ProcessHostValueOp::StringIndex,
+                arguments,
+            } = &context.process_ir.values[handle.0 as usize].kind
+            {
+                let (outer, index) = (arguments[0], arguments[1]);
+                let store = push_value(
+                    span,
+                    Some(crate::types::Ty::Integer),
+                    Some(64),
+                    ProcessValueKind::HostCall {
+                        operation: ProcessHostValueOp::ArrayStore,
+                        arguments: vec![outer, index, appended],
+                    },
+                    context,
+                );
+                cfg_calls::frame_copy(store, process, context, block);
+                return Some(block);
+            }
             let semantics = process_place_assignment(handle, context.process_ir)?;
             process.blocks[block.0 as usize]
                 .instructions
@@ -4362,7 +4419,19 @@ fn assign_process_value(
             || assignment_drives_design_source(source_target, process, context));
     let value = match value {
         AssignedValue::Source(value) => {
-            value_ref_with_type(value, process, context, target_type.as_ref())
+            let ty = literal_type(value, target_type.as_ref());
+            let lowered = value_ref_with_type(
+                value,
+                process,
+                context,
+                ty.as_ref().or(target_type.as_ref()),
+            );
+            // A literal for a runtime array is built in a local first.
+            if ty.is_some() {
+                cfg_calls::frame_copy(lowered, process, context, block)
+            } else {
+                lowered
+            }
         }
         AssignedValue::Lowered(value) => value,
     };
@@ -4380,6 +4449,7 @@ fn assign_process_value(
         if after.is_none() && element_type.is_some() {
             let value = match element_type {
                 Some(element_type) if rest.is_none() => {
+                    let value = runtime_array_copy(value, Some(&element_type), context);
                     symbol_encode(value, &element_type, span, process, context).unwrap_or(value)
                 }
                 _ => value,
@@ -6700,7 +6770,9 @@ fn lower_process_host_call(
         | ProcessHostValueOp::ArrayStore
         | ProcessHostValueOp::ArrayCopy
         | ProcessHostValueOp::ArrayPush
-        | ProcessHostValueOp::ReadSymbols => return None,
+        | ProcessHostValueOp::ReadSymbols
+        | ProcessHostValueOp::ArrayFrom
+        | ProcessHostValueOp::StringFrom => return None,
     });
     let kind = ProcessValueKind::HostCall {
         operation,
@@ -7022,6 +7094,28 @@ fn rebase_place(
     push_value(node.span, node.ty, node.bit_width, node.kind, context)
 }
 
+/// The fixed type of an array literal given to an unconstrained `T[]`
+/// (`xs = [7, 8, 9]` is an `integer[3]`, converted to a runtime array).
+fn literal_type(value: &ast::Expr, ty: Option<&crate::types::Ty>) -> Option<crate::types::Ty> {
+    let ast::Expr::Array { elems, .. } = value else {
+        return None;
+    };
+    match ty? {
+        crate::types::Ty::Array {
+            elem,
+            len: 0,
+            family: None,
+            low,
+        } if !elems.is_empty() => Some(crate::types::Ty::Array {
+            elem: elem.clone(),
+            len: u32::try_from(elems.len()).ok()?,
+            family: None,
+            low: *low,
+        }),
+        _ => None,
+    }
+}
+
 /// `value` assigned to a runtime array of type `ty`: its own copy, unless it
 /// is fresh from a read or a copy already.
 fn runtime_array_copy(
@@ -7029,8 +7123,72 @@ fn runtime_array_copy(
     ty: Option<&crate::types::Ty>,
     context: &mut LoweringContext<'_>,
 ) -> ProcessValueId {
-    if runtime_array_element(ty).is_none() {
+    // A fixed string assigned to a runtime one (`names.push("de")`) becomes
+    // a runtime string of its text.
+    let runtime_string = matches!(
+        ty,
+        Some(crate::types::Ty::Array { elem, len: 0, family: None, .. })
+            if matches!(elem.as_ref(), crate::types::Ty::Char)
+    );
+    if runtime_string
+        && (matches!(
+            process_value_type(value, context),
+            Some(crate::types::Ty::Array { elem, len, family: None, .. })
+                if len > 0 && matches!(elem.as_ref(), crate::types::Ty::Char)
+        ) || matches!(
+            &context.process_ir.values[value.0 as usize].kind,
+            ProcessValueKind::String(text) if !text.is_empty()
+        ))
+    {
+        let span = context.process_ir.values[value.0 as usize].span;
+        return push_value(
+            span,
+            ty.cloned(),
+            Some(64),
+            ProcessValueKind::HostCall {
+                operation: ProcessHostValueOp::StringFrom,
+                arguments: vec![value],
+            },
+            context,
+        );
+    }
+    let Some(element) = runtime_array_element(ty).cloned() else {
         return value;
+    };
+    // A fixed array (`[1, 2]`, an `integer[4]` local) becomes a new runtime
+    // array of its elements.
+    let span = context.process_ir.values[value.0 as usize].span;
+    if let Some(crate::types::Ty::Array {
+        len, family: None, ..
+    }) = process_value_type(value, context).filter(
+        |fixed| matches!(fixed, crate::types::Ty::Array { len, family: None, .. } if *len > 0),
+    ) {
+        let width = process_layout_for_type(&element, span, context)
+            .and_then(|layout| layout.packed_width())
+            .filter(|_| runtime_symbols(&element, span, context).is_none());
+        if let Some(width) = width {
+            let number = |n: u64, context: &mut LoweringContext<'_>| {
+                push_value(
+                    span,
+                    Some(crate::types::Ty::Integer),
+                    Some(64),
+                    ProcessValueKind::Number(ProcessNumber::Integer(vec![n])),
+                    context,
+                )
+            };
+            let count = number(u64::from(len), context);
+            let element_width = number(u64::from(width), context);
+            return push_value(
+                span,
+                ty.cloned(),
+                Some(64),
+                ProcessValueKind::HostCall {
+                    operation: ProcessHostValueOp::ArrayFrom,
+                    arguments: vec![value, count, element_width],
+                },
+                context,
+            );
+        }
     }
     let mut fresh = value;
     while let ProcessValueKind::InlineCall { operand, .. } =
@@ -7043,7 +7201,8 @@ fn runtime_array_copy(
         ProcessValueKind::HostCall {
             operation: ProcessHostValueOp::ReadArray
                 | ProcessHostValueOp::ReadSymbols
-                | ProcessHostValueOp::ArrayCopy,
+                | ProcessHostValueOp::ArrayCopy
+                | ProcessHostValueOp::ArrayFrom,
             ..
         }
     ) {
@@ -7063,14 +7222,27 @@ fn runtime_array_copy(
             context,
         );
     }
-    let span = context.process_ir.values[value.0 as usize].span;
+    // Arrays nested in it are copied too: `integer[][]` is one level deep.
+    let mut levels = 0u64;
+    let mut inner = runtime_array_element(ty);
+    while let Some(element) = inner.and_then(|element| runtime_array_element(Some(element))) {
+        levels += 1;
+        inner = Some(element);
+    }
+    let depth = push_value(
+        span,
+        Some(crate::types::Ty::Integer),
+        Some(64),
+        ProcessValueKind::Number(ProcessNumber::Integer(vec![levels])),
+        context,
+    );
     push_value(
         span,
         ty.cloned(),
         Some(64),
         ProcessValueKind::HostCall {
             operation: ProcessHostValueOp::ArrayCopy,
-            arguments: vec![value],
+            arguments: vec![value, depth],
         },
         context,
     )
@@ -7107,7 +7279,11 @@ fn runtime_handle_width(layout: Option<&SourceLayout>) -> Option<u32> {
             ..
         }
     );
-    (character || element.packed_width().is_some_and(|width| width > 0)).then_some(64)
+    // An element that is a runtime array itself (`integer[][]`) is a handle.
+    (character
+        || element.packed_width().is_some_and(|width| width > 0)
+        || runtime_handle_width(Some(element)).is_some())
+    .then_some(64)
 }
 
 fn process_value_is_runtime_string(
@@ -7122,13 +7298,32 @@ fn process_value_is_runtime_string(
         ProcessValueKind::InlineCall { operand, .. } => {
             process_value_is_runtime_string(*operand, process, context)
         }
+        // An element of `integer[][]` is a runtime array itself.
+        ProcessValueKind::HostCall {
+            operation: ProcessHostValueOp::StringIndex,
+            ..
+        } if value.ty.as_ref().is_some_and(|ty| {
+            matches!(
+                ty,
+                crate::types::Ty::Array {
+                    len: 0,
+                    family: None,
+                    ..
+                }
+            )
+        }) =>
+        {
+            true
+        }
         ProcessValueKind::HostCall {
             operation:
                 ProcessHostValueOp::ReadUtf8
                 | ProcessHostValueOp::ReadArray
                 | ProcessHostValueOp::ArrayCopy
                 | ProcessHostValueOp::ArrayPush
-                | ProcessHostValueOp::ReadSymbols,
+                | ProcessHostValueOp::ReadSymbols
+                | ProcessHostValueOp::ArrayFrom
+                | ProcessHostValueOp::StringFrom,
             ..
         } => true,
         ProcessValueKind::Storage(storage) => context
@@ -7145,10 +7340,16 @@ fn process_value_is_runtime_string(
             process: owner,
             local,
         } if *owner == process.id
-            && process
-                .locals
-                .get(local.0 as usize)
-                .is_some_and(|local| runtime_array_element(local.ty.as_ref()).is_some()) =>
+            && process.locals.get(local.0 as usize).is_some_and(|local| {
+                matches!(
+                    local.ty,
+                    Some(crate::types::Ty::Array {
+                        len: 0,
+                        family: None,
+                        ..
+                    })
+                )
+            }) =>
         {
             true
         }
@@ -9291,8 +9492,14 @@ fn value_ref_with_type_inner(
                         operation: ProcessHostValueOp::StringIndex,
                         arguments: vec![base, index],
                     };
+                    // An attribute's base (`rows[i]'length`) has no recorded
+                    // type: the element type is the array's.
                     let ty = ty
                         .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                        .or_else(|| {
+                            runtime_array_element(process_value_type(base, context).as_ref())
+                                .cloned()
+                        })
                         .or(Some(crate::types::Ty::Char));
                     // A character enum element is held as its symbol's code.
                     if let Some(element) = ty.as_ref() {
@@ -9937,6 +10144,23 @@ fn push_value(
         | ProcessValueKind::String(_) => ty
             .as_ref()
             .and_then(|ty| process_aggregate_layout_for_type(ty, span, context)),
+        // An element of `string[]` or `integer[][]` is a runtime handle the
+        // backend recognizes by its layout (printing it, reading its text).
+        ProcessValueKind::HostCall {
+            operation: ProcessHostValueOp::StringIndex,
+            ..
+        } if matches!(
+            ty,
+            Some(crate::types::Ty::Array {
+                len: 0,
+                family: None,
+                ..
+            })
+        ) =>
+        {
+            ty.as_ref()
+                .and_then(|ty| process_layout_for_type(ty, span, context))
+        }
         _ => None,
     };
     let width = width.or_else(|| layout.as_ref().and_then(SourceLayout::packed_width));

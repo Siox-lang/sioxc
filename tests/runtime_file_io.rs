@@ -553,6 +553,44 @@ fn runtime_sized_arrays_read_index_iterate_and_check_bounds() {
         "{report}"
     );
     assert!(!report.contains("unreachable"), "{report}");
+    // `[]` on an unconstrained array nests: `integer[][]` holds runtime
+    // arrays, `string[]` strings. Assigning or pushing copies every level;
+    // `rows[i]` is written and grown in place. `string[5]` still fills.
+    let report = compile(
+        "nested",
+        "let rows: integer[][];\n\
+         let xs: integer[] = [1, 2];\n\
+         rows.push(xs);\n\
+         xs[0] = 100;\n\
+         rows.push(xs);\n\
+         rows.push([7]);\n\
+         rows[2].push(8);\n\
+         rows[0][1] = 20;\n\
+         let copy: integer[][] = rows;\n\
+         copy[0][0] = 55;\n\
+         let t: integer = 0;\n\
+         for row in rows { for x in row { t = t + x; } }\n\
+         print!(\"rows={} {} {} r0={} {} r1={} r2={} copy={} t={}\\n\", rows'length, \
+             rows[0]'length, rows[2]'length, rows[0][0], rows[0][1], rows[1][0], rows[2][1], \
+             copy[0][0], t);\n\
+         let names: string[];\n\
+         let s: string = \"abc\";\n\
+         names.push(s);\n\
+         names.push(\"de\");\n\
+         let five: string[5] = \"hello\";\n\
+         let unset: string;\n\
+         print!(\"names={} [{}] [{}] {} five={} unset=[{}] {}\\n\", names'length, names[0], \
+             names[1], names[1]'length, five, unset, unset'length);",
+    );
+    assert!(
+        report.contains("rows=3 2 2 r0=1 20 r1=100 r2=8 copy=55 t=138"),
+        "{report}"
+    );
+    assert!(
+        report.contains("names=2 [abc] [de] 2 five=hello unset=[] 0"),
+        "{report}"
+    );
+
     // A character enum (`Logic`, `Bit`) reads as text, one element per
     // symbol, whitespace skipped; X/Z values survive writes and pushes.
     let report = compile(

@@ -511,7 +511,14 @@ pub enum ProcessHostValueOp {
     /// Write one element of a runtime array in place: the handle, the index
     /// and the element value. Its result is zero.
     ArrayStore,
-    /// A runtime array's own copy, for assignment: arrays are values.
+    /// A runtime string made from a fixed `Char[N]` value.
+    StringFrom,
+    /// A runtime array made from a fixed array value: the value, its element
+    /// count and the element width in bits (element 0 in the low bits).
+    ArrayFrom,
+    /// A runtime array's own copy, for assignment: arrays are values. The
+    /// handle, and how many levels of runtime arrays it holds (`integer[][]`
+    /// is one), which are copied too.
     ArrayCopy,
     /// Read a text file of a character enum's symbols (`read<Logic[]>`) into
     /// a runtime array of codes: the path, and the symbols in code order.
@@ -1988,13 +1995,14 @@ impl ProcessIr {
                         | ProcessHostValueOp::StringLength
                         | ProcessHostValueOp::FramePush
                         | ProcessHostValueOp::FrameRestore
-                        | ProcessHostValueOp::ArrayCopy => 1,
+                        | ProcessHostValueOp::StringFrom => 1,
                         ProcessHostValueOp::StringIndex
                         | ProcessHostValueOp::StringEqualsUtf8
                         | ProcessHostValueOp::ReadArray
                         | ProcessHostValueOp::ReadSymbols
-                        | ProcessHostValueOp::ArrayPush => 2,
-                        ProcessHostValueOp::ArrayStore => 3,
+                        | ProcessHostValueOp::ArrayPush
+                        | ProcessHostValueOp::ArrayCopy => 2,
+                        ProcessHostValueOp::ArrayStore | ProcessHostValueOp::ArrayFrom => 3,
                     } =>
                 {
                     issues.push(format!(
