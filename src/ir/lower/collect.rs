@@ -238,7 +238,7 @@ impl<'a> Lowering<'a> {
                                             self.free_fns.type_path_key(p)
                                         }
                                         ast::GenericArg::PositionalType(ty) => {
-                                            self.free_fns.type_head_key(ty)
+                                            self.free_fns.trait_arg_key(ty)
                                         }
                                         _ => None,
                                     });

@@ -437,6 +437,20 @@ impl<'a> Lowering<'a> {
                 temps.source_meta.insert(key, meta.clone());
                 meta
             }
+            // A logic enum signal is its own discriminant: one element's
+            // companion nibble (`o[1] = a` with `a = 'X'` kept `'0'`).
+            Expr::Current(id) | Expr::Old(id) if !self.out.meta_of.contains_key(&id.0) => {
+                let logic = width == 1
+                    && self.out.signals[id.0 as usize]
+                        .enum_type
+                        .as_deref()
+                        .is_some_and(|ty| {
+                            self.logic_encodings
+                                .keys()
+                                .any(|key| key.rsplit("::").next() == ty.rsplit("::").next())
+                        });
+                logic.then(|| e.clone())
+            }
             Expr::Current(id) => self
                 .out
                 .meta_of
@@ -606,6 +620,7 @@ impl<'a> Lowering<'a> {
             .unwrap_or(Expr::Const(0));
         let nibble = match merge.literal {
             Some(discriminant) => Expr::Const(discriminant),
+            None if merge.discriminant => merge.element.clone(),
             None => self
                 .lower_meta_ir(&merge.element, 1, temps)
                 .unwrap_or(Expr::Const(0)),
@@ -804,6 +819,17 @@ impl<'a> Lowering<'a> {
                     .borrow()
                     .explicit_meta
                     .contains_key(value)
+                {
+                    return true;
+                }
+                // An element write of a metavalue or a logic enum value: the
+                // merged expression's operands carry no companion of their own.
+                if self
+                    .source_values
+                    .borrow()
+                    .merge_meta
+                    .get(value)
+                    .is_some_and(|merge| merge.metavalue || merge.discriminant)
                 {
                     return true;
                 }

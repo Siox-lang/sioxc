@@ -503,9 +503,32 @@ pub(super) fn process_select<'ctx>(
 /// Conversely, a negative-capable kernel-integer signal and the result of a
 /// signed arithmetic operation must preserve their sign. This mirrors the
 /// established digital emitter's contextual signed-operand rules.
+/// Whether a value reads as a signed kernel integer: any value it may take
+/// (an arm of a selection, a call's result) does. Walked once per node, as
+/// [`process_value_layout`] walks selections.
 pub(super) fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = vec![id];
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        match process_value_signed_here(design, id) {
+            Ok(true) => return true,
+            Ok(false) => {}
+            Err(next) => pending.extend(next),
+        }
+    }
+    false
+}
+
+/// One node's answer, or the values that decide it.
+fn process_value_signed_here(
+    design: &Design,
+    id: ProcessValueId,
+) -> Result<bool, Vec<ProcessValueId>> {
     let Some(value) = design.process_ir.values.get(id.0 as usize) else {
-        return false;
+        return Ok(false);
     };
     let event = matches!(
         value.kind,
@@ -521,19 +544,19 @@ pub(super) fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bo
                     domain: siox::ir::ScalarDomain::Integer,
                     ..
                 }
-                | LayoutKind::Packed { .. } => return process_layout_is_signed(layout),
+                | LayoutKind::Packed { .. } => return Ok(process_layout_is_signed(layout)),
                 _ => {}
             }
         }
         if value.ty.as_ref().is_some_and(process_type_is_signed) {
-            return true;
+            return Ok(true);
         }
     }
-    match &value.kind {
-        ProcessValueKind::InlineCall { operand, .. } => process_value_is_signed(design, *operand),
+    Ok(match &value.kind {
+        ProcessValueKind::InlineCall { operand, .. } => return Err(vec![*operand]),
         ProcessValueKind::Signal { signals, state } => {
             let [signal] = signals.as_slice() else {
-                return false;
+                return Ok(false);
             };
             !matches!(state, ProcessSignalState::Event)
                 && design.signals.get(signal.0 as usize).is_some_and(|signal| {
@@ -560,17 +583,14 @@ pub(super) fn process_value_is_signed(design: &Design, id: ProcessValueId) -> bo
             then_value,
             else_value,
             ..
-        } => {
-            process_value_is_signed(design, *then_value)
-                || process_value_is_signed(design, *else_value)
+        } => return Err(vec![*then_value, *else_value]),
+        ProcessValueKind::Match { arms, .. } => {
+            return Err(arms.iter().map(|arm| arm.value).collect())
         }
-        ProcessValueKind::Match { arms, .. } => arms
-            .iter()
-            .any(|arm| process_value_is_signed(design, arm.value)),
-        ProcessValueKind::CheckedIndex { index, .. } => process_value_is_signed(design, *index),
+        ProcessValueKind::CheckedIndex { index, .. } => return Err(vec![*index]),
         ProcessValueKind::ForeignCall { integer_result, .. } => *integer_result,
         _ => false,
-    }
+    })
 }
 
 pub(super) fn process_value_is_real(design: &Design, id: ProcessValueId) -> bool {
@@ -792,13 +812,52 @@ pub(super) fn process_value_layout(design: &Design, id: ProcessValueId) -> Optio
                 Some(element)
             }
         }
+        // A selection has its arms' layout when every arm agrees. Walked
+        // once per node: recursing into both arms of nested selections over
+        // shared values (a loop of guarded element writes) was exponential.
         ProcessValueKind::Select {
             then_value,
             else_value,
             ..
         } => {
-            let then_layout = process_value_layout(design, *then_value)?;
-            (process_value_layout(design, *else_value) == Some(then_layout)).then_some(then_layout)
+            let mut seen = std::collections::HashSet::new();
+            let mut pending = vec![*then_value, *else_value];
+            let mut found: Option<&SourceLayout> = None;
+            while let Some(arm) = pending.pop() {
+                if !seen.insert(arm) {
+                    continue;
+                }
+                let retained = design
+                    .process_ir
+                    .value_layouts
+                    .get(arm.0 as usize)
+                    .and_then(Option::as_ref);
+                if let (
+                    None,
+                    Some(ProcessValueKind::Select {
+                        then_value,
+                        else_value,
+                        ..
+                    }),
+                ) = (
+                    retained,
+                    design
+                        .process_ir
+                        .values
+                        .get(arm.0 as usize)
+                        .map(|v| &v.kind),
+                ) {
+                    pending.extend([*then_value, *else_value]);
+                    continue;
+                }
+                let layout = process_value_layout(design, arm)?;
+                match found {
+                    None => found = Some(layout),
+                    Some(previous) if previous == layout => {}
+                    Some(_) => return None,
+                }
+            }
+            found
         }
         ProcessValueKind::Construct { ty, .. } => value
             .ty

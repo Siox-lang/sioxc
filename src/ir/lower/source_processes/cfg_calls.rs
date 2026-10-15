@@ -704,7 +704,7 @@ fn inline_call_once(
                         .as_ref()
                         .and_then(|ty| process_type_key(ty, context))?;
                     let source = process_value_type(*argument, context)
-                        .and_then(|ty| process_type_key(&ty, context))?;
+                        .and_then(|ty| conversion_source_key(&ty, context))?;
                     (context.functions.get_conversion(&target, &source)?, None)
                 }
             }
