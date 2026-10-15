@@ -70,7 +70,9 @@ impl T {
 "#,
     );
     for engine in ["TB", "HW"] {
-        let expected = format!("|{engine} 6 6 -2 6 590295810358705651715 true 'X'\n");
+        // `tm == lm` compares against metavalues, which `numeric_std` makes
+        // false; the element read shows the metavalue was kept.
+        let expected = format!("|{engine} 6 6 -2 6 590295810358705651715 false 'X'\n");
         assert!(report.contains(&expected), "{engine}: {report}");
     }
 }

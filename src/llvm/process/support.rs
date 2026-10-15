@@ -856,15 +856,11 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                     && has(&supported, *then_value)
                     && has(&supported, *else_value)
             }
+            // An operand whose companion cannot be read compares as known
+            // (the comparison's ordinary result), as it did before the rule.
             ProcessValueKind::MetaCompare {
                 operands, inner, ..
-            } => {
-                has(&supported, *inner)
-                    && !operands.is_empty()
-                    && operands
-                        .iter()
-                        .all(|operand| process_meta_operand_supported(design, *operand, &supported))
-            }
+            } => has(&supported, *inner) && !operands.is_empty(),
             ProcessValueKind::Match { scrutinee, arms } => {
                 has(&supported, *scrutinee)
                     && !arms.is_empty()

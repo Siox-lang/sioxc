@@ -81,57 +81,51 @@ impl Prefix<"x", string> for unsigned {}
 impl Prefix<"o", string> for unsigned {}
 
 // Core `and`/`or`/`not` are boolean-per-bit. The remaining familiar logic
-// words are ordinary custom operators declared here for numeric vectors.
+// words are ordinary custom operators declared here for numeric vectors,
+// built from those three so each element follows `std_logic_1164` (an
+// arithmetic form made any metavalue an all-`X` result).
 
 impl CustomOperator<"xor", unsigned, unsigned> for unsigned {
     attr precedence = 35;
-    fn apply(self, rhs: unsigned) -> unsigned { return (self or rhs) - (self and rhs); }
+    fn apply(self, rhs: unsigned) -> unsigned { return (self or rhs) and (not (self and rhs)); }
 }
 
 impl CustomOperator<"nand", unsigned, unsigned> for unsigned {
     attr precedence = 40;
-    fn apply(self, rhs: unsigned) -> unsigned {
-        return ((1 << self'length) - 1) - (self and rhs);
-    }
+    fn apply(self, rhs: unsigned) -> unsigned { return not (self and rhs); }
 }
 
 impl CustomOperator<"nor", unsigned, unsigned> for unsigned {
     attr precedence = 30;
-    fn apply(self, rhs: unsigned) -> unsigned {
-        return ((1 << self'length) - 1) - (self or rhs);
-    }
+    fn apply(self, rhs: unsigned) -> unsigned { return not (self or rhs); }
 }
 
 impl CustomOperator<"xnor", unsigned, unsigned> for unsigned {
     attr precedence = 35;
     fn apply(self, rhs: unsigned) -> unsigned {
-        return ((1 << self'length) - 1) - ((self or rhs) - (self and rhs));
+        return not ((self or rhs) and (not (self and rhs)));
     }
 }
 
 impl CustomOperator<"xor", signed, signed> for signed {
     attr precedence = 35;
-    fn apply(self, rhs: signed) -> signed { return (self or rhs) - (self and rhs); }
+    fn apply(self, rhs: signed) -> signed { return (self or rhs) and (not (self and rhs)); }
 }
 
 impl CustomOperator<"nand", signed, signed> for signed {
     attr precedence = 40;
-    fn apply(self, rhs: signed) -> signed {
-        return ((1 << self'length) - 1) - (self and rhs);
-    }
+    fn apply(self, rhs: signed) -> signed { return not (self and rhs); }
 }
 
 impl CustomOperator<"nor", signed, signed> for signed {
     attr precedence = 30;
-    fn apply(self, rhs: signed) -> signed {
-        return ((1 << self'length) - 1) - (self or rhs);
-    }
+    fn apply(self, rhs: signed) -> signed { return not (self or rhs); }
 }
 
 impl CustomOperator<"xnor", signed, signed> for signed {
     attr precedence = 35;
     fn apply(self, rhs: signed) -> signed {
-        return ((1 << self'length) - 1) - ((self or rhs) - (self and rhs));
+        return not ((self or rhs) and (not (self and rhs)));
     }
 }
 

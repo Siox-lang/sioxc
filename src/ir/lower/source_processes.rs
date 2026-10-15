@@ -8758,7 +8758,74 @@ fn inline_process_comparison(
     if result.is_none() {
         truncate_process_values(context, first_value);
     }
-    result
+    // A numeric family compared against a metavalue is false (`!=` true),
+    // as hardware marks it: `"01X1" == "0101"` compared value planes only.
+    // Not inside an inlined body: an operator impl compares kernel words
+    // (`signed`'s sign test), whose wrapped form had no lowering.
+    // ponytail: user functions don't get the rule either; marking only
+    // operator bodies needs to know which inline frame is an impl's.
+    // Only the design's own comparisons, in the process's file: std's
+    // operator bodies (a sign test, a float's fields) compare kernel words.
+    let own = ast::expr_span(lhs).file == process.span.file;
+    // ponytail: an operand still holding a call (a function result) keeps
+    // the plain comparison; the CFG expands that call once, for the inner
+    // comparison, and a second reference from the rule lost its layout.
+    let holds_call = |root: ProcessValueId| {
+        let mut seen = std::collections::HashSet::new();
+        let mut pending = vec![root];
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(node) = context.process_ir.values.get(id.0 as usize) else {
+                continue;
+            };
+            if matches!(node.kind, ProcessValueKind::Call { .. }) {
+                return true;
+            }
+            pending.extend(crate::ir::process_value_dependencies(&node.kind));
+        }
+        false
+    };
+    let own = own && !holds_call(left) && !holds_call(right);
+    let numeric_family = own
+        && matches!(left_type, crate::types::Ty::Array { family: Some(family), .. }
+        if context.design.array_element_of_family.contains_key(family)
+            || family.rsplit("::").next().is_some_and(|leaf| {
+                context.design.array_element_of_family.contains_key(leaf)
+            }));
+    // The rule reads each operand's companion through its layout; a computed
+    // one (`(a or b) != a`) has none of its own.
+    if numeric_family {
+        for operand in [left, right] {
+            // Only the narrowing copy: the operand values themselves are the
+            // comparison's receiver and argument too.
+            let narrowed = matches!(
+                context.process_ir.values[operand.0 as usize].kind,
+                ProcessValueKind::RawResize { .. }
+            ) && arena_constant_integer(operand, &context.process_ir.values)
+                .is_none();
+            if narrowed && context.process_ir.value_layouts[operand.0 as usize].is_none() {
+                let span = context.process_ir.values[operand.0 as usize].span;
+                context.process_ir.value_layouts[operand.0 as usize] =
+                    process_layout_for_type(left_type, span, context);
+            }
+        }
+    }
+    match result {
+        Some(inner) if numeric_family => Some(push_value(
+            ast::expr_span(lhs).to(ast::expr_span(rhs)),
+            bool_type(context.resolved),
+            Some(1),
+            ProcessValueKind::MetaCompare {
+                not_equal: matches!(operator, ast::BinOp::Ne),
+                operands: vec![left, right],
+                inner,
+            },
+            context,
+        )),
+        other => other,
+    }
 }
 
 /// A computed `value` truncated to the width of its fixed-width array type;
@@ -9287,11 +9354,11 @@ fn contextual_string_bits(
     let element_width = if family.is_some() {
         for character in characters {
             encoded.push(match character {
-                '0' | 'L' => 0,
-                '1' | 'H' => 1,
-                // Packed numeric families carry a separate metavalue plane in
-                // hardware. Process storage does not model that plane yet, so
-                // do not silently collapse an unknown into an ordinary bit.
+                '0' => 0,
+                '1' => 1,
+                // Anything else, the weak `'L'`/`'H'` too, is a value of its
+                // own: the string path keeps its discriminant in the
+                // companion (`"H01L"` read back as `"1010"`).
                 _ => return None,
             });
         }
