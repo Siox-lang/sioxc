@@ -465,7 +465,9 @@ pub(super) fn process_packed_meta_supported(
             ProcessBinaryOp::ArithmeticShr => {
                 packed_arithmetic_operand_layout(design, layout, *left).is_some_and(|left_layout| {
                     process_packed_meta_supported(design, *left, &left_layout, supported)
-                }) && process_constant_i64(design, *right).is_some_and(|right| right >= 0)
+                }) && (process_constant_i64(design, *right).is_some_and(|right| right >= 0)
+                    || (process_constant_i64(design, *right).is_none()
+                        && supported.get(right.0 as usize).copied().unwrap_or(false)))
             }
             _ => false,
         },

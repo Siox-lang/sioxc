@@ -599,7 +599,64 @@ fn process_packed_meta_uncached<'ctx>(
                 for position in left_width..width {
                     left = insert_region(builder, left, source_sign, position.checked_mul(4)?, 4)?;
                 }
-                let shift = u32::try_from(process_constant_i64(design, *right)?).ok()?;
+                let Some(shift) = process_constant_i64(design, *right) else {
+                    // A run-time amount: shift right by four bits an element,
+                    // fill the vacated top with the sign's nibble, and fill
+                    // everything once the amount reaches the width.
+                    let shift_width = design.process_ir.values.get(right.0 as usize)?.bit_width?;
+                    let amount = process_value_at(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        *right,
+                        shift_width,
+                        false,
+                        active,
+                        index_sites,
+                        cache,
+                    )?;
+                    let whole = builder
+                        .build_int_compare(
+                            IntPredicate::UGE,
+                            amount,
+                            amount.get_type().const_int(u64::from(width), false),
+                            "pv.meta.ashr.whole",
+                        )
+                        .ok()?;
+                    let amount = builder
+                        .build_select(whole, amount.get_type().const_zero(), amount, "")
+                        .ok()?
+                        .into_int_value();
+                    let amount = fit(builder, amount, meta_width)?;
+                    let ty = left.get_type();
+                    let bits = builder
+                        .build_int_mul(amount, ty.const_int(4, false), "pv.meta.ashr.bits")
+                        .ok()?;
+                    let sign = extract_region(builder, left, (width - 1).checked_mul(4)?, 4)?;
+                    let sign = fit(builder, sign, meta_width)?;
+                    let ones = ty.const_int_from_string(
+                        &"1".repeat(width as usize),
+                        inkwell::types::StringRadix::Hexadecimal,
+                    )?;
+                    let fill = builder
+                        .build_int_mul(sign, ones, "pv.meta.ashr.fill")
+                        .ok()?;
+                    let kept = builder
+                        .build_right_shift(ty.const_all_ones(), bits, false, "")
+                        .ok()?;
+                    let vacated = builder.build_not(kept, "").ok()?;
+                    let shifted = builder
+                        .build_right_shift(left, bits, false, "pv.meta.ashr")
+                        .ok()?;
+                    let top = builder.build_and(fill, vacated, "").ok()?;
+                    let result = builder.build_or(shifted, top, "").ok()?;
+                    return builder
+                        .build_select(whole, fill, result, "")
+                        .ok()
+                        .map(|value| value.into_int_value());
+                };
+                let shift = u32::try_from(shift).ok()?;
                 let selected = shift.min(width);
                 let mut result = if selected == 0 {
                     left

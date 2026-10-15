@@ -213,3 +213,79 @@ fn wide_signed_division_and_order() {
         );
     }
 }
+
+/// A signed `>>` by a run-time amount had no lowering for the testbench's
+/// metavalue companion; a constant compared with an operator result in
+/// hardware kept all 64 bits of a negative constant (`(a + 0) == (0 - 5)`
+/// was false).
+#[cfg(feature = "llvm")]
+#[test]
+fn variable_signed_shifts_and_negative_constants() {
+    for ty in ["signed[8]", "signed[65]"] {
+        check(
+            &format!("shift_{}", ty.replace(['[', ']'], "_")),
+            ty,
+            ["0 - 100", "3", "0", "100"],
+            &[
+                ("a >> b", -13),
+                ("a >> c", -100),
+                ("a >> d", -1),
+                ("d >> b", 12),
+                ("if (a >> 1) == (0 - 50) { 1 } else { 0 }", 1),
+                ("if (0 - 50) == (a >> 1) { 1 } else { 0 }", 1),
+                ("if (a + 0) != (0 - 100) { 1 } else { 0 }", 0),
+            ],
+        );
+    }
+}
+
+#[cfg(feature = "llvm")]
+fn diagnostics(name: &str, source: &str) -> String {
+    use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
+    let path = std::env::temp_dir().join(format!("siox_operator_literals_{name}.siox"));
+    Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std"))
+        .compile(CompileRequest::new(
+            SourceInput::memory(path, source),
+            Emit::Metadata,
+        ))
+        .render_diagnostics()
+}
+
+/// Writes the checker accepted and nothing could lower.
+#[cfg(feature = "llvm")]
+#[test]
+fn constants_and_loop_variables_are_not_assignable_out_of_range() {
+    let test = |body: &str| {
+        format!(
+            "module m;\nuse std::bits::unsigned;\nconst K: integer = 3;\n\
+             #[test] entity T {{}}\nimpl T {{ check: process {{ {body} }} }}\n"
+        )
+    };
+    for (name, body, expected) in [
+        ("fit", "let k: unsigned[8] = 300;", "does not fit"),
+        (
+            "fit_assign",
+            "let k: unsigned[8] = 0; k = 256;",
+            "does not fit",
+        ),
+        (
+            "fit_shift",
+            "let k: unsigned[8] = 1; let j: unsigned[8] = k << 300;",
+            "does not fit",
+        ),
+        ("const", "K = 4;", "which is a `const`"),
+        (
+            "loop",
+            "for i in 0..4 { i = i + 1; }",
+            "which is a `for` loop variable",
+        ),
+    ] {
+        let rendered = diagnostics(name, &test(body));
+        assert!(rendered.contains(expected), "{name}: {rendered}");
+    }
+    let shadowed = diagnostics(
+        "shadowed",
+        &test("for i in 0..4 { let i: integer = 0; i = 1; print!(\"{}\", i); }"),
+    );
+    assert!(!shadowed.contains("error"), "{shadowed}");
+}

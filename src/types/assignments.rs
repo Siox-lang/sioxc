@@ -44,6 +44,17 @@ impl<'a> Checker<'a> {
             if self.resolved.resolved(path.span).and_then(|definition| self.resolved.kind_of(definition))
                 == Some(DefKind::Const));
         if let Some(root) = target_root_name(target) {
+            if dirs.loop_vars.contains(&root) {
+                self.error_with_help(
+                    codes::INVALID_ASSIGN_TARGET,
+                    expr_span(target),
+                    format!("cannot assign to `{root}`, which is a `for` loop variable"),
+                    "each iteration binds the loop variable afresh; copy it into a \
+                     `let` to compute with it"
+                        .to_string(),
+                );
+                return;
+            }
             if dirs.consts.contains(&root) || module_const {
                 self.error_with_help(
                     codes::INVALID_ASSIGN_TARGET,

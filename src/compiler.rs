@@ -933,6 +933,22 @@ fn select_top(
         .collect();
     match tops.as_slice() {
         [top] => Ok((*top).to_string()),
+        // Entities declared but every one instantiated: almost always they
+        // instantiate each other, and `--top` reaches elaboration's cycle
+        // diagnostic.
+        [] if modules.first().is_some_and(|entry| {
+            entry
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Entity(_)))
+        }) =>
+        {
+            Err(CompileFailure::new(
+                FailureKind::Selection,
+                "no structural root entity: every entity is instantiated by another, \
+                 likely an instantiation cycle; name one with `--top` to see it",
+            ))
+        }
         [] => Err(CompileFailure::new(
             FailureKind::Selection,
             "no structural root entity; name one explicitly with `--top`",

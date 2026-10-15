@@ -375,6 +375,7 @@ impl<'a> Checker<'a> {
                 illegal,
                 plain_in_roots,
                 consts,
+                loop_vars: HashSet::new(),
             },
             sym,
             ranged,

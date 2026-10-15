@@ -469,7 +469,22 @@ impl<'a> Checker<'a> {
                 };
                 let mut loop_sym = sym.clone();
                 loop_sym.insert(var.text.clone(), loop_ty);
-                self.check_stmt_sequence(&body.stmts, dirs, &loop_sym, ranged, expected_return);
+                // A body-level `let` of the same name shadows it.
+                let mut loop_dirs = dirs.clone();
+                if !body
+                    .stmts
+                    .iter()
+                    .any(|s| matches!(s, Stmt::Let(l) if l.name.text == var.text))
+                {
+                    loop_dirs.loop_vars.insert(var.text.clone());
+                }
+                self.check_stmt_sequence(
+                    &body.stmts,
+                    &loop_dirs,
+                    &loop_sym,
+                    ranged,
+                    expected_return,
+                );
             }
             Stmt::Expr(e) => {
                 self.check_no_effect(e);
