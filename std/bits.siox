@@ -220,6 +220,12 @@ impl Shr<signed, signed> for signed {
         // Narrowed first: a constant receiver (`0 - 2`) is a full kernel word,
         // and its raw shift read the sign from bit 63.
         if (resize(self, self'length) >> (self'length - 1)) == 1 {
+            // Shifted out entirely: all sign. The mask below needs
+            // `rhs < self'length`. Compared as kernel words: `signed`'s own
+            // order shifts, so it would call back here.
+            if integer(rhs) >= self'length {
+                return resize(0 - 1, self'length);
+            }
             return (resize(self, self'length) >> rhs)
                 + ((1 << self'length) - (1 << (self'length - rhs)));
         }

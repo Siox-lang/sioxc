@@ -136,6 +136,9 @@ pub(super) struct PortDirs {
     /// and reached the emitter as "unknown signal `K`" — a message naming
     /// something the author had in fact declared.
     pub(super) consts: HashSet<String>,
+    /// `for` variables in scope. Each iteration binds one afresh, so a write
+    /// is meaningless (VHDL: a loop parameter is a constant; Rust: E0384).
+    pub(super) loop_vars: HashSet<String>,
 }
 
 /// The type `self` has inside an impl: the backing struct for a view-applied

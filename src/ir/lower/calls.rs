@@ -915,6 +915,32 @@ impl<'a> Lowering<'a> {
                     shapes.insert(n.text.clone(), layout);
                 }
                 let value = match argument {
+                    // A constant for a vector parameter is cut to the width it
+                    // takes (the receiver's), as a signal of that width holds
+                    // it: `(a + 0) == (0 - 5)` compared 0xFB with all of the
+                    // kernel word's ones.
+                    Val::Scalar(_)
+                        if p.ty.as_ref().and_then(type_head_name) != Some("integer")
+                            && self.eval_const(a, &self.cur_env).is_some()
+                            && self.literal_aware_width(a, receiver_width) > 0 =>
+                    {
+                        let w = self.literal_aware_width(a, receiver_width);
+                        let v = self.eval_const(a, &self.cur_env).unwrap();
+                        Val::Scalar(if w < 64 {
+                            Expr::Const(v as u64 & ((1u64 << w) - 1))
+                        } else if w > 64 && v < 0 {
+                            // Sign-extended through every word, the top one
+                            // cut to the width.
+                            let mut words = vec![u64::MAX; w.div_ceil(64) as usize];
+                            words[0] = v as u64;
+                            if !w.is_multiple_of(64) {
+                                *words.last_mut().unwrap() &= (1u64 << (w % 64)) - 1;
+                            }
+                            Expr::WideConst(words)
+                        } else {
+                            Expr::Const(v as u64)
+                        })
+                    }
                     Val::Scalar(v) => Val::Scalar(
                         self.resolve_char_literal(p.ty.as_ref().and_then(type_head_name), v),
                     ),

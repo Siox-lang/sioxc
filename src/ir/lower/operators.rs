@@ -715,7 +715,8 @@ impl<'a> Lowering<'a> {
         // A literal on the left compares mirrored, against the other side's
         // impl: `100 < c` is `c > 100`. Read as an `integer` it found no
         // `Ord`, and the built-in compared signed `c` as unsigned.
-        if matches!(lhs, ast::Expr::Int { .. })
+        // Any constant, not just a bare literal (`(0 - 3) == (a >> 1)`).
+        if self.eval_const(lhs, &self.cur_env).is_some()
             && self.operand_type_name(lhs).as_deref() == Some("integer")
             && self
                 .operand_type_name(rhs)
