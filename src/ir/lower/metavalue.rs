@@ -1030,6 +1030,47 @@ impl<'a> Lowering<'a> {
             self.hardware.event_blocks[block_index].updates = updates;
         }
 
+        // A comparison whose operand is computed (`(a or b) != a`) tests that
+        // operand's companion, built here where every companion is known and
+        // driven into a signal the comparison can read when it is resolved.
+        let computed: Vec<(ProcessValueId, u32)> = {
+            let arena = self.source_values.borrow();
+            let mut seen = std::collections::HashSet::new();
+            arena
+                .ir
+                .values
+                .iter()
+                .filter_map(|value| match &value.kind {
+                    ProcessValueKind::MetaCompare { operands, .. } => Some(operands.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .filter(|operand| {
+                    !matches!(
+                        arena.ir.values[operand.0 as usize].kind,
+                        ProcessValueKind::Signal { .. } | ProcessValueKind::Number(_)
+                    ) && seen.insert(*operand)
+                })
+                .map(|operand| (operand, 0))
+                .collect()
+        };
+        temps.cond = None;
+        temps.guard = None;
+        for (operand, _) in computed {
+            let expression = self.source_values.borrow().reference(operand);
+            // Widths are assigned later; the companion pass measures it.
+            let width = self.meta_expr_width(&expression, 0);
+            if width == 0 {
+                continue;
+            }
+            let Some(meta) = self.lower_meta_ir(&expression, width, &mut temps) else {
+                continue;
+            };
+            if let Expr::Current(signal) = materialize(meta, width * 4, &mut temps) {
+                self.compare_companions.insert(operand, (signal.0, width));
+            }
+        }
+
         self.materialize_meta_temps(&mut temps);
     }
 
@@ -1104,9 +1145,25 @@ impl<'a> Lowering<'a> {
             })
             .collect();
         let default_encoding = self.logic_encodings.get(DEFAULT_LOGIC_TYPE).cloned();
+        let mut elems = elems;
+        let mut encodings = encodings;
+        for &(companion, width) in self.compare_companions.values() {
+            elems.insert(companion, width);
+            if let Some(encoding) = &default_encoding {
+                encodings
+                    .entry(companion)
+                    .or_insert_with(|| encoding.clone());
+            }
+        }
+        let computed = self.compare_companions.clone();
         let arena = self.source_values.get_mut();
-        let mapped =
-            arena.reconstruct_metavalues(&meta_of, &elems, &encodings, default_encoding.as_ref());
+        let mapped = arena.reconstruct_metavalues(
+            &meta_of,
+            &elems,
+            &encodings,
+            default_encoding.as_ref(),
+            &computed,
+        );
         for expression in self.hardware.expressions_mut() {
             arena.remap_expression(expression, &mapped);
         }

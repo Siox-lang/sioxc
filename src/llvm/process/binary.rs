@@ -843,6 +843,9 @@ pub(super) fn packed_index_discriminant<'ctx>(
         index_sites,
         cache,
     )?;
+    // Widened first: a two-element vector's position is one bit wide, so
+    // `1 * 4` wrapped to 0 and element 1 read element 0's discriminant.
+    let position = fit(builder, position, metadata.get_type().get_bit_width())?;
     let offset = builder
         .build_int_mul(
             position,
@@ -850,7 +853,6 @@ pub(super) fn packed_index_discriminant<'ctx>(
             "pv.meta.index.offset",
         )
         .ok()?;
-    let offset = fit(builder, offset, metadata.get_type().get_bit_width())?;
     let shifted = builder
         .build_right_shift(metadata, offset, false, "pv.meta.index.extract")
         .ok()?;

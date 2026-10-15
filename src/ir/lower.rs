@@ -351,6 +351,10 @@ struct Lowering<'a> {
     /// Left non-hoisting between those windows, so any other caller keeps the
     /// fully inlined lowering.
     meta_temps: std::cell::RefCell<MetaTemps>,
+    /// A computed comparison operand's companion (`(a or b) != a`): the
+    /// operand's canonical value -> (companion signal, elements). The
+    /// metavalue rule reads only signal companions when it is resolved.
+    compare_companions: HashMap<ProcessValueId, (u32, u32)>,
     /// Value names that resolved to nothing while lowering. Name
     /// resolution deliberately leaves plain value identifiers to later
     /// stages, and this is the stage that knows every signal, constant
