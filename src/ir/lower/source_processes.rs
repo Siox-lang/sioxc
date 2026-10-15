@@ -3644,15 +3644,20 @@ fn lower_format_composite(
             element_enum: Some(element),
             ..
         } => {
-            let element_layout = crate::ir::SourceLayout {
-                span: layout.span,
-                kind: LayoutKind::Scalar {
-                    width: 1,
-                    domain: crate::ir::ScalarDomain::Enum(element.clone()),
-                    nominal: Some(element.clone()),
-                    value_range: None,
-                },
-            };
+            // An element read is the element type's whole value (a `Logic`
+            // discriminant, four bits), as in `element_match`: one bit made
+            // `{:?}` of any newtype over `Logic[N]` fail to generate.
+            let element_layout = nominal_type_from_name(element, context.resolved)
+                .and_then(|ty| process_layout_for_type(&ty, layout.span, context))
+                .unwrap_or_else(|| crate::ir::SourceLayout {
+                    span: layout.span,
+                    kind: LayoutKind::Scalar {
+                        width: 1,
+                        domain: crate::ir::ScalarDomain::Enum(element.clone()),
+                        nominal: Some(element.clone()),
+                        value_range: None,
+                    },
+                });
             for label in layout_labels((*range)?)? {
                 let member = push_element(span, value, label, &element_layout, process, context);
                 parts.push(ProcessFormatPart::Value {
@@ -6063,6 +6068,14 @@ fn lower_process_named_conversion(
         .filter(|ty| !matches!(ty, crate::types::Ty::Error))
         .cloned()
         .unwrap_or(crate::types::Ty::Named(definition));
+    // A string literal fills a newtype's field (`B("0110")`); the raw resize
+    // shapes it there.
+    if matches!(argument, ast::Expr::StrLit { .. })
+        && process_layout_for_type(&target_type, *span, context)
+            .is_some_and(|layout| matches!(layout.kind, LayoutKind::Struct { ref fields, .. } if fields.len() == 1))
+    {
+        return None;
+    }
     let target = process_type_key(&target_type, context)?;
     let source_type = context
         .typed
@@ -6270,11 +6283,24 @@ fn lower_process_raw_resize(
                     .next()
                     .is_some_and(|leaf| context.design.array_element_of_family.contains_key(leaf));
             if packed {
-                let operand_type = context
-                    .typed
-                    .expr_type(ast::expr_span(&args[0]))
-                    .filter(|ty| !matches!(ty, crate::types::Ty::Error))
-                    .cloned();
+                // A string literal is the vector under the family: `B("0110")`
+                // for `struct B(Bit[4])` lowered "0110" as text.
+                let operand_type = match (&args[0], target) {
+                    (
+                        ast::Expr::StrLit { .. },
+                        Some(crate::types::Ty::Array { elem, len, low, .. }),
+                    ) => Some(crate::types::Ty::Array {
+                        elem: elem.clone(),
+                        len: *len,
+                        family: None,
+                        low: *low,
+                    }),
+                    _ => context
+                        .typed
+                        .expr_type(ast::expr_span(&args[0]))
+                        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                        .cloned(),
+                };
                 let operand =
                     value_ref_with_type(&args[0], process, context, operand_type.as_ref());
                 let width = context.process_ir.values[operand.0 as usize].bit_width?;
@@ -6302,6 +6328,13 @@ fn lower_process_raw_resize(
                 {
                     crate::types::Ty::Named(definition)
                 }
+                // A newtype over a vector is checked as that vector of its
+                // own family (`struct B(Bit[4])` is `B`-family `Bit[4]`).
+                Some(
+                    vector @ crate::types::Ty::Array {
+                        family: Some(name), ..
+                    },
+                ) if name.rsplit("::").next() == family.rsplit("::").next() => vector.clone(),
                 None | Some(crate::types::Ty::Error) => crate::types::Ty::Named(definition),
                 _ => return None,
             }
@@ -6317,11 +6350,35 @@ fn lower_process_raw_resize(
     ) {
         return None;
     }
-    let operand_type = context
-        .typed
-        .expr_type(ast::expr_span(&args[0]))
-        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
-        .cloned();
+    // A string literal reads through the newtype's field: `B("0110")` with
+    // `struct B(Bit[4])` lowered "0110" as text, which no raw resize can
+    // carry.
+    let field_type = match (&args[0], &target) {
+        (ast::Expr::StrLit { .. }, crate::types::Ty::Array { elem, len, low, .. }) => {
+            Some(crate::types::Ty::Array {
+                elem: elem.clone(),
+                len: *len,
+                family: None,
+                low: *low,
+            })
+        }
+        (ast::Expr::StrLit { .. }, _) => {
+            process_layout_for_type(&target, *span, context).and_then(|layout| match layout.kind {
+                LayoutKind::Struct { fields, .. } if fields.len() == 1 => {
+                    process_type_from_layout(&fields[0].layout, context.resolved)
+                }
+                _ => None,
+            })
+        }
+        _ => None,
+    };
+    let operand_type = field_type.or_else(|| {
+        context
+            .typed
+            .expr_type(ast::expr_span(&args[0]))
+            .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+            .cloned()
+    });
     let operand = value_ref_with_type(&args[0], process, context, operand_type.as_ref());
     let kind = ProcessValueKind::RawResize { operand };
     let width = source_value_width(&kind, Some(&target), process, context)?;

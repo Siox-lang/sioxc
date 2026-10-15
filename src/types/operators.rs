@@ -471,6 +471,15 @@ impl<'a> Checker<'a> {
             Expr::Int { text, .. } if text.contains('.') => {
                 matches!(lhs, Ty::Real | Ty::Error)
             }
+            // An integer is a fixed-point format's word only at zero: `1`
+            // stored 1/16 into `ufixed<8, 4>`. Storing stays explicit; the
+            // constructor builds the value (`ufixed<8, 4>(1)`).
+            Expr::Int { .. }
+                if matches!(lhs, Ty::Array { family: Some(_), low, .. } if *low < 0)
+                    && Self::const_literal(value) != Some(0) =>
+            {
+                false
+            }
             // An integer literal also initialises `real` (`.re = 10` is 10.0)
             // and is contextual for packed numeric families.
             Expr::Int { .. } => {
@@ -585,6 +594,11 @@ impl<'a> Checker<'a> {
             // `Complex::from(integer)`; the reverse direction remains an
             // explicit `integer(value)` conversion because it truncates.
             _ if matches!(lhs, Ty::Real) && matches!(self.type_of(value, sym), Ty::Integer) => true,
+            _ if matches!(lhs, Ty::Array { family: Some(_), low, .. } if *low < 0)
+                && matches!(self.type_of(value, sym), Ty::Integer) =>
+            {
+                false
+            }
             _ => compatible(lhs, &self.type_of(value, sym)),
         }
     }

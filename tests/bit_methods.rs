@@ -520,7 +520,7 @@ impl T {
 "#,
     );
     for line in [
-        "hw1 2.75 2.5 2.75 2.5 | -2.5 -2.75 -2.5 -2.75 | 1.00098 1 1.00098",
+        "hw1 2.75 2.5 2.75 2.5 | -2.5 -2.75 -2.5 -2.75 | 1.0009765625 1 1.0009765625",
         "hw2 13.5 13.5 7.75 5.5 | -7 -7 -4 1 | inf 65504 inf",
         "tb 7.75 5.5 -2.5 -2.75 -inf -65504 13.5",
     ] {
@@ -842,7 +842,7 @@ impl T {
 }
 "#,
     );
-    for line in ["hw 4 4 50 18", "tb 1.41421 1024 2 3 3 3"] {
+    for line in ["hw 4 4 50 18", "tb 1.4142135623730951 1024 2 3 3 3"] {
         assert!(
             stdout.lines().any(|printed| printed == line),
             "missing `{line}` in:\n{stdout}"
@@ -884,7 +884,7 @@ impl T {
 }
 "#,
     );
-    for line in ["hw 5 -7.25 true", "tb 2.82843 3.75 -1 true"] {
+    for line in ["hw 5 -7.25 true", "tb 2.8284271247461903 3.75 -1 true"] {
         assert!(
             stdout.lines().any(|printed| printed == line),
             "missing `{line}` in:\n{stdout}"

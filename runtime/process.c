@@ -1117,6 +1117,44 @@ void sx_runtime_format_signed(const uint64_t *words, uint32_t word_count,
     sx_runtime_format_integer(words, word_count, width, 1);
 }
 
+/* Rust's `{}` of a float: the fewest digits that read back as the same
+ * double, positional, never an exponent (`166.21484375`, `0.30000000000000004`,
+ * `1e20` as `100000000000000000000`). `%g` kept six digits. */
+static void sx_shortest_positional(double value, char *out, size_t size) {
+    char scientific[64];
+    int digits = 0;
+    for (; digits < 17; ++digits) {
+        snprintf(scientific, sizeof scientific, "%.*e", digits, value);
+        if (strtod(scientific, NULL) == value) break;
+    }
+    snprintf(scientific, sizeof scientific, "%.*e", digits, value);
+    char mantissa[32];
+    size_t count = 0;
+    const char *cursor = scientific;
+    int negative = *cursor == '-';
+    if (negative) ++cursor;
+    for (; *cursor && *cursor != 'e'; ++cursor)
+        if (*cursor != '.') mantissa[count++] = *cursor;
+    while (count > 1 && mantissa[count - 1] == '0') --count;
+    long power = *cursor == 'e' ? strtol(cursor + 1, NULL, 10) : 0;
+    size_t at = 0;
+    if (negative && at + 1 < size) out[at++] = '-';
+    if (power < 0) {
+        for (const char *lead = "0."; *lead && at + 1 < size; ++lead) out[at++] = *lead;
+        for (long zero = 0; zero < -power - 1 && at + 1 < size; ++zero) out[at++] = '0';
+        for (size_t i = 0; i < count && at + 1 < size; ++i) out[at++] = mantissa[i];
+    } else {
+        for (long i = 0; i <= power && at + 1 < size; ++i)
+            out[at++] = (size_t)i < count ? mantissa[i] : '0';
+        if ((size_t)power + 1 < count && at + 1 < size) {
+            out[at++] = '.';
+            for (size_t i = (size_t)power + 1; i < count && at + 1 < size; ++i)
+                out[at++] = mantissa[i];
+        }
+    }
+    out[at] = 0;
+}
+
 void sx_runtime_format_real(uint64_t bits) {
     uint32_t form = sx_notation_form;
     int32_t precision = sx_notation_precision;
@@ -1127,13 +1165,21 @@ void sx_runtime_format_real(uint64_t bits) {
     real.bits = bits;
     if ((flags & SX_NOTATION_PLUS) && !signbit(real.value) && !isnan(real.value))
         sx_runtime_format_text("+");
+    /* Rust's `{:?}` takes the exponent form outside [1e-4, 1e16). */
+    if ((flags & SX_NOTATION_DEBUG) && precision < 0 && isfinite(real.value) &&
+        real.value != 0 && (fabs(real.value) >= 1e16 || fabs(real.value) < 1e-4))
+        form = SX_FORM_LOWER_EXP;
     if (!isfinite(real.value) ||
         (form != SX_FORM_LOWER_EXP && form != SX_FORM_UPPER_EXP)) {
         if (precision >= 0 && isfinite(real.value))
             snprintf(rendered, sizeof rendered, "%.*f", (int)(precision > 300 ? 300 : precision),
                      real.value);
+        else if (isnan(real.value))
+            snprintf(rendered, sizeof rendered, "NaN");
+        else if (!isfinite(real.value))
+            snprintf(rendered, sizeof rendered, "%s", real.value < 0 ? "-inf" : "inf");
         else
-            snprintf(rendered, sizeof rendered, "%g", real.value);
+            sx_shortest_positional(real.value, rendered, sizeof rendered);
         sx_runtime_format_text(rendered);
         if ((flags & SX_NOTATION_DEBUG) && isfinite(real.value) && !strpbrk(rendered, ".e"))
             sx_runtime_format_text(".0");

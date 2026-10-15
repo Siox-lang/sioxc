@@ -853,9 +853,6 @@ impl<'a> Lowering<'a> {
             return None;
         }
         self.inline_depth.set(self.inline_depth.get() + 1);
-        self.inlining_methods
-            .borrow_mut()
-            .push((ty.clone(), field.text.clone()));
         // Bind `self` to the receiver's signal so a `self'event`/`self'old`
         // sysattr in the body (the std `ClockLike` edge methods) resolves to it.
         let saved_self = self.self_signal.replace(self.base_signal(base));
@@ -921,6 +918,13 @@ impl<'a> Lowering<'a> {
                     // kernel word's ones.
                     Val::Scalar(_)
                         if p.ty.as_ref().and_then(type_head_name) != Some("integer")
+                            // Only where the integer is the word: a fixed
+                            // format's argument is already built as its value
+                            // (`a < 3` on `ufixed` is 3.0).
+                            && self.promotion_of(a).is_none_or(|ty| {
+                                matches!(ty, crate::types::Ty::Array { family: Some(family), .. }
+                                    if matches!(family.rsplit("::").next(), Some("signed" | "unsigned")))
+                            })
                             && self.eval_const(a, &self.cur_env).is_some()
                             && self.literal_aware_width(a, receiver_width) > 0 =>
                     {
@@ -1013,6 +1017,13 @@ impl<'a> Lowering<'a> {
         }
         let return_layout = self.source_function_return_layout(f, &shapes);
         let _shapes = self.source_shape_scope(shapes, return_layout);
+        // Marked only now: the receiver and arguments above are the caller's
+        // expressions, and a comparison inside them (`(if d > c { d } else
+        // { c }) < c`) is not this body recursing. Marked before them, it
+        // fell back to the built-in unsigned order.
+        self.inlining_methods
+            .borrow_mut()
+            .push((ty.clone(), field.text.clone()));
         let out = self.inline_source_function(f, ast::expr_span(callee), &mut fenv, None);
         for (name, prev) in saved.into_iter().rev() {
             match prev {
