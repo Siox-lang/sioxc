@@ -946,8 +946,20 @@ impl<'a> Lowering<'a> {
                     .and_then(|binding| self.declared_range(&binding.ty, &self.cur_env))
                     .or_else(|| self.persisted_range(&path))
             }
-            ast::Expr::Binary { lhs, .. } => self.operand_range(lhs, env),
+            // A literal operand has no range: `2 * a` is `a`'s format.
+            ast::Expr::Binary { lhs, rhs, .. } => self
+                .operand_range(lhs, env)
+                .or_else(|| self.operand_range(rhs, env)),
             ast::Expr::Unary { rhs, .. } => self.operand_range(rhs, env),
+            // Both branches have the checked type: `(if c { a } else { b }) * x`
+            // read no `self'low` in the fixed-point body.
+            ast::Expr::IfExpr { then, els, .. } => self
+                .operand_range(then, env)
+                .or_else(|| self.operand_range(els, env)),
+            ast::Expr::Match { arms, .. } => arms
+                .iter()
+                .filter_map(|arm| arm.value_expr())
+                .find_map(|value| self.operand_range(value, env)),
             // A constructor builds its written format: `sfixed[7..-8](x)`,
             // the expansion of `sfixed<16, 8>(x)`.
             // A width-only one (`unsigned[8](x)`) is ascending from 0, and a
