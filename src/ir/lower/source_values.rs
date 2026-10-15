@@ -1125,8 +1125,13 @@ mod tests {
         let local = arena.bind_layout(&Expr::Current(SignalId(0)), layout.clone(), span);
         let scalar = arena.bind_scalar(local, Some(crate::types::Ty::Integer), span);
         assert_eq!(arena.ir.value_layouts.len(), arena.ir.values.len());
-        let mapped =
-            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new(), None);
+        let mapped = arena.reconstruct_metavalues(
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &HashMap::new(),
+        );
         let mut draft = HardwareDraft::default();
         draft.drivers.push(Driver {
             target: SignalId(1),
@@ -1276,8 +1281,13 @@ mod tests {
             crate::ir::process_value_dependencies(&arena.ir.values[root.0 as usize].kind),
             vec![input]
         );
-        let mapped =
-            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new(), None);
+        let mapped = arena.reconstruct_metavalues(
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &HashMap::new(),
+        );
         let mut draft = HardwareDraft::default();
         draft.drivers.push(Driver {
             target: SignalId(0),
@@ -1340,8 +1350,13 @@ mod tests {
         let metadata = arena.import_test_fragment(&Expr::Const(0x120), span, None);
         arena.set_explicit_meta(value, arena.reference(metadata));
         assert!(arena.may_have_meta(value, &HashMap::new()));
-        let mapped =
-            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new(), None);
+        let mapped = arena.reconstruct_metavalues(
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &HashMap::new(),
+        );
         let value = mapped[value.0 as usize];
         assert!(arena.may_have_meta(value, &HashMap::new()));
         let mut draft = HardwareDraft::default();

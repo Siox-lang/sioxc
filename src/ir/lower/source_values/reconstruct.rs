@@ -11,6 +11,7 @@ impl SourceValues {
         elems: &HashMap<u32, u32>,
         encodings: &HashMap<u32, LogicEncoding>,
         default_encoding: Option<&LogicEncoding>,
+        computed: &HashMap<ProcessValueId, (u32, u32)>,
     ) -> Vec<ProcessValueId> {
         let SourceValues {
             ir: mut old,
@@ -28,6 +29,12 @@ impl SourceValues {
             // An element of a value with a literal's companion (`"01--"[0]`
             // inside a function) reads it, as an element of a signal reads
             // the signal's companion.
+            // A comparison's operands before remapping, to find a computed
+            // operand's companion.
+            let original_operands = match &value.kind {
+                ProcessValueKind::MetaCompare { operands, .. } => operands.clone(),
+                _ => Vec::new(),
+            };
             let explicit_base = match &value.kind {
                 ProcessValueKind::BitSlice { base, .. } => match explicit_meta.get(base) {
                     Some(Expr::Canonical { value: meta, .. }) => Some(mapped[meta.0 as usize]),
@@ -55,6 +62,8 @@ impl SourceValues {
             {
                 let unknown = self.comparison_unknown(
                     operands,
+                    &original_operands,
+                    computed,
                     span,
                     meta_of,
                     elems,
@@ -120,6 +129,8 @@ impl SourceValues {
                 } => self
                     .comparison_unknown(
                         &[left, right],
+                        &[],
+                        computed,
                         span,
                         meta_of,
                         elems,
@@ -303,9 +314,12 @@ impl SourceValues {
         Some((companion, self.meta_kind(kind, span)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn comparison_unknown(
         &mut self,
         operands: &[ProcessValueId],
+        original: &[ProcessValueId],
+        computed: &HashMap<ProcessValueId, (u32, u32)>,
         span: crate::diag::Span,
         meta_of: &HashMap<u32, u32>,
         elems: &HashMap<u32, u32>,
@@ -313,7 +327,7 @@ impl SourceValues {
         tests: &mut HashMap<(SignalId, ProcessSignalState), ProcessValueId>,
     ) -> Option<ProcessValueId> {
         let mut result = None;
-        for &operand in operands {
+        for (position, &operand) in operands.iter().enumerate() {
             let key = match &self.ir.values[operand.0 as usize].kind {
                 ProcessValueKind::Signal { signals, state } if signals.len() == 1 => {
                     Some((signals[0], *state))
@@ -323,8 +337,15 @@ impl SourceValues {
             let unknown = match key.and_then(|key| tests.get(&key)) {
                 Some(&unknown) => unknown,
                 None => {
-                    let Some((companion, meta)) = self.meta_companion(operand, span, meta_of)
-                    else {
+                    let companion = self.meta_companion(operand, span, meta_of).or_else(|| {
+                        let &(companion, _) = computed.get(original.get(position)?)?;
+                        let kind = ProcessValueKind::Signal {
+                            signals: vec![SignalId(companion)],
+                            state: ProcessSignalState::Current,
+                        };
+                        Some((companion, self.meta_kind(kind, span)))
+                    });
+                    let Some((companion, meta)) = companion else {
                         continue;
                     };
                     let mut unknown = self.meta_number(0, span);
@@ -432,6 +453,7 @@ mod tests {
                 &[(1, 2)].into(),
                 &[(1, encoding.clone())].into(),
                 None,
+                &HashMap::new(),
             );
             for driver in &mut draft.drivers {
                 arena.remap_expression(&mut driver.expr, &mapped);
@@ -558,6 +580,7 @@ mod tests {
                 &[(1, 2)].into(),
                 &[(1, encoding.clone())].into(),
                 None,
+                &HashMap::new(),
             );
             let actual = crate::ir::derive::materialize_digital_expression(
                 &arena.ir,
@@ -659,7 +682,8 @@ mod tests {
             .iter()
             .map(|expression| arena.import_test_fragment(expression, span, None))
             .collect::<Vec<_>>();
-        let mapped = arena.reconstruct_metavalues(&meta_of, &elems, &encodings, None);
+        let mapped =
+            arena.reconstruct_metavalues(&meta_of, &elems, &encodings, None, &HashMap::new());
         assert!(
             arena.ir.validate(3).is_empty(),
             "{:?}",
@@ -723,8 +747,13 @@ mod tests {
         };
         let root = arena.push_node(value.clone(), Some(layout.clone()));
         let before = arena.ir.values.clone();
-        let mapped =
-            arena.reconstruct_metavalues(&HashMap::new(), &HashMap::new(), &HashMap::new(), None);
+        let mapped = arena.reconstruct_metavalues(
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &HashMap::new(),
+        );
         assert_eq!(arena.ir.values, before);
         assert_eq!(mapped[root.0 as usize], root);
         assert_eq!(arena.ir.value_layouts[root.0 as usize], Some(layout));
@@ -803,6 +832,7 @@ mod tests {
             &[(1, 8)].into(),
             &[(1, encoding)].into(),
             None,
+            &HashMap::new(),
         );
         for root in [first, second] {
             let root = mapped[root.0 as usize];

@@ -437,6 +437,9 @@ pub(super) fn write_dynamic_place<'ctx>(
                             .expect("validated local metadata region")
                             .const_zero()
                     });
+                // Widened before scaling, or a narrow offset wraps (`1 * 4`
+                // in one bit is 0).
+                let offset = fit(builder, offset, meta_width)?;
                 let meta_offset = builder
                     .build_int_mul(
                         offset,
@@ -444,7 +447,6 @@ pub(super) fn write_dynamic_place<'ctx>(
                         "process.place.meta.offset",
                     )
                     .ok()?;
-                let meta_offset = fit(builder, meta_offset, meta_width)?;
                 let updated =
                     insert_dynamic_region(builder, current, region, meta_offset, region_width)?;
                 store_state(module, builder, &name, meta_width, updated)?;
@@ -510,6 +512,9 @@ pub(super) fn write_dynamic_place<'ctx>(
                             .expect("validated storage metadata region")
                             .const_zero()
                     });
+                // Widened before scaling, or a narrow offset wraps (`1 * 4`
+                // in one bit is 0).
+                let offset = fit(builder, offset, meta_width)?;
                 let meta_offset = builder
                     .build_int_mul(
                         offset,
@@ -517,7 +522,6 @@ pub(super) fn write_dynamic_place<'ctx>(
                         "process.place.meta.offset",
                     )
                     .ok()?;
-                let meta_offset = fit(builder, meta_offset, meta_width)?;
                 let updated =
                     insert_dynamic_region(builder, current, region, meta_offset, region_width)?;
                 store_state(module, builder, &name, meta_width, updated)?;

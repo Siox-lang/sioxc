@@ -60,6 +60,7 @@ impl<'a> Lowering<'a> {
             inline_depth: std::cell::Cell::new(0),
             inlining_methods: std::cell::RefCell::new(Vec::new()),
             meta_temps: std::cell::RefCell::new(MetaTemps::inline_only()),
+            compare_companions: HashMap::new(),
             expanding_structs: std::cell::RefCell::new(std::collections::HashSet::new()),
             depth_exceeded: std::cell::RefCell::new(Vec::new()),
             procedural_loop: std::cell::Cell::new(None),

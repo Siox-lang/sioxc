@@ -99,3 +99,39 @@ impl T {{
         assert!(report.contains("|W H01L "), "{family}: {report}");
     }
 }
+
+/// Hardware read a computed comparison operand as known: `(a or b) != a`
+/// with `b = "0UU1"` was false (numeric_std: true). And an element of a
+/// two-element vector read element 0's discriminant: its one-bit position
+/// scaled by 4 wrapped to 0.
+#[cfg(feature = "llvm")]
+#[test]
+fn computed_operands_and_two_element_reads() {
+    let report = run(
+        "computed",
+        r#"module g;
+use std::bits::unsigned;
+use std::logic::{Logic, Bit};
+entity E { a: unsigned[4] in, b: unsigned[4] in, m: unsigned[4] in, x: Logic in, y: Logic in, q: Bit[3] out, o: unsigned[2] out }
+impl E {
+    q[0] = if (a or b) != a { '1' } else { '0' };
+    q[1] = if (a and b) == (a and b) { '1' } else { '0' };
+    q[2] = if (a and m) == 0 { '1' } else { '0' };
+    o[1] = x; o[0] = y;
+}
+#[test] entity T {}
+impl T {
+    let a: unsigned[4] = "0011"; let b: unsigned[4] = "0UU1"; let m: unsigned[4] = "0000";
+    let x: Logic = 'X'; let y: Logic = '1';
+    let e: E = { .a = a, .b = b, .m = m, .x = x, .y = y };
+    check: process {
+        await 1ns;
+        let q: Bit[3] = e.q;
+        print!("|{} {} {} {} {}", q[0], q[1], q[2], e.o[1], e.o[0]);
+    }
+}
+"#,
+    );
+    // The mask idiom stays known: `'0' and 'U'` is `'0'`.
+    assert!(report.contains("|1 0 1 X 1"), "{report}");
+}

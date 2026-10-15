@@ -561,6 +561,8 @@ fn process_packed_meta_uncached<'ctx>(
                     index_sites,
                     cache,
                 )?;
+                // Widened before scaling, as an element index is.
+                let shift = fit(builder, shift, meta_width)?;
                 let shift = builder
                     .build_int_mul(
                         shift,
@@ -568,16 +570,29 @@ fn process_packed_meta_uncached<'ctx>(
                         "pv.meta.shift.amount",
                     )
                     .ok()?;
-                let shift = fit(builder, shift, meta_width)?;
-                match operation {
+                let shifted = match operation {
                     ProcessBinaryOp::Shl => {
-                        builder.build_left_shift(left, shift, "pv.meta.shl").ok()
+                        builder.build_left_shift(left, shift, "pv.meta.shl").ok()?
                     }
                     ProcessBinaryOp::Shr => builder
                         .build_right_shift(left, shift, false, "pv.meta.shr")
-                        .ok(),
+                        .ok()?,
                     _ => unreachable!(),
-                }
+                };
+                // Shifted out entirely (`u4 << 4`): every element is a shifted-in
+                // '0', and an LLVM shift by the full width is poison.
+                let whole = builder
+                    .build_int_compare(
+                        IntPredicate::UGE,
+                        shift,
+                        shift.get_type().const_int(u64::from(meta_width), false),
+                        "pv.meta.shift.whole",
+                    )
+                    .ok()?;
+                builder
+                    .build_select(whole, shifted.get_type().const_zero(), shifted, "")
+                    .ok()
+                    .map(|value| value.into_int_value())
             }
             ProcessBinaryOp::ArithmeticShr => {
                 let left_layout = packed_arithmetic_operand_layout(design, layout, *left)?;
