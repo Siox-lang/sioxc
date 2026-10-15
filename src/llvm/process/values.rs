@@ -1787,7 +1787,7 @@ pub(super) fn process_value<'ctx>(
             let ordinary = as_condition(builder, ordinary)?;
             let mut unknown = context.bool_type().const_zero();
             for operand in operands {
-                let operand_unknown = process_meta_operand_unknown(
+                let Some(operand_unknown) = process_meta_operand_unknown(
                     context,
                     module,
                     builder,
@@ -1796,7 +1796,9 @@ pub(super) fn process_value<'ctx>(
                     active,
                     index_sites,
                     cache,
-                )?;
+                ) else {
+                    continue;
+                };
                 unknown = builder
                     .build_or(unknown, operand_unknown, "pv.meta.operand")
                     .ok()?;

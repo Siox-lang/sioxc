@@ -211,6 +211,21 @@ impl<'a> Checker<'a> {
                             return self.ty_from_head(&output);
                         }
                     }
+                    // An operator lifted from the element (`for T[]`) gives
+                    // the array: `(a xor b) xor c` read `a xor b` as an
+                    // error and rejected the outer `xor`.
+                    if let BinOp::Custom { symbol, .. } = op {
+                        if is_liftable_array_key(symbol)
+                            && self
+                                .array_operand_element(&lhs_ty)
+                                .zip(self.array_operand_element(&rhs_ty))
+                                .is_some_and(|(left, right)| {
+                                    left == right && self.has_operator_impl(symbol, &left)
+                                })
+                        {
+                            return lhs_ty;
+                        }
+                    }
                     return Ty::Error;
                 }
                 // An integer literal joins the other operand's numeric type

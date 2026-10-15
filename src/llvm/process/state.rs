@@ -450,44 +450,6 @@ pub(super) fn cached_signal_value<'ctx>(
     Some(value)
 }
 
-/// Whether native Process lowering can recover the unknown-value plane used by a
-/// marked packed-vector comparison. Finalized hardware operands are signal
-/// reads: each value-plane signal either has a companion in `meta_of`, or is
-/// known to be two-valued. Literal numeric operands are likewise two-valued.
-/// Other Process values stay fail-closed until Process storage carries its own
-/// metavalue plane; accepting them here would silently compare only value bits.
-pub(super) fn process_meta_operand_supported(
-    design: &Design,
-    id: ProcessValueId,
-    supported: &ProcessValueSupport,
-) -> bool {
-    let Some(value) = design.process_ir.values.get(id.0 as usize) else {
-        return false;
-    };
-    match &value.kind {
-        ProcessValueKind::Number(_)
-        | ProcessValueKind::BitString { .. }
-        | ProcessValueKind::Char(_) => true,
-        ProcessValueKind::Signal { signals, state } => {
-            !signals.is_empty()
-                && !matches!(state, ProcessSignalState::Event)
-                && signals.iter().all(|signal| {
-                    design.signals.get(signal.0 as usize).is_some()
-                        && design.meta_of.get(&signal.0).is_none_or(|companion| {
-                            design.signals.get(*companion as usize).is_some()
-                                && design
-                                    .array_element_enums
-                                    .get(&signal.0)
-                                    .and_then(|element| design.logic_encodings.get(element))
-                                    .is_some()
-                        })
-                })
-        }
-        _ => process_value_layout(design, id)
-            .is_some_and(|layout| process_packed_meta_supported(design, id, layout, supported)),
-    }
-}
-
 /// Emit `true` when a comparison operand contains one of the std-declared
 /// unknown logic discriminants. Companion storage packs one discriminant nibble
 /// per value-plane bit. Weak `L`/`H` values are deliberately excluded because
