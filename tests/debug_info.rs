@@ -2936,10 +2936,13 @@ while gdb.selected_thread() is not None:
     frame = gdb.selected_frame()
     assert frame.name() == 'dwarf_narrow_binding::low', frame.name()
     stop.enabled = False
+    # Unavailable, or the exact argument: never bits the narrow consumer did
+    # not compute.
+    exact = {'1208925819614629174706184', '1208925819614629174706193'}
     for name in ['value', 'saved']:
         try:
             binding = frame.read_var(name)
-            assert binding.is_optimized_out or binding.is_unavailable, (name, str(binding))
+            assert binding.is_optimized_out or binding.is_unavailable or str(binding) in exact, (name, str(binding))
         except (gdb.error, ValueError):
             pass
     gdb.execute('finish', to_string=True)

@@ -961,8 +961,11 @@ impl<'a> Lowering<'a> {
                 }
                 // The width travels with the family: a nested inline (e.g.
                 // `signed`'s Ord inside this body) reads `self'length` off the
-                // parameter, and without this it saw none.
-                let w = self.ast_width(a);
+                // parameter, and without this it saw none. A literal's is the
+                // receiver's, as its `'length` above: `c > 100` reaches
+                // `rhs.lt(self)` with `rhs` = 100, and at its own seven bits
+                // 100 tested negative.
+                let w = self.literal_aware_width(a, receiver_width);
                 if w > 0 {
                     saved_widths.push((
                         n.text.clone(),
@@ -1258,6 +1261,19 @@ impl<'a> Lowering<'a> {
                     (l, r) => l.or(r),
                 }
             }
+            // A custom operator's result is its impl's: the checker recorded
+            // it. Without it a nested `(a xor b) nand c` had no family.
+            ast::Expr::Binary {
+                op: ast::BinOp::Custom { .. },
+                span,
+                ..
+            } => match self.expr_types.get(span) {
+                Some(crate::types::Ty::Array {
+                    family: Some(family),
+                    ..
+                }) => Some(self.free_fns.canonical_type_key(family)),
+                _ => None,
+            },
             ast::Expr::Int { .. } => Some("integer".to_string()),
             ast::Expr::SuffixLit { suffix, .. } => self
                 .suffix_impls

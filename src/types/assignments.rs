@@ -35,8 +35,16 @@ impl<'a> Checker<'a> {
                     .map(|_| crate::syntax::pretty::expr_string(target))
             })
             .or_else(|| root.filter(|r| dirs.plain_in_roots.contains(r)));
+        // A module-level `const` resolves as one; an impl's is collected.
+        let mut base = target;
+        while let Expr::Field { base: inner, .. } | Expr::Index { base: inner, .. } = base {
+            base = inner;
+        }
+        let module_const = matches!(base, Expr::Path(path)
+            if self.resolved.resolved(path.span).and_then(|definition| self.resolved.kind_of(definition))
+                == Some(DefKind::Const));
         if let Some(root) = target_root_name(target) {
-            if dirs.consts.contains(&root) {
+            if dirs.consts.contains(&root) || module_const {
                 self.error_with_help(
                     codes::INVALID_ASSIGN_TARGET,
                     expr_span(target),
@@ -354,6 +362,23 @@ impl<'a> Checker<'a> {
             }
             self.sink.emit(diag);
         }
+        self.check_literal_fit(&lhs, value);
+    }
+
+    /// A constant that a sized vector cannot hold is an error in an
+    /// initializer or assignment, as it already is in a conversion or a
+    /// comparison: `let k: unsigned[8] = 300;` stored 44 in silence.
+    pub(super) fn check_literal_fit(&mut self, lhs: &Ty, value: &Expr) {
+        if let Ty::Array {
+            family: Some(_),
+            len,
+            ..
+        } = lhs
+        {
+            if let Some(constant) = Self::const_literal(value) {
+                self.check_fits_width(constant, *len, expr_span(value));
+            }
+        }
     }
 
     /// Spec 3.17: the right-hand side of `target = value` must be assignable to
@@ -407,6 +432,7 @@ impl<'a> Checker<'a> {
                 .help(help),
             );
         }
+        self.check_literal_fit(&lhs, value);
     }
 
     /// Whether `value` may be assigned to a target of type `lhs` without an

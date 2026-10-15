@@ -198,6 +198,19 @@ impl<'a> Checker<'a> {
                     return Ty::Real;
                 }
                 if matches!(op, BinOp::Custom { .. }) {
+                    // A literal on the left takes the right operand's type
+                    // (`255 xor a`), as the operator check accepts it.
+                    if Self::is_contextual_literal(lhs) && self.assignable(&rhs_ty, lhs, sym) {
+                        if let (Some(Some(output)), Some(owner)) = (
+                            self.operator_output(op_str, &rhs_ty, &rhs_ty, false),
+                            self.ty_head(&rhs_ty),
+                        ) {
+                            if output == "Self" || output == owner {
+                                return rhs_ty;
+                            }
+                            return self.ty_from_head(&output);
+                        }
+                    }
                     return Ty::Error;
                 }
                 // An integer literal joins the other operand's numeric type
