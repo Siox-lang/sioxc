@@ -20,6 +20,9 @@ impl<'a> Lowering<'a> {
             _ => return None,
         };
         let arg = args.first()?;
+        if let Some(value) = self.lower_from_elements(&target, callee, args, env) {
+            return Some(value);
+        }
         let src = self.operand_type_name(arg);
         let found = self.lower_from_inner(&target, arg, src.as_deref(), env);
         // This is the last conversion strategy tried, so a `None` here is an
@@ -33,6 +36,65 @@ impl<'a> Lowering<'a> {
                 .push((target, src.clone(), ast::expr_span(callee)));
         }
         found
+    }
+
+    /// `T(v)` from an anonymous array's elements (`unsigned(v)` with `v:
+    /// Logic[4]`): `impl From<Logic[]> for T`, as an ordinary call.
+    pub(super) fn lower_from_elements(
+        &self,
+        target: &str,
+        callee: &ast::Expr,
+        args: &[ast::Expr],
+        env: &HashMap<String, Val>,
+    ) -> Option<Val> {
+        let [arg] = args else {
+            return None;
+        };
+        // The checker types an unsized conversion's argument as the target;
+        // its layout still says it is an array of enum elements.
+        let key = self.anonymous_array_key(arg).or_else(|| {
+            match self.source_operand_layout(arg, env)?.kind {
+                LayoutKind::Array { element, .. } => match element.kind {
+                    LayoutKind::Scalar {
+                        domain: crate::ir::ScalarDomain::Enum(name),
+                        ..
+                    } => Some(format!("{}[]", self.free_fns.canonical_type_key(&name))),
+                    _ => None,
+                },
+                _ => None,
+            }
+        })?;
+        let (f, _) = self
+            .op_impls
+            .get("From", target)?
+            .iter()
+            .find(|(f, declared)| {
+                declared.clone().or_else(|| {
+                    f.params
+                        .iter()
+                        .find(|p| !p.is_self)
+                        .and_then(|p| p.ty.as_ref())
+                        .and_then(|ty| self.free_fns.trait_arg_key(ty))
+                }) == Some(key.clone())
+            })?;
+        self.inline_function(f, "from".to_string(), callee, args, env)
+    }
+
+    /// An anonymous array argument's conversion key, its element's with `[]`,
+    /// as `From<Logic[]>` registers it.
+    pub(super) fn anonymous_array_key(&self, arg: &ast::Expr) -> Option<String> {
+        match self.expr_types.get(&ast::expr_span(arg)) {
+            Some(crate::types::Ty::Array {
+                family: None, elem, ..
+            }) => match elem.as_ref() {
+                crate::types::Ty::Named(definition) => self
+                    .free_fns
+                    .nominal_type_key(*definition)
+                    .map(|key| format!("{key}[]")),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// `float<32, 23>(1.5)`: a family's `From<Source>` impl, inlined with
@@ -61,10 +123,10 @@ impl<'a> Lowering<'a> {
         let fns = self.op_impls.get("From", &target)?;
         // The operand's own family first (`sfixed<16, 8>` resizing): the
         // checker records this conversion form's argument as a kernel integer.
-        let source = match self
-            .operand_type_name(arg)
-            .filter(|family| family != "integer")
-        {
+        let source = match self.anonymous_array_key(arg).or_else(|| {
+            self.operand_type_name(arg)
+                .filter(|family| family != "integer")
+        }) {
             Some(family) => family,
             None => match self.expr_types.get(&ast::expr_span(arg)) {
                 Some(crate::types::Ty::Real) => "real".to_string(),
@@ -81,6 +143,14 @@ impl<'a> Lowering<'a> {
                     .and_then(|ty| self.free_fns.type_head_key(ty))
             }) == Some(source.clone())
         })?;
+        // A vector built from an anonymous array's elements is an ordinary
+        // call: the format inliner binds only packed arguments.
+        if source.ends_with("[]") {
+            return match self.inline_function(f, "from".to_string(), callee, args, env)? {
+                Val::Scalar(value) => Some(value),
+                _ => None,
+            };
+        }
         self.inline_in_format(f, index, callee, args, env)
     }
 
@@ -627,9 +697,17 @@ impl<'a> Lowering<'a> {
                     n.text.clone(),
                     self.bind_source_value(value, ast::expr_span(a), None),
                 );
+                // An array's length is its element count; `ast_width` is
+                // one element's width (`v'length` sized a local `1`).
+                let length = match self.source_operand_layout(a, env).map(|layout| layout.kind) {
+                    Some(LayoutKind::Array {
+                        range: Some(range), ..
+                    }) => range.len().unwrap_or(0),
+                    _ => u64::from(self.ast_width(a)),
+                };
                 fenv.insert(
                     format!("{}::length", n.text),
-                    Val::Scalar(Expr::Const(self.ast_width(a) as u64)),
+                    Val::Scalar(Expr::Const(length)),
                 );
                 self.bind_range_attrs(&mut fenv, &n.text, a, env);
                 // Propagate the argument's family so the body dispatches
@@ -1084,6 +1162,15 @@ impl<'a> Lowering<'a> {
         if let Some(value) = self.lower_family_from(callee, args, env) {
             return Some(value);
         }
+        if let ast::Expr::Path(p) = callee {
+            if let Some(Val::Scalar(value)) = self
+                .free_fns
+                .struct_path_key(p)
+                .and_then(|target| self.lower_from_elements(&target, callee, args, env))
+            {
+                return Some(value);
+            }
+        }
         // A field-less struct derived from a scalar kernel type is a nominal
         // newtype with the same representation. Its constructor is therefore
         // value-transparent (`time(v)`, `frequency(v)`), just as derivation is;
@@ -1513,6 +1600,46 @@ impl<'a> Lowering<'a> {
                     let metavalue = literal.is_some_and(|discriminant| {
                         encoding.is_some_and(|encoding| !encoding.binary.contains(&discriminant))
                     });
+                    // A logic enum read is its discriminant; its low bit is the
+                    // value plane's for '0'/'1', and the nibble decides the rest.
+                    let discriminant = literal.is_none()
+                        && matches!(
+                            self.expr_types.get(&ast::expr_span(value)),
+                            Some(crate::types::Ty::Named(definition))
+                                if self.resolved.def(*definition).is_some_and(|definition| {
+                                    self.logic_encodings.keys().any(|key| {
+                                        key.rsplit("::").next() == Some(definition.name.as_str())
+                                    })
+                                })
+                        );
+                    // Its value bit is the encoding's for that discriminant
+                    // (`'X'` reads 0, as a literal's does), not its low bit.
+                    let raw = element.clone();
+                    let element = match (discriminant, encoding) {
+                        (true, Some(encoding)) => {
+                            let mut ones = encoding
+                                .value_bits
+                                .iter()
+                                .filter(|(_, one)| **one)
+                                .map(|(discriminant, _)| *discriminant)
+                                .collect::<Vec<_>>();
+                            ones.sort_unstable();
+                            ones.into_iter()
+                                .map(|one| {
+                                    self.source_binary(
+                                        BinOp::Eq,
+                                        &element,
+                                        &Expr::Const(one),
+                                        *span,
+                                    )
+                                })
+                                .reduce(|any, next| {
+                                    self.source_binary(BinOp::Or, &any, &next, *span)
+                                })
+                                .unwrap_or(Expr::Const(0))
+                        }
+                        _ => element,
+                    };
                     let merged = self.merge_slice(
                         current.clone(),
                         bit,
@@ -1527,9 +1654,10 @@ impl<'a> Lowering<'a> {
                             *id,
                             source_values::MetaMerge {
                                 base: current,
-                                element,
+                                element: if discriminant { raw } else { element },
                                 literal,
                                 metavalue,
+                                discriminant,
                                 bit,
                             },
                         );
@@ -1697,6 +1825,21 @@ impl<'a> Lowering<'a> {
 
     /// The integer a lowered expression always has: constants and arithmetic
     /// over them, through the value arena.
+    /// `cur_env` with the constant attributes an inlined body has bound
+    /// (`value::length`), so a type can size itself by an argument:
+    /// `let r: unsigned[value'length]`.
+    pub(super) fn attribute_env(&self, env: &HashMap<String, Val>) -> HashMap<String, i64> {
+        let mut out = self.cur_env.clone();
+        for (name, value) in env {
+            if let (true, Val::Scalar(value)) = (name.contains("::"), value) {
+                if let Some(constant) = self.constant_expr(value) {
+                    out.insert(name.clone(), constant);
+                }
+            }
+        }
+        out
+    }
+
     pub(super) fn constant_expr(&self, expression: &Expr) -> Option<i64> {
         match expression {
             Expr::Const(value) => Some(*value as i64),
@@ -1810,7 +1953,7 @@ impl<'a> Lowering<'a> {
                 // initializer's shape: its own has no width.
                 let layout =
                     l.ty.as_ref()
-                        .map(|ty| self.source_layout(ty, &self.cur_env))
+                        .map(|ty| self.source_layout(ty, &self.attribute_env(scoped.as_ref())))
                         .filter(|layout| layout.bit_width().is_some())
                         .or_else(|| self.source_operand_layout(value, scoped.as_ref()));
                 // A vector literal is shaped too, which keeps its metavalue

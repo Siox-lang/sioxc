@@ -2352,6 +2352,8 @@ fn lower_statement(
     match statement {
         Stmt::Use(_) => Some(block),
         Stmt::Let(declaration) => {
+            let sized = sized_by_value(declaration, process, context);
+            let declaration = sized.as_ref().unwrap_or(declaration);
             let local = push_local(process, declaration, context);
             let target = process.locals[local.0 as usize].ty.clone();
             let initializer = match declaration.value.as_ref() {
@@ -5634,6 +5636,46 @@ fn apply_process_declared_ranges(
     Some(())
 }
 
+/// A declaration whose width reads a bound value (`let r:
+/// unsigned[value'length]` in an inlined body), with that width folded to a
+/// literal: declared types evaluate only module constants.
+fn sized_by_value(
+    declaration: &ast::LetDecl,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ast::LetDecl> {
+    let Some(ast::Type::Indexed {
+        base,
+        index: Some(index),
+        span,
+    }) = declaration.ty.as_ref()
+    else {
+        return None;
+    };
+    if matches!(
+        index.as_ref(),
+        ast::Expr::Int { .. } | ast::Expr::Range { .. }
+    ) || crate::ir::eval_const_fns(index, context.constant_integers, context.functions, 0)
+        .is_some()
+    {
+        return None;
+    }
+    let first = context.process_ir.values.len();
+    let value = value_ref_with_type(index, process, context, Some(&crate::types::Ty::Integer));
+    let width = arena_constant_integer(value, &context.process_ir.values);
+    truncate_process_values(context, first);
+    let mut sized = declaration.clone();
+    sized.ty = Some(ast::Type::Indexed {
+        base: base.clone(),
+        index: Some(Box::new(ast::Expr::Int {
+            text: width?.to_string(),
+            span: ast::expr_span(index),
+        })),
+        span: *span,
+    });
+    Some(sized)
+}
+
 fn push_local(
     process: &mut ProcessCfg,
     declaration: &ast::LetDecl,
@@ -5767,6 +5809,17 @@ fn inline_bound_value(path: &ast::Path, context: &LoweringContext<'_>) -> Option
         .iter()
         .rev()
         .find_map(|bindings| bindings.get(&definition).copied())
+}
+
+/// A conversion's source key: a type's own, or `Logic[]` for an anonymous
+/// array of `Logic`, as `From<Logic[]>` registers it.
+fn conversion_source_key(ty: &crate::types::Ty, context: &LoweringContext<'_>) -> Option<String> {
+    match ty {
+        crate::types::Ty::Array {
+            family: None, elem, ..
+        } => Some(format!("{}[]", process_type_key(elem, context)?)),
+        other => process_type_key(other, context),
+    }
 }
 
 fn process_type_key(ty: &crate::types::Ty, context: &LoweringContext<'_>) -> Option<String> {
@@ -6077,12 +6130,21 @@ fn lower_process_named_conversion(
         return None;
     }
     let target = process_type_key(&target_type, context)?;
-    let source_type = context
-        .typed
-        .expr_type(ast::expr_span(argument))
-        .filter(|ty| !matches!(ty, crate::types::Ty::Error))
-        .cloned()?;
-    let source = process_type_key(&source_type, context)?;
+    // The checker types an unsized conversion's argument as its target
+    // (`unsigned(v)`); an anonymous array argument is the array it is.
+    let probe = context.process_ir.values.len();
+    let lowered = value_ref_with_type(argument, process, context, None);
+    let own = process_value_type(lowered, context)
+        .filter(|ty| matches!(ty, crate::types::Ty::Array { family: None, .. }));
+    truncate_process_values(context, probe);
+    let source_type = own.or_else(|| {
+        context
+            .typed
+            .expr_type(ast::expr_span(argument))
+            .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+            .cloned()
+    })?;
+    let source = conversion_source_key(&source_type, context)?;
     let first_value = context.process_ir.values.len();
     let operand = value_ref_with_type(argument, process, context, Some(&source_type));
 
@@ -6431,12 +6493,48 @@ fn lower_process_family_from(
                 crate::types::Ty::Integer
             })
         })?;
-    let Some(function) = process_type_key(&source_type, context)
-        .and_then(|source| context.functions.get_conversion(&target, &source))
+    let source = conversion_source_key(&source_type, context);
+    let Some(function) = source
+        .as_ref()
+        .and_then(|source| context.functions.get_conversion(&target, source))
     else {
         truncate_process_values(context, first_value);
         return None;
     };
+    // From an anonymous array's elements: an ordinary call, as in hardware.
+    // A body of statements (a loop of element writes) is a call the CFG
+    // expands, found by its two types as `named_conversion`'s is.
+    if source.is_some_and(|source| source.ends_with("[]")) {
+        if let Some(value) = inline_process_function(
+            function,
+            *span,
+            None,
+            &[operand],
+            process,
+            context,
+            return_type,
+        ) {
+            return Some(value);
+        }
+        let target_type = return_type
+            .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+            .cloned()?;
+        let callee = push_value(
+            *span,
+            None,
+            None,
+            ProcessValueKind::Definition(definition),
+            context,
+        );
+        let kind = ProcessValueKind::Call {
+            callee,
+            type_arguments: Vec::new(),
+            arguments: vec![operand],
+            bang: false,
+        };
+        let width = source_value_width(&kind, Some(&target_type), process, context);
+        return Some(push_value(*span, Some(target_type), width, kind, context));
+    }
     inline_with_self_format(
         function,
         family,

@@ -516,3 +516,31 @@ impl signed {
         return self - rhs;
     }
 }
+
+// `unsigned(v)` / `signed(v)` for a `Logic[]` (VHDL's `unsigned(slv)`): the
+// elements in order, the leftmost most significant, metavalues kept.
+impl From<Logic[]> for unsigned {
+    fn from(value: Logic[]) -> unsigned {
+        let r: unsigned[value'length] = 0;
+        // One write per element: a branch around each would select between
+        // two versions of `r` at every step.
+        let step: integer = if value'ascending { 1 } else { 0 - 1 };
+        for k in 0..value'length - 1 {
+            r[value'length - 1 - k] = value[value'left + step * k];
+        }
+        return r;
+    }
+}
+
+impl From<Logic[]> for signed {
+    fn from(value: Logic[]) -> signed {
+        let r: signed[value'length] = 0;
+        // One write per element: a branch around each would select between
+        // two versions of `r` at every step.
+        let step: integer = if value'ascending { 1 } else { 0 - 1 };
+        for k in 0..value'length - 1 {
+            r[value'length - 1 - k] = value[value'left + step * k];
+        }
+        return r;
+    }
+}

@@ -24,6 +24,9 @@ pub(super) struct MetaMerge {
     pub(super) literal: Option<u64>,
     /// Whether that literal is a metavalue, so the result has a companion.
     pub(super) metavalue: bool,
+    /// The element is a logic enum value (`v[k]` of a `Logic[]`), which is its
+    /// own discriminant: the companion nibble, and possibly a metavalue.
+    pub(super) discriminant: bool,
     /// The element's storage position.
     pub(super) bit: u32,
 }
@@ -106,7 +109,7 @@ impl SourceValues {
                 || self
                     .merge_meta
                     .get(&id)
-                    .is_some_and(|merge| merge.metavalue)
+                    .is_some_and(|merge| merge.metavalue || merge.discriminant)
                 || match &node.kind {
                     ProcessValueKind::Signal { signals, state } => {
                         !matches!(state, ProcessSignalState::Event)

@@ -68,6 +68,31 @@ impl<'a> Lowering<'a> {
                 continue;
             }
             constants.remove(name);
+            // An array argument's bounds, for `v[v'low + 1]` in its body.
+            if let Some(range) = argument
+                .layout
+                .as_ref()
+                .and_then(|layout| match &layout.kind {
+                    LayoutKind::Array {
+                        range: Some(range), ..
+                    }
+                    | LayoutKind::Packed {
+                        range: Some(range), ..
+                    } => Some(*range),
+                    _ => None,
+                })
+            {
+                let (low, high) = (range.left.min(range.right), range.left.max(range.right));
+                for (attribute, value) in [
+                    ("left", range.left),
+                    ("right", range.right),
+                    ("low", low),
+                    ("high", high),
+                    ("length", high - low + 1),
+                ] {
+                    constants.insert(format!("{name}::{attribute}"), value);
+                }
+            }
             if !argument.layout.as_ref().is_some_and(|layout| {
                 matches!(
                     layout.kind,

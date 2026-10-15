@@ -79,7 +79,7 @@ impl<'a> FunctionIndex<'a> {
             .first()
             .and_then(|argument| match argument {
                 ast::GenericArg::Positional(ast::Expr::Path(path)) => self.type_path_key(path),
-                ast::GenericArg::PositionalType(ty) => self.type_head_key(ty),
+                ast::GenericArg::PositionalType(ty) => self.trait_arg_key(ty),
                 _ => None,
             })
         else {
@@ -746,6 +746,17 @@ impl<'a> FunctionIndex<'a> {
             .or_else(|| self.entity_path_key(path))
             .or_else(|| self.type_alias_path_key(path))
             .or_else(|| path.segments.last().map(|name| name.text.clone()))
+    }
+
+    /// A trait argument's key: an unconstrained array keeps its `[]`, so
+    /// `From<Logic[]>` (a vector) is not `From<Logic>` (one element).
+    pub fn trait_arg_key(&self, ty: &ast::Type) -> Option<String> {
+        match ty {
+            ast::Type::Indexed {
+                base, index: None, ..
+            } => Some(format!("{}[]", self.type_head_key(base)?)),
+            other => self.type_head_key(other),
+        }
     }
 
     /// Identity-preserving head name for a declared type. Applied views carry

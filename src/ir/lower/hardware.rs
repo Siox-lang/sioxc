@@ -466,6 +466,29 @@ fn normalized_value_width(
                 width(left)?.checked_add(width(right)?)
             }
             ProcessBinaryOp::Shl => shifted_arena_width(width(left)?, *right, &process_ir.values),
+            // A constant's natural width has no sign bit: as a one-bit signed
+            // value `1` is -1, so the index `v[0 + 1]` sign-extended to 3.
+            ProcessBinaryOp::SignedAdd
+            | ProcessBinaryOp::SignedSub
+            | ProcessBinaryOp::SignedDiv
+            | ProcessBinaryOp::SignedRem => {
+                let signed = |id: &ProcessValueId| {
+                    let natural = width(id)?;
+                    Some(
+                        match process_ir
+                            .values
+                            .get(id.0 as usize)
+                            .map(|value| &value.kind)
+                        {
+                            Some(ProcessValueKind::Number(ProcessNumber::Integer(_))) => {
+                                natural.saturating_add(1).min(64.max(natural))
+                            }
+                            _ => natural,
+                        },
+                    )
+                };
+                Some(signed(left)?.max(signed(right)?))
+            }
             _ => Some(width(left)?.max(width(right)?)),
         },
         ProcessValueKind::Select {

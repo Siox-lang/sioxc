@@ -326,6 +326,13 @@ pub fn eval_const_fns(
         ast::Expr::Path(path) => fns
             .constant_path_key(path)
             .and_then(|key| env.get(&key).copied()),
+        // A bound argument's range attribute (`v'low`), as the caller binds it.
+        ast::Expr::SysAttr { base, attr, .. } => match base.as_ref() {
+            ast::Expr::Path(path) if path.segments.len() == 1 => env
+                .get(&format!("{}::{}", path.segments[0].text, attr.text))
+                .copied(),
+            _ => None,
+        },
         ast::Expr::IfExpr {
             cond, then, els, ..
         } => {
