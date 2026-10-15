@@ -250,6 +250,14 @@ impl<'a> Checker<'a> {
                         if has_impl {
                             return Ty::Named(id);
                         }
+                        // No impl: the operator error says so, and the
+                        // recovery type keeps it from also failing as a
+                        // mistyped initializer (`let z: Complex = 2 - a`).
+                        if matches!(lhs_ty, Ty::Integer | Ty::Real)
+                            && self.resolved.kind_of(id) == Some(DefKind::Struct)
+                        {
+                            return Ty::Error;
+                        }
                     }
                 }
                 lhs_ty
@@ -485,12 +493,21 @@ impl<'a> Checker<'a> {
                         .and_then(|index| elems.get(index).cloned())
                         .unwrap_or(Ty::Error);
                 }
-                match self
-                    .ty_head(&recv)
-                    .and_then(|head| self.field_decl_ty(&head, &field.text))
+                let head = self.ty_head(&recv);
+                match head
+                    .as_ref()
+                    .and_then(|head| self.field_decl_ty(head, &field.text))
                 {
                     Some(ty) => self.ast_ty(&ty),
-                    None => Ty::Error,
+                    // An instance's port (`dut.z`): its declared type. As an
+                    // error it read untyped, and `print!("{}", dut.z)` of an
+                    // aggregate port found no way to print it.
+                    None => head
+                        .as_ref()
+                        .and_then(|head| self.entities.get(head))
+                        .and_then(|ports| ports.iter().find(|port| port.name == field.text))
+                        .map(|port| port.ty.clone())
+                        .unwrap_or(Ty::Error),
                 }
             }
         }

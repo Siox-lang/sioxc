@@ -3360,6 +3360,32 @@ fn lower_format_value(
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
 ) -> Option<()> {
+    // A DUT's aggregate port read directly (`print!("{}", dut.z)`) is its
+    // signals, untyped: take the checked type, as a `let` copy would.
+    // Its layout too, which a `Logic[4]` port needs to print as symbols.
+    if let Some(expression) = expression {
+        let ty = process_value_type(value, context).or_else(|| {
+            context
+                .typed
+                .expr_type(ast::expr_span(expression))
+                .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                .cloned()
+        });
+        let signals = matches!(
+            context.process_ir.values[value.0 as usize].kind,
+            ProcessValueKind::Signal { .. }
+        );
+        if let Some(ty) = ty.filter(|_| signals) {
+            let span = ast::expr_span(expression);
+            if context.process_ir.value_layouts[value.0 as usize].is_none() {
+                context.process_ir.value_layouts[value.0 as usize] =
+                    process_layout_for_type(&ty, span, context);
+            }
+            context.process_ir.values[value.0 as usize]
+                .ty
+                .get_or_insert(ty);
+        }
+    }
     let layout = operand_source_layout(value, process, context);
     let debug = spec.kind == crate::syntax::format::FormatKind::Debug;
     // `{:?}` is the built-in form, whatever `Display` says.
@@ -8663,8 +8689,19 @@ fn inline_process_binary_operator(
     // legitimately inspect `rhs'length`, and keeping a literal/expression as
     // an unbounded integer here would make the selected `signed[N]` contract
     // disappear between overload resolution and body inlining.
+    // Not where the selected impl declares the operand `integer`
+    // (`impl Add<integer, Complex> for Complex`): `z + 2` bound `2` as a
+    // `Complex`.
+    let declared_integer = function
+        .params
+        .iter()
+        .find(|parameter| !parameter.is_self)
+        .and_then(|parameter| parameter.ty.as_ref())
+        .and_then(crate::ir::lower_helpers::type_head_name)
+        == Some("integer");
     let right_context = if matches!(right_type, Some(crate::types::Ty::Integer))
         && !matches!(left_type, crate::types::Ty::Integer)
+        && !declared_integer
     {
         Some(&left_type)
     } else {
@@ -9419,12 +9456,71 @@ fn value_ref(
 /// aliases use the type of the path being read: a declaration such as
 /// `const HIGH: Bit = '1'` must remain the `Bit` discriminant rather than the
 /// Unicode code point of a standalone `Char` expression.
+/// `5i`: a suffix whose impl builds a struct (`impl Suffix<"i", real> for
+/// Complex`) inlines that impl's `suffix`, as hardware does. A number-valued
+/// suffix (`10ns`) is folded as a constant instead.
+fn struct_suffix_literal(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<crate::ir::ProcessValueId> {
+    let ast::Expr::SuffixLit { text, suffix, span } = expression else {
+        return None;
+    };
+    if normalized_suffix(text, &suffix.text, context).is_some() {
+        return None;
+    }
+    let ty @ crate::types::Ty::Named(definition) = context.typed.expr_type(*span).cloned()? else {
+        return None;
+    };
+    if context.resolved.kind_of(definition) != Some(crate::resolve::DefKind::Struct) {
+        return None;
+    }
+    let owner = process_type_key(&ty, context)?;
+    let function = context.functions.get_associated(&owner, "suffix")?;
+    let parameter = function
+        .params
+        .iter()
+        .find(|parameter| !parameter.is_self)?
+        .ty
+        .as_ref()
+        .and_then(crate::ir::lower_helpers::type_head_name)?;
+    let (number, number_type, width) = match parameter {
+        "real" => (
+            ProcessNumber::Real(real_literal(text)?.to_bits()),
+            crate::types::Ty::Real,
+            64,
+        ),
+        "integer" => (parse_number(text, None), crate::types::Ty::Integer, 64),
+        _ => return None,
+    };
+    let argument = push_value(
+        *span,
+        Some(number_type),
+        Some(width),
+        ProcessValueKind::Number(number),
+        context,
+    );
+    inline_process_function(
+        function,
+        *span,
+        None,
+        &[argument],
+        process,
+        context,
+        Some(&ty),
+    )
+}
+
 fn value_ref_with_type(
     expression: &ast::Expr,
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
     contextual_type: Option<&crate::types::Ty>,
 ) -> crate::ir::ProcessValueId {
+    if let Some(value) = struct_suffix_literal(expression, process, context) {
+        return value;
+    }
     // Arithmetic on literals alone is exact in the vector it fills, as a
     // literal is: `0 - 17262465143367426459` into `signed[65]` wrapped in
     // the 64-bit kernel (also when promoted there) and came out positive.

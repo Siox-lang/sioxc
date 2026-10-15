@@ -218,6 +218,25 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // A struct negates only through its own `Neg` impl: `-z` on a
+                // `Complex` was accepted and computed nonsense.
+                if matches!(op, UnOp::Neg) {
+                    if let Ty::Named(definition) = self.type_of(rhs, sym) {
+                        let owner = self.resolved.def(definition).map(|d| d.name.clone());
+                        let is_struct = self.resolved.kind_of(definition) == Some(DefKind::Struct);
+                        if let Some(owner) = owner.filter(|owner| {
+                            is_struct
+                                && !self.is_packed_array_newtype(owner)
+                                && !self.has_impl("Neg", owner)
+                        }) {
+                            self.error(
+                                codes::TYPE_MISMATCH,
+                                *span,
+                                format!("no unary `-` for `{owner}`: it needs an `impl Neg<Out> for {owner}`"),
+                            );
+                        }
+                    }
+                }
             }
             Expr::IfExpr {
                 cond, then, els, ..
