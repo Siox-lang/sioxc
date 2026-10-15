@@ -523,6 +523,18 @@ impl<'a> Lowering<'a> {
         if let Some((base, digits)) = Self::bit_string_parts(expression) {
             return Some(self.decode_bit_string_words(base, digits).0);
         }
+        // Arithmetic on literals alone is exact, as in a testbench local:
+        // `0 - 17262465143367426459` wrapped in the 64-bit kernel. A negative
+        // value is sign-extended; the caller truncates to the signal's width.
+        if !matches!(expression, ast::Expr::Int { .. }) {
+            if let Some(value) = super::source_processes::literal_arithmetic(expression) {
+                let pattern = value as u128;
+                let fill = if value < 0 { u64::MAX } else { 0 };
+                let mut words = vec![pattern as u64, (pattern >> 64) as u64];
+                words.resize(64, fill);
+                return Some(words);
+            }
+        }
         match self.lower_const_value(expression, &self.cur_env) {
             Some(Expr::WideConst(words)) => Some(words),
             Some(Expr::Const(value)) => Some(vec![value]),

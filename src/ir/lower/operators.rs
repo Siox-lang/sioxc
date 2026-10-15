@@ -712,6 +712,24 @@ impl<'a> Lowering<'a> {
         env: &HashMap<String, Val>,
     ) -> Option<Expr> {
         let (trait_name, method) = comparison_method(op_str)?;
+        // A literal on the left compares mirrored, against the other side's
+        // impl: `100 < c` is `c > 100`. Read as an `integer` it found no
+        // `Ord`, and the built-in compared signed `c` as unsigned.
+        if matches!(lhs, ast::Expr::Int { .. })
+            && self.operand_type_name(lhs).as_deref() == Some("integer")
+            && self
+                .operand_type_name(rhs)
+                .is_some_and(|ty| self.op_impls.contains(trait_name, &ty))
+        {
+            let mirrored = match op_str {
+                "<" => ">",
+                ">" => "<",
+                "<=" => ">=",
+                ">=" => "<=",
+                other => other,
+            };
+            return self.inline_cmp(mirrored, rhs, lhs, env);
+        }
         let ty = self.operand_type_name(lhs)?;
         if !self.op_impls.contains(trait_name, &ty) {
             return None;

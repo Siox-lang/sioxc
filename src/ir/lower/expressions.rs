@@ -588,6 +588,17 @@ impl<'a> Lowering<'a> {
             ast::Expr::Binary { op, lhs, rhs, .. } if op.keeps_operand_family() => {
                 self.ast_width(lhs).max(self.ast_width(rhs))
             }
+            // A custom operator is as wide as the checker typed it: a nested
+            // `(b xnor 123) nand c` complemented within one bit, not eight.
+            ast::Expr::Binary {
+                op: ast::BinOp::Custom { .. },
+                lhs,
+                rhs,
+                span,
+            } => match self.expr_types.get(span) {
+                Some(crate::types::Ty::Array { len, .. }) if *len > 0 => *len,
+                _ => self.ast_width(lhs).max(self.ast_width(rhs)),
+            },
             // A conversion is as wide as its target (64 for kernel integer).
             // A generic call is as wide as the argument its result takes.
             ast::Expr::Call { callee, args, .. }
@@ -728,24 +739,33 @@ impl<'a> Lowering<'a> {
         if !matches!(op, "xor" | "nand" | "nor" | "xnor") {
             return None;
         }
-        let operand = |expression| source_operators::OperatorOperand {
-            value: Val::Scalar(lower(expression)),
-            family: self.operand_type_name(expression),
-            width: self.ast_width(expression),
-            range: None,
-            layout: None,
-        };
-        // Test families before lowering either operand.
-        if ![lhs, rhs].iter().all(|expression| {
+        // Test families before lowering either operand. An integer literal
+        // takes the other operand's family and width, on either side
+        // (`255 xor a` as `a xor 255`).
+        let vector = |expression: &ast::Expr| {
             self.operand_type_name(expression)
-                .is_some_and(|family| self.out.array_element_of_family.contains_key(&family))
-        }) {
-            return None;
-        }
+                .filter(|family| self.out.array_element_of_family.contains_key(family))
+                .map(|family| (family, self.ast_width(expression)))
+        };
+        let literal = |expression: &ast::Expr| matches!(expression, ast::Expr::Int { .. });
+        let (left, right) = match (vector(lhs), vector(rhs)) {
+            (Some(left), Some(right)) => (left, right),
+            (Some(left), None) if literal(rhs) => (left.clone(), left),
+            (None, Some(right)) if literal(lhs) => (right.clone(), right),
+            _ => return None,
+        };
+        let operand =
+            |expression, (family, width): (String, _)| source_operators::OperatorOperand {
+                value: Val::Scalar(lower(expression)),
+                family: Some(family),
+                width,
+                range: None,
+                layout: None,
+            };
         self.native_bound_vector_logical(
             op,
-            &operand(lhs),
-            &operand(rhs),
+            &operand(lhs, left),
+            &operand(rhs, right),
             ast::expr_span(lhs).to(ast::expr_span(rhs)),
         )
     }
@@ -831,24 +851,52 @@ impl<'a> Lowering<'a> {
         rhs: &ast::Expr,
         env: &HashMap<String, Val>,
     ) -> Option<Val> {
-        let family = self.operand_type_name(lhs)?;
         let rhs_family = self.operand_type_name(rhs);
+        // A literal on the left takes the right operand's family: `102 / c`
+        // with `c: signed[8]` divided as unsigned kernel words.
+        let family = match (lhs, self.operand_type_name(lhs), &rhs_family) {
+            (ast::Expr::Int { .. }, Some(left), Some(right))
+                if left == "integer" && self.out.array_element_of_family.contains_key(right) =>
+            {
+                right.clone()
+            }
+            (_, left, _) => left?,
+        };
         let function = self.source_binary_operator(
             op,
             &family,
             rhs_family.as_deref(),
             ast::expr_span(lhs).to(ast::expr_span(rhs)),
         )?;
-        self.inline_source_operator(
+        let width = if matches!(lhs, ast::Expr::Int { .. }) {
+            self.ast_width(rhs)
+        } else {
+            self.ast_width(lhs)
+        };
+        let inlined = self.inline_source_operator(
             function,
             ast::expr_span(lhs).to(ast::expr_span(rhs)),
-            self.source_operator_operand(lhs, env, self.ast_width(lhs)),
-            Some(self.source_operator_operand(
-                rhs,
-                env,
-                self.literal_aware_width(rhs, self.ast_width(lhs)),
-            )),
-        )
+            self.source_operator_operand(lhs, env, width),
+            Some(self.source_operator_operand(rhs, env, self.literal_aware_width(rhs, width))),
+        )?;
+        // An operator returning its own type returns it at the operand's
+        // width, as a call returns its declared type in the testbench. A raw
+        // kernel product is twice as wide (fixed-point bodies need those
+        // bits), so `(c * d) / b` divided the unwrapped product.
+        let own = function
+            .ret
+            .as_ref()
+            .and_then(crate::ir::lower_helpers::type_head_name)
+            .is_some_and(|head| head == "Self" || family.rsplit("::").next() == Some(head));
+        match inlined {
+            Val::Scalar(value) if own && width > 1 => Some(Val::Scalar(self.source_slice(
+                &value,
+                width - 1,
+                0,
+                ast::expr_span(lhs).to(ast::expr_span(rhs)),
+            ))),
+            other => Some(other),
+        }
     }
 
     /// The declared index range of an operand, when it has one: a local or

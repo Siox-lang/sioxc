@@ -286,6 +286,13 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // A constant must fit the sized vector it meets under any
+                // operator, as under a comparison: `x << 300` on an 8-bit
+                // vector reached code generation as a 9-bit `unsigned[8]`,
+                // and `x + 300` added 44.
+                if !is_comparison(op) {
+                    self.check_comparison_fit(lhs, rhs, sym);
+                }
                 let comparison_handled = if is_comparison(op) {
                     self.check_comparison_fit(lhs, rhs, sym);
                     self.check_comparison_operands(op, lhs, rhs, *span, sym)
@@ -332,7 +339,12 @@ impl<'a> Checker<'a> {
                     // Self-typed parameter, as it does for the symbolic
                     // operators — `a + 255` worked and `a xor 255` did not,
                     // purely because the textual half dispatches here.
-                    let matching = self.operator_accepts_expr(symbol, &lhs_ty, &rhs_ty, rhs, sym);
+                    let matching = self.operator_accepts_expr(symbol, &lhs_ty, &rhs_ty, rhs, sym)
+                        // ...and on the left, taking the right operand's
+                        // type: `255 xor a` as `255 and a` already does.
+                        || Self::is_contextual_literal(lhs)
+                            && self.assignable(&rhs_ty, lhs, sym)
+                            && self.operator_accepts(symbol, &rhs_ty, &rhs_ty, false);
                     // A plain array has no type head, so the exact
                     // `(symbol, owner)` lookup above cannot see the blanket
                     // `for T[]` impl that lifts the element's operator.

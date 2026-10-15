@@ -292,7 +292,16 @@ pub(super) fn process_value_at<'ctx>(
     // recover `-7`. The established digital emitter has the same `emit_at`
     // rule. Preserve explicit narrowing by taking this path only when a
     // consumer widens the expression.
-    if width > natural_width {
+    //
+    // A value typed as a sized vector of exactly its own width wraps there
+    // first: `d << 1` on a `signed[8]` is 50, and recomputed at a divisor's
+    // wider width it was -206, so `-72 / (d << 1)` came out 0. (A raw
+    // fixed-point product is wider than its type, and still widens.)
+    let sized_vector = matches!(
+        value.ty,
+        Some(siox::types::Ty::Array { family: Some(_), len, .. }) if len == natural_width
+    );
+    if width > natural_width && !sized_vector {
         let key = (id, cache.key(id, active, None).1, width, signed);
         if let Some(value) = cache.contextual_value(key) {
             debug::capture_value(builder, design, cache, id, value);

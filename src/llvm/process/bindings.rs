@@ -209,10 +209,36 @@ pub(super) fn packed_arithmetic_operand_layout(
     operand: ProcessValueId,
 ) -> Option<SourceLayout> {
     packed_logic_layout(design, target)?;
+    let packed = |layout: &&SourceLayout| {
+        packed_logic_layout(design, layout).is_some_and(|(width, _)| width != 0)
+    };
     process_value_layout(design, operand)
-        .filter(|layout| packed_logic_layout(design, layout).is_some_and(|(width, _)| width != 0))
+        .filter(packed)
+        .or_else(|| bitwise_operand_layout(design, operand).filter(packed))
         .cloned()
         .or_else(|| Some(target.clone()))
+}
+
+/// A bitwise `and`/`or`/`xor`/`not` keeps its operands' shape, so a node of
+/// one without a layout has a leaf operand's. Falling back to the consumer's
+/// instead checked `a` in `0 - (a and b)` at the wrong width, and a signed
+/// division by `a and b` failed to lower.
+fn bitwise_operand_layout(design: &Design, operand: ProcessValueId) -> Option<&SourceLayout> {
+    match &design.process_ir.values.get(operand.0 as usize)?.kind {
+        ProcessValueKind::Binary {
+            operation: ProcessBinaryOp::And | ProcessBinaryOp::Or | ProcessBinaryOp::Xor,
+            left,
+            right,
+        } => [*left, *right].into_iter().find_map(|side| {
+            process_value_layout(design, side).or_else(|| bitwise_operand_layout(design, side))
+        }),
+        ProcessValueKind::Unary {
+            operation: ProcessUnaryOp::Not,
+            operand,
+        } => process_value_layout(design, *operand)
+            .or_else(|| bitwise_operand_layout(design, *operand)),
+        _ => None,
+    }
 }
 
 /// Metadata regions use the same offsets as value regions, scaled by four.

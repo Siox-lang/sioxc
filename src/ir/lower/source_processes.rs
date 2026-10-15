@@ -1675,6 +1675,11 @@ fn register_test_storages(
             continue;
         };
         let id = ProcessStorageId(process_ir.storages.len() as u32);
+        // The initializer's type stands in for an unsized declaration, but a
+        // kernel `integer` initializer (`0 - 5`) does not retype a declared
+        // vector: a `signed[65]` stored as `integer` read its initializer at
+        // 64 bits.
+        let from_layout = process_type_from_layout(layout, resolved);
         let ty = declared_nominal_type(declaration.ty.as_ref(), resolved)
             .or_else(|| {
                 declaration
@@ -1682,9 +1687,15 @@ fn register_test_storages(
                     .as_ref()
                     .and_then(|value| typed.expr_type(ast::expr_span(value)))
                     .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                    .filter(|ty| {
+                        !matches!(ty, crate::types::Ty::Integer)
+                            || from_layout
+                                .as_ref()
+                                .is_none_or(|layout| matches!(layout, crate::types::Ty::Integer))
+                    })
                     .cloned()
             })
-            .or_else(|| process_type_from_layout(layout, resolved));
+            .or(from_layout);
         let layout = process_layout_with_type(layout, ty.as_ref());
         process_ir.storages.push(ProcessStorage {
             id,
@@ -8411,8 +8422,22 @@ fn inline_process_binary_operator(
     context: &mut LoweringContext<'_>,
     return_type: Option<&crate::types::Ty>,
 ) -> Option<ProcessValueId> {
-    let left_type = operand_type(lhs, process, context)?;
     let right_type = operand_type(rhs, process, context);
+    // A literal on the left takes the right operand's type, as one on the
+    // right takes the left's: `255 xor a`, and `102 / (c and c)`, which
+    // otherwise divided as unsigned kernel words.
+    let literal_left = matches!(lhs, ast::Expr::Int { .. })
+        && matches!(
+            right_type,
+            Some(crate::types::Ty::Array {
+                family: Some(_),
+                ..
+            })
+        );
+    let left_type = match operand_type(lhs, process, context) {
+        Some(crate::types::Ty::Integer) | None if literal_left => right_type.clone()?,
+        left => left?,
+    };
     let symbol = crate::syntax::pretty::bin_op(operator);
     if let Some(value) = inline_process_comparison(
         operator,
@@ -8462,6 +8487,12 @@ fn inline_process_binary_operator(
 
     let first_value = context.process_ir.values.len();
     let left = value_ref_with_type(lhs, process, context, Some(&left_type));
+    // A literal receiver (`255 xor a`) has no declaration to give it a
+    // layout, and the operator's body reads its elements.
+    if literal_left && context.process_ir.value_layouts[left.0 as usize].is_none() {
+        let layout = process_layout_for_type(&left_type, ast::expr_span(lhs), context);
+        context.process_ir.value_layouts[left.0 as usize] = layout;
+    }
     // A width-generic operand (`x: signed` in a function) has its argument's
     // width. A literal on the other side takes that one: typed as the bare
     // family, `x - 1` read `1` as a one-bit signed, which is -1.
@@ -9172,6 +9203,40 @@ fn value_ref_with_type(
     context: &mut LoweringContext<'_>,
     contextual_type: Option<&crate::types::Ty>,
 ) -> crate::ir::ProcessValueId {
+    // Arithmetic on literals alone is exact in the vector it fills, as a
+    // literal is: `0 - 17262465143367426459` into `signed[65]` wrapped in
+    // the 64-bit kernel (also when promoted there) and came out positive.
+    if !matches!(expression, ast::Expr::Int { .. }) {
+        let span = ast::expr_span(expression);
+        let target = context
+            .typed
+            .promotion(span)
+            .or(contextual_type)
+            .or_else(|| context.typed.expr_type(span))
+            .cloned();
+        if let (
+            Some(
+                ty @ crate::types::Ty::Array {
+                    family: Some(_),
+                    len,
+                    ..
+                },
+            ),
+            Some(folded),
+        ) = (target, literal_arithmetic(expression))
+        {
+            if (1..=128).contains(&len) {
+                let pattern = if len == 128 {
+                    folded as u128
+                } else {
+                    (folded as u128) & ((1u128 << len) - 1)
+                };
+                let words = vec![pattern as u64, (pattern >> 64) as u64];
+                let kind = ProcessValueKind::Number(ProcessNumber::Integer(words));
+                return push_value(span, Some(ty), Some(len), kind, context);
+            }
+        }
+    }
     if let Some(value) = process_promoted_operand(expression, process, context) {
         return value;
     }
@@ -10583,6 +10648,43 @@ fn parse_number(text: &str, ty: Option<&crate::types::Ty>) -> ProcessNumber {
     ProcessNumber::Integer(parse_digits_words(digits, radix))
 }
 
+/// The exact value of arithmetic on integer literals alone (`0 - 5`):
+/// `None` for anything else or on `i128` overflow. Division truncates toward
+/// zero and `%` takes the dividend's sign.
+pub(super) fn literal_arithmetic(expression: &ast::Expr) -> Option<i128> {
+    match expression {
+        ast::Expr::Int { text, .. } => {
+            let ProcessNumber::Integer(words) = parse_number(text, None) else {
+                return None;
+            };
+            let value = match words.as_slice() {
+                [] => 0u128,
+                [low] => u128::from(*low),
+                [low, high] => u128::from(*low) | (u128::from(*high) << 64),
+                _ => return None,
+            };
+            i128::try_from(value).ok()
+        }
+        ast::Expr::Unary {
+            op: ast::UnOp::Neg,
+            rhs,
+            ..
+        } => literal_arithmetic(rhs)?.checked_neg(),
+        ast::Expr::Binary { op, lhs, rhs, .. } => {
+            let (left, right) = (literal_arithmetic(lhs)?, literal_arithmetic(rhs)?);
+            match op {
+                ast::BinOp::Add => left.checked_add(right),
+                ast::BinOp::Sub => left.checked_sub(right),
+                ast::BinOp::Mul => left.checked_mul(right),
+                ast::BinOp::Div => left.checked_div(right),
+                ast::BinOp::Rem => left.checked_rem(right),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Accumulate arbitrary-width digits into low-word-first storage.
 fn parse_digits_words(digits: &str, radix: u32) -> Vec<u64> {
     let mut words = Vec::<u64>::new();
@@ -10707,7 +10809,11 @@ fn lower_binary_operator(
             } => Some(family.rsplit("::").next() == Some("signed")),
             _ => None,
         })
-        .unwrap_or_else(|| types.into_iter().any(process_type_is_signed));
+        .unwrap_or_else(|| types.iter().copied().any(process_type_is_signed));
+    let signed_vector = types.iter().any(|ty| {
+        matches!(ty, crate::types::Ty::Array { family: Some(family), .. }
+            if family.rsplit("::").next() == Some("signed"))
+    });
     match operator {
         ast::BinOp::Add if real => ProcessBinaryOp::FloatAdd,
         ast::BinOp::Sub if real => ProcessBinaryOp::FloatSub,
@@ -10723,8 +10829,12 @@ fn lower_binary_operator(
         ast::BinOp::Add if signed => ProcessBinaryOp::SignedAdd,
         ast::BinOp::Sub if signed => ProcessBinaryOp::SignedSub,
         ast::BinOp::Mul if signed => ProcessBinaryOp::SignedMul,
-        ast::BinOp::Div if signed => ProcessBinaryOp::SignedDiv,
-        ast::BinOp::Rem if signed => ProcessBinaryOp::SignedRem,
+        // A built-in `/` or `%` on `signed` vectors is reached only inside
+        // std's sign-handling bodies, which divide magnitudes: the unsigned
+        // word operation, as in hardware. Signed, the magnitude of -128 read
+        // back as -128 and `-128 % 87` came out 41.
+        ast::BinOp::Div if signed && !signed_vector => ProcessBinaryOp::SignedDiv,
+        ast::BinOp::Rem if signed && !signed_vector => ProcessBinaryOp::SignedRem,
         ast::BinOp::Shr if signed => ProcessBinaryOp::ArithmeticShr,
         ast::BinOp::Lt if signed => ProcessBinaryOp::SignedLt,
         ast::BinOp::Le if signed => ProcessBinaryOp::SignedLe,

@@ -168,26 +168,22 @@ impl Mul<signed, signed> for signed {
 // word-wrapping negate, truncated back to the operand's width); results
 // wrap to the target's width when stored, which re-encodes a negative
 // quotient as two's complement.
-// The sign test reads the RAW top bit, like `sext` above: `self >> ..` here
-// dispatches signed's own arithmetic shift, which fills with the sign, so a
-// negative operand tests as all-ones and never equals 1. (The `>>` impl
-// below spells it the short way safely — a `>>` nested inside that body is
-// the built-in shift, not a re-entry into this dispatch.)
-//
-// `resize(x, x'length)` narrows the operand to its own width first. A signal
-// already holds exactly that many bits, but a constant operand does not:
-// `0 - 2` is computed full-width, so its bit 7 was clear and a negative
-// literal divisor tested as positive.
+// The sign test is signed's own arithmetic shift of the operand narrowed to
+// its width: `resize(x, x'length) >> (x'length - 1)` is all ones for a
+// negative `x` and zero otherwise, at any width (a constant operand such as
+// `0 - 2` is a full kernel word until narrowed). Read through
+// `integer`, it was the 64-bit kernel word: at 64 bits the shift left -1, so
+// `== 1` missed every negative operand, and above 64 bits the sign bit was
+// not in the word at all.
 impl Div<signed, signed> for signed {
     fn div(self, rhs: signed) -> signed {
-        if ((integer(resize(self, self'length)) >> (self'length - 1)) == 1)
-            and ((integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) == 1) {
-            return resize(0 - self, self'length) / resize(0 - rhs, rhs'length);
-        }
-        if (integer(resize(self, self'length)) >> (self'length - 1)) == 1 {
+        if (resize(self, self'length) >> (self'length - 1)) != 0 {
+            if (resize(rhs, rhs'length) >> (rhs'length - 1)) != 0 {
+                return resize(0 - self, self'length) / resize(0 - rhs, rhs'length);
+            }
             return 0 - (resize(0 - self, self'length) / rhs);
         }
-        if (integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) == 1 {
+        if (resize(rhs, rhs'length) >> (rhs'length - 1)) != 0 {
             return 0 - (self / resize(0 - rhs, rhs'length));
         }
         return self / rhs;
@@ -195,18 +191,17 @@ impl Div<signed, signed> for signed {
 }
 
 // `%`, with the dividend's sign (`-7 % 2` is -1): the remainder of the
-// magnitudes, negated for a negative dividend. As in `/`, operands read as
-// raw words, so the sign is the top bit tested by hand (`!= 0`, which also
-// holds at 64 bits, where the kernel shift leaves -1).
+// magnitudes, negated for a negative dividend. The sign test is the one in
+// `/`.
 impl Rem<signed, signed> for signed {
     fn rem(self, rhs: signed) -> signed {
-        if (integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) != 0 {
-            if (integer(resize(self, self'length)) >> (self'length - 1)) != 0 {
+        if (resize(rhs, rhs'length) >> (rhs'length - 1)) != 0 {
+            if (resize(self, self'length) >> (self'length - 1)) != 0 {
                 return 0 - (resize(0 - self, self'length) % resize(0 - rhs, rhs'length));
             }
             return self % resize(0 - rhs, rhs'length);
         }
-        if (integer(resize(self, self'length)) >> (self'length - 1)) != 0 {
+        if (resize(self, self'length) >> (self'length - 1)) != 0 {
             return 0 - (resize(0 - self, self'length) % rhs);
         }
         return self % rhs;
@@ -222,10 +217,13 @@ impl Shl<signed, signed> for signed {
 // positions); the shifted value's top bits are zero, so `+` sets them.
 impl Shr<signed, signed> for signed {
     fn shr(self, rhs: signed) -> signed {
-        if (self >> (self'length - 1)) == 1 {
-            return (self >> rhs) + ((1 << self'length) - (1 << (self'length - rhs)));
+        // Narrowed first: a constant receiver (`0 - 2`) is a full kernel word,
+        // and its raw shift read the sign from bit 63.
+        if (resize(self, self'length) >> (self'length - 1)) == 1 {
+            return (resize(self, self'length) >> rhs)
+                + ((1 << self'length) - (1 << (self'length - rhs)));
         }
-        return self >> rhs;
+        return resize(self, self'length) >> rhs;
     }
 }
 
@@ -233,19 +231,15 @@ impl Eq<signed> for signed {
     fn eq(self, rhs: signed) -> Bool { return self == rhs; }
 }
 
-// Sign-aware order: `self'length` is the operand's bit width, so the raw word
-// shifted by `self'length - 1` is non-zero exactly when the sign bit is set
-// (at 64 bits the kernel integer's own shift makes it -1, not 1). It reads
-// the RAW word,
-// narrowed to the operand's width as the `/` impl does: `self >> ..` would
-// dispatch signed's own arithmetic shift. A negative orders below a
-// non-negative; same-sign two's-complement values order like their unsigned
-// words, which is the built-in comparison inside these bodies (spec 3.25).
+// Sign-aware order: the sign test is the one in `/`. A negative orders below
+// a non-negative; same-sign two's-complement values order like their
+// unsigned words, which is the built-in comparison inside these bodies
+// (spec 3.25).
 impl Ord<signed> for signed {
     fn lt(self, rhs: signed) -> Bool {
-        if ((integer(resize(self, self'length)) >> (self'length - 1)) != 0)
-            != ((integer(resize(rhs, rhs'length)) >> (rhs'length - 1)) != 0) {
-            return (integer(resize(self, self'length)) >> (self'length - 1)) != 0;
+        if ((resize(self, self'length) >> (self'length - 1)) != 0)
+            != ((resize(rhs, rhs'length) >> (rhs'length - 1)) != 0) {
+            return (resize(self, self'length) >> (self'length - 1)) != 0;
         }
         return self < rhs;
     }
