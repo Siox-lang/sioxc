@@ -274,6 +274,7 @@ impl Lowering<'_> {
                 .collect();
         }
         let env = HashMap::new();
+        let value_expression = value;
         let source_layout = self
             .source_operand_layout(value, &env)
             .unwrap_or_else(|| target_layout.clone());
@@ -292,7 +293,19 @@ impl Lowering<'_> {
                     format!(".{destination}")
                 };
                 let signal = *self.locals.get(&format!("{path}{suffix}"))?;
-                let value = values.get(&source)?.clone();
+                // A field the literal leaves out (`{ .x = 3 }`, warned as
+                // W-P016) takes its default, the signal's initial value.
+                let value = match values.get(&source) {
+                    Some(value) => value.clone(),
+                    None if matches!(value_expression, ast::Expr::Construct { .. }) => {
+                        match self.out.signals[signal.0 as usize].init.as_slice() {
+                            [] => Expr::Const(0),
+                            [word] => Expr::Const(*word),
+                            words => Expr::WideConst(words.to_vec()),
+                        }
+                    }
+                    None => return None,
+                };
                 Some((signal, self.coerce_to_target(signal, value)))
             })
             .collect()

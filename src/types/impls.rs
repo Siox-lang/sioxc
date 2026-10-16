@@ -296,7 +296,9 @@ impl<'a> Checker<'a> {
         index_bounds: &HashMap<String, (i64, i64)>,
     ) {
         let saved_index_bounds = self.array_bounds.replace(index_bounds.clone());
+        let saved_process = self.in_process.replace(true);
         self.check_stmt_sequence(&block.stmts, view_dirs, names, bounds, None);
+        self.in_process.set(saved_process);
         self.array_bounds.replace(saved_index_bounds);
     }
 
