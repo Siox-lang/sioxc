@@ -13,6 +13,10 @@ impl<'a> Checker<'a> {
                     .as_deref()
                     .map(|index| self.index_shape(index))
                     .unwrap_or((0, 0));
+                // A base that is already indexed is a sized element, even when
+                // its size is a parameter not yet known (`unsigned[W][4]` is
+                // four `unsigned[W]`, not `unsigned[4]`).
+                let indexed_base = matches!(base.as_ref(), Type::Indexed { index: Some(_), .. });
                 match self.ast_ty(base) {
                     // The *first* index on a nominal array family sets its width
                     // (`unsigned[8]`). A *second* index makes an array of those
@@ -22,7 +26,7 @@ impl<'a> Checker<'a> {
                         len: 0,
                         family: Some(family),
                         ..
-                    } => Ty::Array {
+                    } if !indexed_base => Ty::Array {
                         elem,
                         len: width,
                         family: Some(family),
@@ -46,7 +50,7 @@ impl<'a> Checker<'a> {
                         len: 0,
                         family: None,
                         ..
-                    } if index.is_some() => Ty::Array {
+                    } if index.is_some() && !indexed_base => Ty::Array {
                         elem,
                         len: width,
                         family: None,
