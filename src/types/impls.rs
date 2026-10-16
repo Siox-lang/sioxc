@@ -151,6 +151,24 @@ impl<'a> Checker<'a> {
                     self.check_expr(&c.value, &sym);
                 }
                 ImplItem::Let(l) => {
+                    // A signal named like one of the entity's ports: reads
+                    // went to the port, the `let` was ignored, and the
+                    // waveform held two `a`s in one scope.
+                    if im.trait_.is_none() {
+                        let port = self
+                            .type_key(&im.target)
+                            .and_then(|key| self.entities.get(&key))
+                            .is_some_and(|ports| ports.iter().any(|p| p.name == l.name.text));
+                        if port {
+                            self.error_with_help(
+                                codes::DUPLICATE_ITEM,
+                                l.name.span,
+                                format!("`{}` is already a port of this entity", l.name.text),
+                                "rename the signal; a port and a signal share one namespace"
+                                    .to_string(),
+                            );
+                        }
+                    }
                     self.require_let_annotation(l);
                     self.check_struct_literal_fields(l, &sym);
                     self.check_signal_reset_value(l);
