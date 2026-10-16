@@ -518,7 +518,7 @@ pub(super) fn process_packed_meta_supported(
                 let Some(part_value) = design.process_ir.values.get(part.0 as usize) else {
                     return false;
                 };
-                let Some(part_width) = part_value.bit_width else {
+                let Some(part_width) = concat_part_width(design, *part) else {
                     return false;
                 };
                 let part_layout = SourceLayout {
@@ -953,7 +953,7 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
             ProcessValueKind::Concat(parts) => {
                 parts.iter().all(|part| has(&supported, *part))
                     && parts.iter().try_fold(0u32, |width, part| {
-                        width.checked_add(design.process_ir.values.get(part.0 as usize)?.bit_width?)
+                        width.checked_add(concat_part_width(design, *part)?)
                     }) == value.bit_width
             }
             ProcessValueKind::String(text) => u32::try_from(text.chars().count())

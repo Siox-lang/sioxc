@@ -858,7 +858,7 @@ fn process_packed_meta_uncached<'ctx>(
             let mut result = ty.const_zero();
             let mut offset = meta_width;
             for part in parts {
-                let part_width = design.process_ir.values.get(part.0 as usize)?.bit_width?;
+                let part_width = concat_part_width(design, *part)?;
                 let part_meta_width = part_width.checked_mul(4)?;
                 offset = offset.checked_sub(part_meta_width)?;
                 let part_layout = SourceLayout {

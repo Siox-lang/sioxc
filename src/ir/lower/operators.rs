@@ -146,6 +146,64 @@ impl<'a> Lowering<'a> {
         arena.reference(id)
     }
 
+    /// Whether `e` is typed as a scalar logic enum (`Logic`), whose read is
+    /// its discriminant rather than one value bit.
+    pub(super) fn is_logic_scalar(&self, e: &ast::Expr) -> bool {
+        let logic = |name: &str| {
+            self.logic_encodings
+                .keys()
+                .any(|key| key.rsplit("::").next() == name.rsplit("::").next())
+        };
+        // Hardware bodies carry no checked types: a signal says it itself.
+        if let Some(id) = expr_path(e).and_then(|path| self.locals.get(&path)) {
+            let signal = &self.out.signals[id.0 as usize];
+            if !self.out.meta_of.contains_key(&id.0)
+                && !self.out.array_element_enums.contains_key(&id.0)
+                && signal.enum_type.as_deref().is_some_and(logic)
+            {
+                return true;
+            }
+        }
+        matches!(
+            self.expr_types.get(&ast::expr_span(e)),
+            Some(crate::types::Ty::Named(definition))
+                if self.resolved.def(*definition).is_some_and(|definition| {
+                    self.logic_encodings
+                        .keys()
+                        .any(|key| key.rsplit("::").next() == Some(definition.name.as_str()))
+                })
+        )
+    }
+
+    /// A logic discriminant's value-plane bit: the encoding's for it (`'X'`
+    /// reads 0, as a literal's does), not its low bit.
+    pub(super) fn logic_value_bit(&self, discriminant: &Expr, span: crate::diag::Span) -> Expr {
+        let Some(encoding) = self.logic_encoding(DEFAULT_LOGIC_TYPE) else {
+            return discriminant.clone();
+        };
+        let mut ones = encoding
+            .value_bits
+            .iter()
+            .filter(|(_, one)| **one)
+            .map(|(discriminant, _)| *discriminant)
+            .collect::<Vec<_>>();
+        ones.sort_unstable();
+        ones.into_iter()
+            .map(|one| self.source_binary(BinOp::Eq, discriminant, &Expr::Const(one), span))
+            .reduce(|any, next| self.source_binary(BinOp::Or, &any, &next, span))
+            .unwrap_or(Expr::Const(0))
+    }
+
+    /// One concatenation part's width: a `Logic` scalar is one element, not
+    /// its 4-bit discriminant (`{l, n}` of an `unsigned[3]` was 7 bits).
+    pub(super) fn concat_part_width(&self, part: &ast::Expr) -> u32 {
+        if self.is_logic_scalar(part) {
+            1
+        } else {
+            self.ast_width(part)
+        }
+    }
+
     pub(super) fn bit_string_meta(&self, e: &ast::Expr) -> Option<Expr> {
         let (base, digits) = Self::bit_string_parts(e)?;
         let (_, discs) = self.decode_bit_string_words(base, digits);

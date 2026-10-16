@@ -46,6 +46,10 @@ pub(super) struct SourceValues {
     pub(super) explicit_meta: HashMap<ProcessValueId, Expr>,
     /// Element writes whose companion is the base's with one nibble replaced.
     pub(super) merge_meta: HashMap<ProcessValueId, MetaMerge>,
+    /// `or`s joining a concatenation's non-overlapping parts, whose companion
+    /// is the parts' together, not the logic `or` table's (`'Z' or '0'` is
+    /// `'X'`). Consumed by metavalue propagation, before any remap.
+    pub(super) disjoint_joins: HashSet<ProcessValueId>,
     /// Physical bit projections used to compute companion planes, not source
     /// element reads. Keep this intent until read reconstruction has finished.
     raw_bits: HashSet<ProcessValueId>,

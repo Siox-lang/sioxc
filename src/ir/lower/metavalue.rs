@@ -409,6 +409,24 @@ impl<'a> Lowering<'a> {
                 let mut guarded = false;
                 let meta = match merge {
                     Some(merge) => Some(self.merged_meta(&merge, width, temps)),
+                    None if self.source_values.borrow().disjoint_joins.contains(value) => {
+                        match self.source_node(*value) {
+                            Expr::Binary {
+                                op: BinOp::Or,
+                                lhs,
+                                rhs,
+                            } => {
+                                let mut part = |part: &Expr| {
+                                    let part_width = self.meta_expr_width(part, width);
+                                    self.lower_meta_ir(part, part_width, temps)
+                                        .unwrap_or(Expr::Const(0))
+                                };
+                                let (lhs, rhs) = (part(&lhs), part(&rhs));
+                                Some(self.source_binary(BinOp::Or, &lhs, &rhs, temps.anchor))
+                            }
+                            node => self.lower_meta_ir(&node, width, temps),
+                        }
+                    }
                     None => {
                         let node = self.source_node(*value);
                         guarded = matches!(node, Expr::Select { .. });

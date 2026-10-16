@@ -94,6 +94,15 @@ pub(super) fn process_scalar_logic_encoding(
     packed_logic_layout(design, process_value_layout(design, *base)?).map(|(_, encoding)| encoding)
 }
 
+/// One concatenation part's width: a scalar logic enum joins as one element,
+/// not as its discriminant's bits (`{n, l}` of an `unsigned[3]` is 4 bits).
+pub(super) fn concat_part_width(design: &Design, part: ProcessValueId) -> Option<u32> {
+    if process_scalar_logic_encoding(design, part).is_some() {
+        return Some(1);
+    }
+    design.process_ir.values.get(part.0 as usize)?.bit_width
+}
+
 pub(super) fn storage_binding_is_compatible(
     design: &Design,
     storage: ProcessStorageId,

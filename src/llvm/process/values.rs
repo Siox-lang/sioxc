@@ -1953,20 +1953,36 @@ pub(super) fn process_value<'ctx>(
             let mut joined = ty.const_zero();
             let mut offset = width;
             for part in parts {
-                let part_width = design.process_ir.values.get(part.0 as usize)?.bit_width?;
+                let part_width = concat_part_width(design, *part)?;
                 offset = offset.checked_sub(part_width)?;
+                let logic = process_scalar_logic_encoding(design, *part);
                 let part = process_value_at(
                     context,
                     module,
                     builder,
                     design,
                     *part,
-                    width,
+                    match logic {
+                        Some(_) => design.process_ir.values.get(part.0 as usize)?.bit_width?,
+                        None => width,
+                    },
                     false,
                     active,
                     index_sites,
                     cache,
                 )?;
+                // A logic scalar joins as its value bit; its discriminant
+                // is the element's companion nibble.
+                let part = match logic {
+                    Some(encoding) => builder
+                        .build_int_z_extend(
+                            logic_value_bit(context, builder, encoding, part)?,
+                            ty,
+                            "pv.concat.logic",
+                        )
+                        .ok()?,
+                    None => part,
+                };
                 let part = if offset == 0 {
                     part
                 } else {
