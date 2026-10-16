@@ -1033,6 +1033,8 @@ impl<'a> Lowering<'a> {
         // A comparison whose operand is computed (`(a or b) != a`) tests that
         // operand's companion, built here where every companion is known and
         // driven into a signal the comparison can read when it is resolved.
+        // So does an element of a computed vector (`f(l)[0]`), which read
+        // `'0'` for an `'X'`.
         let computed: Vec<(ProcessValueId, u32)> = {
             let arena = self.source_values.borrow();
             let mut seen = std::collections::HashSet::new();
@@ -1042,6 +1044,18 @@ impl<'a> Lowering<'a> {
                 .iter()
                 .filter_map(|value| match &value.kind {
                     ProcessValueKind::MetaCompare { operands, .. } => Some(operands.clone()),
+                    ProcessValueKind::BitSlice { base, high, low }
+                        if high == low
+                            && !matches!(
+                                arena.ir.values[base.0 as usize].kind,
+                                ProcessValueKind::Binary {
+                                    operation: ProcessBinaryOp::Shr,
+                                    ..
+                                }
+                            ) =>
+                    {
+                        Some(vec![*base])
+                    }
                     _ => None,
                 })
                 .flatten()

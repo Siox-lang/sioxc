@@ -15,6 +15,9 @@
 //!   253); it is the family's conversion, as `signed[16](s)` is.
 //! - A method on a conversion (`unsigned[8](x).reverse_bits()`) had no shape
 //!   for `self`, and failed in both engines.
+//! - An element of a computed vector lost its metavalue in hardware
+//!   (`id(u)[2]` read `'0'` for an `'X'`), and failed to lower in the
+//!   testbench (`(not u)[2]`).
 
 #[cfg(feature = "llvm")]
 fn run(name: &str, source: &str) -> String {
@@ -115,6 +118,38 @@ impl T {
     );
     for engine in ["TB", "HW"] {
         let expected = format!("|{engine} -3 -3 147 1 true\n");
+        assert!(report.contains(&expected), "{engine}: {report}");
+    }
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn elements_of_computed_vectors_keep_metavalues() {
+    let report = run(
+        "computed",
+        r#"module g;
+use std::bits::unsigned;
+use std::logic::Logic;
+fn id(u: unsigned[3]) -> unsigned[3] { return u; }
+fn put(l: Logic) -> unsigned[1] { let r: unsigned[1] = 0; r[0] = l; return r; }
+entity E { u: unsigned[3] in, l: Logic in, a: Logic out, b: Logic out, c: Logic out, d: Logic out, e: Logic out }
+impl E { a = id(u)[2]; b = put(l)[0]; c = (not u)[2]; d = (u and u)[2]; e = id(u)[0]; }
+#[test] entity T {}
+impl T {
+    let u: unsigned[3] = "X11"; let l: Logic = 'X';
+    let dut: E = { .u = u, .l = l };
+    check: process {
+        let a: Logic = id(u)[2]; let b: Logic = put(l)[0]; let c: Logic = (not u)[2];
+        let d: Logic = (u and u)[2]; let e: Logic = id(u)[0];
+        await 1ns;
+        print!("|TB {} {} {} {} {}\n", a, b, c, d, e);
+        print!("|HW {} {} {} {} {}\n", dut.a, dut.b, dut.c, dut.d, dut.e);
+    }
+}
+"#,
+    );
+    for engine in ["TB", "HW"] {
+        let expected = format!("|{engine} 'X' 'X' 'X' 'X' '1'\n");
         assert!(report.contains(&expected), "{engine}: {report}");
     }
 }
