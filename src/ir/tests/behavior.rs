@@ -948,6 +948,7 @@ fn validate_accepts_good_and_flags_bad_ir() {
         base_dir: Default::default(),
         meta_of: Default::default(),
         metavalue_temps: Default::default(),
+        testbench_nets: Default::default(),
         array_element_enums: Default::default(),
         array_element_of_family: Default::default(),
         source_layouts: Default::default(),
