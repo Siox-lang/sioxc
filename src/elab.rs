@@ -1769,10 +1769,30 @@ fn collect_field_assign_ports(s: &Stmt, inst: &str, out: &mut HashSet<String>) {
             target: Expr::Field { base, field, .. },
             ..
         } => {
-            if let Expr::Path(p) = base.as_ref() {
-                if p.segments.len() == 1 && p.segments[0].text == inst {
+            match base.as_ref() {
+                Expr::Path(p) if p.segments.len() == 1 && p.segments[0].text == inst => {
                     out.insert(field.text.clone());
                 }
+                // An instance-array element (`cells[0].a = ..`, `inst` being
+                // `cells[0]`), which W-P012 called unconnected. A literal index
+                // names one element; a computed one (`cells[k]` in a loop) may
+                // name any, so it counts for all.
+                // ponytail: no loop-range evaluation, so `cells[k]` over
+                // `1..2` also covers `cells[0]`; a forgotten element 0 then
+                // goes unwarned.
+                Expr::Index { base, index, .. } => {
+                    if let Expr::Path(p) = base.as_ref() {
+                        let name = &p.segments[0].text;
+                        let element = match index.as_ref() {
+                            Expr::Int { text, .. } => inst == format!("{name}[{text}]"),
+                            _ => inst.starts_with(&format!("{name}[")),
+                        };
+                        if p.segments.len() == 1 && element {
+                            out.insert(field.text.clone());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         Stmt::If(iff) => {
