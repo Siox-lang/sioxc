@@ -23,7 +23,8 @@
 //!   vector.
 //! - A struct's own `Index` contract (`regs[2]`, `regs[1..3]`) did not lower
 //!   in the testbench; it now selects the impl by the index's type, as
-//!   hardware does.
+//!   hardware does. Spelled out (`regs.index(2)`) beside the `Range`
+//!   overload, the checker rejected it and the testbench took the wrong one.
 
 #[cfg(feature = "llvm")]
 fn run(name: &str, source: &str) -> String {
@@ -202,23 +203,23 @@ use std::ops::{Index, Range};
 struct Regs { pub r: unsigned[8][4] }
 impl Index<integer, unsigned[8]> for Regs { fn index(self, i: integer) -> unsigned[8] { return self.r[i]; } }
 impl Index<Range, unsigned[8]> for Regs { fn index(self, r: Range) -> unsigned[8] { return self.r[r.left] + self.r[r.right]; } }
-entity E { g: Regs in, a: unsigned[8] out, b: unsigned[8] out }
-impl E { a = g[2]; b = g[1..3]; }
+entity E { g: Regs in, a: unsigned[8] out, b: unsigned[8] out, c: unsigned[8] out }
+impl E { a = g[2]; b = g[1..3]; c = g.index(3); }
 #[test] entity T {}
 impl T {
     let g: Regs = { .r = [5, 6, 7, 8] };
     let e: E = { .g = g };
     check: process {
-        let a: unsigned[8] = g[2]; let b: unsigned[8] = g[1..3];
+        let a: unsigned[8] = g[2]; let b: unsigned[8] = g[1..3]; let c: unsigned[8] = g.index(3);
         await 1ns;
-        print!("|TB {} {}\n", a, b);
-        print!("|HW {} {}\n", e.a, e.b);
+        print!("|TB {} {} {}\n", a, b, c);
+        print!("|HW {} {} {}\n", e.a, e.b, e.c);
     }
 }
 "#,
     );
     for engine in ["TB", "HW"] {
-        let expected = format!("|{engine} 7 14\n");
+        let expected = format!("|{engine} 7 14 8\n");
         assert!(report.contains(&expected), "{engine}: {report}");
     }
 }

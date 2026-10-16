@@ -437,6 +437,23 @@ impl<'a> Checker<'a> {
             return;
         }
         let owner_ty = self.ty_from_head(owner);
+        // Another overload of this name that takes these arguments
+        // (`regs.index(2)` beside `Index<Range, _>`'s `index`).
+        let overloads = self.method_overloads.get(&key).cloned().unwrap_or_default();
+        if overloads.len() > 1
+            && overloads.iter().any(|overload| {
+                overload.len() == args.len()
+                    && args.iter().zip(overload).all(|(argument, declared)| {
+                        declared.as_ref().is_none_or(|declared| {
+                            let expected = self.ast_ty_for_owner(declared, &owner_ty);
+                            matches!(expected, Ty::Error)
+                                || self.assignable(&expected, argument, sym)
+                        })
+                    })
+            })
+        {
+            return;
+        }
         for (argument, declared) in args.iter().zip(params.iter()) {
             let Some(declared) = declared else { continue };
             let expected = self.ast_ty_for_owner(declared, &owner_ty);

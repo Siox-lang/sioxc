@@ -418,6 +418,10 @@ struct Checker<'a> {
     /// Method calls used to check only that a name existed, so wrong counts
     /// and raw-bit reinterpretations both passed semantic analysis.
     method_param_types: HashMap<(String, String), MethodParams>,
+    /// Every parameter list declared for a `(type, method)`: trait impls may
+    /// overload one name by argument type (`Index<integer, _>` and
+    /// `Index<Range, _>` both give `index`).
+    method_overloads: HashMap<(String, String), Vec<MethodParams>>,
     /// Whether a collected method declares a `self` receiver. Instance and
     /// associated call syntax are distinct and cannot substitute for each
     /// other merely because the owner/name pair exists.

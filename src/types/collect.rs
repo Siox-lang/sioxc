@@ -134,6 +134,7 @@ impl<'a> Checker<'a> {
             expanding: std::cell::RefCell::new(HashSet::new()),
             methods: HashMap::new(),
             method_param_types: HashMap::new(),
+            method_overloads: HashMap::new(),
             method_has_self: HashMap::new(),
             method_visibility: HashMap::new(),
             private_entity_members: HashMap::new(),
@@ -263,14 +264,17 @@ impl<'a> Checker<'a> {
                             ImplItem::Fn(f) => {
                                 let key = (ty.clone(), f.name.text.clone());
                                 self.methods.insert(key.clone(), f.ret.clone());
-                                self.method_param_types.insert(
-                                    key.clone(),
-                                    f.params
-                                        .iter()
-                                        .filter(|parameter| !parameter.is_self)
-                                        .map(|parameter| parameter.ty.clone())
-                                        .collect(),
-                                );
+                                let params: MethodParams = f
+                                    .params
+                                    .iter()
+                                    .filter(|parameter| !parameter.is_self)
+                                    .map(|parameter| parameter.ty.clone())
+                                    .collect();
+                                self.method_overloads
+                                    .entry(key.clone())
+                                    .or_default()
+                                    .push(params.clone());
+                                self.method_param_types.insert(key.clone(), params);
                                 self.method_has_self.insert(
                                     key,
                                     f.params.iter().any(|parameter| parameter.is_self),

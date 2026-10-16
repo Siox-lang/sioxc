@@ -6575,7 +6575,11 @@ fn custom_index_value(
     let input = if matches!(index, ast::Expr::Range { .. }) {
         "Range".to_string()
     } else {
-        "integer".to_string()
+        context
+            .typed
+            .expr_type(ast::expr_span(index))
+            .and_then(|ty| process_type_key(ty, context))
+            .unwrap_or_else(|| "integer".to_string())
     };
     let function = context
         .functions
@@ -6614,6 +6618,11 @@ fn custom_index_value(
             );
             context.process_ir.value_layouts[value.0 as usize] = layout;
             value
+        }
+        // An integer index binds the contract's `integer` parameter, a
+        // literal included (`2` alone is two bits wide).
+        _ if input == "integer" => {
+            value_ref_with_type(index, process, context, Some(&crate::types::Ty::Integer))
         }
         _ => value_ref(index, process, context),
     };
@@ -9831,6 +9840,21 @@ fn value_ref_with_type_inner(
     context: &mut LoweringContext<'_>,
     contextual_type: Option<&crate::types::Ty>,
 ) -> crate::ir::ProcessValueId {
+    // `regs.index(2)` spelled out selects its `Index` overload as `regs[2]`
+    // does: by name alone, the last declared `index` was taken.
+    if let ast::Expr::Call { callee, args, .. } = expression {
+        if let (ast::Expr::Field { base, field, .. }, [argument]) =
+            (callee.as_ref(), args.as_slice())
+        {
+            if field.text == "index" {
+                if let Some(value) =
+                    custom_index_value(expression, base, argument, process, context)
+                {
+                    return value;
+                }
+            }
+        }
+    }
     let span = ast::expr_span(expression);
     let inferred = context
         .typed
