@@ -950,6 +950,8 @@ impl<'a> Checker<'a> {
             "a function"
         } else if self.in_match_arm.get() {
             "a `match` arm"
+        } else if self.in_process.get() {
+            "a process"
         } else {
             return;
         };
