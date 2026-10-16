@@ -101,6 +101,10 @@ pub struct Design {
     /// plane like `meta_of`'s companions, so consumers that hide companions
     /// (waveforms) hide these too.
     pub metavalue_temps: std::collections::HashSet<u32>,
+    /// A testbench name several DUT outputs drive (`let line: Logic;` on two
+    /// tristate drivers), keyed by its path: the net their drivers resolve
+    /// on, which the testbench reads in place of any one output.
+    pub testbench_nets: HashMap<String, SignalId>,
     /// Packed-array signal -> enum used by each element. This is declaration
     /// metadata (`struct F(E[])`), not a std type-name
     /// convention. Consumers use it to render metavalue companions.

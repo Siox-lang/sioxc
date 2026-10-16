@@ -665,6 +665,46 @@ impl<'a> Lowering<'a> {
                 .filter(|(_, d, _)| *d == Some(ast::Direction::In))
                 .map(|&(s, _, _)| s)
                 .collect();
+            // Several outputs onto one testbench name share a net, which the
+            // testbench reads: bound to each output in turn, the storage held
+            // whichever came last, so a disabled tristate driver's `'Z'`
+            // hid an enabled one's `'1'`. Each output drives the net in its
+            // own context, folding through the type's Resolve (or E-P014).
+            // ponytail: scalar leaves without a metavalue companion only
+            // (`Logic`, `Bit`, enums); a vector output with one keeps
+            // last-wins until the net carries a companion too.
+            if outs.len() >= 2
+                && outs
+                    .iter()
+                    .all(|out| !self.out.meta_of.contains_key(&out.0))
+            {
+                let template = self.out.signals[outs[0].0 as usize].clone();
+                let net = SignalId(self.out.signals.len() as u32);
+                let path = format!("{name}.{tbname}");
+                self.out.signals.push(Signal {
+                    path: path.clone(),
+                    ..template
+                });
+                // Its type, which decides how its drivers resolve.
+                if let Some(ty) = self.sig_type.get(&outs[0].0).cloned() {
+                    self.sig_type.insert(net.0, ty);
+                }
+                if let Some(element) = self.out.array_element_enums.get(&outs[0].0).cloned() {
+                    self.out.array_element_enums.insert(net.0, element);
+                }
+                for &out in &outs {
+                    let ctx = self.next_ctx();
+                    self.hardware.drivers.push(Driver {
+                        span: self.cur_span,
+                        target: net,
+                        cond: None,
+                        expr: Expr::Current(out),
+                        meta: None,
+                        ctx,
+                    });
+                }
+                self.out.testbench_nets.insert(path, net);
+            }
             if outs.is_empty() || ins.is_empty() {
                 continue;
             }

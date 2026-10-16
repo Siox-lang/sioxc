@@ -1771,6 +1771,27 @@ pub(super) fn testbench_bindings(
             }
         }
     }
+    // Several outputs onto one projection read their shared, resolved net.
+    let shared: Vec<(String, SignalId)> = bindings
+        .iter()
+        .filter(|binding| matches!(binding.direction, LayoutDirection::Out))
+        .filter_map(|binding| {
+            let net = design
+                .testbench_nets
+                .get(&format!("{root_path}.{storage}{}", binding.projection))?;
+            Some((binding.projection.clone(), *net))
+        })
+        .collect();
+    for (projection, net) in shared {
+        bindings.retain(|binding| {
+            binding.projection != projection || !matches!(binding.direction, LayoutDirection::Out)
+        });
+        bindings.push(ProcessStorageBinding {
+            projection,
+            signal: net,
+            direction: LayoutDirection::Out,
+        });
+    }
     bindings.sort_by(|left, right| {
         left.projection
             .cmp(&right.projection)
