@@ -649,6 +649,34 @@ impl<'a> Lowering<'a> {
                                 meta: None,
                                 ctx,
                             });
+                        } else if let ast::Expr::Index { index, .. } = value {
+                            // `.y = y[3..0]`: the output drives that slice, in
+                            // its own context, as `y[3..0] = c.y;` would.
+                            // Without a signal to name, the connection was
+                            // dropped and `y` reported as never driven.
+                            if matches!(
+                                index.as_ref(),
+                                ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                            ) {
+                                let span = ast::expr_span(value);
+                                let name = format!("$port{}", child_id.0);
+                                self.locals.insert(name.clone(), child_id);
+                                let saved = self.cur_ctx;
+                                self.next_ctx();
+                                self.ctx_span.insert(self.cur_ctx, span);
+                                let statement = ast::Stmt::Assign {
+                                    label: None,
+                                    target: value.clone(),
+                                    value: ast::Expr::Path(ast::Path {
+                                        segments: vec![ast::Ident { text: name, span }],
+                                        span,
+                                    }),
+                                    after: None,
+                                    span,
+                                };
+                                self.lower_stmt(&statement, None);
+                                self.cur_ctx = saved;
+                            }
                         }
                     } else {
                         let expr = self.lower_expr(value);

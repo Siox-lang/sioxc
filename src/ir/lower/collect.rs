@@ -584,6 +584,32 @@ impl<'a> Lowering<'a> {
                                     }
                                     continue;
                                 }
+                                // A testbench output into a slice has no storage
+                                // write to make: it read as lowering left
+                                // incomplete when the test ran.
+                                if let ast::Expr::Index { index, .. } = &value {
+                                    if matches!(
+                                        index.as_ref(),
+                                        ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                                    ) {
+                                        if let Some(&(_, Some(ast::Direction::Out))) =
+                                            sub_ports.get(&port)
+                                        {
+                                            self.sink.emit(
+                                                crate::diag::Diagnostic::error(format!(
+                                                    "output `{port}` cannot drive a slice of a testbench signal"
+                                                ))
+                                                .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+                                                .at(ast::expr_span(&value))
+                                                .help(
+                                                    "connect a whole signal of the port's width and \
+                                                     slice it where it is read",
+                                                ),
+                                            );
+                                        }
+                                        continue;
+                                    }
+                                }
                                 let Some(tbname) = tbname else {
                                     continue;
                                 };
