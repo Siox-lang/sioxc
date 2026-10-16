@@ -25,6 +25,7 @@
 //!   in the testbench; it now selects the impl by the index's type, as
 //!   hardware does. Spelled out (`regs.index(2)`) beside the `Range`
 //!   overload, the checker rejected it and the testbench took the wrong one.
+//! - `regs[1] = v` through `IndexAssign` did not lower in the testbench.
 
 #[cfg(feature = "llvm")]
 fn run(name: &str, source: &str) -> String {
@@ -222,4 +223,35 @@ impl T {
         let expected = format!("|{engine} 7 14 8\n");
         assert!(report.contains(&expected), "{engine}: {report}");
     }
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn index_assign_contracts_agree() {
+    let report = run(
+        "index_assign",
+        r#"module g;
+use std::bits::unsigned;
+use std::ops::{Index, IndexAssign};
+struct Regs { pub r: unsigned[8][4] }
+impl Index<integer, unsigned[8]> for Regs { fn index(self, i: integer) -> unsigned[8] { return self.r[i]; } }
+impl IndexAssign<integer, unsigned[8]> for Regs { fn index_assign(self, i: integer, v: unsigned[8]) { self.r[i] = v; } }
+entity E { a: unsigned[8] in, o: Regs out }
+impl E { p: process { o = { .r = [1, 2, 3, 4] }; o[2] = a; } }
+#[test] entity T {}
+impl T {
+    let a: unsigned[8] = 99; let o: Regs;
+    let e: E = { .a = a, .o = o };
+    check: process {
+        let g: Regs = { .r = [5, 6, 7, 8] };
+        g[1] = 50; g[3] = g[1] + 1;
+        await 1ns;
+        print!("|TB {} {} {}\n", g[0], g[1], g[3]);
+        print!("|HW {} {} {}\n", o[1], o[2], o[3]);
+    }
+}
+"#,
+    );
+    assert!(report.contains("|TB 5 50 51\n"), "{report}");
+    assert!(report.contains("|HW 2 99 4\n"), "{report}");
 }
