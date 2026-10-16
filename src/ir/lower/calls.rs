@@ -1162,6 +1162,42 @@ impl<'a> Lowering<'a> {
         if let Some(value) = self.lower_family_from(callee, args, env) {
             return Some(value);
         }
+        // A widening `resize(x, n)` is `F[n](x)` for `x`'s family `F`:
+        // `From<signed> for signed` sign-extends, where the raw resize
+        // zero-extended (-3 into 16 bits read 253). Narrowing keeps the low
+        // bits either way, and std's bodies use `resize(self, self'length)`.
+        if let (ast::Expr::Path(p), [operand, width]) = (callee, args) {
+            let widening = self
+                .eval_const(width, &self.cur_env)
+                .is_some_and(|width| width > i64::from(self.ast_width(operand)));
+            if widening && p.segments.len() == 1 && p.segments[0].text == "resize" {
+                let family = self.operand_type_name(operand);
+                let function = family.as_ref().and_then(|family| {
+                    let fns = self.op_impls.get("From", family)?;
+                    fns.iter().find_map(|(f, declared)| {
+                        let source = declared.clone().or_else(|| {
+                            f.params
+                                .iter()
+                                .find(|p| !p.is_self)
+                                .and_then(|p| p.ty.as_ref())
+                                .and_then(|ty| self.free_fns.type_head_key(ty))
+                        });
+                        (source.as_ref() == Some(family)).then_some(f)
+                    })
+                });
+                if let Some(value) = function.and_then(|function| {
+                    self.inline_in_format(
+                        function,
+                        width,
+                        callee,
+                        std::slice::from_ref(operand),
+                        env,
+                    )
+                }) {
+                    return Some(value);
+                }
+            }
+        }
         if let ast::Expr::Path(p) = callee {
             if let Some(Val::Scalar(value)) = self
                 .free_fns

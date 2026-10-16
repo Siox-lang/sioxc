@@ -314,14 +314,21 @@ impl Lowering<'_> {
                             left: i64::from(*width) - 1,
                             right: 0,
                         });
-                        let layout = self.source_packed_result_layout(&place.layout, index)?;
+                        let layout = self.source_packed_result_layout(
+                            &place.layout,
+                            index,
+                            &HashMap::new(),
+                        )?;
                         let mut projections = Vec::<(Vec<u32>, Option<Expr>)>::new();
                         if matches!(
                             index,
                             ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
                         ) {
-                            let (left, right) =
-                                self.source_packed_slice_bounds(&place.layout, index)?;
+                            let (left, right) = self.source_packed_slice_bounds(
+                                &place.layout,
+                                index,
+                                &HashMap::new(),
+                            )?;
                             let bits = if left >= right {
                                 (right..=left).collect()
                             } else {
