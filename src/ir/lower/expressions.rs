@@ -251,6 +251,16 @@ impl<'a> Lowering<'a> {
                 if let Some(id) = expr_path(e).and_then(|p| self.locals.get(&p).copied()) {
                     return Expr::Current(id);
                 }
+                // An index the parameters fold (`acc[C - 1]` in `G<C>`) is
+                // that element, as a write to it is. Read as a run-time index,
+                // it muxed every element, and a generate chain through such
+                // reads became a combinational loop that never settled.
+                if let Some(id) = self
+                    .folded_elem_path(e)
+                    .and_then(|path| self.locals.get(&path).copied())
+                {
+                    return Expr::Current(id);
+                }
                 // A struct constant's field (`K.a`). It has no signal — a
                 // constant is a value, not storage — so the dotted path is
                 // looked up in the constant table the same way a plain `N`
