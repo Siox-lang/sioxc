@@ -1513,8 +1513,6 @@ impl<'a> Lowering<'a> {
     /// Statements that only bind and assign, applied to `env` in order: a
     /// loop body, a return-free branch, or one such statement of a body.
     fn inline_effects(&self, stmts: &[ast::Stmt], env: &mut HashMap<String, Val>) -> Option<()> {
-        // ponytail: a fixed unroll cap; a longer loop leaves the call unlowered.
-        const MAX_ITERATIONS: u64 = 4096;
         for stmt in stmts {
             match stmt {
                 ast::Stmt::Use(_) => {}
@@ -1996,6 +1994,39 @@ impl<'a> Lowering<'a> {
             // Assignments, constant-bound loops and return-free `if`s update the
             // bindings, as a VHDL function's variables do.
             match stmts {
+                // A loop that returns (`for k in 0..7 { if v[k] == '1' {
+                // return k; } }`) unrolls in place, followed by what comes
+                // after it, so each `return` is one the walk below handles.
+                [ast::Stmt::For {
+                    var,
+                    range: ast::Expr::Range { lo, hi, .. },
+                    body,
+                    ..
+                }, rest @ ..]
+                    if statements_return(&body.stmts) =>
+                {
+                    let bound = |e: &ast::Expr| {
+                        self.constant_expr(&self.lower_scalar_env(e, scoped.as_ref()))
+                    };
+                    let (first, last) = (bound(lo)?, bound(hi)?);
+                    if first.abs_diff(last) >= MAX_ITERATIONS {
+                        return None;
+                    }
+                    let mut unrolled = Vec::new();
+                    for index in crate::ir::loop_range(first, last) {
+                        if index < 0 {
+                            return None;
+                        }
+                        let literal = ast::Expr::Int {
+                            text: index.to_string(),
+                            span: var.span,
+                        };
+                        let map = HashMap::from([(var.text.clone(), literal)]);
+                        unrolled.extend(body.stmts.iter().map(|s| subst_stmt_paths(s, &map)));
+                    }
+                    unrolled.extend(rest.iter().cloned());
+                    return self.inline_block_body(&unrolled, scoped.as_ref());
+                }
                 [statement @ (ast::Stmt::Assign { after: None, .. } | ast::Stmt::For { .. }), rest @ ..] =>
                 {
                     self.inline_effects(std::slice::from_ref(statement), scoped.to_mut())?;
@@ -2109,17 +2140,27 @@ impl<'a> Lowering<'a> {
     }
 }
 
+/// The most iterations a hardware function loop unrolls.
+// ponytail: a fixed unroll cap; a longer loop leaves the call unlowered.
+const MAX_ITERATIONS: u64 = 4096;
+
+/// Whether a `return` sits anywhere in these statements.
+fn statements_return(statements: &[ast::Stmt]) -> bool {
+    statements.iter().any(|statement| match statement {
+        ast::Stmt::Return { .. } => true,
+        ast::Stmt::If(statement) => if_returns(statement),
+        ast::Stmt::Match(statement) => statement
+            .arms
+            .iter()
+            .any(|arm| statements_return(&arm.body.stmts)),
+        ast::Stmt::For { body, .. } => statements_return(&body.stmts),
+        _ => false,
+    })
+}
+
 /// Whether a `return` sits anywhere inside this `if`.
 fn if_returns(statement: &ast::IfStmt) -> bool {
-    fn any(statements: &[ast::Stmt]) -> bool {
-        statements.iter().any(|statement| match statement {
-            ast::Stmt::Return { .. } => true,
-            ast::Stmt::If(statement) => if_returns(statement),
-            ast::Stmt::Match(statement) => statement.arms.iter().any(|arm| any(&arm.body.stmts)),
-            ast::Stmt::For { body, .. } => any(&body.stmts),
-            _ => false,
-        })
-    }
+    let any = statements_return;
     any(&statement.then.stmts)
         || match statement.else_.as_deref() {
             Some(ast::ElseBranch::Block(block)) => any(&block.stmts),

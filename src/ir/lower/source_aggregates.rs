@@ -243,6 +243,36 @@ impl Lowering<'_> {
         ) {
             return None;
         }
+        // `{ hi, lo }` into an element-wise bit array: the parts' elements,
+        // in order, fill the labels from `'left`, as VHDL's `&` does.
+        if let (
+            ast::Expr::Concat { parts, .. },
+            LayoutKind::Array {
+                range: Some(range),
+                element,
+            },
+        ) = (value, &target_layout.kind)
+        {
+            if !matches!(element.kind, LayoutKind::Scalar { .. }) {
+                return None;
+            }
+            let mut elements = Vec::new();
+            for part in parts {
+                elements.extend(self.concat_part_elements(part)?);
+            }
+            let labels = loop_range(range.left, range.right);
+            if elements.len() != labels.len() {
+                return None;
+            }
+            return labels
+                .into_iter()
+                .zip(elements)
+                .map(|(label, element)| {
+                    let signal = *self.locals.get(&format!("{path}[{label}]"))?;
+                    Some((signal, self.coerce_to_target(signal, element)))
+                })
+                .collect();
+        }
         let env = HashMap::new();
         let source_layout = self
             .source_operand_layout(value, &env)
@@ -270,6 +300,41 @@ impl Lowering<'_> {
 }
 
 impl Lowering<'_> {
+    /// One concatenation part's scalar elements in order: a slice of an
+    /// element-wise array as written, a whole one from `'left`, or one bit.
+    fn concat_part_elements(&self, part: &ast::Expr) -> Option<Vec<Expr>> {
+        let element = |path: &str, label: i64| {
+            self.locals
+                .get(&format!("{path}[{label}]"))
+                .map(|signal| Expr::Current(*signal))
+        };
+        let array_path = |base: &ast::Expr| {
+            let path = expr_path(base)?;
+            matches!(self.persisted_layout(&path)?.kind, LayoutKind::Array { .. }).then_some(path)
+        };
+        if let ast::Expr::Index { base, index, .. } = part {
+            if matches!(
+                index.as_ref(),
+                ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+            ) {
+                let path = array_path(base)?;
+                let (left, right) = self.slice_bounds(base, index)?;
+                return loop_range(left, right)
+                    .into_iter()
+                    .map(|label| element(&path, label))
+                    .collect();
+            }
+        }
+        if let Some(path) = array_path(part) {
+            let (left, right) = self.persisted_range(&path)?;
+            return loop_range(left, right)
+                .into_iter()
+                .map(|label| element(&path, label))
+                .collect();
+        }
+        Some(vec![self.lower_expr(part)])
+    }
+
     /// `(q, r) = e;`: each named position of the target takes its part of the
     /// value, leaf by leaf; `_` takes nothing. A position that is a block
     /// local is stored at once (under `cond`); the signal leaves are returned
