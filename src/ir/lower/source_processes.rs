@@ -6606,35 +6606,59 @@ fn lower_process_family_from(
     // A body of statements (a loop of element writes) is a call the CFG
     // expands, found by its two types as `named_conversion`'s is.
     if source.is_some_and(|source| source.ends_with("[]")) {
-        if let Some(value) = inline_process_function(
-            function,
-            *span,
-            None,
-            &[operand],
-            process,
-            context,
-            return_type,
-        ) {
-            return Some(value);
-        }
         let target_type = return_type
             .filter(|ty| !matches!(ty, crate::types::Ty::Error))
             .cloned()?;
-        let callee = push_value(
+        // The body builds the operand's own width (`unsigned[value'length]`);
+        // a wider or narrower format resizes that, as `resize(unsigned(a), 8)`
+        // does. Typed as the format, `unsigned[8](a)` of a `Logic[4]` did
+        // not lower.
+        let natural = match (&target_type, process_value_type(operand, context)) {
+            (
+                crate::types::Ty::Array {
+                    elem,
+                    family: family @ Some(_),
+                    len,
+                    ..
+                },
+                Some(crate::types::Ty::Array {
+                    len: operand_len, ..
+                }),
+            ) if operand_len > 0 && operand_len != *len => Some(crate::types::Ty::Array {
+                elem: elem.clone(),
+                family: family.clone(),
+                len: operand_len,
+                low: 0,
+            }),
+            _ => None,
+        };
+        if let Some(natural) = natural {
+            let converted = lower_logic_vector_call(
+                function, definition, operand, *span, &natural, process, context,
+            )?;
+            let width = source_value_width(
+                &ProcessValueKind::RawResize { operand: converted },
+                Some(&target_type),
+                process,
+                context,
+            )?;
+            return Some(push_converted(
+                *span,
+                target_type,
+                width,
+                ProcessValueKind::RawResize { operand: converted },
+                context,
+            ));
+        }
+        return lower_logic_vector_call(
+            function,
+            definition,
+            operand,
             *span,
-            None,
-            None,
-            ProcessValueKind::Definition(definition),
+            &target_type,
+            process,
             context,
         );
-        let kind = ProcessValueKind::Call {
-            callee,
-            type_arguments: Vec::new(),
-            arguments: vec![operand],
-            bang: false,
-        };
-        let width = source_value_width(&kind, Some(&target_type), process, context);
-        return Some(push_value(*span, Some(target_type), width, kind, context));
     }
     inline_with_self_format(
         function,
@@ -6647,6 +6671,45 @@ fn lower_process_family_from(
         context,
         return_type,
     )
+}
+
+/// A conversion from an anonymous array's elements, typed `target`: inlined
+/// where its body allows, else a call the CFG expands.
+fn lower_logic_vector_call(
+    function: &ast::FnDecl,
+    definition: crate::resolve::DefId,
+    operand: ProcessValueId,
+    span: crate::diag::Span,
+    target: &crate::types::Ty,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    if let Some(value) = inline_process_function(
+        function,
+        span,
+        None,
+        &[operand],
+        process,
+        context,
+        Some(target),
+    ) {
+        return Some(value);
+    }
+    let callee = push_value(
+        span,
+        None,
+        None,
+        ProcessValueKind::Definition(definition),
+        context,
+    );
+    let kind = ProcessValueKind::Call {
+        callee,
+        type_arguments: Vec::new(),
+        arguments: vec![operand],
+        bang: false,
+    };
+    let width = source_value_width(&kind, Some(target), process, context);
+    Some(push_value(span, Some(target.clone()), width, kind, context))
 }
 
 /// A family result uses its Self format; kernel-number helpers do not.
