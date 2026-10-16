@@ -1667,13 +1667,30 @@ impl ProcessIr {
                 }
                 for instruction in &block.instructions {
                     match instruction {
-                        ProcessInstruction::Declare { local, .. } => {
+                        ProcessInstruction::Declare {
+                            local, initializer, ..
+                        } => {
                             if process.locals.get(local.0 as usize).map(|value| value.id)
                                 != Some(*local)
                             {
                                 issues.push(format!(
                                     "process {:?} references invalid local {:?}",
                                     process.id, local
+                                ));
+                            }
+                            // `let t: time = 18446744073709551615ns;` was left
+                            // unfolded and failed only when the test ran.
+                            if let Some(problem) = initializer.and_then(|value| {
+                                matches!(
+                                    self.values.get(value.0 as usize).map(|value| &value.kind),
+                                    Some(ProcessValueKind::Suffixed { .. })
+                                )
+                                .then(|| invalid_native_duration(value))
+                                .flatten()
+                            }) {
+                                issues.push(format!(
+                                    "process {:?} block {:?} time literal {problem}",
+                                    process.id, block.id
                                 ));
                             }
                         }

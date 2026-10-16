@@ -31,6 +31,8 @@ struct ConstantSuffix {
     parameter: String,
     domain: SuffixDomain,
     body: ast::Block,
+    /// The impl's `suffix`, inlined when the body builds a struct.
+    function: ast::FnDecl,
 }
 
 #[derive(Clone, Copy)]
@@ -928,6 +930,7 @@ fn constant_suffixes(
                     parameter: parameter_name.text.clone(),
                     domain,
                     body: body.clone(),
+                    function: function.clone(),
                 });
         }
     }
@@ -9611,11 +9614,24 @@ fn struct_suffix_literal(
     let ty @ crate::types::Ty::Named(definition) = context.typed.expr_type(*span).cloned()? else {
         return None;
     };
-    if context.resolved.kind_of(definition) != Some(crate::resolve::DefKind::Struct) {
+    // `time` literals fold to a constant; one left over overflowed, which
+    // validation reports, where an inlined body wrapped it.
+    if context.resolved.kind_of(definition) != Some(crate::resolve::DefKind::Struct)
+        || context.resolved.lang_of(definition) == Some("time")
+    {
         return None;
     }
-    let owner = process_type_key(&ty, context)?;
-    let function = context.functions.get_associated(&owner, "suffix")?;
+    // This literal's impl, by its symbol: any `suffix` of the type picked
+    // `ms`'s for an `ns`.
+    let leaf = context.resolved.def(definition)?.name.clone();
+    let function = context
+        .suffixes
+        .get(&suffix.text)?
+        .iter()
+        .find(|entry| entry.target == leaf)?
+        .function
+        .clone();
+    let function = &function;
     let parameter = function
         .params
         .iter()

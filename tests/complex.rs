@@ -87,3 +87,30 @@ fn missing_complex_operators_are_reported_once() {
         assert_eq!(rendered.matches("error[").count(), 1, "{name}: {rendered}");
     }
 }
+
+/// A testbench literal of a struct with several suffix impls took whichever
+/// `suffix` came first, not the one for its symbol.
+#[cfg(feature = "llvm")]
+#[test]
+fn a_struct_suffix_is_chosen_by_its_symbol() {
+    let (compilation, binary) = compile(
+        "units",
+        r#"module g;
+use std::ops::Suffix;
+struct L { pub mm: real }
+impl Suffix<"mm", real> for L { fn suffix(v: real) -> L { return { .mm = v }; } }
+impl Suffix<"cm", real> for L { fn suffix(v: real) -> L { return { .mm = v * 10.0 }; } }
+impl Suffix<"km", real> for L { fn suffix(v: real) -> L { return { .mm = v * 1000000.0 }; } }
+#[test] entity T {}
+impl T { check: process { let a: L = 3.0cm; let b: L = 2.0km; let c: L = 7.0mm; print!("|{} {} {}", a.mm, b.mm, c.mm); } }
+"#,
+    );
+    assert!(
+        compilation.succeeded(),
+        "{}",
+        compilation.render_diagnostics()
+    );
+    let output = std::process::Command::new(&binary).output().unwrap();
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains("|30 2000000 7"), "{report}");
+}

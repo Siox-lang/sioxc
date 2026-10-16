@@ -805,6 +805,34 @@ impl<'a> Checker<'a> {
                     );
                 }
             }
+            // A time, an edge or a condition. `await 5;` was accepted as an
+            // always-true condition and waited for nothing.
+            "await" => {
+                let Some(argument) = args.first() else {
+                    return;
+                };
+                // A suffixed literal (`5ns`) is a time; lowering checks its
+                // range.
+                if matches!(argument, Expr::SuffixLit { .. }) {
+                    return;
+                }
+                let ty = self.type_of(argument, sym);
+                let time = self
+                    .type_kind_name(&ty)
+                    .is_some_and(|name| name.rsplit("::").next() == Some("time"));
+                if time {
+                } else if matches!(ty, Ty::Integer | Ty::Real) {
+                    self.error_with_help(
+                        codes::TYPE_MISMATCH,
+                        expr_span(argument),
+                        "`await` takes a time, an edge or a condition, not a number".to_string(),
+                        "a time needs its unit (`await 5ns;`); a count compares (`await n == 5;`)"
+                            .to_string(),
+                    );
+                } else {
+                    self.check_condition(argument, sym);
+                }
+            }
             "assert" | "warn" => {
                 let Some(condition) = args.first() else {
                     return;
