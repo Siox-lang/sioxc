@@ -26,6 +26,9 @@
 //!   hardware does. Spelled out (`regs.index(2)`) beside the `Range`
 //!   overload, the checker rejected it and the testbench took the wrong one.
 //! - `regs[1] = v` through `IndexAssign` did not lower in the testbench.
+//! - A hardware call with a constant argument (`crc(0, 165)`, `f(0 - 3)`)
+//!   bound the parameter as `integer`: a custom operator on it (`xor`,
+//!   `nand`) found no impl and the call lowered to nothing.
 
 #[cfg(feature = "llvm")]
 fn run(name: &str, source: &str) -> String {
@@ -254,4 +257,58 @@ impl T {
     );
     assert!(report.contains("|TB 5 50 51\n"), "{report}");
     assert!(report.contains("|HW 2 99 4\n"), "{report}");
+}
+
+/// CRC-8 (polynomial 0x07) and a 16-bit Fibonacci LFSR, checked against
+/// values computed independently in Python.
+#[cfg(feature = "llvm")]
+#[test]
+fn constant_arguments_keep_their_parameter_type() {
+    let report = run(
+        "crc",
+        r#"module g;
+use std::bits::{unsigned, signed};
+fn crc_byte(c: unsigned[8], b: unsigned[8]) -> unsigned[8] {
+    let r: unsigned[8] = c xor b;
+    for k in 0..7 { if r[7] == '1' { r = (r << 1) xor 7; } else { r = r << 1; } }
+    return r;
+}
+fn step(s: unsigned[16]) -> unsigned[16] {
+    let bit: unsigned[16] = (s xor (s >> 2) xor (s >> 3) xor (s >> 5)) and 1;
+    return (s >> 1) or (bit << 15);
+}
+fn len(b: unsigned[8]) -> integer { return b'length; }
+fn sn(b: signed[8]) -> signed[8] { return b xor 1; }
+entity E { d: unsigned[8][9] in, s: unsigned[16] in, c9: unsigned[8] out, c1: unsigned[8] out, l5: unsigned[16] out, n: integer out, m: signed[8] out }
+impl E {
+    let acc: unsigned[8][10];
+    acc[0] = 0;
+    bytes: for i in 0..8 { acc[i + 1] = crc_byte(acc[i], d[i]); }
+    c9 = acc[9]; c1 = crc_byte(0, 165);
+    let st: unsigned[16][6];
+    st[0] = s;
+    steps: for i in 0..4 { st[i + 1] = step(st[i]); }
+    l5 = st[5]; n = len(7); m = sn(0 - 3);
+}
+#[test] entity T {}
+impl T {
+    let d: unsigned[8][9] = [49, 50, 51, 52, 53, 54, 55, 56, 57];
+    let s: unsigned[16] = 44257;
+    let e: E = { .d = d, .s = s };
+    check: process {
+        let c: unsigned[8] = 0;
+        for i in 0..8 { c = crc_byte(c, d[i]); }
+        let y: unsigned[16] = s;
+        for i in 0..4 { y = step(y); }
+        await 1ns;
+        print!("|TB {} {} {} {} {}\n", c, crc_byte(0, 165), y, len(7), sn(0 - 3));
+        print!("|HW {} {} {} {} {}\n", e.c9, e.c1, e.l5, e.n, e.m);
+    }
+}
+"#,
+    );
+    for engine in ["TB", "HW"] {
+        let expected = format!("|{engine} 244 114 5479 8 -4\n");
+        assert!(report.contains(&expected), "{engine}: {report}");
+    }
 }
