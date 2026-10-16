@@ -21,6 +21,9 @@
 //! - A conversion from `Logic[N]` to another width (`unsigned[8](a)` of a
 //!   `Logic[4]`) did not lower in the testbench; it resizes the converted
 //!   vector.
+//! - A struct's own `Index` contract (`regs[2]`, `regs[1..3]`) did not lower
+//!   in the testbench; it now selects the impl by the index's type, as
+//!   hardware does.
 
 #[cfg(feature = "llvm")]
 fn run(name: &str, source: &str) -> String {
@@ -184,6 +187,38 @@ impl T {
     // "1X01": the value plane reads 9, the `'X'` kept as an element.
     for engine in ["TB", "HW"] {
         let expected = format!("|{engine} 9 1 'X' '0'\n");
+        assert!(report.contains(&expected), "{engine}: {report}");
+    }
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn custom_index_contracts_agree() {
+    let report = run(
+        "index",
+        r#"module g;
+use std::bits::unsigned;
+use std::ops::{Index, Range};
+struct Regs { pub r: unsigned[8][4] }
+impl Index<integer, unsigned[8]> for Regs { fn index(self, i: integer) -> unsigned[8] { return self.r[i]; } }
+impl Index<Range, unsigned[8]> for Regs { fn index(self, r: Range) -> unsigned[8] { return self.r[r.left] + self.r[r.right]; } }
+entity E { g: Regs in, a: unsigned[8] out, b: unsigned[8] out }
+impl E { a = g[2]; b = g[1..3]; }
+#[test] entity T {}
+impl T {
+    let g: Regs = { .r = [5, 6, 7, 8] };
+    let e: E = { .g = g };
+    check: process {
+        let a: unsigned[8] = g[2]; let b: unsigned[8] = g[1..3];
+        await 1ns;
+        print!("|TB {} {}\n", a, b);
+        print!("|HW {} {}\n", e.a, e.b);
+    }
+}
+"#,
+    );
+    for engine in ["TB", "HW"] {
+        let expected = format!("|{engine} 7 14\n");
         assert!(report.contains(&expected), "{engine}: {report}");
     }
 }

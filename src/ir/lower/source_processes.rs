@@ -6551,6 +6551,84 @@ fn push_converted(
     value
 }
 
+/// `base[index]` through the struct's own `Index` impl for the index's type
+/// (`Index<integer, _>`, `Index<Range, _>`), inlined with `base` as `self`.
+fn custom_index_value(
+    expression: &ast::Expr,
+    base: &ast::Expr,
+    index: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    if matches!(index, ast::Expr::PartialRange { .. }) {
+        return None;
+    }
+    let ty @ crate::types::Ty::Named(definition) =
+        context.typed.expr_type(ast::expr_span(base)).cloned()?
+    else {
+        return None;
+    };
+    if context.resolved.kind_of(definition) != Some(crate::resolve::DefKind::Struct) {
+        return None;
+    }
+    let owner = process_type_key(&ty, context)?;
+    let input = if matches!(index, ast::Expr::Range { .. }) {
+        "Range".to_string()
+    } else {
+        "integer".to_string()
+    };
+    let function = context
+        .functions
+        .get_binary_operator("[]", &owner, Some(&input))?;
+    let span = ast::expr_span(expression);
+    let receiver = value_ref(base, process, context);
+    let argument = match index {
+        // The contract's `Range { left, right }` value, which the impl reads
+        // as a struct (`r.left`).
+        ast::Expr::Range { lo, hi, span } => {
+            let range_type = context
+                .typed
+                .expr_type(*span)
+                .filter(|ty| matches!(ty, crate::types::Ty::Named(_)))
+                .cloned()?;
+            let integer = Some(crate::types::Ty::Integer);
+            let left = value_ref_with_type(lo, process, context, integer.as_ref());
+            let right = value_ref_with_type(hi, process, context, integer.as_ref());
+            let field = |name: &str, value| ProcessAggregateField {
+                name: Some(name.to_string()),
+                value: Some(value),
+                span: *span,
+            };
+            let layout = process_aggregate_layout_for_type(&range_type, *span, context);
+            let width = layout.as_ref().and_then(|layout| layout.packed_width());
+            let value = push_value(
+                *span,
+                Some(range_type.clone()),
+                width,
+                ProcessValueKind::Construct {
+                    ty: Some(range_type),
+                    fields: vec![field("left", left), field("right", right)],
+                    spread: None,
+                },
+                context,
+            );
+            context.process_ir.value_layouts[value.0 as usize] = layout;
+            value
+        }
+        _ => value_ref(index, process, context),
+    };
+    let result = context.typed.expr_type(span).cloned();
+    inline_process_function(
+        function,
+        span,
+        Some(receiver),
+        &[argument],
+        process,
+        context,
+        result.as_ref(),
+    )
+}
+
 /// `float<32, 23>(1.5)`: a family's `From<Source>` impl, inlined with `Self`
 /// standing for the format being built, so the body can read `Self'high`.
 /// `None` when the family has no impl for the argument's type, and the
@@ -10010,6 +10088,11 @@ fn value_ref_with_type_inner(
             }
         }
         ast::Expr::Index { base, index, .. } => {
+            // A struct's own `Index` contract (`regs[2]`), as hardware lowers
+            // it. Lowered as an element read, it did not lower at all.
+            if let Some(value) = custom_index_value(expression, base, index, process, context) {
+                return value;
+            }
             if let Some(signals) = signal_reference(expression, process, context) {
                 ProcessValueKind::Signal {
                     signals,

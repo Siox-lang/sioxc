@@ -184,6 +184,11 @@ impl<'a> FunctionIndex<'a> {
                 return;
             };
             (symbol, "apply")
+        } else if trait_key == "Index" {
+            // `value[index]` on a type's own contract, selected by the index's
+            // type as an operator by its right operand: `Index<integer, _>`
+            // and `Index<Range, _>` may both exist.
+            ("[]".to_string(), "index")
         } else {
             match (
                 ast::operator_trait_symbol(&trait_key),
