@@ -696,14 +696,7 @@ impl<'a> Lowering<'a> {
             // whichever came last, so a disabled tristate driver's `'Z'`
             // hid an enabled one's `'1'`. Each output drives the net in its
             // own context, folding through the type's Resolve (or E-P014).
-            // ponytail: scalar leaves without a metavalue companion only
-            // (`Logic`, `Bit`, enums); a vector output with one keeps
-            // last-wins until the net carries a companion too.
-            if outs.len() >= 2
-                && outs
-                    .iter()
-                    .all(|out| !self.out.meta_of.contains_key(&out.0))
-            {
+            if outs.len() >= 2 {
                 let template = self.out.signals[outs[0].0 as usize].clone();
                 let net = SignalId(self.out.signals.len() as u32);
                 let path = format!("{name}.{tbname}");

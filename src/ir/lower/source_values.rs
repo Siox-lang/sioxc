@@ -73,6 +73,12 @@ impl SourceValues {
 
     fn child(&self, id: ProcessValueId) -> Result<Expr, String> {
         match self.ir.values[id.0 as usize].kind {
+            // A literal carrying an explicit companion (`"ZZZZ"` in an `if`
+            // branch) keeps its identity, which the companion is keyed by:
+            // inlined as a bare constant, its metavalues read as clean.
+            ProcessValueKind::Number(_) if self.explicit_meta.contains_key(&id) => {
+                Ok(self.reference(id))
+            }
             ProcessValueKind::Number(_)
             | ProcessValueKind::Char(_)
             | ProcessValueKind::Signal { .. }

@@ -131,6 +131,21 @@ impl<'a> Lowering<'a> {
     /// the target's companion. A raw `Const`/`WideConst` retains only the low
     /// value bit of each element and cannot recover whether that bit was `X`,
     /// `Z`, or another nine-value symbol.
+    /// A logic-vector literal's value carrying its metavalues as the explicit
+    /// companion, wherever it is read: an `if` branch (`if oe { d } else {
+    /// "ZZZZ" }`) lost them, and a disabled tristate driver read `0000`.
+    pub(super) fn literal_with_metavalues(&self, e: &ast::Expr, value: Expr) -> Expr {
+        let Some(meta) = self.bit_string_meta(e) else {
+            return value;
+        };
+        // Its own arena node, which the companion is recorded on: a bound
+        // constant stays a bare constant.
+        let mut arena = self.source_values.borrow_mut();
+        let id = arena.append(&value, ast::expr_span(e), None);
+        arena.set_explicit_meta(id, meta);
+        arena.reference(id)
+    }
+
     pub(super) fn bit_string_meta(&self, e: &ast::Expr) -> Option<Expr> {
         let (base, digits) = Self::bit_string_parts(e)?;
         let (_, discs) = self.decode_bit_string_words(base, digits);
