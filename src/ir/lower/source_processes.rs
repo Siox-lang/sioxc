@@ -2424,6 +2424,32 @@ fn lower_statement(
             process,
             block,
         ),
+        // `regs[1] = v` on a struct's own `IndexAssign` contract is the call
+        // `regs.index_assign(1, v)`; as an element write it did not lower.
+        Stmt::Assign {
+            target: ast::Expr::Index { base, index, .. },
+            value,
+            after: None,
+            span,
+            ..
+        } if index_assign_contract(base, context) => {
+            let call = Stmt::Expr(ast::Expr::Call {
+                callee: Box::new(ast::Expr::Field {
+                    base: base.clone(),
+                    field: ast::Ident {
+                        text: "index_assign".to_string(),
+                        span: *span,
+                    },
+                    span: *span,
+                }),
+                type_args: Vec::new(),
+                qualifier: None,
+                args: vec![index.as_ref().clone(), value.clone()],
+                bang: false,
+                span: *span,
+            });
+            lower_statement(&call, context, process, block)
+        }
         Stmt::Assign {
             target,
             value,
@@ -6549,6 +6575,22 @@ fn push_converted(
         context.process_ir.value_layouts[value.0 as usize] = layout;
     }
     value
+}
+
+/// Whether `base` is a struct with an `index_assign` method (`IndexAssign`).
+fn index_assign_contract(base: &ast::Expr, context: &LoweringContext<'_>) -> bool {
+    let Some(ty @ crate::types::Ty::Named(definition)) =
+        context.typed.expr_type(ast::expr_span(base)).cloned()
+    else {
+        return false;
+    };
+    context.resolved.kind_of(definition) == Some(crate::resolve::DefKind::Struct)
+        && process_type_key(&ty, context).is_some_and(|owner| {
+            context
+                .functions
+                .get_associated(&owner, "index_assign")
+                .is_some()
+        })
 }
 
 /// `base[index]` through the struct's own `Index` impl for the index's type
