@@ -1734,6 +1734,11 @@ pub(super) fn testbench_bindings(
             let Some(storage_prefix) = storage_projection(&connection.signal, storage) else {
                 continue;
             };
+            // A slice or computed index (rendered `[<expr>]`) is no storage
+            // projection: an input reads it as a value.
+            if storage_prefix.contains("<expr>") {
+                continue;
+            }
             let port_path = format!("{root_path}.{}.{}", child.name, connection.port);
             for (index, signal) in design.signals.iter().enumerate() {
                 let port_projection = if signal.path == port_path {
@@ -2122,6 +2127,10 @@ fn instance_has_runtime_connections(declaration: &ast::LetDecl, resolved: &Resol
 fn process_connection_is_place(expression: &ast::Expr) -> bool {
     match expression {
         ast::Expr::Path(_) => true,
+        // A slice or computed index (`x[3..0]`, `x[i]`) is a value, read at
+        // the connection as `x[3..0] + 0` is: bound as storage, it did not
+        // lower.
+        ast::Expr::Index { index, .. } if !matches!(index.as_ref(), ast::Expr::Int { .. }) => false,
         ast::Expr::Field { base, .. } | ast::Expr::Index { base, .. } => {
             process_connection_is_place(base)
         }
