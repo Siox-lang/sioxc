@@ -371,7 +371,7 @@ impl Lowering<'_> {
                             (**element).clone()
                         }
                         (AccessStep::Index(index), LayoutKind::Packed { .. }) => {
-                            self.source_packed_result_layout(&layout, index)?
+                            self.source_packed_result_layout(&layout, index, env)?
                         }
                         _ => return None,
                     };
@@ -402,6 +402,34 @@ impl Lowering<'_> {
                                 family.clone_from(&segment.text);
                             }
                             return Some(layout);
+                        }
+                    }
+                }
+                // `unsigned[8](x)`: that family at that width. Without it a
+                // method on the conversion (`unsigned[8](64).count_ones()`)
+                // had no shape for `self[i]`.
+                if let ast::Expr::Index { base, index, .. } = callee.as_ref() {
+                    if let ast::Expr::Path(path) = base.as_ref() {
+                        if let [segment] = path.segments.as_slice() {
+                            if self.array_families.contains(&segment.text) {
+                                let (left, right) = match index.as_ref() {
+                                    ast::Expr::Range { lo, hi, .. } => (
+                                        self.eval_const(lo, &self.cur_env)?,
+                                        self.eval_const(hi, &self.cur_env)?,
+                                    ),
+                                    width => (self.eval_const(width, &self.cur_env)? - 1, 0),
+                                };
+                                let family = segment.text.clone();
+                                return Some(SourceLayout {
+                                    span: ast::expr_span(expression),
+                                    kind: LayoutKind::Packed {
+                                        width: u32::try_from(left.abs_diff(right) + 1).ok()?,
+                                        range: Some(crate::ir::LayoutRange { left, right }),
+                                        element_enum: self.array_element_enum(&family),
+                                        family,
+                                    },
+                                });
+                            }
                         }
                     }
                 }
@@ -457,7 +485,7 @@ impl Lowering<'_> {
                     .clone(),
                 (AccessStep::Index(_), LayoutKind::Array { element, .. }) => (**element).clone(),
                 (AccessStep::Index(index), LayoutKind::Packed { .. }) => {
-                    self.source_packed_result_layout(&layout, index)?
+                    self.source_packed_result_layout(&layout, index, &HashMap::new())?
                 }
                 _ => return None,
             };
@@ -529,8 +557,8 @@ impl Lowering<'_> {
 
     /// A constant slice bound, including one over a function receiver's
     /// shape (`self[self'low..self'high]`), which the source-level folder
-    /// cannot see.
-    fn slice_bound(&self, bound: &ast::Expr) -> Option<i64> {
+    /// cannot see; `env` holds an inlined body's `self'low`.
+    fn slice_bound(&self, bound: &ast::Expr, env: &HashMap<String, Val>) -> Option<i64> {
         fn shape_arithmetic(expression: &ast::Expr) -> bool {
             match expression {
                 ast::Expr::Int { .. } | ast::Expr::SysAttr { .. } => true,
@@ -542,7 +570,7 @@ impl Lowering<'_> {
         }
         self.eval_const(bound, &self.cur_env).or_else(|| {
             shape_arithmetic(bound)
-                .then(|| self.constant_expr(&self.lower_scalar_env(bound, &HashMap::new())))?
+                .then(|| self.constant_expr(&self.lower_scalar_env(bound, env)))?
         })
     }
 
@@ -550,10 +578,13 @@ impl Lowering<'_> {
         &self,
         layout: &SourceLayout,
         index: &ast::Expr,
+        env: &HashMap<String, Val>,
     ) -> Option<(u32, u32)> {
         let range = layout.index_range()?;
         let (left, right) = match index {
-            ast::Expr::Range { lo, hi, .. } => (self.slice_bound(lo)?, self.slice_bound(hi)?),
+            ast::Expr::Range { lo, hi, .. } => {
+                (self.slice_bound(lo, env)?, self.slice_bound(hi, env)?)
+            }
             ast::Expr::PartialRange { lo, hi, .. } => (
                 lo.as_deref()
                     .map(|lo| self.eval_const(lo, &self.cur_env))
@@ -579,12 +610,13 @@ impl Lowering<'_> {
         &self,
         layout: &SourceLayout,
         index: &ast::Expr,
+        env: &HashMap<String, Val>,
     ) -> Option<SourceLayout> {
         let kind = if matches!(
             index,
             ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
         ) {
-            let (left, right) = self.source_packed_slice_bounds(layout, index)?;
+            let (left, right) = self.source_packed_slice_bounds(layout, index, env)?;
             let width = left.abs_diff(right).checked_add(1)?;
             let LayoutKind::Packed {
                 family,
@@ -644,7 +676,7 @@ impl Lowering<'_> {
             index,
             ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
         ) {
-            let (left, right) = self.source_packed_slice_bounds(layout, index)?;
+            let (left, right) = self.source_packed_slice_bounds(layout, index, env)?;
             if left >= right {
                 self.source_slice(&value, left, right, span)
             } else {
@@ -711,7 +743,7 @@ impl Lowering<'_> {
         };
         Some(self.bind_value_layout(
             Val::Scalar(result),
-            self.source_packed_result_layout(layout, index)?,
+            self.source_packed_result_layout(layout, index, env)?,
             span,
         ))
     }
@@ -834,7 +866,7 @@ impl Lowering<'_> {
                     if let (Val::Scalar(scalar), Some(shape)) = (&value, &layout) {
                         if matches!(shape.kind, LayoutKind::Packed { .. }) {
                             value = self.source_packed_access(scalar.clone(), shape, index, env)?;
-                            layout = Some(self.source_packed_result_layout(shape, index)?);
+                            layout = Some(self.source_packed_result_layout(shape, index, env)?);
                             continue;
                         }
                     }

@@ -6312,6 +6312,38 @@ fn lower_process_raw_resize(
             truncate_process_values(context, first_width_value);
 
             let operand_type = process_value_type(operand, context);
+            // A widening `resize(x, n)` is `F[n](x)` for `x`'s family `F`, as
+            // in hardware: `From<signed> for signed` sign-extends.
+            let widening = context.process_ir.values[operand.0 as usize]
+                .bit_width
+                .is_some_and(|operand_width| width > operand_width);
+            if let (
+                Some(crate::types::Ty::Array {
+                    family: Some(family),
+                    ..
+                }),
+                true,
+            ) = (&operand_type, widening)
+            {
+                let owner = context.functions.canonical_type_key(family);
+                let function = conversion_source_key(operand_type.as_ref()?, context)
+                    .and_then(|source| context.functions.get_conversion(&owner, &source));
+                if let Some(function) = function {
+                    if let Some(value) = inline_with_self_format(
+                        function,
+                        family.clone(),
+                        &args[1],
+                        &[operand],
+                        *span,
+                        first_width_value,
+                        process,
+                        context,
+                        target,
+                    ) {
+                        return Some(value);
+                    }
+                }
+            }
             let target = match operand_type {
                 Some(crate::types::Ty::Array { elem, family, .. }) => crate::types::Ty::Array {
                     elem,
@@ -6419,10 +6451,10 @@ fn lower_process_raw_resize(
                     len,
                     low: 0,
                 };
-                return Some(push_value(
+                return Some(push_converted(
                     *span,
-                    Some(target),
-                    Some(width),
+                    target,
+                    width,
                     ProcessValueKind::RawResize { operand },
                     context,
                 ));
@@ -6487,7 +6519,33 @@ fn lower_process_raw_resize(
     let operand = value_ref_with_type(&args[0], process, context, operand_type.as_ref());
     let kind = ProcessValueKind::RawResize { operand };
     let width = source_value_width(&kind, Some(&target), process, context)?;
-    Some(push_value(*span, Some(target), Some(width), kind, context))
+    Some(push_converted(*span, target, width, kind, context))
+}
+
+/// A conversion's result with its target's vector layout, which a method on
+/// it reads (`unsigned[8](x).reverse_bits()` slices `self[self'low..]`).
+fn push_converted(
+    span: crate::diag::Span,
+    target: crate::types::Ty,
+    width: u32,
+    kind: ProcessValueKind,
+    context: &mut LoweringContext<'_>,
+) -> ProcessValueId {
+    let layout = matches!(
+        target,
+        crate::types::Ty::Array {
+            family: Some(_),
+            ..
+        }
+    )
+    .then(|| process_aggregate_layout_for_type(&target, span, context))
+    .flatten()
+    .filter(|layout| layout.packed_width() == Some(width));
+    let value = push_value(span, Some(target), Some(width), kind, context);
+    if layout.is_some() {
+        context.process_ir.value_layouts[value.0 as usize] = layout;
+    }
+    value
 }
 
 /// `float<32, 23>(1.5)`: a family's `From<Source>` impl, inlined with `Self`

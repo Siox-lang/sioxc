@@ -11,6 +11,10 @@
 //!   lowering exponential (eight iterations took 7 GB).
 //! - A ranged-integer DUT port printed directly failed to generate, and a
 //!   negative `integer<-8..7>` copied into a local came out positive.
+//! - A widening `resize` of a `signed` zero-extended (-3 into 16 bits read
+//!   253); it is the family's conversion, as `signed[16](s)` is.
+//! - A method on a conversion (`unsigned[8](x).reverse_bits()`) had no shape
+//!   for `self`, and failed in both engines.
 
 #[cfg(feature = "llvm")]
 fn run(name: &str, source: &str) -> String {
@@ -78,6 +82,39 @@ impl T {
     // v = "00010100" is v[0]..v[7], so v[3] and v[5] are set.
     for engine in ["TB", "HW"] {
         let expected = format!("|{engine} 10000010 0100 '0' 3 7 13 -5\n");
+        assert!(report.contains(&expected), "{engine}: {report}");
+    }
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn signed_resize_and_methods_on_conversions() {
+    let report = run(
+        "resize",
+        r#"module g;
+use std::bits::{unsigned, signed};
+entity E { s: signed[8] in, a: unsigned[8] in, w: signed[16] out, x: signed[70] out, r: unsigned[8] out, c: integer out, p: Bool out }
+impl E {
+    w = resize(s, 16); x = resize(s, 70); r = unsigned[8](a + 1).reverse_bits();
+    c = unsigned[8](64).count_ones(); p = unsigned[8](64).is_power_of_two();
+}
+#[test] entity T {}
+impl T {
+    let s: signed[8] = 0 - 3; let a: unsigned[8] = 200;
+    let e: E = { .s = s, .a = a };
+    check: process {
+        let w: signed[16] = resize(s, 16); let x: signed[70] = resize(s, 70);
+        let r: unsigned[8] = unsigned[8](a + 1).reverse_bits();
+        let c: integer = unsigned[8](64).count_ones(); let p: Bool = unsigned[8](64).is_power_of_two();
+        await 1ns;
+        print!("|TB {} {} {} {} {}\n", w, x, r, c, p);
+        print!("|HW {} {} {} {} {}\n", e.w, e.x, e.r, e.c, e.p);
+    }
+}
+"#,
+    );
+    for engine in ["TB", "HW"] {
+        let expected = format!("|{engine} -3 -3 147 1 true\n");
         assert!(report.contains(&expected), "{engine}: {report}");
     }
 }

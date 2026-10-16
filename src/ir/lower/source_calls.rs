@@ -143,7 +143,7 @@ impl<'a> Lowering<'a> {
                     .clone(),
                 (AccessStep::Index(_), LayoutKind::Array { element, .. }) => (**element).clone(),
                 (AccessStep::Index(index), LayoutKind::Packed { .. }) => {
-                    self.source_packed_result_layout(&layout, index)?
+                    self.source_packed_result_layout(&layout, index, &HashMap::new())?
                 }
                 _ => return None,
             };
