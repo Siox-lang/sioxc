@@ -583,7 +583,15 @@ impl<'a> Checker<'a> {
                 self.check_conversion_arity(callee, args);
                 self.check_conversion_route(callee, args, sym);
                 self.check_generic_bounds(callee, args, sym);
-                self.check_call_arity(callee, args, sym);
+                // A `name!(..)` still here is a macro expansion already
+                // reported (no matching form, or no such macro): it also
+                // read as "unknown function `name`".
+                let failed_macro = *bang
+                    && matches!(callee.as_ref(), Expr::Path(path)
+                        if path.segments.last().is_some_and(|name| !self.callee_is_declared(&name.text)));
+                if !failed_macro {
+                    self.check_call_arity(callee, args, sym);
+                }
                 self.check_runtime_call_contract(callee, type_args, args, *bang, sym);
             }
             Expr::Construct {

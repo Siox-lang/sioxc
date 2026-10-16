@@ -409,3 +409,23 @@ fn a_generic_call_argument_keeps_its_commas() {
     );
     assert!(ok, "{rendered}");
 }
+
+/// A failed macro call was reported twice: its own error, then "unknown
+/// function `name`" for the unexpanded call left behind.
+#[test]
+fn a_failed_macro_call_is_reported_once() {
+    for (name, call, expected) in [
+        ("no_form", "two!(1)", "no form of `two!`"),
+        ("no_macro", "nope!(1)", "cannot find macro `nope!`"),
+    ] {
+        let (rendered, ok) = check(
+            name,
+            &format!(
+                "module m;\nmacro two($a: expr, $b: expr) {{ $a + $b }}\n\
+                 entity E {{ y: integer out }}\nimpl E {{ y = {call}; }}\n"
+            ),
+        );
+        assert!(!ok && rendered.contains(expected), "{name}: {rendered}");
+        assert!(!rendered.contains("unknown function"), "{name}: {rendered}");
+    }
+}
