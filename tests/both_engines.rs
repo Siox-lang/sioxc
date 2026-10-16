@@ -18,6 +18,9 @@
 //! - An element of a computed vector lost its metavalue in hardware
 //!   (`id(u)[2]` read `'0'` for an `'X'`), and failed to lower in the
 //!   testbench (`(not u)[2]`).
+//! - A conversion from `Logic[N]` to another width (`unsigned[8](a)` of a
+//!   `Logic[4]`) did not lower in the testbench; it resizes the converted
+//!   vector.
 
 #[cfg(feature = "llvm")]
 fn run(name: &str, source: &str) -> String {
@@ -150,6 +153,37 @@ impl T {
     );
     for engine in ["TB", "HW"] {
         let expected = format!("|{engine} 'X' 'X' 'X' 'X' '1'\n");
+        assert!(report.contains(&expected), "{engine}: {report}");
+    }
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn logic_vector_conversions_change_width() {
+    let report = run(
+        "widths",
+        r#"module g;
+use std::bits::unsigned;
+use std::logic::Logic;
+entity E { a: Logic[4] in, w: unsigned[8] out, n: unsigned[2] out, x: Logic out }
+impl E { w = unsigned[8](a); n = unsigned[2](a); x = unsigned[8](a)[2]; }
+#[test] entity T {}
+impl T {
+    let a: Logic[4] = "1X01";
+    let e: E = { .a = a };
+    check: process {
+        let w: unsigned[8] = unsigned[8](a); let n: unsigned[2] = unsigned[2](a);
+        let x: Logic = unsigned[8](a)[2];
+        await 1ns;
+        print!("|TB {} {} {} {}\n", w, n, x, w[7]);
+        print!("|HW {} {} {} {}\n", e.w, e.n, e.x, e.w[7]);
+    }
+}
+"#,
+    );
+    // "1X01": the value plane reads 9, the `'X'` kept as an element.
+    for engine in ["TB", "HW"] {
+        let expected = format!("|{engine} 9 1 'X' '0'\n");
         assert!(report.contains(&expected), "{engine}: {report}");
     }
 }
