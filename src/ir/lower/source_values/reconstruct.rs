@@ -33,6 +33,7 @@ impl SourceValues {
             // operand's companion.
             let original_operands = match &value.kind {
                 ProcessValueKind::MetaCompare { operands, .. } => operands.clone(),
+                ProcessValueKind::BitSlice { base, .. } => vec![*base],
                 _ => Vec::new(),
             };
             let explicit_base = match &value.kind {
@@ -156,11 +157,24 @@ impl SourceValues {
                         } if low == 0 => (left, Some(right)),
                         _ => (base, None),
                     };
+                    // A computed vector's element reads the companion built
+                    // for it during propagation.
+                    let computed_base = offset
+                        .is_none()
+                        .then(|| computed.get(original_operands.first()?))
+                        .flatten()
+                        .map(|&(companion, _)| {
+                            let kind = ProcessValueKind::Signal {
+                                signals: vec![SignalId(companion)],
+                                state: ProcessSignalState::Current,
+                            };
+                            self.meta_kind(kind, span)
+                        });
                     self.meta_companion(signal, span, meta_of)
                         .and_then(|(companion, meta)| {
                             encodings.get(&companion).map(|encoding| (encoding, meta))
                         })
-                        .or_else(|| Some((default_encoding?, explicit_base?)))
+                        .or_else(|| Some((default_encoding?, explicit_base.or(computed_base)?)))
                         .map(|(encoding, mut meta)| {
                             if let Some(offset) = offset {
                                 let stride = self.meta_number(4, span);

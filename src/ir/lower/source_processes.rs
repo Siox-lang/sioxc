@@ -9938,6 +9938,38 @@ fn value_ref_with_type_inner(
                 }
             } else {
                 let base = value_ref(base, process, context);
+                // An element of a computed vector (`(not u)[2]`) decodes
+                // through the vector's layout, which an operator result
+                // does not record.
+                if context.process_ir.value_layouts[base.0 as usize].is_none() {
+                    let value = &context.process_ir.values[base.0 as usize];
+                    if let (
+                        Some(
+                            ty @ crate::types::Ty::Array {
+                                family: Some(_),
+                                len,
+                                ..
+                            },
+                        ),
+                        Some(width),
+                    ) = (value.ty.clone(), value.bit_width)
+                    {
+                        // Only an operator or call result: places and their
+                        // projections own declaration layouts (`15..8`).
+                        let computed = matches!(
+                            value.kind,
+                            ProcessValueKind::Unary { .. }
+                                | ProcessValueKind::Binary { .. }
+                                | ProcessValueKind::InlineCall { .. }
+                                | ProcessValueKind::Call { .. }
+                        );
+                        if len == width && computed {
+                            let layout =
+                                process_aggregate_layout_for_type(&ty, value.span, context);
+                            context.process_ir.value_layouts[base.0 as usize] = layout;
+                        }
+                    }
+                }
                 if process_value_is_runtime_string(base, process, context) {
                     let index_span = ast::expr_span(index);
                     let index = value_ref_with_type(
