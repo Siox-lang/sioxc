@@ -293,6 +293,9 @@ struct Checker<'a> {
     /// at the root of another entity's body, or inside a generate `for`/`if` —
     /// a `match` is neither, and elaboration never gathered instances from one.
     in_match_arm: std::cell::Cell<bool>,
+    /// Whether the walk is inside a `process`, which is sequential code and,
+    /// like a `match` arm, never had its instances gathered.
+    in_process: std::cell::Cell<bool>,
     /// Generic parameter names in scope (an impl's binder, a fn's own). A
     /// parameter is never an entity instantiation even when an entity happens
     /// to share its name — elaboration excludes them the same way.

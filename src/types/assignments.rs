@@ -380,15 +380,32 @@ impl<'a> Checker<'a> {
     /// initializer or assignment, as it already is in a conversion or a
     /// comparison: `let k: unsigned[8] = 300;` stored 44 in silence.
     pub(super) fn check_literal_fit(&mut self, lhs: &Ty, value: &Expr) {
-        if let Ty::Array {
-            family: Some(_),
-            len,
-            ..
-        } = lhs
-        {
-            if let Some(constant) = Self::const_literal(value) {
-                self.check_fits_width(constant, *len, expr_span(value));
+        match (lhs, value) {
+            (
+                Ty::Array {
+                    family: Some(_),
+                    len,
+                    ..
+                },
+                _,
+            ) => {
+                if let Some(constant) = Self::const_literal(value) {
+                    self.check_fits_width(constant, *len, expr_span(value));
+                }
             }
+            // Each element of an array literal, too: `[1, 20]` into
+            // `unsigned[4][2]` stored 4 in silence.
+            (
+                Ty::Array {
+                    elem, family: None, ..
+                },
+                Expr::Array { elems, .. },
+            ) => {
+                for element in elems {
+                    self.check_literal_fit(elem, element);
+                }
+            }
+            _ => {}
         }
     }
 
