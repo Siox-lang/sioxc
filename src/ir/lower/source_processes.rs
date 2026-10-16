@@ -3377,9 +3377,11 @@ fn lower_format_value(
         );
         if let Some(ty) = ty.filter(|_| signals) {
             let span = ast::expr_span(expression);
+            // Only an aggregate's: a scalar's (a ranged `integer<0..15>`,
+            // 4 bits) would contradict the 64-bit word the read carries.
             if context.process_ir.value_layouts[value.0 as usize].is_none() {
                 context.process_ir.value_layouts[value.0 as usize] =
-                    process_layout_for_type(&ty, span, context);
+                    process_aggregate_layout_for_type(&ty, span, context);
             }
             context.process_ir.values[value.0 as usize]
                 .ty
@@ -4004,6 +4006,21 @@ fn process_display_kind(
         .filter(usable)
         .cloned()
         .or_else(|| process_value_type(value, context));
+    // A port read keeps its signal's width: `integer<0..15>` is 4 bits,
+    // which as signed printed 13 as -3.
+    if let ProcessValueKind::Signal { signals, .. } = &process_value.kind {
+        let natural = signals.iter().all(|signal| {
+            context
+                .design
+                .signals
+                .get(signal.0 as usize)
+                .and_then(|signal| signal.range)
+                .is_some_and(|(left, right)| left.min(right) >= 0)
+        });
+        if natural && matches!(ty, Some(crate::types::Ty::Integer)) {
+            return Some(ProcessDisplayKind::Unsigned);
+        }
+    }
     match ty.as_ref() {
         Some(ty) => process_display_kind_for_type(ty, context),
         None => process_display_kind_from_value(process_value, context),
@@ -10334,12 +10351,17 @@ fn value_ref_with_type_inner(
         // target, which are lowered position by position; everywhere else it
         // was rewritten to a struct literal before lowering.
         ast::Expr::Tuple { .. } => ProcessValueKind::Invalid,
-        ast::Expr::Concat { parts, .. } => ProcessValueKind::Concat(
-            parts
-                .iter()
-                .map(|part| value_ref(part, process, context))
-                .collect(),
-        ),
+        ast::Expr::Concat { parts, .. } => {
+            match element_array_concat(parts, ty.as_ref(), process, context) {
+                Some(elements) => ProcessValueKind::Array(elements),
+                None => ProcessValueKind::Concat(
+                    parts
+                        .iter()
+                        .map(|part| value_ref(part, process, context))
+                        .collect(),
+                ),
+            }
+        }
         ast::Expr::Array { elems, .. } => {
             let element_type = match ty.as_ref() {
                 Some(crate::types::Ty::Array { elem, .. }) => Some(elem.as_ref().clone()),
@@ -10487,6 +10509,95 @@ fn truncate_process_values(context: &mut LoweringContext<'_>, length: usize) {
         .shared_functions
         .borrow_mut()
         .retain(|_, shared| shared.is_none_or(|id| id.0 < functions));
+}
+
+/// `{ v[3..0], '1' }` into a `Bit[N]`/`Logic[N]`: the parts' elements in
+/// order (a slice as written, a whole array from `'left`), as the elements
+/// of an array value. `None` for a packed (numeric) target.
+fn element_array_concat(
+    parts: &[ast::Expr],
+    ty: Option<&crate::types::Ty>,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<Vec<crate::ir::ProcessValueId>> {
+    let Some(crate::types::Ty::Array {
+        elem, family: None, ..
+    }) = ty
+    else {
+        return None;
+    };
+    if !matches!(elem.as_ref(), crate::types::Ty::Named(_)) {
+        return None;
+    }
+    let element_layout = process_layout_for_type(elem, ast::expr_span(&parts[0]), context);
+    let element_width = match element_layout.as_ref().map(|layout| &layout.kind) {
+        Some(LayoutKind::Scalar { width, .. }) => *width,
+        _ => return None,
+    };
+    let range_of = |value: crate::ir::ProcessValueId, context: &mut LoweringContext<'_>| {
+        match operand_source_layout(value, process, context)?.kind {
+            LayoutKind::Array {
+                range: Some(range), ..
+            } => Some((range.left, range.right)),
+            _ => None,
+        }
+    };
+    let mut elements = Vec::new();
+    for part in parts {
+        let span = ast::expr_span(part);
+        let (base, labels) = match part {
+            ast::Expr::Index { base, index, .. }
+                if matches!(
+                    index.as_ref(),
+                    ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                ) =>
+            {
+                let base = value_ref(base, process, context);
+                let (declared_left, declared_right) = range_of(base, context)?;
+                let (left, right) = match index.as_ref() {
+                    ast::Expr::Range { lo, hi, .. } => (Some(&**lo), Some(&**hi)),
+                    ast::Expr::PartialRange { lo, hi, .. } => (lo.as_deref(), hi.as_deref()),
+                    _ => unreachable!(),
+                };
+                let mut bound = |bound: Option<&ast::Expr>, default| match bound {
+                    Some(bound) => constant_integer(value_ref(bound, process, context), context),
+                    None => Some(default),
+                };
+                let left = bound(left, declared_left)?;
+                let right = bound(right, declared_right)?;
+                (base, crate::ir::loop_range(left, right))
+            }
+            _ => {
+                let value = value_ref_with_type(part, process, context, Some(elem));
+                match range_of(value, context) {
+                    Some((left, right)) => (value, crate::ir::loop_range(left, right)),
+                    None => {
+                        elements.push(value);
+                        continue;
+                    }
+                }
+            }
+        };
+        for label in labels {
+            let index = push_value(
+                span,
+                Some(crate::types::Ty::Integer),
+                Some(64),
+                ProcessValueKind::Number(ProcessNumber::Integer(vec![label as u64])),
+                context,
+            );
+            let element = push_value(
+                span,
+                Some(elem.as_ref().clone()),
+                Some(element_width),
+                ProcessValueKind::Index { base, index },
+                context,
+            );
+            context.process_ir.value_layouts[element.0 as usize] = element_layout.clone();
+            elements.push(element);
+        }
+    }
+    Some(elements)
 }
 
 fn push_value(
@@ -10645,6 +10756,18 @@ fn source_value_width(
                 .and_then(SourceLayout::packed_width)
                 .or_else(|| runtime_handle_width(storage.layout.as_ref()))
                 .or_else(|| storage.ty.as_ref().and_then(typed_width))
+                .filter(|width| *width != 0);
+        }
+        // A DUT port read (`dut.k`) is its signals, typed since the checker
+        // names a port's type: a ranged `integer<0..15>` is 4 bits, not 64.
+        ProcessValueKind::Signal {
+            signals,
+            state: ProcessSignalState::Current | ProcessSignalState::Old,
+        } => {
+            return signals
+                .iter()
+                .map(|signal| Some(context.design.signals.get(signal.0 as usize)?.width))
+                .sum::<Option<u32>>()
                 .filter(|width| *width != 0);
         }
         _ => {}

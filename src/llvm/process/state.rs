@@ -735,6 +735,33 @@ pub(super) fn latch_range_failure<'ctx>(
     Some(())
 }
 
+/// A constant inside `low..=high`, or an unsigned vector whose every value is:
+/// `unsigned[3]` indexing eight labels from 0.
+fn index_never_fails(design: &Design, index: ProcessValueId, low: i64, high: i64) -> bool {
+    let Some(value) = design.process_ir.values.get(index.0 as usize) else {
+        return false;
+    };
+    if let ProcessValueKind::Number(siox::ir::ProcessNumber::Integer(words)) = &value.kind {
+        return words.iter().skip(1).all(|word| *word == 0)
+            && i64::try_from(words.first().copied().unwrap_or(0))
+                .is_ok_and(|index| (low..=high).contains(&index));
+    }
+    let vector = matches!(
+        &value.ty,
+        Some(siox::types::Ty::Array { family: Some(_), len, .. })
+            if Some(*len) == value.bit_width
+    ) || matches!(
+        super::value_types::process_value_layout(design, index).map(|layout| &layout.kind),
+        Some(LayoutKind::Packed { width, .. }) if Some(*width) == value.bit_width
+    );
+    let unsigned_vector = vector && !super::value_types::process_value_is_signed(design, index);
+    unsigned_vector
+        && value
+            .bit_width
+            .filter(|width| *width < 63)
+            .is_some_and(|width| low <= 0 && high >= (1_i64 << width) - 1)
+}
+
 /// Compute which arena nodes need their source activity predicate: checked
 /// accesses and host/foreign effects must be inert on unselected paths.
 /// One shared table serves every process/block in the module.
@@ -748,9 +775,17 @@ pub(super) fn activity_sensitive_process_values(design: &Design) -> Vec<bool> {
     };
     for value in &design.process_ir.values {
         let contains = match &value.kind {
-            ProcessValueKind::CheckedIndex { .. }
-            | ProcessValueKind::ForeignCall { .. }
-            | ProcessValueKind::HostCall { .. } => true,
+            // An index that cannot leave the declared labels never fails, so
+            // its check needs no activity. Keyed by activity, each loop
+            // iteration that read the previous one's result (`if r == 255 {
+            // r = k; }` over `v[k]`) doubled LLVM lowering: eight took 7 GB.
+            // ponytail: an index that can fail still keys by activity, so
+            // such a chain stays exponential; computing each check's activity
+            // once over the value graph would end that.
+            ProcessValueKind::CheckedIndex {
+                index, left, right, ..
+            } => !index_never_fails(design, *index, (*left).min(*right), (*left).max(*right)),
+            ProcessValueKind::ForeignCall { .. } | ProcessValueKind::HostCall { .. } => true,
             ProcessValueKind::Parameter { .. } => false,
             ProcessValueKind::Field { base, .. }
             | ProcessValueKind::BitSlice { base, .. }

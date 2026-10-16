@@ -394,7 +394,16 @@ impl<'a> Checker<'a> {
                 // only meaningful on Boolean and bit-derived types — never on
                 // `real` or `Char`.
                 if matches!(op_str, "and" | "or") {
-                    for operand in [lhs, rhs] {
+                    for (operand, other) in [(lhs, rhs), (rhs, lhs)] {
+                        // A char literal reads through the other operand's
+                        // enum, as in a comparison (`l and '0'`).
+                        if let (Expr::CharLit { ch, .. }, Ty::Named(id)) =
+                            (operand.as_ref(), self.type_of(other, sym))
+                        {
+                            if self.enum_has_char_variant(id, *ch) {
+                                continue;
+                            }
+                        }
                         let t = self.type_of(operand, sym);
                         // A literal is a bit-mask that coerces to the other
                         // operand's width (`b and 31`); a non-literal number
@@ -410,8 +419,9 @@ impl<'a> Checker<'a> {
                                 codes::TYPE_MISMATCH,
                                 *span,
                                 format!(
-                                    "`{op_str}` needs bit-derived operands (Bit/Logic/Bool/unsigned/signed); `{}` is a number",
-                                    self.ty_display(&t)
+                                    "`{op_str}` needs bit-derived operands (Bit/Logic/Bool/unsigned/signed); `{}` is {}",
+                                    self.ty_display(&t),
+                                    if matches!(t, Ty::Char) { "a character" } else { "a number" }
                                 ),
                             );
                             break;

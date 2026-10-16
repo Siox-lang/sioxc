@@ -557,6 +557,25 @@ impl<'a> Checker<'a> {
             Expr::Concat { parts, .. } => match lhs {
                 Ty::Named(id) => self.struct_field_count(*id) == Some(parts.len()),
                 Ty::Error => true,
+                // Bits concatenate into a plain bit vector too (`Bit[8] =
+                // { v[3..0], v[7..4] }`) when every part holds its element.
+                Ty::Array {
+                    elem, family: None, ..
+                } if matches!(elem.as_ref(), Ty::Named(_)) => {
+                    parts.iter().all(|part| match (part, elem.as_ref()) {
+                        (Expr::CharLit { ch, .. }, Ty::Named(id)) => {
+                            self.enum_has_char_variant(*id, *ch)
+                        }
+                        _ => match self.type_of(part, sym) {
+                            Ty::Array {
+                                elem: part_elem,
+                                family: None,
+                                ..
+                            } => part_elem == *elem,
+                            part => part == **elem || matches!(part, Ty::Error),
+                        },
+                    })
+                }
                 _ => compatible(lhs, &self.type_of(value, sym)),
             },
             // A string is a sequence of characters: assigned to a `Logic`-vector

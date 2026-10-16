@@ -2,6 +2,17 @@
 
 use super::*;
 
+/// Whether a layout is a kernel-integer scalar.
+fn integer_scalar(layout: &SourceLayout) -> bool {
+    matches!(
+        layout.kind,
+        LayoutKind::Scalar {
+            domain: siox::ir::ScalarDomain::Integer,
+            ..
+        }
+    )
+}
+
 /// Emit a value using an expected recursive layout. Aggregates have no LLVM
 /// ABI of their own; they are packed only inside the design object so field
 /// reads, copies, and bindings share one exact-width representation.
@@ -98,6 +109,8 @@ pub(super) fn process_value_in_layout<'ctx>(
                     LayoutKind::Scalar { .. } | LayoutKind::Packed { .. }
                 ) =>
             {
+                // A narrow constrained integer widens by its own range: as
+                // zero-extended, `integer<-8..7>` holding -5 copied as 11.
                 process_value_at(
                     context,
                     module,
@@ -105,7 +118,7 @@ pub(super) fn process_value_in_layout<'ctx>(
                     design,
                     id,
                     width,
-                    false,
+                    integer_scalar(layout),
                     active,
                     index_sites,
                     cache,
@@ -132,6 +145,8 @@ pub(super) fn process_value_in_layout<'ctx>(
                     LayoutKind::Scalar { .. } | LayoutKind::Packed { .. }
                 ) =>
             {
+                // A narrow constrained integer widens by its own range: as
+                // zero-extended, `integer<-8..7>` holding -5 copied as 11.
                 process_value_at(
                     context,
                     module,
@@ -139,7 +154,7 @@ pub(super) fn process_value_in_layout<'ctx>(
                     design,
                     id,
                     width,
-                    false,
+                    integer_scalar(layout),
                     active,
                     index_sites,
                     cache,
