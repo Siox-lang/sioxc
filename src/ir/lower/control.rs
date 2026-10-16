@@ -361,14 +361,19 @@ impl<'a> Lowering<'a> {
             ast::Stmt::If(iff) => {
                 if expr_is_event(&iff.cond) {
                     // Event-controlled block (spec 3.11): the body's assignments
-                    // become next-state updates (spec 3.13).
-                    let condition = self.lower_expr(&iff.cond);
+                    // become next-state updates (spec 3.13). It holds only where
+                    // its enclosing branch does: in the asynchronous reset
+                    // `if rst == '1' { .. } else if clk.rising() { .. }` the
+                    // edge counted while the reset was held.
+                    let span = ast::expr_span(&iff.cond);
+                    let event = self.lower_expr(&iff.cond);
+                    let condition = self.source_and(cond.clone(), event.clone(), span);
                     let mut updates = Vec::new();
                     self.lower_event_block(&iff.then, None, &mut updates);
                     // An `else` on an event block is unusual; lower it under the
                     // negated event for completeness.
                     if let Some(eb) = iff.else_.as_deref() {
-                        let neg = Some(self.source_not(&condition, ast::expr_span(&iff.cond)));
+                        let neg = Some(self.source_and(cond, self.source_not(&event, span), span));
                         self.lower_event_else(eb, neg, &mut updates);
                     }
                     self.hardware.event_blocks.push(EventBlock {
