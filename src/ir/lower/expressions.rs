@@ -93,13 +93,15 @@ impl<'a> Lowering<'a> {
             // drove `0x0123...` and `let w: unsigned[96] = x"DEADBEEF0123..."`
             // did not.
             ast::Expr::BitStrLit { base, digits, .. } => {
-                words_const(self.decode_bit_string_words(*base, digits).0)
+                let value = words_const(self.decode_bit_string_words(*base, digits).0);
+                self.literal_with_metavalues(e, value)
             }
             // A plain string in value position is a logic-value vector
             // (`out = "1X10"`) — decode it per-char like a binary bit string.
             // (Char/enum arrays are filled element-wise before reaching here.)
             ast::Expr::StrLit { text, .. } => {
-                words_const(self.decode_bit_string_words('b', text).0)
+                let value = words_const(self.decode_bit_string_words('b', text).0);
+                self.literal_with_metavalues(e, value)
             }
             ast::Expr::CharLit { ch, .. } => Expr::Logic(*ch),
             ast::Expr::Path(path) => {

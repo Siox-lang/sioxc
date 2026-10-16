@@ -209,6 +209,28 @@ impl<'a> Lowering<'a> {
             // A forwarded array Resolve operates per element and preserves the
             // separate value/discriminant planes.
             if let Some(element) = element_resolve {
+                // A context that forwards another vector (`Current(port)`, a
+                // child's output wired here) reads that vector's companion,
+                // which propagation would create only later: read as clean, a
+                // disabled tristate output's "ZZZZ" folded as "0000" and
+                // turned an enabled one's '1's into 'X'. Create it now; the
+                // propagation pass fills it from the source's own writes.
+                let target_width = self.out.signals[*t as usize].width;
+                let forwarded: Vec<SignalId> = ctxs
+                    .values()
+                    .flatten()
+                    .filter_map(|&index| match self.hardware.drivers[index].expr {
+                        Expr::Current(source)
+                            if self.out.signals[source.0 as usize].width == target_width =>
+                        {
+                            Some(source)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                for source in forwarded {
+                    self.driven_companion(source);
+                }
                 let width = self.out.signals[*t as usize].width;
                 // Folding unrolls per element, so an operand it repeats is
                 // hoisted rather than deep-copied `width` times. Nothing

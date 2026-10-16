@@ -3,6 +3,11 @@
 //! one's `'1'`, and two enabled drivers never resolved. They now share a net
 //! that folds through the type's `Resolve`; an unresolved type (`Bit`) is the
 //! E-P014 conflict it is elsewhere.
+//!
+//! For `unsigned` outputs two more gaps hid the same: `bus = if oe { d } else
+//! { "ZZZZ" };` dropped the literal's metavalues (a disabled driver read
+//! `0000`), and resolving instance outputs read their metavalues before they
+//! existed.
 
 use std::process::Command;
 
@@ -77,4 +82,33 @@ fn unresolved_outputs_on_a_testbench_name_conflict() {
         !ok && text.contains("is driven by 2 conflicting sources"),
         "{text}"
     );
+}
+
+#[test]
+fn unsigned_tristate_outputs_resolve() {
+    let drv = "module g;\nuse std::bits::unsigned;\nuse std::logic::Bit;\n\
+               entity Drv { oe: Bit in, d: unsigned[4] in, bus: unsigned[4] out }\n\
+               impl Drv { bus = if oe == '1' { d } else { \"ZZZZ\" }; }\n";
+    let print = "print!(\"|{} {} {} {} {}\\n\", bus, bus[3], bus[2], bus[1], bus[0]);";
+    let (ok, text, binary) = build(
+        "unsigned",
+        &format!(
+            "{drv}#[test] entity T {{}}\nimpl T {{ let oe1: Bit = '1'; let oe2: Bit = '0'; \
+             let d1: unsigned[4] = 10; let d2: unsigned[4] = 6; let bus: unsigned[4];\n\
+             let a: Drv = {{ .oe = oe1, .d = d1, .bus = bus }}; let b: Drv = {{ .oe = oe2, .d = d2, .bus = bus }};\n\
+             check: process {{ await 1ns; {print} oe1 = '0'; await 1ns; {print} oe2 = '1'; await 1ns; {print} \
+             oe1 = '1'; await 1ns; {print} }} }}\n"
+        ),
+    );
+    assert!(ok, "{text}");
+    let report =
+        String::from_utf8_lossy(&Command::new(&binary).output().unwrap().stdout).into_owned();
+    for line in [
+        "|10 '1' '0' '1' '0'",
+        "|0 'Z' 'Z' 'Z' 'Z'",
+        "|6 '0' '1' '1' '0'",
+        "|2 'X' 'X' '1' '0'",
+    ] {
+        assert!(report.contains(line), "{line}: {report}");
+    }
 }
