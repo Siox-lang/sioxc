@@ -430,9 +430,17 @@ impl<'a> Lowering<'a> {
             ast::Expr::Concat { parts, .. } => {
                 let mut acc = Expr::Const(0);
                 for part in parts {
-                    let w = self.ast_width(part);
+                    let w = self.concat_part_width(part);
                     let value = self.lower_expr(part);
-                    let value = {
+                    // A `Logic` part joins as its value bit; its discriminant
+                    // is the element's companion nibble.
+                    let value = if self.is_logic_scalar(part) {
+                        let bit = self.logic_value_bit(&value, ast::expr_span(part));
+                        let mut arena = self.source_values.borrow_mut();
+                        let id = arena.append(&bit, ast::expr_span(part), None);
+                        arena.set_explicit_meta(id, value);
+                        arena.reference(id)
+                    } else {
                         let mut arena = self.source_values.borrow_mut();
                         let id = arena.append(&value, ast::expr_span(part), None);
                         arena.reference(id)
@@ -444,6 +452,12 @@ impl<'a> Lowering<'a> {
                         ast::expr_span(e),
                     );
                     acc = self.source_binary(BinOp::Or, &shifted, &value, ast::expr_span(e));
+                    if let Expr::Canonical { value, .. } = &acc {
+                        self.source_values
+                            .borrow_mut()
+                            .disjoint_joins
+                            .insert(*value);
+                    }
                 }
                 acc
             }
@@ -471,7 +485,7 @@ impl<'a> Lowering<'a> {
         value: &ast::Expr,
         span: crate::diag::Span,
     ) {
-        let want: u32 = parts.iter().map(|p| self.ast_width(p)).sum();
+        let want: u32 = parts.iter().map(|p| self.concat_part_width(p)).sum();
         let Some(have) = self.ref_width(value) else {
             return;
         };
@@ -537,7 +551,9 @@ impl<'a> Lowering<'a> {
                     .get(&p)
                     .map(|&id| self.out.signals[id.0 as usize].width)
             }
-            ast::Expr::Concat { parts, .. } => Some(parts.iter().map(|p| self.ast_width(p)).sum()),
+            ast::Expr::Concat { parts, .. } => {
+                Some(parts.iter().map(|p| self.concat_part_width(p)).sum())
+            }
             _ => None,
         }
     }
@@ -695,7 +711,9 @@ impl<'a> Lowering<'a> {
                     .filter(|w| *w > 0)
                     .unwrap_or(64),
             },
-            ast::Expr::Concat { parts, .. } => parts.iter().map(|p| self.ast_width(p)).sum(),
+            ast::Expr::Concat { parts, .. } => {
+                parts.iter().map(|p| self.concat_part_width(p)).sum()
+            }
             ast::Expr::Index { base, index, .. } if self.slice_bounds(base, index).is_some() => {
                 let (a, b) = self.slice_bounds(base, index).unwrap();
                 (a.max(b) - a.min(b) + 1) as u32

@@ -29,6 +29,10 @@
 //! - A hardware call with a constant argument (`crc(0, 165)`, `f(0 - 3)`)
 //!   bound the parameter as `integer`: a custom operator on it (`xor`,
 //!   `nand`) found no impl and the call lowered to nothing.
+//! - A `Logic` part of a concatenation (`{l, n}`) counted as its 4-bit
+//!   discriminant: rejected in hardware, unlowerable in the testbench. And a
+//!   hardware concatenation joined parts with the logic `or` table, so `'Z'`
+//!   and `'W'` came out `'X'` and `'H'`/`'L'` came out `'1'`/`'0'`.
 
 #[cfg(feature = "llvm")]
 fn run(name: &str, source: &str) -> String {
@@ -310,5 +314,40 @@ impl T {
     for engine in ["TB", "HW"] {
         let expected = format!("|{engine} 244 114 5479 8 -4\n");
         assert!(report.contains(&expected), "{engine}: {report}");
+    }
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn concatenations_keep_logic_parts_and_metavalues() {
+    let report = run(
+        "logic_concat",
+        r#"module g;
+use std::bits::unsigned;
+use std::logic::Logic;
+entity E { l: Logic in, a: unsigned[2] in, z: unsigned[3] out }
+impl E { z = {l, a}; }
+#[test] entity T {}
+impl T {
+    let l: Logic = 'H'; let a: unsigned[2] = "Z1";
+    let dut: E = { .l = l, .a = a };
+    check: process {
+        await 1ns;
+        let t: unsigned[3] = {l, a};
+        print!("|TB {} {} {}\n", t[2], t[1], t[0]);
+        print!("|HW {} {} {}\n", dut.z[2], dut.z[1], dut.z[0]);
+        l = '1'; a = "01";
+        await 1ns;
+        let u: unsigned[3] = {l, a};
+        print!("|TB {}\n", u);
+        print!("|HW {}\n", dut.z);
+    }
+}
+"#,
+    );
+    for engine in ["TB", "HW"] {
+        for expected in [format!("|{engine} 'H' 'Z' '1'\n"), format!("|{engine} 5\n")] {
+            assert!(report.contains(&expected), "{expected}: {report}");
+        }
     }
 }

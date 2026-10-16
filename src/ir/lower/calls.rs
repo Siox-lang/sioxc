@@ -1656,43 +1656,12 @@ impl<'a> Lowering<'a> {
                     });
                     // A logic enum read is its discriminant; its low bit is the
                     // value plane's for '0'/'1', and the nibble decides the rest.
-                    let discriminant = literal.is_none()
-                        && matches!(
-                            self.expr_types.get(&ast::expr_span(value)),
-                            Some(crate::types::Ty::Named(definition))
-                                if self.resolved.def(*definition).is_some_and(|definition| {
-                                    self.logic_encodings.keys().any(|key| {
-                                        key.rsplit("::").next() == Some(definition.name.as_str())
-                                    })
-                                })
-                        );
-                    // Its value bit is the encoding's for that discriminant
-                    // (`'X'` reads 0, as a literal's does), not its low bit.
+                    let discriminant = literal.is_none() && self.is_logic_scalar(value);
                     let raw = element.clone();
-                    let element = match (discriminant, encoding) {
-                        (true, Some(encoding)) => {
-                            let mut ones = encoding
-                                .value_bits
-                                .iter()
-                                .filter(|(_, one)| **one)
-                                .map(|(discriminant, _)| *discriminant)
-                                .collect::<Vec<_>>();
-                            ones.sort_unstable();
-                            ones.into_iter()
-                                .map(|one| {
-                                    self.source_binary(
-                                        BinOp::Eq,
-                                        &element,
-                                        &Expr::Const(one),
-                                        *span,
-                                    )
-                                })
-                                .reduce(|any, next| {
-                                    self.source_binary(BinOp::Or, &any, &next, *span)
-                                })
-                                .unwrap_or(Expr::Const(0))
-                        }
-                        _ => element,
+                    let element = if discriminant {
+                        self.logic_value_bit(&element, *span)
+                    } else {
+                        element
                     };
                     let merged = self.merge_slice(
                         current.clone(),
