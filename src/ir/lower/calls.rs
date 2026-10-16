@@ -697,13 +697,26 @@ impl<'a> Lowering<'a> {
                     n.text.clone(),
                     self.bind_source_value(value, ast::expr_span(a), None),
                 );
+                // A literal argument (`f(165)`, `f(0 - 3)`) is as wide as the
+                // parameter it fills, not its minimal width (`7` alone is
+                // three bits).
+                let literal = self.operand_type_name(a).as_deref() == Some("integer")
+                    && self.eval_const(a, &self.cur_env).is_some();
+                let literal_width = literal
+                    .then(|| {
+                        p.ty.as_ref()
+                            .and_then(|ty| self.source_layout(ty, &self.cur_env).bit_width())
+                            .and_then(|width| u32::try_from(width).ok())
+                    })
+                    .flatten()
+                    .filter(|width| *width > 0);
                 // An array's length is its element count; `ast_width` is
                 // one element's width (`v'length` sized a local `1`).
                 let length = match self.source_operand_layout(a, env).map(|layout| layout.kind) {
                     Some(LayoutKind::Array {
                         range: Some(range), ..
                     }) => range.len().unwrap_or(0),
-                    _ => u64::from(self.ast_width(a)),
+                    _ => u64::from(literal_width.unwrap_or_else(|| self.ast_width(a))),
                 };
                 fenv.insert(
                     format!("{}::length", n.text),
@@ -719,7 +732,14 @@ impl<'a> Lowering<'a> {
                         .and_then(type_head_name)
                         .filter(|head| !f.generics.params.iter().any(|g| g.name.text == *head))
                         .map(str::to_owned);
-                if let Some(fam) = self.operand_type_name(a).or(declared) {
+                // ...and a bare integer for a vector parameter is that vector:
+                // read as `integer`, `b nand 7` in `f(165)` found no impl and
+                // the call lowered to nothing.
+                let family = match (self.operand_type_name(a), declared) {
+                    (Some(_), Some(declared)) if literal => Some(declared),
+                    (argument, declared) => argument.or(declared),
+                };
+                if let Some(fam) = family {
                     let prev = self.param_types.borrow_mut().insert(n.text.clone(), fam);
                     saved.push((n.text.clone(), prev));
                 }
@@ -747,7 +767,7 @@ impl<'a> Lowering<'a> {
                 // The width travels with the family: a nested inline (e.g.
                 // `signed`'s Ord inside this body) reads `self'length` off the
                 // parameter, and without this it saw none.
-                let w = self.ast_width(a);
+                let w = literal_width.unwrap_or_else(|| self.ast_width(a));
                 if w > 0 {
                     saved_widths.push((
                         n.text.clone(),
