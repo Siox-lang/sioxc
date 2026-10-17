@@ -2017,8 +2017,10 @@ fn native_range_checks_each_clock_settle() {
          }
          impl PulseRange {
              let value: integer<0..1> = 0;
-             if clk.rising() { value = bad; }
-             if clk.falling() { value = 0; }
+             update: process {
+                 if clk.rising() { value = bad; }
+                 if clk.falling() { value = 0; }
+             }
              n = value;
          }
          #[test] entity RangeTest {}

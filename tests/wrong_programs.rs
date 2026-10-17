@@ -6,6 +6,9 @@
 //!   skipped the constant-fit check a single value gets.
 //! - `p = { .x = 3 }` warned that `y` keeps its default (W-P016), then failed
 //!   with E-P017; the missing field now takes its default.
+//! - A register clocked from two processes was accepted, last-wins (E-P014
+//!   held only for combinational drivers): disjoint slices of an `unsigned`
+//!   clobbered each other's half.
 
 use std::process::Command;
 
@@ -75,4 +78,33 @@ fn a_partial_struct_literal_defaults_the_rest() {
     let output = Command::new(&binary).output().unwrap();
     let report = String::from_utf8_lossy(&output.stdout);
     assert!(report.contains("|3 '0' A\n"), "{report}");
+}
+
+#[test]
+fn a_register_clocked_from_two_processes_conflicts() {
+    for (ty, help) in [
+        ("Bit", "only one source may drive"),
+        ("unsigned[8]", "do not resolve across"),
+    ] {
+        let body = if ty == "Bit" {
+            "pa: process { if clk.rising() { v = a; } }\npb: process { if clk.rising() { v = a; } }"
+        } else {
+            "pa: process { if clk.rising() { v[3..0] = 1; } }\npb: process { if clk.rising() { v[7..4] = 2; } }"
+        };
+        let (ok, text, _) = compile(
+            "clocked",
+            &format!(
+                "module m;\nuse std::logic::Bit;\nuse std::bits::unsigned;\n\
+                 entity E {{ clk: Bit in, a: Bit in, s: {ty} out }}\n\
+                 impl E {{ let v: {ty};\n{body}\ns = v; }}\n"
+            ),
+            false,
+        );
+        assert!(
+            !ok && text.contains("E-P014")
+                && text.contains("is written by 2 processes")
+                && text.contains(help),
+            "{ty}: {text}"
+        );
+    }
 }

@@ -36,6 +36,10 @@
 //! - `s >> k` of a `signed` by an `unsigned` count was logical in hardware
 //!   (-21 >> 2 read 10): std had no impl for that count, and the hardware
 //!   fallback is the raw shift.
+//! - An element of a call's aggregate result (`split3(x)[1]`, `mk(x).v[1]`)
+//!   had no hardware form, and a hardware function returning an element
+//!   read (`fn top(x: unsigned) -> Logic { return x[4]; }`) failed native
+//!   generation.
 
 #[cfg(feature = "llvm")]
 fn run(name: &str, source: &str) -> String {
@@ -387,5 +391,36 @@ impl T {
         for expected in [format!("|{engine} -6\n"), format!("|{engine} -1\n")] {
             assert!(report.contains(&expected), "{expected}: {report}");
         }
+    }
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn elements_of_call_results() {
+    let report = run(
+        "call_elements",
+        r#"module g;
+use std::bits::unsigned;
+struct Q { pub tag: unsigned[2], pub v: unsigned[3][3] }
+fn split3(x: unsigned[8]) -> unsigned[3][3] { return [x[2..0], x[5..3], 5]; }
+fn mk(x: unsigned[8]) -> Q { return { .tag = x[1..0], .v = split3(x) }; }
+fn top(x: unsigned) -> Logic { return x[x'high]; }
+entity E { x: unsigned[8] in, a: unsigned[3] out, b: unsigned[3] out, t: Logic out }
+impl E { a = split3(x)[1]; b = mk(x).v[0]; t = top(x); }
+#[test] entity T {}
+impl T {
+    let x: unsigned[8] = "X0110110";
+    let dut: E = { .x = x };
+    check: process {
+        await 1ns;
+        print!("|TB {} {} {}\n", split3(x)[1], mk(x).v[0], top(x));
+        print!("|HW {} {} {}\n", dut.a, dut.b, dut.t);
+    }
+}
+"#,
+    );
+    for engine in ["TB", "HW"] {
+        let expected = format!("|{engine} 6 6 'X'\n");
+        assert!(report.contains(&expected), "{expected}: {report}");
     }
 }

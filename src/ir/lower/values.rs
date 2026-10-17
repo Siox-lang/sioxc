@@ -538,20 +538,59 @@ impl<'a> Lowering<'a> {
     /// `f(x).0`, `f(x).a.b`: a field of a value a call computes, read from
     /// that value's leaves. A call has no signal to name a field of.
     pub(super) fn computed_field(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Option<Val> {
-        let mut names = Vec::new();
         let mut base = e;
-        while let ast::Expr::Field {
-            base: inner, field, ..
-        } = base
-        {
-            names.push(field.text.as_str());
-            base = inner;
+        loop {
+            match base {
+                ast::Expr::Field { base: inner, .. } => base = inner,
+                ast::Expr::Index { base: inner, .. } => base = inner,
+                _ => break,
+            }
         }
-        if names.is_empty() || !matches!(base, ast::Expr::Call { .. }) {
+        if std::ptr::eq(base, e) || !matches!(base, ast::Expr::Call { .. }) {
             return None;
         }
-        names.reverse();
-        let path = names.join(".");
+        // Fields and constant elements (`split3(x)[1]`, `mk(x).v[1]`): the
+        // result's leaves are named by label. Indexed, a call result had no
+        // hardware form at all.
+        // ponytail: a runtime index into a call result still has none; it
+        // would select among the elements as `lower_dynamic_access` does.
+        let mut segments = Vec::new();
+        let mut walk = e;
+        while !std::ptr::eq(walk, base) {
+            match walk {
+                ast::Expr::Field {
+                    base: inner, field, ..
+                } => {
+                    segments.push(format!(".{}", field.text));
+                    walk = inner;
+                }
+                ast::Expr::Index {
+                    base: inner, index, ..
+                } => {
+                    if matches!(
+                        index.as_ref(),
+                        ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                    ) {
+                        return None;
+                    }
+                    segments.push(format!("[{}]", self.eval_const(index, &self.cur_env)?));
+                    walk = inner;
+                }
+                _ => return None,
+            }
+        }
+        // An element of a packed result (`id(u)[2]`) is a bit read, not a
+        // leaf: leave it to the element path rather than lower the call twice.
+        if segments.iter().any(|segment| segment.starts_with('['))
+            && self
+                .source_call_layout(base)
+                .is_some_and(|layout| matches!(layout.kind, LayoutKind::Packed { .. }))
+        {
+            return None;
+        }
+        segments.reverse();
+        let joined = segments.concat();
+        let path = joined.strip_prefix('.').unwrap_or(&joined).to_string();
         let Val::Fields(fields) = self.lower_val_env(base, env) else {
             return None;
         };
