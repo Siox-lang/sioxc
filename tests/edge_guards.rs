@@ -2,6 +2,10 @@
 //! asynchronous reset `if rst == '1' { .. } else if clk.rising() { .. }`
 //! (spec 3.15) kept counting edges while the reset was held, and a clock
 //! enable `if en == '1' { if clk.rising() { .. } }` counted with `en` low.
+//!
+//! A `Logic` clock's edges were exact `'0'`/`'1'` transitions; IEEE 1164's
+//! `rising_edge` reads both values through `To_X01`, so `'L'` -> `'H'` is an
+//! edge and `'X'` -> `'1'` is not.
 
 #[cfg(feature = "llvm")]
 fn run(name: &str, source: &str) -> String {
@@ -64,4 +68,52 @@ impl T {
     assert!(report.contains("|A 3 3\n"), "{report}");
     assert!(report.contains("|B 0 3\n"), "{report}");
     assert!(report.contains("|C 2 5\n"), "{report}");
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn weak_logic_values_make_edges() {
+    let mut steps = String::new();
+    for (from, to) in [
+        ("0", "1"),
+        ("L", "H"),
+        ("0", "H"),
+        ("H", "L"),
+        ("X", "1"),
+        ("Z", "1"),
+    ] {
+        steps.push_str(&format!(
+            "c = '{from}'; await 1ns; r0 = dut.r; f0 = dut.f; \
+             c = '{to}'; await 1ns; print!(\"|{from}{to} {{}} {{}}\", dut.r - r0, dut.f - f0);\n"
+        ));
+    }
+    let report = run(
+        "weak_edges",
+        &format!(
+            r#"module g;
+use std::bits::unsigned;
+entity E {{ c: Logic in, r: unsigned[8] out, f: unsigned[8] out }}
+impl E {{
+    let n: unsigned[8] = 0; let m: unsigned[8] = 0;
+    up: process {{ if c.rising() {{ n = n + 1; }} }}
+    down: process {{ if c.falling() {{ m = m + 1; }} }}
+    r = n; f = m;
+}}
+#[test] entity T {{}}
+impl T {{
+    let c: Logic = '0';
+    let dut: E = {{ .c = c }};
+    check: process {{
+        let r0: unsigned[8] = 0; let f0: unsigned[8] = 0;
+{steps}    }}
+}}
+"#
+        ),
+    );
+    // nvc / IEEE 1164: rising_edge and falling_edge per transition.
+    for expected in [
+        "|01 1 0", "|LH 1 0", "|0H 1 0", "|HL 0 1", "|X1 0 0", "|Z1 0 0",
+    ] {
+        assert!(report.contains(expected), "{expected}: {report}");
+    }
 }
