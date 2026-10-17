@@ -201,12 +201,16 @@ pub trait ClockLike {
     fn edge(self) -> Bool;
 }
 
+// IEEE 1164's `rising_edge`/`falling_edge` read both values through
+// `To_X01`, so a weak `'L'` -> `'H'` is an edge too, and `'X'` -> `'1'` is not.
 impl ClockLike for Logic {
     fn rising(self) -> Bool {
-        return self'event and self'old == '0' and self == '1';
+        return self'event and (self'old == '0' or self'old == 'L')
+            and (self == '1' or self == 'H');
     }
     fn falling(self) -> Bool {
-        return self'event and self'old == '1' and self == '0';
+        return self'event and (self'old == '1' or self'old == 'H')
+            and (self == '0' or self == 'L');
     }
     fn edge(self) -> Bool {
         return self'event;
