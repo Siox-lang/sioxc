@@ -44,6 +44,8 @@
 //!   had no hardware form, and a hardware function returning an element
 //!   read (`fn top(x: unsigned) -> Logic { return x[4]; }`) failed native
 //!   generation.
+//! - A runtime index into a call's aggregate result (`split3(x)[i]`) had no
+//!   hardware form either, at entity level or inside a function.
 //! - A slice of an element-wise array (`a[0..3]` of a `Bit[8]`) assigned
 //!   whole had no hardware form, and as a testbench value (a `let`, a
 //!   `print!` argument, a call argument) did not lower; inside a
@@ -512,6 +514,39 @@ impl T {
     // When `v` changes, `a` had already settled at 'L' ('old = 'L' -> '0'),
     // `v'old` = 0111 has three ones, and 1X01 xor 0111 = 1X10.
     assert!(report.contains("|HW '0' 3 '1''X''1''0'"), "{report}");
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn runtime_elements_of_call_results() {
+    let report = run(
+        "call_runtime_elements",
+        r#"module g;
+use std::bits::unsigned;
+struct Q { pub tag: unsigned[2], pub v: unsigned[3][3] }
+fn split3(x: unsigned[8]) -> unsigned[3][3] { return [x[2..0], x[5..3], 5]; }
+fn mk(x: unsigned[8]) -> Q { return { .tag = x[1..0], .v = split3(x) }; }
+fn pick(x: unsigned[8], k: unsigned[2]) -> unsigned[3] { return split3(x)[k]; }
+entity E { x: unsigned[8] in, i: unsigned[2] in, a: unsigned[3] out, b: unsigned[3] out, c: unsigned[3] out }
+impl E { a = split3(x)[i]; b = mk(x).v[i]; c = pick(x, i); }
+#[test] entity T {}
+impl T {
+    let x: unsigned[8] = 0x9E; let i: unsigned[2] = 0;
+    let dut: E = { .x = x, .i = i };
+    check: process {
+        for k in 0..2 {
+            i = k; await 1ns;
+            print!("|{} TB {} {} {} HW {} {} {}", k, split3(x)[i], mk(x).v[i], pick(x, i), dut.a, dut.b, dut.c);
+        }
+    }
+}
+"#,
+    );
+    // 0x9E: x[2..0] = 6, x[5..3] = 3.
+    for (k, v) in [(0, 6), (1, 3), (2, 5)] {
+        let expected = format!("|{k} TB {v} {v} {v} HW {v} {v} {v}\n");
+        assert!(report.contains(&expected), "{expected}: {report}");
+    }
 }
 
 #[cfg(feature = "llvm")]

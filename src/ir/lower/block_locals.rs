@@ -270,9 +270,22 @@ impl<'a> Lowering<'a> {
         left: i64,
         right: i64,
     ) -> Option<Expr> {
-        let (&first, rest) = labels.split_first()?;
         let span = ast::expr_span(index);
         let lowered = self.bind_source_expression(self.lower_expr(index), span);
+        self.checked_lowered_index(lowered, span, labels, left, right)
+    }
+
+    /// [`Self::checked_runtime_index_with_bounds`] for an index already
+    /// lowered (against a function's bindings, say).
+    pub(super) fn checked_lowered_index(
+        &self,
+        lowered: Expr,
+        span: crate::diag::Span,
+        labels: &[i64],
+        left: i64,
+        right: i64,
+    ) -> Option<Expr> {
+        let (&first, rest) = labels.split_first()?;
         let low = left.min(right);
         let high = left.max(right);
         let step = if first <= *labels.last()? { 1 } else { -1 };
@@ -284,12 +297,7 @@ impl<'a> Lowering<'a> {
                 .all(|pair| i128::from(pair[1]) - i128::from(pair[0]) == step);
         if contiguous {
             let bound = |op, label| {
-                self.source_binary(
-                    op,
-                    &lowered,
-                    &self.source_index_label(label, ast::expr_span(index)),
-                    span,
-                )
+                self.source_binary(op, &lowered, &self.source_index_label(label, span), span)
             };
             let valid = self.source_binary(
                 BinOp::And,
@@ -306,14 +314,14 @@ impl<'a> Lowering<'a> {
         let mut valid = self.source_binary(
             BinOp::Eq,
             &lowered,
-            &self.source_index_label(first, ast::expr_span(index)),
+            &self.source_index_label(first, span),
             span,
         );
         for &label in rest {
             let equal = self.source_binary(
                 BinOp::Eq,
                 &lowered,
-                &self.source_index_label(label, ast::expr_span(index)),
+                &self.source_index_label(label, span),
                 span,
             );
             valid = self.source_binary(BinOp::Or, &valid, &equal, span);

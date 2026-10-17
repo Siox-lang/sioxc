@@ -71,6 +71,13 @@ impl<'a> Lowering<'a> {
             if let Some(value) = self.source_signal_aggregate_access(e, env) {
                 return value;
             }
+            // An element of a call's result, read against these bindings: a
+            // function's `split3(x)[k]` lowered its `k` without them.
+            if matches!(e, ast::Expr::Index { .. }) {
+                if let Some(value) = self.computed_field(e, env) {
+                    return value;
+                }
+            }
         }
         match e {
             // `self::length` inside an operator-impl body: the bound operand's
@@ -549,11 +556,11 @@ impl<'a> Lowering<'a> {
         if std::ptr::eq(base, e) || !matches!(base, ast::Expr::Call { .. }) {
             return None;
         }
-        // Fields and constant elements (`split3(x)[1]`, `mk(x).v[1]`): the
-        // result's leaves are named by label. Indexed, a call result had no
-        // hardware form at all.
-        // ponytail: a runtime index into a call result still has none; it
-        // would select among the elements as `lower_dynamic_access` does.
+        // Fields and elements (`split3(x)[1]`, `mk(x).v[1]`, `table(x)[sel]`):
+        // the result's leaves are named by label, and a runtime index, the
+        // outermost step only, selects among them as a signal array's does.
+        // Indexed, a call result had no hardware form at all.
+        let mut runtime = None;
         let mut segments = Vec::new();
         let mut walk = e;
         while !std::ptr::eq(walk, base) {
@@ -573,7 +580,11 @@ impl<'a> Lowering<'a> {
                     ) {
                         return None;
                     }
-                    segments.push(format!("[{}]", self.eval_const(index, &self.cur_env)?));
+                    match self.eval_const(index, &self.cur_env) {
+                        Some(label) => segments.push(format!("[{label}]")),
+                        None if std::ptr::eq(walk, e) => runtime = Some(index.as_ref()),
+                        None => return None,
+                    }
                     walk = inner;
                 }
                 _ => return None,
@@ -581,7 +592,7 @@ impl<'a> Lowering<'a> {
         }
         // An element of a packed result (`id(u)[2]`) is a bit read, not a
         // leaf: leave it to the element path rather than lower the call twice.
-        if segments.iter().any(|segment| segment.starts_with('['))
+        if (runtime.is_some() || segments.iter().any(|segment| segment.starts_with('[')))
             && self
                 .source_call_layout(base)
                 .is_some_and(|layout| matches!(layout.kind, LayoutKind::Packed { .. }))
@@ -594,6 +605,37 @@ impl<'a> Lowering<'a> {
         let Val::Fields(fields) = self.lower_val_env(base, env) else {
             return None;
         };
+        if let Some(index) = runtime {
+            // ponytail: scalar elements only; an aggregate element would
+            // select each of its leaves the same way.
+            let elements: Vec<(i64, Expr)> = fields
+                .iter()
+                .filter_map(|(name, value)| {
+                    let label = name
+                        .strip_prefix(&path)?
+                        .strip_prefix('[')?
+                        .strip_suffix(']')?;
+                    Some((label.parse().ok()?, value.clone()))
+                })
+                .collect();
+            let labels: Vec<i64> = elements.iter().map(|(label, _)| *label).collect();
+            let (&left, &right) = (labels.first()?, labels.last()?);
+            let span = ast::expr_span(index);
+            let lowered = self.bind_source_expression(self.lower_scalar_env(index, env), span);
+            let checked = self.checked_lowered_index(lowered, span, &labels, left, right)?;
+            let ((_, last), earlier) = elements.split_last()?;
+            let mut result = last.clone();
+            for (label, value) in earlier.iter().rev() {
+                let condition = self.source_binary(
+                    BinOp::Eq,
+                    &checked,
+                    &self.source_index_label(*label, span),
+                    span,
+                );
+                result = self.source_select(&condition, value, &result, span);
+            }
+            return Some(Val::Scalar(result));
+        }
         if let Some((_, value)) = fields.iter().find(|(name, _)| *name == path) {
             return Some(Val::Scalar(value.clone()));
         }
