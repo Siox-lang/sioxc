@@ -721,6 +721,8 @@ impl<'a> Lowering<'a> {
             ast::Expr::Int { text, .. } => {
                 (u64::BITS - parse_int(text).unwrap_or(0).leading_zeros()).max(1)
             }
+            // `x'old` is as wide as `x`.
+            ast::Expr::SysAttr { base, attr, .. } if attr.text == "old" => self.ast_width(base),
             // A bit-string literal has an explicit digit-count width.
             ast::Expr::BitStrLit { base, digits, .. } => (crate::syntax::radix_digits(digits)
                 .count() as u32
