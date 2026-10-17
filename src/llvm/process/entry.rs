@@ -758,19 +758,23 @@ pub(super) fn process_entry<'ctx>(
                 // starts over. Left through a `return` (an inlined call's),
                 // the loop stayed active, and the next call's loop carried on
                 // from where the last one stopped.
+                // A loop with no state has no lowering either: its header
+                // reports the process unsupported.
+                let active = loop_active_name(process.id, *target);
                 if matches!(
                     process.blocks[target.0 as usize].terminator,
                     ProcessTerminator::For { .. }
                 ) && !dominates(&loop_dominators, target.0 as usize, block.id.0 as usize)
+                    && module.get_global(&active).is_some()
                 {
                     store_state(
                         module,
                         &builder,
-                        &loop_active_name(process.id, *target),
+                        &active,
                         1,
                         context.bool_type().const_zero(),
                     )
-                    .expect("every loop header has an active flag");
+                    .expect("a declared loop flag stores");
                 }
                 builder
                     .build_unconditional_branch(blocks[target.0 as usize])

@@ -5593,6 +5593,43 @@ fn lower_for(
     process: &mut ProcessCfg,
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
+    // `for b in v` over a packed vector's elements: one body per label, each
+    // reading `b` as `v[label]`, as hardware lowers it. The native loop
+    // iterates ranges and arrays only, so this left the process unlowered.
+    // ponytail: the iterable is re-read per element; a stored `v` written by
+    // the body would be seen mid-loop.
+    if !matches!(iterable, ast::Expr::Range { .. }) && crate::ir::expr_path(iterable).is_some() {
+        let first_value = context.process_ir.values.len();
+        let value = value_ref(iterable, process, context);
+        let range = match process_value_source_layout(value, context.process_ir).map(|l| &l.kind) {
+            Some(LayoutKind::Packed {
+                range: Some(range), ..
+            }) => Some(*range),
+            _ => None,
+        };
+        truncate_process_values(context, first_value);
+        if let Some(range) = range {
+            let statements: Vec<Stmt> = crate::ir::loop_range(range.left, range.right)
+                .into_iter()
+                .flat_map(|label| {
+                    let element = ast::Expr::Index {
+                        base: Box::new(iterable.clone()),
+                        index: Box::new(ast::Expr::Int {
+                            text: label.to_string(),
+                            span: variable.span,
+                        }),
+                        span: variable.span,
+                    };
+                    let map = std::collections::HashMap::from([(variable.text.clone(), element)]);
+                    body.stmts
+                        .iter()
+                        .map(|statement| crate::ir::subst_stmt_paths(statement, &map))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            return lower_statements(&statements, context, process, block);
+        }
+    }
     let local = ProcessLocalId(process.locals.len() as u32);
     let ty = if matches!(iterable, ast::Expr::Range { .. }) {
         Some(crate::types::Ty::Integer)
