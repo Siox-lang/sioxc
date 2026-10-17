@@ -1722,6 +1722,19 @@ impl<'a> Lowering<'a> {
                         None => env.remove(&var.text),
                     };
                 }
+                // `for x in xs`: one body per element, with `x` read as
+                // `xs[label]`. Only the index form lowered in a hardware
+                // function; this one left the call unlowered.
+                ast::Stmt::For {
+                    var,
+                    range: iterable,
+                    body,
+                    ..
+                } => {
+                    for body in self.element_loop_bodies(var, iterable, body, env)? {
+                        self.inline_scoped(&body, env)?;
+                    }
+                }
                 ast::Stmt::If(iff) if !if_returns(iff) => {
                     self.inline_merged_if(iff, env)?;
                 }
@@ -1729,6 +1742,43 @@ impl<'a> Lowering<'a> {
             }
         }
         Some(())
+    }
+
+    /// The bodies of `for var in iterable` over an array or vector's
+    /// elements, in its declared order, each reading `var` as
+    /// `iterable[label]`.
+    fn element_loop_bodies(
+        &self,
+        var: &ast::Ident,
+        iterable: &ast::Expr,
+        body: &ast::Block,
+        env: &HashMap<String, Val>,
+    ) -> Option<Vec<Vec<ast::Stmt>>> {
+        let range = self.source_operand_layout(iterable, env)?.index_range()?;
+        let labels = crate::ir::loop_range(range.left, range.right);
+        if labels.len() as u64 >= MAX_ITERATIONS {
+            return None;
+        }
+        Some(
+            labels
+                .into_iter()
+                .map(|label| {
+                    let element = ast::Expr::Index {
+                        base: Box::new(iterable.clone()),
+                        index: Box::new(ast::Expr::Int {
+                            text: label.to_string(),
+                            span: var.span,
+                        }),
+                        span: var.span,
+                    };
+                    let map = HashMap::from([(var.text.clone(), element)]);
+                    body.stmts
+                        .iter()
+                        .map(|s| subst_stmt_paths(s, &map))
+                        .collect()
+                })
+                .collect(),
+        )
     }
 
     /// `r[k] = v` or `r[hi..lo] = v` on an array local, at constant indices:
@@ -2049,6 +2099,23 @@ impl<'a> Lowering<'a> {
                         let map = HashMap::from([(var.text.clone(), literal)]);
                         unrolled.extend(body.stmts.iter().map(|s| subst_stmt_paths(s, &map)));
                     }
+                    unrolled.extend(rest.iter().cloned());
+                    return self.inline_block_body(&unrolled, scoped.as_ref());
+                }
+                [ast::Stmt::For {
+                    var,
+                    range: iterable,
+                    body,
+                    ..
+                }, rest @ ..]
+                    if statements_return(&body.stmts)
+                        && !matches!(iterable, ast::Expr::Range { .. }) =>
+                {
+                    let mut unrolled: Vec<ast::Stmt> = self
+                        .element_loop_bodies(var, iterable, body, scoped.as_ref())?
+                        .into_iter()
+                        .flatten()
+                        .collect();
                     unrolled.extend(rest.iter().cloned());
                     return self.inline_block_body(&unrolled, scoped.as_ref());
                 }
