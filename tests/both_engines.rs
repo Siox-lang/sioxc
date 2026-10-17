@@ -44,6 +44,9 @@
 //!   had no hardware form, and a hardware function returning an element
 //!   read (`fn top(x: unsigned) -> Logic { return x[4]; }`) failed native
 //!   generation.
+//! - An operand or receiver read through `'old` had no type: a method on it
+//!   (`a'old.to_x01()`) did not lower, and `v xor v'old` on an `unsigned`
+//!   dropped `v`'s metavalues.
 
 #[cfg(feature = "llvm")]
 fn run(name: &str, source: &str) -> String {
@@ -472,4 +475,37 @@ impl T {
         let expected = format!("|{engine} 6 6 'X'\n");
         assert!(report.contains(&expected), "{expected}: {report}");
     }
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn old_values_keep_their_type() {
+    let report = run(
+        "old_values",
+        r#"module g;
+use std::bits::unsigned;
+use std::logic::Bit;
+entity E { clk: Bit in, a: Logic in, v: unsigned[4] in, y: Logic out, z: integer out, d: unsigned[4] out }
+impl E {
+    let ry: Logic = '0'; let rz: integer = 0; let rd: unsigned[4] = 0;
+    p: process { if v'event { ry = a'old.to_x01(); rz = v'old.count_ones(); rd = v xor v'old; } }
+    y = ry; z = rz; d = rd;
+}
+#[test] entity T {}
+impl T {
+    let clk: Bit = '0'; let a: Logic = 'H'; let v: unsigned[4] = 7;
+    let dut: E = { .clk = clk, .a = a, .v = v };
+    check: process {
+        await 1ns;
+        a = 'L';
+        v = "1X01";
+        await 1ns;
+        print!("|HW {} {} {}{}{}{}", dut.y, dut.z, dut.d[3], dut.d[2], dut.d[1], dut.d[0]);
+    }
+}
+"#,
+    );
+    // When `v` changes, `a` had already settled at 'L' ('old = 'L' -> '0'),
+    // `v'old` = 0111 has three ones, and 1X01 xor 0111 = 1X10.
+    assert!(report.contains("|HW '0' 3 '1''X''1''0'"), "{report}");
 }
