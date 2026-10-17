@@ -2088,14 +2088,25 @@ impl<'a> Lowering<'a> {
                     self.lower_scalar_env(&iff.cond, env),
                     ast::expr_span(&iff.cond),
                 );
-                // The else value: an explicit else branch, or the statements
-                // after the if.
+                // A branch that can fall through continues with the statements
+                // after the if: one that returns only on some paths (`if a {
+                // if b { return x; } acc = acc + 1; }`) found no `return` of
+                // its own and left the call unlowered. One that always returns
+                // stays on its own, which keeps its lexical scope its own.
+                // ponytail: a fall-through branch lowers `rest` once more, so
+                // a chain of k such ifs lowers the tail 2^k times.
+                let continued = |branch: &[ast::Stmt]| {
+                    if statements_always_return(branch) {
+                        return self.inline_block(branch, env);
+                    }
+                    let mut all = branch.to_vec();
+                    all.extend(rest.iter().cloned());
+                    self.inline_block(&all, env)
+                };
                 let els = || match &iff.else_ {
                     Some(e) => match e.as_ref() {
-                        ast::ElseBranch::Block(b) => self.inline_block(&b.stmts, env),
-                        ast::ElseBranch::If(i) => {
-                            self.inline_block(std::slice::from_ref(&ast::Stmt::If(i.clone())), env)
-                        }
+                        ast::ElseBranch::Block(b) => continued(&b.stmts),
+                        ast::ElseBranch::If(i) => continued(&[ast::Stmt::If(i.clone())]),
                     },
                     None => self.inline_block(rest, env),
                 };
@@ -2111,11 +2122,11 @@ impl<'a> Lowering<'a> {
                     _ => None,
                 };
                 match constant {
-                    Some(true) => return self.inline_block(&iff.then.stmts, env),
+                    Some(true) => return continued(&iff.then.stmts),
                     Some(false) => return els(),
                     None => {}
                 }
-                let then = self.inline_block(&iff.then.stmts, env)?;
+                let then = continued(&iff.then.stmts)?;
                 let els = els()?;
                 Some(self.source_inline_select(cond, then, els, iff.span))
             }
@@ -2181,6 +2192,28 @@ fn statements_return(statements: &[ast::Stmt]) -> bool {
         ast::Stmt::For { body, .. } => statements_return(&body.stmts),
         _ => false,
     })
+}
+
+/// Whether every path through these statements ends in a `return`.
+fn statements_always_return(statements: &[ast::Stmt]) -> bool {
+    statements.iter().any(|statement| match statement {
+        ast::Stmt::Return { .. } => true,
+        ast::Stmt::If(statement) => if_always_returns(statement),
+        ast::Stmt::Match(statement) => statement
+            .arms
+            .iter()
+            .all(|arm| statements_always_return(&arm.body.stmts)),
+        _ => false,
+    })
+}
+
+fn if_always_returns(statement: &ast::IfStmt) -> bool {
+    statements_always_return(&statement.then.stmts)
+        && match statement.else_.as_deref() {
+            Some(ast::ElseBranch::Block(block)) => statements_always_return(&block.stmts),
+            Some(ast::ElseBranch::If(inner)) => if_always_returns(inner),
+            None => false,
+        }
 }
 
 /// Whether a `return` sits anywhere inside this `if`.

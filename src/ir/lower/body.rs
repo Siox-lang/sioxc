@@ -385,6 +385,14 @@ impl<'a> Lowering<'a> {
                     if let Some(ast::Expr::Array { elems, .. }) = &l.value {
                         let name = l.name.text.clone();
                         self.seed_elements(&name, elems.iter().collect(), l.span);
+                    } else if let Some(value) = l.value.as_ref().filter(|value| {
+                        self.local_array.contains_key(&l.name.text)
+                            && !self.local_struct.contains_key(&l.name.text)
+                            && !matches!(value, ast::Expr::StrLit { .. })
+                            && Self::fs_read_call(value).is_none()
+                    }) {
+                        let name = l.name.text.clone();
+                        self.seed_array_from(&name, value, l.span);
                     }
                     // A value-less internal `let` in a component entity must be
                     // driven; record its leaves for the undriven check. Root
