@@ -33,6 +33,9 @@
 //!   discriminant: rejected in hardware, unlowerable in the testbench. And a
 //!   hardware concatenation joined parts with the logic `or` table, so `'Z'`
 //!   and `'W'` came out `'X'` and `'H'`/`'L'` came out `'1'`/`'0'`.
+//! - `s >> k` of a `signed` by an `unsigned` count was logical in hardware
+//!   (-21 >> 2 read 10): std had no impl for that count, and the hardware
+//!   fallback is the raw shift.
 
 #[cfg(feature = "llvm")]
 fn run(name: &str, source: &str) -> String {
@@ -347,6 +350,41 @@ impl T {
     );
     for engine in ["TB", "HW"] {
         for expected in [format!("|{engine} 'H' 'Z' '1'\n"), format!("|{engine} 5\n")] {
+            assert!(report.contains(&expected), "{expected}: {report}");
+        }
+    }
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn signed_shift_by_an_unsigned_count_is_arithmetic() {
+    let report = run(
+        "signed_shift",
+        r#"module g;
+use std::bits::unsigned;
+use std::bits::signed;
+entity E { s: signed[6] in, k: unsigned[3] in, a: signed[6] out }
+impl E { a = s >> k; }
+#[test] entity T {}
+impl T {
+    let s: signed[6] = -21; let k: unsigned[3] = 2;
+    let dut: E = { .s = s, .k = k };
+    check: process {
+        await 1ns;
+        let t: signed[6] = s >> k;
+        print!("|TB {}\n", t);
+        print!("|HW {}\n", dut.a);
+        k = 7;
+        await 1ns;
+        let u: signed[6] = s >> k;
+        print!("|TB {}\n", u);
+        print!("|HW {}\n", dut.a);
+    }
+}
+"#,
+    );
+    for engine in ["TB", "HW"] {
+        for expected in [format!("|{engine} -6\n"), format!("|{engine} -1\n")] {
             assert!(report.contains(&expected), "{expected}: {report}");
         }
     }
