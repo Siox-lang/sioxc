@@ -36,6 +36,10 @@
 //! - `s >> k` of a `signed` by an `unsigned` count was logical in hardware
 //!   (-21 >> 2 read 10): std had no impl for that count, and the hardware
 //!   fallback is the raw shift.
+//! - A hardware function whose `return` sat in a branch that otherwise falls
+//!   through (`if a { if b { return x; } acc = acc + 1; }`) did not lower.
+//! - A testbench call whose loop was left by a `return` kept that loop
+//!   running: the next call's loop resumed where the last one stopped.
 
 #[cfg(feature = "llvm")]
 fn run(name: &str, source: &str) -> String {
@@ -387,5 +391,50 @@ impl T {
         for expected in [format!("|{engine} -6\n"), format!("|{engine} -1\n")] {
             assert!(report.contains(&expected), "{expected}: {report}");
         }
+    }
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn partial_returns_and_loops_left_by_a_return() {
+    let report = run(
+        "partial_returns",
+        r#"module g;
+use std::bits::unsigned;
+fn a(v: unsigned[8]) -> unsigned[8] {
+    let acc: unsigned[8] = 0;
+    if v[0] == '1' { if v[1] == '1' { return 100; } acc = acc + 1; }
+    if v[2] == '1' { acc = acc + 10; } else { if v[3] == '1' { return 200; } acc = acc + 20; }
+    return acc;
+}
+fn b(v: unsigned[8]) -> unsigned[8] {
+    let acc: unsigned[8] = 0;
+    for k in 0..7 { if v[k] == '1' { acc = acc + k; if acc > 6 { return acc * 2; } } }
+    return acc;
+}
+entity E { v: unsigned[8] in, x: unsigned[8] out, y: unsigned[8] out }
+impl E { x = a(v); y = b(v); }
+#[test] entity T {}
+impl T {
+    let v: unsigned[8] = 0;
+    let dut: E = { .v = v };
+    check: process {
+        for n in 3..6 {
+            v = n * 17;
+            await 1ns;
+            print!("|{} TB {} {} HW {} {}\n", n, a(v), b(v), dut.x, dut.y);
+        }
+    }
+}
+"#,
+    );
+    // v = 51, 68, 85, 102: Python's reading of the two bodies.
+    for expected in [
+        "|3 TB 100 20 HW 100 20\n",
+        "|4 TB 10 16 HW 10 16\n",
+        "|5 TB 11 24 HW 11 24\n",
+        "|6 TB 10 16 HW 10 16\n",
+    ] {
+        assert!(report.contains(expected), "{expected}: {report}");
     }
 }

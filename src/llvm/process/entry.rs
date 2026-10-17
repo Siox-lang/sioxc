@@ -98,6 +98,20 @@ pub(super) fn shared_pure_values(
         .collect()
 }
 
+/// Whether `header` dominates `block` in `idom` (unreachable blocks are
+/// dominated by nothing).
+fn dominates(idom: &[Option<usize>], header: usize, mut block: usize) -> bool {
+    loop {
+        if block == header {
+            return true;
+        }
+        match idom[block] {
+            Some(parent) if parent != block => block = parent,
+            _ => return false,
+        }
+    }
+}
+
 /// Each block's immediate dominator by index (Cooper, Harvey and Kennedy's
 /// iteration over reverse postorder); none for the entry and for blocks
 /// the entry cannot reach.
@@ -273,6 +287,8 @@ pub(super) fn process_entry<'ctx>(
         .flatten()
         .copied()
         .collect::<std::collections::HashSet<_>>();
+    // Which `Goto`s into a loop header enter it rather than iterate.
+    let loop_dominators = immediate_dominators(process);
     let mut block_values: Vec<Option<PlaceFreeValues<'ctx>>> =
         (0..process.blocks.len()).map(|_| None).collect();
     for (block, llvm) in process.blocks.iter().zip(&blocks) {
@@ -738,6 +754,24 @@ pub(super) fn process_entry<'ctx>(
                     .unwrap();
             }
             ProcessTerminator::Goto(target) => {
+                // An edge its header does not dominate enters the loop, which
+                // starts over. Left through a `return` (an inlined call's),
+                // the loop stayed active, and the next call's loop carried on
+                // from where the last one stopped.
+                if matches!(
+                    process.blocks[target.0 as usize].terminator,
+                    ProcessTerminator::For { .. }
+                ) && !dominates(&loop_dominators, target.0 as usize, block.id.0 as usize)
+                {
+                    store_state(
+                        module,
+                        &builder,
+                        &loop_active_name(process.id, *target),
+                        1,
+                        context.bool_type().const_zero(),
+                    )
+                    .expect("every loop header has an active flag");
+                }
                 builder
                     .build_unconditional_branch(blocks[target.0 as usize])
                     .unwrap();

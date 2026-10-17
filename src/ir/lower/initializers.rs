@@ -114,6 +114,75 @@ impl<'a> Lowering<'a> {
         ))
     }
 
+    /// An array-typed initializer other than a literal: a module constant
+    /// (`let w: T[3] = K`) seeds from its folded elements, and a function
+    /// whose body returns one array literal (`= table()`) seeds from that
+    /// literal, as a struct initializer does. Anything else, a read of a
+    /// signal among them, is E-P021. All of these powered on at zero.
+    pub(super) fn seed_array_from(
+        &mut self,
+        prefix: &str,
+        value: &ast::Expr,
+        span: crate::diag::Span,
+    ) {
+        if let Some(values) = self
+            .free_fns
+            .constant_expr_key(value)
+            .and_then(|key| self.const_arrays.get(&key))
+            .cloned()
+        {
+            let indices = self.local_array.get(prefix).cloned().unwrap_or_default();
+            for (folded, index) in values.into_iter().zip(indices) {
+                // ponytail: scalar elements only; a constant of nested
+                // arrays or structs still seeds nothing below the top.
+                let (Expr::Const(word), Some(&id)) =
+                    (folded, self.locals.get(&format!("{prefix}[{index}]")))
+                else {
+                    continue;
+                };
+                let width = self.out.signals[id.0 as usize].width;
+                let masked = if width > 0 && width < 64 {
+                    word & ((1u64 << width) - 1)
+                } else {
+                    word
+                };
+                self.out.signals[id.0 as usize].init = vec![masked];
+            }
+            return;
+        }
+        if let ast::Expr::Call { callee, args, .. } = value {
+            if let Some(f) = self.free_fns.get(callee) {
+                if let Some(
+                    [ast::Stmt::Return {
+                        value: Some(ast::Expr::Array { elems, .. }),
+                        ..
+                    }],
+                ) = f.body.as_ref().map(|body| body.stmts.as_slice())
+                {
+                    let bound: HashMap<String, ast::Expr> = f
+                        .params
+                        .iter()
+                        .filter(|p| !p.is_self)
+                        .zip(args)
+                        .filter_map(|(param, arg)| {
+                            param
+                                .name
+                                .as_ref()
+                                .map(|name| (name.text.clone(), arg.clone()))
+                        })
+                        .collect();
+                    let elems: Vec<ast::Expr> =
+                        elems.iter().map(|e| subst_expr_paths(e, &bound)).collect();
+                    self.seed_elements(prefix, elems.iter().collect(), span);
+                    return;
+                }
+            }
+        }
+        if !Self::is_default_construction(value) {
+            self.report_non_constant_init(prefix, span);
+        }
+    }
+
     /// Seed a struct-typed signal's leaves from a literal, so unnamed fields
     /// take their declared defaults.
     pub(super) fn seed_struct_literal(
