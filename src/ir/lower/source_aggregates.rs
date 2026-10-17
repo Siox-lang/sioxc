@@ -244,14 +244,31 @@ impl Lowering<'_> {
             return None;
         }
         // `{ hi, lo }` into an element-wise bit array: the parts' elements,
-        // in order, fill the labels from `'left`, as VHDL's `&` does.
+        // in order, fill the labels from `'left`, as VHDL's `&` does. A bare
+        // slice of such an array (`x = a[0..3]`) is a concatenation of one:
+        // alone it had no aggregate value form.
+        let single = std::slice::from_ref(value);
+        let parts = match value {
+            ast::Expr::Concat { parts, .. } => Some(parts.as_slice()),
+            ast::Expr::Index { base, index, .. }
+                if matches!(
+                    index.as_ref(),
+                    ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                ) && expr_path(base)
+                    .and_then(|path| self.persisted_layout(&path))
+                    .is_some_and(|layout| matches!(layout.kind, LayoutKind::Array { .. })) =>
+            {
+                Some(single)
+            }
+            _ => None,
+        };
         if let (
-            ast::Expr::Concat { parts, .. },
+            Some(parts),
             LayoutKind::Array {
                 range: Some(range),
                 element,
             },
-        ) = (value, &target_layout.kind)
+        ) = (parts, &target_layout.kind)
         {
             if !matches!(element.kind, LayoutKind::Scalar { .. }) {
                 return None;

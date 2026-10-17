@@ -10220,6 +10220,28 @@ fn value_ref_with_type_inner(
                 }
             }
         }
+        // A slice of an element-wise array (`a[0..3]` into a `Bit[4]`): its
+        // elements as written, a concatenation of one. It did not lower.
+        ast::Expr::Index { index, .. }
+            if matches!(
+                index.as_ref(),
+                ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+            ) && matches!(
+                ty.as_ref(),
+                Some(crate::types::Ty::Array { family: None, elem, .. })
+                    if matches!(elem.as_ref(), crate::types::Ty::Named(_))
+            ) =>
+        {
+            match element_array_concat(
+                std::slice::from_ref(expression),
+                ty.as_ref(),
+                process,
+                context,
+            ) {
+                Some(elements) => ProcessValueKind::Array(elements),
+                None => ProcessValueKind::Invalid,
+            }
+        }
         ast::Expr::Index { base, index, .. } => {
             // A struct's own `Index` contract (`regs[2]`), as hardware lowers
             // it. Lowered as an element read, it did not lower at all.
