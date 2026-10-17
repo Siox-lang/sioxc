@@ -227,6 +227,22 @@ impl Shr<signed, signed> for signed {
     }
 }
 
+// A count shifts a `signed` arithmetically too, as VHDL's
+// `shift_right(signed, natural)`: with no impl for an `unsigned` amount,
+// hardware fell back to the raw shift and `s >> k` came out logical.
+impl Shr<unsigned, signed> for signed {
+    fn shr(self, rhs: unsigned) -> signed {
+        if (resize(self, self'length) >> (self'length - 1)) == 1 {
+            if integer(rhs) >= self'length {
+                return resize(0 - 1, self'length);
+            }
+            return (resize(self, self'length) >> rhs)
+                + ((1 << self'length) - (1 << (self'length - rhs)));
+        }
+        return resize(self, self'length) >> rhs;
+    }
+}
+
 impl Eq<signed> for signed {
     fn eq(self, rhs: signed) -> Bool { return self == rhs; }
 }
