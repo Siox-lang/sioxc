@@ -103,6 +103,73 @@ impl<'a> Lowering<'a> {
     /// context's contribution (its override chain over a 'Z' base) through
     /// the type's `Resolve` impl; a type without one is unresolved, and
     /// parallel drivers are an elaboration error.
+    /// A register written from more than one process (or from a process and
+    /// a concurrent statement) is several drivers, as a combinational net
+    /// is. Only combinational drivers were ever compared, so two clocked
+    /// writers silently became last-wins: `pa: v = a; pb: v = b;` on a `Bit`
+    /// kept `b` with no E-P014, and two processes clocking disjoint slices of
+    /// an `unsigned` clobbered each other's half.
+    // ponytail: a resolved type is rejected too, rather than resolved; that
+    // needs one register per process, combined like the combinational case.
+    pub(super) fn report_clocked_conflicts(&mut self) {
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut clocked: BTreeMap<u32, BTreeMap<u32, crate::diag::Span>> = BTreeMap::new();
+        for block in &self.hardware.event_blocks {
+            for update in &block.updates {
+                let site = update
+                    .span
+                    .unwrap_or(self.out.signals[update.target.0 as usize].declaration_span);
+                clocked
+                    .entry(update.target.0)
+                    .or_default()
+                    .entry(block.ctx)
+                    .or_insert(site);
+            }
+        }
+        let companions: BTreeSet<u32> = self.out.meta_of.values().copied().collect();
+        for (target, contexts) in clocked {
+            if companions.contains(&target) {
+                continue;
+            }
+            let mut sites: Vec<crate::diag::Span> = contexts.values().copied().collect();
+            let mut count = contexts.len();
+            for driver in &self.hardware.drivers {
+                if driver.target.0 == target && !contexts.contains_key(&driver.ctx) {
+                    count += 1;
+                    sites.extend(driver.span);
+                    break;
+                }
+            }
+            if count < 2 {
+                continue;
+            }
+            let signal = &self.out.signals[target as usize];
+            let ty = self.sig_type.get(&target).cloned().unwrap_or_default();
+            let resolved = self.op_impls.contains("Resolve", &ty)
+                || self.out.array_element_enums.contains_key(&target);
+            let mut diagnostic = crate::diag::Diagnostic::error(format!(
+                "`{}` is written by {count} processes, and at least one writes it clocked",
+                signal.path
+            ))
+            .with_code(crate::diag::codes::CONFLICTING_DRIVERS);
+            for (index, site) in sites.iter().enumerate() {
+                diagnostic = if index == 0 {
+                    diagnostic.at(*site).label(*site, "written here")
+                } else {
+                    diagnostic.label(*site, "and here")
+                };
+            }
+            diagnostic = diagnostic.label(signal.declaration_span, "register declared here");
+            self.sink.emit(diagnostic.help(if resolved {
+                "each process is a separate driver; registers do not resolve across \
+                 processes yet, so write this one from a single process"
+            } else {
+                "each process is a separate driver, and only one source may drive a \
+                 register: write it from a single process"
+            }));
+        }
+    }
+
     pub(super) fn resolve_driver_contexts(&mut self) {
         use std::collections::BTreeMap;
         // target -> ctx -> ordered driver indices

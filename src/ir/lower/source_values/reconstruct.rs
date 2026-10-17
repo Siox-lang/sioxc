@@ -90,7 +90,24 @@ impl SourceValues {
                 mapped.push(self.push_node(value, layout));
                 continue;
             }
+            // A function returning an element read (`fn top(x: unsigned) ->
+            // Logic { return x[4]; }`) returns the element's whole value now,
+            // not the one bit its operand's layout describes: it takes its
+            // declared result's layout, and is an element read itself.
+            let element_call = match &value.kind {
+                ProcessValueKind::InlineCall { operand, source } if elements.contains(operand) => {
+                    Some(source.result_layout.clone())
+                }
+                _ => None,
+            };
+            let layout = match &element_call {
+                Some(result_layout) => result_layout.clone(),
+                None => layout,
+            };
             let original = self.push_node(value, layout);
+            if element_call.is_some() {
+                elements.insert(original);
+            }
             let raw_bit = raw_bits.contains(&ProcessValueId(index as u32));
             if raw_bit {
                 self.raw_bits.insert(original);
