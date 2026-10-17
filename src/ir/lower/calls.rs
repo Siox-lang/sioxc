@@ -1430,6 +1430,11 @@ impl<'a> Lowering<'a> {
             // same value, merely bound first — printed correctly.
             // `not x` is whatever `x` is, in hardware as in the testbench.
             ast::Expr::Unary { rhs, .. } => self.operand_type_name(rhs),
+            // `x'old` is an `x`: a method on it (`a'old.to_x01()`) found no
+            // impl, and the call lowered to nothing.
+            ast::Expr::SysAttr { base, attr, .. } if attr.text == "old" => {
+                self.operand_type_name(base)
+            }
             ast::Expr::Binary { op, lhs, rhs, .. } if op.keeps_operand_family() => {
                 let l = self.operand_type_name(lhs);
                 let r = self.operand_type_name(rhs);
