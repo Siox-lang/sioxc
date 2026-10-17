@@ -183,6 +183,7 @@ pub fn lower_in(
     l.report_unsupported_exprs();
     l.lint_possible_latches();
     l.prepare_test_input_metavalues(modules, hier);
+    l.report_clocked_conflicts();
     l.resolve_driver_contexts();
     l.propagate_metavalues();
     // Finalized write/guard roots join their operands before representation

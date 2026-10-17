@@ -8,11 +8,11 @@ use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
 fn scheduler_views_cannot_override_canonical_cfgs_through_the_public_api() {
     use siox::ir::Expr;
     let source = r#"module canonical_api;
-entity Dut { clock: Bit in, enabled: Bool in, a: unsigned[8] out, b: unsigned[8] out }
+entity Dut { clock: Bit in, enabled: Bool in, a: unsigned[8] out, b: unsigned[8] out, c: unsigned[8] out }
 impl Dut {
     a = 1;
     b = 2;
-    if clock.rising() { if enabled { a = 3; } }
+    if clock.rising() { if enabled { c = 3; } }
 }
 "#;
     for mutation in 0..7 {
