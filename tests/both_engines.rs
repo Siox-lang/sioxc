@@ -46,6 +46,10 @@
 //!   generation.
 //! - A runtime index into a call's aggregate result (`split3(x)[i]`) had no
 //!   hardware form either, at entity level or inside a function.
+//! - A slice of an element-wise array (`a[0..3]` of a `Bit[8]`) assigned
+//!   whole had no hardware form, and as a testbench value (a `let`, a
+//!   `print!` argument, a call argument) did not lower; inside a
+//!   concatenation it already worked.
 //! - An operand or receiver read through `'old` had no type: a method on it
 //!   (`a'old.to_x01()`) did not lower, and `v xor v'old` on an `unsigned`
 //!   dropped `v`'s metavalues.
@@ -543,4 +547,32 @@ impl T {
         let expected = format!("|{k} TB {v} {v} {v} HW {v} {v} {v}\n");
         assert!(report.contains(&expected), "{expected}: {report}");
     }
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn slices_of_element_arrays() {
+    let report = run(
+        "array_slices",
+        r#"module g;
+use std::logic::Bit;
+fn ones(x: Bit[4]) -> integer { let n: integer = 0; for k in 0..3 { if x[k] == '1' { n = n + 1; } } return n; }
+entity E { a: Bit[8] in, x: Bit[4] out, y: Bit[4] out }
+impl E { x = a[0..3]; y = a[3..0]; }
+#[test] entity T {}
+impl T {
+    let a: Bit[8] = "11010010";
+    let dut: E = { .a = a };
+    check: process {
+        await 1ns;
+        let x: Bit[4] = a[0..3]; let y: Bit[4] = a[3..0];
+        print!("|TB {:?} {:?} {:?} {}", x, y, a[4..7], ones(a[4..7]));
+        print!("|HW {:?} {:?}", dut.x, dut.y);
+    }
+}
+"#,
+    );
+    // `Bit[8]` is ascending and a string fills it from 'left: a[0] = '1'.
+    assert!(report.contains("|TB 1101 1011 0010 1\n"), "{report}");
+    assert!(report.contains("|HW 1101 1011\n"), "{report}");
 }
