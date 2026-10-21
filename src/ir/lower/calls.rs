@@ -134,6 +134,39 @@ impl<'a> Lowering<'a> {
                 _ => "integer".to_string(),
             },
         };
+        if let (Some(_target_std), Some(source_std)) = (
+            super::source_processes::std_integer_vector_family(&target),
+            super::source_processes::std_integer_vector_family(&source),
+        ) {
+            let (left, right) = match index.as_ref() {
+                ast::Expr::Range { lo, hi, .. } => (
+                    self.eval_const(lo, &self.cur_env)?,
+                    self.eval_const(hi, &self.cur_env)?,
+                ),
+                width => (self.eval_const(width, &self.cur_env)? - 1, 0),
+            };
+            let target_width = u32::try_from(left.abs_diff(right) + 1).ok()?;
+            let source_width = self
+                .source_operand_layout(arg, env)
+                .and_then(|l| match l.kind {
+                    LayoutKind::Packed { width, .. } => Some(width),
+                    _ => None,
+                })
+                .unwrap_or_else(|| self.ast_width(arg));
+            if target_width.max(source_width) > 64 && source_width > 0 {
+                return self.lower_wide_packed_resize(
+                    arg,
+                    env,
+                    source_std == "signed",
+                    source_width,
+                    target_width,
+                    &target,
+                    left,
+                    right,
+                    ast::expr_span(callee),
+                );
+            }
+        }
         let (f, _) = fns.iter().find(|(f, declared)| {
             declared.clone().or_else(|| {
                 f.params
@@ -152,6 +185,99 @@ impl<'a> Lowering<'a> {
             };
         }
         self.inline_in_format(f, index, callee, args, env)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_wide_packed_resize(
+        &self,
+        arg: &ast::Expr,
+        env: &HashMap<String, Val>,
+        source_signed: bool,
+        source_width: u32,
+        target_width: u32,
+        target: &str,
+        left: i64,
+        right: i64,
+        span: crate::diag::Span,
+    ) -> Option<Expr> {
+        let v = self.lower_scalar_env(arg, env);
+        let elem = self
+            .expr_types
+            .get(&span)
+            .and_then(|ty| match ty {
+                crate::types::Ty::Array { elem, .. } => Some((**elem).clone()),
+                _ => None,
+            })
+            .unwrap_or(crate::types::Ty::Error);
+        let target_type = Some(crate::types::Ty::Array {
+            elem: Box::new(elem),
+            family: Some(target.to_string()),
+            len: target_width,
+            low: left.min(right),
+        });
+        let target_layout = Some(SourceLayout {
+            span,
+            kind: LayoutKind::Packed {
+                width: target_width,
+                family: target.to_string(),
+                range: Some(LayoutRange { left, right }),
+                element_enum: self.array_element_enum(target),
+            },
+        });
+        let mut source_values = self.source_values.borrow_mut();
+        let operand = source_values.append(&v, span, None);
+        let final_kind = if source_signed && target_width > source_width {
+            let resized = source_values.push_node(
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(target_width),
+                    kind: ProcessValueKind::RawResize { operand },
+                },
+                None,
+            );
+            let sign = source_values.push_node(
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(target_width),
+                    kind: ProcessValueKind::Number(ProcessNumber::Integer(
+                        super::source_processes::single_bit_words(source_width - 1),
+                    )),
+                },
+                None,
+            );
+            let flipped = source_values.push_node(
+                ProcessValue {
+                    span,
+                    ty: None,
+                    bit_width: Some(target_width),
+                    kind: ProcessValueKind::Binary {
+                        operation: ProcessBinaryOp::Xor,
+                        left: resized,
+                        right: sign,
+                    },
+                },
+                None,
+            );
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Sub,
+                left: flipped,
+                right: sign,
+            }
+        } else {
+            ProcessValueKind::RawResize { operand }
+        };
+        let final_id = source_values.push_node(
+            ProcessValue {
+                span,
+                ty: target_type,
+                bit_width: Some(target_width),
+                kind: final_kind,
+            },
+            target_layout,
+        );
+        Some(source_values.reference(final_id))
     }
 
     /// Inline `f` with `Self'left`/`'right`/`'high`/`'low`/`'length`
@@ -658,9 +784,11 @@ impl<'a> Lowering<'a> {
             // Bailing here leaves an `Unknown` in the middle of a driver, so
             // record it — otherwise lowering "succeeds" and the design only
             // fails much later with a generic engine message.
-            self.depth_exceeded
-                .borrow_mut()
-                .push((display_name, ast::expr_span(callee)));
+            if self.depth_exceeded.borrow().is_empty() {
+                self.depth_exceeded
+                    .borrow_mut()
+                    .push((display_name, ast::expr_span(callee)));
+            }
             return None;
         }
         self.inline_depth.set(self.inline_depth.get() + 1);
@@ -829,10 +957,10 @@ impl<'a> Lowering<'a> {
             &self.structs,
             &self.const_ranges,
         );
-        if w == 0 || w >= 64 {
+        if w == 0 || w == 64 {
             return v;
         }
-        self.source_binary(BinOp::And, &v, &Expr::Const((1u64 << w) - 1), span)
+        self.source_slice(&v, w - 1, 0, span)
     }
 
     /// Find a method `name` on type `ty`: an inherent-impl method
@@ -944,10 +1072,19 @@ impl<'a> Lowering<'a> {
         });
         let f = self.find_method(&ty, &field.text, input.as_deref())?;
         f.body.as_ref()?;
-        if self.inline_depth.get() > 16 {
-            self.depth_exceeded
-                .borrow_mut()
-                .push((format!("{ty}.{}", field.text), ast::expr_span(callee)));
+        let is_op_method = self
+            .op_impls
+            .iter()
+            .filter(|(_, owner, _)| *owner == ty)
+            .flat_map(|(_, _, fns)| fns.iter())
+            .any(|(op_fn, _)| std::ptr::eq(*op_fn, f));
+        let max_depth = if is_op_method { 20 } else { 16 };
+        if self.inline_depth.get() > max_depth {
+            if self.depth_exceeded.borrow().is_empty() {
+                self.depth_exceeded
+                    .borrow_mut()
+                    .push((format!("{ty}.{}", field.text), ast::expr_span(callee)));
+            }
             return None;
         }
         self.inline_depth.set(self.inline_depth.get() + 1);
@@ -1262,7 +1399,7 @@ impl<'a> Lowering<'a> {
                             &self.const_ranges,
                         );
                         let v = self.lower_scalar_env(args.first()?, env);
-                        return Some(if w > 0 && w < 64 {
+                        return Some(if w > 0 && w != 64 {
                             self.source_slice(&v, w - 1, 0, ast::expr_span(callee))
                         } else {
                             v
@@ -1302,9 +1439,16 @@ impl<'a> Lowering<'a> {
                     .as_deref()
                     .is_some_and(|h| self.array_families.contains(h)) =>
             {
-                let w = match self.lower_scalar_env(index, env) {
-                    Expr::Const(c) => c as u32,
-                    _ => self.eval_const(index, &self.cur_env)? as u32,
+                let w = match index.as_ref() {
+                    ast::Expr::Range { lo, hi, .. } => {
+                        let lo = self.eval_const(lo, &self.cur_env)?;
+                        let hi = self.eval_const(hi, &self.cur_env)?;
+                        u32::try_from(lo.abs_diff(hi) + 1).ok()?
+                    }
+                    _ => match self.lower_scalar_env(index, env) {
+                        Expr::Const(c) => c as u32,
+                        _ => self.eval_const(index, &self.cur_env)? as u32,
+                    },
                 };
                 (Some(w), false)
             }
@@ -1363,11 +1507,11 @@ impl<'a> Lowering<'a> {
         // width (16 bits for `sfixed<16, 8>`), a later signed step misread
         // its top bit.
         let packed_operand = target_w.is_none()
-            && self
-                .operand_type_name(arg)
-                .is_some_and(|family| self.array_families.contains(&family));
+            && self.operand_type_name(arg).is_some_and(|family| {
+                self.array_families.contains(&family) || self.enum_variants.contains_key(&family)
+            });
         Some(match target_w {
-            Some(w) if w > 0 && w < 64 => self.source_slice(&v, w - 1, 0, ast::expr_span(callee)),
+            Some(w) if w > 0 && w != 64 => self.source_slice(&v, w - 1, 0, ast::expr_span(callee)),
             None if packed_operand => self.source_slice(&v, 63, 0, ast::expr_span(callee)),
             _ => v,
         })
@@ -1539,7 +1683,7 @@ impl<'a> Lowering<'a> {
             // at all and no operator impl could be found for it: `v[7] xor
             // v[5]` did not lower, while `v[7] and v[5]` did, because `and`
             // is a built-in with its own lowering and needs no impl.
-            ast::Expr::Index { base, .. } => {
+            ast::Expr::Index { base, index, .. } => {
                 if let Some(name) = expr_path(e) {
                     if let Some(found) = self
                         .local_enum
@@ -1551,6 +1695,13 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 let family = self.operand_type_name(base)?;
+                if matches!(
+                    index.as_ref(),
+                    ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                ) && self.array_families.contains(&family)
+                {
+                    return Some(family);
+                }
                 self.array_element_enum(&family)
             }
             _ => {
@@ -1580,11 +1731,35 @@ impl<'a> Lowering<'a> {
                 ast::Stmt::Let(l) => {
                     let value = l.value.as_ref()?;
                     self.register_local_type(l, value);
-                    let lowered = self.bind_source_value(
-                        self.lower_val_env(value, env),
+                    let layout =
+                        l.ty.as_ref()
+                            .map(|ty| self.source_layout(ty, &self.attribute_env(env)))
+                            .filter(|layout| layout.bit_width().is_some())
+                            .or_else(|| self.source_operand_layout(value, env));
+                    let literal = matches!(
+                        value,
+                        ast::Expr::StrLit { .. } | ast::Expr::BitStrLit { .. }
+                    );
+                    let value_ir = match &layout {
+                        Some(layout)
+                            if matches!(
+                                layout.kind,
+                                LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+                            ) || literal && matches!(layout.kind, LayoutKind::Packed { .. }) =>
+                        {
+                            self.lower_shaped_source(value, env, layout)
+                        }
+                        _ => self.lower_val_env(value, env),
+                    };
+                    let mut lowered = self.bind_source_value(
+                        value_ir,
                         l.span,
                         self.expr_types.get(&ast::expr_span(value)).cloned(),
                     );
+                    self.source_inline_local(&l.name.text, l.span, layout.clone(), &mut lowered);
+                    if let Some(layout) = layout {
+                        self.bind_source_shape(l.name.text.clone(), layout);
+                    }
                     env.insert(l.name.text.clone(), lowered);
                 }
                 ast::Stmt::Assign {
@@ -1600,15 +1775,95 @@ impl<'a> Lowering<'a> {
                     if !env.contains_key(name) {
                         return None;
                     }
-                    let lowered = self.bind_source_value(
-                        self.lower_val_env(value, env),
+                    let layout = self.source_bound_layout(name);
+                    let literal = matches!(
+                        value,
+                        ast::Expr::StrLit { .. } | ast::Expr::BitStrLit { .. }
+                    );
+                    let value_ir = match &layout {
+                        Some(layout)
+                            if matches!(
+                                layout.kind,
+                                LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+                            ) || literal && matches!(layout.kind, LayoutKind::Packed { .. }) =>
+                        {
+                            self.lower_shaped_source(value, env, layout)
+                        }
+                        _ => self.lower_val_env(value, env),
+                    };
+                    let mut lowered = self.bind_source_value(
+                        value_ir,
                         *span,
                         self.expr_types.get(&ast::expr_span(value)).cloned(),
                     );
+                    self.source_inline_local(name, *span, layout, &mut lowered);
                     env.insert(name.clone(), lowered);
                 }
-                // `r[k] = v` with a constant `k` on a packed local: the vector
-                // with that one bit replaced.
+                ast::Stmt::Assign {
+                    target: target @ ast::Expr::Field { .. },
+                    value,
+                    after: None,
+                    span,
+                    ..
+                } => {
+                    let path = expr_path(target)?;
+                    let (root, suffix) = path.split_once('.')?;
+                    let Some(Val::Fields(mut fields)) = env.get(root).cloned() else {
+                        return None;
+                    };
+                    let field_layout = self.source_operand_layout(target, env);
+                    let literal = matches!(
+                        value,
+                        ast::Expr::StrLit { .. } | ast::Expr::BitStrLit { .. }
+                    );
+                    let lowered_val = match &field_layout {
+                        Some(layout)
+                            if matches!(
+                                layout.kind,
+                                LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+                            ) || literal && matches!(layout.kind, LayoutKind::Packed { .. }) =>
+                        {
+                            self.lower_shaped_source(value, env, layout)
+                        }
+                        _ => self.lower_val_env(value, env),
+                    };
+                    let mut lowered = self.bind_source_value(
+                        lowered_val,
+                        *span,
+                        self.expr_types.get(&ast::expr_span(value)).cloned(),
+                    );
+                    if let Some(layout) = field_layout {
+                        if let Val::Scalar(scalar) = &mut lowered {
+                            if let Some(width) = layout
+                                .packed_width()
+                                .filter(|&w| w > 0 && w != 64 && !literal)
+                            {
+                                *scalar = self.source_slice(scalar, width - 1, 0, *span);
+                            }
+                        }
+                        lowered = self.bind_value_layout(lowered, layout, *span);
+                    }
+                    match lowered {
+                        Val::Scalar(scalar) => {
+                            let (_, slot) = fields.iter_mut().find(|(k, _)| k == suffix)?;
+                            *slot = scalar;
+                        }
+                        Val::Fields(subfields) => {
+                            for (subk, subv) in subfields {
+                                let key = if subk.starts_with('[') {
+                                    format!("{suffix}{subk}")
+                                } else {
+                                    format!("{suffix}.{subk}")
+                                };
+                                let (_, slot) = fields.iter_mut().find(|(k, _)| *k == key)?;
+                                *slot = subv;
+                            }
+                        }
+                    }
+                    env.insert(root.to_owned(), Val::Fields(fields));
+                }
+                // `r[k] = v` or `r[hi..lo] = v` with constant bounds on a packed
+                // local or struct field: the vector with those bits replaced.
                 ast::Stmt::Assign {
                     target: ast::Expr::Index { base, index, .. },
                     value,
@@ -1616,24 +1871,71 @@ impl<'a> Lowering<'a> {
                     span,
                     ..
                 } => {
-                    let ast::Expr::Path(path) = base.as_ref() else {
-                        return None;
+                    let base_path = expr_path(base)?;
+                    let (name, suffix) = match base_path.split_once('.') {
+                        Some((root, suffix)) => (root, Some(suffix)),
+                        None => (base_path.as_str(), None),
                     };
-                    let [segment] = path.segments.as_slice() else {
-                        return None;
-                    };
-                    let name = &segment.text;
-                    let layout = self.source_bound_layout(name)?;
-                    if let Some(Val::Fields(fields)) = env.get(name).cloned() {
-                        let updated = self.write_elements(fields, &layout, index, value, env)?;
-                        env.insert(name.clone(), Val::Fields(updated));
-                        continue;
+                    if suffix.is_none() {
+                        if let Some(Val::Fields(fields)) = env.get(name).cloned() {
+                            let layout = self.source_bound_layout(name)?;
+                            let updated =
+                                self.write_elements(fields, &layout, index, value, env)?;
+                            env.insert(name.to_owned(), Val::Fields(updated));
+                            continue;
+                        }
                     }
-                    let Some(Val::Scalar(current)) = env.get(name).cloned() else {
-                        return None;
+                    let (current, layout) = match suffix {
+                        None => {
+                            let Some(Val::Scalar(current)) = env.get(name).cloned() else {
+                                return None;
+                            };
+                            (current, self.source_bound_layout(name)?)
+                        }
+                        Some(suffix) => {
+                            let Some(Val::Fields(fields)) = env.get(name) else {
+                                return None;
+                            };
+                            let (_, current) = fields.iter().find(|(k, _)| k == suffix)?;
+                            (current.clone(), self.source_operand_layout(base, env)?)
+                        }
                     };
                     if !matches!(layout.kind, LayoutKind::Packed { .. }) {
                         return None;
+                    }
+                    let store_packed = |env: &mut HashMap<String, Val>,
+                                        merged: Expr|
+                     -> Option<()> {
+                        match suffix {
+                            None => {
+                                env.insert(name.to_owned(), Val::Scalar(merged));
+                            }
+                            Some(suffix) => {
+                                let Some(Val::Fields(mut fields)) = env.get(name).cloned() else {
+                                    return None;
+                                };
+                                let (_, slot) = fields.iter_mut().find(|(k, _)| k == suffix)?;
+                                *slot = merged;
+                                env.insert(name.to_owned(), Val::Fields(fields));
+                            }
+                        }
+                        Some(())
+                    };
+                    if let Some((left, right)) =
+                        self.source_packed_slice_bounds(&layout, index, env)
+                    {
+                        let replacement = self.lower_scalar_env(value, env);
+                        let merged = self.merge_slice(
+                            current,
+                            left.max(right),
+                            left.min(right),
+                            replacement,
+                            layout.packed_width()?,
+                            *span,
+                        );
+                        let merged = self.bind_source_expression(merged, *span);
+                        store_packed(env, merged)?;
+                        continue;
                     }
                     let bit = self.constant_packed_index(&layout, index, env)?;
                     // The element holds whatever value is written, `'X'` as
@@ -1690,7 +1992,137 @@ impl<'a> Lowering<'a> {
                             },
                         );
                     }
-                    env.insert(name.clone(), Val::Scalar(merged));
+                    store_packed(env, merged)?;
+                }
+                ast::Stmt::Expr(ast::Expr::Call { callee, args, .. }) => {
+                    let ast::Expr::Field { base, field, .. } = callee.as_ref() else {
+                        return None;
+                    };
+                    let ast::Expr::Path(path) = base.as_ref() else {
+                        return None;
+                    };
+                    let [segment] = path.segments.as_slice() else {
+                        return None;
+                    };
+                    let recv_name = &segment.text;
+                    let recv_val = env.get(recv_name)?.clone();
+                    let recv_layout = self.source_operand_layout(base, env);
+                    let ty = self
+                        .operand_type_name(base)
+                        .or_else(|| recv_layout.as_ref().and_then(Self::source_layout_family))?;
+                    let input = args.first().and_then(|arg| match arg {
+                        ast::Expr::Construct { ty: Some(ty), .. }
+                            if type_head_name(ty) == Some("Range") =>
+                        {
+                            Some("Range".to_string())
+                        }
+                        ast::Expr::StrLit { .. }
+                        | ast::Expr::BitStrLit { .. }
+                        | ast::Expr::CharLit { .. } => None,
+                        _ => self.operand_type_name(arg),
+                    });
+                    let f = self.find_method(&ty, &field.text, input.as_deref())?;
+                    let body = f.body.as_ref()?;
+                    let mut fenv: HashMap<String, Val> = HashMap::new();
+                    let mut shapes = HashMap::new();
+                    if let Some(layout) = recv_layout {
+                        shapes.insert("self".to_owned(), layout);
+                    }
+                    fenv.insert(
+                        "self".to_string(),
+                        self.bind_source_value(recv_val, ast::expr_span(base), None),
+                    );
+                    fenv.insert(
+                        "self::length".to_string(),
+                        Val::Scalar(Expr::Const(self.ast_width(base) as u64)),
+                    );
+                    self.bind_range_attrs(&mut fenv, "self", base, env);
+                    let mut saved: Vec<(String, Option<String>)> = Vec::new();
+                    let mut saved_widths: Vec<(String, Option<u32>)> = Vec::new();
+                    let mut added_integers: Vec<String> = Vec::new();
+                    let self_prev = self
+                        .param_types
+                        .borrow_mut()
+                        .insert("self".to_string(), ty.clone());
+                    saved.push(("self".to_string(), self_prev));
+                    let receiver_width = self.ast_width(base);
+                    for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
+                        if let Some(n) = &p.name {
+                            let a = &self.as_struct_literal(p.ty.as_ref(), a);
+                            let (argument, layout) =
+                                self.lower_source_argument(a, p.ty.as_ref(), env);
+                            if let Some(layout) = layout {
+                                shapes.insert(n.text.clone(), layout);
+                            }
+                            fenv.insert(
+                                n.text.clone(),
+                                self.bind_source_value(argument, ast::expr_span(a), None),
+                            );
+                            let w = self.literal_aware_width(a, receiver_width);
+                            fenv.insert(
+                                format!("{}::length", n.text),
+                                Val::Scalar(Expr::Const(w as u64)),
+                            );
+                            self.bind_range_attrs(&mut fenv, &n.text, a, env);
+                            let declared = p.ty.as_ref().and_then(type_head_name).map(|head| {
+                                if head == "Self" {
+                                    ty.clone()
+                                } else {
+                                    head.to_owned()
+                                }
+                            });
+                            if let Some(mut fam) = self.operand_type_name(a).or(declared) {
+                                if fam == "integer"
+                                    && p.ty.as_ref().and_then(type_head_name) != Some("integer")
+                                {
+                                    fam = ty.clone();
+                                }
+                                let prev =
+                                    self.param_types.borrow_mut().insert(n.text.clone(), fam);
+                                saved.push((n.text.clone(), prev));
+                            }
+                            if p.ty.as_ref().and_then(type_head_name) == Some("integer")
+                                && self.param_integers.borrow_mut().insert(n.text.clone())
+                            {
+                                added_integers.push(n.text.clone());
+                            }
+                            if w > 0 {
+                                saved_widths.push((
+                                    n.text.clone(),
+                                    self.param_widths.borrow_mut().insert(n.text.clone(), w),
+                                ));
+                            }
+                        }
+                    }
+                    if receiver_width > 0 {
+                        saved_widths.push((
+                            "self".to_string(),
+                            self.param_widths
+                                .borrow_mut()
+                                .insert("self".to_string(), receiver_width),
+                        ));
+                    }
+                    let _shapes = self.source_shape_scope(shapes, None);
+                    let mark = self.local_type_saves.borrow().len();
+                    let result = self.inline_effects(&body.stmts, &mut fenv);
+                    self.restore_local_types(mark);
+                    for (name, prev) in saved.into_iter().rev() {
+                        match prev {
+                            Some(v) => self.param_types.borrow_mut().insert(name, v),
+                            None => self.param_types.borrow_mut().remove(&name),
+                        };
+                    }
+                    for (name, prev) in saved_widths.into_iter().rev() {
+                        match prev {
+                            Some(w) => self.param_widths.borrow_mut().insert(name, w),
+                            None => self.param_widths.borrow_mut().remove(&name),
+                        };
+                    }
+                    for name in added_integers {
+                        self.param_integers.borrow_mut().remove(&name);
+                    }
+                    result?;
+                    env.insert(recv_name.clone(), fenv.remove("self")?);
                 }
                 ast::Stmt::For {
                     var,
@@ -2124,8 +2556,9 @@ impl<'a> Lowering<'a> {
                     unrolled.extend(rest.iter().cloned());
                     return self.inline_block_body(&unrolled, scoped.as_ref());
                 }
-                [statement @ (ast::Stmt::Assign { after: None, .. } | ast::Stmt::For { .. }), rest @ ..] =>
-                {
+                [statement @ (ast::Stmt::Assign { after: None, .. }
+                | ast::Stmt::For { .. }
+                | ast::Stmt::Expr(ast::Expr::Call { .. })), rest @ ..] => {
                     self.inline_effects(std::slice::from_ref(statement), scoped.to_mut())?;
                     stmts = rest;
                 }
@@ -2139,12 +2572,13 @@ impl<'a> Lowering<'a> {
         let env = scoped.as_ref();
         match stmts {
             [ast::Stmt::Return { value: Some(v), .. }, ..] => {
+                let literal = matches!(v, ast::Expr::StrLit { .. } | ast::Expr::BitStrLit { .. });
                 let value = match self.source_return_layout() {
                     Some(layout)
                         if matches!(
                             layout.kind,
                             LayoutKind::Array { .. } | LayoutKind::Struct { .. }
-                        ) =>
+                        ) || literal && matches!(layout.kind, LayoutKind::Packed { .. }) =>
                     {
                         self.lower_shaped_source(v, env, &layout)
                     }
