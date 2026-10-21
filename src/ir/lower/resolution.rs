@@ -542,21 +542,51 @@ impl<'a> Lowering<'a> {
         let layout = layout
             .cloned()
             .or_else(|| self.named_source_layout(ty, span));
-        let parameters = env
+        let parameters: HashMap<String, SourceLayout> = env
             .keys()
             .filter_map(|name| Some((name.clone(), layout.clone()?)))
             .collect();
+        let width = layout.as_ref().and_then(SourceLayout::packed_width);
+        let mut saved_types = Vec::new();
+        let mut saved_widths = Vec::new();
+        for name in env.keys() {
+            saved_types.push((
+                name.clone(),
+                self.param_types
+                    .borrow_mut()
+                    .insert(name.clone(), ty.to_string()),
+            ));
+            if let Some(w) = width.filter(|&w| w > 0) {
+                saved_widths.push((
+                    name.clone(),
+                    self.param_widths.borrow_mut().insert(name.clone(), w),
+                ));
+            }
+        }
         let inspection = super::source_bindings::SourceCallInspection {
             result: self.source_function_return_layout(f, &parameters),
-            parameters,
+            parameters: parameters.clone(),
         };
         let _shapes = self.source_shape_scope(
-            HashMap::new(),
+            parameters,
             f.ret
                 .as_ref()
                 .map(|ty| self.source_layout(ty, &self.cur_env)),
         );
-        match self.inline_source_function(f, span, &mut env, Some(&inspection))? {
+        let out = self.inline_source_function(f, span, &mut env, Some(&inspection));
+        for (name, prev) in saved_types.into_iter().rev() {
+            match prev {
+                Some(v) => self.param_types.borrow_mut().insert(name, v),
+                None => self.param_types.borrow_mut().remove(&name),
+            };
+        }
+        for (name, prev) in saved_widths.into_iter().rev() {
+            match prev {
+                Some(w) => self.param_widths.borrow_mut().insert(name, w),
+                None => self.param_widths.borrow_mut().remove(&name),
+            };
+        }
+        match out? {
             Val::Scalar(e) => Some(e),
             _ => None,
         }
