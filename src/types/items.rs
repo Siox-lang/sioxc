@@ -292,6 +292,46 @@ impl<'a> Checker<'a> {
 
     /// Reject a type whose layout cannot be computed, such as an unconstrained
     /// array in a position that needs a width.
+    /// A trait is implemented for a named type, a vector family
+    /// (`unsigned`, even written `unsigned[8]`), or every array (`impl<T> ..
+    /// for T[]`). A tuple or one concrete array (`(unsigned[8], unsigned[8])`,
+    /// `integer[2]`) has no key to hold the impl: the tuple's registered
+    /// nowhere and the array's as one for all of `integer`, so its operator
+    /// was rejected at the use (#150, #162). Say so at the impl.
+    fn check_trait_impl_target(&mut self, implementation: &ImplDecl) {
+        let target = &implementation.target;
+        let supported = match target {
+            Type::Tuple { .. } => false,
+            Type::Indexed { base, .. } => {
+                let generic = type_head_name(base).is_some_and(|name| {
+                    implementation
+                        .params
+                        .params
+                        .iter()
+                        .any(|param| param.name.text == name)
+                });
+                generic
+                    || self
+                        .type_key(base)
+                        .is_some_and(|key| self.array_families.contains(&key))
+            }
+            _ => true,
+        };
+        if supported {
+            return;
+        }
+        let written = crate::syntax::pretty::type_str(target);
+        self.error_with_help(
+            codes::TYPE_MISMATCH,
+            type_span(target),
+            format!("a trait cannot be implemented for `{written}`"),
+            format!(
+                "implement it for a named type: wrap the value in a struct \
+                 (`struct Pair {{ pub v: {written} }}`) and implement the trait for that"
+            ),
+        );
+    }
+
     pub(super) fn check_type_layout(&mut self, ty: &Type) {
         match ty {
             Type::Path(_) => {}
@@ -425,6 +465,9 @@ impl<'a> Checker<'a> {
             Item::Impl(implementation) => {
                 self.check_param_type_layouts(&implementation.params);
                 self.check_type_layout(&implementation.target);
+                if implementation.trait_.is_some() {
+                    self.check_trait_impl_target(implementation);
+                }
                 for item in &implementation.items {
                     match item {
                         ImplItem::Const(constant) => self.check_type_layout(&constant.ty),

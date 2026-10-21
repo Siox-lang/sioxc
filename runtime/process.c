@@ -482,6 +482,76 @@ uint64_t sx_runtime_array_copy(uint64_t handle, uint64_t depth) {
     return copy;
 }
 
+/* One Unicode scalar as UTF-8 at `out`; the bytes written. */
+static size_t sx_utf8_put(char *out, uint32_t scalar) {
+    if (scalar < 0x80) {
+        out[0] = (char)scalar;
+        return 1;
+    }
+    if (scalar < 0x800) {
+        out[0] = (char)(0xC0 | scalar >> 6);
+        out[1] = (char)(0x80 | (scalar & 0x3F));
+        return 2;
+    }
+    if (scalar < 0x10000) {
+        out[0] = (char)(0xE0 | scalar >> 12);
+        out[1] = (char)(0x80 | (scalar >> 6 & 0x3F));
+        out[2] = (char)(0x80 | (scalar & 0x3F));
+        return 3;
+    }
+    out[0] = (char)(0xF0 | scalar >> 18);
+    out[1] = (char)(0x80 | (scalar >> 12 & 0x3F));
+    out[2] = (char)(0x80 | (scalar >> 6 & 0x3F));
+    out[3] = (char)(0x80 | (scalar & 0x3F));
+    return 4;
+}
+
+/* `xs[left..right]` of a runtime string or array, as a new one: inclusive
+ * labels from 0, a descending range reversed, as a fixed array's slice is.
+ * ponytail: like a copy, a slice is never freed. */
+uint64_t sx_runtime_array_slice(uint64_t handle, uint64_t left, uint64_t right) {
+    sx_runtime_string *string = sx_runtime_array_for(handle);
+    if (!string) return 0;
+    uint64_t high = left > right ? left : right;
+    if (high >= string->length) {
+        sx_set_error("slice %llu..%llu is outside declared range 0..%lld",
+                     (unsigned long long)left, (unsigned long long)right,
+                     (long long)string->length - 1);
+        return 0;
+    }
+    size_t count = (size_t)(left > right ? left - right : right - left) + 1;
+    if (string->elements) {
+        size_t words = string->element_words;
+        uint64_t *elements = malloc(count * words * sizeof(uint64_t));
+        if (!elements) {
+            sx_set_error("runtime array slice: out of memory");
+            return 0;
+        }
+        for (size_t k = 0; k < count; ++k) {
+            uint64_t from = left <= right ? left + k : left - k;
+            memcpy(elements + k * words, string->elements + from * words,
+                   words * sizeof(uint64_t));
+        }
+        uint64_t made = sx_runtime_array_add(elements, count, words);
+        if (!made) sx_set_error("runtime array slice: out of memory");
+        return made;
+    }
+    char *bytes = malloc(count * 4 + 1);
+    uint32_t *values = calloc(count, sizeof(uint32_t));
+    if (!bytes || !values) {
+        free(bytes);
+        free(values);
+        sx_set_error("runtime string slice: out of memory");
+        return 0;
+    }
+    size_t length = 0;
+    for (size_t k = 0; k < count; ++k) {
+        uint64_t from = left <= right ? left + k : left - k;
+        length += sx_utf8_put(bytes + length, string->values[from]);
+    }
+    return sx_runtime_string_register(bytes, values, length, "<string>");
+}
+
 /* A runtime array from a fixed array's packed bits: `count` elements of
  * `width` bits each, element 0 in the lowest bits. */
 uint64_t sx_runtime_array_from(const uint64_t *words, uint64_t count,

@@ -291,6 +291,7 @@ pub(super) fn emit_source_locations<'ctx>(
                         | ProcessHostValueOp::ReadArray
                         | ProcessHostValueOp::ArrayStore
                         | ProcessHostValueOp::ArrayCopy
+                        | ProcessHostValueOp::ArraySlice
                         | ProcessHostValueOp::ArrayPush
                         | ProcessHostValueOp::ReadSymbols
                         | ProcessHostValueOp::ArrayFrom

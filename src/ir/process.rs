@@ -527,6 +527,9 @@ pub enum ProcessHostValueOp {
     /// Append one element to a runtime array (the handle, the value); the
     /// result is the array's handle, a new one when it was empty (zero).
     ArrayPush,
+    /// `xs[left..right]` of a runtime string or array, as a new one: the
+    /// handle and the inclusive bounds; a descending range reverses.
+    ArraySlice,
 }
 
 /// One normalized piece of a runtime message.
@@ -2019,7 +2022,9 @@ impl ProcessIr {
                         | ProcessHostValueOp::ReadSymbols
                         | ProcessHostValueOp::ArrayPush
                         | ProcessHostValueOp::ArrayCopy => 2,
-                        ProcessHostValueOp::ArrayStore | ProcessHostValueOp::ArrayFrom => 3,
+                        ProcessHostValueOp::ArrayStore
+                        | ProcessHostValueOp::ArrayFrom
+                        | ProcessHostValueOp::ArraySlice => 3,
                     } =>
                 {
                     issues.push(format!(

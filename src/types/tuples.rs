@@ -83,14 +83,12 @@ pub fn tuple_struct_name(arity: usize) -> String {
     format!("({})", ",".repeat(arity.saturating_sub(1)))
 }
 
-/// The element count of a tuple struct named by [`tuple_struct_name`].
+/// The element count of a tuple struct named by [`tuple_struct_name`]. A
+/// 1-tuple (`(integer,)`) is `()`; it used to be excluded, so its values had
+/// no layout and a process using one did not lower (#155).
 pub fn tuple_struct_arity(name: &str) -> Option<usize> {
     let commas = name.strip_prefix('(')?.strip_suffix(')')?;
-    commas
-        .chars()
-        .all(|c| c == ',')
-        .then(|| commas.len() + 1)
-        .filter(|arity| *arity >= 2)
+    commas.chars().all(|c| c == ',').then(|| commas.len() + 1)
 }
 
 struct Lower<'t> {
@@ -523,7 +521,7 @@ mod tests {
         assert_eq!(tuple_struct_name(3), "(,,)");
         assert_eq!(tuple_struct_arity("(,,)"), Some(3));
         assert_eq!(tuple_struct_arity("(,)"), Some(2));
-        assert_eq!(tuple_struct_arity("()"), None);
+        assert_eq!(tuple_struct_arity("()"), Some(1));
         assert_eq!(tuple_struct_arity("Pair"), None);
     }
 }

@@ -7437,6 +7437,7 @@ fn lower_process_host_call(
         | ProcessHostValueOp::FrameRestore
         | ProcessHostValueOp::ArrayStore
         | ProcessHostValueOp::ArrayCopy
+        | ProcessHostValueOp::ArraySlice
         | ProcessHostValueOp::ArrayPush
         | ProcessHostValueOp::ReadSymbols
         | ProcessHostValueOp::ArrayFrom
@@ -7870,6 +7871,7 @@ fn runtime_array_copy(
             operation: ProcessHostValueOp::ReadArray
                 | ProcessHostValueOp::ReadSymbols
                 | ProcessHostValueOp::ArrayCopy
+                | ProcessHostValueOp::ArraySlice
                 | ProcessHostValueOp::ArrayFrom,
             ..
         }
@@ -7988,6 +7990,7 @@ fn process_value_is_runtime_string(
                 ProcessHostValueOp::ReadUtf8
                 | ProcessHostValueOp::ReadArray
                 | ProcessHostValueOp::ArrayCopy
+                | ProcessHostValueOp::ArraySlice
                 | ProcessHostValueOp::ArrayPush
                 | ProcessHostValueOp::ReadSymbols
                 | ProcessHostValueOp::ArrayFrom
@@ -8090,6 +8093,7 @@ fn inline_process_call(
         return None;
     };
     let first_value = context.process_ir.values.len();
+    let mut args = args.as_slice();
     let (function, receiver) = match callee.as_ref() {
         ast::Expr::Field { base, field, .. } => {
             let receiver = value_ref(base, process, context);
@@ -8101,6 +8105,32 @@ fn inline_process_call(
                 .and_then(|ty| process_type_key(ty, context))?;
             (
                 context.functions.get_associated(&owner, &field.text)?,
+                Some(receiver),
+            )
+        }
+        // `Trait::method(s)` is `s.method()`: the impl is the receiver
+        // type's. Looked up as a plain path it named the trait's declaration
+        // and the call did not lower (#159).
+        ast::Expr::Path(path)
+            if path.segments.len() >= 2
+                && !args.is_empty()
+                && context
+                    .resolved
+                    .resolved(path.segments[path.segments.len() - 2].span)
+                    .and_then(|id| context.resolved.kind_of(id))
+                    == Some(crate::resolve::DefKind::Trait) =>
+        {
+            let receiver = value_ref(&args[0], process, context);
+            let owner = context
+                .process_ir
+                .values
+                .get(receiver.0 as usize)
+                .and_then(|value| value.ty.as_ref())
+                .and_then(|ty| process_type_key(ty, context))?;
+            let method = &path.segments[path.segments.len() - 1].text;
+            args = &args[1..];
+            (
+                context.functions.get_associated(&owner, method)?,
                 Some(receiver),
             )
         }
@@ -10373,14 +10403,18 @@ fn value_ref_with_type_inner(
         }
         // A slice of an element-wise array (`a[0..3]` into a `Bit[4]`): its
         // elements as written, a concatenation of one. It did not lower.
-        ast::Expr::Index { index, .. }
+        ast::Expr::Index { base, index, .. }
+            // Sized only, the array and its slice: a runtime `T[]` is sliced
+            // below, at run time.
             if matches!(
                 index.as_ref(),
                 ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
             ) && matches!(
                 ty.as_ref(),
-                Some(crate::types::Ty::Array { family: None, elem, .. })
-                    if matches!(elem.as_ref(), crate::types::Ty::Named(_))
+                Some(crate::types::Ty::Array { family: None, len, .. }) if *len > 0
+            ) && matches!(
+                context.typed.expr_type(ast::expr_span(base)),
+                Some(crate::types::Ty::Array { len, .. }) if *len > 0
             ) =>
         {
             match element_array_concat(
@@ -10439,6 +10473,78 @@ fn value_ref_with_type_inner(
                     }
                 }
                 if process_value_is_runtime_string(base, process, context) {
+                    // `s[1..3]`: a new string (or array) of those elements.
+                    // As an index, the range had no native form (#160).
+                    let bounds = match index.as_ref() {
+                        ast::Expr::Range { lo, hi, .. } => Some((Some(&**lo), Some(&**hi))),
+                        ast::Expr::PartialRange { lo, hi, .. } => {
+                            Some((lo.as_deref(), hi.as_deref()))
+                        }
+                        _ => None,
+                    };
+                    if let Some((lo, hi)) = bounds {
+                        let integer = Some(crate::types::Ty::Integer);
+                        let mut bound = |bound: Option<&ast::Expr>, last: bool| match bound {
+                            Some(bound) => {
+                                value_ref_with_type(bound, process, context, integer.as_ref())
+                            }
+                            None if !last => push_value(
+                                span,
+                                integer.clone(),
+                                Some(64),
+                                ProcessValueKind::Number(ProcessNumber::Integer(vec![0])),
+                                context,
+                            ),
+                            None => {
+                                let length = push_value(
+                                    span,
+                                    integer.clone(),
+                                    Some(64),
+                                    ProcessValueKind::HostCall {
+                                        operation: ProcessHostValueOp::StringLength,
+                                        arguments: vec![base],
+                                    },
+                                    context,
+                                );
+                                let one = push_value(
+                                    span,
+                                    integer.clone(),
+                                    Some(64),
+                                    ProcessValueKind::Number(ProcessNumber::Integer(vec![1])),
+                                    context,
+                                );
+                                push_value(
+                                    span,
+                                    integer.clone(),
+                                    Some(64),
+                                    ProcessValueKind::Binary {
+                                        operation: ProcessBinaryOp::Sub,
+                                        left: length,
+                                        right: one,
+                                    },
+                                    context,
+                                )
+                            }
+                        };
+                        let left = bound(lo, false);
+                        let right = bound(hi, true);
+                        // A handle, typed as the runtime array it came from:
+                        // the checked `Char[3]` of `r[1..3]` is not its form.
+                        let sliced = process_value_type(base, context).or_else(|| {
+                            ty.clone()
+                                .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                        });
+                        return push_value(
+                            span,
+                            sliced,
+                            Some(64),
+                            ProcessValueKind::HostCall {
+                                operation: ProcessHostValueOp::ArraySlice,
+                                arguments: vec![base, left, right],
+                            },
+                            context,
+                        );
+                    }
                     let index_span = ast::expr_span(index);
                     let index = value_ref_with_type(
                         index,
@@ -11084,12 +11190,13 @@ fn element_array_concat(
     else {
         return None;
     };
-    if !matches!(elem.as_ref(), crate::types::Ty::Named(_)) {
-        return None;
-    }
+    // Any element with a packed form: a nominal one (`Bit`), a kernel one
+    // (`integer[4]`, #158) or a vector (`unsigned[8][4]`).
     let element_layout = process_layout_for_type(elem, ast::expr_span(&parts[0]), context);
     let element_width = match element_layout.as_ref().map(|layout| &layout.kind) {
-        Some(LayoutKind::Scalar { width, .. }) => *width,
+        Some(LayoutKind::Scalar { .. } | LayoutKind::Packed { .. }) => {
+            element_layout.as_ref()?.packed_width()?
+        }
         _ => return None,
     };
     let range_of = |value: crate::ir::ProcessValueId, context: &mut LoweringContext<'_>| {

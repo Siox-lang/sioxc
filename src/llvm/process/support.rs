@@ -739,6 +739,9 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                     (ProcessHostValueOp::ArrayCopy, [handle, depth]) => {
                         scalar(*handle) && scalar(*depth)
                     }
+                    (ProcessHostValueOp::ArraySlice, [handle, left, right]) => {
+                        scalar(*handle) && scalar(*left) && scalar(*right)
+                    }
                     (ProcessHostValueOp::ReadSymbols, [path, alphabet]) => {
                         process_string(design, *alphabet).is_some()
                             && (process_string(design, *path).is_some()
