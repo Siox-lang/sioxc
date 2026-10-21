@@ -409,6 +409,10 @@ impl<'a> Lowering<'a> {
                 let mut guarded = false;
                 let meta = match merge {
                     Some(merge) => Some(self.merged_meta(&merge, width, temps)),
+                    None if self.source_values.borrow().slice_merges.contains_key(value) => {
+                        let merge = self.source_values.borrow().slice_merges[value].clone();
+                        Some(self.slice_merged_meta(&merge, temps))
+                    }
                     None if self.source_values.borrow().disjoint_joins.contains(value) => {
                         match self.source_node(*value) {
                             Expr::Binary {
@@ -620,6 +624,45 @@ impl<'a> Lowering<'a> {
             }
             _ => None,
         }
+    }
+
+    /// The companion of a range write: the base's nibbles outside `lo..=hi`
+    /// and the value's inside, each plane taken bit for bit.
+    fn slice_merged_meta(
+        &self,
+        merge: &super::source_values::SliceMerge,
+        temps: &mut MetaTemps,
+    ) -> Expr {
+        let anchor = temps.anchor;
+        let slice_width = merge.hi - merge.lo + 1;
+        let base = self
+            .lower_meta_ir(&merge.base, merge.width, temps)
+            .unwrap_or(Expr::Const(0));
+        let value_width = self.meta_expr_width(&merge.value, slice_width);
+        let value = self
+            .lower_meta_ir(&merge.value, value_width, temps)
+            .unwrap_or(Expr::Const(0));
+        let nibbles = |from: u32, to: u32| {
+            let mut words = vec![0u64; (merge.width as usize * 4).div_ceil(64)];
+            for element in from..to {
+                words[element as usize / 16] |= 0xF << (4 * (element % 16));
+            }
+            words_const(words)
+        };
+        let mut keep = vec![0u64; (merge.width as usize * 4).div_ceil(64)];
+        for element in (0..merge.width).filter(|element| *element < merge.lo || *element > merge.hi)
+        {
+            keep[element as usize / 16] |= 0xF << (4 * (element % 16));
+        }
+        let kept = self.source_binary(BinOp::And, &base, &words_const(keep), anchor);
+        let written = self.source_binary(BinOp::And, &value, &nibbles(0, slice_width), anchor);
+        let placed = self.source_binary(
+            BinOp::Shl,
+            &written,
+            &Expr::Const(u64::from(merge.lo) * 4),
+            anchor,
+        );
+        self.source_binary(BinOp::Or, &kept, &placed, anchor)
     }
 
     /// The companion of an element write: the base's, with the element's
