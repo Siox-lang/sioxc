@@ -590,6 +590,15 @@ impl<'a> Lowering<'a> {
         if let Some(ty) = self.block_local_type(e) {
             return self.block_local_width(&ty);
         }
+        if matches!(e, ast::Expr::Field { .. } | ast::Expr::Index { .. }) {
+            if let Some(width) = self
+                .source_operand_layout(e, &HashMap::new())
+                .and_then(|layout| layout.bit_width())
+                .and_then(|width| u32::try_from(width).ok())
+            {
+                return width;
+            }
+        }
         // A bound parameter carries the caller's width, recorded at the
         // inline; without it a nested inline sees no width at all.
         if let Some(p) = expr_path(e) {
@@ -1013,7 +1022,14 @@ impl<'a> Lowering<'a> {
                 }
                 _ => None,
             },
-            _ => None,
+            _ => self
+                .source_operand_layout(e, env)
+                .and_then(|layout| layout.index_range())
+                .map(|range| (range.left, range.right))
+                .or_else(|| {
+                    let width = self.ast_width(e);
+                    (width > 0).then(|| (i64::from(width - 1), 0))
+                }),
         }
     }
 
@@ -1162,13 +1178,16 @@ impl<'a> Lowering<'a> {
             // recover labels. Its result uses the array family's canonical
             // zero-based storage labels, so an explicit/partial slice can still
             // select it (`(a + b)[3..0]`) instead of lowering to `Unknown`.
-            if !matches!(
+            let is_packed_array = matches!(
                 self.expr_types.get(&ast::expr_span(base)),
                 Some(crate::types::Ty::Array {
                     family: Some(_),
                     ..
                 })
-            ) {
+            ) || self
+                .operand_type_name(base)
+                .is_some_and(|family| self.array_families.contains(&family));
+            if !is_packed_array {
                 return None;
             }
             let width = self.ast_width(base);
