@@ -358,25 +358,42 @@ impl Lowering<'_> {
             }
         }
         if let Some((root, steps)) = access_steps(expression) {
-            if env.contains_key(&root) {
-                let mut layout = self.source_bound_layout(&root)?;
-                for step in steps {
-                    layout = match (step, &layout.kind) {
-                        (AccessStep::Field(name), LayoutKind::Struct { fields, .. }) => fields
-                            .iter()
-                            .find(|field| field.name == name)?
-                            .layout
-                            .clone(),
-                        (AccessStep::Index(_), LayoutKind::Array { element, .. }) => {
-                            (**element).clone()
-                        }
-                        (AccessStep::Index(index), LayoutKind::Packed { .. }) => {
-                            self.source_packed_result_layout(&layout, index, env)?
-                        }
-                        _ => return None,
-                    };
+            if env.is_empty() || env.contains_key(&root) {
+                if let Some(mut layout) = self.source_bound_layout(&root) {
+                    let mut ok = true;
+                    for step in steps {
+                        layout = match (step, &layout.kind) {
+                            (AccessStep::Field(name), LayoutKind::Struct { fields, .. }) => {
+                                match fields.iter().find(|field| field.name == name) {
+                                    Some(field) => field.layout.clone(),
+                                    None => {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            (AccessStep::Index(_), LayoutKind::Array { element, .. }) => {
+                                (**element).clone()
+                            }
+                            (AccessStep::Index(index), LayoutKind::Packed { .. }) => {
+                                match self.source_packed_result_layout(&layout, index, env) {
+                                    Some(next) => next,
+                                    None => {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            _ => {
+                                ok = false;
+                                break;
+                            }
+                        };
+                    }
+                    if ok {
+                        return Some(layout);
+                    }
                 }
-                return Some(layout);
             }
         }
         if let Some(ty) = self.block_local_type(expression) {

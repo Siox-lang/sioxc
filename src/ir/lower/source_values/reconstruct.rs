@@ -22,6 +22,9 @@ impl SourceValues {
         let mut mapped = Vec::with_capacity(old.values.len());
         // Element reads now carrying their whole value (discriminant).
         let mut elements = HashSet::new();
+        // Pre-remap root of each non-reversed BitSlice chain, so nested slices
+        // (`x[7..4][0]`) find the underlying signal, computed, or literal plane.
+        let mut slice_origins: HashMap<ProcessValueId, ProcessValueId> = HashMap::new();
         // Each signal plane's unknown test, built once for every comparison
         // reading it (a 128-element operand is ~1400 nodes per test).
         let mut unknown_tests = HashMap::new();
@@ -31,18 +34,25 @@ impl SourceValues {
             // the signal's companion.
             // A comparison's operands before remapping, to find a computed
             // operand's companion.
-            let original_operands = match &value.kind {
-                ProcessValueKind::MetaCompare { operands, .. } => operands.clone(),
-                ProcessValueKind::BitSlice { base, .. } => vec![*base],
-                _ => Vec::new(),
-            };
-            let explicit_base = match &value.kind {
-                ProcessValueKind::BitSlice { base, .. } => match explicit_meta.get(base) {
-                    Some(Expr::Canonical { value: meta, .. }) => Some(mapped[meta.0 as usize]),
-                    _ => None,
-                },
+            let slice_root = match &value.kind {
+                ProcessValueKind::BitSlice { base, high, low } => {
+                    let root = slice_origins.get(base).copied().unwrap_or(*base);
+                    if high >= low {
+                        slice_origins.insert(ProcessValueId(index as u32), root);
+                    }
+                    Some(root)
+                }
                 _ => None,
             };
+            let original_operands = match &value.kind {
+                ProcessValueKind::MetaCompare { operands, .. } => operands.clone(),
+                ProcessValueKind::BitSlice { .. } => slice_root.into_iter().collect(),
+                _ => Vec::new(),
+            };
+            let explicit_base = slice_root.and_then(|root| match explicit_meta.get(&root) {
+                Some(Expr::Canonical { value: meta, .. }) => Some(mapped[meta.0 as usize]),
+                _ => None,
+            });
             crate::ir::process::remap_process_value_dependencies(&mut value.kind, |child| {
                 assert!(
                     (child.0 as usize) < index,
@@ -163,7 +173,23 @@ impl SourceValues {
                             else_value: original,
                         }
                     }),
-                ProcessValueKind::BitSlice { base, high, low } if high == low && !raw_bit => {
+                ProcessValueKind::BitSlice {
+                    mut base,
+                    high,
+                    mut low,
+                } if high == low && !raw_bit => {
+                    while let ProcessValueKind::BitSlice {
+                        base: outer_base,
+                        high: outer_high,
+                        low: outer_low,
+                    } = self.ir.values[base.0 as usize].kind
+                    {
+                        if outer_high < outer_low {
+                            break;
+                        }
+                        base = outer_base;
+                        low += outer_low;
+                    }
                     // Static and checked-shift reads share the same reconstruction.
                     // A RawResize between slice and shift remains a typed boundary.
                     let (signal, offset) = match self.ir.values[base.0 as usize].kind {
