@@ -719,15 +719,30 @@ impl<'a> Checker<'a> {
                         },
                     );
                 }
-                self.struct_field_types.insert(
-                    struct_key,
-                    st.fields
-                        .iter()
-                        .filter_map(|f| {
-                            Some((f.name.text.clone(), self.type_key(&f.ty)?, f.name.span))
-                        })
-                        .collect(),
-                );
+                // A tuple field holds each of its elements: one has no type key
+                // of its own, and `next: (Node, integer)` escaped the cycle
+                // check (#179).
+                fn held<'t>(ty: &'t Type, out: &mut Vec<&'t Type>) {
+                    match ty {
+                        Type::Tuple { elems, .. } => elems.iter().for_each(|elem| held(elem, out)),
+                        other => out.push(other),
+                    }
+                }
+                let fields = st
+                    .fields
+                    .iter()
+                    .flat_map(|f| {
+                        let mut types = Vec::new();
+                        held(&f.ty, &mut types);
+                        types
+                            .into_iter()
+                            .filter_map(|ty| {
+                                Some((f.name.text.clone(), self.type_key(ty)?, f.name.span))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+                self.struct_field_types.insert(struct_key, fields);
             }
             Item::View(v) => {
                 let Some(key) = self

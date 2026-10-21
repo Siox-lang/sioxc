@@ -299,6 +299,38 @@ impl<'a> Lowering<'a> {
                 break;
             }
         }
+        // A constant computed by a call that never folded (a recursion that
+        // does not end, past the evaluator's depth) was dropped in silence:
+        // a width read from it was "unresolved", and a test did not lower
+        // (#174). Say so at the constant.
+        for (key, constant) in &constant_decls {
+            let folded = self.consts.contains_key(key)
+                || self.const_values.contains_key(key)
+                || self.consts_real.contains_key(key)
+                || self.const_arrays.contains_key(key)
+                || self.const_ranges.contains_key(key);
+            // ponytail: integer constants only; another type's call may fold
+            // through a table this does not consult.
+            let integer = matches!(
+                &constant.ty,
+                ast::Type::Path(path) if path.segments.last().is_some_and(|s| s.text == "integer")
+            );
+            if !folded && integer && matches!(constant.value, ast::Expr::Call { .. }) {
+                self.sink.emit(
+                    crate::diag::Diagnostic::error(format!(
+                        "the value of `{}` could not be computed when the design is built",
+                        constant.name.text
+                    ))
+                    .with_code(crate::diag::codes::NON_CONSTANT_INITIALIZER)
+                    .at(ast::expr_span(&constant.value))
+                    .help(
+                        "a constant is folded at compile time: the call must return for \
+                         these arguments, within the evaluator's depth (a recursion that \
+                         never ends cannot)",
+                    ),
+                );
+            }
+        }
     }
 
     /// Register an impl's *static* associated fns (those without a `self`

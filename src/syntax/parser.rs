@@ -1776,6 +1776,30 @@ impl<'a> Parser<'a> {
         let value = self.parse_expr(false);
         self.expect(TokenKind::Semi, "after a `let`");
         let span = start.to(self.prev_span());
+        // A written tuple type must match the pattern position for position:
+        // `let (a, b): (real, integer, string)` dropped `string` in silence,
+        // or reported against the truncated type (#169).
+        if let (
+            LetPattern::Tuple(elems, pattern_span),
+            Some(Type::Tuple {
+                elems: types,
+                span: ty_span,
+            }),
+        ) = (&pattern, whole.as_ref())
+        {
+            if elems.len() != types.len() {
+                self.sink.emit(
+                    Diagnostic::error(format!(
+                        "this pattern binds {} position(s), but its type has {}",
+                        elems.len(),
+                        types.len()
+                    ))
+                    .with_code(crate::diag::codes::TYPE_MISMATCH)
+                    .at(*pattern_span)
+                    .label(*ty_span, "the type"),
+                );
+            }
+        }
         let mut lets = Vec::new();
         let target = declare_let_pattern(pattern, whole.as_ref(), &mut lets);
         let mut stmts: Vec<Stmt> = lets.into_iter().map(Stmt::Let).collect();

@@ -79,7 +79,11 @@ struct LoweringContext<'a> {
     shared_functions: &'a std::cell::RefCell<SharedFunctions>,
     /// Functions found calling themselves, with a call that does: reported
     /// once each when lowering ends.
-    recursive_calls: &'a std::cell::RefCell<Vec<(String, crate::diag::Span, crate::diag::Span)>>,
+    /// Recursive calls that could not be lowered: (function name, call,
+    /// function, whether the call changes its argument types).
+    #[allow(clippy::type_complexity)]
+    recursive_calls:
+        &'a std::cell::RefCell<Vec<(String, crate::diag::Span, crate::diag::Span, bool)>>,
     /// Source a testbench cannot lower, reported once lowering is done.
     rejected: &'a std::cell::RefCell<Vec<crate::diag::Diagnostic>>,
     /// Recursive calls of pure value functions: each is a call of the
@@ -1640,8 +1644,21 @@ pub fn lower(
         sink.emit(diagnostic);
     }
     let mut reported = std::collections::HashSet::new();
-    for (name, call, function) in recursive_calls.into_inner() {
-        if reported.insert(function) {
+    for (name, call, function, polymorphic) in recursive_calls.into_inner() {
+        if polymorphic && reported.insert(function) {
+            sink.emit(
+                crate::diag::Diagnostic::error(format!(
+                    "`{name}` calls itself with arguments of other types, so it has no finite expansion"
+                ))
+                .with_code(crate::diag::codes::RECURSIVE_CALL)
+                .at(call)
+                .label(function, "this function")
+                .help(
+                    "each call would need a new copy of the function for its new argument \
+                     types, without end; recurse with the types it was called with",
+                ),
+            );
+        } else if reported.insert(function) {
             sink.emit(
                 crate::diag::Diagnostic::error(format!(
                     "`{name}` calls itself, directly or through other calls, and cannot keep a frame"
@@ -8435,6 +8452,31 @@ fn inline_process_function(
         first_value..context.process_ir.values.len(),
         context,
     );
+    // `blowup((x, x))` in `blowup<T>`: a self-call with other argument types
+    // is no call of this copy, and treated as one it lowered to a block
+    // nothing could run (#175).
+    let ty = |value: &ProcessValueId| context.process_ir.values[value.0 as usize].ty.clone();
+    let width = |value: &ProcessValueId| context.process_ir.values[value.0 as usize].bit_width;
+    if let Some((call_value, _)) = recursive.iter().find(|(_, called)| {
+        called.iter().zip(arguments).any(|(a, b)| {
+            matches!((ty(a), ty(b)), (Some(a), Some(b)) if a != b)
+                || matches!((width(a), width(b)), (Some(a), Some(b)) if a != b)
+                // An aggregate built for a scalar parameter.
+                || matches!(
+                    context.process_ir.values[a.0 as usize].kind,
+                    ProcessValueKind::Construct { .. }
+                ) && operand_source_layout(*b, process, context)
+                    .is_some_and(|layout| matches!(layout.kind, LayoutKind::Scalar { .. }))
+        })
+    }) {
+        context.recursive_calls.borrow_mut().push((
+            function.name.text.clone(),
+            context.process_ir.values[call_value.0 as usize].span,
+            function.span,
+            true,
+        ));
+        return None;
+    }
     let share = !recursive.is_empty()
         || match function.inline {
             ast::Inline::Always | ast::Inline::Hint => false,

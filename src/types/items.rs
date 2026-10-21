@@ -23,21 +23,35 @@ impl<'a> Checker<'a> {
                 }
                 // Variants are values: two sharing a discriminant compare equal
                 // and are indistinguishable at runtime (and in a waveform).
-                // Only explicit constants are checked — implicit numbering
-                // cannot collide.
+                // Implicit numbering counts on from the previous variant, as
+                // lowering numbers them, so it can collide with an explicit
+                // value too (`Zero, One, Two = 1`, #184).
                 let mut seen: HashMap<i64, &str> = HashMap::new();
+                let mut next = Some(0i64);
                 for v in &e.variants {
-                    let Some(val) = &v.value else { continue };
-                    let Some(n) = Self::const_literal(val) else {
-                        continue;
+                    let n = match &v.value {
+                        Some(val) => match Self::const_literal(val) {
+                            Some(n) => n,
+                            None => {
+                                // Not a literal: the count is unknown from here.
+                                next = None;
+                                continue;
+                            }
+                        },
+                        None => match next {
+                            Some(n) => n,
+                            None => continue,
+                        },
                     };
+                    next = n.checked_add(1);
+                    let val = v.value.as_ref();
                     // Discriminants are unsigned: the enum's width is what
                     // its largest one needs. A negative one was dropped in
                     // lowering and numbered from zero instead (#166).
                     if n < 0 {
                         self.error(
                             codes::TYPE_MISMATCH,
-                            expr_span(val),
+                            val.map(expr_span).unwrap_or(v.name.span),
                             format!(
                                 "`{}::{}` has the negative discriminant {n}; an enum's \
                                  discriminants start at 0",
