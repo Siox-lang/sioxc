@@ -10,6 +10,16 @@ mod build;
 mod metadata;
 mod reconstruct;
 
+/// A write of elements `lo..=hi` of a `width`-element `base` with `value`.
+#[derive(Clone, Debug)]
+pub(super) struct SliceMerge {
+    pub(super) base: Expr,
+    pub(super) value: Expr,
+    pub(super) hi: u32,
+    pub(super) lo: u32,
+    pub(super) width: u32,
+}
+
 /// One element written into a packed vector inside a hardware function
 /// (`r[k] = 'X'`). The value plane is the ordinary bit merge; the companion
 /// is the base's with element `bit`'s nibble replaced, so the element holds
@@ -46,6 +56,10 @@ pub(super) struct SourceValues {
     pub(super) explicit_meta: HashMap<ProcessValueId, Expr>,
     /// Element writes whose companion is the base's with one nibble replaced.
     pub(super) merge_meta: HashMap<ProcessValueId, MetaMerge>,
+    /// Writes of a range of elements (`v[k] = x`, `v[7..4] = y`), whose
+    /// companion is the base's with those elements' replaced, not what the
+    /// masking `and`/`or` would make of it.
+    pub(super) slice_merges: HashMap<ProcessValueId, SliceMerge>,
     /// `or`s joining a concatenation's non-overlapping parts, whose companion
     /// is the parts' together, not the logic `or` table's (`'Z' or '0'` is
     /// `'X'`). Consumed by metavalue propagation, before any remap.
