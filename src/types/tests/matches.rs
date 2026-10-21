@@ -158,7 +158,7 @@ fn non_exhaustive_enum_match_warns() {
 
 /// Exhaustiveness was only ever checked on match *statements*. In
 /// expression position a missing variant means there is no value to
-/// produce, yet it drew no diagnostic at all.
+/// produce, yet it drew no diagnostic at all; it is an error (E-P039).
 #[test]
 fn match_expression_exhaustiveness_is_checked() {
     let src = |arms: &str| {
@@ -167,7 +167,7 @@ fn match_expression_exhaustiveness_is_checked() {
     assert_eq!(
         warnings(
             &src("Base::A => 1, Base::B => 2"),
-            codes::NON_EXHAUSTIVE_MATCH
+            codes::NON_EXHAUSTIVE_MATCH_VALUE
         ),
         1,
         "a missing variant in expression position"
@@ -175,13 +175,16 @@ fn match_expression_exhaustiveness_is_checked() {
     assert_eq!(
         warnings(
             &src("Base::A => 1, Base::B => 2, Base::C => 3"),
-            codes::NON_EXHAUSTIVE_MATCH
+            codes::NON_EXHAUSTIVE_MATCH_VALUE
         ),
         0,
         "all variants named"
     );
     assert_eq!(
-        warnings(&src("Base::A => 1, _ => 9"), codes::NON_EXHAUSTIVE_MATCH),
+        warnings(
+            &src("Base::A => 1, _ => 9"),
+            codes::NON_EXHAUSTIVE_MATCH_VALUE
+        ),
         0,
         "a wildcard covers the rest"
     );

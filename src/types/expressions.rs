@@ -99,7 +99,7 @@ impl<'a> Checker<'a> {
                 // An expression must yield a value for every case it can meet,
                 // so a missing variant matters at least as much here as in a
                 // statement — and this form was not checked at all.
-                self.check_arms_exhaustive(scrutinee, arms, *span, sym);
+                self.check_arms_exhaustive(scrutinee, arms, *span, sym, true);
                 // Unreachability was statement-only for the same reason
                 // exhaustiveness was: the two forms share `MatchArm` but not
                 // the code that walks it.
