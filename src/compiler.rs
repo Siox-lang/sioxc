@@ -730,6 +730,10 @@ impl Compiler {
     #[cfg(feature = "llvm")]
     /// Emit textual LLVM IR for the validated design.
     fn emit_llvm_ir(&self, result: &mut Compilation, debug: bool) {
+        // The same actionable message `--emit object` gives (#147).
+        if !Self::reject_unresolved_widths(result) {
+            return;
+        }
         if !Self::validate_design(result) {
             return;
         }

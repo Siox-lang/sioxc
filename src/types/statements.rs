@@ -372,6 +372,11 @@ impl<'a> Checker<'a> {
             Stmt::Let(l) => {
                 self.check_instance_placement(l);
                 self.require_let_annotation(l);
+                // A local's type has the same layout rules as a port's: a
+                // negative or zero width reached code generation (#157).
+                if let Some(ty) = &l.ty {
+                    self.check_type_layout(ty);
+                }
                 self.check_struct_literal_fields(l, sym);
                 if let Some(v) = &l.value {
                     self.check_init(l.ty.as_ref(), v, sym);

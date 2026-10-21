@@ -4807,6 +4807,12 @@ fn lower_match(
     process: &mut ProcessCfg,
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
+    // `match x {}` takes no arm, so control continues; a `Match` with no arms
+    // has no native form and left the process unlowered (#145).
+    // ponytail: the scrutinee is not evaluated, so a call in it is skipped.
+    if statement.arms.is_empty() {
+        return Some(block);
+    }
     let scrutinee_type = context
         .typed
         .expr_type(ast::expr_span(&statement.scrutinee))

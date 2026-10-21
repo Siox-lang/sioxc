@@ -481,6 +481,10 @@ pub mod codes {
     /// recursion runs (a shared native copy for a body that is one value, a
     /// runtime frame stack otherwise).
     pub const RECURSIVE_CALL: &str = "E-P038";
+    /// A `match` *expression* that does not cover every value of its
+    /// scrutinee: it has no value to produce for the rest. (A non-exhaustive
+    /// statement is the W-P007 lint.)
+    pub const NON_EXHAUSTIVE_MATCH_VALUE: &str = "E-P039";
 
     // Warnings
     // W-P001 retired: parallel drivers are legal when their type implements
