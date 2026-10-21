@@ -828,9 +828,7 @@ impl<'a> Lowering<'a> {
                                 format!("{}::{}", self.cur_instance_path, label.text),
                             );
                         }
-                        for statement in &process.body.stmts {
-                            self.lower_stmt(statement, None);
-                        }
+                        self.lower_combinational_block(&process.body, None);
                     }
                     ast::ImplItem::Stmt(statement) => {
                         self.next_ctx();

@@ -427,12 +427,19 @@ impl<'a> Lowering<'a> {
         // A partial driver of a resolved packed signal contributes `Z` on the
         // elements it does not name. That is what lets independent concurrent
         // slice assignments compose instead of forcing zero against one
-        // another. Unresolved/two-valued signals retain the historical zero
-        // seed until their own undriven-value model is represented explicitly.
+        // another. Unresolved/two-valued signals seed from their declared
+        // initializer when one exists, or zero otherwise.
         let seed = self
             .resolved_neutral_planes(signal)
             .map(|(value, _)| value)
-            .unwrap_or(Expr::Const(0));
+            .unwrap_or_else(|| {
+                let init = &self.out.signals[signal.0 as usize].init;
+                if init.is_empty() {
+                    Expr::Const(0)
+                } else {
+                    words_const(init.clone())
+                }
+            });
         self.hardware
             .drivers
             .iter()

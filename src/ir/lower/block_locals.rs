@@ -611,110 +611,126 @@ impl<'a> Lowering<'a> {
         if self.assign_block_dynamic_access(target, value, cond) {
             return true;
         }
-        // A packed local vector is one scalar expression. Its indexed writes
-        // are immediate read-modify-writes over that expression, unlike an
-        // array local whose elements live in `Val::Fields` below.
+        // A packed local vector is one scalar expression (or one scalar leaf in
+        // `Val::Fields` when nested inside a local struct/array). Its indexed
+        // writes are immediate read-modify-writes over that expression, unlike
+        // an unpacked array local whose elements live as separate fields below.
         if let ast::Expr::Index { base, index, .. } = target {
             if let Some((scope_index, name, suffix)) = self.block_local_path(base) {
-                if suffix.is_empty() {
-                    let previous = {
-                        let scopes = self.block_scopes.borrow();
-                        scopes
-                            .get(scope_index)
-                            .and_then(|scope| scope.get(&name))
-                            .cloned()
+                let previous = {
+                    let scopes = self.block_scopes.borrow();
+                    scopes
+                        .get(scope_index)
+                        .and_then(|scope| scope.get(&name))
+                        .cloned()
+                };
+                if let Some(previous) = previous {
+                    let leaf_ty = if suffix.is_empty() {
+                        Some(previous.ty.clone())
+                    } else {
+                        self.block_local_type(base)
                     };
-                    if let Some(previous) = previous {
-                        if let (Val::Scalar(old), Some((left, right))) = (
-                            previous.value.clone(),
-                            self.storage_slice_bounds(base, index),
-                        ) {
-                            let next = self.merge_slice(
-                                old.clone(),
-                                left.max(right),
-                                left.min(right),
-                                self.lower_expr(value),
-                                self.block_local_width(&previous.ty),
-                                ast::expr_span(target),
-                            );
-                            let next = match cond {
-                                Some(condition) => self.source_select(
-                                    condition,
-                                    &next,
-                                    &old,
-                                    ast::expr_span(target),
-                                ),
-                                None => next,
-                            };
-                            self.store_block_local(
-                                scope_index,
-                                name,
-                                Val::Scalar(next),
-                                previous.ty,
-                                ast::expr_span(target),
-                            );
-                            return true;
-                        }
-                        if let Val::Scalar(old) = previous.value.clone() {
-                            if !matches!(
-                                index.as_ref(),
-                                ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
-                            ) && self.eval_const(index, &self.cur_env).is_none()
-                            {
-                                if let Some(positions) = self.block_packed_positions(&previous.ty) {
-                                    let labels: Vec<i64> =
-                                        positions.iter().map(|(label, _)| *label).collect();
-                                    let Some((left, right)) =
-                                        self.declared_range(&previous.ty, &self.cur_env)
-                                    else {
-                                        return false;
-                                    };
-                                    let Some(lowered_index) = self
-                                        .checked_runtime_index_with_bounds(
-                                            index, &labels, left, right,
-                                        )
-                                    else {
-                                        return false;
-                                    };
-                                    let replacement = self.lower_expr(value);
-                                    let width = self.block_local_width(&previous.ty);
-                                    let mut next = old.clone();
-                                    for (logical, physical) in positions.into_iter().rev() {
-                                        let span = ast::expr_span(target);
-                                        let hit = self.source_binary(
-                                            BinOp::Eq,
-                                            &lowered_index,
-                                            &self
-                                                .source_index_label(logical, ast::expr_span(index)),
-                                            ast::expr_span(index),
-                                        );
-                                        let fire = self.source_and(cond.clone(), hit, span);
-                                        let replacement = self.merge_slice(
-                                            old.clone(),
-                                            physical,
-                                            physical,
-                                            replacement.clone(),
-                                            width,
-                                            span,
-                                        );
-                                        next = self.source_select(
-                                            &fire,
-                                            &replacement,
-                                            &next,
-                                            ast::expr_span(target),
-                                        );
-                                    }
-                                    self.store_block_local(
-                                        scope_index,
-                                        name,
-                                        Val::Scalar(next),
-                                        previous.ty,
+                    let old_scalar = match (&previous.value, suffix.is_empty()) {
+                        (Val::Scalar(old), true) => Some(old.clone()),
+                        (Val::Fields(fields), false) => fields
+                            .iter()
+                            .find(|(k, _)| *k == suffix)
+                            .map(|(_, v)| v.clone()),
+                        _ => None,
+                    };
+                    let store_leaf = |this: &Self, next: Expr| {
+                        let value = if suffix.is_empty() {
+                            Val::Scalar(next)
+                        } else if let Val::Fields(mut fields) = previous.value.clone() {
+                            if let Some((_, slot)) = fields.iter_mut().find(|(k, _)| *k == suffix) {
+                                *slot = next;
+                            }
+                            Val::Fields(fields)
+                        } else {
+                            return;
+                        };
+                        this.store_block_local(
+                            scope_index,
+                            name.clone(),
+                            value,
+                            previous.ty.clone(),
+                            ast::expr_span(target),
+                        );
+                    };
+                    if let (Some(old), Some(leaf_ty), Some((left, right))) = (
+                        old_scalar.clone(),
+                        leaf_ty.as_ref(),
+                        self.storage_slice_bounds(base, index),
+                    ) {
+                        let next = self.merge_slice(
+                            old.clone(),
+                            left.max(right),
+                            left.min(right),
+                            self.lower_expr(value),
+                            self.block_local_width(leaf_ty),
+                            ast::expr_span(target),
+                        );
+                        let next = match cond {
+                            Some(condition) => {
+                                self.source_select(condition, &next, &old, ast::expr_span(target))
+                            }
+                            None => next,
+                        };
+                        store_leaf(self, next);
+                        return true;
+                    }
+                    if let (Some(old), Some(leaf_ty)) = (old_scalar, leaf_ty.as_ref()) {
+                        if !matches!(
+                            index.as_ref(),
+                            ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                        ) && self.eval_const(index, &self.cur_env).is_none()
+                        {
+                            if let Some(positions) = self.block_packed_positions(leaf_ty) {
+                                let labels: Vec<i64> =
+                                    positions.iter().map(|(label, _)| *label).collect();
+                                let Some((left, right)) =
+                                    self.declared_range(leaf_ty, &self.cur_env)
+                                else {
+                                    return false;
+                                };
+                                let Some(lowered_index) = self
+                                    .checked_runtime_index_with_bounds(index, &labels, left, right)
+                                else {
+                                    return false;
+                                };
+                                let replacement = self.lower_expr(value);
+                                let width = self.block_local_width(leaf_ty);
+                                let mut next = old.clone();
+                                for (logical, physical) in positions.into_iter().rev() {
+                                    let span = ast::expr_span(target);
+                                    let hit = self.source_binary(
+                                        BinOp::Eq,
+                                        &lowered_index,
+                                        &self.source_index_label(logical, ast::expr_span(index)),
+                                        ast::expr_span(index),
+                                    );
+                                    let fire = self.source_and(cond.clone(), hit, span);
+                                    let replacement = self.merge_slice(
+                                        old.clone(),
+                                        physical,
+                                        physical,
+                                        replacement.clone(),
+                                        width,
+                                        span,
+                                    );
+                                    next = self.source_select(
+                                        &fire,
+                                        &replacement,
+                                        &next,
                                         ast::expr_span(target),
                                     );
-                                    return true;
                                 }
+                                store_leaf(self, next);
+                                return true;
                             }
                         }
+                    }
+                    if suffix.is_empty() {
                         if let (Val::Fields(mut fields), Some((element_ty, indices))) = (
                             previous.value.clone(),
                             array_of(
