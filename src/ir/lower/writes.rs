@@ -635,10 +635,33 @@ impl<'a> Lowering<'a> {
                 *word &= !(1u64 << (bit % 64));
             }
         }
-        let kept = self.source_binary(BinOp::And, &base, &words_const(keep), span);
-        let masked = self.source_binary(BinOp::And, &value, &words_const(ones(slice_w)), span);
+        let kept = self.source_binary(BinOp::And, &base.clone(), &words_const(keep), span);
+        let masked = self.source_binary(
+            BinOp::And,
+            &value.clone(),
+            &words_const(ones(slice_w)),
+            span,
+        );
         let shifted = self.source_binary(BinOp::Shl, &masked, &Expr::Const(lo as u64), span);
-        self.source_binary(BinOp::Or, &kept, &shifted, span)
+        let merged = self.source_binary(BinOp::Or, &kept, &shifted, span);
+        // The masks are exact on the value plane, but read as `std_logic`
+        // `and`/`or` they rewrote the untouched elements' metavalues (`'Z'
+        // and '1'` is `'X'`, `'H'` came back `'1'`) and cost a table lookup
+        // per element: a chain of 48 writes took 2.9 GB to compile (#148).
+        // The companion is the base's with the written elements' replaced.
+        if let Expr::Canonical { value: id, .. } = &merged {
+            self.source_values.borrow_mut().slice_merges.insert(
+                *id,
+                source_values::SliceMerge {
+                    base,
+                    value,
+                    hi,
+                    lo,
+                    width,
+                },
+            );
+        }
+        merged
     }
 
     /// Insert one runtime-selected region without enumerating packed bits.
