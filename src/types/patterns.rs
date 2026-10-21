@@ -7,7 +7,21 @@ impl<'a> Checker<'a> {
     /// Warn (spec Stage 10) when a `match` on an enum omits variants and has no
     /// `_` wildcard.
     pub(super) fn check_match_exhaustive(&mut self, m: &MatchStmt, sym: &HashMap<String, Ty>) {
-        self.check_arms_exhaustive(&m.scrutinee, &m.arms, m.span, sym);
+        self.check_arms_exhaustive(&m.scrutinee, &m.arms, m.span, sym, false);
+    }
+
+    /// A gap in a match: the W-P007 lint for a statement, which may take no
+    /// arm, and an error for an expression, which then has no value to
+    /// produce. Lowered anyway, it returned the last arm's value (#153).
+    fn non_exhaustive(&self, value: bool, message: String) -> Diagnostic {
+        if value {
+            Diagnostic::error(format!(
+                "{message}; a `match` expression needs a value for every case"
+            ))
+            .with_code(codes::NON_EXHAUSTIVE_MATCH_VALUE)
+        } else {
+            Diagnostic::warning(message).with_code(codes::NON_EXHAUSTIVE_MATCH)
+        }
     }
 
     /// Shared by the statement and expression forms. A match *expression* was
@@ -39,7 +53,13 @@ impl<'a> Checker<'a> {
     /// uncovered. The enum form of this has always been checked; the numeric
     /// form was not, so a missing case was silent — and lowering then had no
     /// base arm for it.
-    pub(super) fn check_numeric_arms_exhaustive(&mut self, ty: &Ty, arms: &[MatchArm], span: Span) {
+    pub(super) fn check_numeric_arms_exhaustive(
+        &mut self,
+        ty: &Ty,
+        arms: &[MatchArm],
+        span: Span,
+        value: bool,
+    ) {
         let Some((lo, hi)) = self.numeric_domain(ty) else {
             return;
         };
@@ -77,10 +97,12 @@ impl<'a> Checker<'a> {
             format!("`{frontier}..{gap_end}`")
         };
         self.sink.emit(
-            Diagnostic::warning(format!("non-exhaustive match: {missing} is not covered"))
-                .with_code(codes::NON_EXHAUSTIVE_MATCH)
-                .at(span)
-                .help("add the missing arms, or a `_` wildcard"),
+            self.non_exhaustive(
+                value,
+                format!("non-exhaustive match: {missing} is not covered"),
+            )
+            .at(span)
+            .help("add the missing arms, or a `_` wildcard"),
         );
     }
 
@@ -323,6 +345,7 @@ impl<'a> Checker<'a> {
         arms: &[MatchArm],
         span: Span,
         sym: &HashMap<String, Ty>,
+        value: bool,
     ) {
         let ty = self.type_of(scrutinee, sym);
         if let Ty::Tuple(elems) = &ty {
@@ -335,10 +358,10 @@ impl<'a> Checker<'a> {
             }
             if let Some(missing) = missing {
                 self.sink.emit(
-                    Diagnostic::warning(format!(
-                        "non-exhaustive match: `{missing}` is not covered"
-                    ))
-                    .with_code(codes::NON_EXHAUSTIVE_MATCH)
+                    self.non_exhaustive(
+                        value,
+                        format!("non-exhaustive match: `{missing}` is not covered"),
+                    )
                     .at(span)
                     .help("add the missing arms, or a `_` wildcard"),
                 );
@@ -355,7 +378,7 @@ impl<'a> Checker<'a> {
             // Only enums were ever checked, so `match s { 0 => .. }` on an
             // `unsigned[2]` passed silently while the same hole over an enum
             // was reported.
-            self.check_numeric_arms_exhaustive(&ty, arms, span);
+            self.check_numeric_arms_exhaustive(&ty, arms, span, value);
             return;
         };
         let Some(enum_name) = self.definition_key(id) else {
@@ -385,14 +408,14 @@ impl<'a> Checker<'a> {
                 .map(|v| format!("`{v}`"))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let message = format!(
+                "non-exhaustive match on `{}`: missing {names}",
+                self.key_leaf(&enum_name)
+            );
             self.sink.emit(
-                Diagnostic::warning(format!(
-                    "non-exhaustive match on `{}`: missing {names}",
-                    self.key_leaf(&enum_name)
-                ))
-                .with_code(codes::NON_EXHAUSTIVE_MATCH)
-                .at(span)
-                .help("add the missing arms, or a `_` wildcard"),
+                self.non_exhaustive(value, message)
+                    .at(span)
+                    .help("add the missing arms, or a `_` wildcard"),
             );
         }
     }

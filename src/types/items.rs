@@ -320,6 +320,22 @@ impl<'a> Checker<'a> {
                     }
                     _ => {
                         let Some(width) = signed_lit(index) else {
+                            // A literal past every machine word is past the
+                            // layout maximum too; it used to pass silently
+                            // (#149).
+                            if let Expr::Int { text, .. } = index {
+                                if !text.contains('.') {
+                                    self.error(
+                                        codes::TYPE_MISMATCH,
+                                        expr_span(index),
+                                        format!(
+                                            "type width {text} exceeds the compiler layout \
+                                             maximum of {}",
+                                            u32::MAX
+                                        ),
+                                    );
+                                }
+                            }
                             return;
                         };
                         if width < 0 {
@@ -327,6 +343,14 @@ impl<'a> Checker<'a> {
                                 codes::TYPE_MISMATCH,
                                 expr_span(index),
                                 "a type width cannot be negative".to_string(),
+                            );
+                        } else if width == 0 {
+                            // An empty vector has no storage to simulate, and
+                            // a zero length elsewhere means "unsized" (#146).
+                            self.error(
+                                codes::TYPE_MISMATCH,
+                                expr_span(index),
+                                "a type width must be at least 1".to_string(),
                             );
                         } else if u32::try_from(width).is_err() {
                             self.error(

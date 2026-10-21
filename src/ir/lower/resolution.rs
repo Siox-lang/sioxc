@@ -253,6 +253,15 @@ impl<'a> Lowering<'a> {
                 } else {
                     d = d.at(declaration_span);
                 }
+                // A kernel type has no recorded name: `` for `integer` (#154).
+                let signal = &self.out.signals[*t as usize];
+                let ty = match ty.as_str() {
+                    "" if signal.integer => "integer",
+                    "" if signal.real => "real",
+                    "" if signal.char => "Char",
+                    "" => "its type",
+                    named => named,
+                };
                 self.sink.emit(d.help(format!(
                     "only one source may drive `{path}`; a bus needs converse \
                      endpoints (one side driving each leaf). To have several \

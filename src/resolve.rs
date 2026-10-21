@@ -359,6 +359,9 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
         }
     }
     r.check_declaration_cycles(modules);
+    r.check_constant_cycles();
+    r.check_generic_arity();
+    r.check_trait_impls(modules);
     r.check_public_interfaces(modules);
     // The std library is not linted (its imports serve the whole library, not
     // this compilation); only warn about unused imports in the user's files.
@@ -507,6 +510,13 @@ struct Resolver<'a> {
     /// *renames* (`impl<M> Counter<M>` for `entity Counter<W>`) can be matched
     /// to the declaration by position, the way Rust matches it.
     decl_param_order: HashMap<DefId, Vec<DefId>>,
+    /// Each `G<..>` written, as (its head's span, arguments, whole span),
+    /// checked against the declaration once every parameter is known.
+    generic_uses: Vec<(Span, usize, Span)>,
+    /// The constant whose value is being resolved, and the constants each
+    /// such value reads, for the cycle check.
+    resolving_const: Option<DefId>,
+    const_edges: Vec<(DefId, DefId, Span)>,
     /// Inside the current impl: its binder's names mapped to the declaration
     /// parameters they stand for.
     current_impl_renames: HashMap<String, DefId>,
@@ -549,6 +559,9 @@ impl<'a> Resolver<'a> {
             param_sites: Vec::new(),
             decl_params: HashMap::new(),
             decl_param_order: HashMap::new(),
+            generic_uses: Vec::new(),
+            resolving_const: None,
+            const_edges: Vec::new(),
             current_impl_renames: HashMap::new(),
             impl_used_decl_params: HashSet::new(),
             current_impl_owner: None,
@@ -1106,6 +1119,190 @@ impl<'a> Resolver<'a> {
     /// `struct A : B` with `struct B : A`) made every later stage recurse
     /// until the stack overflowed — the compiler aborted with a core dump.
     /// Report it once, here, where the declarations are all in hand.
+    /// A constant whose value reads itself, directly or through others, has
+    /// no value: `const A = B + 1; const B = A + 1;` passed the checker, then
+    /// failed late as "no value named `A`" or an unlowerable test (#156).
+    fn check_constant_cycles(&mut self) {
+        let mut reads: HashMap<DefId, Vec<(DefId, Span)>> = HashMap::new();
+        for &(owner, read, span) in &self.const_edges {
+            reads.entry(owner).or_default().push((read, span));
+        }
+        // Depth-first, reporting each cycle once at its first constant.
+        let mut done: HashSet<DefId> = HashSet::new();
+        let mut owners: Vec<DefId> = reads.keys().copied().collect();
+        owners.sort_by_key(|id| {
+            self.out
+                .def(*id)
+                .and_then(|d| d.span)
+                .map(|s| (s.file.0, s.start))
+        });
+        for start in owners {
+            let mut path: Vec<DefId> = Vec::new();
+            let mut stack: Vec<(DefId, usize)> = vec![(start, 0)];
+            while let Some((node, next)) = stack.last_mut() {
+                let node = *node;
+                if *next == 0 {
+                    if done.contains(&node) {
+                        stack.pop();
+                        continue;
+                    }
+                    path.push(node);
+                }
+                let edges = reads.get(&node).map(Vec::as_slice).unwrap_or(&[]);
+                if let Some(&(read, span)) = edges.get(*next) {
+                    *next += 1;
+                    if path.contains(&read) {
+                        let name = self
+                            .out
+                            .def(read)
+                            .map(|d| d.name.clone())
+                            .unwrap_or_else(|| "<constant>".to_string());
+                        self.sink.emit(
+                            Diagnostic::error(format!(
+                                "constant `{name}` is defined in terms of itself"
+                            ))
+                            .with_code(codes::DUPLICATE_ITEM)
+                            .at(span)
+                            .help("break the cycle: a constant's value cannot depend on itself"),
+                        );
+                        // Report once: everything on this path is now known.
+                        done.extend(path.iter().copied());
+                        continue;
+                    }
+                    if !done.contains(&read) {
+                        stack.push((read, 0));
+                    }
+                } else {
+                    done.insert(node);
+                    path.pop();
+                    stack.pop();
+                }
+            }
+        }
+    }
+
+    /// An `impl Trait for T` must provide the trait's methods as declared: a
+    /// method the trait lacks, a receiver or parameter count that differs, or
+    /// a required method left out was accepted, and a generic call through
+    /// the trait then failed to lower (#152).
+    // ponytail: parameter and return *types* are not compared; that needs the
+    // trait's parameters substituted by the impl's arguments.
+    fn check_trait_impls(&mut self, modules: &[Module]) {
+        let mut traits: HashMap<DefId, &TraitDecl> = HashMap::new();
+        for m in modules {
+            for item in &m.items {
+                if let Item::Trait(trait_) = item {
+                    if let Some(id) = self.out.declared(trait_.name.span) {
+                        traits.insert(id, trait_);
+                    }
+                }
+            }
+        }
+        let receiver = |f: &FnDecl| f.params.iter().any(|p| p.is_self);
+        let arity = |f: &FnDecl| f.params.iter().filter(|p| !p.is_self).count();
+        for m in modules {
+            for item in &m.items {
+                let Item::Impl(im) = item else { continue };
+                let Some(trait_) = im
+                    .trait_
+                    .as_ref()
+                    .and_then(|path| self.out.resolved(path.span))
+                    .and_then(|id| traits.get(&id).copied())
+                else {
+                    continue;
+                };
+                let name = &trait_.name.text;
+                let provided: Vec<&FnDecl> = im
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        ImplItem::Fn(f) => Some(f),
+                        _ => None,
+                    })
+                    .collect();
+                for f in &provided {
+                    let method = &f.name.text;
+                    let Some(declared) = trait_.items.iter().find(|d| d.name.text == *method)
+                    else {
+                        self.sink.emit(
+                            Diagnostic::error(format!(
+                                "`{method}` is not a method of trait `{name}`"
+                            ))
+                            .with_code(codes::TYPE_MISMATCH)
+                            .at(f.name.span)
+                            .label(trait_.name.span, "trait declared here"),
+                        );
+                        continue;
+                    };
+                    let problem = if receiver(declared) != receiver(f) {
+                        Some(if receiver(declared) {
+                            "takes `self`, and this impl's does not".to_string()
+                        } else {
+                            "takes no `self`, and this impl's does".to_string()
+                        })
+                    } else if arity(declared) != arity(f) {
+                        Some(format!(
+                            "takes {} parameter(s), but this impl's takes {}",
+                            arity(declared),
+                            arity(f)
+                        ))
+                    } else {
+                        None
+                    };
+                    if let Some(problem) = problem {
+                        self.sink.emit(
+                            Diagnostic::error(format!("`{name}::{method}` {problem}"))
+                                .with_code(codes::TYPE_MISMATCH)
+                                .at(f.name.span)
+                                .label(declared.name.span, "declared here"),
+                        );
+                    }
+                }
+                for declared in trait_.items.iter().filter(|d| d.body.is_none()) {
+                    if !provided.iter().any(|f| f.name.text == declared.name.text) {
+                        self.sink.emit(
+                            Diagnostic::error(format!(
+                                "missing `{}`, which trait `{name}` requires",
+                                declared.name.text
+                            ))
+                            .with_code(codes::TYPE_MISMATCH)
+                            .at(im.span)
+                            .label(declared.name.span, "declared here"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// `G<integer>` for `struct G<A, B>`, or `G<integer, integer>` for
+    /// `struct G<A>`: an argument count that does not match the declaration
+    /// passed silently, then failed in code generation (#151).
+    fn check_generic_arity(&mut self) {
+        for (head, args, span) in std::mem::take(&mut self.generic_uses) {
+            let Some(owner) = self.out.resolved(head) else {
+                continue;
+            };
+            let Some(declared) = self.decl_param_order.get(&owner).map(Vec::len) else {
+                continue;
+            };
+            if args != declared {
+                let name = self
+                    .out
+                    .def(owner)
+                    .map(|d| d.name.clone())
+                    .unwrap_or_else(|| "<type>".to_string());
+                self.sink.emit(
+                    Diagnostic::error(format!(
+                        "`{name}` takes {declared} generic argument(s), but {args} were given"
+                    ))
+                    .with_code(codes::TYPE_MISMATCH)
+                    .at(span),
+                );
+            }
+        }
+    }
+
     fn check_declaration_cycles(&mut self, modules: &[Module]) {
         // declaration identity -> (target identity, source site, diagnostic kind)
         let mut edges: HashMap<DefId, (DefId, Span, &'static str)> = HashMap::new();
@@ -1341,7 +1538,9 @@ impl<'a> Resolver<'a> {
             }
             Item::Const(c) => {
                 self.resolve_type(&c.ty);
+                self.resolving_const = self.out.declared(c.name.span);
                 self.resolve_expr(&c.value);
+                self.resolving_const = None;
             }
             Item::Struct(s) => {
                 self.enter();
@@ -1659,7 +1858,9 @@ impl<'a> Resolver<'a> {
         match item {
             ImplItem::Const(c) => {
                 self.resolve_type(&c.ty);
+                self.resolving_const = self.out.declared(c.name.span);
                 self.resolve_expr(&c.value);
+                self.resolving_const = None;
             }
             ImplItem::Let(l) => {
                 if let Some(t) = &l.ty {
@@ -1887,8 +2088,11 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(index);
                 }
             }
-            Type::Generic { base, args, .. } => {
+            Type::Generic { base, args, span } => {
                 self.resolve_type(base);
+                if let Some(head) = type_head_path(base) {
+                    self.generic_uses.push((head.span, args.len(), *span));
+                }
                 for a in args {
                     match a {
                         GenericArg::Positional(e) => self.resolve_expr(e),
@@ -2325,6 +2529,11 @@ impl<'a> Resolver<'a> {
     /// Record a qualified use of a definition, so visibility can be checked
     /// against the module that owns it.
     fn record_qualified_use(&mut self, use_span: Span, id: DefId) {
+        if let Some(owner) = self.resolving_const {
+            if self.out.kind_of(id) == Some(DefKind::Const) {
+                self.const_edges.push((owner, id, use_span));
+            }
+        }
         // A private import is diagnosed at the import itself. Keep resolving
         // uses through that binding so one mistake does not cascade onto every
         // later reference in the importing module.

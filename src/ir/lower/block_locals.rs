@@ -28,7 +28,24 @@ impl<'a> Lowering<'a> {
         seen: &mut HashMap<String, (crate::diag::Span, bool)>,
     ) {
         match statement {
-            ast::Stmt::Assign { target, span, .. } => {
+            ast::Stmt::Assign {
+                target,
+                value,
+                span,
+                ..
+            } => {
+                // A write read before it is overwritten has its effect: an
+                // unrolled `sum = sum + i` reads the previous iteration's
+                // `sum` (#161). Forget every earlier write this one reads.
+                let mut read = crate::syntax::pretty::expr_string(value);
+                if let ast::Expr::Index { index, .. } = target {
+                    read.push(' ');
+                    read.push_str(&crate::syntax::pretty::expr_string(index));
+                }
+                seen.retain(|key, _| {
+                    let root = key.split(['.', '[']).next().unwrap_or(key);
+                    !mentions_name(&read, root)
+                });
                 let key = crate::syntax::pretty::expr_string(target);
                 if let Some((previous, previous_generated)) =
                     seen.insert(key.clone(), (*span, generated))
@@ -997,4 +1014,13 @@ impl<'a> Lowering<'a> {
             }
         }
     }
+}
+
+/// Whether `text` holds `name` as a whole identifier.
+fn mentions_name(text: &str, name: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(name).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(word)
+            && !text[at + name.len()..].chars().next().is_some_and(word)
+    })
 }
