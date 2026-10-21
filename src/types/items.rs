@@ -31,6 +31,21 @@ impl<'a> Checker<'a> {
                     let Some(n) = Self::const_literal(val) else {
                         continue;
                     };
+                    // Discriminants are unsigned: the enum's width is what
+                    // its largest one needs. A negative one was dropped in
+                    // lowering and numbered from zero instead (#166).
+                    if n < 0 {
+                        self.error(
+                            codes::TYPE_MISMATCH,
+                            expr_span(val),
+                            format!(
+                                "`{}::{}` has the negative discriminant {n}; an enum's \
+                                 discriminants start at 0",
+                                e.name.text, v.name.text
+                            ),
+                        );
+                        continue;
+                    }
                     if let Some(prev) = seen.insert(n, v.name.text.as_str()) {
                         self.error(
                             codes::DUPLICATE_ITEM,
@@ -332,6 +347,40 @@ impl<'a> Checker<'a> {
         );
     }
 
+    /// A struct with fields is stored field by field, and parallel drivers
+    /// resolve each field by its own type: `impl Resolve for Packet` was
+    /// never called, and an `integer` field still conflicted (#167).
+    // ponytail: rejected rather than folded across the leaves; that needs
+    // the struct's `resolve` called on the reassembled drivers.
+    fn check_struct_resolve(&mut self, implementation: &ImplDecl) {
+        let is_resolve = implementation
+            .trait_
+            .as_ref()
+            .and_then(|path| path.segments.last())
+            .is_some_and(|segment| segment.text == "Resolve");
+        let Some(key) = self.type_key(&implementation.target) else {
+            return;
+        };
+        let record = self
+            .structs
+            .get(&key)
+            .is_some_and(|(base, fields)| base.is_none() && !fields.is_empty());
+        if !is_resolve || !record {
+            return;
+        }
+        self.error_with_help(
+            codes::TYPE_MISMATCH,
+            type_span(&implementation.target),
+            format!(
+                "`Resolve` cannot be implemented for `{}`, a struct with fields",
+                crate::syntax::pretty::type_str(&implementation.target)
+            ),
+            "a struct is stored field by field and parallel drivers resolve each field by \
+             its own type: give the field types `impl Resolve` (as `Logic` has)"
+                .to_string(),
+        );
+    }
+
     pub(super) fn check_type_layout(&mut self, ty: &Type) {
         match ty {
             Type::Path(_) => {}
@@ -491,6 +540,7 @@ impl<'a> Checker<'a> {
                 self.check_type_layout(&implementation.target);
                 if implementation.trait_.is_some() {
                     self.check_trait_impl_target(implementation);
+                    self.check_struct_resolve(implementation);
                 }
                 for item in &implementation.items {
                     match item {
