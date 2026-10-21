@@ -1661,6 +1661,12 @@ void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
         sx_fail_id("process registered more than one suspension", process);
         return;
     }
+    /* A `time` is signed: a negative one computed at run time cannot be
+     * waited for. */
+    if ((int64_t)delay < 0) {
+        sx_set_error("`await` was given a negative time (%lld fs)", (long long)(int64_t)delay);
+        return;
+    }
     sx_event *event = sx_allocate_event(delay, 0);
     if (!event) return;
     event->kind = SX_EVENT_RESUME;

@@ -105,6 +105,20 @@ impl<'a> Lowering<'a> {
             ast::Stmt::Assign {
                 target,
                 value,
+                after: None,
+                span,
+                ..
+            } if self.array_slice_statements(target, value, *span).is_some() => {
+                for element in self
+                    .array_slice_statements(target, value, *span)
+                    .unwrap_or_default()
+                {
+                    self.lower_stmt_at(&element, cond.clone());
+                }
+            }
+            ast::Stmt::Assign {
+                target,
+                value,
                 after,
                 span,
                 ..
@@ -855,6 +869,21 @@ impl<'a> Lowering<'a> {
                 self.report_bad_indices(bad);
             }
             match s {
+                ast::Stmt::Assign {
+                    target,
+                    value,
+                    after: None,
+                    span,
+                    ..
+                } if self.array_slice_statements(target, value, *span).is_some() => {
+                    let elements = ast::Block {
+                        stmts: self
+                            .array_slice_statements(target, value, *span)
+                            .unwrap_or_default(),
+                        span: *span,
+                    };
+                    self.lower_event_block(&elements, cond.clone(), out);
+                }
                 ast::Stmt::Assign {
                     target,
                     value,

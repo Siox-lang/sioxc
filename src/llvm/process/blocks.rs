@@ -152,18 +152,14 @@ pub(super) fn block_is_supported(
             let [delay] = arguments.as_slice() else {
                 return false;
             };
+            // Any 64-bit time: a literal, or one computed at run time
+            // (`let t: time = 5ns; await t;`, #181).
             value(*delay)
                 && design
                     .process_ir
                     .values
                     .get(delay.0 as usize)
-                    .is_some_and(|delay| {
-                        delay.bit_width.is_some_and(|width| width <= 64)
-                            && matches!(
-                                delay.kind,
-                                ProcessValueKind::Number(ProcessNumber::Integer(_))
-                            )
-                    })
+                    .is_some_and(|delay| delay.bit_width.is_some_and(|width| width <= 64))
         }
         ProcessTerminator::Suspend {
             operation: siox::ir::ProcessSuspendOp::AwaitCondition,

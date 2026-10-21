@@ -515,6 +515,31 @@ impl<'a> Checker<'a> {
                 self.check_param_type_layouts(&structure.params);
                 if let Some(base) = &structure.base {
                     self.check_type_layout(base);
+                    // ponytail: a newtype family records one element type by
+                    // name, so over `unsigned[8][4]` its elements read as
+                    // single bits (#176). Rejected until families carry a
+                    // vector element.
+                    if let Type::Indexed { base: inner, .. } = base {
+                        if structure.fields.is_empty()
+                            && matches!(inner.as_ref(), Type::Indexed { .. })
+                        {
+                            self.error_with_help(
+                                codes::TYPE_MISMATCH,
+                                structure.name.span,
+                                format!(
+                                    "`{}` is a newtype over an array of arrays, which is not \
+                                     supported yet",
+                                    structure.name.text
+                                ),
+                                format!(
+                                    "hold the array in a field instead: `struct {} {{ pub \
+                                     rows: {} }}`",
+                                    structure.name.text,
+                                    crate::syntax::pretty::type_str(base)
+                                ),
+                            );
+                        }
+                    }
                 }
                 for field in &structure.fields {
                     self.check_type_layout(&field.ty);
