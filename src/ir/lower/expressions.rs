@@ -1178,16 +1178,13 @@ impl<'a> Lowering<'a> {
             // recover labels. Its result uses the array family's canonical
             // zero-based storage labels, so an explicit/partial slice can still
             // select it (`(a + b)[3..0]`) instead of lowering to `Unknown`.
-            let is_packed_array = matches!(
+            if !matches!(
                 self.expr_types.get(&ast::expr_span(base)),
                 Some(crate::types::Ty::Array {
                     family: Some(_),
                     ..
                 })
-            ) || self
-                .operand_type_name(base)
-                .is_some_and(|family| self.array_families.contains(&family));
-            if !is_packed_array {
+            ) {
                 return None;
             }
             let width = self.ast_width(base);
