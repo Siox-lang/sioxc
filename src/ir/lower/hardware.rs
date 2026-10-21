@@ -426,7 +426,22 @@ fn normalized_value_width(
             ProcessUnaryOp::RealToInteger
             | ProcessUnaryOp::IntegerToReal
             | ProcessUnaryOp::Real(_) => Some(64),
-            ProcessUnaryOp::Neg | ProcessUnaryOp::Not => width(operand),
+            ProcessUnaryOp::Neg => {
+                let natural = width(operand)?;
+                let literal_sign_headroom = matches!(
+                    process_ir
+                        .values
+                        .get(operand.0 as usize)
+                        .map(|value| &value.kind),
+                    Some(ProcessValueKind::Number(ProcessNumber::Integer(_)))
+                );
+                Some(if literal_sign_headroom {
+                    natural.saturating_add(1).min(64.max(natural))
+                } else {
+                    natural
+                })
+            }
+            ProcessUnaryOp::Not => width(operand),
         },
         ProcessValueKind::RawResize { operand } | ProcessValueKind::InlineCall { operand, .. } => {
             width(operand)

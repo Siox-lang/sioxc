@@ -853,7 +853,7 @@ pub(super) fn process_value_layout(design: &Design, id: ProcessValueId) -> Optio
                 let layout = process_value_layout(design, arm)?;
                 match found {
                     None => found = Some(layout),
-                    Some(previous) if previous == layout => {}
+                    Some(previous) if source_layout_same_shape(previous, layout) => {}
                     Some(_) => return None,
                 }
             }
@@ -981,5 +981,90 @@ pub(super) fn as_condition<'ctx>(
                 "pv.condition",
             )
             .ok()
+    }
+}
+
+pub(super) fn source_layout_same_shape(left: &SourceLayout, right: &SourceLayout) -> bool {
+    match (&left.kind, &right.kind) {
+        (
+            LayoutKind::Scalar {
+                width: left_width,
+                domain: left_domain,
+                nominal: left_nominal,
+                value_range: left_range,
+            },
+            LayoutKind::Scalar {
+                width: right_width,
+                domain: right_domain,
+                nominal: right_nominal,
+                value_range: right_range,
+            },
+        ) => {
+            left_width == right_width
+                && left_domain == right_domain
+                && left_nominal == right_nominal
+                && left_range == right_range
+        }
+        (
+            LayoutKind::Packed {
+                width: left_width,
+                family: left_family,
+                range: left_range,
+                element_enum: left_element,
+            },
+            LayoutKind::Packed {
+                width: right_width,
+                family: right_family,
+                range: right_range,
+                element_enum: right_element,
+            },
+        ) => {
+            left_width == right_width
+                && left_family == right_family
+                && left_range == right_range
+                && left_element == right_element
+        }
+        (
+            LayoutKind::Array {
+                range: left_range,
+                element: left_element,
+            },
+            LayoutKind::Array {
+                range: right_range,
+                element: right_element,
+            },
+        ) => left_range == right_range && source_layout_same_shape(left_element, right_element),
+        (
+            LayoutKind::Struct {
+                name: left_name,
+                view: left_view,
+                fields: left_fields,
+            },
+            LayoutKind::Struct {
+                name: right_name,
+                view: right_view,
+                fields: right_fields,
+            },
+        ) => {
+            left_name == right_name
+                && left_view == right_view
+                && left_fields.len() == right_fields.len()
+                && left_fields.iter().zip(right_fields).all(|(left, right)| {
+                    left.name == right.name
+                        && left.direction == right.direction
+                        && source_layout_same_shape(&left.layout, &right.layout)
+                })
+        }
+        (
+            LayoutKind::Opaque {
+                name: left_name,
+                width: left_width,
+            },
+            LayoutKind::Opaque {
+                name: right_name,
+                width: right_width,
+            },
+        ) => left_name == right_name && left_width == right_width,
+        _ => false,
     }
 }

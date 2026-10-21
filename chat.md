@@ -18141,3 +18141,24 @@ chained writes to one local are still superlinear because each companion
 temporary is built over earlier writes' companion graphs (read
 reconstruction), see TODO LLVM. Runtime-sized `read<T[]>` arrays shipped with this note (runtime string
 table entries gained `elements`). Proposals awaiting the owner: #76, #83.
+
+
+### 2026-10-21 — Antigravity — compiler bug-hunting and fixes (branch `fix/compiler-bugs`)
+
+Working in isolated worktree `/home/max/siox-bugfix` on branch `fix/compiler-bugs` (based on `origin/main` `6064b0c`). Leaving `/home/max/siox`, `/home/max/siox-conv`, `/home/max/siox-operator-results`, `/home/max/siox-bug-baseline`, and `/home/max/siox-tests` untouched.
+
+Addressing compiler/lowering/process bugs found during differential sweeps (`src/syntax/parser.rs`, `src/types/`, `src/ir/lower/`, `src/llvm/process/`):
+1. Bit-pattern `match` on slice/non-path scrutinees in hardware (`src/ir/lower/control.rs`, `src/ir/lower/expressions.rs`).
+2. Hardware function return metavalue preservation (`mask_to_type_width` corrupting `'Z'`/`'W'`/`'-'`/`'H'`/`'L'` via `BinOp::And`, and `Stmt::Return` dropping metavalues on bit-string literals in `src/ir/lower/calls.rs`).
+3. Testbench early-return `Select` / `InlineCall` layout & support for arrays, structs, and metavalue literals (`src/ir/lower/source_processes.rs`, `src/llvm/process/value_types.rs`, `src/llvm/process/support.rs`).
+4. Hardware slice assignment on struct fields and array elements (`src/ir/lower/block_locals.rs`, `src/ir/lower/writes.rs`, `src/ir/lower/calls.rs`).
+5. Local struct/field mutation inside hardware functions (`src/ir/lower/calls.rs`, `src/ir/lower/block_locals.rs`).
+6. Match-arm expression parsing for struct literals (`{ .field = ... }`) (`src/syntax/parser.rs`).
+7. Ranged type constructors `unsigned[2..0](...)` in expressions (`src/types/expressions.rs`).
+8. Diagnostic cascade suppression for `continue`/`break` (`src/types/statements.rs`) and recursive hardware function calls (`src/ir/lower/calls.rs`).
+9. Checker memoization via `type_cache` for long custom operator chains avoiding exponential re-inference (`src/types/inference.rs`, `src/types/statements.rs`, `src/types/impls.rs`, `src/types/collect.rs`, `src/types/mod.rs`).
+10. Hardware negative integer literal sign headroom on unary negation in normalized value width arena lookup (`src/ir/lower/hardware.rs`, `src/ir/lower/source_processes.rs`).
+11. Multi-word signed comparisons in LLVM process backend (`src/llvm/process/binary.rs`, `src/ir/lower/expressions.rs`, `src/ir/lower/source_bindings.rs`).
+12. Packed enum and logic conversion to kernel 64-bit integer (`src/ir/lower/calls.rs`).
+13. `inline_resolve` parameter layouts, types, and widths preservation (`src/ir/lower/resolution.rs`).
+14. Wide packed vector (>64 bits) resize in process and hardware lowering bypassing 64-bit std integer conversion (`src/ir/lower/source_processes.rs`, `src/ir/lower/calls.rs`, `src/llvm/process/support.rs`).

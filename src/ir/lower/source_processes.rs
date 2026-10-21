@@ -3885,8 +3885,8 @@ fn process_value_source_layout(
             ..
         } => {
             let then_layout = process_value_source_layout(*then_value, process_ir)?;
-            (process_value_source_layout(*else_value, process_ir) == Some(then_layout))
-                .then_some(then_layout)
+            let else_layout = process_value_source_layout(*else_value, process_ir)?;
+            process_layout_same_shape(then_layout, else_layout).then_some(then_layout)
         }
         _ => None,
     }
@@ -6477,9 +6477,19 @@ fn lower_process_raw_resize(
             if !family_known {
                 return None;
             }
-            let len =
-                crate::ir::eval_const_fns(index, context.constant_integers, context.functions, 0)
-                    .and_then(|width| u32::try_from(width).ok())?;
+            let eval = |bound: &ast::Expr| {
+                crate::ir::eval_const_fns(bound, context.constant_integers, context.functions, 0)
+            };
+            let (len, low) = match index.as_ref() {
+                ast::Expr::Range { lo, hi, .. } => {
+                    let (left, right) = eval(lo).zip(eval(hi))?;
+                    (
+                        u32::try_from(left.abs_diff(right) + 1).ok()?,
+                        left.min(right),
+                    )
+                }
+                width => (u32::try_from(eval(width)?).ok()?, 0),
+            };
             let (elem, family) = match target {
                 Some(crate::types::Ty::Array {
                     elem,
@@ -6499,7 +6509,7 @@ fn lower_process_raw_resize(
                 elem,
                 family: Some(family),
                 len,
-                low: 0,
+                low,
             }
         }
         ast::Expr::Path(path) => {
@@ -6605,13 +6615,15 @@ fn lower_process_raw_resize(
         }
         _ => None,
     };
-    let operand_type = field_type.or_else(|| {
-        context
-            .typed
-            .expr_type(ast::expr_span(&args[0]))
-            .filter(|ty| !matches!(ty, crate::types::Ty::Error))
-            .cloned()
-    });
+    let operand_type = field_type
+        .or_else(|| literal_arithmetic(&args[0]).map(|_| target.clone()))
+        .or_else(|| {
+            context
+                .typed
+                .expr_type(ast::expr_span(&args[0]))
+                .filter(|ty| !matches!(ty, crate::types::Ty::Error))
+                .cloned()
+        });
     let operand = value_ref_with_type(&args[0], process, context, operand_type.as_ref());
     let kind = ProcessValueKind::RawResize { operand };
     let width = source_value_width(&kind, Some(&target), process, context)?;
@@ -6783,6 +6795,18 @@ fn lower_process_family_from(
     // The checker reads `family[range](x)` as a kernel conversion and records
     // no type for a literal argument, so the value says what it is.
     let checked = operand_type(argument, process, context);
+    if let Some(value) = lower_process_wide_packed_resize(
+        &family,
+        index,
+        argument,
+        checked.as_ref(),
+        *span,
+        process,
+        context,
+        return_type,
+    ) {
+        return Some(value);
+    }
     let operand = value_ref_with_type(argument, process, context, checked.as_ref());
     let source_type = checked
         .or_else(|| process_value_type(operand, context))
@@ -6870,6 +6894,121 @@ fn lower_process_family_from(
         context,
         return_type,
     )
+}
+
+/// The leaf name of a std `signed`/`unsigned` family key, if it is one.
+pub(super) fn std_integer_vector_family(family: &str) -> Option<&'static str> {
+    match family.rsplit("::").next()? {
+        "signed" => Some("signed"),
+        "unsigned" => Some("unsigned"),
+        _ => None,
+    }
+}
+
+/// The two's-complement words of `1 << bit`.
+pub(super) fn single_bit_words(bit: u32) -> Vec<u64> {
+    let mut words = vec![0u64; bit as usize / 64 + 1];
+    words[bit as usize / 64] = 1u64 << (bit % 64);
+    words
+}
+
+/// `signed[N](x)` / `unsigned[N](x)` for a packed `signed`/`unsigned` `x`
+/// when either side is wider than the 64-bit kernel word. std's `From`
+/// bodies read their operand through `integer(..)`, which keeps only 64
+/// bits, so `signed[129](signed[81] ..)` lost every bit above 63. Resize the
+/// word itself instead: zero-extend (or truncate), and sign-extend a
+/// `signed` source as `(x ^ s) - s` evaluated at the target width, `s`
+/// being the source's sign bit.
+#[allow(clippy::too_many_arguments)]
+fn lower_process_wide_packed_resize(
+    family: &str,
+    index: &ast::Expr,
+    argument: &ast::Expr,
+    checked: Option<&crate::types::Ty>,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+    return_type: Option<&crate::types::Ty>,
+) -> Option<ProcessValueId> {
+    std_integer_vector_family(family)?;
+    let Some(crate::types::Ty::Array {
+        family: Some(source_family),
+        len: source_len,
+        ..
+    }) = checked
+    else {
+        return None;
+    };
+    let source_signed = std_integer_vector_family(source_family)? == "signed";
+    let eval = |bound: &ast::Expr| {
+        crate::ir::eval_const_fns(bound, context.constant_integers, context.functions, 0)
+    };
+    let (left, right) = match index {
+        ast::Expr::Range { lo, hi, .. } => eval(lo).zip(eval(hi))?,
+        width => eval(width).map(|width| (width - 1, 0))?,
+    };
+    let target_width = u32::try_from(left.abs_diff(right) + 1).ok()?;
+    let first_value = context.process_ir.values.len();
+    let operand = value_ref_with_type(argument, process, context, checked);
+    let source_width = context.process_ir.values[operand.0 as usize]
+        .bit_width
+        .filter(|width| *width > 0)
+        .unwrap_or(*source_len);
+    if source_width == 0 || target_width.max(source_width) <= 64 {
+        truncate_process_values(context, first_value);
+        return None;
+    }
+    let elem = match return_type {
+        Some(crate::types::Ty::Array { elem, .. }) => elem.clone(),
+        _ => Box::new(crate::types::Ty::Error),
+    };
+    let target_type = crate::types::Ty::Array {
+        elem,
+        family: Some(family.to_owned()),
+        len: target_width,
+        low: left.min(right),
+    };
+    let resized = push_value(
+        span,
+        None,
+        Some(target_width),
+        ProcessValueKind::RawResize { operand },
+        context,
+    );
+    let kind = if source_signed && target_width > source_width {
+        let sign = push_value(
+            span,
+            None,
+            Some(target_width),
+            ProcessValueKind::Number(ProcessNumber::Integer(single_bit_words(source_width - 1))),
+            context,
+        );
+        let flipped = push_value(
+            span,
+            None,
+            Some(target_width),
+            ProcessValueKind::Binary {
+                operation: ProcessBinaryOp::Xor,
+                left: resized,
+                right: sign,
+            },
+            context,
+        );
+        ProcessValueKind::Binary {
+            operation: ProcessBinaryOp::Sub,
+            left: flipped,
+            right: sign,
+        }
+    } else {
+        ProcessValueKind::RawResize { operand: resized }
+    };
+    Some(push_converted(
+        span,
+        target_type,
+        target_width,
+        kind,
+        context,
+    ))
 }
 
 /// A conversion from an anonymous array's elements, typed `target`: inlined
@@ -9684,6 +9823,9 @@ fn inline_select_value(
         (Some(left), Some(right)) => Some(left.max(right)),
         (left, right) => left.or(right),
     };
+    let shared_layout = process_value_source_layout(then_value, context.process_ir)
+        .zip(process_value_source_layout(else_value, context.process_ir))
+        .and_then(|(left, right)| process_layout_same_shape(left, right).then(|| left.clone()));
     let selection = push_value(
         span,
         ty,
@@ -9695,6 +9837,15 @@ fn inline_select_value(
         },
         context,
     );
+    if let Some(layout) = shared_layout {
+        if let Some(slot) = context
+            .process_ir
+            .value_layouts
+            .get_mut(selection.0 as usize)
+        {
+            *slot = Some(layout);
+        }
+    }
     if let Some(branches) = context.inline_value_branches.last_mut() {
         branches.push((selection, [then_span, else_span]));
     }
@@ -11286,7 +11437,24 @@ fn source_value_width(
             ProcessUnaryOp::RealToInteger
             | ProcessUnaryOp::IntegerToReal
             | ProcessUnaryOp::Real(_) => Some(64),
-            ProcessUnaryOp::Neg | ProcessUnaryOp::Not => value_width(operand),
+            ProcessUnaryOp::Neg => {
+                let natural = value_width(operand)?;
+                let literal_sign_headroom = matches!(
+                    context
+                        .design
+                        .process_ir
+                        .values
+                        .get(operand.0 as usize)
+                        .map(|value| &value.kind),
+                    Some(ProcessValueKind::Number(ProcessNumber::Integer(_)))
+                );
+                Some(if literal_sign_headroom {
+                    natural.saturating_add(1).min(64.max(natural))
+                } else {
+                    natural
+                })
+            }
+            ProcessUnaryOp::Not => value_width(operand),
         },
         ProcessValueKind::RawResize { operand } | ProcessValueKind::InlineCall { operand, .. } => {
             value_width(operand)

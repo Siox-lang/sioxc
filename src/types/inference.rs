@@ -25,7 +25,15 @@ impl<'a> Checker<'a> {
     /// or unsupported cases yield [`Ty::Error`], which suppresses dependent
     /// checks rather than producing a false positive.
     pub(super) fn type_of(&self, e: &Expr, sym: &HashMap<String, Ty>) -> Ty {
+        let key = (
+            e as *const Expr as usize,
+            sym as *const HashMap<String, Ty> as usize,
+        );
+        if let Some(cached) = self.type_cache.borrow().get(&key).cloned() {
+            return cached;
+        }
         let ty = self.infer_type_of(e, sym);
+        self.type_cache.borrow_mut().insert(key, ty.clone());
         self.expr_types
             .borrow_mut()
             .insert(expr_span(e), ty.clone());

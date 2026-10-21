@@ -374,6 +374,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                     sym.insert(l.name.text.clone(), ty);
+                    self.type_cache.borrow_mut().clear();
                     if let Some(r) = l.ty.as_ref().and_then(|t| self.declared_range(t)) {
                         ranged.insert(l.name.text.clone(), r);
                     }
@@ -385,6 +386,7 @@ impl<'a> Checker<'a> {
                 }
                 ImplItem::Const(c) => {
                     sym.insert(c.name.text.clone(), self.ast_ty(&c.ty));
+                    self.type_cache.borrow_mut().clear();
                     consts.insert(c.name.text.clone());
                 }
                 _ => {}

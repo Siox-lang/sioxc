@@ -605,49 +605,52 @@ impl<'a> Lowering<'a> {
                     .and_then(|element| self.find_method(&element, "matches", None))
                     .is_some();
                 if element_matches {
-                    let (left, right) = self.operand_range(scrutinee, env)?;
-                    let low = left.min(right);
-                    let width = left.abs_diff(right) as u32 + 1;
-                    let bit = |words: &[u64], index: u32| {
-                        words
-                            .get(index as usize / 64)
-                            .is_some_and(|word| word >> (index % 64) & 1 == 1)
-                    };
-                    let mut all: Option<Expr> = None;
-                    for position in (0..width).filter(|position| bit(&mask, *position)) {
-                        let symbol = if bit(&value, position) { '1' } else { '0' };
-                        let call = ast::Expr::Call {
-                            callee: Box::new(ast::Expr::Field {
-                                base: Box::new(ast::Expr::Index {
-                                    base: Box::new(scrutinee.clone()),
-                                    index: Box::new(ast::Expr::Int {
-                                        text: (low + i64::from(position)).to_string(),
+                    if let Some((left, right)) = self.operand_range(scrutinee, env) {
+                        let low = left.min(right);
+                        let width = left.abs_diff(right) as u32 + 1;
+                        let bit = |words: &[u64], index: u32| {
+                            words
+                                .get(index as usize / 64)
+                                .is_some_and(|word| word >> (index % 64) & 1 == 1)
+                        };
+                        let mut all: Option<Expr> = None;
+                        for position in (0..width).filter(|position| bit(&mask, *position)) {
+                            let symbol = if bit(&value, position) { '1' } else { '0' };
+                            let call = ast::Expr::Call {
+                                callee: Box::new(ast::Expr::Field {
+                                    base: Box::new(ast::Expr::Index {
+                                        base: Box::new(scrutinee.clone()),
+                                        index: Box::new(ast::Expr::Int {
+                                            text: (low + i64::from(position)).to_string(),
+                                            span: *span,
+                                        }),
                                         span: *span,
                                     }),
+                                    field: ast::Ident {
+                                        text: "matches".to_string(),
+                                        span: *span,
+                                    },
                                     span: *span,
                                 }),
-                                field: ast::Ident {
-                                    text: "matches".to_string(),
+                                type_args: Vec::new(),
+                                qualifier: None,
+                                args: vec![ast::Expr::CharLit {
+                                    ch: symbol,
                                     span: *span,
-                                },
+                                }],
+                                bang: false,
                                 span: *span,
-                            }),
-                            type_args: Vec::new(),
-                            qualifier: None,
-                            args: vec![ast::Expr::CharLit {
-                                ch: symbol,
-                                span: *span,
-                            }],
-                            bang: false,
-                            span: *span,
-                        };
-                        let condition = self.lower_scalar_env(&call, env);
-                        all = Some(match all {
-                            Some(all) => self.source_binary(BinOp::And, &all, &condition, *span),
-                            None => condition,
-                        });
+                            };
+                            let condition = self.lower_scalar_env(&call, env);
+                            all = Some(match all {
+                                Some(all) => {
+                                    self.source_binary(BinOp::And, &all, &condition, *span)
+                                }
+                                None => condition,
+                            });
+                        }
+                        return Some(all.unwrap_or(Expr::Const(1)));
                     }
-                    return Some(all.unwrap_or(Expr::Const(1)));
                 }
                 let masked = self.source_binary(BinOp::And, scrut, &words_const(mask), *span);
                 Some(self.source_binary(BinOp::Eq, &masked, &words_const(value), *span))

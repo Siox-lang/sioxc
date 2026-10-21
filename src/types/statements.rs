@@ -346,6 +346,7 @@ impl<'a> Checker<'a> {
                 if let Some(Ty::Array { len, .. }) = names.get_mut(&declaration.name.text) {
                     *len = inferred;
                 }
+                self.type_cache.borrow_mut().clear();
             }
         }
 
@@ -365,6 +366,7 @@ impl<'a> Checker<'a> {
         ranged: &HashMap<String, (i64, i64)>,
         expected_return: Option<&Ty>,
     ) {
+        self.type_cache.borrow_mut().clear();
         match s {
             Stmt::Use(_) => {}
             Stmt::Let(l) => {
@@ -488,6 +490,14 @@ impl<'a> Checker<'a> {
             }
             Stmt::Expr(e) => {
                 self.check_no_effect(e);
+                if matches!(
+                    e,
+                    Expr::Path(path)
+                        if path.segments.len() == 1
+                            && matches!(path.segments[0].text.as_str(), "continue" | "break")
+                ) {
+                    return;
+                }
                 self.check_stimulus_context(e);
                 self.check_expr(e, sym);
             }

@@ -337,6 +337,15 @@ pub(super) fn process_value_supported_in_layout(
                 && process_value_supported_in_layout(design, *then_value, layout, supported)
                 && process_value_supported_in_layout(design, *else_value, layout, supported)
         }
+        ProcessValueKind::RawResize { operand } => {
+            has(*operand)
+                || process_value_layout(design, *operand).is_some_and(|source| {
+                    process_value_supported_in_layout(design, *operand, source, supported)
+                })
+        }
+        ProcessValueKind::InlineCall { operand, .. } => {
+            process_value_supported_in_layout(design, *operand, layout, supported)
+        }
         ProcessValueKind::Match { scrutinee, arms } => {
             has(*scrutinee)
                 && !arms.is_empty()
@@ -853,8 +862,20 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                 else_value,
             } => {
                 has(&supported, *condition)
-                    && has(&supported, *then_value)
-                    && has(&supported, *else_value)
+                    && ((has(&supported, *then_value) && has(&supported, *else_value))
+                        || process_value_layout(design, id).is_some_and(|layout| {
+                            process_value_supported_in_layout(
+                                design,
+                                *then_value,
+                                layout,
+                                &supported,
+                            ) && process_value_supported_in_layout(
+                                design,
+                                *else_value,
+                                layout,
+                                &supported,
+                            )
+                        }))
             }
             // An operand whose companion cannot be read compares as known
             // (the comparison's ordinary result), as it did before the rule.

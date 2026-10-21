@@ -2293,6 +2293,38 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Whether an opening `{` begins a struct literal (`{ .a = 1 }` / `{ .. }`)
+    /// or a concatenation (`{ a, b }`) rather than a statement block.
+    fn brace_starts_expr(&self) -> bool {
+        if matches!(
+            self.kind_at(self.pos + 1),
+            TokenKind::Dot | TokenKind::DotDot
+        ) {
+            return true;
+        }
+        let mut cursor = self.pos + 1;
+        let mut depth = 1usize;
+        while cursor < self.tokens.len() && depth > 0 {
+            match self.kind_at(cursor) {
+                TokenKind::LBrace | TokenKind::LParen | TokenKind::LBracket => {
+                    depth += 1;
+                }
+                TokenKind::RBrace | TokenKind::RParen | TokenKind::RBracket => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return false;
+                    }
+                }
+                TokenKind::Semi if depth == 1 => return false,
+                TokenKind::Comma if depth == 1 => return true,
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            cursor += 1;
+        }
+        false
+    }
+
     /// Parse a `match` statement and its arms.
     fn parse_match(&mut self) -> MatchStmt {
         let start = self.span();
@@ -2305,7 +2337,7 @@ impl<'a> Parser<'a> {
             let astart = self.span();
             let pattern = self.parse_pattern();
             self.expect(TokenKind::FatArrow, "after a match pattern");
-            let body = if self.at(TokenKind::LBrace) {
+            let body = if self.at(TokenKind::LBrace) && !self.brace_starts_expr() {
                 self.parse_block()
             } else {
                 // Single statement arm: `"00--" => op = Op::Alu,`.

@@ -140,6 +140,7 @@ impl<'a> Checker<'a> {
             private_entity_members: HashMap::new(),
             view_dirs: HashMap::new(),
             expr_types: std::cell::RefCell::new(HashMap::new()),
+            type_cache: std::cell::RefCell::new(HashMap::new()),
             covered_tuple_matches: HashSet::new(),
             checked_struct_literals: std::cell::RefCell::new(HashSet::new()),
             current_self_ty: std::cell::RefCell::new(None),
