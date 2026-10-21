@@ -437,6 +437,9 @@ struct Checker<'a> {
     view_dirs: HashMap<String, HashMap<String, Direction>>,
     /// Persistent Stage-4 facts keyed by the AST expression's stable span.
     expr_types: std::cell::RefCell<HashMap<Span, Ty>>,
+    /// Per-statement memo table for [`Self::type_of`], keyed by `(expr_ptr, sym_ptr)`
+    /// so repeated `type_of` queries on nested operator trees stay linear.
+    type_cache: std::cell::RefCell<HashMap<(usize, usize), Ty>>,
     /// Tuple matches proven covered; handed on in [`Typed`].
     covered_tuple_matches: HashSet<Span>,
     /// Struct literals are reached both from their contextual consumer and
