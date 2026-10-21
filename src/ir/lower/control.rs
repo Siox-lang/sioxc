@@ -606,6 +606,14 @@ impl<'a> Lowering<'a> {
                     .is_some();
                 if element_matches {
                     if let Some((left, right)) = self.operand_range(scrutinee, env) {
+                        let target_base = match scrutinee {
+                            ast::Expr::Index { base, index, .. }
+                                if matches!(index.as_ref(), ast::Expr::Range { .. }) =>
+                            {
+                                base.as_ref().clone()
+                            }
+                            _ => scrutinee.clone(),
+                        };
                         let low = left.min(right);
                         let width = left.abs_diff(right) as u32 + 1;
                         let bit = |words: &[u64], index: u32| {
@@ -619,7 +627,7 @@ impl<'a> Lowering<'a> {
                             let call = ast::Expr::Call {
                                 callee: Box::new(ast::Expr::Field {
                                     base: Box::new(ast::Expr::Index {
-                                        base: Box::new(scrutinee.clone()),
+                                        base: Box::new(target_base.clone()),
                                         index: Box::new(ast::Expr::Int {
                                             text: (low + i64::from(position)).to_string(),
                                             span: *span,

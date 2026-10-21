@@ -18162,3 +18162,19 @@ Addressing compiler/lowering/process bugs found during differential sweeps (`src
 12. Packed enum and logic conversion to kernel 64-bit integer (`src/ir/lower/calls.rs`).
 13. `inline_resolve` parameter layouts, types, and widths preservation (`src/ir/lower/resolution.rs`).
 14. Wide packed vector (>64 bits) resize in process and hardware lowering bypassing 64-bit std integer conversion (`src/ir/lower/source_processes.rs`, `src/ir/lower/calls.rs`, `src/llvm/process/support.rs`).
+
+### 2026-10-21 — Antigravity — post-PR #141 lowering regression fixes (branch `fix/compiler-regressions`)
+
+Working in `/home/max/siox-bugfix` on branch `fix/compiler-regressions` based on `origin/main` (`872e039`).
+Fixed regressions identified after PR #141 merge:
+1. `both_engines::elements_of_call_results`: `storage_slice_bounds` in `src/ir/lower/expressions.rs` was treating calls returning unpacked arrays (`split3(x)[1]`) as packed vectors because `operand_type_name` returned `"unsigned"`. Restored the check to strictly require `Ty::Array { family: Some(_), .. }`.
+2. `debug_info` panics at `logic.rs:204` (`Option::unwrap()` on `None`):
+   - In `src/ir/lower/expressions.rs`: `operand_range` now specifically matches `ast::Expr::Index { index: Range, .. }` and evaluates actual slice bounds. Removed the fabricated `(width - 1, 0)` range fallback and ad-hoc `Field|Index` width probe in `ast_width`.
+   - In `src/ir/lower/control.rs`: bit matching on slice scrutinees unwraps the target base to index the underlying vector at `(low + position)` rather than constructing nested slice indexing `x[7..4][pos]`.
+3. `calls.rs` vector narrowing & scalar return masking:
+   - In `src/ir/lower/calls.rs`: restricted `lower_wide_packed_resize` to `target_width > 64 && source_width > 0` so narrowing conversions (e.g. 81 -> 8 bits) continue to use standard std function inlining.
+   - Removed redundant `bind_source_expression` on scalar returns; in `mask_to_type_width`, use bitwise AND masking for `w < 64` and slice for `w > 64`, restoring `and 255` expected by `ir::tests::values::a_call_result_carries_its_return_type`.
+4. `debug_info::numeric_family_conversions_keep_source_signatures`: in `src/ir/lower/source_bindings.rs`, restored `if env.contains_key(&root)` to prevent nominal type loss for block locals falling through to `block_local_type`.
+5. `testbench_methods::procedural_calls_share_cfg_and_preserve_call_evaluation`: in `src/llvm/process/binary.rs`, restricted sign-extension of unpacked equality operands to cases where the packed vector operand is actually signed, avoiding sign-extending positive wide integers when compared against wide `unsigned[N]`.
+
+

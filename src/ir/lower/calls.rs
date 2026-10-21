@@ -153,7 +153,7 @@ impl<'a> Lowering<'a> {
                     _ => None,
                 })
                 .unwrap_or_else(|| self.ast_width(arg));
-            if target_width.max(source_width) > 64 && source_width > 0 {
+            if target_width > 64 && source_width > 0 {
                 return self.lower_wide_packed_resize(
                     arg,
                     env,
@@ -914,8 +914,9 @@ impl<'a> Lowering<'a> {
         // Only a scalar result has a declared width to wrap to; a struct's
         // leaves were already masked field by field as the body built them.
         let out = match (out, f.ret.as_ref()) {
-            (Some(Val::Scalar(v)), Some(ret)) => Some(Val::Scalar(self.bind_source_expression(
-                self.mask_to_type_width(v, ret, ast::expr_span(callee)),
+            (Some(Val::Scalar(v)), Some(ret)) => Some(Val::Scalar(self.mask_to_type_width(
+                v,
+                ret,
                 ast::expr_span(callee),
             ))),
             (v, _) => v,
@@ -960,7 +961,11 @@ impl<'a> Lowering<'a> {
         if w == 0 || w == 64 {
             return v;
         }
-        self.source_slice(&v, w - 1, 0, span)
+        if w < 64 {
+            self.source_binary(BinOp::And, &v, &Expr::Const((1u64 << w) - 1), span)
+        } else {
+            self.source_slice(&v, w - 1, 0, span)
+        }
     }
 
     /// Find a method `name` on type `ty`: an inherent-impl method

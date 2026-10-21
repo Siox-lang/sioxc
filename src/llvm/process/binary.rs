@@ -400,14 +400,20 @@ pub(super) fn process_binary<'ctx>(
         return fit(builder, result, result_width);
     }
 
+    let packed_signed = packed_comparison_width.flatten().is_some_and(|_| {
+        [left, right].into_iter().any(|operand| {
+            process_value_packed_width(design, operand).is_some()
+                && process_value_is_signed(design, operand)
+        })
+    });
     let left_signed = signed_operands
         || (matches!(operation, ProcessBinaryOp::Eq | ProcessBinaryOp::Ne)
-            && packed_comparison_width.flatten().is_some()
+            && packed_signed
             && process_value_packed_width(design, left).is_none()
             && process_value_is_signed(design, left));
     let right_signed = signed_operands
         || (matches!(operation, ProcessBinaryOp::Eq | ProcessBinaryOp::Ne)
-            && packed_comparison_width.flatten().is_some()
+            && packed_signed
             && process_value_packed_width(design, right).is_none()
             && process_value_is_signed(design, right));
     let left = process_value_at(
