@@ -1272,7 +1272,10 @@ impl<'a> Lowering<'a> {
         }
         // Target: (is_resize, family, width). Width None = kernel integer.
         let head = |e: &ast::Expr| match e {
-            ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+            ast::Expr::Path(p) => self
+                .free_fns
+                .struct_path_key(p)
+                .or_else(|| (p.segments.len() == 1).then(|| p.segments[0].text.clone())),
             _ => None,
         };
         let (target_w, resize) = match callee {

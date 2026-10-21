@@ -39,7 +39,45 @@ fn run(name: &str, source: &str) -> String {
         .join(format!("siox_fixed_printing_{name}_{}", std::process::id()))
         .join(name);
     let output = std::process::Command::new(&binary).output().unwrap();
+    assert!(output.status.success(), "{output:?}");
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn fixed_constructors_keep_their_format_in_comparisons() {
+    let report = run(
+        "constructor_comparison",
+        r#"module m;
+use std::fixed::{ufixed, sfixed};
+#[test] entity T {}
+impl T {
+    process {
+        let local: ufixed<8, 4> = ufixed<8, 4>(2.53);
+        print!("|{} {} {} {} {} {}\n", integer(local),
+            integer(ufixed<8, 4>(2.53)), integer(ufixed<8, 4>(100.0)),
+            integer(ufixed<8, 4>(0.0 - 1.0)), integer(sfixed<8, 4>(0.0 - 100.0)),
+            integer(sfixed<8, 4>(0.0 - 2.53)));
+        assert!(integer(ufixed<8, 4>(2.53)) == 40, "direct rounding bits");
+        assert!(integer(ufixed<8, 4>(100.0)) == 255, "direct saturation bits");
+        assert!(integer(ufixed<8, 4>(0.0 - 1.0)) == 0, "direct zero bits");
+        assert!(integer(sfixed<8, 4>(0.0 - 100.0)) == 128, "signed saturation bits");
+        assert!(integer(sfixed<8, 4>(0.0 - 2.53)) == 216, "signed rounding bits");
+        assert!(integer(ufixed<8, 4>(3)) == 48, "integer conversion bits");
+        assert!(local == ufixed<8, 4>(2.53), "stored and direct formats agree");
+        assert!(ufixed<8, 4>(2.53) == 2.5, "direct numeric value");
+        assert!(ufixed<8, 4>(3) == 3, "integers compare by value, not bits");
+        assert!(ufixed<8, 4>(2.53) != 40, "a raw word is not its numeric value");
+        assert!(sfixed<8, 4>(0.0 - 100.0) == 0 - 8, "signed saturation value");
+        assert!(sfixed<8, 4>(0.0 - 2.53) == 0.0 - 2.5, "signed numeric value");
+        assert!(sfixed<8, 4>(0.0 - 100.0) == -8, "unary negative promotion");
+        assert!(ufixed<8, 4>(3) == 1 + 2, "compound literals promote by value");
+        assert!(ufixed<8, 4>(3) == 2 * 2 - 1, "nested literal promotion");
+    }
+}
+"#,
+    );
+    assert!(report.contains("|40 40 255 0 128 216\n"), "{report}");
 }
 
 /// Each expression as a DUT output and a testbench local of `ty`; the

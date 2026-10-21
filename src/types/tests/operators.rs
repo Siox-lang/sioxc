@@ -676,6 +676,54 @@ fn constrained_operator_outputs_keep_their_declared_width() {
         0,
         "explicit result ranges stay constrained"
     );
+    let aliased = format!(
+        "{}\ntype Narrow = Shape;\ntype Shape = unsigned[2..0];\n",
+        source.replace("unsigned[3]", "Narrow")
+    );
+    assert_eq!(
+        check_src(&aliased),
+        0,
+        "forward alias chains preserve binary and unary result constraints"
+    );
+    assert_eq!(
+        check_src(&aliased.replace("x = a clip b", "x = 1 clip b")),
+        0,
+        "literal-left outputs expand aliases too"
+    );
+    assert_eq!(
+        check_src(&aliased.replace("x: Narrow out", "x: unsigned[8] out")),
+        1,
+        "an aliased constrained output cannot silently widen"
+    );
+}
+
+#[test]
+fn ranged_constructors_reject_implicit_output_widening() {
+    for (range, wider) in [
+        ("2..0", "7..0"),
+        ("6..4", "11..4"),
+        ("-1..-3", "4..-3"),
+        ("-3..-1", "-3..4"),
+    ] {
+        let source = format!(
+            "module m; entity E {{ a: unsigned[8] in, y: unsigned[{range}] out }}\n\
+             impl E {{ y = unsigned[{range}](a); }}\n"
+        );
+        assert_eq!(
+            check_src(&source),
+            0,
+            "a three-bit constructor fits ({range}): {:?}",
+            check_modules(&[(&format!("{source}{VEC}"), FileId(0))]).diagnostics()
+        );
+        assert_eq!(
+            check_src(&source.replace(
+                &format!("y: unsigned[{range}]"),
+                &format!("y: unsigned[{wider}]"),
+            )),
+            1,
+            "a ranged constructor is not an unconstrained output"
+        );
+    }
 }
 
 #[test]

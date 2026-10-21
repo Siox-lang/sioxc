@@ -405,11 +405,16 @@ impl Lowering<'_> {
                 }
                 // `unsigned(v)`: the argument's shape under the new family.
                 if let ast::Expr::Path(path) = callee.as_ref() {
-                    if let ([argument], [segment]) = (args.as_slice(), path.segments.as_slice()) {
-                        if self.array_families.contains(&segment.text) {
+                    if let ([argument], Some(family)) = (
+                        args.as_slice(),
+                        self.free_fns.struct_path_key(path).or_else(|| {
+                            (path.segments.len() == 1).then(|| path.segments[0].text.clone())
+                        }),
+                    ) {
+                        if self.array_families.contains(&family) {
                             let mut layout = self.source_operand_layout(argument, env)?;
-                            if let LayoutKind::Packed { family, .. } = &mut layout.kind {
-                                family.clone_from(&segment.text);
+                            if let LayoutKind::Packed { family: target, .. } = &mut layout.kind {
+                                *target = family;
                             }
                             return Some(layout);
                         }
@@ -420,8 +425,10 @@ impl Lowering<'_> {
                 // had no shape for `self[i]`.
                 if let ast::Expr::Index { base, index, .. } = callee.as_ref() {
                     if let ast::Expr::Path(path) = base.as_ref() {
-                        if let [segment] = path.segments.as_slice() {
-                            if self.array_families.contains(&segment.text) {
+                        if let Some(family) = self.free_fns.struct_path_key(path).or_else(|| {
+                            (path.segments.len() == 1).then(|| path.segments[0].text.clone())
+                        }) {
+                            if self.array_families.contains(&family) {
                                 let (left, right) = match index.as_ref() {
                                     ast::Expr::Range { lo, hi, .. } => (
                                         self.eval_const(lo, &self.cur_env)?,
@@ -429,7 +436,6 @@ impl Lowering<'_> {
                                     ),
                                     width => (self.eval_const(width, &self.cur_env)? - 1, 0),
                                 };
-                                let family = segment.text.clone();
                                 return Some(SourceLayout {
                                     span: ast::expr_span(expression),
                                     kind: LayoutKind::Packed {

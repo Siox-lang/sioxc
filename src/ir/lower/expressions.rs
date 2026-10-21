@@ -643,9 +643,13 @@ impl<'a> Lowering<'a> {
             }
             ast::Expr::Call { callee, args, .. } => match callee.as_ref() {
                 ast::Expr::Index { base, index, .. }
-                    if expr_path(base)
-                        .as_deref()
-                        .is_some_and(|h| self.array_families.contains(h)) =>
+                    if match base.as_ref() {
+                        ast::Expr::Path(path) => self.free_fns.struct_path_key(path),
+                        _ => None,
+                    }
+                    .or_else(|| expr_path(base))
+                    .as_deref()
+                    .is_some_and(|h| self.array_families.contains(h)) =>
                 {
                     // A width (`unsigned[8]`) or a range (`sfixed[3..-4]`).
                     match index.as_ref() {
@@ -664,8 +668,11 @@ impl<'a> Lowering<'a> {
                 // argument's.
                 ast::Expr::Path(p)
                     if args.len() == 1
-                        && p.segments.len() == 1
-                        && self.array_families.contains(&p.segments[0].text) =>
+                        && self
+                            .free_fns
+                            .struct_path_key(p)
+                            .or_else(|| (p.segments.len() == 1).then(|| p.segments[0].text.clone()))
+                            .is_some_and(|family| self.array_families.contains(&family)) =>
                 {
                     self.ast_width(&args[0])
                 }

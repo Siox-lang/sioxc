@@ -402,13 +402,13 @@ impl<'a> Checker<'a> {
                         Expr::Path(path) => self.path_key(path),
                         _ => None,
                     };
-                    let w = signed_lit(index).unwrap_or(0).max(0) as u32;
+                    let (w, low) = self.index_shape(index);
                     match head.filter(|key| self.array_families.contains(key)) {
                         Some(head) => Ty::Array {
                             elem: Box::new(self.array_element_ty(&head)),
                             family: Some(head),
                             len: w,
-                            low: 0,
+                            low,
                         },
                         None => Ty::Error,
                     }

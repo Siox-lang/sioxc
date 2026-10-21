@@ -77,8 +77,11 @@ impl Test {
     let dir = std::env::temp_dir().join(format!("siox_operator_results_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let compiler = Compiler::new(concat!(env!("CARGO_MANIFEST_DIR"), "/std"));
-    for range in [None, Some((2, 0)), Some((-1, -3)), Some((-3, -1))] {
-        let source = if let Some((left, right)) = range {
+    for (range, aliased) in [None, Some((2, 0)), Some((-1, -3)), Some((-3, -1))]
+        .into_iter()
+        .flat_map(|range| [false, true].map(move |aliased| (range, aliased)))
+    {
+        let mut source = if let Some((left, right)) = range {
             source
                 .replace("unsigned[3]", &format!("unsigned[{left}..{right}]"))
                 .replace(
@@ -88,9 +91,25 @@ impl Test {
         } else {
             source.to_owned()
         };
+        if aliased {
+            let constraint = range.map_or_else(
+                || "unsigned[3]".to_owned(),
+                |(left, right)| format!("unsigned[{left}..{right}]"),
+            );
+            source = source
+                .replace(&constraint, "Narrow")
+                .replace(", Packet> for unsigned", ", PacketAlias> for unsigned")
+                .replace("-> Packet {", "-> PacketAlias {")
+                .replace(", Bool> for unsigned", ", Decision> for unsigned")
+                .replace("-> Bool {", "-> Decision {");
+            source.push_str(&format!(
+                "\ntype Narrow = Shape;\ntype Shape = {constraint};\n\
+                 type PacketAlias = Packet;\ntype Decision = Bool;\n"
+            ));
+        }
         let mut traces = Vec::new();
         for debug in [false, true] {
-            let binary = dir.join(format!("test_{range:?}_{debug}"));
+            let binary = dir.join(format!("test_{range:?}_{aliased}_{debug}"));
             let result = compiler.compile(
                 CompileRequest::new(
                     SourceInput::memory(dir.join("test.siox"), source.clone()),

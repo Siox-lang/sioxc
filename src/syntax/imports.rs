@@ -154,12 +154,14 @@ pub fn desugar(modules: &mut [Module], sink: &mut DiagnosticSink) {
         .collect();
     for (module, env) in modules.iter_mut().zip(envs) {
         let here = path_segments(&module.path);
+        let expanding = RefCell::new(HashSet::new());
         let rewriter = Rewriter {
             generated: false,
             scopes: &scopes,
             index: &index,
             module: here,
             hidden: RefCell::default(),
+            expanding: &expanding,
         };
         rewriter.items(&mut module.items, &env, sink);
         let mut hidden: Vec<_> = rewriter.hidden.into_inner().into_iter().collect();
@@ -722,6 +724,8 @@ struct Rewriter<'a> {
     generated: bool,
     /// Enums a block-level variant import needs visible: name -> module.
     hidden: RefCell<HashMap<String, String>>,
+    /// Alias identities, not arguments: transformed recursion also has no finite type.
+    expanding: &'a RefCell<HashSet<(String, String)>>,
 }
 
 impl Rewriter<'_> {
@@ -1383,7 +1387,7 @@ impl Rewriter<'_> {
 
     /// A generic alias applied to `args`, substituted: `Pair<u8>` is
     /// `Packet<u8>`, `float<32, 23>` is `float[8..-23]`. `None` after an
-    /// arity error.
+    /// arity error or recursive expansion.
     fn expand_alias(
         &self,
         site: &Path,
@@ -1403,6 +1407,18 @@ impl Rewriter<'_> {
                 ))
                 .with_code(codes::TYPE_MISMATCH)
                 .at(span),
+            );
+            return None;
+        }
+        if !self.expanding.borrow_mut().insert(key.clone()) {
+            sink.emit(
+                Diagnostic::error(format!(
+                    "alias `{}::{}` is defined in terms of itself",
+                    key.0, key.1
+                ))
+                .with_code(codes::DUPLICATE_ITEM)
+                .at(span)
+                .help("break the cycle: a type alias must have a finite expansion"),
             );
             return None;
         }
@@ -1426,6 +1442,7 @@ impl Rewriter<'_> {
             index: self.index,
             module: alias_module,
             hidden: RefCell::default(),
+            expanding: self.expanding,
         };
         qualify_home(&mut body, &key.0, &alias.params, self.index);
         substitute_type(&mut body, &bindings);
@@ -1437,13 +1454,14 @@ impl Rewriter<'_> {
             }
         }
         home.ty(&mut body, &Env::default(), sink);
+        self.expanding.borrow_mut().remove(key);
         Some(body)
     }
 
     /// The non-generic alias `path` names, with its type read in its own
     /// module and qualified so it means the same wherever it is used.
     fn plain_alias(&self, path: &Path, env: &Env, sink: &mut DiagnosticSink) -> Option<Type> {
-        let key = match &path.segments[..] {
+        let mut key = match &path.segments[..] {
             [only] if !env.shadow.contains(&only.text) => match env.items.get(&only.text) {
                 Some(full) => {
                     let (module, name) = full.rsplit_once("::")?;
@@ -1463,18 +1481,44 @@ impl Rewriter<'_> {
             }
             _ => return None,
         };
-        let mut ty = self.index.plain.get(&key)?.clone();
-        let home_env = self.scopes.get(&key.0).cloned().unwrap_or_default();
-        let home = Rewriter {
-            generated: true,
-            scopes: self.scopes,
-            index: self.index,
-            module: key.0.split("::").map(str::to_string).collect(),
-            hidden: RefCell::default(),
-        };
-        home.ty(&mut ty, &home_env, sink);
-        qualify_with_scope(&mut ty, &key.0, &home_env, self.index);
-        Some(ty)
+        let mut seen = HashSet::new();
+        let mut result = None;
+        while let Some(body) = self.index.plain.get(&key) {
+            if !seen.insert(key.clone()) {
+                break;
+            }
+            let mut ty = body.clone();
+            let home_env = self.scopes.get(&key.0).cloned().unwrap_or_default();
+            let home = Rewriter {
+                generated: true,
+                scopes: self.scopes,
+                index: self.index,
+                module: key.0.split("::").map(str::to_string).collect(),
+                hidden: RefCell::default(),
+                expanding: self.expanding,
+            };
+            home.ty(&mut ty, &home_env, sink);
+            qualify_with_scope(&mut ty, &key.0, &home_env, self.index);
+            let next = match &ty {
+                Type::Path(path) => path.segments.split_last().map(|(name, module)| {
+                    let module = if module.is_empty() {
+                        key.0.clone()
+                    } else {
+                        module
+                            .iter()
+                            .map(|name| name.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join("::")
+                    };
+                    (module, name.text.clone())
+                }),
+                _ => None,
+            };
+            result = Some(ty);
+            let Some(next) = next else { break };
+            key = next;
+        }
+        result
     }
 
     /// A format struct's range written by hand (`float[8..-23]`): its

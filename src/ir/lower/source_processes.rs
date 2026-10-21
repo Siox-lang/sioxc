@@ -6464,8 +6464,9 @@ fn lower_process_raw_resize(
     if args.len() != 1 {
         return None;
     }
+    let declared = crate::ir::lower_helpers::expr_to_type(callee)?;
     let target = match callee.as_ref() {
-        ast::Expr::Index { base, index, .. } => {
+        ast::Expr::Index { base, .. } => {
             let ast::Expr::Path(path) = base.as_ref() else {
                 return None;
             };
@@ -6479,9 +6480,10 @@ fn lower_process_raw_resize(
             if !family_known {
                 return None;
             }
-            let len =
-                crate::ir::eval_const_fns(index, context.constant_integers, context.functions, 0)
-                    .and_then(|width| u32::try_from(width).ok())?;
+            let crate::types::Ty::Array { len, .. } = process_declared_type(&declared, context)?
+            else {
+                return None;
+            };
             let (elem, family) = match target {
                 Some(crate::types::Ty::Array {
                     elem,
@@ -6617,7 +6619,13 @@ fn lower_process_raw_resize(
     let operand = value_ref_with_type(&args[0], process, context, operand_type.as_ref());
     let kind = ProcessValueKind::RawResize { operand };
     let width = source_value_width(&kind, Some(&target), process, context)?;
-    Some(push_converted(*span, target, width, kind, context))
+    let value = push_converted(*span, target, width, kind, context);
+    if let Some(layout) = process_binding_layout(Some(&declared), *span, value, process, context)
+        .filter(|layout| layout.packed_width() == Some(width))
+    {
+        context.process_ir.value_layouts[value.0 as usize] = Some(layout);
+    }
+    Some(value)
 }
 
 /// A conversion's result with its target's vector layout, which a method on
@@ -9908,12 +9916,10 @@ fn value_ref_with_type(
     // Arithmetic on literals alone is exact in the vector it fills, as a
     // literal is: `0 - 17262465143367426459` into `signed[65]` wrapped in
     // the 64-bit kernel (also when promoted there) and came out positive.
-    if !matches!(expression, ast::Expr::Int { .. }) {
-        let span = ast::expr_span(expression);
-        let target = context
-            .typed
-            .promotion(span)
-            .or(contextual_type)
+    let span = ast::expr_span(expression);
+    // Numeric promotions must run the source-owned conversion, not fold raw target bits.
+    if !matches!(expression, ast::Expr::Int { .. }) && context.typed.promotion(span).is_none() {
+        let target = contextual_type
             .or_else(|| context.typed.expr_type(span))
             .cloned();
         if let (

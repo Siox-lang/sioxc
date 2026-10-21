@@ -18644,3 +18644,177 @@ validation passed. Corpus migration is committed locally as17f11a1; its commit
 contains exactly the two owned tracked fixtures, preserving all untracked
 programs and artifacts. This accepted compiler batch references that corpus
 revision and retains the actual-checkout acceptance above. No push performed.
+
+### 2026-10-21 — Codex — operator output aliases: reproduce first
+
+Accepted base is9d84a3c. Own the output-declaration collection and its existing
+checker/native tests, plus a new actual-corpus operator_alias_result_test.siox;
+leave all previous untracked corpus files and Antigravity/LLVM ownership alone.
+Exercise forward/chained sized aliases, named/Bool aliases, unary and binary
+operators, and literal-left output selection. Current collector drops every
+Path AST, so aliases cannot use existing ast_ty_for_owner/path_ty expansion.
+First retain failing tests/evidence; only then remove that special-case filter
+if the shared path suffices. No new alias resolver or backend workaround.
+
+3913537 proves the pre-fix failure: the checker regression reports2 unexpected
+errors for forward/chained binary/unary outputs; the actual corpus case reports
+3 E-P003 errors assigning/initializing Small as unsigned[3] and comparing its
+literal-left result. The guard exited0 only because both failures were expected;
+this is reproduction evidence, not a passing acceptance gate. Remove the Path
+filter so existing ast_ty_for_owner/path_ty handles declaration identity and
+aliases after collection. Expanded native matrix covers four ranges, direct
+and forward-alias outputs, Packet/Bool aliases, ordinary/debug and VCD parity.
+
+3916207 is terminal failed101: after retaining output ASTs, all565 default
+library tests pass, including the alias controls. The expanded native matrix
+then finds a separate chained-alias constructor gap at Narrow(1): import
+desugaring's plain_alias follows one body only, leaving the inner alias as a
+callee. Keep the failing matrix. Own src/syntax/imports.rs now to make its
+existing plain_alias expansion iterative/cycle-safe in the alias declaration's
+home scope; do not add checker/IR/backend constructor special cases.
+
+3933712 passes565 default unit tests and the cycle control, but import-form
+tests correctly reject the new fixture's public alias exposing private aliases.
+Make that fixture's two referenced aliases public; retain the caller's same-leaf
+WordBase and all scope/cycle assertions. This was invalid test setup, not a
+reason to relax privacy. The operator native binary had not run in that gate.
+
+3940450 then passes565 units and the cycle control, but the cross-module fixture
+needs its existing geometry dependency (colors) explicitly loaded, and alias
+constructors now expose a real qualified-constructor lowering gap: raw resize
+recognizes only one-segment family paths. The canonical std::bits::unsigned
+callee falls through, evaluating bound self/rhs with no inline environment.
+Own the raw-resize family lookup in calls.rs and matching width/layout lookups
+in expressions.rs/source_bindings.rs; use the existing resolver-owned
+struct_path_key, retaining current unqualified synthetic-path behavior. No new
+alias/constructor machinery in IR and no LLVM/runtime edits. Keep all alias,
+scope, cycle and native controls.
+
+3950353 passes all565 default units, all9 import tests and the complete hardware
+operator native matrix. The actual corpus binary then fails at its first
+procedural ranged constructor: lower_process_raw_resize evaluates a Range as
+one scalar width. Own that existing function in source_processes.rs now; reuse
+expr_to_type/process_declared_type and process_binding_layout for exact lengths
+and written labels, rather than another evaluator. The checker's corresponding
+Call/Index inference also used signed_lit and erased ranges to width0; use the
+existing index_shape helper and add wrong-width rejection controls. Preserve
+all native assertions and add procedural/direct qualified range-label checks.
+
+3961830 passes565 old unit tests; the new width control's negative-label cases
+incorrectly assign to a different zero-based format. Keep exact-format positive
+controls and use an eight-bit destination with the SAME low bound for the
+negative control, isolating width rather than relaxing existing format rules.
+3968787 did NOT run tests (exit75): peer guarded service3963345 holds the shared
+slot running debug_info. Do not stop it or use an unguarded fallback; wait for
+its authoritative terminal status, then run the corrected alias/range matrix.
+
+Peer3963345 ended failed101; left it and its source alone. Focused owned job
+3972817 is terminal exited/success/0, peak1041022976: all566 library tests in
+both modes, all9 import controls in both modes, the eight-variant hardware
+operator matrix, and the new actual corpus case pass. That matrix executes36
+ordinary/debug native binaries and18 complete VCD comparisons across default
+and bitpack. Strict all-target/all-feature Clippy, fmt/diff and AST graph
+refresh6132/17104 pass. Source82323446 and corpusc83335ea are the candidate
+snapshot; no new commits. Next run full Rust/actual247-program corpora and the
+remaining frontend/example gates on that frozen snapshot at the measured3GiB
+budget required by unchanged-baseline companion_chains.
+
+Full acceptance is live as
+siox-job-3000-1792586026354150373-3980593.service, retained log beside the
+earlier guarded logs. It runs all stages with --no-fail-fast for both Rust
+suites, then both actual corpora, and retains individual logs/source hashes.
+Re-poll this service; launch is not acceptance. Freeze source/std/Rust/scripts
+and corpus while live. Keep this follow-up uncommitted until terminal green.
+
+Read-only follow-up tracing while3980593 runs: constructor-only alias imports
+can lose their last reference before the resolver's unused-import lint sees
+them (3940450's diagnostic output includes the warning). Reproduce separately
+with used/unused and privacy controls before changing expansion metadata;
+do not blanket-exempt alias imports. Also inspect the unused-private-import
+case: ImportSite.accessible documents cascade suppression, but
+lint_unused_imports currently does not consult it. These are next diagnostic
+probes, not changes or completion claims for the frozen alias/range snapshot.
+
+### 2026-10-21 — Codex — ranged constructors and numeric comparisons
+
+Acceptance3980593 is terminal failed1, not live: both full Rust suites/Clippy
+passed, but both corpora were246/247 at fixed_test.siox:108. The existing spec
+section3.17 requires numeric fixed/integer comparison and explicit integer(x)
+for raw bits. Old ranged Call/Index width0 bypassed promotion. Migrate the six
+stale raw-word checks to integer reads and add separate numeric/negative value
+and raw-vs-value controls. tests/fixed_and_printing.rs now checks native exit
+status and has a focused regression preserving raw and numeric expectations.
+No std, LLVM or runtime edits. AST graph update passes6133/17106 (known libfst
+extractor warnings remain). GitHub #143/#144/#178 coordination is posted.
+
+Guarded343280/343782 exited75; no tests ran. Claude's inspected flock287758
+is live in ci-local in siox-conv, so do not stop it or bypass the lock. Once
+free, launch the syntax-checked cache runner through guarded-run with3G/2816M
+(unchanged companion_chains measured need), not directly:
+/home/max/.cache/siox-jobs/tmp/operator-alias-resume-verify.sh
+It retains focused fixed suites,8 actual ordinary/debug native executions with
+VCD parity, then all full gates and before/after source/corpus hashes. No new
+commit/push until terminal green. Broader goal stays active.
+
+### 2026-10-21 — Codex — GitHub #178 generic alias expansion guard
+
+Claimed #178 in the issue and shared chat after Antigravity confirmed reporting
+only. Rewriter now shares an active alias-identity set across home rewriters;
+expand_alias rejects repeat identities before body substitution, even with
+transformed arguments, and removes identities after expansion. Existing
+E-P002 cycle diagnostic, no depth cap, dependencies or backend change.
+import_forms adds direct, growing, mutual, imported and constructor-cycle
+controls plus finite nested/repeated aliases. All Rewriter constructors were
+updated; fmt/diff checks pass. Graph refreshed6136/17111 with the known third-
+party extractor warnings only. Actual Rust/native verification still pending
+live peer flock287758 (bitpack Rust suite, inspected again); runner now also
+runs both import_forms suites before the native/full acceptance stages.
+
+### 2026-10-21 — Codex — queued acceptance behind verified live peer
+
+TTY session51109 is a lightweight waiter for inspected live peer flock287758;
+once that process exits it launches the cache acceptance runner through the
+unchanged guarded-run mechanism with3GiB/2816MiB and a2h timeout. No unguarded
+tests or parallel heavy job. Poll session51109 for the new service/log handle,
+then poll that service to terminal; do not start a duplicate acceptance job.
+Freeze owned source/std/tests/scripts and corpus until its result is observed.
+The script retains per-stage logs and before/after source/corpus hashes.
+
+Waiter51109 completed after peer287758 exited. Own acceptance is now live as
+siox-job-3000-1792615279683566502-369265.service with its retained siox-jobs log.
+Poll that unit; do not launch another run. Peer final corpus reported247/247,
+which is peer evidence only, not verification of this source candidate.
+
+Acceptance369265 ended failed101: the new test correctly exposed an additional
+compound-literal promotion bug. All printed raw words40/40/255/0/128/216 were
+right, but sfixed(-100)==(0-8) failed. value_ref_with_type folded arithmetic
+using the promotion's destination format before process_promoted_operand ran.
+Skip that raw-fold shortcut for expressions with checked promotions; their std
+From body now handles the value, while unpromoted vector arithmetic stays exact.
+Keep the original signed check and add unary/nested/positive literal controls.
+No std/backend changes. Temporary diagnostic dumps were removed; retry394968
+was failed75 (no tests). New acceptance395550 is live:
+siox-job-3000-1792615440255047571-395550.service
+evidence /home/max/.cache/siox-jobs/tmp/operator-alias-resume.j64qWM
+Both5-test fixed suites and11-test import suites pass; default actual fixed and
+alias cases pass ordinary/debug native runs with full VCD parity. Bitpack and
+full gates remain live. Freeze source/corpus and poll this unit, not369265.
+AST update6138/17113 passes (known libfst extractor warnings remain).
+
+### 2026-10-21 — Codex — accepted alias/promotion safety follow-up
+
+395550 is terminal exited/success/0, peak2968403968 bytes. Evidence is retained
+in operator-alias-resume.j64qWM. Full default/bitpack Rust suites (including all
+23 DWARF tests each), both actual247-program corpora, frontend-only check/strict
+Clippy, all-target/all-feature strict Clippy, fmt and required examples pass.
+Focused fixed/import suites pass in both modes;8 actual ordinary/debug native
+executions and4 full VCD parity comparisons pass. Earlier focused operator
+matrix is repeated in both full Rust suites. Sourcef0146f53 and corpused48eaf5
+match before/after. AST graph6138/17113 refreshed; no LLVM/runtime/std changes.
+
+Commit only owned alias/operator/range/promotion code, tests and this log here;
+commit only fixed_test and the new operator_alias_result_test in the actual
+corpus. Other agents' untracked cases/artifacts stay untouched. Latest main was
+fetched read-only at14373be; these results are NOT latest-main integration
+acceptance. #143/#144/#178 stay open until integration/review. No push. Broader
+bug fixing continues separately with test-first #186 in siox-port-types.

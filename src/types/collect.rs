@@ -501,8 +501,7 @@ impl<'a> Checker<'a> {
                                     _ => None,
                                 })
                             });
-                            // Dispatch uses family keys, but an explicit result
-                            // constraint must survive until expression typing.
+                            // A path can name a sized alias; retain it for call-site typing.
                             let output_declaration = im
                                 .trait_args
                                 .get(usize::from(!unary) + skip)
@@ -512,8 +511,7 @@ impl<'a> Checker<'a> {
                                         ImplItem::Fn(function) => function.ret.clone(),
                                         _ => None,
                                     })
-                                })
-                                .filter(|ty| !matches!(ty, Type::Path(_)));
+                                });
                             let output = output.map(|head| (head, output_declaration));
                             self.operator_sigs
                                 .entry((t.clone(), ty.clone()))
