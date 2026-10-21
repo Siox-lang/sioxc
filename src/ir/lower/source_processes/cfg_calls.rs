@@ -648,7 +648,7 @@ fn inline_call(
     }
     let recursive = context.recursive_calls.borrow()[recursions..]
         .iter()
-        .map(|(_, _, function)| *function)
+        .map(|(_, _, function, _)| *function)
         .collect::<Vec<_>>();
     let &function = recursive.first()?;
     if context.frame_functions.contains(&function) {
@@ -742,6 +742,7 @@ fn inline_call_once(
             function.name.text.clone(),
             context.process_ir.values[call.0 as usize].span,
             function.span,
+            false,
         ));
         return None;
     }
@@ -968,8 +969,19 @@ fn recursive_frame_call(
     // Arguments read the caller's activation, so they are taken first.
     let mut values = Vec::with_capacity(arguments.len());
     let mut places = Vec::with_capacity(arguments.len());
-    for argument in arguments {
+    for (argument, parameter) in arguments.iter().zip(&parameters) {
         let value = normalize_value(*argument, true, block, process, context, memo)?;
+        // Polymorphic recursion (`blowup((x, x))` inside `blowup<T>`) calls
+        // the frame with an argument of another shape: bound to the frame's
+        // parameter it lowered to a block nothing could run (#175). Refuse,
+        // so the call is reported as a recursion.
+        let shape = |id: ProcessValueId| {
+            let value = &context.process_ir.values[id.0 as usize];
+            (value.bit_width, value.ty.clone())
+        };
+        if shape(value) != shape(*parameter) {
+            return None;
+        }
         places.push(local_place(value, context));
         values.push(capture_process_operand(value, context, process, *block));
     }

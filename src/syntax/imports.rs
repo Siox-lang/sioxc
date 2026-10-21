@@ -1417,6 +1417,35 @@ impl Rewriter<'_> {
                 }
             }
         }
+        // An alias applying itself (`type Tree<T> = (T, Tree<(T, T)>)`) grows
+        // with every expansion and recursed until the stack overflowed
+        // (#178). One already being expanded, with any arguments, is a cycle.
+        thread_local! {
+            static EXPANDING: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+        }
+        if EXPANDING.with(|stack| stack.borrow().contains(key)) {
+            sink.emit(
+                Diagnostic::error(format!("alias `{}` is defined in terms of itself", key.1))
+                    .with_code(codes::DUPLICATE_ITEM)
+                    .at(span)
+                    .help("break the cycle: an alias cannot expand to itself"),
+            );
+            return None;
+        }
+        EXPANDING.with(|stack| stack.borrow_mut().push(key.clone()));
+        let body = self.expand_alias_body(site, key, alias, &bindings, sink);
+        EXPANDING.with(|stack| stack.borrow_mut().pop());
+        Some(body)
+    }
+
+    fn expand_alias_body(
+        &self,
+        site: &Path,
+        key: &(String, String),
+        alias: &GenericAlias,
+        bindings: &HashMap<String, GenericArg>,
+        sink: &mut DiagnosticSink,
+    ) -> Type {
         let mut body = alias.ty.clone();
         // The alias body is written in its own module.
         let alias_module: Vec<String> = key.0.split("::").map(str::to_string).collect();
@@ -1428,7 +1457,7 @@ impl Rewriter<'_> {
             hidden: RefCell::default(),
         };
         qualify_home(&mut body, &key.0, &alias.params, self.index);
-        substitute_type(&mut body, &bindings);
+        substitute_type(&mut body, bindings);
         // A format struct is named as the use site names it (`float`, or a
         // renamed import), so that import is the one in use.
         if alias.structure {
@@ -1437,7 +1466,7 @@ impl Rewriter<'_> {
             }
         }
         home.ty(&mut body, &Env::default(), sink);
-        Some(body)
+        body
     }
 
     /// The non-generic alias `path` names, with its type read in its own

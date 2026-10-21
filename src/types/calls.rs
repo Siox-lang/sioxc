@@ -161,7 +161,31 @@ impl<'a> Checker<'a> {
             }
             _ => return,
         };
-        if !(1..=64).contains(&width) {
+        // A width the layout cannot hold: `resize(x, -5)` underflowed into a
+        // 4-billion-bit slice, or left the testbench unlowered (#172).
+        if width < 1 || u32::try_from(width).is_err() {
+            let at = match callee {
+                Expr::Index { index, .. } => expr_span(index),
+                _ => args
+                    .get(1)
+                    .map(expr_span)
+                    .unwrap_or_else(|| expr_span(site)),
+            };
+            self.error(
+                codes::TYPE_MISMATCH,
+                at,
+                if width < 1 {
+                    format!("a width must be at least 1, not {width}")
+                } else {
+                    format!(
+                        "width {width} exceeds the compiler layout maximum of {}",
+                        u32::MAX
+                    )
+                },
+            );
+            return;
+        }
+        if width > 64 {
             return;
         }
         /// Fold a constant integer expression, or `None` when it is not constant.

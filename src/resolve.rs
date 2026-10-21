@@ -360,7 +360,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     }
     r.check_declaration_cycles(modules);
     r.check_constant_cycles();
-    r.check_generic_arity();
+    r.check_generic_arity(modules);
     r.check_trait_impls(modules);
     r.check_public_interfaces(modules);
     // The std library is not linted (its imports serve the whole library, not
@@ -510,9 +510,10 @@ struct Resolver<'a> {
     /// *renames* (`impl<M> Counter<M>` for `entity Counter<W>`) can be matched
     /// to the declaration by position, the way Rust matches it.
     decl_param_order: HashMap<DefId, Vec<DefId>>,
-    /// Each `G<..>` written, as (its head's span, arguments, whole span),
-    /// checked against the declaration once every parameter is known.
-    generic_uses: Vec<(Span, usize, Span)>,
+    /// Each `G<..>` written, as (its head's span, arguments, whole span, each
+    /// argument's literal integer value), checked against the declaration
+    /// once every parameter is known.
+    generic_uses: Vec<(Span, usize, Span, Vec<Option<i64>>)>,
     /// The constant whose value is being resolved, and the constants each
     /// such value reads, for the cycle check.
     resolving_const: Option<DefId>,
@@ -1278,20 +1279,53 @@ impl<'a> Resolver<'a> {
     /// `G<integer>` for `struct G<A, B>`, or `G<integer, integer>` for
     /// `struct G<A>`: an argument count that does not match the declaration
     /// passed silently, then failed in code generation (#151).
-    fn check_generic_arity(&mut self) {
-        for (head, args, span) in std::mem::take(&mut self.generic_uses) {
+    fn check_generic_arity(&mut self, modules: &[Module]) {
+        // Per generic declaration: each parameter's name, and the types its
+        // fields or ports are written with, for the width check below.
+        let mut shapes: HashMap<DefId, (Vec<String>, Vec<&Type>)> = HashMap::new();
+        for m in modules {
+            for item in &m.items {
+                let (name, params, types): (&Ident, &Params, Vec<&Type>) = match item {
+                    Item::Struct(s) => {
+                        (&s.name, &s.params, s.fields.iter().map(|f| &f.ty).collect())
+                    }
+                    Item::Entity(e) => {
+                        (&e.name, &e.params, e.ports.iter().map(|p| &p.ty).collect())
+                    }
+                    _ => continue,
+                };
+                if let Some(id) = self.out.declared(name.span) {
+                    let names = params.params.iter().map(|p| p.name.text.clone()).collect();
+                    shapes.insert(id, (names, types));
+                }
+            }
+        }
+        // Whether `param` is written as a width, directly (`unsigned[W]`).
+        fn sizes(ty: &Type, param: &str) -> bool {
+            match ty {
+                Type::Indexed { base, index, .. } => {
+                    matches!(index.as_deref(), Some(Expr::Path(path))
+                        if path.segments.len() == 1 && path.segments[0].text == param)
+                        || sizes(base, param)
+                }
+                Type::Generic { base, .. } | Type::View { target: base, .. } => sizes(base, param),
+                Type::Tuple { elems, .. } => elems.iter().any(|elem| sizes(elem, param)),
+                Type::Path(_) => false,
+            }
+        }
+        for (head, args, span, values) in std::mem::take(&mut self.generic_uses) {
             let Some(owner) = self.out.resolved(head) else {
                 continue;
             };
             let Some(declared) = self.decl_param_order.get(&owner).map(Vec::len) else {
                 continue;
             };
+            let name = self
+                .out
+                .def(owner)
+                .map(|d| d.name.clone())
+                .unwrap_or_else(|| "<type>".to_string());
             if args != declared {
-                let name = self
-                    .out
-                    .def(owner)
-                    .map(|d| d.name.clone())
-                    .unwrap_or_else(|| "<type>".to_string());
                 self.sink.emit(
                     Diagnostic::error(format!(
                         "`{name}` takes {declared} generic argument(s), but {args} were given"
@@ -1299,6 +1333,24 @@ impl<'a> Resolver<'a> {
                     .with_code(codes::TYPE_MISMATCH)
                     .at(span),
                 );
+                continue;
+            }
+            // `Packet<-4>` where `W` sizes `data: unsigned[W]`: a width that
+            // is not at least 1 passed, and failed in code generation (#177).
+            let Some((params, types)) = shapes.get(&owner) else {
+                continue;
+            };
+            for (param, value) in params.iter().zip(&values) {
+                let Some(value) = *value else { continue };
+                if value < 1 && types.iter().any(|ty| sizes(ty, param)) {
+                    self.sink.emit(
+                        Diagnostic::error(format!(
+                            "`{name}`'s `{param}` is a width, so it must be at least 1, not {value}"
+                        ))
+                        .with_code(codes::TYPE_MISMATCH)
+                        .at(span),
+                    );
+                }
             }
         }
     }
@@ -2091,7 +2143,25 @@ impl<'a> Resolver<'a> {
             Type::Generic { base, args, span } => {
                 self.resolve_type(base);
                 if let Some(head) = type_head_path(base) {
-                    self.generic_uses.push((head.span, args.len(), *span));
+                    let literal = |arg: &GenericArg| {
+                        let GenericArg::Positional(value) = arg else {
+                            return None;
+                        };
+                        let digits = |text: &str| text.replace('_', "").parse::<i64>().ok();
+                        match value {
+                            Expr::Int { text, .. } => digits(text),
+                            Expr::Unary {
+                                op: UnOp::Neg, rhs, ..
+                            } => match rhs.as_ref() {
+                                Expr::Int { text, .. } => digits(text).map(|n| -n),
+                                _ => None,
+                            },
+                            _ => None,
+                        }
+                    };
+                    let values = args.iter().map(literal).collect();
+                    self.generic_uses
+                        .push((head.span, args.len(), *span, values));
                 }
                 for a in args {
                     match a {

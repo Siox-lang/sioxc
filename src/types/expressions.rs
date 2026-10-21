@@ -224,10 +224,13 @@ impl<'a> Checker<'a> {
                     if let Ty::Named(definition) = self.type_of(rhs, sym) {
                         let owner = self.resolved.def(definition).map(|d| d.name.clone());
                         let is_struct = self.resolved.kind_of(definition) == Some(DefKind::Struct);
-                        if let Some(owner) = owner.filter(|owner| {
+                        // Impls are keyed by the qualified name: the bare
+                        // one found none, so `-p` was refused (#171).
+                        let key = self.definition_key(definition).unwrap_or_default();
+                        if let Some(owner) = owner.filter(|_| {
                             is_struct
-                                && !self.is_packed_array_newtype(owner)
-                                && !self.has_impl("Neg", owner)
+                                && !self.is_packed_array_newtype(&key)
+                                && !self.has_impl("Neg", &key)
                         }) {
                             self.error(
                                 codes::TYPE_MISMATCH,
@@ -551,6 +554,23 @@ impl<'a> Checker<'a> {
                         }
                         self.check_expr(index, sym);
                     }
+                    // `(integer, integer)(1, 2)` and `(unsigned[8][2])([..])`
+                    // name no conversion: `T(x)` is for a named type. Typed
+                    // as an error, they passed silently and did not lower
+                    // (#180).
+                    Expr::Tuple { .. } => self.error(
+                        codes::TYPE_MISMATCH,
+                        expr_span(callee),
+                        "a tuple type cannot be called: write the tuple itself, `(a, b)`"
+                            .to_string(),
+                    ),
+                    Expr::Index { base, .. } if matches!(base.as_ref(), Expr::Index { .. }) => self
+                        .error(
+                            codes::TYPE_MISMATCH,
+                            expr_span(callee),
+                            "an array type cannot be called: write the array itself, `[a, b]`"
+                                .to_string(),
+                        ),
                     _ => self.check_expr(callee, sym),
                 }
                 for a in args {

@@ -295,13 +295,31 @@ impl<'a> Checker<'a> {
             Expr::Tuple { elems, .. } => {
                 Ty::Tuple(elems.iter().map(|elem| self.type_of(elem, sym)).collect())
             }
-            // A concatenation is an anonymous packed Logic array of unknown width.
-            Expr::Concat { .. } => Ty::Array {
-                elem: Box::new(self.ty_from_head("Logic")),
-                family: Some(self.array_family_key("unsigned")),
-                len: 0,
-                low: 0,
-            },
+            // A concatenation is an anonymous packed Logic array, as wide as
+            // its parts when each one's width is known: unsized, `{ a, b }`
+            // of 4 and 8 bits was accepted into an `unsigned[10]` (#183).
+            Expr::Concat { parts, .. } => {
+                let len = parts
+                    .iter()
+                    .try_fold(0u32, |total, part| {
+                        let width = match self.type_of(part, sym) {
+                            Ty::Array { len, .. } if len > 0 => len,
+                            Ty::Named(id) => self
+                                .definition_key(id)
+                                .filter(|key| self.has_impl("LogicEncoding", key))
+                                .map(|_| 1)?,
+                            _ => return None,
+                        };
+                        total.checked_add(width)
+                    })
+                    .unwrap_or(0);
+                Ty::Array {
+                    elem: Box::new(self.ty_from_head("Logic")),
+                    family: Some(self.array_family_key("unsigned")),
+                    len,
+                    low: 0,
+                }
+            }
             // An array literal: element type from the first element, length
             // from the count.
             Expr::Array { elems, .. } => {
