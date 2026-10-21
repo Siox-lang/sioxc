@@ -730,6 +730,96 @@ impl<'a> Lowering<'a> {
     /// fell through to the target check and reported `g` as something that
     /// cannot be assigned to. Registering an array is the ordinary way to
     /// write a pipeline, and it named the innocent half of the statement.
+    /// `y[0..1] = [a, b]` on an unpacked array: one element write per
+    /// position, from an array literal, a constant slice, or a whole array.
+    /// Lowered as one write, it had no form and reported a scheduler error
+    /// (#185). `None` when this is not such a write.
+    pub(super) fn array_slice_statements(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+        span: crate::diag::Span,
+    ) -> Option<Vec<ast::Stmt>> {
+        let layout = |e: &ast::Expr| {
+            self.folded_elem_path(e)
+                .or_else(|| expr_path(e))
+                .and_then(|path| {
+                    self.persisted_layout(&path)
+                        .map(|layout| layout.kind.clone())
+                })
+        };
+        let array = |e: &ast::Expr| matches!(layout(e), Some(LayoutKind::Array { .. }));
+        let bounds = |lo: &ast::Expr, hi: &ast::Expr| {
+            Some(loop_range(
+                self.eval_const(lo, &self.cur_env)?,
+                self.eval_const(hi, &self.cur_env)?,
+            ))
+        };
+        let sliced = |e: &ast::Expr| {
+            matches!(e, ast::Expr::Index { index, .. }
+                if matches!(index.as_ref(), ast::Expr::Range { .. }))
+        };
+        let (base, targets) = match target {
+            ast::Expr::Index { base, index, .. } if sliced(target) && array(base) => {
+                let ast::Expr::Range { lo, hi, .. } = index.as_ref() else {
+                    return None;
+                };
+                (base.as_ref(), bounds(lo, hi)?)
+            }
+            // A whole array from a slice (`sub = matrix[1..2]`, #182): its
+            // own indices, in order.
+            _ if sliced(value) => {
+                let Some(LayoutKind::Array {
+                    range: Some(range), ..
+                }) = layout(target)
+                else {
+                    return None;
+                };
+                (target, loop_range(range.left, range.right))
+            }
+            _ => return None,
+        };
+        let label = |n: i64| ast::Expr::Int {
+            text: n.to_string(),
+            span,
+        };
+        let at = |source: &ast::Expr, n: i64| ast::Expr::Index {
+            base: Box::new(source.clone()),
+            index: Box::new(label(n)),
+            span,
+        };
+        let elements: Vec<ast::Expr> = match value {
+            ast::Expr::Array { elems, .. } => elems.clone(),
+            ast::Expr::Index {
+                base: source,
+                index,
+                ..
+            } if array(source) => {
+                let ast::Expr::Range { lo, hi, .. } = index.as_ref() else {
+                    return None;
+                };
+                bounds(lo, hi)?.into_iter().map(|n| at(source, n)).collect()
+            }
+            _ => return None,
+        };
+        if elements.len() != targets.len() {
+            return None;
+        }
+        Some(
+            targets
+                .into_iter()
+                .zip(elements)
+                .map(|(to, element)| ast::Stmt::Assign {
+                    label: None,
+                    target: at(base, to),
+                    value: element,
+                    after: None,
+                    span,
+                })
+                .collect(),
+        )
+    }
+
     pub(super) fn array_assign_leaves(
         &self,
         target: &ast::Expr,

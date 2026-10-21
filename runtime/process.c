@@ -1671,6 +1671,20 @@ void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
     sx_suspension_kind = SX_SUSPENSION_TIME;
 }
 
+/* `await t` for a `time` computed at run time: signed, so a negative one
+ * cannot be waited for. A literal delay goes to `sx_runtime_suspend_time`,
+ * unsigned up to the end of the timeline. */
+void sx_runtime_suspend_signed_time(uint32_t process, uint32_t resume_block,
+                                    uint64_t delay) {
+    if (sx_error) return;
+    if ((int64_t)delay < 0) {
+        sx_set_error("`await` was given a negative time (%lld fs)",
+                     (long long)(int64_t)delay);
+        return;
+    }
+    sx_runtime_suspend_time(process, resume_block, delay);
+}
+
 void sx_runtime_settle(uint32_t process, uint32_t resume_block) {
     if (sx_error) return;
     if (!sx_running || sx_current_process == UINT32_MAX) {

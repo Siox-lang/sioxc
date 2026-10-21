@@ -84,6 +84,8 @@ struct LoweringContext<'a> {
     #[allow(clippy::type_complexity)]
     recursive_calls:
         &'a std::cell::RefCell<Vec<(String, crate::diag::Span, crate::diag::Span, bool)>>,
+    /// Source a testbench cannot lower, reported once lowering is done.
+    rejected: &'a std::cell::RefCell<Vec<crate::diag::Diagnostic>>,
     /// Recursive calls of pure value functions: each is a call of the
     /// function's shared copy, evaluated where its selection reaches it, so
     /// CFG normalization leaves it alone.
@@ -1184,6 +1186,7 @@ pub fn lower(
     let type_aliases = source_type_aliases(modules, resolved);
     let shared_functions = std::cell::RefCell::new(SharedFunctions::new());
     let recursive_calls = std::cell::RefCell::new(Vec::new());
+    let rejected = std::cell::RefCell::new(Vec::new());
     let self_calls = std::cell::RefCell::new(std::collections::HashSet::new());
     let functions = process_functions(modules, resolved);
     let constant_integers = module_constant_integers(modules, &functions);
@@ -1297,6 +1300,7 @@ pub fn lower(
                 cfg_call_cache: Vec::new(),
                 shared_functions: &shared_functions,
                 recursive_calls: &recursive_calls,
+                rejected: &rejected,
                 self_calls: &self_calls,
                 frames: Vec::new(),
                 frame_functions: Default::default(),
@@ -1365,6 +1369,7 @@ pub fn lower(
                             cfg_call_cache: Vec::new(),
                             shared_functions: &shared_functions,
                             recursive_calls: &recursive_calls,
+                            rejected: &rejected,
                             self_calls: &self_calls,
                             frames: Vec::new(),
                             frame_functions: Default::default(),
@@ -1426,6 +1431,7 @@ pub fn lower(
                             cfg_call_cache: Vec::new(),
                             shared_functions: &shared_functions,
                             recursive_calls: &recursive_calls,
+                            rejected: &rejected,
                             self_calls: &self_calls,
                             frames: Vec::new(),
                             frame_functions: Default::default(),
@@ -1504,6 +1510,7 @@ pub fn lower(
                     cfg_call_cache: Vec::new(),
                     shared_functions: &shared_functions,
                     recursive_calls: &recursive_calls,
+                    rejected: &rejected,
                     self_calls: &self_calls,
                     frames: Vec::new(),
                     frame_functions: Default::default(),
@@ -1601,6 +1608,7 @@ pub fn lower(
                 cfg_call_cache: Vec::new(),
                 shared_functions: &shared_functions,
                 recursive_calls: &recursive_calls,
+                rejected: &rejected,
                 self_calls: &self_calls,
                 frames: Vec::new(),
                 frame_functions: Default::default(),
@@ -1632,6 +1640,9 @@ pub fn lower(
         process_ir.processes.push(process);
     }
 
+    for diagnostic in rejected.into_inner() {
+        sink.emit(diagnostic);
+    }
     let mut reported = std::collections::HashSet::new();
     for (name, call, function, polymorphic) in recursive_calls.into_inner() {
         if polymorphic && reported.insert(function) {
@@ -2597,7 +2608,7 @@ fn array_slice_elements(
     else {
         return None;
     };
-    let (ast::Expr::Range { lo, hi, .. }, ast::Expr::Path(source)) = (index.as_ref(), value) else {
+    let ast::Expr::Range { lo, hi, .. } = index.as_ref() else {
         return None;
     };
     let base_value = value_ref(base, process, context);
@@ -2614,15 +2625,6 @@ fn array_slice_elements(
         constant_integer(left, context)?,
         constant_integer(right, context)?,
     );
-    let source_value = value_ref(value, process, context);
-    let source = operand_source_layout(source_value, process, context)?
-        .index_range()
-        .filter(|_| !source.segments.is_empty())?;
-    let targets = crate::ir::loop_range(left, right);
-    let sources = crate::ir::loop_range(source.left, source.right);
-    if targets.len() != sources.len() || targets.iter().chain(&sources).any(|label| *label < 0) {
-        return None;
-    }
     let label = |n: i64, span| ast::Expr::Int {
         text: n.to_string(),
         span,
@@ -2634,23 +2636,94 @@ fn array_slice_elements(
         start: span.end,
         ..span
     };
-    let (target_span, value_span) = (empty(*target_span), empty(ast::expr_span(value)));
-    Some(
-        targets
+    let targets = crate::ir::loop_range(left, right);
+    let value_span = empty(ast::expr_span(value));
+    // Each element of the value, as an expression: `[a, b]` is its elements,
+    // `other[3..4]` and a whole array `v` are indexed. Only a whole array
+    // was, and any other value lowered to a slice write nothing could run
+    // (#170, #185).
+    let indexed = |source: &ast::Expr, labels: Vec<i64>| {
+        labels
             .into_iter()
-            .zip(sources)
-            .map(|(to, from)| Stmt::Assign {
+            .map(|from| ast::Expr::Index {
+                base: Box::new(source.clone()),
+                index: Box::new(label(from, value_span)),
+                span: value_span,
+            })
+            .collect::<Vec<_>>()
+    };
+    let (elements, source_base) = match value {
+        ast::Expr::Array { elems, .. } => (elems.clone(), None),
+        ast::Expr::Index {
+            base: source,
+            index: source_index,
+            ..
+        } => {
+            let ast::Expr::Range { lo, hi, .. } = source_index.as_ref() else {
+                return None;
+            };
+            let source_value = value_ref(source, process, context);
+            if !matches!(
+                operand_source_layout(source_value, process, context)?.kind,
+                LayoutKind::Array { .. }
+            ) {
+                return None;
+            }
+            let left = value_ref_with_type(lo, process, context, integer);
+            let right = value_ref_with_type(hi, process, context, integer);
+            let labels = crate::ir::loop_range(
+                constant_integer(left, context)?,
+                constant_integer(right, context)?,
+            );
+            (indexed(source, labels), Some(source.as_ref()))
+        }
+        ast::Expr::Path(path) if !path.segments.is_empty() => {
+            let source_value = value_ref(value, process, context);
+            let source = operand_source_layout(source_value, process, context)?.index_range()?;
+            (
+                indexed(value, crate::ir::loop_range(source.left, source.right)),
+                Some(value),
+            )
+        }
+        _ => return None,
+    };
+    if targets.len() != elements.len() || targets.iter().any(|label| *label < 0) {
+        return None;
+    }
+    let target_span = empty(*target_span);
+    let mut pairs = targets.into_iter().zip(elements).collect::<Vec<_>>();
+    // `a[1..2] = a[0..1]` copies within one array: element by element it
+    // must go from the far end, or it reads what it just wrote.
+    let same_array = |a: &ast::Expr, b: &ast::Expr| match (a, b) {
+        (ast::Expr::Path(a), ast::Expr::Path(b)) => a
+            .segments
+            .iter()
+            .map(|s| &s.text)
+            .eq(b.segments.iter().map(|s| &s.text)),
+        _ => false,
+    };
+    if let (Some(source), Some((first, ast::Expr::Index { index, .. }))) =
+        (source_base, pairs.first())
+    {
+        let from = match index.as_ref() {
+            ast::Expr::Int { text, .. } => text.parse::<i64>().ok(),
+            _ => None,
+        };
+        if same_array(base, source) && from.is_some_and(|from| from < *first) {
+            pairs.reverse();
+        }
+    }
+    Some(
+        pairs
+            .into_iter()
+            .map(|(to, element)| Stmt::Assign {
                 label: None,
                 target: ast::Expr::Index {
                     base: base.clone(),
                     index: Box::new(label(to, target_span)),
                     span: target_span,
                 },
-                value: ast::Expr::Index {
-                    base: Box::new(value.clone()),
-                    index: Box::new(label(from, value_span)),
-                    span: value_span,
-                },
+                value: element,
                 after: None,
                 span,
             })
@@ -6672,6 +6745,23 @@ fn lower_process_raw_resize(
                 .cloned()
         });
     let operand = value_ref_with_type(&args[0], process, context, operand_type.as_ref());
+    // `Wrapper(Inner { .x = 42 })`, `Pair((1, 2))`: a newtype derives its
+    // base's fields, so a constructed base is the newtype built from the same
+    // fields. A raw resize of an aggregate construct did not lower (#176).
+    if let (crate::types::Ty::Named(_), ProcessValueKind::Construct { fields, spread, .. }) =
+        (&target, &context.process_ir.values[operand.0 as usize].kind)
+    {
+        let kind = ProcessValueKind::Construct {
+            ty: Some(target.clone()),
+            fields: fields.clone(),
+            spread: *spread,
+        };
+        let width = context.process_ir.values[operand.0 as usize].bit_width;
+        let layout = process_layout_for_type(&target, *span, context);
+        let value = push_value(*span, Some(target), width, kind, context);
+        context.process_ir.value_layouts[value.0 as usize] = layout;
+        return Some(value);
+    }
     let kind = ProcessValueKind::RawResize { operand };
     let width = source_value_width(&kind, Some(&target), process, context)?;
     Some(push_converted(*span, target, width, kind, context))
@@ -10720,10 +10810,33 @@ fn value_ref_with_type_inner(
                     return id;
                 }
                 let index_span = ast::expr_span(index);
-                let index = value_ref(index, process, context);
                 let packed = base_layout
                     .as_ref()
                     .is_some_and(|layout| matches!(&layout.kind, LayoutKind::Packed { .. }));
+                // `v[hi..lo]` with bounds known only at run time has no width
+                // to give the value. Read as an element index of a range, it
+                // lowered to a block nothing could run (#173, #195).
+                if packed
+                    && matches!(
+                        index.as_ref(),
+                        ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                    )
+                {
+                    context.rejected.borrow_mut().push(
+                        crate::diag::Diagnostic::error(format!(
+                            "`{}` has bounds known only at run time",
+                            crate::syntax::pretty::expr_string(expression)
+                        ))
+                        .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+                        .at(span)
+                        .help(
+                            "packed-vector slice bounds must be constant; shift and resize \
+                             instead, e.g. `resize(v >> lo, N)`",
+                        ),
+                    );
+                    return push_value(span, ty, None, ProcessValueKind::Invalid, context);
+                }
+                let index = value_ref(index, process, context);
                 let range = base_layout
                     .as_ref()
                     .and_then(crate::ir::SourceLayout::index_range);
@@ -11265,10 +11378,15 @@ fn element_array_concat(
     // Any element with a packed form: a nominal one (`Bit`), a kernel one
     // (`integer[4]`, #158) or a vector (`unsigned[8][4]`).
     let element_layout = process_layout_for_type(elem, ast::expr_span(&parts[0]), context);
+    // A struct or array element too (`Pair[4]`, `unsigned[8][4][4]`, #182):
+    // anything with a packed width.
     let element_width = match element_layout.as_ref().map(|layout| &layout.kind) {
-        Some(LayoutKind::Scalar { .. } | LayoutKind::Packed { .. }) => {
-            element_layout.as_ref()?.packed_width()?
-        }
+        Some(
+            LayoutKind::Scalar { .. }
+            | LayoutKind::Packed { .. }
+            | LayoutKind::Struct { .. }
+            | LayoutKind::Array { .. },
+        ) => element_layout.as_ref()?.packed_width()?,
         _ => return None,
     };
     let range_of = |value: crate::ir::ProcessValueId, context: &mut LoweringContext<'_>| {
@@ -12293,6 +12411,7 @@ mod tests {
             cfg_call_cache: vec![],
             shared_functions: &std::cell::RefCell::new(SharedFunctions::new()),
             recursive_calls: &std::cell::RefCell::new(Vec::new()),
+            rejected: &std::cell::RefCell::new(Vec::new()),
             self_calls: &std::cell::RefCell::new(std::collections::HashSet::new()),
             frames: Vec::new(),
             frame_functions: Default::default(),
