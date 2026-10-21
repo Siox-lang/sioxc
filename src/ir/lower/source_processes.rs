@@ -5770,6 +5770,30 @@ fn apply_process_declared_ranges(
                 }
             }
         }
+        // `integer<0..9>`: the checked type is `integer`, the range a
+        // constraint the local keeps for its runtime check (#165).
+        ast::Type::Generic { base, args, .. }
+            if matches!(base.as_ref(), ast::Type::Path(path)
+                if path.segments.last().is_some_and(|segment| segment.text == "integer")) =>
+        {
+            if let (
+                [ast::GenericArg::Positional(ast::Expr::Range { lo, hi, .. })],
+                LayoutKind::Scalar { value_range, .. },
+            ) = (args.as_slice(), &mut layout.kind)
+            {
+                let bound = |bound: &ast::Expr| {
+                    crate::ir::eval_const_fns(
+                        bound,
+                        context.constant_integers,
+                        context.functions,
+                        0,
+                    )
+                };
+                if let (Some(left), Some(right)) = (bound(lo), bound(hi)) {
+                    *value_range = Some((left.min(right), left.max(right)));
+                }
+            }
+        }
         ast::Type::Generic { base, .. } => {
             apply_process_declared_ranges(layout, base, context, aliases)?;
         }

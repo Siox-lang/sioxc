@@ -395,22 +395,25 @@ pub(super) fn emit_source_locations<'ctx>(
         &range_locations,
     );
 
-    let signal_names = design
+    // Ranged testbench storages and locals follow the signals, numbered by
+    // [`ranged_places`].
+    let places = ranged_places(design);
+    let mut signal_names = design
         .signals
         .iter()
         .map(|signal| signal.path.clone())
         .collect::<Vec<_>>();
-    let signal_left = design
+    let mut signal_left = design
         .signals
         .iter()
         .map(|signal| signal.range.unwrap_or_default().0 as u64)
         .collect::<Vec<_>>();
-    let signal_right = design
+    let mut signal_right = design
         .signals
         .iter()
         .map(|signal| signal.range.unwrap_or_default().1 as u64)
         .collect::<Vec<_>>();
-    let signal_locations = design
+    let mut signal_locations = design
         .signals
         .iter()
         .map(|signal| {
@@ -419,11 +422,33 @@ pub(super) fn emit_source_locations<'ctx>(
                 .unwrap_or_default()
         })
         .collect::<Vec<_>>();
+    for &(place, left, right) in &places {
+        let (name, span) = match place {
+            StaticPlaceRoot::Storage(storage) => {
+                let storage = &design.process_ir.storages[storage.0 as usize];
+                (storage.name.clone(), storage.span)
+            }
+            StaticPlaceRoot::Local(process, local) => {
+                let local =
+                    &design.process_ir.processes[process.0 as usize].locals[local.0 as usize];
+                (local.name.clone(), local.span)
+            }
+            StaticPlaceRoot::Signal(_) => unreachable!("signals have their own entries"),
+        };
+        signal_names.push(name);
+        signal_left.push(left as u64);
+        signal_right.push(right as u64);
+        signal_locations.push(
+            sources
+                .and_then(|sources| sources.location(span))
+                .unwrap_or_default(),
+        );
+    }
     u32_global(
         context,
         module,
         "sx_range_signal_count",
-        u32::try_from(design.signals.len())
+        u32::try_from(signal_names.len())
             .expect("runtime range signal count exceeds its ABI index"),
     );
     string_table(
@@ -587,4 +612,28 @@ pub(in crate::llvm) fn emit_metadata<'ctx>(
         "sx_process_sensitivity_ids",
         &sensitivity_ids,
     );
+}
+
+/// Testbench storages and process locals with a ranged type (`let s:
+/// integer<0..5>`), with their bounds. Their range failures are reported
+/// after the signals', so entry `k` of this list is range id `signals + k`.
+pub(super) fn ranged_places(design: &Design) -> Vec<(StaticPlaceRoot, i64, i64)> {
+    let range = |layout: Option<&SourceLayout>| match layout.map(|layout| &layout.kind) {
+        Some(LayoutKind::Scalar {
+            value_range: Some((left, right)),
+            ..
+        }) => Some((*left, *right)),
+        _ => None,
+    };
+    let storages = design.process_ir.storages.iter().filter_map(|storage| {
+        let (left, right) = range(storage.layout.as_ref())?;
+        Some((StaticPlaceRoot::Storage(storage.id), left, right))
+    });
+    let locals = design.process_ir.processes.iter().flat_map(|process| {
+        process.locals.iter().filter_map(move |local| {
+            let (left, right) = range(local.layout.as_ref())?;
+            Some((StaticPlaceRoot::Local(process.id, local.id), left, right))
+        })
+    });
+    storages.chain(locals).collect()
 }

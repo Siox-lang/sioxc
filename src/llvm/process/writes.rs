@@ -640,6 +640,40 @@ pub(super) fn emit_place_assignment<'ctx>(
                 storage_range_checks.push((binding.signal, checked));
             }
         }
+        // A storage of a ranged type checks the value before it is narrowed
+        // to the storage: `s = 100` into `integer<0..5>` stored -4 in
+        // silence (#165). One bound to a ranged port leaves it to the port's
+        // check above, which names the port.
+        let own_range_check = match place.root {
+            root @ (StaticPlaceRoot::Storage(_) | StaticPlaceRoot::Local(..))
+                if storage_range_checks.is_empty()
+                    && place.offset == 0
+                    && place.width == place.root_width
+                    && super::metadata::ranged_places(design)
+                        .iter()
+                        .any(|(id, _, _)| *id == root) =>
+            {
+                let assigned_width = design
+                    .process_ir
+                    .values
+                    .get(assigned.0 as usize)?
+                    .bit_width?;
+                let checked = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    assigned,
+                    assigned_width.max(64),
+                    true,
+                    None,
+                    index_sites,
+                    cache,
+                )?;
+                Some((root, checked))
+            }
+            _ => None,
+        };
         let value = assignment_value(
             context,
             module,
@@ -674,6 +708,17 @@ pub(super) fn emit_place_assignment<'ctx>(
             span,
             range_sites,
         )?;
+        if let Some((root, checked)) = own_range_check {
+            latch_place_range_failure(
+                context,
+                module,
+                builder,
+                design,
+                root,
+                checked,
+                range_sites.get(&span).copied().unwrap_or(0),
+            )?;
+        }
         // `write_static_place` stages the narrowed storage image. Replace its
         // fallback check with the original mathematical RHS when this write
         // exactly targeted a ranged binding, so 8 assigned to a 4-bit
@@ -909,5 +954,76 @@ pub(super) fn emit_schedule_call<'ctx>(
             "",
         )
         .ok()?;
+    Some(())
+}
+
+/// Latch the first range failure of a write to a ranged testbench storage or
+/// process local, as a ranged signal's commit does: its id after the
+/// signals', the value and the site.
+fn latch_place_range_failure<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    root: StaticPlaceRoot,
+    value: IntValue<'ctx>,
+    site: u32,
+) -> Option<()> {
+    let ranged = super::metadata::ranged_places(design);
+    let Some(position) = ranged.iter().position(|(id, _, _)| *id == root) else {
+        return Some(());
+    };
+    let (_, left, right) = ranged[position];
+    let i32 = context.i32_type();
+    let i64 = context.i64_type();
+    let value = fit_signed(builder, value, 64)?;
+    let below = builder
+        .build_int_compare(
+            IntPredicate::SLT,
+            value,
+            i64.const_int(left as u64, true),
+            "pv.range.below",
+        )
+        .ok()?;
+    let above = builder
+        .build_int_compare(
+            IntPredicate::SGT,
+            value,
+            i64.const_int(right as u64, true),
+            "pv.range.above",
+        )
+        .ok()?;
+    let outside = builder.build_or(below, above, "pv.range.outside").ok()?;
+    let error = module.get_global("range_error")?.as_pointer_value();
+    let previous = builder
+        .build_load(i32, error, "pv.range.previous")
+        .ok()?
+        .into_int_value();
+    let first = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            previous,
+            i32.const_zero(),
+            "pv.range.first",
+        )
+        .ok()?;
+    let fire = builder.build_and(outside, first, "pv.range.fire").ok()?;
+    let id = u64::try_from(design.signals.len() + position + 1).ok()?;
+    for (name, ty, fired) in [
+        ("range_error", i32, i32.const_int(id, false)),
+        ("range_value", i64, value),
+        ("range_site", i32, i32.const_int(u64::from(site), false)),
+    ] {
+        let pointer = module.get_global(name)?.as_pointer_value();
+        let old = builder
+            .build_load(ty, pointer, "pv.range.old")
+            .ok()?
+            .into_int_value();
+        let next = builder
+            .build_select(fire, fired, old, "pv.range.next")
+            .ok()?
+            .into_int_value();
+        builder.build_store(pointer, next).ok()?;
+    }
     Some(())
 }

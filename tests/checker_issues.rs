@@ -193,3 +193,62 @@ fn issue_161_an_unrolled_accumulator_is_not_a_dead_assignment() {
     );
     assert!(out.contains("check ok") && !out.contains("W-P014"), "{out}");
 }
+
+#[test]
+fn issue_165_ranged_testbench_storage_and_locals_are_checked() {
+    for (name, body, message) in [
+        (
+            "storage",
+            "let s: integer<0..5> = 0;\nprocess { let y: integer = 100; s = y; await 1ns; }",
+            "`s` left its range 0..5 (it was 100)",
+        ),
+        (
+            "local",
+            "process { let r: integer<-3..3> = -3; r = r - 1; await 1ns; }",
+            "`r` left its range -3..3 (it was -4)",
+        ),
+    ] {
+        let out = compile(
+            name,
+            &format!("module m;\n#[test] entity T {{}}\nimpl T {{\n{body}\n}}\n"),
+            &[],
+            true,
+        );
+        assert!(
+            out.contains(message) && out.contains("1 failed"),
+            "{name}: {out}"
+        );
+    }
+    let out = compile(
+        "in_range",
+        "module m;\n#[test] entity T {}\nimpl T { process { let r: integer<0..9> = 5; r = r + 4; await 1ns; } }\n",
+        &[],
+        true,
+    );
+    assert!(out.contains("1 passed"), "{out}");
+}
+
+#[test]
+fn issue_166_a_negative_discriminant_is_rejected() {
+    let out = metadata(
+        "negative_discriminant",
+        "module m;\nenum K { A = -5, B = 5 }\nentity E { k: K out }\nimpl E { k = K::A; }\n",
+    );
+    assert!(
+        out.contains("`K::A` has the negative discriminant -5"),
+        "{out}"
+    );
+}
+
+#[test]
+fn issue_167_resolve_on_a_struct_with_fields_is_rejected() {
+    let out = metadata(
+        "struct_resolve",
+        "module m;\nstruct Packet { pub x: integer }\n\
+         impl Resolve for Packet { fn resolve(self, rhs: Packet) -> Packet { return { .x = self.x + rhs.x }; } }\n",
+    );
+    assert!(
+        out.contains("`Resolve` cannot be implemented for `Packet`, a struct with fields"),
+        "{out}"
+    );
+}
