@@ -515,25 +515,42 @@ impl<'a> Checker<'a> {
                 self.check_param_type_layouts(&structure.params);
                 if let Some(base) = &structure.base {
                     self.check_type_layout(base);
-                    // ponytail: a newtype family records one element type by
-                    // name, so over `unsigned[8][4]` its elements read as
-                    // single bits (#176). Rejected until families carry a
-                    // vector element.
-                    if let Type::Indexed { base: inner, .. } = base {
-                        if structure.fields.is_empty()
-                            && matches!(inner.as_ref(), Type::Indexed { .. })
-                        {
+                    // A newtype over an array is a packed vector family: one
+                    // index over single-bit (enum) elements, or over another
+                    // family (`struct Byte(unsigned[8])`). Over `Point[]` or
+                    // `unsigned[8][4]` its elements read as single bits: a
+                    // 4-bit `PointList[4]` (#206, #176).
+                    if let (true, Type::Indexed { base: inner, .. }) =
+                        (structure.fields.is_empty(), base)
+                    {
+                        let generic = |name: &str| {
+                            structure.params.params.iter().any(|p| p.name.text == name)
+                        };
+                        let packed = match inner.as_ref() {
+                            Type::Path(path) => match self.path_key(path) {
+                                Some(key) => {
+                                    self.enum_variants.contains_key(&key)
+                                        || self.array_families.contains(&key)
+                                        || path.segments.len() == 1
+                                            && generic(&path.segments[0].text)
+                                }
+                                None => true,
+                            },
+                            _ => false,
+                        };
+                        if !packed {
                             self.error_with_help(
                                 codes::TYPE_MISMATCH,
                                 structure.name.span,
                                 format!(
-                                    "`{}` is a newtype over an array of arrays, which is not \
-                                     supported yet",
-                                    structure.name.text
+                                    "`{}` wraps `{}`, but a newtype over an array is a packed \
+                                     vector, so its elements must be an enum such as `Logic`",
+                                    structure.name.text,
+                                    crate::syntax::pretty::type_str(base)
                                 ),
                                 format!(
-                                    "hold the array in a field instead: `struct {} {{ pub \
-                                     rows: {} }}`",
+                                    "use an element such as `Logic` or `Bit`, or hold the \
+                                     array in a field: `struct {} {{ pub items: {} }}`",
                                     structure.name.text,
                                     crate::syntax::pretty::type_str(base)
                                 ),

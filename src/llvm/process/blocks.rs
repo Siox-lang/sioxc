@@ -235,6 +235,17 @@ pub(super) fn emit_timed_suspend<'ctx>(
     index_sites: &HashMap<IndexSite, u32>,
     cache: &mut ProcessValueCache<'ctx, '_>,
 ) -> Option<()> {
+    // A literal delay is an unsigned femtosecond count up to the end of the
+    // timeline; one computed at run time is a signed `time`, which the
+    // runtime rejects when negative.
+    let computed = !matches!(
+        design
+            .process_ir
+            .values
+            .get(delay.0 as usize)
+            .map(|value| &value.kind),
+        Some(ProcessValueKind::Number(_) | ProcessValueKind::Suffixed { .. })
+    );
     let delay = process_value_at(
         context,
         module,
@@ -249,17 +260,20 @@ pub(super) fn emit_timed_suspend<'ctx>(
     )?;
     let i32 = context.i32_type();
     let i64 = context.i64_type();
-    let function = module
-        .get_function("sx_runtime_suspend_time")
-        .unwrap_or_else(|| {
-            module.add_function(
-                "sx_runtime_suspend_time",
-                context
-                    .void_type()
-                    .fn_type(&[i32.into(), i32.into(), i64.into()], false),
-                Some(Linkage::External),
-            )
-        });
+    let name = if computed {
+        "sx_runtime_suspend_signed_time"
+    } else {
+        "sx_runtime_suspend_time"
+    };
+    let function = module.get_function(name).unwrap_or_else(|| {
+        module.add_function(
+            name,
+            context
+                .void_type()
+                .fn_type(&[i32.into(), i32.into(), i64.into()], false),
+            Some(Linkage::External),
+        )
+    });
     builder
         .build_call(
             function,

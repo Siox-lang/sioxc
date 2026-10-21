@@ -180,7 +180,7 @@ fn issue_173_a_runtime_packed_slice_is_an_error() {
 }
 
 #[test]
-fn issue_176_newtypes_take_compound_literals() {
+fn issues_176_206_newtypes_take_compound_literals_and_bit_arrays() {
     let out = run(
         "newtype_literals",
         r#"module m;
@@ -198,8 +198,11 @@ impl T { process { let w: Wrapper = Wrapper(Inner { .x = 42 }); let p: Pair = Pa
         "module m;\nuse std::bits::unsigned;\nstruct Table(unsigned[8][4]);\n\
          #[test] entity T {}\nimpl T { process { let t: Table; } }\n",
     );
-    assert!(
-        out.contains("`Table` is a newtype over an array of arrays"),
-        "{out}"
+    assert!(out.contains("`Table` wraps `unsigned[8][4]`"), "{out}");
+    let out = run(
+        "newtype_over_structs",
+        "module m;\npub struct Point { pub x: integer, pub y: integer, }\npub struct PointList(Point[]);\n\
+         entity Top { y: PointList[4] out, }\nimpl Top { y = 0; }\n",
     );
+    assert!(out.contains("`PointList` wraps `Point[]`"), "{out}");
 }

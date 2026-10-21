@@ -24,6 +24,9 @@ void sx_runtime_schedule(uint32_t site, uint64_t delay, const uint64_t *words,
 /* Suspend the current process and enqueue its resume block after `delay`. */
 void sx_runtime_suspend_time(uint32_t process, uint32_t resume_block,
                              uint64_t delay);
+/* The same for a `time` computed at run time: a negative one fails the test. */
+void sx_runtime_suspend_signed_time(uint32_t process, uint32_t resume_block,
+                                    uint64_t delay);
 
 /* Suspend until a design/storage change lets the emitted trigger block
  * re-evaluate its normalized condition. */
