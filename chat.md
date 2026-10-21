@@ -18175,4 +18175,6 @@ Fixed regressions identified after PR #141 merge:
    - In `src/ir/lower/calls.rs`: restricted `lower_wide_packed_resize` to `target_width > 64 && source_width > 0` so narrowing conversions (e.g. 81 -> 8 bits) continue to use standard std function inlining.
    - Removed redundant `bind_source_expression` on scalar returns; in `mask_to_type_width`, use bitwise AND masking for `w < 64` and slice for `w > 64`, restoring `and 255` expected by `ir::tests::values::a_call_result_carries_its_return_type`.
 4. `debug_info::numeric_family_conversions_keep_source_signatures`: in `src/ir/lower/source_bindings.rs`, restored `if env.contains_key(&root)` to prevent nominal type loss for block locals falling through to `block_local_type`.
+5. `testbench_methods::procedural_calls_share_cfg_and_preserve_call_evaluation`: in `src/llvm/process/binary.rs`, restricted sign-extension of unpacked equality operands to cases where the packed vector operand is actually signed, avoiding sign-extending positive wide integers when compared against wide `unsigned[N]`.
+
 
