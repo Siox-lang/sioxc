@@ -529,6 +529,28 @@ impl<'a> Checker<'a> {
                     // reject runtime/compiler-provided primitives that have
                     // no source declaration.
                     Expr::Path(_) => {}
+                    // A sized or ranged type constructor (`unsigned[8](x)`,
+                    // `unsigned[2..0](x)`) names a type in `base`, not a value;
+                    // `check_known_call` validates the constructor family, so
+                    // check only the width/range index expression here.
+                    Expr::Index { base, index, .. } if matches!(base.as_ref(), Expr::Path(_)) => {
+                        match index.as_ref() {
+                            Expr::Range { lo, hi, .. } => {
+                                self.check_index_value(lo, sym, "range bound");
+                                self.check_index_value(hi, sym, "range bound");
+                            }
+                            Expr::PartialRange { lo, hi, .. } => {
+                                if let Some(lo) = lo {
+                                    self.check_index_value(lo, sym, "range bound");
+                                }
+                                if let Some(hi) = hi {
+                                    self.check_index_value(hi, sym, "range bound");
+                                }
+                            }
+                            _ => {}
+                        }
+                        self.check_expr(index, sym);
+                    }
                     _ => self.check_expr(callee, sym),
                 }
                 for a in args {
