@@ -590,15 +590,6 @@ impl<'a> Lowering<'a> {
         if let Some(ty) = self.block_local_type(e) {
             return self.block_local_width(&ty);
         }
-        if matches!(e, ast::Expr::Field { .. } | ast::Expr::Index { .. }) {
-            if let Some(width) = self
-                .source_operand_layout(e, &HashMap::new())
-                .and_then(|layout| layout.bit_width())
-                .and_then(|width| u32::try_from(width).ok())
-            {
-                return width;
-            }
-        }
         // A bound parameter carries the caller's width, recorded at the
         // inline; without it a nested inline sees no width at all.
         if let Some(p) = expr_path(e) {
@@ -1001,6 +992,13 @@ impl<'a> Lowering<'a> {
                 .iter()
                 .filter_map(|arm| arm.value_expr())
                 .find_map(|value| self.operand_range(value, env)),
+            ast::Expr::Index { index, .. } => match index.as_ref() {
+                ast::Expr::Range { lo, hi, .. } => Some((
+                    self.eval_const(lo, &self.cur_env)?,
+                    self.eval_const(hi, &self.cur_env)?,
+                )),
+                _ => None,
+            },
             // A constructor builds its written format: `sfixed[7..-8](x)`,
             // the expansion of `sfixed<16, 8>(x)`.
             // A width-only one (`unsigned[8](x)`) is ascending from 0, and a
@@ -1025,11 +1023,7 @@ impl<'a> Lowering<'a> {
             _ => self
                 .source_operand_layout(e, env)
                 .and_then(|layout| layout.index_range())
-                .map(|range| (range.left, range.right))
-                .or_else(|| {
-                    let width = self.ast_width(e);
-                    (width > 0).then(|| (i64::from(width - 1), 0))
-                }),
+                .map(|range| (range.left, range.right)),
         }
     }
 
