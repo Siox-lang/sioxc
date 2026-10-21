@@ -370,6 +370,9 @@ impl<'a> Checker<'a> {
             );
             return;
         }
+        if self.report_bitless_concat(&lhs, value, sym) {
+            return;
+        }
         if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
             let mut diag = Diagnostic::error(format!(
@@ -430,6 +433,9 @@ impl<'a> Checker<'a> {
     ) {
         let lhs = self.type_of(target, sym);
         if self.check_struct_literal_for_ty(&lhs, value, sym) {
+            return;
+        }
+        if self.report_bitless_concat(&lhs, value, sym) {
             return;
         }
         if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
@@ -612,6 +618,63 @@ impl<'a> Checker<'a> {
 
     /// Whether an expression is a contextual literal, which takes its type from
     /// the surrounding context rather than carrying one.
+    /// Whether a value of `ty` is bits a concatenation can join: a packed
+    /// vector, a single-bit enum (`Bit`, `Logic`), or an array of those.
+    pub(super) fn concatenable(&self, ty: &Ty) -> bool {
+        let bit = |ty: &Ty| match ty {
+            Ty::Named(id) => self
+                .definition_key(*id)
+                .is_some_and(|key| self.has_impl("LogicEncoding", &key)),
+            _ => false,
+        };
+        match ty {
+            Ty::Array {
+                family: Some(_), ..
+            } => true,
+            Ty::Array {
+                family: None, elem, ..
+            } => bit(elem),
+            other => bit(other),
+        }
+    }
+
+    /// A concatenation into a vector joins bits: `{ 1.5, 2.5 }` and
+    /// `{ points, points }` were sized by element counts and did not lower
+    /// (#197, #215). Reports each part with no bits; true when one was.
+    pub(super) fn report_bitless_concat(
+        &mut self,
+        lhs: &Ty,
+        value: &Expr,
+        sym: &HashMap<String, Ty>,
+    ) -> bool {
+        let (Ty::Array { .. }, Expr::Concat { parts, .. }) = (lhs, value) else {
+            return false;
+        };
+        let mut reported = false;
+        for part in parts {
+            // A literal takes its bits from context.
+            if Self::is_contextual_literal(part) {
+                continue;
+            }
+            let ty = self.type_of(part, sym);
+            if matches!(ty, Ty::Error) || self.concatenable(&ty) {
+                continue;
+            }
+            self.error_with_help(
+                codes::TYPE_MISMATCH,
+                expr_span(part),
+                format!(
+                    "a concatenation joins bits, and `{}` is a `{}`",
+                    crate::syntax::pretty::expr_string(part),
+                    self.ty_display(&ty)
+                ),
+                "convert it to a bit vector first, e.g. `unsigned[8](x)`".to_string(),
+            );
+            reported = true;
+        }
+        reported
+    }
+
     pub(super) fn is_contextual_literal(expression: &Expr) -> bool {
         matches!(
             expression,

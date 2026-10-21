@@ -579,7 +579,11 @@ impl<'a> FunctionIndex<'a> {
 
     /// Resolver-selected identity of a path that names a trait.
     pub fn trait_path_key(&self, path: &ast::Path) -> Option<String> {
-        let id = self.resolved.resolved(path.span)?;
+        self.trait_key(self.resolved.resolved(path.span)?)
+    }
+
+    /// The key a trait definition is registered under.
+    pub fn trait_key(&self, id: DefId) -> Option<String> {
         if is_compiler_trait(self.resolved, id) {
             self.resolved
                 .def(id)

@@ -142,6 +142,7 @@ pub(in crate::ir) fn enum_reprs(
 ) -> HashMap<String, u32> {
     let empty = HashMap::new();
     let enums = enum_index(modules, fns);
+    let constants = discriminant_constants(modules, fns);
     let mut out = HashMap::new();
     for (name, e) in &enums {
         // A numeric `: repr` sets the width explicitly; otherwise the width is
@@ -156,14 +157,25 @@ pub(in crate::ir) fn enum_reprs(
         {
             type_width(repr, &empty, fns, &HashMap::new(), &HashMap::new())
         } else {
-            let variants = effective_variants(name, &enums, fns, &mut Vec::new());
+            let variants = effective_variants(name, &enums, fns, &mut Vec::new(), &constants);
             let n = variants.len().max(1) as u32;
             let count_bits = if n <= 1 {
                 1
             } else {
                 u32::BITS - (n - 1).leading_zeros()
             };
-            let max_disc = variants.iter().filter_map(|(_, d)| *d).max().unwrap_or(0);
+            // Implicit variants count on from the last value: `A = 15, B`
+            // makes `B` 16.
+            let mut next = 0i64;
+            let max_disc = variants
+                .iter()
+                .map(|(_, d)| {
+                    let value = d.unwrap_or(next);
+                    next = value.saturating_add(1);
+                    value
+                })
+                .max()
+                .unwrap_or(0);
             let disc_bits = if max_disc <= 0 {
                 1
             } else {

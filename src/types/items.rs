@@ -30,7 +30,9 @@ impl<'a> Checker<'a> {
                 let mut next = Some(0i64);
                 for v in &e.variants {
                     let n = match &v.value {
-                        Some(val) => match Self::const_literal(val) {
+                        Some(val) => match Self::const_literal(val)
+                            .or_else(|| self.const_int(val).and_then(|n| i64::try_from(n).ok()))
+                        {
                             Some(n) => n,
                             None => {
                                 // Not a literal: the count is unknown from here.
@@ -73,6 +75,22 @@ impl<'a> Checker<'a> {
                 }
             }
             Item::Entity(e) => {
+                // A test is a root nothing instantiates: a port has nothing
+                // to connect to, and lowering failed on its writes (#188).
+                if let Some(port) = e.ports.first() {
+                    if e.attrs.iter().any(|attribute| {
+                        crate::resolve::is_enabled_std_test_attribute(self.resolved, attribute)
+                    }) {
+                        self.error_with_help(
+                            codes::TYPE_MISMATCH,
+                            port.name.span,
+                            format!("test entity `{}` cannot have ports", e.name.text),
+                            "a test drives its design through signals of its own: declare \
+                             `let` signals in its impl and connect an instance to them"
+                                .to_string(),
+                        );
+                    }
+                }
                 for port in &e.ports {
                     self.check_applied_view(&port.ty);
                     for a in &port.attrs {
@@ -107,6 +125,21 @@ impl<'a> Checker<'a> {
                 }
             }
             Item::Fn(f) => {
+                // `fn puts(s: string) -> integer;` outside an `extern "C"`
+                // block escaped the foreign ABI's checks and lowered as a
+                // call nothing could run, or passed a string as a word
+                // (#193, #194).
+                if f.body.is_none() {
+                    self.error_with_help(
+                        codes::TYPE_MISMATCH,
+                        f.name.span,
+                        format!("function `{}` has no body", f.name.text),
+                        format!(
+                            "give it one, or declare a C function: `extern \"C\" {{ fn {}(..) -> ..; }}`",
+                            f.name.text
+                        ),
+                    );
+                }
                 // A generic fn's body is verified at each call (it inlines),
                 // where the concrete types are known; checking it abstractly
                 // (operators on the opaque `T`) would wrongly reject it.
@@ -395,6 +428,40 @@ impl<'a> Checker<'a> {
         );
     }
 
+    /// A signal, port or local holds bits: a struct with no fields has none,
+    /// and storing one reached lowering with no width (#210). Such a struct
+    /// is still a type (`Unicode::code(c)`, a `Formatter` parameter).
+    pub(super) fn check_storable(&mut self, ty: &Type) {
+        match ty {
+            Type::Indexed { base, .. } => self.check_storable(base),
+            Type::Path(_) | Type::Generic { .. } => {
+                let Some(key) = self.type_key(ty) else { return };
+                if self
+                    .structs
+                    .get(&key)
+                    .is_some_and(|(base, fields)| base.is_none() && fields.is_empty())
+                {
+                    let name = key.rsplit("::").next().unwrap_or(&key).to_string();
+                    self.error_with_help(
+                        codes::TYPE_MISMATCH,
+                        crate::syntax::ast::type_span(ty),
+                        format!("`{name}` has no fields, so it holds no bits to store"),
+                        format!("give `{name}` a field, or use it only as a type (`{name}::f()`)"),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a field is an array with no length (`unsigned[8][]`). A
+    /// string (`Char[]`, an array of them) is a testbench runtime value.
+    fn unsized_field(ty: &Type) -> bool {
+        matches!(ty, Type::Indexed { index: None, base, .. }
+            if !matches!(base.as_ref(), Type::Path(path)
+                if path.segments.last().is_some_and(|s| s.text == "Char")))
+    }
+
     pub(super) fn check_type_layout(&mut self, ty: &Type) {
         match ty {
             Type::Path(_) => {}
@@ -574,6 +641,22 @@ impl<'a> Checker<'a> {
                 }
                 for field in &structure.fields {
                     self.check_type_layout(&field.ty);
+                    // `data: unsigned[8][]` sizes no field: the struct had
+                    // no layout, and its signals were dropped (#212).
+                    if Self::unsized_field(&field.ty) {
+                        self.error_with_help(
+                            codes::TYPE_MISMATCH,
+                            crate::syntax::ast::type_span(&field.ty),
+                            format!(
+                                "field `{}` has no fixed size: `{}`",
+                                field.name.text,
+                                crate::syntax::pretty::type_str(&field.ty)
+                            ),
+                            "give the array a length, or make the struct generic over it \
+                             (`struct S<N: integer> { pub data: T[N] }`)"
+                                .to_string(),
+                        );
+                    }
                 }
             }
             Item::View(view) => {
@@ -589,6 +672,7 @@ impl<'a> Checker<'a> {
                 self.check_param_type_layouts(&entity.params);
                 for port in &entity.ports {
                     self.check_type_layout(&port.ty);
+                    self.check_storable(&port.ty);
                 }
             }
             Item::Impl(implementation) => {
@@ -604,6 +688,7 @@ impl<'a> Checker<'a> {
                         ImplItem::Let(declaration) => {
                             if let Some(ty) = &declaration.ty {
                                 self.check_type_layout(ty);
+                                self.check_storable(ty);
                             }
                         }
                         ImplItem::Fn(function) => self.check_fn_type_layouts(function),

@@ -1300,17 +1300,56 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
-        // Whether `param` is written as a width, directly (`unsigned[W]`).
-        fn sizes(ty: &Type, param: &str) -> bool {
+        // Each width written in `ty` (`unsigned[W * 2]`), with the
+        // parameters bound: a width that folds below 1.
+        fn widths(ty: &Type, bound: &HashMap<&str, i64>, out: &mut Vec<i64>) {
+            fn eval(e: &Expr, bound: &HashMap<&str, i64>) -> Option<i64> {
+                match e {
+                    Expr::Int { text, .. } => text.replace('_', "").parse().ok(),
+                    Expr::Path(path) if path.segments.len() == 1 => {
+                        bound.get(path.segments[0].text.as_str()).copied()
+                    }
+                    Expr::Unary {
+                        op: UnOp::Neg, rhs, ..
+                    } => eval(rhs, bound)?.checked_neg(),
+                    Expr::Binary { op, lhs, rhs, .. } => {
+                        let (a, b) = (eval(lhs, bound)?, eval(rhs, bound)?);
+                        match op {
+                            BinOp::Add => a.checked_add(b),
+                            BinOp::Sub => a.checked_sub(b),
+                            BinOp::Mul => a.checked_mul(b),
+                            BinOp::Div if b != 0 => Some(a / b),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            fn mentions(e: &Expr, bound: &HashMap<&str, i64>) -> bool {
+                match e {
+                    Expr::Path(path) => {
+                        path.segments.len() == 1
+                            && bound.contains_key(path.segments[0].text.as_str())
+                    }
+                    Expr::Unary { rhs, .. } => mentions(rhs, bound),
+                    Expr::Binary { lhs, rhs, .. } => mentions(lhs, bound) || mentions(rhs, bound),
+                    _ => false,
+                }
+            }
             match ty {
                 Type::Indexed { base, index, .. } => {
-                    matches!(index.as_deref(), Some(Expr::Path(path))
-                        if path.segments.len() == 1 && path.segments[0].text == param)
-                        || sizes(base, param)
+                    if let Some(index) = index.as_deref() {
+                        if !matches!(index, Expr::Range { .. }) && mentions(index, bound) {
+                            out.extend(eval(index, bound));
+                        }
+                    }
+                    widths(base, bound, out);
                 }
-                Type::Generic { base, .. } | Type::View { target: base, .. } => sizes(base, param),
-                Type::Tuple { elems, .. } => elems.iter().any(|elem| sizes(elem, param)),
-                Type::Path(_) => false,
+                Type::Generic { base, .. } | Type::View { target: base, .. } => {
+                    widths(base, bound, out)
+                }
+                Type::Tuple { elems, .. } => elems.iter().for_each(|elem| widths(elem, bound, out)),
+                Type::Path(_) => {}
             }
         }
         for (head, args, span, values) in std::mem::take(&mut self.generic_uses) {
@@ -1340,17 +1379,27 @@ impl<'a> Resolver<'a> {
             let Some((params, types)) = shapes.get(&owner) else {
                 continue;
             };
-            for (param, value) in params.iter().zip(&values) {
-                let Some(value) = *value else { continue };
-                if value < 1 && types.iter().any(|ty| sizes(ty, param)) {
-                    self.sink.emit(
-                        Diagnostic::error(format!(
-                            "`{name}`'s `{param}` is a width, so it must be at least 1, not {value}"
-                        ))
-                        .with_code(codes::TYPE_MISMATCH)
-                        .at(span),
-                    );
-                }
+            // `Packet<0>` where `W * 2` sizes a field, or `S<-1>` with
+            // `N + 1`: as with a bare `W`, a width below 1 failed in code
+            // generation (#177, #211).
+            let bound: HashMap<&str, i64> = params
+                .iter()
+                .zip(&values)
+                .filter_map(|(param, value)| Some((param.as_str(), (*value)?)))
+                .collect();
+            let mut found = Vec::new();
+            for ty in types {
+                widths(ty, &bound, &mut found);
+            }
+            if let Some(width) = found.into_iter().find(|width| *width < 1) {
+                self.sink.emit(
+                    Diagnostic::error(format!(
+                        "these arguments give `{name}` a width of {width}; a width must be at \
+                         least 1"
+                    ))
+                    .with_code(codes::TYPE_MISMATCH)
+                    .at(span),
+                );
             }
         }
     }

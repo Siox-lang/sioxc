@@ -376,6 +376,9 @@ impl<'a> Checker<'a> {
                 // negative or zero width reached code generation (#157).
                 if let Some(ty) = &l.ty {
                     self.check_type_layout(ty);
+                    if !self.in_fn_body.get() {
+                        self.check_storable(ty);
+                    }
                 }
                 self.check_struct_literal_fields(l, sym);
                 if let Some(v) = &l.value {
