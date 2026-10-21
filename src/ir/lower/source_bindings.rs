@@ -386,6 +386,16 @@ impl Lowering<'_> {
             return Some(layout);
         }
         match expression {
+            ast::Expr::Field { base, field, .. } => {
+                let layout = self.source_operand_layout(base, env)?;
+                let LayoutKind::Struct { fields, .. } = layout.kind else {
+                    return None;
+                };
+                fields
+                    .into_iter()
+                    .find(|candidate| candidate.name == field.text)
+                    .map(|field| field.layout)
+            }
             ast::Expr::SysAttr { base, attr, .. } if attr.text == "old" => {
                 self.source_operand_layout(base, env)
             }
@@ -463,6 +473,32 @@ impl Lowering<'_> {
                     self.source_operand_layout(argument, env)
                 })
                 .or(Some(declared))
+            }
+            ast::Expr::Binary {
+                op: ast::BinOp::Custom { symbol, .. },
+                lhs,
+                rhs,
+                ..
+            } => {
+                let receiver = if matches!(lhs.as_ref(), ast::Expr::Int { .. }) {
+                    rhs.as_ref()
+                } else {
+                    lhs.as_ref()
+                };
+                let family = self.operand_type_name(receiver)?;
+                let function = self.source_binary_operator(
+                    symbol,
+                    &family,
+                    self.operand_type_name(rhs).as_deref(),
+                    ast::expr_span(expression),
+                )?;
+                let declared = self.source_layout(function.ret.as_ref()?, &self.cur_env);
+                if declared.bit_width().is_some() {
+                    return Some(declared);
+                }
+                // A bare Self/family retains its receiver's format; only an
+                // explicit result constraint replaces that contextual shape.
+                self.source_operand_layout(receiver, env)
             }
             ast::Expr::Binary { lhs, .. } => self.source_operand_layout(lhs, env),
             ast::Expr::Unary { rhs, .. } => self.source_operand_layout(rhs, env),
@@ -877,11 +913,29 @@ impl Lowering<'_> {
                     else {
                         return None;
                     };
+                    let index_value = self.lower_scalar_env(index, env);
                     let indices = loop_range(range.left, range.right);
-                    let lowered = self.bind_source_expression(
-                        self.lower_scalar_env(index, env),
-                        ast::expr_span(index),
-                    );
+                    let nonnegative_word = self
+                        .constant_expr(&index_value)
+                        .is_some_and(|value| value >= 0)
+                        || (range.left.min(range.right) >= 0
+                            && matches!(self.expr_types.get(&ast::expr_span(index)),
+                            Some(crate::types::Ty::Array { family: Some(_), len, .. })
+                                if *len > 0 && *len < i64::BITS
+                                    && self.source_evaluated_width(&index_value) == Some(*len)));
+                    let lowered = if nonnegative_word {
+                        self.bind_source_expression(index_value, ast::expr_span(index))
+                    } else {
+                        // Kernel index arithmetic needs a word boundary: -1
+                        // must not evaluate in its literal operand's one bit.
+                        let index_value =
+                            self.source_slice(&index_value, 63, 0, ast::expr_span(index));
+                        self.bind_source_scalar(
+                            index_value,
+                            ast::expr_span(index),
+                            crate::types::Ty::Integer,
+                        )
+                    };
                     let span = ast::expr_span(index);
                     let (&first, rest) = indices.split_first()?;
                     let mut valid = self.source_binary(

@@ -646,6 +646,39 @@ fn constant_zero_divisor_is_rejected() {
 }
 
 #[test]
+fn constrained_operator_outputs_keep_their_declared_width() {
+    let source = "module m;\n\
+        impl CustomOperator<\"clip\", unsigned, unsigned[3]> for unsigned {\n\
+            attr precedence = 35;\n\
+            fn apply(self, rhs: unsigned) -> unsigned[3] { return 0; }\n\
+        }\n\
+        impl Not<unsigned[3]> for unsigned {\n\
+            fn not(self) -> unsigned[3] { return 0; }\n\
+        }\n\
+        entity E { a: unsigned[8] in, b: unsigned[8] in, x: unsigned[3] out, y: unsigned[3] out }\n\
+        impl E { x = a clip b; y = not a; }\n";
+    assert_eq!(check_src(source), 0, "the output is three bits, not eight");
+    let bad = source.replace("x: unsigned[3] out", "x: unsigned[8] out");
+    assert_eq!(
+        check_src(&bad),
+        1,
+        "constrained output is not widened implicitly"
+    );
+    let literal_left = source.replace("x = a clip b", "x = 1 clip b");
+    assert_eq!(
+        check_src(&literal_left),
+        0,
+        "literal-left output stays constrained"
+    );
+    let directed = source.replace("unsigned[3]", "unsigned[2..0]");
+    assert_eq!(
+        check_src(&directed),
+        0,
+        "explicit result ranges stay constrained"
+    );
+}
+
+#[test]
 /// Operators the grammar reserves cannot be overloaded.
 fn reserved_operators_cannot_be_overloaded() {
     let header = "module m;\nattr precedence: integer for impl;\n\

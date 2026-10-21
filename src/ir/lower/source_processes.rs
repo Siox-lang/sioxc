@@ -4399,6 +4399,7 @@ fn widen_operand(
         process,
         context,
         Some(target),
+        context.resolved.declared(function.name.span),
     )
 }
 
@@ -6435,6 +6436,7 @@ fn lower_process_raw_resize(
                         process,
                         context,
                         target,
+                        context.resolved.declared(function.name.span),
                     ) {
                         return Some(value);
                     }
@@ -6869,6 +6871,7 @@ fn lower_process_family_from(
         process,
         context,
         return_type,
+        Some(definition),
     )
 }
 
@@ -6938,6 +6941,7 @@ fn inline_with_self_format(
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
     return_type: Option<&crate::types::Ty>,
+    conversion: Option<crate::resolve::DefId>,
 ) -> Option<ProcessValueId> {
     let eval = |bound: &ast::Expr| {
         crate::ir::eval_const_fns(bound, context.constant_integers, context.functions, 0)
@@ -6997,8 +7001,8 @@ fn inline_with_self_format(
         },
     );
     context.self_formats.pop();
-    match result {
-        Some(result) if in_format => {
+    match (result, conversion) {
+        (Some(result), _) if in_format => {
             // Source result types retain the explicit target range, rather
             // than a generic width-only layout or the source operand's range.
             // The native result/argument widths remain executable decisions.
@@ -7021,8 +7025,34 @@ fn inline_with_self_format(
             }
             Some(inherit_receiver_layout(result, format, context))
         }
-        Some(result) => Some(result),
-        None => {
+        (Some(result), _) => Some(result),
+        (None, Some(conversion)) if in_format => {
+            let layout = context.process_ir.value_layouts[format.0 as usize].clone();
+            // Keep evaluated arguments; discard only the failed value expansion.
+            truncate_process_values(context, format.0 as usize);
+            let callee = push_value(
+                span,
+                None,
+                None,
+                ProcessValueKind::Definition(conversion),
+                context,
+            );
+            let result = push_value(
+                span,
+                Some(target_type),
+                Some(len),
+                ProcessValueKind::Call {
+                    callee,
+                    type_arguments: Vec::new(),
+                    arguments: operands.to_vec(),
+                    bang: false,
+                },
+                context,
+            );
+            context.process_ir.value_layouts[result.0 as usize] = layout;
+            Some(result)
+        }
+        (None, _) => {
             truncate_process_values(context, first_value);
             None
         }
@@ -7080,6 +7110,7 @@ fn lower_process_qualified_call(
         process,
         context,
         return_type,
+        None,
     )
 }
 
@@ -8405,7 +8436,10 @@ fn give_literal_parameter_layout(
             .value_layouts
             .get_mut(argument.0 as usize),
     ) {
-        *slot = Some(layout);
+        // Inspection must not change a contextual literal's executable width.
+        if layout.packed_width() == context.process_ir.values[argument.0 as usize].bit_width {
+            *slot = Some(layout);
+        }
     }
 }
 
@@ -10782,6 +10816,38 @@ fn value_ref_with_type_inner(
     }
     ty = ty.or_else(|| process_kind_type(&kind, context));
     let width = source_value_width(&kind, ty.as_ref(), process, context);
+    if let ProcessValueKind::Concat(parts) = &kind {
+        // Concatenation evaluates its parts at their own widths, then the
+        // consumer resizes the result; its target cannot enlarge a part.
+        let natural = parts.iter().try_fold(0u32, |width, part| {
+            let logic = process_value_type(*part, context)
+                .filter(|ty| matches!(ty, crate::types::Ty::Named(_)))
+                .and_then(|ty| process_type_key(&ty, context))
+                .is_some_and(|key| context.design.logic_encodings.contains_key(&key));
+            width.checked_add(if logic {
+                1
+            } else {
+                context.process_ir.values.get(part.0 as usize)?.bit_width?
+            })
+        });
+        if let Some(natural) = natural {
+            let target = ty.clone();
+            if let Some(crate::types::Ty::Array { len, .. }) = &mut ty {
+                *len = natural;
+            }
+            let value = push_value(span, ty, Some(natural), kind, context);
+            return match (target, width) {
+                (Some(target), Some(width)) if width != natural => push_converted(
+                    span,
+                    target,
+                    width,
+                    ProcessValueKind::RawResize { operand: value },
+                    context,
+                ),
+                _ => value,
+            };
+        }
+    }
     // The CFG under construction is not yet in process_ir.processes. Bind
     // local reads to its declaration now so nested fields/indices retain the
     // concrete layout during source lowering, not only after CFG publication.

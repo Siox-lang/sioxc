@@ -1163,15 +1163,16 @@ fn consume_small_tail(tag: integer, gain: real) -> real {
 }
 fn consume_subpair(tag: integer) -> integer {
     let value: SubPair = make_subpair(unsigned[3](tag), signed[3](tag));
-    return integer(value.first) + integer(value.second);
+    // `integer` reads raw bits; `sext` reads the signed subbyte value.
+    return integer(value.first) + sext(value.second);
 }
 fn consume_subtail(tag: integer, gain: real) -> real {
     let value: SubTail = make_subtail(unsigned[3](tag), signed[3](tag), gain);
-    return value.gain + real(integer(value.first)) + real(integer(value.second));
+    return value.gain + real(integer(value.first)) + real(sext(value.second));
 }
 fn consume_subnested(tag: integer, gain: real) -> real {
     let value: SubNested = make_subnested(unsigned[3](tag), signed[3](tag), gain);
-    return value.gain + real(integer(value.pair.first)) + real(integer(value.pair.second));
+    return value.gain + real(integer(value.pair.first)) + real(sext(value.pair.second));
 }
 fn consume_subarray(tag: integer) -> integer {
     let value: SubArray = make_subarray(unsigned[3](tag));

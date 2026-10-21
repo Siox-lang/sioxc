@@ -139,7 +139,7 @@ impl<'a> Checker<'a> {
         left: &Ty,
         right: &Ty,
         coerces_to_owner: bool,
-    ) -> Option<Option<String>> {
+    ) -> Option<Option<OperatorOutput>> {
         let owner = self.ty_head(left)?;
         let input = self.ty_head(right)?;
         self.operator_sigs
@@ -167,8 +167,18 @@ impl<'a> Checker<'a> {
                         .trait_impls
                         .get(requirement)
                         .is_some_and(|types| types.contains(element)))
-                .then_some(Some(owner))
+                .then_some(Some((owner, None)))
             })
+    }
+
+    /// Explicit output constraints outrank an operand's contextual format.
+    pub(super) fn constrained_operator_output(
+        &self,
+        declaration: Option<&Type>,
+        owner: &Ty,
+    ) -> Option<Ty> {
+        let ty = self.ast_ty_for_owner(declaration?, owner);
+        (!matches!(ty, Ty::Error | Ty::Array { len: 0, .. })).then_some(ty)
     }
 
     /// Whether an operator impl accepts these operand types.

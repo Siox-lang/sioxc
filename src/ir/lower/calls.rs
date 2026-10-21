@@ -277,7 +277,7 @@ impl<'a> Lowering<'a> {
             ));
         }
         let shapes = self.source_shape_scope(
-            HashMap::new(),
+            inspection.parameters.clone(),
             f.ret
                 .as_ref()
                 .map(|ty| self.source_layout(ty, &self.cur_env)),
@@ -302,10 +302,9 @@ impl<'a> Lowering<'a> {
         }
         let length = u32::try_from(left.abs_diff(right) + 1).ok()?;
         match out? {
-            Val::Scalar(value) if length < 64 => {
+            Val::Scalar(value) => {
                 Some(self.source_slice(&value, length - 1, 0, ast::expr_span(callee)))
             }
-            Val::Scalar(value) => Some(value),
             _ => None,
         }
     }
@@ -1302,9 +1301,16 @@ impl<'a> Lowering<'a> {
                     .as_deref()
                     .is_some_and(|h| self.array_families.contains(h)) =>
             {
-                let w = match self.lower_scalar_env(index, env) {
-                    Expr::Const(c) => c as u32,
-                    _ => self.eval_const(index, &self.cur_env)? as u32,
+                let w = match index.as_ref() {
+                    ast::Expr::Range { lo, hi, .. } => {
+                        let left = self.eval_const(lo, &self.cur_env)?;
+                        let right = self.eval_const(hi, &self.cur_env)?;
+                        u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?
+                    }
+                    _ => match self.lower_scalar_env(index, env) {
+                        Expr::Const(c) => c as u32,
+                        _ => self.eval_const(index, &self.cur_env)? as u32,
+                    },
                 };
                 (Some(w), false)
             }
@@ -1357,18 +1363,17 @@ impl<'a> Lowering<'a> {
                 ast::expr_span(callee),
             );
         }
-        // `integer(x)` of a packed value is its raw word as a 64-bit kernel
-        // integer: the slice makes the backend evaluate it at that width, so
-        // the kernel arithmetic built on it does too. Left at the vector's
-        // width (16 bits for `sfixed<16, 8>`), a later signed step misread
-        // its top bit.
-        let packed_operand = target_w.is_none()
-            && self
-                .operand_type_name(arg)
-                .is_some_and(|family| self.array_families.contains(&family));
+        // Kernel integer arithmetic needs an integer-width boundary: a
+        // one-bit enum discriminant must not become signed -1 in its resolver.
+        let raw_operand = target_w.is_none()
+            && (self.operand_type_name(arg).is_some_and(|name| {
+                self.array_families.contains(&name) || self.out.enum_syms.contains_key(&name)
+            }) || self
+                .source_evaluated_width(&v)
+                .is_some_and(|width| width < 64));
         Some(match target_w {
-            Some(w) if w > 0 && w < 64 => self.source_slice(&v, w - 1, 0, ast::expr_span(callee)),
-            None if packed_operand => self.source_slice(&v, 63, 0, ast::expr_span(callee)),
+            Some(w) if w > 0 => self.source_slice(&v, w - 1, 0, ast::expr_span(callee)),
+            None if raw_operand => self.source_slice(&v, 63, 0, ast::expr_span(callee)),
             _ => v,
         })
     }
@@ -1457,6 +1462,9 @@ impl<'a> Lowering<'a> {
                     family: Some(family),
                     ..
                 }) => Some(self.free_fns.canonical_type_key(family)),
+                Some(crate::types::Ty::Named(definition)) => {
+                    self.free_fns.nominal_type_key(*definition)
+                }
                 _ => None,
             },
             ast::Expr::Int { .. } => Some("integer".to_string()),

@@ -724,6 +724,16 @@ fn inline_call_once(
         }
         _ => return None,
     };
+    let format = match context.process_ir.values[callee.0 as usize].kind {
+        ProcessValueKind::Definition(definition)
+            if context.functions.get_definition(definition).is_none() =>
+        {
+            process_value_source_layout(call, context.process_ir)
+                .filter(|layout| returns_self_format(function, layout))
+                .map(|_| call)
+        }
+        _ => None,
+    };
     let body = function.body.as_ref()?;
     function.ret.as_ref()?;
     if context.inline_functions.contains(&function.span) {
@@ -812,7 +822,9 @@ fn inline_call_once(
         .or(generic_argument)
         .or_else(|| same_type_argument(function, arguments, context))
         .and_then(|receiver| process_value_source_layout(receiver, context.process_ir).cloned());
-    if let Some(layout) = inherited_layout.or(declared_layout) {
+    let format_layout =
+        format.and_then(|format| process_value_source_layout(format, context.process_ir).cloned());
+    if let Some(layout) = format_layout.or(inherited_layout).or(declared_layout) {
         let ProcessValueKind::Local { local, .. } =
             context.process_ir.values[result.0 as usize].kind
         else {
@@ -855,7 +867,13 @@ fn inline_call_once(
         });
     }
     let first_body_block = entry.0 as usize;
+    if let Some(format) = format {
+        context.self_formats.push(format);
+    }
     let tail = lower_statements(&body.stmts, context, process, entry);
+    if format.is_some() {
+        context.self_formats.pop();
+    }
     // Before normalization adds the recursive sites' own argument bindings.
     let mut writes_parameter = false;
     if framed {

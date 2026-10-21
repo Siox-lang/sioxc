@@ -80,6 +80,9 @@ impl<'a> Lowering<'a> {
             }
         }
         match e {
+            ast::Expr::Concat { parts, .. } => {
+                Val::Scalar(self.lower_concat_env(parts, env, ast::expr_span(e)))
+            }
             // `self::length` inside an operator-impl body: the bound operand's
             // width (inline_op stashes it under the "param::attr" key).
             ast::Expr::SysAttr { base, attr, .. } => {
@@ -669,7 +672,7 @@ impl<'a> Lowering<'a> {
 
     /// Lower a system attribute (`'event`, `'old`, `'length`) into its IR form.
     pub(super) fn lower_sysattr(&self, base: &ast::Expr, attr: &str) -> Expr {
-        if let Some(layout) = self.source_call_layout(base) {
+        if let Some(layout) = self.source_operand_layout(base, &HashMap::new()) {
             let range = layout.index_range();
             let value = match attr {
                 "length" => match &layout.kind {

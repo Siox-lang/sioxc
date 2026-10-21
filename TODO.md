@@ -88,52 +88,6 @@ listed under LLVM and Output below.
   4000 (`--emit metadata`). A span-keyed memo must respect that one span can
   be checked under different symbol tables (generic bodies). Found
   2026-10-13 while probing stack depth.
-- 🔴 **Nested `xor` in hardware.** `y = a xor b xor c` (or
-  `(a xor b) xor c`) on `unsigned[8]` ports fails E-P017 ("cannot derive a
-  digital scheduler expression from Invalid"); one `xor`, `and`/`or` chains
-  and `xor` mixed with `or` all lower. Found 2026-10-13 writing the benchmark
-  workload; reproduces on current main.
-- 🔴 **Hardware scalar packed-index metavalues.** A pure source function
-  returning a `Logic` element from a packed struct port currently loses the
-  discriminant in hardware lowering (`copy.data[6]` on `"01XZUWLH-"` returns
-  binary zero rather than `X`). Both ordinary and DWARF native builds reproduce
-  the failure; the same procedural call is correct. Preserve the source enum
-  and companion-plane dependency through SourceValues field/index expansion,
-  then verify native results and waveform parity in both packing modes.
-- 🔴 **Hardware returned-array negative-label consumers.** In a pure hardware
-  function, reading `value.gains[-1]`, `[-2]` and `[-3]` from a returned nested
-  struct with `real[-1..-3]` loses the real values: adding them to a retained
-  real field yields just that field in both ordinary and debug native builds.
-  Actual GDB `finish` exposes all three returned array values correctly; the
-  source return ABI is not the failure. Trace field/index selection and signed
-  labels through SourceValues, preserve the declared real leaf format, and
-  verify native arithmetic and waveform parity rather than inspection alone.
-- 🔴 **Inactive aggregate-return array checks.** A hardware function returning
-  a struct with runtime-indexed array fields can latch bounds failures even
-  when its caller is in an untaken conditional. Ordinary and DWARF native
-  builds both reproduce this with index 999 on a declared two-element array;
-  equivalent scalar-return array calls already have inactive-path coverage.
-  Keep SourceValues aggregate field/check prefixes under the caller's active
-  predicate, preserving first-failure source order. This is a lowering gap,
-  separate from the debug return transport and its active-call parity checks.
-- 🔴 **Hardware signed widening/aggregate-field equality.** Comparing a returned
-  nested `signed[81]` field with the same negative source argument (`-7`)
-  selects the unequal branch in both ordinary and DWARF native builds, even though actual
-  GDB formals and `finish` show `-7` in both places. The argument is formed by
-  hardware `signed[81](left)` from a 64-bit integer port; a full-width unsigned
-  comparison of both operands also fails. Procedural `signed[81](-7)` also
-  zero-extends the integer pattern to `18446744073709551609` instead of `-7`;
-  constructing the complete 81-bit two's-complement literal avoids that path.
-  Audit sign extension and contextual widths for typed field comparisons;
-  verify full-width native comparisons as well as source inspection before
-  claiming a fix.
-- 🔴 **Narrow enum-to-integer arithmetic in hardware.** A custom Resolve body
-  with `let sum: integer = integer(self) + integer(rhs)` on a two-value enum
-  interprets two High inputs as negative (`sum > 0` selects false). An ordinary
-  native executable reproduces this without DWARF. Audit contextual signed
-  widths/carry bits for kernel arithmetic on narrow nonnegative inputs; the
-  declared integer must represent `1 + 1` as positive two. Keep this separate
-  from faithful debugger inspection of the emitted narrow computation.
 
 ## LLVM
 

@@ -501,6 +501,20 @@ impl<'a> Checker<'a> {
                                     _ => None,
                                 })
                             });
+                            // Dispatch uses family keys, but an explicit result
+                            // constraint must survive until expression typing.
+                            let output_declaration = im
+                                .trait_args
+                                .get(usize::from(!unary) + skip)
+                                .and_then(GenericArg::as_type)
+                                .or_else(|| {
+                                    im.items.iter().find_map(|item| match item {
+                                        ImplItem::Fn(function) => function.ret.clone(),
+                                        _ => None,
+                                    })
+                                })
+                                .filter(|ty| !matches!(ty, Type::Path(_)));
+                            let output = output.map(|head| (head, output_declaration));
                             self.operator_sigs
                                 .entry((t.clone(), ty.clone()))
                                 .or_default()
@@ -519,7 +533,7 @@ impl<'a> Checker<'a> {
                             self.operator_sigs
                                 .entry((symbol.to_string(), ty.clone()))
                                 .or_default()
-                                .push((input, Some("Bool".to_string())));
+                                .push((input, Some(("Bool".to_string(), None))));
                         }
                         if matches!(t.as_str(), "Index" | "IndexAssign") {
                             let arg_name = |index: usize| {

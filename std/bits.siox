@@ -282,17 +282,34 @@ impl From<signed> for real {
 
 // `signed[16](s)` sign-extends, as VHDL's `resize`; narrowing keeps the low
 // bits. `signed[9](u)` zero-extends: every `unsigned[8]` value fits.
+impl From<integer> for signed {
+    fn from(value: integer) -> signed {
+        let converted: signed[Self'length] = value;
+        if value < 0 {
+            let magnitude: signed[Self'length] = 0 - value;
+            let zero: signed[Self'length] = 0;
+            return zero - magnitude;
+        }
+        return converted;
+    }
+}
+
 impl From<signed> for signed {
     fn from(value: signed) -> signed {
-        let w: integer = integer(value) - ((integer(value) >> value'length) << value'length);
-        if (w >> (value'length - 1)) == 1 { return w - (1 << value'length); }
-        return w;
+        let result: signed[Self'length] = { value };
+        if Self'length > value'length {
+            for bit in value'length..Self'length - 1 {
+                result[bit] = value[value'high];
+            }
+        }
+        return result;
     }
 }
 
 impl From<unsigned> for signed {
     fn from(value: unsigned) -> signed {
-        return integer(value) - ((integer(value) >> value'length) << value'length);
+        let result: signed[Self'length] = { value };
+        return result;
     }
 }
 
