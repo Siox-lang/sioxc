@@ -1720,6 +1720,20 @@ pub(super) fn process_value<'ctx>(
             },
         )?,
         ProcessValueKind::RawResize { operand } => {
+            let signed_integer_to_signed = matches!(
+                design
+                    .process_ir
+                    .values
+                    .get(operand.0 as usize)
+                    .and_then(|v| v.ty.as_ref()),
+                Some(siox::types::Ty::Integer)
+            ) && matches!(
+                value.ty.as_ref(),
+                Some(siox::types::Ty::Array {
+                    family: Some(family),
+                    ..
+                }) if family.rsplit("::").next() == Some("signed")
+            );
             let operand = process_value(
                 context,
                 module,
@@ -1730,7 +1744,11 @@ pub(super) fn process_value<'ctx>(
                 index_sites,
                 cache,
             )?;
-            fit(builder, operand, width)?
+            if signed_integer_to_signed {
+                fit_signed(builder, operand, width)?
+            } else {
+                fit(builder, operand, width)?
+            }
         }
         ProcessValueKind::Binary {
             operation: ProcessBinaryOp::And | ProcessBinaryOp::Or | ProcessBinaryOp::Xor,
