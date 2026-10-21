@@ -142,6 +142,7 @@ pub(super) fn initializer_can_raise_host_error(
             operation: ProcessHostValueOp::ReadUtf8
                 | ProcessHostValueOp::ReadArray
                 | ProcessHostValueOp::ArrayCopy
+                | ProcessHostValueOp::ArraySlice
                 | ProcessHostValueOp::ArrayPush
                 | ProcessHostValueOp::ReadSymbols
                 | ProcessHostValueOp::ArrayFrom

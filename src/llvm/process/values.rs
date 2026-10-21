@@ -1481,6 +1481,20 @@ pub(super) fn process_value<'ctx>(
                         ],
                     )
                 }
+                ProcessHostValueOp::ArraySlice => {
+                    let [handle, left, right] = arguments.as_slice() else {
+                        return None;
+                    };
+                    (
+                        "sx_runtime_array_slice",
+                        i64.fn_type(&[i64.into(), i64.into(), i64.into()], false),
+                        vec![
+                            scalar_argument(*handle, cache)?,
+                            scalar_argument(*left, cache)?,
+                            scalar_argument(*right, cache)?,
+                        ],
+                    )
+                }
                 ProcessHostValueOp::FramePop => {
                     let restored = emit_frame_pop(context, module, builder, width)?;
                     emit_host_read_check(context, module, builder, value.span)?;
@@ -1568,6 +1582,7 @@ pub(super) fn process_value<'ctx>(
                     | ProcessHostValueOp::ReadArray
                     | ProcessHostValueOp::ReadSymbols
                     | ProcessHostValueOp::ArrayCopy
+                    | ProcessHostValueOp::ArraySlice
             ) {
                 emit_host_read_check(context, module, builder, value.span)?;
             }

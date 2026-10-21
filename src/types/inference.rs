@@ -324,8 +324,41 @@ impl<'a> Checker<'a> {
                     Expr::Range { .. } | Expr::PartialRange { .. }
                 );
                 match &base_ty {
-                    Ty::Array { elem, family, .. } if is_range => {
-                        let width = explicit_range_len(index).unwrap_or(0);
+                    Ty::Array {
+                        elem,
+                        family,
+                        len: base_len,
+                        low: base_low,
+                    } if is_range => {
+                        // An open end of an element array's slice (`s[2..]` of
+                        // a `Char[5]`) is the array's own: the slice is sized
+                        // too, rather than read as a runtime `T[]`.
+                        let open = || {
+                            let Expr::PartialRange { lo, hi, .. } = index.as_ref() else {
+                                return None;
+                            };
+                            if family.is_some() || *base_len == 0 {
+                                return None;
+                            }
+                            let left = match lo {
+                                Some(lo) => signed_lit(lo)?,
+                                None => *base_low,
+                            };
+                            let right = match hi {
+                                Some(hi) => signed_lit(hi)?,
+                                None => base_low + i64::from(*base_len) - 1,
+                            };
+                            u32::try_from(left.abs_diff(right) + 1).ok()
+                        };
+                        // In a testbench an unsized `T[]` is a runtime array,
+                        // and so is its slice: sized, `let c: Char[] =
+                        // r[1..3]` gave `c` fixed storage for a handle.
+                        let runtime = self.in_testbench.get() && family.is_none() && *base_len == 0;
+                        let width = if runtime {
+                            0
+                        } else {
+                            explicit_range_len(index).or_else(open).unwrap_or(0)
+                        };
                         if width == 1 {
                             elem.as_ref().clone()
                         } else {
