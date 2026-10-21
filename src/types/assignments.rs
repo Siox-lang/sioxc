@@ -359,6 +359,17 @@ impl<'a> Checker<'a> {
         {
             return;
         }
+        // `{}` is a construction for a named type, and no bits for a vector.
+        if matches!(lhs, Ty::Array { .. })
+            && matches!(value, Expr::Concat { parts, .. } if parts.is_empty())
+        {
+            self.error(
+                codes::TYPE_MISMATCH,
+                expr_span(value),
+                "an empty concatenation has no bits to initialize a vector with".to_string(),
+            );
+            return;
+        }
         if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
             let mut diag = Diagnostic::error(format!(
@@ -435,7 +446,13 @@ impl<'a> Checker<'a> {
                 _ => true,
             };
             let help = strlit_help(&lhs, value).unwrap_or_else(|| {
-                if route {
+                // A tuple or an array has no conversion to wrap it in: it is
+                // built from converted parts.
+                if matches!(lhs, Ty::Tuple(_)) {
+                    "build the tuple from converted parts, e.g. `(T(a), U(b))`".to_string()
+                } else if matches!(lhs, Ty::Array { family: None, len, .. } if len > 0) {
+                    "build the array from converted elements, e.g. `[T(a), T(b)]`".to_string()
+                } else if route {
                     format!(
                         "wrap it in a conversion, e.g. `{}(...)`",
                         self.ty_display(&lhs)

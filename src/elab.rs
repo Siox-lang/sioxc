@@ -482,6 +482,14 @@ fn elaborate_roots(
         collisions: std::cell::RefCell::new(Vec::new()),
         entities: HashMap::new(),
         impls: HashMap::new(),
+        record_structs: modules
+            .iter()
+            .flat_map(|m| &m.items)
+            .filter_map(|item| match item {
+                Item::Struct(s) if !s.fields.is_empty() => Some(s.name.text.clone()),
+                _ => None,
+            })
+            .collect(),
         out: Hierarchy::default(),
     };
     e.out.expr_types = typed.expr_types().clone();
@@ -540,6 +548,8 @@ struct Elaborator<'a> {
     entities: HashMap<DefId, &'a EntityDecl>,
     /// Entity identity -> its inherent impls (where instances live).
     impls: HashMap<DefId, Vec<&'a ImplDecl>>,
+    /// Names of structs with fields, which are connected field by field.
+    record_structs: HashSet<String>,
     /// The hierarchy being built; returned once the walk completes.
     out: Hierarchy,
 }
@@ -1406,6 +1416,31 @@ impl<'a> Elaborator<'a> {
             let Some(sig) = parent_signals.get(&c.signal) else {
                 continue;
             };
+            // A struct port connects field by field, by name: another struct,
+            // or a vector, of the same width matched no field and the
+            // connection was dropped in silence (#186).
+            let record =
+                |ty: &EType| matches!(ty, EType::Named(name) if self.record_structs.contains(name));
+            let mismatched = match (&c.ty, sig) {
+                (EType::Named(port), EType::Named(signal)) => {
+                    port != signal && (record(&c.ty) || record(sig))
+                }
+                (EType::Named(_), EType::Array { .. }) | (EType::Array { .. }, EType::Named(_)) => {
+                    record(&c.ty) || record(sig)
+                }
+                _ => false,
+            };
+            if mismatched {
+                self.error(
+                    codes::TYPE_MISMATCH,
+                    site,
+                    format!(
+                        "type mismatch on port `{}`: the port is `{}` but `{}` is `{}`",
+                        c.port, c.ty, c.signal, sig
+                    ),
+                );
+                continue;
+            }
             if let (Some(pw), Some(sw)) = (c.ty.width(), sig.width()) {
                 if pw != sw {
                     self.error(
