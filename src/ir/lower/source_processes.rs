@@ -192,9 +192,21 @@ fn process_functions<'a>(
         let Some(owner) = functions.type_head_key(&implementation.target) else {
             continue;
         };
+        // A trait's methods also under `Owner#Trait`: two traits' `ping`
+        // share one `Owner::ping` key, and `A::ping(f)` called `B`'s (#192).
+        let trait_key = implementation
+            .trait_
+            .as_ref()
+            .and_then(|path| functions.trait_path_key(path));
         for item in &implementation.items {
             if let ast::ImplItem::Fn(function) = item {
                 functions.insert_associated(format!("{owner}::{}", function.name.text), function);
+                if let Some(trait_key) = &trait_key {
+                    functions.insert_associated(
+                        format!("{owner}#{trait_key}::{}", function.name.text),
+                        function,
+                    );
+                }
             }
         }
     }
@@ -2558,7 +2570,16 @@ fn lower_statement(
             body,
             span,
             ..
-        } => lower_for(var, range, body, *span, context, process, block),
+        } => {
+            // `for x in []` / `for c in ""` never runs its body. With no
+            // elements the loop had no shape and did not lower (#200).
+            if matches!(range, ast::Expr::Array { elems, .. } if elems.is_empty())
+                || matches!(range, ast::Expr::StrLit { text, .. } if text.is_empty())
+            {
+                return Some(block);
+            }
+            lower_for(var, range, body, *span, context, process, block)
+        }
         Stmt::Return { value, span } => {
             if let Some((resume, target)) = context.inline_return_blocks.last().copied() {
                 if let (Some(target), Some(value)) = (target, value) {
@@ -3102,6 +3123,26 @@ fn lower_call(
                 inline_process_procedure_call(callee, arguments, span, context, process, block)
             {
                 return Some(tail);
+            }
+            // `putchar(65);`: a C function called for its effect is the
+            // call's value, taken and dropped. As a runtime statement it
+            // had no lowering (#193).
+            if context
+                .functions
+                .get(callee)
+                .is_some_and(|function| function.body.is_none() && function.ret.is_some())
+            {
+                let call = ast::Expr::Call {
+                    callee: Box::new(callee.clone()),
+                    type_args: Vec::new(),
+                    qualifier: None,
+                    args: arguments.to_vec(),
+                    bang: false,
+                    span,
+                };
+                let value = value_ref(&call, process, context);
+                cfg_calls::frame_copy(value, process, context, block);
+                return Some(block);
             }
             let operation = match name.as_str() {
                 "assert" => ProcessRuntimeOp::Assert,
@@ -4052,6 +4093,22 @@ fn checked_process_index(
     range: crate::ir::LayoutRange,
     context: &mut LoweringContext<'_>,
 ) -> ProcessValueId {
+    // `s.arr[5]` and `matrix[0][5]`: a constant index past the declared
+    // labels, which the checker cannot see through a field or element. It
+    // lowered to a block nothing could run (#198, #213).
+    if let Some(value) = arena_constant_integer(index, &context.process_ir.values) {
+        let (low, high) = (range.left.min(range.right), range.left.max(range.right));
+        if value < i128::from(low) || value > i128::from(high) {
+            context.rejected.borrow_mut().push(
+                crate::diag::Diagnostic::error(format!(
+                    "index {value} is outside `{}..{}` of this array",
+                    range.left, range.right
+                ))
+                .with_code(crate::diag::codes::TYPE_MISMATCH)
+                .at(span),
+            );
+        }
+    }
     if arena_constant_integer(index, &context.process_ir.values).is_some()
         || matches!(
             context
@@ -5781,6 +5838,13 @@ fn process_local_layout(
     ty: Option<&crate::types::Ty>,
     context: &LoweringContext<'_>,
 ) -> Option<crate::ir::SourceLayout> {
+    if let Some(layout) = declaration
+        .ty
+        .as_ref()
+        .and_then(|declared| generic_struct_layout(declared, declaration.span, context))
+    {
+        return Some(layout);
+    }
     let mut layout = process_layout_for_type(ty?, declaration.span, context)?;
     if let Some(declared) = &declaration.ty {
         apply_process_declared_ranges(
@@ -5791,6 +5855,79 @@ fn process_local_layout(
         )?;
     }
     Some(layout)
+}
+
+/// `Wrapper<8>`: a generic struct's fields with its arguments substituted.
+/// Its checked type names only `Wrapper`, so a local of it had no layout and
+/// did not lower (#196).
+fn generic_struct_layout(
+    declared: &ast::Type,
+    span: crate::diag::Span,
+    context: &LoweringContext<'_>,
+) -> Option<crate::ir::SourceLayout> {
+    let ast::Type::Generic { base, args, .. } = declared else {
+        return None;
+    };
+    let ast::Type::Path(path) = base.as_ref() else {
+        return None;
+    };
+    let definition = context.resolved.resolved(path.span)?;
+    let declaration = context
+        .modules
+        .iter()
+        .flat_map(|module| &module.items)
+        .find_map(|item| match item {
+            ast::Item::Struct(declaration)
+                if !declaration.fields.is_empty()
+                    && context.resolved.declared(declaration.name.span) == Some(definition) =>
+            {
+                Some(declaration)
+            }
+            _ => None,
+        })?;
+    let mut types = std::collections::HashMap::new();
+    let mut values = std::collections::HashMap::new();
+    for (parameter, argument) in declaration.params.params.iter().zip(args) {
+        let name = parameter.name.text.clone();
+        match argument {
+            ast::GenericArg::PositionalType(ty) => {
+                types.insert(name, ty.clone());
+            }
+            ast::GenericArg::Positional(value) if parameter.bound.is_some() => {
+                values.insert(name, value.clone());
+            }
+            ast::GenericArg::Positional(value) => {
+                types.insert(name, crate::ir::expr_to_type(value)?);
+            }
+            _ => return None,
+        }
+    }
+    let fields = declaration
+        .fields
+        .iter()
+        .map(|field| {
+            let ty = crate::ir::subst_type_values(
+                &crate::ir::subst_type_params(&field.ty, &types),
+                &values,
+            );
+            let layout = generic_struct_layout(&ty, span, context).or_else(|| {
+                process_layout_for_type(&process_declared_type(&ty, context)?, span, context)
+            })?;
+            Some(crate::ir::LayoutField {
+                name: field.name.text.clone(),
+                direction: None,
+                layout,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(crate::ir::SourceLayout {
+        span,
+        kind: LayoutKind::Struct {
+            name: context.functions.type_head_key(base)?,
+            view: None,
+            fields,
+        },
+    })
 }
 
 /// Checked types retain array lengths, not their written labels. Restore the
@@ -8266,8 +8403,17 @@ fn inline_process_call(
                 .and_then(|ty| process_type_key(ty, context))?;
             let method = &path.segments[path.segments.len() - 1].text;
             args = &args[1..];
+            let qualified = context
+                .resolved
+                .resolved(path.segments[path.segments.len() - 2].span)
+                .and_then(|id| context.functions.trait_key(id))
+                .and_then(|key| {
+                    context
+                        .functions
+                        .get_associated(&format!("{owner}#{key}"), method)
+                });
             (
-                context.functions.get_associated(&owner, method)?,
+                qualified.or_else(|| context.functions.get_associated(&owner, method))?,
                 Some(receiver),
             )
         }
@@ -9283,9 +9429,21 @@ fn inline_process_binary_operator(
                 ..
             })
         );
+    // A character literal beside an enum is that enum's variant: `u and
+    // '1'` found no `And<Char>` for `Logic` and fell back to raw
+    // discriminant arithmetic, `'U' and '1'` giving `'0'` (#190).
+    let named = |ty: &Option<crate::types::Ty>| matches!(ty, Some(crate::types::Ty::Named(_)));
+    let char_left = matches!(lhs, ast::Expr::CharLit { .. }) && named(&right_type);
     let left_type = match operand_type(lhs, process, context) {
         Some(crate::types::Ty::Integer) | None if literal_left => right_type.clone()?,
+        _ if char_left => right_type.clone()?,
         left => left?,
+    };
+    let right_type = if matches!(rhs, ast::Expr::CharLit { .. }) && named(&Some(left_type.clone()))
+    {
+        Some(left_type.clone())
+    } else {
+        right_type
     };
     let symbol = crate::syntax::pretty::bin_op(operator);
     if let Some(value) = inline_process_comparison(
@@ -11288,6 +11446,34 @@ fn value_ref_with_type_inner(
             },
             _ => None,
         },
+        // `Boxed { .val = x }` of a generic struct, inside an inlined
+        // `wrap<T>`: `Boxed<T>` has no declared layout, so its field values
+        // give it one. Without it the construct did not lower (#204).
+        ProcessValueKind::Construct {
+            ty: Some(struct_type @ crate::types::Ty::Named(_)),
+            fields,
+            spread: None,
+        } if process_aggregate_layout_for_type(struct_type, span, context).is_none() => (|| {
+            let fields = fields
+                .iter()
+                .map(|field| {
+                    Some(crate::ir::LayoutField {
+                        name: field.name.clone()?,
+                        direction: None,
+                        layout: operand_source_layout(field.value?, process, context)?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(SourceLayout {
+                span,
+                kind: LayoutKind::Struct {
+                    name: process_type_key(struct_type, context)?,
+                    view: None,
+                    fields,
+                },
+            })
+        })(
+        ),
         _ => None,
     };
     let width = match (&kind, &local_layout) {

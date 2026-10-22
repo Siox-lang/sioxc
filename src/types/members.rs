@@ -216,6 +216,28 @@ impl<'a> Checker<'a> {
                 return;
             }
         }
+        // A fixed array has only its blanket methods, and a tuple none:
+        // `xs.push(4)` and `p.foo()` passed and did not lower (#205).
+        let fixed_array = matches!(recv, Ty::Array { family: None, len, .. } if len > 0);
+        if (fixed_array && !self.array_methods.contains(&field.text))
+            || matches!(recv, Ty::Tuple(_))
+        {
+            self.error_with_help(
+                codes::INVALID_METHOD_CALL,
+                *span,
+                format!(
+                    "`{}` has no method `{}`",
+                    self.ty_display(&recv),
+                    field.text
+                ),
+                if fixed_array {
+                    "a fixed-size array cannot grow; its length is `xs'length`".to_string()
+                } else {
+                    "a tuple has fields `.0`, `.1`, ..., not methods".to_string()
+                },
+            );
+            return;
+        }
         let Some(head) = self.ty_head(&recv) else {
             return;
         };

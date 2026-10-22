@@ -156,6 +156,16 @@ impl<'a> Checker<'a> {
                 }
                 let lhs_ty = self.type_of(lhs, sym);
                 let rhs_ty = self.type_of(rhs, sym);
+                // A character literal on the left is the right operand's
+                // variant: `'1' and u` is a `Logic`, not a `Char` (#190).
+                let lhs_ty = if matches!(lhs.as_ref(), Expr::CharLit { .. })
+                    && matches!(rhs_ty, Ty::Named(_))
+                    && self.assignable(&rhs_ty, lhs, sym)
+                {
+                    rhs_ty.clone()
+                } else {
+                    lhs_ty
+                };
                 // Mixed numbers promote (spec 3.17).
                 if matches!(
                     op,
@@ -302,7 +312,11 @@ impl<'a> Checker<'a> {
                 let len = parts
                     .iter()
                     .try_fold(0u32, |total, part| {
-                        let width = match self.type_of(part, sym) {
+                        let ty = self.type_of(part, sym);
+                        if !self.concatenable(&ty) {
+                            return None;
+                        }
+                        let width = match ty {
                             Ty::Array { len, .. } if len > 0 => len,
                             Ty::Named(id) => self
                                 .definition_key(id)

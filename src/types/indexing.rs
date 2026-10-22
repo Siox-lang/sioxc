@@ -149,8 +149,16 @@ impl<'a> Checker<'a> {
             } if self.is_entity_ty(&elem) => (0, len as i64 - 1, "instance"),
             // A data array's bounds come from its declaration, not its
             // length: `Logic[15..8]` is indexed `8..15`.
-            Ty::Array { family: None, .. } => match declared_bounds_of(base, &self.array_bounds) {
+            // An array literal (`[10, 20, 30][5]`) is labelled from 0. It was
+            // not checked at all and failed to lower (#198, #213). A field or
+            // element of a declaration keeps labels its checked type lacks.
+            Ty::Array {
+                family: None, len, ..
+            } => match declared_bounds_of(base, &self.array_bounds) {
                 Some((lo, hi)) => (lo, hi, "element"),
+                None if len > 0 && matches!(base, Expr::Array { .. }) => {
+                    (0, len as i64 - 1, "element")
+                }
                 None => return,
             },
             _ => return,

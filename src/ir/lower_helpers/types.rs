@@ -117,11 +117,47 @@ pub(in crate::ir) fn enum_base_name(
 
 /// An enum's effective variants, base chain first then its own declared ones
 /// (spec: nominal derivation). `(name, explicit discriminant)`.
+/// Module integer constants folded to values, for discriminants written as
+/// `Base = OFFSET` or `Next = OFFSET + 1`.
+pub(in crate::ir) fn discriminant_constants(
+    modules: &[Module],
+    fns: &FunctionIndex<'_>,
+) -> HashMap<String, i64> {
+    let constants: Vec<&ast::ConstDecl> = modules
+        .iter()
+        .flat_map(|m| &m.items)
+        .filter_map(|item| match item {
+            ast::Item::Const(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    let mut env = HashMap::new();
+    // Constants may name each other in any order: fold to a fixpoint.
+    for _ in 0..=constants.len() {
+        let mut changed = false;
+        for c in &constants {
+            let key = fns.constant_decl_key(c);
+            if env.contains_key(&key) {
+                continue;
+            }
+            if let Some(value) = eval_const_fns(&c.value, &env, fns, 0) {
+                env.insert(key, value);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    env
+}
+
 pub(in crate::ir) fn effective_variants(
     name: &str,
     enums: &HashMap<String, &ast::EnumDecl>,
     fns: &FunctionIndex<'_>,
     seen: &mut Vec<String>,
+    constants: &HashMap<String, i64>,
 ) -> Vec<(String, Option<i64>)> {
     let Some(e) = enums.get(name) else {
         return Vec::new();
@@ -131,14 +167,16 @@ pub(in crate::ir) fn effective_variants(
     }
     seen.push(name.to_string());
     let mut out = match enum_base_name(e, enums, fns) {
-        Some(base) => effective_variants(&base, enums, fns, seen),
+        Some(base) => effective_variants(&base, enums, fns, seen, constants),
         None => Vec::new(),
     };
     for v in &e.variants {
-        let disc = match &v.value {
-            Some(ast::Expr::Int { text, .. }) => parse_int(text).map(|n| n as i64),
-            _ => None,
-        };
+        // Any constant expression: only a bare literal was read, and
+        // `Base = OFFSET` numbered from zero instead (#201).
+        let disc = v
+            .value
+            .as_ref()
+            .and_then(|value| eval_const_fns(value, constants, fns, 0));
         out.push((v.name.text.clone(), disc));
     }
     seen.pop();
@@ -154,11 +192,12 @@ pub fn enum_discriminants(
     fns: &FunctionIndex<'_>,
 ) -> HashMap<String, HashMap<String, u64>> {
     let enums = enum_index(modules, fns);
+    let constants = discriminant_constants(modules, fns);
     let mut out = HashMap::new();
     for name in enums.keys() {
         let mut vars = HashMap::new();
         let mut next = 0u64;
-        for (v, disc) in effective_variants(name, &enums, fns, &mut Vec::new()) {
+        for (v, disc) in effective_variants(name, &enums, fns, &mut Vec::new(), &constants) {
             let d = disc.map(|d| d as u64).unwrap_or(next);
             vars.insert(v, d);
             next = d + 1;
@@ -178,9 +217,12 @@ pub fn enum_first_discriminants(
     fns: &FunctionIndex<'_>,
 ) -> HashMap<String, u64> {
     let enums = enum_index(modules, fns);
+    let constants = discriminant_constants(modules, fns);
     let mut out = HashMap::new();
     for name in enums.keys() {
-        if let Some((_, disc)) = effective_variants(name, &enums, fns, &mut Vec::new()).first() {
+        if let Some((_, disc)) =
+            effective_variants(name, &enums, fns, &mut Vec::new(), &constants).first()
+        {
             out.insert(name.clone(), disc.map(|d| d as u64).unwrap_or(0));
         }
     }

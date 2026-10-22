@@ -546,9 +546,11 @@ impl Compiler {
         crate::syntax::attributes::attach(&mut result.modules, &mut result.diagnostics);
         let resolved = crate::resolve::resolve(&result.modules, &mut result.diagnostics);
         result.stats.definitions = Some(resolved.defs().len());
+        crate::types::inline_loop_ranges(&mut result.modules, &resolved);
         let typed = crate::types::check(&result.modules, &resolved, &mut result.diagnostics);
         // `x'integers` -> `x'high + 1`: later stages see system attributes only.
         crate::types::expand_type_attrs(&mut result.modules, &typed);
+        crate::types::fold_value_lengths(&mut result.modules, &typed);
         // Tuples become the generic structs they are; see `types::tuples`.
         crate::types::lower_tuples(&mut result.modules, &typed);
         result.resolved = Some(resolved);

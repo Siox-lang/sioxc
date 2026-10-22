@@ -579,6 +579,37 @@ impl<'a> Lowering<'a> {
             let norm = self.norm_conns(conns, sub_id);
             let mut aliases: HashMap<String, SignalId> = HashMap::new();
             if let Some(decl) = self.entities.get(&sub_id).copied() {
+                // `child.io = io;` after the instance drives the port one way:
+                // the child's own drivers never reached the parent net (#191).
+                // An inout shares its net only through the construction.
+                for item in impls.iter().flat_map(|im| &im.items) {
+                    let ast::ImplItem::Stmt(ast::Stmt::Assign { target, span, .. }) = item else {
+                        continue;
+                    };
+                    let ast::Expr::Field { base, field, .. } = target else {
+                        continue;
+                    };
+                    let inout = decl
+                        .ports
+                        .iter()
+                        .any(|p| p.dir == Some(ast::Direction::Inout) && p.name.text == field.text);
+                    if inout && expr_path(base).as_deref() == Some(inst.as_str()) {
+                        self.sink.emit(
+                            crate::diag::Diagnostic::error(format!(
+                                "inout port `{inst}.{}` is connected by assignment",
+                                field.text
+                            ))
+                            .with_code(crate::diag::codes::TYPE_MISMATCH)
+                            .at(*span)
+                            .help(format!(
+                                "an inout port shares its net only where the instance is built: \
+                                 `let {inst}: {} = {{ .{} = net }};`",
+                                crate::syntax::pretty::type_str(cty),
+                                field.text
+                            )),
+                        );
+                    }
+                }
                 for p in &decl.ports {
                     if p.dir != Some(ast::Direction::Inout) {
                         continue;

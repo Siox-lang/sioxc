@@ -133,6 +133,8 @@ impl<'a> Checker<'a> {
             aliases: HashMap::new(),
             expanding: std::cell::RefCell::new(HashSet::new()),
             methods: HashMap::new(),
+            method_traits: HashMap::new(),
+            array_methods: HashSet::new(),
             method_param_types: HashMap::new(),
             method_overloads: HashMap::new(),
             method_has_self: HashMap::new(),
@@ -257,6 +259,13 @@ impl<'a> Checker<'a> {
                 self.attr_value_kinds.insert(a.name.text.clone(), kind);
             }
             Item::Impl(im) => {
+                if matches!(im.target, Type::Indexed { index: None, .. }) {
+                    for it in &im.items {
+                        if let ImplItem::Fn(f) = it {
+                            self.array_methods.insert(f.name.text.clone());
+                        }
+                    }
+                }
                 // Record every impl method by (type head, name) with its
                 // declared return type, so `recv.method(args)` types (spec 3.20).
                 if let Some(ty) = self.type_key(&im.target) {
@@ -265,6 +274,14 @@ impl<'a> Checker<'a> {
                             ImplItem::Fn(f) => {
                                 let key = (ty.clone(), f.name.text.clone());
                                 self.methods.insert(key.clone(), f.ret.clone());
+                                if let Some(name) =
+                                    im.trait_.as_ref().and_then(|path| self.trait_key(path))
+                                {
+                                    let traits = self.method_traits.entry(key.clone()).or_default();
+                                    if !traits.contains(&name) {
+                                        traits.push(name);
+                                    }
+                                }
                                 let params: MethodParams = f
                                     .params
                                     .iter()
@@ -722,10 +739,29 @@ impl<'a> Checker<'a> {
                 // A tuple field holds each of its elements: one has no type key
                 // of its own, and `next: (Node, integer)` escaped the cycle
                 // check (#179).
-                fn held<'t>(ty: &'t Type, out: &mut Vec<&'t Type>) {
+                // ponytail: a generic field holds its type arguments too
+                // (`a: A<B>` holds a `B`, #214); an argument the generic does
+                // not store counts as held, a rare false cycle.
+                fn held(ty: &Type, out: &mut Vec<Type>) {
                     match ty {
                         Type::Tuple { elems, .. } => elems.iter().for_each(|elem| held(elem, out)),
-                        other => out.push(other),
+                        Type::Generic { base, args, .. } => {
+                            out.push(ty.clone());
+                            held(base, out);
+                            for arg in args {
+                                match arg {
+                                    GenericArg::PositionalType(ty)
+                                    | GenericArg::NamedType { ty, .. } => held(ty, out),
+                                    GenericArg::Positional(Expr::Path(path))
+                                    | GenericArg::Named {
+                                        value: Expr::Path(path),
+                                        ..
+                                    } => out.push(Type::Path(path.clone())),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        other => out.push(other.clone()),
                     }
                 }
                 let fields = st
@@ -737,7 +773,7 @@ impl<'a> Checker<'a> {
                         types
                             .into_iter()
                             .filter_map(|ty| {
-                                Some((f.name.text.clone(), self.type_key(ty)?, f.name.span))
+                                Some((f.name.text.clone(), self.type_key(&ty)?, f.name.span))
                             })
                             .collect::<Vec<_>>()
                     })

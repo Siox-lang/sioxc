@@ -154,7 +154,7 @@ impl Typed {
     }
 }
 
-pub use expand::expand_type_attrs;
+pub use expand::{expand_type_attrs, fold_value_lengths, inline_loop_ranges};
 pub use tuples::{lower_tuples, tuple_struct_arity, tuple_struct_name};
 
 /// Type-check resolved modules.
@@ -414,6 +414,11 @@ struct Checker<'a> {
     /// typing method calls `recv.method(args)` (spec 3.20). Covers both
     /// inherent (`impl T`) and trait (`impl Tr for T`) impl methods.
     methods: HashMap<(String, String), Option<Type>>,
+    /// `(type head, method name)` -> the traits whose impls define it, so a
+    /// method two traits share is ambiguous unqualified.
+    method_traits: HashMap<(String, String), Vec<String>>,
+    /// Methods of blanket `impl .. for T[]` blocks, which every array has.
+    array_methods: HashSet<String>,
     /// `(type head, method name)` -> declared non-`self` parameter types.
     /// Method calls used to check only that a name existed, so wrong counts
     /// and raw-bit reinterpretations both passed semantic analysis.

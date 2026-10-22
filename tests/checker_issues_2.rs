@@ -63,14 +63,14 @@ fn late_failures_are_diagnosed() {
         (
             "177_struct",
             format!("module m;\nuse std::bits::unsigned;\nstruct P<W: integer> {{ pub d: unsigned[W], }}\n{TB}let p: P<-4>; }} }}\n"),
-            "`P`'s `W` is a width, so it must be at least 1, not -4",
+            "these arguments give `P` a width of -4",
         ),
         (
             "177_entity",
             "module m;\nuse std::bits::unsigned;\nentity R<W: integer> { d: unsigned[W] in, q: unsigned[W] out, }\n\
              impl<W: integer> R<W> { q = d; }\n#[test] entity T {}\nimpl T { let dut: R<0> = {}; }\n"
                 .to_string(),
-            "`R`'s `W` is a width, so it must be at least 1, not 0",
+            "these arguments give `R` a width of 0",
         ),
         (
             "178",

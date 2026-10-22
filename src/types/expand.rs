@@ -175,6 +175,52 @@ pub fn expand_type_attrs(modules: &mut [Module], typed: &Typed) {
     }
 }
 
+/// `[10, 20, 30]'length` and `arr[0..2]'length`: the length of a value that
+/// is not a name, from its checked type. Lowering read the attribute of a
+/// declaration only, and these did not lower or read the element's width
+/// (#203). A runtime array's length stays a run-time read.
+pub fn fold_value_lengths(modules: &mut [Module], typed: &Typed) {
+    let mut fold = |e: &mut Expr| {
+        let Expr::SysAttr { base, attr, span } = e else {
+            return true;
+        };
+        if attr.text != "length" || matches!(base.as_ref(), Expr::Path(_)) {
+            return true;
+        }
+        let literal = |e: &Expr| match e {
+            Expr::Int { text, .. } => text.replace('_', "").parse::<i64>().ok(),
+            _ => None,
+        };
+        let len = match (typed.expr_type(expr_span(base)), base.as_ref()) {
+            (Some(Ty::Array { len, .. }), _) if *len > 0 => Some(i64::from(*len)),
+            (_, Expr::Array { elems, .. }) if !elems.is_empty() => Some(elems.len() as i64),
+            (_, Expr::StrLit { text, .. }) if !text.is_empty() => Some(text.chars().count() as i64),
+            (_, Expr::Index { index, .. }) => match index.as_ref() {
+                Expr::Range { lo, hi, .. } => literal(lo)
+                    .zip(literal(hi))
+                    .map(|(lo, hi)| (hi - lo).abs() + 1),
+                _ => None,
+            },
+            _ => None,
+        };
+        match len {
+            Some(len) => {
+                *e = Expr::Int {
+                    text: len.to_string(),
+                    span: *span,
+                };
+                false
+            }
+            None => true,
+        }
+    };
+    for module in modules {
+        for item in &mut module.items {
+            walk_item(item, &mut fold);
+        }
+    }
+}
+
 /// Expand `e` when it is a recorded read; true when the walk should still
 /// descend into it.
 fn expand_read(e: &mut Expr, reads: &HashMap<Span, Expr>, depth: usize) -> bool {
@@ -430,6 +476,103 @@ fn walk_expr(e: &mut Expr, f: &mut impl FnMut(&mut Expr) -> bool) {
         | Expr::Tuple { elems: items, .. } => {
             for item in items {
                 walk_expr(item, f);
+            }
+        }
+    }
+}
+
+/// `for i in R` where `R` is a constant range: the range itself. A generate
+/// loop unrolled only a written `lo..hi`, so a named range dropped the body's
+/// drivers and instances, and a testbench loop over it did not lower (#207).
+/// Runs after resolution, so the inlined bounds keep their resolved spans.
+pub fn inline_loop_ranges(modules: &mut [Module], resolved: &Resolved) {
+    let mut ranges: HashMap<DefId, Expr> = HashMap::new();
+    for module in modules.iter() {
+        for item in &module.items {
+            let constants: Vec<&ConstDecl> = match item {
+                Item::Const(constant) => vec![constant],
+                Item::Impl(implementation) => implementation
+                    .items
+                    .iter()
+                    .filter_map(|member| match member {
+                        ImplItem::Const(constant) => Some(constant),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for constant in constants {
+                if let (Expr::Range { .. }, Some(id)) =
+                    (&constant.value, resolved.declared(constant.name.span))
+                {
+                    ranges.insert(id, constant.value.clone());
+                }
+            }
+        }
+    }
+    if ranges.is_empty() {
+        return;
+    }
+    fn block(block: &mut Block, ranges: &HashMap<DefId, Expr>, resolved: &Resolved) {
+        for statement in &mut block.stmts {
+            stmt(statement, ranges, resolved);
+        }
+    }
+    fn stmt(statement: &mut Stmt, ranges: &HashMap<DefId, Expr>, resolved: &Resolved) {
+        match statement {
+            Stmt::For {
+                range, body: inner, ..
+            } => {
+                if let Expr::Path(path) = range {
+                    if let Some(value) = resolved.resolved(path.span).and_then(|id| ranges.get(&id))
+                    {
+                        *range = value.clone();
+                    }
+                }
+                block(inner, ranges, resolved);
+            }
+            Stmt::If(nested) => if_stmt(nested, ranges, resolved),
+            Stmt::Match(nested) => {
+                for arm in &mut nested.arms {
+                    block(&mut arm.body, ranges, resolved);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn if_stmt(statement: &mut IfStmt, ranges: &HashMap<DefId, Expr>, resolved: &Resolved) {
+        block(&mut statement.then, ranges, resolved);
+        match statement.else_.as_deref_mut() {
+            Some(ElseBranch::Block(inner)) => block(inner, ranges, resolved),
+            Some(ElseBranch::If(nested)) => if_stmt(nested, ranges, resolved),
+            None => {}
+        }
+    }
+    for module in modules {
+        for item in &mut module.items {
+            match item {
+                Item::Fn(function) => {
+                    if let Some(body) = &mut function.body {
+                        block(body, &ranges, resolved);
+                    }
+                }
+                Item::Impl(implementation) => {
+                    for member in &mut implementation.items {
+                        match member {
+                            ImplItem::Fn(function) => {
+                                if let Some(body) = &mut function.body {
+                                    block(body, &ranges, resolved);
+                                }
+                            }
+                            ImplItem::Process(process) => {
+                                block(&mut process.body, &ranges, resolved)
+                            }
+                            ImplItem::Stmt(statement) => stmt(statement, &ranges, resolved),
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }

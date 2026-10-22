@@ -431,6 +431,28 @@ impl<'a> Checker<'a> {
                     .map(|elem| self.call_return_type(elem, function, args, sym))
                     .collect(),
             ),
+            // `-> T[2]`: an array of a bound parameter. It typed as an array
+            // of errors, and `make_arr(42)[0]` did not lower (#204).
+            Type::Indexed {
+                base,
+                index: Some(index),
+                ..
+            } if self.mentions_type_param(base, function) => {
+                let elem = self.call_return_type(base, function, args, sym);
+                match (
+                    elem,
+                    self.const_int(index)
+                        .and_then(|len| u32::try_from(len).ok()),
+                ) {
+                    (Ty::Error, _) | (_, None) => Ty::Error,
+                    (elem, Some(len)) => Ty::Array {
+                        elem: Box::new(elem),
+                        family: None,
+                        len,
+                        low: 0,
+                    },
+                }
+            }
             Type::Path(path) if path.segments.len() == 1 => {
                 let parameter_name = &path.segments[0].text;
                 match self.generic_fns.get(&function) {
@@ -439,14 +461,17 @@ impl<'a> Checker<'a> {
                             .iter()
                             .any(|parameter| parameter.name.text == *parameter_name) =>
                     {
+                        // Bound where it appears in a parameter, directly
+                        // (`x: T`) or as an element (`arr: T[4]`, `p: (T, U)`).
                         params
                             .iter()
                             .zip(args)
                             .find_map(|(parameter, argument)| {
-                                parameter
-                                    .as_ref()
-                                    .filter(|ty| Self::is_direct_type_param(ty, parameter_name))
-                                    .map(|_| self.type_of(argument, sym))
+                                Self::bind_type_param(
+                                    parameter.as_ref()?,
+                                    &self.type_of(argument, sym),
+                                    parameter_name,
+                                )
                             })
                             .unwrap_or(Ty::Error)
                     }
@@ -455,6 +480,34 @@ impl<'a> Checker<'a> {
             }
             _ => self.ast_ty(declared),
         }
+    }
+
+    /// What `name` stands for when a parameter written `ty` takes an argument
+    /// of type `argument`.
+    fn bind_type_param(ty: &Type, argument: &Ty, name: &str) -> Option<Ty> {
+        match (ty, argument) {
+            _ if Self::is_direct_type_param(ty, name) => {
+                (!matches!(argument, Ty::Error)).then(|| argument.clone())
+            }
+            (Type::Indexed { base, .. }, Ty::Array { elem, .. }) => {
+                Self::bind_type_param(base, elem, name)
+            }
+            (Type::Tuple { elems, .. }, Ty::Tuple(arguments)) => elems
+                .iter()
+                .zip(arguments)
+                .find_map(|(elem, argument)| Self::bind_type_param(elem, argument, name)),
+            _ => None,
+        }
+    }
+
+    /// Whether `ty` names one of `function`'s type parameters.
+    fn mentions_type_param(&self, ty: &Type, function: DefId) -> bool {
+        let Some((generics, _)) = self.generic_fns.get(&function) else {
+            return false;
+        };
+        generics.iter().any(|parameter| {
+            Self::bind_type_param(ty, &Ty::Integer, &parameter.name.text).is_some()
+        })
     }
 
     /// Return contracts for compiler/runtime-provided functions which have no

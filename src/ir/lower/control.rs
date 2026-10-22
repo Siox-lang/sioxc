@@ -102,6 +102,21 @@ impl<'a> Lowering<'a> {
                     }
                 }
             }
+            // `for v in ARR` unrolls nothing: hardware loops are generated
+            // over a constant range, and the body was dropped (#207).
+            ast::Stmt::For { range, .. } => {
+                self.sink.emit(
+                    crate::diag::Diagnostic::error(format!(
+                        "a hardware `for` runs over a constant range, not `{}`",
+                        crate::syntax::pretty::expr_string(range)
+                    ))
+                    .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+                    .at(ast::expr_span(range))
+                    .help(
+                        "loop over its indices and index it: `for k in 0..N - 1 { .. ARR[k] .. }`",
+                    ),
+                );
+            }
             ast::Stmt::Assign {
                 target,
                 value,
@@ -381,15 +396,44 @@ impl<'a> Lowering<'a> {
                     // edge counted while the reset was held.
                     let span = ast::expr_span(&iff.cond);
                     let event = self.lower_expr(&iff.cond);
-                    let condition = self.source_and(cond.clone(), event.clone(), span);
                     let mut updates = Vec::new();
-                    self.lower_event_block(&iff.then, None, &mut updates);
-                    // An `else` on an event block is unusual; lower it under the
-                    // negated event for completeness.
-                    if let Some(eb) = iff.else_.as_deref() {
-                        let neg = Some(self.source_and(cond, self.source_not(&event, span), span));
-                        self.lower_event_else(eb, neg, &mut updates);
-                    }
+                    let condition = match iff.else_.as_deref() {
+                        None => {
+                            self.lower_event_block(&iff.then, None, &mut updates);
+                            self.source_and(cond.clone(), event.clone(), span)
+                        }
+                        // `if clk.rising() { .. } else { .. }` runs its `else`
+                        // whenever the process wakes without the edge, as a
+                        // normal process does (spec 3.15). Activated by the
+                        // edge alone, the `else` could never run (#189): the
+                        // block wakes on any signal the statement reads, and
+                        // each branch is guarded by the edge or its absence.
+                        Some(otherwise) => {
+                            self.lower_event_block(&iff.then, Some(event.clone()), &mut updates);
+                            let absent = Some(self.source_not(&event, span));
+                            self.lower_event_else(otherwise, absent, &mut updates);
+                            let mut reads = Vec::new();
+                            crate::ir::read_set(&event, &mut reads);
+                            for update in &updates {
+                                if let Some(guard) = &update.cond {
+                                    crate::ir::read_set(guard, &mut reads);
+                                }
+                                crate::ir::read_set(&update.expr, &mut reads);
+                            }
+                            reads.sort_by_key(|signal| signal.0);
+                            reads.dedup();
+                            let woken = reads
+                                .into_iter()
+                                .map(|signal| {
+                                    self.bind_source_expression(Expr::Event(signal), span)
+                                })
+                                .reduce(|any, next| {
+                                    self.source_binary(BinOp::Or, &any, &next, span)
+                                })
+                                .unwrap_or_else(|| event.clone());
+                            self.source_and(cond.clone(), woken, span)
+                        }
+                    };
                     self.hardware.event_blocks.push(EventBlock {
                         condition,
                         updates,

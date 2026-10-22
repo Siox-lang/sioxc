@@ -525,7 +525,41 @@ impl<'a> Checker<'a> {
                 // not a field — check the receiver and let `check_method_exists`
                 // judge the name, so one mistake yields one diagnostic.
                 match callee.as_ref() {
-                    Expr::Field { base, .. } => self.check_expr(base, sym),
+                    Expr::Field { base, field, .. } => {
+                        self.check_expr(base, sym);
+                        // `f.ping()` with `ping` from two traits: lowering
+                        // took whichever impl came last (#192). As in rustc,
+                        // the call must name its trait.
+                        let receiver = self.type_of(base, sym);
+                        if let Some(owner) = self.ty_head(&receiver) {
+                            if let Some(traits) =
+                                self.method_traits.get(&(owner.clone(), field.text.clone()))
+                            {
+                                if traits.len() > 1 {
+                                    let names = traits
+                                        .iter()
+                                        .map(|t| {
+                                            format!(
+                                                "`{}::{}(..)`",
+                                                t.rsplit("::").next().unwrap_or(t),
+                                                field.text
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join(" or ");
+                                    self.error_with_help(
+                                        codes::UNKNOWN_NAME,
+                                        field.span,
+                                        format!(
+                                            "`{}` is defined by more than one trait for `{owner}`",
+                                            field.text
+                                        ),
+                                        format!("name the trait: {names}"),
+                                    );
+                                }
+                            }
+                        }
+                    }
                     // A bare path in callee position is checked by
                     // `check_known_call` below. Treating it as an ordinary
                     // value here would double-report unknown functions and
