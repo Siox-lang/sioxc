@@ -4908,6 +4908,32 @@ fn lower_tuple_assign(
     process: &mut ProcessCfg,
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
+    // `(y1, _) = ('1', '0')`: position by position, `_` skipped, when no
+    // target is read on the right (a swap must read first). A wildcard of a
+    // tuple literal had no place to lower to (#263).
+    if after.is_none() {
+        if let Some(parts) = super::control::tuple_literal_parts(target, value) {
+            let written: Vec<String> = parts
+                .iter()
+                .filter_map(|part| match part {
+                    Stmt::Assign { target, .. } => Some(crate::syntax::pretty::expr_string(target)),
+                    _ => None,
+                })
+                .collect();
+            let read = crate::syntax::pretty::expr_string(value);
+            let overlaps = written.iter().any(|name| {
+                read.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+                    .any(|word| word == name)
+            });
+            if !overlaps {
+                let mut block = block;
+                for part in &parts {
+                    block = lower_statement(part, context, process, block)?;
+                }
+                return Some(block);
+            }
+        }
+    }
     // Each position's type: the target's where it names one, the value's
     // where the target is `_`.
     fn merge(

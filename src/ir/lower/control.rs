@@ -150,6 +150,15 @@ impl<'a> Lowering<'a> {
                         .at(*span),
                     );
                 }
+                // `(y1, _) = (a, b)`: position by position, `_` binding
+                // nothing. A wildcard has no layout to read the tuple
+                // through, and the assignment did not lower (#263).
+                if let Some(parts) = tuple_literal_parts(target, value) {
+                    for part in parts {
+                        self.lower_stmt_at(&part, cond.clone());
+                    }
+                    return;
+                }
                 if matches!(target, ast::Expr::Tuple { .. }) {
                     match self.tuple_assign_leaves(target, value, &cond) {
                         Some(leaves) => {
@@ -850,6 +859,16 @@ impl<'a> Lowering<'a> {
             // resolved against the scrutinee's type downstream — exactly what
             // `l == '0'` in expression position already lowers to, so the two
             // spellings cannot disagree.
+            // On a `Char`, the literal is its code point: resolved as a
+            // `Logic` it read 0 and no arm matched (#257).
+            ast::Pattern::CharLit { ch, span }
+                if matches!(
+                    self.expr_types.get(&ast::expr_span(scrutinee)),
+                    Some(crate::types::Ty::Char)
+                ) || self.operand_type_name(scrutinee).as_deref() == Some("Char") =>
+            {
+                Some(self.source_binary(BinOp::Eq, scrut, &Expr::Const(*ch as u64), *span))
+            }
             ast::Pattern::CharLit { ch, span } => {
                 Some(self.source_binary(BinOp::Eq, scrut, &Expr::Logic(*ch), *span))
             }
@@ -948,6 +967,14 @@ impl<'a> Lowering<'a> {
                             .with_code(crate::diag::codes::TYPE_MISMATCH)
                             .at(*span),
                         );
+                    }
+                    if let Some(parts) = tuple_literal_parts(target, value) {
+                        let block = ast::Block {
+                            stmts: parts,
+                            span: *span,
+                        };
+                        self.lower_event_block(&block, cond.clone(), out);
+                        continue;
                     }
                     if matches!(target, ast::Expr::Tuple { .. }) {
                         match self.tuple_assign_leaves(target, value, &cond) {
@@ -1238,4 +1265,55 @@ impl<'a> Lowering<'a> {
             }
         }
     }
+}
+
+/// `(x, _) = (a, b)` as one assignment per named position, `_` skipped;
+/// `None` unless both sides are tuples of one arity.
+pub(super) fn tuple_literal_parts(target: &ast::Expr, value: &ast::Expr) -> Option<Vec<ast::Stmt>> {
+    let ast::Expr::Tuple { elems: targets, .. } = target else {
+        return None;
+    };
+    // After tuple lowering the value is a positional construct of the tuple
+    // struct; the target stays a tuple.
+    let (values, span): (Vec<ast::Expr>, _) = match value {
+        ast::Expr::Tuple { elems, span } => (elems.clone(), span),
+        // `{ .0 = a, .1 = b }`: positions by their numeric field names.
+        ast::Expr::Construct { args, span, .. } => {
+            let mut positioned = args
+                .iter()
+                .enumerate()
+                .map(|(order, arg)| {
+                    let position = match &arg.field {
+                        Some(name) => name.text.parse::<usize>().ok()?,
+                        None => order,
+                    };
+                    Some((position, arg.value.clone()?))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            positioned.sort_by_key(|(position, _)| *position);
+            (
+                positioned.into_iter().map(|(_, value)| value).collect(),
+                span,
+            )
+        }
+        _ => return None,
+    };
+    if targets.len() != values.len() {
+        return None;
+    }
+    let wildcard = |e: &ast::Expr| matches!(e, ast::Expr::Path(path) if matches!(path.segments.as_slice(), [only] if only.text == "_"));
+    Some(
+        targets
+            .iter()
+            .zip(&values)
+            .filter(|(target, _)| !wildcard(target))
+            .map(|(target, value)| ast::Stmt::Assign {
+                label: None,
+                target: target.clone(),
+                value: value.clone(),
+                after: None,
+                span: *span,
+            })
+            .collect(),
+    )
 }

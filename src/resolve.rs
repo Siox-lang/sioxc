@@ -282,6 +282,31 @@ impl Resolved {
 pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     let mut r = Resolver::new(sink);
     r.seed_builtins();
+    r.associated_fns = modules
+        .iter()
+        .flat_map(|m| &m.items)
+        .filter_map(|item| match item {
+            Item::Impl(implementation) => Some(implementation),
+            _ => None,
+        })
+        .filter_map(|implementation| {
+            let head = type_head_path(&implementation.target)?
+                .segments
+                .last()?
+                .text
+                .clone();
+            Some(
+                implementation
+                    .items
+                    .iter()
+                    .filter_map(move |member| match member {
+                        ImplItem::Fn(function) => Some((head.clone(), function.name.text.clone())),
+                        _ => None,
+                    }),
+            )
+        })
+        .flatten()
+        .collect();
     r.loaded_modules = modules
         .iter()
         .map(|m| {
@@ -535,6 +560,9 @@ struct Resolver<'a> {
     /// never read, which is a different mistake from importing a name the
     /// module does not have — and used to be reported as the latter.
     loaded_modules: HashSet<String>,
+    /// `(type name, fn name)` of every impl function, so `State::make()` on
+    /// an enum is an associated call, not a missing variant.
+    associated_fns: HashSet<(String, String)>,
     /// Source file -> declared module path. Privacy belongs to the module,
     /// never to the physical file that happened to contain a declaration.
     file_modules: HashMap<crate::diag::FileId, String>,
@@ -568,6 +596,7 @@ impl<'a> Resolver<'a> {
             current_impl_owner: None,
             inherent_members: HashMap::new(),
             loaded_modules: HashSet::new(),
+            associated_fns: HashSet::new(),
             file_modules: HashMap::new(),
             current_module: None,
         }
@@ -2454,7 +2483,9 @@ impl<'a> Resolver<'a> {
                     // `Enum::x` as a variant first made the documented pair
                     // disagree: `Pair::new()` worked and `Phase::new()` was
                     // "not a variant of enum `Phase`".
-                    if var == "new" {
+                    // An associated function of the enum (`State::default_state()`)
+                    // is a call, not a variant (#265).
+                    if var == "new" || self.associated_fns.contains(&(head.clone(), var.clone())) {
                         self.record_qualified_use(p.segments[enum_position].span, id);
                         return;
                     }

@@ -2479,6 +2479,21 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Pattern::Wildcard
             }
+            // `true`/`false` are `Bool`'s variants, as in expression position:
+            // left bare they named no variant, and a `match` on a `Bool`
+            // could not cover it (#256).
+            TokenKind::Ident if self.cur_text() == "true" || self.cur_text() == "false" => {
+                let variant = self.cur_text().to_string();
+                let t = self.bump();
+                let seg = |text: &str| Ident {
+                    text: text.to_string(),
+                    span: t.span,
+                };
+                Pattern::Path(Path {
+                    segments: vec![seg("Bool"), seg(&variant)],
+                    span: t.span,
+                })
+            }
             // A radix bit pattern `x"A?"` / `o"7?"` (spec 3.22): a one-letter
             // prefix glued to a string; `?` masks one radix group (nibble/triad)
             // as a don't-care.

@@ -748,7 +748,18 @@ impl<'a> Lowering<'a> {
                         .map(|layout| layout.kind.clone())
                 })
         };
-        let array = |e: &ast::Expr| matches!(layout(e), Some(LayoutKind::Array { .. }));
+        // A constant table (`TABLE[1..2]`, `COPY`) is an array of values,
+        // with no storage layout; read whole or sliced it had no hardware
+        // form (#261).
+        let table = |e: &ast::Expr| {
+            self.free_fns
+                .constant_expr_key(e)
+                .and_then(|key| self.const_arrays.get(&key))
+                .map(Vec::len)
+        };
+        let array = |e: &ast::Expr| {
+            matches!(layout(e), Some(LayoutKind::Array { .. })) || table(e).is_some()
+        };
         let bounds = |lo: &ast::Expr, hi: &ast::Expr| {
             Some(loop_range(
                 self.eval_const(lo, &self.cur_env)?,
@@ -766,9 +777,9 @@ impl<'a> Lowering<'a> {
                 };
                 (base.as_ref(), bounds(lo, hi)?)
             }
-            // A whole array from a slice (`sub = matrix[1..2]`, #182): its
-            // own indices, in order.
-            _ if sliced(value) => {
+            // A whole array from a slice (`sub = matrix[1..2]`, #182) or a
+            // table: its own indices, in order.
+            _ if sliced(value) || table(value).is_some() => {
                 let Some(LayoutKind::Array {
                     range: Some(range), ..
                 }) = layout(target)
@@ -799,6 +810,9 @@ impl<'a> Lowering<'a> {
                     return None;
                 };
                 bounds(lo, hi)?.into_iter().map(|n| at(source, n)).collect()
+            }
+            whole if table(whole).is_some() => {
+                (0..table(whole)? as i64).map(|n| at(whole, n)).collect()
             }
             _ => return None,
         };
