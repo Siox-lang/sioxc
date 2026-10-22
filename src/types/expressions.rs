@@ -264,6 +264,19 @@ impl<'a> Checker<'a> {
             Expr::Binary { op, lhs, rhs, span } => {
                 self.check_expr(lhs, sym);
                 self.check_expr(rhs, sym);
+                // An operand has no expected type to make `{ .. }` a struct:
+                // it is a concatenation, and its parts must be bits (#218).
+                let vector = Ty::Array {
+                    elem: Box::new(Ty::Error),
+                    family: None,
+                    len: 0,
+                    low: 0,
+                };
+                if self.report_bitless_concat(&vector, lhs, sym)
+                    | self.report_bitless_concat(&vector, rhs, sym)
+                {
+                    return;
+                }
                 if matches!(self.type_of(lhs, sym), Ty::Void)
                     || matches!(self.type_of(rhs, sym), Ty::Void)
                 {
@@ -571,6 +584,35 @@ impl<'a> Checker<'a> {
                     // `check_known_call` validates the constructor family, so
                     // check only the width/range index expression here.
                     Expr::Index { base, index, .. } if matches!(base.as_ref(), Expr::Path(_)) => {
+                        // `integer[2](x)`: a sized constructor is a packed
+                        // family's; an array of scalars or structs has none,
+                        // and the call did not lower (#223).
+                        if let Expr::Path(path) = base.as_ref() {
+                            let key = self.path_key(path);
+                            let kernel = path.segments.len() == 1
+                                && matches!(
+                                    path.segments[0].text.as_str(),
+                                    "integer" | "real" | "Bool" | "Char"
+                                );
+                            let record = key.as_ref().is_some_and(|key| {
+                                self.structs
+                                    .get(key)
+                                    .is_some_and(|(_, fields)| !fields.is_empty())
+                            });
+                            if kernel || record {
+                                self.error_with_help(
+                                    codes::TYPE_MISMATCH,
+                                    expr_span(callee),
+                                    format!(
+                                        "`{}` is an array, not a vector family, and has no constructor",
+                                        crate::syntax::pretty::expr_string(callee)
+                                    ),
+                                    "slice the array (`x[0..1]`) or build one from its elements \
+                                     (`[x[0], x[1]]`)"
+                                        .to_string(),
+                                );
+                            }
+                        }
                         match index.as_ref() {
                             Expr::Range { lo, hi, .. } => {
                                 self.check_index_value(lo, sym, "range bound");

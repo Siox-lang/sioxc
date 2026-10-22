@@ -607,6 +607,10 @@ impl<'a> Checker<'a> {
             if self.check_struct_literal_for_ty(&want, arg, sym) {
                 continue;
             }
+            // `check_bits({ a, a })` with `a: integer[2]` (#218).
+            if self.report_bitless_concat(&want, arg, sym) {
+                continue;
+            }
             if want == Ty::Error || self.assignable(&want, arg, sym) {
                 continue;
             }

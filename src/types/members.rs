@@ -106,7 +106,13 @@ impl<'a> Checker<'a> {
                 return; // cyclic derivation: already diagnosed elsewhere
             }
             let Some((base_ty, fields)) = self.structs.get(&name) else {
-                return;
+                // A newtype over a scalar (`struct Number(integer)`) ends
+                // the walk with no such field: `n.xyz` passed (#221). Only
+                // an unknown starting type is someone else's to report.
+                if name == head {
+                    return;
+                }
+                break;
             };
             if fields.contains(&field.text) {
                 // Applying a view is the explicit structural interface for
@@ -302,8 +308,13 @@ impl<'a> Checker<'a> {
                 return;
             }
         }
-        // Only complain about a type we actually know methods for.
-        if !self.methods.keys().any(|(h, _)| *h == head) {
+        // Only complain about a type we know all the methods of: one with
+        // methods, or a declared struct or enum, which has none without an
+        // impl (`p.foo()` on a bare struct passed and did not lower, #222).
+        if !self.methods.keys().any(|(h, _)| *h == head)
+            && !self.structs.contains_key(&head)
+            && !self.enum_variants.contains_key(&head)
+        {
             return;
         }
         let mut known: Vec<&str> = self

@@ -783,6 +783,48 @@ fn inline_call_once(
         };
         bindings.insert(definition, argument);
     }
+    // `fn sum<N: integer>(arr: integer[N])` called with an `integer[3]`: `N`
+    // is 3. Unbound, `0..N - 1` read the parameter's definition and the
+    // call did not lower (#225).
+    for generic in &function.generics.params {
+        let Some(definition) = context.resolved.declared(generic.name.span) else {
+            continue;
+        };
+        if bindings.contains_key(&definition) {
+            continue;
+        }
+        let length = parameters
+            .iter()
+            .zip(arguments)
+            .find_map(|(parameter, argument)| {
+                let ast::Type::Indexed {
+                    index: Some(index), ..
+                } = parameter.ty.as_ref()?
+                else {
+                    return None;
+                };
+                let ast::Expr::Path(path) = index.as_ref() else {
+                    return None;
+                };
+                if path.segments.len() != 1 || path.segments[0].text != generic.name.text {
+                    return None;
+                }
+                operand_source_layout(*argument, process, context)?
+                    .index_range()?
+                    .len()
+            });
+        if let Some(length) = length {
+            let span = context.process_ir.values[call.0 as usize].span;
+            let value = push_value(
+                span,
+                Some(crate::types::Ty::Integer),
+                Some(64),
+                ProcessValueKind::Number(ProcessNumber::Integer(vec![length])),
+                context,
+            );
+            bindings.insert(definition, value);
+        }
+    }
     let mut node = context.process_ir.values[call.0 as usize].clone();
     let generic_argument = generic_return_argument(function, arguments);
     node.ty = node
@@ -1062,7 +1104,7 @@ fn frame_kernel_width(local: &ProcessLocal) -> Option<u32> {
 }
 
 /// A read of `local` as a value.
-fn local_value(
+pub(super) fn local_value(
     local: ProcessLocalId,
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,

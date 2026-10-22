@@ -1422,9 +1422,9 @@ impl<'a> Elaborator<'a> {
             let record =
                 |ty: &EType| matches!(ty, EType::Named(name) if self.record_structs.contains(name));
             let mismatched = match (&c.ty, sig) {
-                (EType::Named(port), EType::Named(signal)) => {
-                    port != signal && (record(&c.ty) || record(sig))
-                }
+                // A port named by a generic parameter (`input: T`) takes any
+                // type; only a struct port must match by name (#226).
+                (EType::Named(port), EType::Named(signal)) => port != signal && record(&c.ty),
                 (EType::Named(_), EType::Array { .. }) | (EType::Array { .. }, EType::Named(_)) => {
                     record(&c.ty) || record(sig)
                 }
