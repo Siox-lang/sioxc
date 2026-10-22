@@ -162,12 +162,35 @@ impl<'a> Checker<'a> {
             }
             // A nominal array family (`struct F(Logic[])`): the first index
             // supplies its unconstrained base length.
-            None if self.is_array_family(&key) => Ty::Array {
-                elem: Box::new(self.array_element_ty(&key)),
-                family: Some(key),
-                len: 0,
-                low: 0,
-            },
+            // A sized base (`struct Word(Logic[15..8])`, `struct Byte(
+            // unsigned[8])`) gives it its length: unsized, a `Word` took or
+            // gave any width (#244).
+            None if self.is_array_family(&key) => {
+                let sized = match self.structs.get(&key).and_then(|(base, _)| base.as_ref()) {
+                    Some(Type::Indexed {
+                        index: Some(index), ..
+                    }) => match index.as_ref() {
+                        Expr::Range { lo, hi, .. } => self
+                            .constant_value(lo)
+                            .zip(self.constant_value(hi))
+                            .map(|(a, b)| (a.abs_diff(b) + 1, a.min(b))),
+                        width => self
+                            .constant_value(width)
+                            .filter(|width| *width > 0)
+                            .map(|width| (width as u64, 0)),
+                    },
+                    _ => None,
+                };
+                let (len, low) = sized
+                    .and_then(|(len, low)| Some((u32::try_from(len).ok()?, low)))
+                    .unwrap_or((0, 0));
+                Ty::Array {
+                    elem: Box::new(self.array_element_ty(&key)),
+                    family: Some(key),
+                    len,
+                    low,
+                }
+            }
             None => self.named_ty(path.span),
         }
     }

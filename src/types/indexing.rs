@@ -144,10 +144,11 @@ impl<'a> Checker<'a> {
             Ty::Array {
                 len,
                 family: Some(_),
+                low,
                 ..
             } => declared_bounds_of(base, &self.array_bounds)
                 .map(|(lo, hi)| (lo, hi, "bit"))
-                .unwrap_or((0, len as i64 - 1, "bit")),
+                .unwrap_or((low, low + len as i64 - 1, "bit")),
             Ty::Array {
                 elem,
                 len,

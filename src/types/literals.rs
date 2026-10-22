@@ -300,7 +300,12 @@ impl<'a> Checker<'a> {
         // In written order, `'left` then `'right`: an open range's omitted
         // bound is one of them (`down[..4]` is `7..4`).
         match ix.as_ref() {
-            Expr::Range { lo, hi, .. } => Some((signed_lit(lo)?, signed_lit(hi)?)),
+            // Folded: a format type's range is written in its parameters,
+            // and `ufixed<8, 4>` expands to `ufixed[8 - 4 - 1..0 - 4]`. Read
+            // as `0..7`, its half bit `x[-1]` was rejected (#245).
+            Expr::Range { lo, hi, .. } => {
+                Some((self.constant_value(lo)?, self.constant_value(hi)?))
+            }
             other => {
                 let n = Self::const_literal(other)?;
                 (n > 0).then_some((0, n - 1))
