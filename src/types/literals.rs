@@ -297,11 +297,10 @@ impl<'a> Checker<'a> {
             Ty::Array { elem, .. } if !self.is_entity_ty(&elem) => {}
             _ => return None,
         }
+        // In written order, `'left` then `'right`: an open range's omitted
+        // bound is one of them (`down[..4]` is `7..4`).
         match ix.as_ref() {
-            Expr::Range { lo, hi, .. } => {
-                let (a, b) = (signed_lit(lo)?, signed_lit(hi)?);
-                Some((a.min(b), a.max(b)))
-            }
+            Expr::Range { lo, hi, .. } => Some((signed_lit(lo)?, signed_lit(hi)?)),
             other => {
                 let n = Self::const_literal(other)?;
                 (n > 0).then_some((0, n - 1))

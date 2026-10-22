@@ -336,8 +336,9 @@ impl<'a> Checker<'a> {
                 };
                 self.check_intrinsic_binary_operands(op, lhs, rhs, *span, sym);
                 // A constant zero divisor is always a mistake: hardware has no
-                // trap for it, so today it just yields 0 with no complaint.
-                if matches!(op, BinOp::Div | BinOp::Rem) && Self::const_literal(rhs) == Some(0) {
+                // trap for it, so today it just yields 0 with no complaint. A
+                // named constant (`10 / ZERO`) is one too (#233).
+                if matches!(op, BinOp::Div | BinOp::Rem) && self.constant_value(rhs) == Some(0) {
                     self.error(
                         codes::TYPE_MISMATCH,
                         expr_span(rhs),

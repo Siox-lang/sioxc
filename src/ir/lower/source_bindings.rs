@@ -439,10 +439,56 @@ impl Lowering<'_> {
                     if function.ret.as_ref().and_then(type_head_name) == Some("Self") {
                         return self.source_operand_layout(base, env);
                     }
-                    return function
+                    let declared = function
                         .ret
                         .as_ref()
                         .map(|ty| self.source_layout(ty, &self.cur_env));
+                    if declared
+                        .as_ref()
+                        .is_some_and(|layout| layout.bit_width().is_some())
+                    {
+                        return declared;
+                    }
+                    // `-> T` of a generic method: the returned argument's
+                    // shape (`return val`), or the receiver field's
+                    // (`return self.item`). The declared `T` had none, and
+                    // the result had no aggregate form (#234, #235).
+                    let parameters = function
+                        .params
+                        .iter()
+                        .filter(|parameter| !parameter.is_self)
+                        .zip(args)
+                        .collect::<Vec<_>>();
+                    let from_argument = self.body_result_layout(function, |name| {
+                        let (_, argument) = parameters.iter().find(|(parameter, _)| {
+                            parameter.name.as_ref().is_some_and(|n| n.text == name)
+                        })?;
+                        self.source_operand_layout(argument, env)
+                    });
+                    let from_field = || {
+                        let field = function.body.as_ref()?.stmts.iter().find_map(|statement| {
+                            let ast::Stmt::Return {
+                                value: Some(ast::Expr::Field { base, field, .. }),
+                                ..
+                            } = statement
+                            else {
+                                return None;
+                            };
+                            matches!(base.as_ref(), ast::Expr::Path(path)
+                                if path.segments.len() == 1 && path.segments[0].text == "self")
+                            .then_some(field)
+                        })?;
+                        let LayoutKind::Struct { fields, .. } =
+                            self.source_operand_layout(base, env)?.kind
+                        else {
+                            return None;
+                        };
+                        fields
+                            .into_iter()
+                            .find(|candidate| candidate.name == field.text)
+                            .map(|candidate| candidate.layout)
+                    };
+                    return from_argument.or_else(from_field).or(declared);
                 }
                 let function = self.free_fns.get(callee)?;
                 let declared = self.source_layout(function.ret.as_ref()?, &self.cur_env);
@@ -463,6 +509,11 @@ impl Lowering<'_> {
                     self.source_operand_layout(argument, env)
                 })
                 .or(Some(declared))
+            }
+            // `Pair { .a = 10, .b = 20 }` names its type.
+            ast::Expr::Construct { ty: Some(ty), .. } => {
+                Some(self.source_layout(ty, &self.cur_env))
+                    .filter(|layout| layout.bit_width().is_some())
             }
             ast::Expr::Binary { lhs, .. } => self.source_operand_layout(lhs, env),
             ast::Expr::Unary { rhs, .. } => self.source_operand_layout(rhs, env),

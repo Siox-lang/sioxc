@@ -55,6 +55,13 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A literal or named integer constant's value (`300`, `OFFSET + 1`):
+    /// the width, bound and division checks read named constants too, and
+    /// `let k: unsigned[8] = LIMIT` with `LIMIT = 300` stored 44 (#233).
+    pub(super) fn constant_value(&self, e: &Expr) -> Option<i64> {
+        Self::const_literal(e).or_else(|| self.const_int(e).and_then(|n| i64::try_from(n).ok()))
+    }
+
     /// Whether a type may be used as an index. `Ty::Error` is admitted so one
     /// bad type does not cascade.
     pub(super) fn is_integer_like_index(ty: &Ty) -> bool {
@@ -168,7 +175,7 @@ impl<'a> Checker<'a> {
                         .and_then(|id| self.const_types.get(&id))
                         .and_then(|ty| self.declared_index_bounds(ty))
                     {
-                        Some((lo, hi)) => (lo, hi, "element"),
+                        Some((left, right)) => (left.min(right), left.max(right), "element"),
                         None => return,
                     },
                     _ => return,
@@ -180,7 +187,20 @@ impl<'a> Checker<'a> {
             return; // parametric: not known yet
         }
         let len = hi - lo + 1;
-        let mut check = |v: i64, e: &Expr| {
+        let positions: Vec<&Expr> = match index {
+            Expr::Range { lo, hi, .. } => vec![lo.as_ref(), hi.as_ref()],
+            Expr::PartialRange { lo, hi, .. } => lo
+                .iter()
+                .chain(hi.iter())
+                .map(|bound| bound.as_ref())
+                .collect(),
+            _ => vec![index],
+        };
+        let constants: Vec<(i64, &Expr)> = positions
+            .into_iter()
+            .filter_map(|e| Some((self.constant_value(e)?, e)))
+            .collect();
+        for (v, e) in constants {
             if v < lo || v > hi {
                 self.error(
                     codes::TYPE_MISMATCH,
@@ -197,33 +217,6 @@ impl<'a> Checker<'a> {
                         }
                     },
                 );
-            }
-        };
-        match index {
-            Expr::Range { lo, hi, .. } => {
-                if let Some(v) = Self::const_literal(lo) {
-                    check(v, lo);
-                }
-                if let Some(v) = Self::const_literal(hi) {
-                    check(v, hi);
-                }
-            }
-            Expr::PartialRange { lo, hi, .. } => {
-                if let Some(lo) = lo {
-                    if let Some(v) = Self::const_literal(lo) {
-                        check(v, lo);
-                    }
-                }
-                if let Some(hi) = hi {
-                    if let Some(v) = Self::const_literal(hi) {
-                        check(v, hi);
-                    }
-                }
-            }
-            _ => {
-                if let Some(v) = Self::const_literal(index) {
-                    check(v, index);
-                }
             }
         }
     }
