@@ -597,44 +597,14 @@ impl<'a> Checker<'a> {
     /// integer arithmetic over them. Anything else (a signal, a typed
     /// literal, an overflow) is unknown.
     pub(super) fn const_int(&self, e: &Expr) -> Option<i128> {
-        self.const_int_at(e, 0)
-    }
-
-    fn const_int_at(&self, e: &Expr, depth: u8) -> Option<i128> {
-        // A constant defined through itself is a resolve error; stop anyway.
-        if depth > 32 {
-            return None;
-        }
-        match e {
-            Expr::Int { text, .. } => unsigned_lit_text(text).map(i128::from),
-            Expr::Unary {
-                op: UnOp::Neg, rhs, ..
-            } => self.const_int_at(rhs, depth + 1)?.checked_neg(),
-            Expr::Binary { op, lhs, rhs, .. } => {
-                let (a, b) = (
-                    self.const_int_at(lhs, depth + 1)?,
-                    self.const_int_at(rhs, depth + 1)?,
-                );
-                match op {
-                    BinOp::Add => a.checked_add(b),
-                    BinOp::Sub => a.checked_sub(b),
-                    BinOp::Mul => a.checked_mul(b),
-                    BinOp::Div => a.checked_div(b),
-                    BinOp::Rem => a.checked_rem(b),
-                    BinOp::Shl => a.checked_shl(u32::try_from(b).ok()?),
-                    BinOp::Shr => a.checked_shr(u32::try_from(b).ok()?),
-                    _ => None,
-                }
-            }
-            Expr::Path(p) => {
-                let id = self
-                    .resolved
-                    .resolved(p.span)
-                    .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Const))?;
-                self.const_int_at(self.const_values.get(&id)?, depth + 1)
-            }
-            _ => None,
-        }
+        consteval::integer(e, |path| {
+            let id = self
+                .resolved
+                .resolved(path.span)
+                .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Const))?;
+            self.const_values.get(&id)
+        })
+        .ok()
     }
 
     /// Append the value ranges a numeric pattern covers, folding constant

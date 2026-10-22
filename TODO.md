@@ -48,8 +48,11 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
   token spans so diagnostics in a macro body identify the invocation that
   produced them, including nested expansions. Macro syntax, hygiene,
   repetition, built-ins and runtime call-site reporting are already implemented.
-- 🟡 **Compiler foundations followups.** Add a shared constant evaluator and
-  declaration-ID registries. Hook
+- 🟡 **Compiler foundations followups.** Finish shared constant evaluation and
+  declaration-ID registries. Checked integer analysis for conversions, widths,
+  indices and pattern bounds now shares `types::consteval`, including named
+  constants selected by `DefId`. Elaboration/IR evaluation, typed operators,
+  const-function calls and static attributes still need migration. Hook
   lang-item registration and core loading are implemented; diagnostic UI
   snapshots cover all active codes, and `--explain CODE` has embedded pages for
   the complete catalogue. JSON diagnostics and atomic structured migration edits

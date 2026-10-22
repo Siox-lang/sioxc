@@ -154,19 +154,21 @@ fixes.
 
 ## 3. One constant evaluator
 
-**Problem.** Constant folding is written nine times:
+**Problem.** Constant folding has been duplicated across stages:
 
-| where | function |
-| --- | --- |
-| `types/calls.rs` | `const_fold` |
-| `types/indexing.rs` | `const_literal` |
-| `elab.rs` | `eval` |
-| `ir/lower_helpers/builders.rs` | `eval_const`, `eval_const_fns`, `eval_const_stmts` |
-| `ir/lower_helpers/substitute.rs` | `fold_const` |
-| `ir/lower/collect.rs` | `fold_const`, `eval_const` |
+| where | function | migration status |
+| --- | --- | --- |
+| `types/calls.rs` | `const_fold` | removed; uses shared integer analysis |
+| `types/indexing.rs` | `const_literal` | shared-evaluator adapter |
+| `types/patterns.rs` | `const_int_at` | removed; `const_int` supplies resolver-selected constants |
+| `elab.rs` | `eval` | pending |
+| `ir/lower_helpers/builders.rs` | `eval_const`, `eval_const_fns`, `eval_const_stmts` | pending |
+| `ir/lower_helpers/substitute.rs` | `fold_const` | already an IR evaluator adapter |
+| `ir/lower/collect.rs` | `fold_const`, `eval_const` | aggregate collection and an IR evaluator adapter |
 
-They have different reach. Only `eval_const_fns` calls const functions; the
-two in `types` see no generic or loop bindings at all, while `elab`'s `eval`
+The remaining implementations have different reach. Only `eval_const_fns`
+calls const functions; integer analysis in `types` still sees no generic or
+loop bindings, while `elab`'s `eval`
 and the IR's `eval_const` take an environment. So the same expression can be a
 constant in one stage and not in the next, and each fix lands in one copy.
 
@@ -187,8 +189,30 @@ constant question: array lengths, const generics, `const` items, and
   over the corpus and the Rust test sources and require identical answers
   wherever the old one answered.
 
-**Acceptance.** The nine folders are gone; `E-P021` ("not a constant") and
-range errors come from one place and agree across stages.
+**Implemented first migration.** `types::consteval::integer` owns checked
+integer arithmetic and declaration traversal, returning an `i128` analysis
+value or a spanned reason evaluation failed. Its three checker callers share
+this evaluator; narrowing to `i64` happens at the consumer boundary. This
+retains the pattern checker's wider domain and avoids division/remainder
+panics at the signed-word minimum. Resolver-owned lookup stays outside the
+evaluator, so qualified constants and parameter shadowing keep their identity.
+No new runtime or packed-value width limit is introduced.
+
+Before removing the three old folders, a temporary side-by-side oracle passed
+the full Rust suite and actual 255-program corpus, requiring agreement for
+every previously returned value. New tests cover failure spans, zero divisors,
+overflow, shifts, named constants, shadowing and cycles. Literal parsing is
+still the existing parser's domain; this is not yet full typed const evaluation.
+
+**Remaining.** Migrate elaboration and IR with their function/binding context.
+Their current logical/bitwise disagreement cannot be resolved from untyped
+integer bits: preserve library operator implementations and value types.
+Include static attributes, directional ranges, packed-width semantics and
+metadata constant-expression validation. Do not mark the proposal complete
+just because the checker's duplicated arithmetic is gone.
+
+**Acceptance.** Duplicate expression interpreters are gone (thin adapters may
+remain); `E-P021` ("not a constant") and range errors agree across stages.
 
 ## 4. A resolved tree between `types` and `elab`
 

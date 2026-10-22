@@ -19050,3 +19050,51 @@ compiler-foundations proposal roughly35% (engineering estimate), with diagnostic
 snapshots/explanations/JSON/initial atomic suggestions complete; shared const
 evaluation, declaration-ID registries and residual hook cleanup still remain.
 Keep commits local; no push. The broader proposals goal is not complete.
+
+### 2026-10-22 — Codex — shared integer constant evaluation
+
+Own types/consteval.rs and integer adapters in types/{patterns,indexing,calls}.
+Migrate checked integer analysis first, retaining the wider pattern-bound
+domain. Compare legacy answers over actual corpus/Rust tests before deleting
+folders; test overflow, division and constant cycles. Typed logical/bitwise
+operations, elab/IR, metadata and function evaluation remain subsequent
+migrations. Preserve peer work; guarded gates before commits, no push.
+
+### 2026-10-22 — Codex — integer evaluator parity passed
+
+Guarded unit siox-job-3000-1792696015672104583-1817530 is
+exited/success/0 (peak1881124864 bytes). With temporary side-by-side oracles,
+all523 frontend tests, the full Rust suite (including all23 DWARF tests) and
+the actual255-program corpus pass. Every old successful fold agreed with the
+shared evaluator; the legacy oracle's division/remainder were made checked
+to avoid reintroducing the known signed-minimum panic during comparison.
+
+Delete the three old implementations and temporary assertions now. Keep thin
+checker adapters, and avoid evaluating a literal twice in constant_value.
+Seven new tests cover arithmetic, failures/spans, numeric boundaries, declared
+constants/qualified lookup, parameter shadowing and cycles. Update proposal
+and TODO with explicit remaining elab/IR/typed-operator/metadata work. Final
+default+bitpack full gates and direct native constant examples next; no push.
+
+### 2026-10-22 — Codex — shared integer migration accepted
+
+Final guarded unit siox-job-3000-1792696836922667094-1842494 is
+exited/success/0, peak1881325568 bytes. Evidence is retained under
+/home/max/.cache/siox-jobs/consteval-final-20261022 and its service log.
+The final source has no legacy oracles/duplicate integer folders. All523
+frontend tests, both complete Rust suites (all23 DWARF tests each), strict
+frontend/all-target/all-feature Clippy, formatting, runner self-tests and
+example checks pass. Both actual255-program corpora pass; each representation
+also passes61 exact human snapshots and61 JSON/schema cases,54/54 active
+codes and both atomic migration apply/recompile checks. Eight directly built
+and executed native constant examples plus VCD checks pass (four per mode).
+Source hash67e980ae8abef7b3 / corpus hashcf825c14f3ab3f92 match before/after.
+
+AST graph refreshed to6523 nodes/17907 edges; existing vendored C extraction
+warnings remain, and no semantic/API extraction was requested. Corpus and
+peer/root work are unchanged. Commit only these owned eight files: checked
+integer evaluator/tests, checker adapters, proposal/TODO status and this log.
+Completion estimate: compiler-foundations roughly40%, an engineering estimate.
+Elab/IR and full typed const evaluation, metadata constants, declaration-ID
+registries and hook cleanup remain; broader language proposals are not done.
+Keep the commit local on feat/proposal-foundations; no push.

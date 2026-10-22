@@ -188,27 +188,7 @@ impl<'a> Checker<'a> {
         if width > 64 {
             return;
         }
-        /// Fold a constant integer expression, or `None` when it is not constant.
-        fn const_fold(e: &Expr) -> Option<i64> {
-            match e {
-                Expr::Binary { op, lhs, rhs, .. } => {
-                    let (a, b) = (const_fold(lhs)?, const_fold(rhs)?);
-                    match op {
-                        BinOp::Add => a.checked_add(b),
-                        BinOp::Sub => a.checked_sub(b),
-                        BinOp::Mul => a.checked_mul(b),
-                        BinOp::Div => a.checked_div(b),
-                        BinOp::Rem => a.checked_rem(b),
-                        _ => None,
-                    }
-                }
-                _ => signed_lit(e),
-            }
-        }
-        let Some(v) = args
-            .first()
-            .and_then(|arg| const_fold(arg).or_else(|| self.constant_value(arg)))
-        else {
+        let Some(v) = args.first().and_then(|arg| self.constant_value(arg)) else {
             return;
         };
         self.check_fits_width(v, width as u32, expr_span(site));

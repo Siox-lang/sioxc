@@ -39,27 +39,16 @@ impl<'a> Checker<'a> {
     /// Const-fold a literal arithmetic expression (`3`, `0 - 3`). `None` once
     /// any operand is a runtime value.
     pub(super) fn const_literal(e: &Expr) -> Option<i64> {
-        match e {
-            Expr::Binary { op, lhs, rhs, .. } => {
-                let (a, b) = (Self::const_literal(lhs)?, Self::const_literal(rhs)?);
-                Some(match op {
-                    BinOp::Add => a.checked_add(b)?,
-                    BinOp::Sub => a.checked_sub(b)?,
-                    BinOp::Mul => a.checked_mul(b)?,
-                    BinOp::Div if b != 0 => a / b,
-                    BinOp::Rem if b != 0 => a % b,
-                    _ => return None,
-                })
-            }
-            _ => signed_lit(e),
-        }
+        consteval::integer(e, |_| None)
+            .ok()
+            .and_then(|n| i64::try_from(n).ok())
     }
 
     /// A literal or named integer constant's value (`300`, `OFFSET + 1`):
     /// the width, bound and division checks read named constants too, and
     /// `let k: unsigned[8] = LIMIT` with `LIMIT = 300` stored 44 (#233).
     pub(super) fn constant_value(&self, e: &Expr) -> Option<i64> {
-        Self::const_literal(e).or_else(|| self.const_int(e).and_then(|n| i64::try_from(n).ok()))
+        self.const_int(e).and_then(|n| i64::try_from(n).ok())
     }
 
     /// Whether a type may be used as an index. `Ty::Error` is admitted so one

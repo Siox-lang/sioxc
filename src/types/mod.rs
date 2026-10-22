@@ -25,6 +25,7 @@ mod assignments;
 mod ast_types;
 mod calls;
 mod collect;
+pub(crate) mod consteval;
 mod expand;
 mod expressions;
 mod helpers;
