@@ -302,6 +302,9 @@ struct Checker<'a> {
     /// belongs to a function; in hardware statement position there is nothing
     /// to return from, and lowering silently dropped it.
     in_fn_body: std::cell::Cell<bool>,
+    /// Whether the expression being checked is a hardware signal's
+    /// initializer, which elaboration evaluates (compile-time file reads).
+    in_initializer: std::cell::Cell<bool>,
     /// Whether the walk is inside a `match` arm. An entity may be instantiated
     /// at the root of another entity's body, or inside a generate `for`/`if` —
     /// a `match` is neither, and elaboration never gathered instances from one.
