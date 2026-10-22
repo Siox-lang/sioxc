@@ -314,6 +314,7 @@ impl<'a> Checker<'a> {
         if !self.methods.keys().any(|(h, _)| *h == head)
             && !self.structs.contains_key(&head)
             && !self.enum_variants.contains_key(&head)
+            && !matches!(head.as_str(), "integer" | "real" | "Char")
         {
             return;
         }

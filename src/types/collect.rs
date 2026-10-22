@@ -9,8 +9,18 @@ impl<'a> Checker<'a> {
     pub(super) fn new(
         sink: &'a mut DiagnosticSink,
         resolved: &'a Resolved,
-        modules: &[Module],
+        modules: &'a [Module],
     ) -> Self {
+        let generic_bodies = modules
+            .iter()
+            .flat_map(|m| &m.items)
+            .filter_map(|item| match item {
+                Item::Fn(f) if !f.generics.params.is_empty() && f.body.is_some() => {
+                    Some((resolved.declared(f.name.span)?, f))
+                }
+                _ => None,
+            })
+            .collect();
         // Seed the std::attrs targets so the standard attributes validate while
         // `std/` is still empty (mirrors the builtins seeded in siox-resolve).
         let mut attr_targets = HashMap::new();
@@ -90,6 +100,10 @@ impl<'a> Checker<'a> {
             })
             .collect();
         Checker {
+            generic_bodies,
+            type_bindings: std::cell::RefCell::new(HashMap::new()),
+            instantiated: std::cell::RefCell::new(HashSet::new()),
+            instantiating: std::cell::RefCell::new(Vec::new()),
             test_entities: HashSet::new(),
             in_testbench: std::cell::Cell::new(false),
             in_fn_body: std::cell::Cell::new(false),

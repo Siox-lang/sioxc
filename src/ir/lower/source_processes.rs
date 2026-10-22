@@ -10825,14 +10825,25 @@ fn value_ref_with_type_inner(
             if matches!(
                 index.as_ref(),
                 ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
-            ) && matches!(
+            ) && (matches!(
                 ty.as_ref(),
                 Some(crate::types::Ty::Array { family: None, len, .. }) if *len > 0
-            ) && matches!(
+            ) || matches!(
+                // An argument for a `T[]` parameter has the slice's own
+                // sized type, not the parameter's unsized one (#237).
+                (ty.as_ref(), context.typed.expr_type(span)),
+                (
+                    Some(crate::types::Ty::Array { family: None, len: 0, .. }),
+                    Some(crate::types::Ty::Array { family: None, len, .. }),
+                ) if *len > 0
+            )) && matches!(
                 context.typed.expr_type(ast::expr_span(base)),
                 Some(crate::types::Ty::Array { len, .. }) if *len > 0
             ) =>
         {
+            if matches!(ty, Some(crate::types::Ty::Array { len: 0, .. })) {
+                ty = context.typed.expr_type(span).cloned();
+            }
             match element_array_concat(
                 std::slice::from_ref(expression),
                 ty.as_ref(),

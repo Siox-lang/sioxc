@@ -110,7 +110,13 @@ impl<'a> Checker<'a> {
     /// parameter is bound at elaboration.
     pub(super) fn named_ty(&self, span: Span) -> Ty {
         match self.resolved.resolved(span) {
-            Some(id) if self.resolved.def(id).map(|d| d.kind) == Some(DefKind::Param) => Ty::Error,
+            // A type parameter is its call's argument type while a generic
+            // body is checked for that call, and unknown otherwise.
+            Some(id) if self.resolved.def(id).map(|d| d.kind) == Some(DefKind::Param) => self
+                .resolved
+                .def(id)
+                .and_then(|d| self.type_bindings.borrow().get(&d.name).cloned())
+                .unwrap_or(Ty::Error),
             Some(id) => Ty::Named(id),
             None => Ty::Error,
         }

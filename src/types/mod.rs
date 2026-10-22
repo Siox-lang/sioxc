@@ -172,7 +172,11 @@ pub use tuples::{lower_tuples, tuple_struct_arity, tuple_struct_name};
 ///
 /// Deferred to elaboration, where the needed information exists: width-level
 /// conversions (`unsigned[8]` !-> `unsigned[16]`) and method-call resolution.
-pub fn check(modules: &[Module], resolved: &Resolved, sink: &mut DiagnosticSink) -> Typed {
+pub fn check<'a>(
+    modules: &'a [Module],
+    resolved: &'a Resolved,
+    sink: &'a mut DiagnosticSink,
+) -> Typed {
     let mut checker = Checker::new(sink, resolved, modules);
     checker.collect(modules);
     checker.check_struct_field_cycles();
@@ -280,6 +284,15 @@ struct MemberVisibility {
 /// rather than registries: they track where in the tree the checker
 /// currently is, and are borrowed from `&self` methods.
 struct Checker<'a> {
+    /// Generic module functions' declarations, checked once per distinct set
+    /// of type arguments at their calls (spec: "each call is").
+    generic_bodies: HashMap<DefId, &'a FnDecl>,
+    /// Type parameters bound while a generic body is checked for one call.
+    type_bindings: std::cell::RefCell<HashMap<String, Ty>>,
+    /// Instantiations already checked, by function and type arguments.
+    instantiated: std::cell::RefCell<HashSet<String>>,
+    /// Generic functions whose body is being checked, against recursion.
+    instantiating: std::cell::RefCell<Vec<DefId>>,
     /// Entities carrying `#[test]`: testbenches, where the stimulus
     /// primitives (`await`, `assert!`, `print!`, `warn!`) are meaningful.
     test_entities: HashSet<String>,

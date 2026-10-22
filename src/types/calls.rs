@@ -487,7 +487,7 @@ impl<'a> Checker<'a> {
 
     /// What `name` stands for when a parameter written `ty` takes an argument
     /// of type `argument`.
-    fn bind_type_param(ty: &Type, argument: &Ty, name: &str) -> Option<Ty> {
+    pub(super) fn bind_type_param(ty: &Type, argument: &Ty, name: &str) -> Option<Ty> {
         match (ty, argument) {
             _ if Self::is_direct_type_param(ty, name) => {
                 (!matches!(argument, Ty::Error)).then(|| argument.clone())
@@ -604,9 +604,17 @@ impl<'a> Checker<'a> {
         let Some(params) = self.fn_param_types.get(&function).cloned() else {
             return;
         };
+        // A generic callee binds its own parameters: inside an instantiation
+        // (`f((x, x))` in `f<T>` with `T = integer`) the outer binding does
+        // not apply to its `x: T`.
+        let generic = self.generic_fns.contains_key(&function);
         for (arg, pty) in args.iter().zip(params.iter()) {
             let Some(pty) = pty else { continue };
+            let saved = generic.then(|| self.type_bindings.replace(HashMap::new()));
             let want = self.ast_ty(pty);
+            if let Some(saved) = saved {
+                self.type_bindings.replace(saved);
+            }
             if self.check_struct_literal_for_ty(&want, arg, sym) {
                 continue;
             }
