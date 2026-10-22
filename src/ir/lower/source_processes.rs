@@ -10934,28 +10934,6 @@ fn value_ref_with_type_inner(
                     (bounds, _) => bounds,
                 };
                 if let Some((left, right)) = bounds {
-                    if left == right {
-                        let index_span = ast::expr_span(index);
-                        let index = push_value(
-                            index_span,
-                            Some(crate::types::Ty::Integer),
-                            Some(64),
-                            ProcessValueKind::Number(ProcessNumber::Integer(vec![left as u64])),
-                            context,
-                        );
-                        let range = base_layout
-                            .as_ref()
-                            .and_then(crate::ir::SourceLayout::index_range);
-                        let index = range.map_or(index, |range| {
-                            checked_process_index(index, index_span, range, context)
-                        });
-                        let kind = ProcessValueKind::Index { base, index };
-                        let ty = ty
-                            .filter(|ty| !matches!(ty, crate::types::Ty::Error))
-                            .or_else(|| process_index_type(base, context));
-                        let width = source_value_width(&kind, ty.as_ref(), process, context);
-                        return push_value(span, ty, width, kind, context);
-                    }
                     let kind = ProcessValueKind::PackedSlice { base, left, right };
                     let width = left
                         .abs_diff(right)

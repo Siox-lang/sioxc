@@ -27,7 +27,7 @@ impl Pick {
 entity Top { mvx: Logic out, y: unsigned[8] out }
 impl Top {
     let meta: unsigned[4] = \"1X10\";
-    mvx = meta[2..2];
+    mvx = meta[2];
     let inner: Pick = { .o = { .lo = 11, .hi = 22 }, .y = y };
 }
 struct Link { pub req: unsigned[8], pub ack: unsigned[8] }
