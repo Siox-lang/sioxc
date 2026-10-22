@@ -820,6 +820,66 @@ impl<'a> Lowering<'a> {
         )
     }
 
+    /// `{x, y} = c` with `c: Logic[2]`, an array stored per element: one
+    /// element per part, most significant (highest label) first, as the
+    /// spec orders a concatenation. Read as one signal, `c` was "not in
+    /// scope" (#249). `None` unless the parts match the elements one to one.
+    pub(super) fn concat_from_array(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+    ) -> Option<Vec<ast::Stmt>> {
+        let ast::Expr::Concat { parts, span } = target else {
+            return None;
+        };
+        let path = self.folded_elem_path(value).or_else(|| expr_path(value))?;
+        // A packed vector of enum elements (`Logic[2]`) too: its parts are
+        // elements, not raw bits, and sliced bitwise a `Logic` part read
+        // one value bit as a whole discriminant.
+        let range = match &self.persisted_layout(&path)?.kind {
+            LayoutKind::Array {
+                range: Some(range), ..
+            }
+            | LayoutKind::Packed {
+                range: Some(range),
+                element_enum: Some(_),
+                ..
+            } => *range,
+            _ => return None,
+        };
+        let mut labels = loop_range(range.left, range.right);
+        if labels.len() != parts.len() {
+            return None;
+        }
+        labels.sort_unstable_by(|a, b| b.cmp(a));
+        // An empty span carries no checked type: the concatenation's own
+        // span is typed as the whole vector.
+        let span = &crate::diag::Span {
+            start: span.end,
+            ..*span
+        };
+        Some(
+            parts
+                .iter()
+                .zip(labels)
+                .map(|(part, label)| ast::Stmt::Assign {
+                    label: None,
+                    target: part.clone(),
+                    value: ast::Expr::Index {
+                        base: Box::new(value.clone()),
+                        index: Box::new(ast::Expr::Int {
+                            text: label.to_string(),
+                            span: *span,
+                        }),
+                        span: *span,
+                    },
+                    after: None,
+                    span: *span,
+                })
+                .collect(),
+        )
+    }
+
     pub(super) fn array_assign_leaves(
         &self,
         target: &ast::Expr,

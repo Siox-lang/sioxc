@@ -350,6 +350,10 @@ impl<'a> Lowering<'a> {
                             ctx: self.cur_ctx,
                         }),
                     }
+                } else if let Some(elements) = self.concat_from_array(target, value) {
+                    for element in elements {
+                        self.lower_stmt_at(&element, cond.clone());
+                    }
                 } else if let ast::Expr::Concat { parts, span: cspan } = target {
                     // `{hi, lo} = w;` unpacks the value MSB-first: each part
                     // takes its width's slice of the RHS.

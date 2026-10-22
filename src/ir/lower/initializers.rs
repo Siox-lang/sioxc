@@ -572,12 +572,27 @@ impl<'a> Lowering<'a> {
                 let els = self.lower_const_value(els, scope)?;
                 Some(self.source_select(&cond, &then, &els, span))
             }
-            ast::Expr::SuffixLit { text, suffix, .. } => Some(self.source_binary(
-                BinOp::Mul,
-                &integer_const(text)?,
-                &Expr::Const(ast::suffix_scale(&suffix.text).unwrap_or(1) as u64),
-                span,
-            )),
+            // A user `impl Suffix` (`4kB`) is its function's value, and a
+            // fractional number scales exactly (`1.5ns` is 1_500_000 fs).
+            // Only an integer one with a fixed scale folded, so `const MEM:
+            // Bytes = 4kB` read 4 and `1.5ns` did not fold at all (#247).
+            ast::Expr::SuffixLit { text, suffix, .. } => {
+                let scale = ast::suffix_scale(&suffix.text).unwrap_or(1);
+                if text.contains('.') {
+                    let scaled = text.replace('_', "").parse::<f64>().ok()? * scale as f64;
+                    return (scaled.fract() == 0.0 && scaled >= 0.0 && scaled < u64::MAX as f64)
+                        .then_some(Expr::Const(scaled as u64));
+                }
+                if let Some(Val::Scalar(value)) = self.inline_suffix(expression) {
+                    return Some(value);
+                }
+                Some(self.source_binary(
+                    BinOp::Mul,
+                    &integer_const(text)?,
+                    &Expr::Const(scale as u64),
+                    span,
+                ))
+            }
             _ => None,
         }
     }

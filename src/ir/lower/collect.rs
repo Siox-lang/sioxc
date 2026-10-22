@@ -831,9 +831,33 @@ impl<'a> Lowering<'a> {
             // A constant lookup table. Every element has to fold, or the table
             // is left for a later round of the fixed point (an element may
             // name a constant not yet resolved).
+            // Each element by the declared element type: a `Char` literal is
+            // its code point, an enum's (`Logic`'s `'1'`, `Color::Red`,
+            // `true`) its discriminant. Only numbers folded, and a table of
+            // characters or enums had no hardware form (#243).
+            let element = match &constant.ty {
+                ast::Type::Indexed { base, .. } => Some(base.as_ref()),
+                _ => None,
+            };
+            let character = element.and_then(type_head_name) == Some("Char");
+            let enumeration = element.and_then(|ty| self.free_fns.type_head_key(ty));
             let values: Option<Vec<Expr>> = elems
                 .iter()
-                .map(|e| self.lower_const_value(e, scope))
+                .map(|e| match e {
+                    ast::Expr::CharLit { ch, .. } if character => Some(Expr::Const(*ch as u64)),
+                    ast::Expr::CharLit { ch, .. } => enumeration
+                        .as_deref()
+                        .and_then(|en| {
+                            self.enum_variant(en, &format!("'{ch}'"))
+                                .or_else(|| self.enum_variant(en, &ch.to_string()))
+                        })
+                        .map(Expr::Const),
+                    ast::Expr::Path(path) => self
+                        .enum_variant_path(path)
+                        .map(Expr::Const)
+                        .or_else(|| self.lower_const_value(e, scope)),
+                    _ => self.lower_const_value(e, scope),
+                })
                 .collect();
             if let Some(values) = values {
                 self.const_arrays.insert(name.to_string(), values);
@@ -866,6 +890,17 @@ impl<'a> Lowering<'a> {
                 if folded {
                     return true;
                 }
+            }
+        } else if let (ast::Expr::StrLit { text, .. }, ast::Type::Indexed { base, .. }) =
+            (&constant.value, &constant.ty)
+        {
+            // `const S: Char[5] = "hello"`: a table of its characters (#243).
+            if type_head_name(base) == Some("Char") {
+                self.const_arrays.insert(
+                    name.to_string(),
+                    text.chars().map(|ch| Expr::Const(ch as u64)).collect(),
+                );
+                return true;
             }
         } else if let Some(args) = self
             .free_fns

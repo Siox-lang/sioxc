@@ -22,6 +22,29 @@ impl<'a> Checker<'a> {
                     // analogue expression into unrelated value/type errors.
                     return;
                 }
+                // `'event` and `'old` are a signal's history: a computed value
+                // (`(a and b)'event`) has none, and lowering failed (#248).
+                if matches!(attr.text.as_str(), "event" | "old")
+                    && !matches!(
+                        base.as_ref(),
+                        Expr::Path(_) | Expr::Field { .. } | Expr::Index { .. }
+                    )
+                {
+                    self.error_with_help(
+                        codes::TYPE_MISMATCH,
+                        expr_span(base),
+                        format!(
+                            "`'{}` reads a signal's history, and `{}` is a computed value",
+                            attr.text,
+                            crate::syntax::pretty::expr_string(base)
+                        ),
+                        format!(
+                            "apply it to the signals instead, e.g. `a'{} or b'{}`",
+                            attr.text, attr.text
+                        ),
+                    );
+                    return;
+                }
                 // Anything outside the implemented set is reported here.
                 // Silently lowering it produced an `Unknown` that only failed
                 // at codegen, naming a driver index rather than the attribute.

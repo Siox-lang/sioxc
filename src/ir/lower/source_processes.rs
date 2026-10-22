@@ -1154,6 +1154,15 @@ fn normalized_suffix(
         return None;
     };
     match suffix.domain {
+        // `1.5ns`: an integer-domain time suffix over a fraction is exact
+        // in femtoseconds, 1_500_000. It reached the backend unscaled and
+        // did not lower (#247).
+        SuffixDomain::Integer if text.contains('.') => {
+            let scaled = text.replace('_', "").parse::<f64>().ok()?
+                * crate::syntax::ast::suffix_scale(symbol)? as f64;
+            (scaled.fract() == 0.0 && scaled >= 0.0 && scaled < u64::MAX as f64)
+                .then(|| ProcessNumber::Integer(vec![scaled as u64]))
+        }
         SuffixDomain::Integer => {
             let input = integer_literal_u64(text)?;
             Some(ProcessNumber::Integer(vec![eval_suffix_block(
