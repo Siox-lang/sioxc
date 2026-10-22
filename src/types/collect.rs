@@ -106,6 +106,7 @@ impl<'a> Checker<'a> {
             instantiating: std::cell::RefCell::new(Vec::new()),
             test_entities: HashSet::new(),
             in_testbench: std::cell::Cell::new(false),
+            in_initializer: std::cell::Cell::new(false),
             in_fn_body: std::cell::Cell::new(false),
             in_match_arm: std::cell::Cell::new(false),
             in_process: std::cell::Cell::new(false),

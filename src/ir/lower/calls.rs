@@ -1557,6 +1557,9 @@ impl<'a> Lowering<'a> {
             return self.free_fns.type_head_key(&ty);
         }
         match e {
+            // A struct literal names its type: `Rect { .w = w }.width()` and
+            // `Complex { .. } + Complex { .. }` found no impl (#253).
+            ast::Expr::Construct { ty: Some(ty), .. } => self.free_fns.type_head_key(ty),
             // A branch-valued expression is whatever its branches are; the
             // checker has already made them agree. Without this an `if`/`match`
             // over `signed` values had no family and compared unsigned, while

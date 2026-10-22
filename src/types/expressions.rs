@@ -558,6 +558,41 @@ impl<'a> Checker<'a> {
                 span,
                 ..
             } => {
+                // The runtime's random numbers and file queries run in a
+                // testbench; in hardware they lowered to an intrinsic the
+                // scheduler could not evaluate (#252). A signal initializer's
+                // `read`/`exists` is compile-time I/O, elaborated.
+                if let Expr::Path(path) = callee.as_ref() {
+                    if let [segment] = path.segments.as_slice() {
+                        let runtime = self
+                            .resolved
+                            .resolved(path.span)
+                            .is_none_or(|id| self.resolved.kind_of(id) == Some(DefKind::Builtin));
+                        let name = segment.text.as_str();
+                        let random = matches!(name, "rand" | "randint" | "uniform" | "seed");
+                        let file = matches!(name, "read" | "exists") && !self.in_initializer.get();
+                        if runtime
+                            && (random || file)
+                            && !self.in_testbench.get()
+                            && !self.in_fn_body.get()
+                        {
+                            self.error_with_help(
+                                codes::INVALID_METHOD_CALL,
+                                segment.span,
+                                format!("`{name}` is only available in a testbench"),
+                                if file {
+                                    "a hardware signal reads a file only where it is declared: \
+                                     `let rom: T = read<T>(\"file\");`"
+                                        .to_string()
+                                } else {
+                                    "hardware has no random source; drive the value from a \
+                                     `#[test]` entity"
+                                        .to_string()
+                                },
+                            );
+                        }
+                    }
+                }
                 // A method callee is a `Field` node, but its name is a method,
                 // not a field — check the receiver and let `check_method_exists`
                 // judge the name, so one mistake yields one diagnostic.

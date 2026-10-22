@@ -203,7 +203,11 @@ impl<'a> Checker<'a> {
                     }
                     if let Some(v) = &l.value {
                         self.check_init(l.ty.as_ref(), v, &sym);
+                        // A signal's initializer is elaborated: compile-time
+                        // `read`/`exists` belong there.
+                        let saved = self.in_initializer.replace(true);
                         self.check_expr(v, &sym);
+                        self.in_initializer.set(saved);
                     }
                 }
                 ImplItem::Fn(f) => {
