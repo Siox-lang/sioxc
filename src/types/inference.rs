@@ -369,7 +369,23 @@ impl<'a> Checker<'a> {
                             let Expr::PartialRange { lo, hi, .. } = index.as_ref() else {
                                 return None;
                             };
-                            if family.is_some() || *base_len == 0 {
+                            // A packed vector's omitted bound is its declared
+                            // `'left` or `'right`: `v[..3]` of an `unsigned[8]`
+                            // (`0..7`) is `0..3`, four bits. Unsized, it was
+                            // assignable to any width (#232).
+                            if family.is_some() {
+                                let (left, right) = declared_labels_of(base, &self.array_bounds)?;
+                                let left = match lo {
+                                    Some(lo) => signed_lit(lo)?,
+                                    None => left,
+                                };
+                                let right = match hi {
+                                    Some(hi) => signed_lit(hi)?,
+                                    None => right,
+                                };
+                                return u32::try_from(left.abs_diff(right) + 1).ok();
+                            }
+                            if *base_len == 0 {
                                 return None;
                             }
                             let left = match lo {

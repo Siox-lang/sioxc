@@ -11342,7 +11342,20 @@ fn value_ref_with_type_inner(
                 bang: *bang,
             }
         }
-        ast::Expr::Construct { args, spread, .. } => {
+        ast::Expr::Construct {
+            args,
+            spread,
+            ty: written,
+            ..
+        } => {
+            // `Pair { .. }` names its type: an argument of a generic method
+            // (`d.transform(Pair { .. })`) had no expected type, and the
+            // construct had no layout (#234).
+            if ty.is_none() {
+                ty = written
+                    .as_ref()
+                    .and_then(|written| process_declared_type(written, context));
+            }
             let layout_fields = ty
                 .as_ref()
                 .and_then(|ty| process_aggregate_layout_for_type(ty, span, context))

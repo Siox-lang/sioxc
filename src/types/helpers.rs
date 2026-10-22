@@ -339,6 +339,14 @@ pub(super) fn declared_bounds_of(
     base: &Expr,
     bounds: &std::cell::RefCell<HashMap<String, (i64, i64)>>,
 ) -> Option<(i64, i64)> {
+    declared_labels_of(base, bounds).map(|(left, right)| (left.min(right), left.max(right)))
+}
+
+/// A declared array name's labels in written order, `'left` then `'right`.
+pub(super) fn declared_labels_of(
+    base: &Expr,
+    bounds: &std::cell::RefCell<HashMap<String, (i64, i64)>>,
+) -> Option<(i64, i64)> {
     let Expr::Path(p) = base else { return None };
     let [seg] = p.segments.as_slice() else {
         return None;

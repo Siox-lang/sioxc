@@ -403,7 +403,7 @@ impl<'a> Checker<'a> {
                 },
                 _,
             ) => {
-                if let Some(constant) = Self::const_literal(value) {
+                if let Some(constant) = self.constant_value(value) {
                     self.check_fits_width(constant, *len, expr_span(value));
                 }
             }
@@ -712,11 +712,21 @@ impl<'a> Checker<'a> {
                     return true;
                 }
                 // A named (struct/enum) type without the impl fails; a kernel
-                // scalar / vector is accepted (built-in capability).
-                !matches!(ty, Ty::Named(_))
+                // scalar / vector has the built-in capabilities of core and
+                // std traits, but not a user trait's (#231).
+                !matches!(ty, Ty::Named(_)) && Self::builtin_trait(trait_name)
             }
-            None => true,
+            None => Self::builtin_trait(trait_name),
         }
+    }
+
+    /// A compiler, core or std trait, whose capabilities kernel types have
+    /// without a source impl. `run_double(10)` with `T: Doubler` passed and
+    /// called a method `integer` does not have (#231).
+    fn builtin_trait(trait_name: &str) -> bool {
+        !trait_name.contains("::")
+            || trait_name.starts_with("core::")
+            || trait_name.starts_with("std::")
     }
 }
 
