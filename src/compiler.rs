@@ -551,6 +551,7 @@ impl Compiler {
         // `x'integers` -> `x'high + 1`: later stages see system attributes only.
         crate::types::expand_type_attrs(&mut result.modules, &typed);
         crate::types::fold_value_lengths(&mut result.modules, &typed);
+        crate::types::flatten_slice_chains(&mut result.modules);
         // Tuples become the generic structs they are; see `types::tuples`.
         crate::types::lower_tuples(&mut result.modules, &typed);
         result.resolved = Some(resolved);

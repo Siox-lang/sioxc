@@ -979,6 +979,11 @@ impl<'a> Lowering<'a> {
                 }
             }
             if let Some(source) = self.free_fns.constant_path_key(path) {
+                // `const COPY: T[4] = TABLE`: the same table (#261).
+                if let Some(values) = self.const_arrays.get(&source).cloned() {
+                    self.const_arrays.insert(name.to_string(), values);
+                    return true;
+                }
                 if let Some(value) = self.const_values.get(&source).cloned() {
                     self.const_values.insert(name.to_string(), value);
                     return true;
@@ -987,6 +992,23 @@ impl<'a> Lowering<'a> {
                     return true;
                 }
             }
+        } else if let Some(folded) = self.const_table_index(&constant.value, scope) {
+            // `const SUB: T[2] = TABLE[1..2]` / `const X: T = TABLE[1]`: part
+            // of a table, which was no constant at all (#261).
+            match folded {
+                Ok(values) => {
+                    self.const_arrays.insert(name.to_string(), values);
+                }
+                Err(value) => {
+                    if let Expr::Const(word) = &value {
+                        if let Ok(narrow) = i64::try_from(*word) {
+                            self.consts.insert(name.to_string(), narrow);
+                        }
+                    }
+                    self.const_values.insert(name.to_string(), value);
+                }
+            }
+            return true;
         } else if let Some(value) = self.lower_const_value(&constant.value, scope) {
             self.const_values.insert(name.to_string(), value);
             if let Some(narrow) = self.eval_const(&constant.value, scope) {
@@ -998,6 +1020,32 @@ impl<'a> Lowering<'a> {
             return true;
         }
         false
+    }
+
+    /// A constant table indexed by constants: the elements a slice selects,
+    /// in written order (`Ok`), or the one element an index picks (`Err`).
+    pub(super) fn const_table_index(
+        &self,
+        expression: &ast::Expr,
+        scope: &HashMap<String, i64>,
+    ) -> Option<Result<Vec<Expr>, Expr>> {
+        let ast::Expr::Index { base, index, .. } = expression else {
+            return None;
+        };
+        let table = self
+            .const_arrays
+            .get(&self.free_fns.constant_expr_key(base)?)?;
+        let element = |label: i64| table.get(usize::try_from(label).ok()?).cloned();
+        match index.as_ref() {
+            ast::Expr::Range { lo, hi, .. } => {
+                loop_range(self.eval_const(lo, scope)?, self.eval_const(hi, scope)?)
+                    .into_iter()
+                    .map(element)
+                    .collect::<Option<Vec<_>>>()
+                    .map(Ok)
+            }
+            single => element(self.eval_const(single, scope)?).map(Err),
+        }
     }
 
     /// Fold a constant expression in `env`, or `None` when it is not constant.

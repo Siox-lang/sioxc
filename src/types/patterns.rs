@@ -194,8 +194,13 @@ impl<'a> Checker<'a> {
                 let qualifier_key = self
                     .ident_key(qualifier)
                     .unwrap_or_else(|| qualifier.text.clone());
+                // `true`/`false` desugar to `Bool::…` with one span for both
+                // segments, so the qualifier resolves as the variant (#256).
+                let desugared = qualifier.span == path.span;
                 match self.enum_operand_name(ty) {
                     Some(expected) if qualifier_key == expected => {}
+                    Some(expected)
+                        if desugared && expected.rsplit("::").next() == Some(qualifier.text.as_str()) => {}
                     Some(expected) => self.error_with_help(
                         codes::TYPE_MISMATCH,
                         path.span,
@@ -305,6 +310,11 @@ impl<'a> Checker<'a> {
 
     /// [`Self::check_char_patterns`] for one pattern.
     fn check_char_pattern(&mut self, ty: &Ty, pattern: &Pattern) {
+        // A `Char` is a character: `match ch { 'a' => .. }` compares code
+        // points, and was rejected as if it were numeric (#257).
+        if matches!(ty, Ty::Char) {
+            return;
+        }
         let variants = match ty {
             Ty::Named(id) => self
                 .definition_key(*id)

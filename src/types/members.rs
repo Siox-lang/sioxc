@@ -37,6 +37,28 @@ impl<'a> Checker<'a> {
             }
             return;
         }
+        // A scalar, an enum value or an array has no fields: `x.foo` on an
+        // `integer` passed and did not lower (#259).
+        let fieldless = match &base_ty {
+            Ty::Integer | Ty::Real | Ty::Char => true,
+            Ty::Array { family: None, .. } => true,
+            Ty::Named(id) => self
+                .definition_key(*id)
+                .is_some_and(|key| self.enum_variants.contains_key(&key)),
+            _ => false,
+        };
+        if fieldless {
+            self.error(
+                codes::UNKNOWN_NAME,
+                field.span,
+                format!(
+                    "`{}` has no field `{}`",
+                    self.ty_display(&base_ty),
+                    field.text
+                ),
+            );
+            return;
+        }
         let Some(head) = self.ty_head(&base_ty) else {
             return;
         };
@@ -354,7 +376,9 @@ impl<'a> Checker<'a> {
             .and_then(|id| self.definition_key(id))
             .unwrap_or_else(|| owner_name.text.clone());
         let name = &path.segments[path.segments.len() - 1].text;
-        if name == "new" && self.is_conversion_name(&owner) {
+        // A type's own `fn new(..)` replaces the derived `T::new()` (#264).
+        let declared_new = self.methods.contains_key(&(owner.clone(), name.clone()));
+        if name == "new" && !declared_new && self.is_conversion_name(&owner) {
             if !args.is_empty() {
                 self.error(
                     codes::TYPE_MISMATCH,

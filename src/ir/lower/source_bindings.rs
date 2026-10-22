@@ -491,9 +491,55 @@ impl Lowering<'_> {
                     return from_argument.or_else(from_field).or(declared);
                 }
                 let function = self.free_fns.get(callee)?;
+                // `Point::create(x) -> Self` is a `Point`: `Self` is the
+                // qualifying type, and laid out bare it was opaque (#266).
+                if function.ret.as_ref().and_then(type_head_name) == Some("Self") {
+                    if let ast::Expr::Path(path) = callee.as_ref() {
+                        if path.segments.len() >= 2 {
+                            let owner = ast::Type::Path(ast::Path {
+                                segments: path.segments[..path.segments.len() - 1].to_vec(),
+                                span: path.segments[path.segments.len() - 2].span,
+                            });
+                            let layout = self.source_layout(&owner, &self.cur_env);
+                            if layout.bit_width().is_some() {
+                                return Some(layout);
+                            }
+                        }
+                    }
+                }
                 let declared = self.source_layout(function.ret.as_ref()?, &self.cur_env);
                 if declared.bit_width().is_some() {
                     return Some(declared);
+                }
+                // `-> (A, B)` / `-> Pair<A, B>`: each type parameter is the
+                // layout of the argument it binds. Left opaque, the result
+                // had no aggregate form in hardware (#258).
+                let bound: HashMap<String, SourceLayout> = function
+                    .generics
+                    .params
+                    .iter()
+                    .filter_map(|generic| {
+                        let (_, argument) = function
+                            .params
+                            .iter()
+                            .filter(|parameter| !parameter.is_self)
+                            .zip(args)
+                            .find(|(parameter, _)| {
+                                matches!(&parameter.ty, Some(ast::Type::Path(path))
+                                    if path.segments.len() == 1
+                                        && path.segments[0].text == generic.name.text)
+                            })?;
+                        Some((
+                            generic.name.text.clone(),
+                            self.source_operand_layout(argument, env)?,
+                        ))
+                    })
+                    .collect();
+                if !bound.is_empty() {
+                    let substituted = substitute_opaque(declared.clone(), &bound);
+                    if substituted.bit_width().is_some() {
+                        return Some(substituted);
+                    }
                 }
                 // `-> Logic[]`: the size is the body's.
                 let parameters = function
@@ -1040,4 +1086,34 @@ pub(super) fn returned_shapes(function: &ast::FnDecl) -> Vec<(&str, Option<&ast:
             Some((name, declared))
         })
         .collect()
+}
+
+/// `layout` with each opaque leaf named by a bound type parameter replaced
+/// by that parameter's layout.
+fn substitute_opaque(layout: SourceLayout, bound: &HashMap<String, SourceLayout>) -> SourceLayout {
+    let kind = match layout.kind {
+        LayoutKind::Opaque { name, .. } if bound.contains_key(&name) => {
+            return bound[&name].clone()
+        }
+        LayoutKind::Struct { name, view, fields } => LayoutKind::Struct {
+            name,
+            view,
+            fields: fields
+                .into_iter()
+                .map(|field| crate::ir::LayoutField {
+                    layout: substitute_opaque(field.layout, bound),
+                    ..field
+                })
+                .collect(),
+        },
+        LayoutKind::Array { range, element } => LayoutKind::Array {
+            range,
+            element: Box::new(substitute_opaque(*element, bound)),
+        },
+        other => other,
+    };
+    SourceLayout {
+        span: layout.span,
+        kind,
+    }
 }

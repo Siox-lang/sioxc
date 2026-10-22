@@ -256,6 +256,72 @@ pub fn fold_value_lengths(modules: &mut [Module], typed: &Typed) {
     }
 }
 
+/// `arr[1..3][0]` is `arr[1]` and `arr[1..3][0..1]` is `arr[1..2]`: an
+/// index into a slice counts positions from the slice's left end, as the
+/// slice's checked type does. Chained, neither had a hardware form, and a
+/// write through one did not lower (#262). Constant bounds only.
+pub fn flatten_slice_chains(modules: &mut [Module]) {
+    fn literal(e: &Expr) -> Option<i64> {
+        match e {
+            Expr::Int { text, .. } => text.replace('_', "").parse().ok(),
+            _ => None,
+        }
+    }
+    let mut flatten = |e: &mut Expr| {
+        let Expr::Index { base, index, span } = e else {
+            return true;
+        };
+        let Expr::Index {
+            base: inner,
+            index: range,
+            ..
+        } = base.as_ref()
+        else {
+            return true;
+        };
+        let Expr::Range { lo, hi, .. } = range.as_ref() else {
+            return true;
+        };
+        let (Some(left), Some(right)) = (literal(lo), literal(hi)) else {
+            return true;
+        };
+        let step = if left <= right { 1 } else { -1 };
+        let at = |position: i64| Expr::Int {
+            text: (left + step * position).to_string(),
+            span: *span,
+        };
+        let mapped = match index.as_ref() {
+            Expr::Range {
+                lo,
+                hi,
+                span: range_span,
+            } => match (literal(lo), literal(hi)) {
+                (Some(a), Some(b)) => Expr::Range {
+                    lo: Box::new(at(a)),
+                    hi: Box::new(at(b)),
+                    span: *range_span,
+                },
+                _ => return true,
+            },
+            single => match literal(single) {
+                Some(position) => at(position),
+                None => return true,
+            },
+        };
+        *e = Expr::Index {
+            base: inner.clone(),
+            index: Box::new(mapped),
+            span: *span,
+        };
+        true
+    };
+    for module in modules {
+        for item in &mut module.items {
+            walk_item(item, &mut flatten);
+        }
+    }
+}
+
 /// Expand `e` when it is a recorded read; true when the walk should still
 /// descend into it.
 fn expand_read(e: &mut Expr, reads: &HashMap<Span, Expr>, depth: usize) -> bool {
