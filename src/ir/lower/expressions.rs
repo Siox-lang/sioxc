@@ -535,7 +535,12 @@ impl<'a> Lowering<'a> {
                 // A single element of a `Logic`-vector *is* a `Logic` — its
                 // width is the element's (a 4-bit disc), not one value bit — so
                 // `s: Logic = v[i]` matches, and a metavalue reconstructs.
+                // A range is a vector at any width: `v[0..0]` is one bit (#199).
                 if a == b
+                    && !matches!(
+                        index.as_ref(),
+                        ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                    )
                     && expr_path(base)
                         .and_then(|p| self.locals.get(&p))
                         .is_some_and(|&id| self.out.signals[id.0 as usize].width > 1)

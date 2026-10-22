@@ -391,15 +391,15 @@ impl<'a> Checker<'a> {
                         } else {
                             explicit_range_len(index).or_else(open).unwrap_or(0)
                         };
-                        if width == 1 {
-                            elem.as_ref().clone()
-                        } else {
-                            Ty::Array {
-                                elem: elem.clone(),
-                                family: family.clone(),
-                                len: width,
-                                low: 0,
-                            }
+                        // A range is a slice at any width: `v[0..0]` is a
+                        // one-element vector, as `v(0 downto 0)` is in VHDL and
+                        // `&v[0..1]` in Rust; `v[0]` is the element. Decaying
+                        // it broke generic code at `W = 1` (#199).
+                        Ty::Array {
+                            elem: elem.clone(),
+                            family: family.clone(),
+                            len: width,
+                            low: 0,
                         }
                     }
                     Ty::Array { elem, len, .. } if !is_range => {
