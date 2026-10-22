@@ -470,6 +470,15 @@ impl<'a> FunctionIndex<'a> {
             ast::Expr::Field { base, field, .. } => {
                 Some(format!("{}.{}", self.constant_expr_key(base)?, field.text))
             }
+            // An element of a constant struct table, `SA[0].a` (#229).
+            ast::Expr::Index { base, index, .. } => match index.as_ref() {
+                ast::Expr::Int { text, .. } => Some(format!(
+                    "{}[{}]",
+                    self.constant_expr_key(base)?,
+                    text.replace('_', "").parse::<i64>().ok()?
+                )),
+                _ => None,
+            },
             _ => None,
         }
     }

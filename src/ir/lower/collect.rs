@@ -839,6 +839,34 @@ impl<'a> Lowering<'a> {
                 self.const_arrays.insert(name.to_string(), values);
                 return true;
             }
+            // A table of structs (`const SA: S[2] = [S { .a = 1 }, ..]`):
+            // one value per element field, keyed as `SA[0].a` reads it.
+            // Nothing folded it, and the read had no hardware form (#229).
+            if let ast::Type::Indexed { base: element, .. } = &constant.ty {
+                let mut folded = false;
+                for (position, elem) in elems.iter().enumerate() {
+                    let ast::Expr::Construct { args, .. } = elem else {
+                        return false;
+                    };
+                    let Some(fields) = self.const_struct_fields(element, args) else {
+                        return false;
+                    };
+                    for (field, value) in fields {
+                        let key = format!("{name}[{position}].{field}");
+                        if let Some(narrow) = self.eval_const(&value, scope) {
+                            self.consts.insert(key.clone(), narrow);
+                        }
+                        let Some(lowered) = self.lower_const_value(&value, scope) else {
+                            return false;
+                        };
+                        self.const_values.insert(key, lowered);
+                        folded = true;
+                    }
+                }
+                if folded {
+                    return true;
+                }
+            }
         } else if let Some(args) = self
             .free_fns
             .type_head_key(&constant.ty)

@@ -313,6 +313,29 @@ impl Lower<'_> {
     }
 
     fn generic_arg(&mut self, arg: &mut GenericArg) {
+        // `Box<(integer, integer)>` parses its argument as a tuple value; it
+        // names a tuple type, and as a value it lowered to a construct the
+        // struct's layout could not use (#227).
+        fn as_type(e: &Expr) -> Option<Type> {
+            match e {
+                Expr::Path(path) => Some(Type::Path(path.clone())),
+                Expr::Index { base, index, span } => Some(Type::Indexed {
+                    base: Box::new(as_type(base)?),
+                    index: Some(index.clone()),
+                    span: *span,
+                }),
+                Expr::Tuple { elems, span } => Some(Type::Tuple {
+                    elems: elems.iter().map(as_type).collect::<Option<_>>()?,
+                    span: *span,
+                }),
+                _ => None,
+            }
+        }
+        if let GenericArg::Positional(e @ Expr::Tuple { .. }) = arg {
+            if let Some(ty) = as_type(e) {
+                *arg = GenericArg::PositionalType(ty);
+            }
+        }
         match arg {
             GenericArg::Positional(e) | GenericArg::Named { value: e, .. } => self.expr(e),
             GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => self.ty(ty),

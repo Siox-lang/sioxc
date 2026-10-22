@@ -15,6 +15,12 @@ pub(in crate::ir) fn expr_to_type(e: &ast::Expr) -> Option<ast::Type> {
             index: Some(index.clone()),
             span: *span,
         }),
+        // `Box<(integer, integer)>`: a tuple type argument parses as a tuple
+        // expression, and was dropped (#227).
+        ast::Expr::Tuple { elems, span } => Some(ast::Type::Tuple {
+            elems: elems.iter().map(expr_to_type).collect::<Option<_>>()?,
+            span: *span,
+        }),
         _ => None,
     }
 }

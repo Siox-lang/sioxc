@@ -525,7 +525,9 @@ impl<'a> Checker<'a> {
                     );
                 } else {
                     if let (Some(expected), Some(value)) = (expected_return, value) {
-                        if self.check_struct_literal_for_ty(expected, value, sym) {
+                        if self.check_struct_literal_for_ty(expected, value, sym)
+                            || self.report_bitless_concat(expected, value, sym)
+                        {
                             return;
                         }
                     }

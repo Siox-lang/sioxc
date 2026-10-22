@@ -2424,6 +2424,65 @@ fn lower_statement(
 ) -> Option<ProcessBlockId> {
     match statement {
         Stmt::Use(_) => Some(block),
+        // `let b: Box<(integer, integer)> = { .val = (10, 20) }`: a generic
+        // struct's construct has no field types to give its values, but the
+        // local is laid out from its declaration (#196). Declared bare and
+        // written field by field, a tuple field value lowers (#227).
+        Stmt::Let(declaration)
+            if declaration.ty.as_ref().is_some_and(|ty| {
+                generic_struct_layout(ty, declaration.span, context).is_some()
+            }) && matches!(
+                &declaration.value,
+                Some(ast::Expr::Construct { args, spread: None, .. })
+                    if !args.is_empty() && args.iter().all(|arg| arg.field.is_some() && arg.value.is_some())
+            ) =>
+        {
+            let Some(ast::Expr::Construct { args, .. }) = &declaration.value else {
+                unreachable!()
+            };
+            let bare = Stmt::Let(ast::LetDecl {
+                value: None,
+                ..declaration.clone()
+            });
+            let block = lower_statement(&bare, context, process, block)?;
+            let local = ProcessLocalId(process.locals.len().checked_sub(1)? as u32);
+            let layout = process.locals[local.0 as usize].layout.clone()?;
+            let LayoutKind::Struct { fields, .. } = &layout.kind else {
+                return None;
+            };
+            for arg in args {
+                let (Some(field), Some(value)) = (&arg.field, &arg.value) else {
+                    continue;
+                };
+                let field_layout = fields.iter().find(|f| f.name == field.text)?.layout.clone();
+                let field_type = process_type_from_layout(&field_layout, context.resolved);
+                let base = cfg_calls::local_value(local, process, context);
+                let place = push_value(
+                    arg.span,
+                    field_type.clone(),
+                    field_layout.packed_width(),
+                    ProcessValueKind::Field {
+                        base,
+                        field: field.text.clone(),
+                    },
+                    context,
+                );
+                context.process_ir.value_layouts[place.0 as usize] = Some(field_layout);
+                let value = value_ref_with_type(value, process, context, field_type.as_ref());
+                let semantics = process_place_assignment(place, context.process_ir)?;
+                process.blocks[block.0 as usize]
+                    .instructions
+                    .push(ProcessInstruction::Assign {
+                        semantics,
+                        driver_context: None,
+                        target: place,
+                        value,
+                        span: arg.span,
+                    });
+            }
+
+            Some(block)
+        }
         Stmt::Let(declaration) => {
             let sized = sized_by_value(declaration, process, context);
             let declaration = sized.as_ref().unwrap_or(declaration);
@@ -2642,10 +2701,15 @@ fn array_slice_elements(
     let integer = Some(&crate::types::Ty::Integer);
     let left = value_ref_with_type(lo, process, context, integer);
     let right = value_ref_with_type(hi, process, context, integer);
-    let (left, right) = (
-        constant_integer(left, context)?,
-        constant_integer(right, context)?,
-    );
+    let (Some(left), Some(right)) = (
+        constant_integer(left, context),
+        constant_integer(right, context),
+    ) else {
+        // `arr[hi..lo] = v` with run-time bounds has no element list; as a
+        // whole write it reached code generation with no width (#219).
+        reject_runtime_slice(target, index, span, process, context);
+        return Some(Vec::new());
+    };
     let label = |n: i64, span| ast::Expr::Int {
         text: n.to_string(),
         span,
@@ -2750,6 +2814,38 @@ fn array_slice_elements(
             })
             .collect(),
     )
+}
+
+/// A slice of an array with bounds known only at run time: it has no fixed
+/// length to give the value (#219).
+fn reject_runtime_slice(
+    expression: &ast::Expr,
+    index: &ast::Expr,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) {
+    let ast::Expr::Range { lo, hi, .. } = index else {
+        return;
+    };
+    let integer = Some(&crate::types::Ty::Integer);
+    let first = context.process_ir.values.len();
+    let left = value_ref_with_type(lo, process, context, integer);
+    let right = value_ref_with_type(hi, process, context, integer);
+    let runtime =
+        constant_integer(left, context).is_none() || constant_integer(right, context).is_none();
+    truncate_process_values(context, first);
+    if runtime {
+        context.rejected.borrow_mut().push(
+            crate::diag::Diagnostic::error(format!(
+                "`{}` has bounds known only at run time",
+                crate::syntax::pretty::expr_string(expression)
+            ))
+            .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+            .at(span)
+            .help("array slice bounds must be constant; copy the elements in a loop instead"),
+        );
+    }
 }
 
 /// `v == "10XZ"`: a string literal beside a vector of non-`Char` elements
@@ -10744,7 +10840,10 @@ fn value_ref_with_type_inner(
                 context,
             ) {
                 Some(elements) => ProcessValueKind::Array(elements),
-                None => ProcessValueKind::Invalid,
+                None => {
+                    reject_runtime_slice(expression, index, span, process, context);
+                    ProcessValueKind::Invalid
+                }
             }
         }
         ast::Expr::Index { base, index, .. } => {

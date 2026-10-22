@@ -159,7 +159,20 @@ impl<'a> Checker<'a> {
                 None if len > 0 && matches!(base, Expr::Array { .. }) => {
                     (0, len as i64 - 1, "element")
                 }
-                None => return,
+                // A constant array (`ARR[999]`) has its declared labels;
+                // hardware read past them as 0 in silence (#228).
+                None => match base {
+                    Expr::Path(path) => match self
+                        .resolved
+                        .resolved(path.span)
+                        .and_then(|id| self.const_types.get(&id))
+                        .and_then(|ty| self.declared_index_bounds(ty))
+                    {
+                        Some((lo, hi)) => (lo, hi, "element"),
+                        None => return,
+                    },
+                    _ => return,
+                },
             },
             _ => return,
         };

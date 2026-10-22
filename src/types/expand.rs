@@ -184,25 +184,60 @@ pub fn fold_value_lengths(modules: &mut [Module], typed: &Typed) {
         let Expr::SysAttr { base, attr, span } = e else {
             return true;
         };
-        if attr.text != "length" || matches!(base.as_ref(), Expr::Path(_)) {
+        let attribute = attr.text.as_str();
+        if !matches!(
+            attribute,
+            "length" | "left" | "right" | "high" | "low" | "ascending"
+        ) || matches!(base.as_ref(), Expr::Path(_))
+        {
             return true;
         }
         let literal = |e: &Expr| match e {
             Expr::Int { text, .. } => text.replace('_', "").parse::<i64>().ok(),
             _ => None,
         };
-        let len = match (typed.expr_type(expr_span(base)), base.as_ref()) {
-            (Some(Ty::Array { len, .. }), _) if *len > 0 => Some(i64::from(*len)),
-            (_, Expr::Array { elems, .. }) if !elems.is_empty() => Some(elems.len() as i64),
-            (_, Expr::StrLit { text, .. }) if !text.is_empty() => Some(text.chars().count() as i64),
-            (_, Expr::Index { index, .. }) => match index.as_ref() {
-                Expr::Range { lo, hi, .. } => literal(lo)
-                    .zip(literal(hi))
-                    .map(|(lo, hi)| (hi - lo).abs() + 1),
+        // The value's labels, left to right: a literal is labelled from 0 and
+        // a slice keeps the labels it selects (`arr[2..1]` is 2 down to 1),
+        // as VHDL's are. `'high` and the rest did not lower (#224).
+        let labels = match base.as_ref() {
+            Expr::Array { elems, .. } if !elems.is_empty() => Some((0, elems.len() as i64 - 1)),
+            Expr::StrLit { text, .. } if !text.is_empty() => {
+                Some((0, text.chars().count() as i64 - 1))
+            }
+            Expr::Index { index, .. } => match index.as_ref() {
+                Expr::Range { lo, hi, .. } => literal(lo).zip(literal(hi)),
                 _ => None,
             },
             _ => None,
         };
+        let len = match (attribute, typed.expr_type(expr_span(base)), labels) {
+            ("length", Some(Ty::Array { len, .. }), _) if *len > 0 => Some(i64::from(*len)),
+            (_, _, Some((left, right))) => Some(match attribute {
+                "left" => left,
+                "right" => right,
+                "high" => left.max(right),
+                "low" => left.min(right),
+                _ => (right - left).abs() + 1,
+            }),
+            _ => None,
+        };
+        // `'ascending` is the comparison of the labels, a `Bool` that lowers
+        // without a path to resolve.
+        if let ("ascending", Some((left, right))) = (attribute, labels) {
+            let int = |value: i64| {
+                Box::new(Expr::Int {
+                    text: value.to_string(),
+                    span: *span,
+                })
+            };
+            *e = Expr::Binary {
+                op: BinOp::Le,
+                lhs: int(left),
+                rhs: int(right),
+                span: *span,
+            };
+            return false;
+        }
         match len {
             Some(len) => {
                 *e = Expr::Int {

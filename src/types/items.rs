@@ -596,6 +596,40 @@ impl<'a> Checker<'a> {
                 self.check_param_type_layouts(&structure.params);
                 if let Some(base) = &structure.base {
                     self.check_type_layout(base);
+                    // `struct Box<T>(T)` derives from a type it does not know:
+                    // no representation to share, `?` widths and a test that
+                    // did not lower (#220). A value parameter sizing a known
+                    // base (`float<W, M>(Logic[..])`) is fine.
+                    let type_params: Vec<&str> = structure
+                        .params
+                        .params
+                        .iter()
+                        .filter(|p| {
+                            p.bound
+                                .as_ref()
+                                .is_none_or(|b| type_head_name(b).is_none_or(|h| h != "integer"))
+                        })
+                        .map(|p| p.name.text.as_str())
+                        .collect();
+                    if crate::syntax::pretty::type_str(base)
+                        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        .any(|word| type_params.contains(&word))
+                    {
+                        self.error_with_help(
+                            codes::TYPE_MISMATCH,
+                            structure.name.span,
+                            format!(
+                                "newtype `{}` derives from its own type parameter",
+                                structure.name.text
+                            ),
+                            format!(
+                                "a newtype shares a known type's representation; hold the \
+                                 value in a field instead: `struct {}<..> {{ pub value: {} }}`",
+                                structure.name.text,
+                                crate::syntax::pretty::type_str(base)
+                            ),
+                        );
+                    }
                     // A newtype over an array is a packed vector family: one
                     // index over single-bit (enum) elements, or over another
                     // family (`struct Byte(unsigned[8])`). Over `Point[]` or
