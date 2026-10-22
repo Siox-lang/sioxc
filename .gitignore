@@ -2,6 +2,7 @@
 /target
 **/*.rs.bk
 Cargo.lock.orig
+__pycache__/
 
 # Simulator / tooling output
 *.vcd

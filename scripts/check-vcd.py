@@ -65,6 +65,18 @@ def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> No
             expected = [(0, "0"), (when, "1")]
             assert changes[f"ConcurrentProcessTest.dut.{signal}"] == expected
             assert changes[f"ConcurrentProcessTest.dut.seen_{signal}"] == expected
+    elif profile == "metavalue_state_test":
+        root = "MetavalueStateTest.dut."
+        assert changes[root + "comb"] == [(0, "x000"), (3_000_000, "0000")]
+        assert values(changes, root + "concurrent") == ["x000"]
+        assert changes[root + "reg"] == [
+            (0, "0000"), (1_000_000, "x000"), (4_000_000, "0000")
+        ]
+        assert values(changes, root + "narrowed") == ["xxxx"]
+    elif profile == "packed_partial_write_test":
+        root = "PackedPartialWriteTest.comb."
+        assert values(changes, root + "q") == ["00001010"]
+        assert values(changes, root + "neutral") == ["zzzz1z1z"]
     elif profile == "basic_mux":
         assert changes["BasicMuxTest.dut.y"] == [
             (time, f"{value:08b}") for time, value in

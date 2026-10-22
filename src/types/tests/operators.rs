@@ -646,6 +646,87 @@ fn constant_zero_divisor_is_rejected() {
 }
 
 #[test]
+fn constrained_operator_outputs_keep_their_declared_width() {
+    let source = "module m;\n\
+        impl CustomOperator<\"clip\", unsigned, unsigned[3]> for unsigned {\n\
+            attr precedence = 35;\n\
+            fn apply(self, rhs: unsigned) -> unsigned[3] { return 0; }\n\
+        }\n\
+        impl Not<unsigned[3]> for unsigned {\n\
+            fn not(self) -> unsigned[3] { return 0; }\n\
+        }\n\
+        entity E { a: unsigned[8] in, b: unsigned[8] in, x: unsigned[3] out, y: unsigned[3] out }\n\
+        impl E { x = a clip b; y = not a; }\n";
+    assert_eq!(check_src(source), 0, "the output is three bits, not eight");
+    let bad = source.replace("x: unsigned[3] out", "x: unsigned[8] out");
+    assert_eq!(
+        check_src(&bad),
+        1,
+        "constrained output is not widened implicitly"
+    );
+    let literal_left = source.replace("x = a clip b", "x = 1 clip b");
+    assert_eq!(
+        check_src(&literal_left),
+        0,
+        "literal-left output stays constrained"
+    );
+    let directed = source.replace("unsigned[3]", "unsigned[2..0]");
+    assert_eq!(
+        check_src(&directed),
+        0,
+        "explicit result ranges stay constrained"
+    );
+    let aliased = format!(
+        "{}\ntype Narrow = Shape;\ntype Shape = unsigned[2..0];\n",
+        source.replace("unsigned[3]", "Narrow")
+    );
+    assert_eq!(
+        check_src(&aliased),
+        0,
+        "forward alias chains preserve binary and unary result constraints"
+    );
+    assert_eq!(
+        check_src(&aliased.replace("x = a clip b", "x = 1 clip b")),
+        0,
+        "literal-left outputs expand aliases too"
+    );
+    assert_eq!(
+        check_src(&aliased.replace("x: Narrow out", "x: unsigned[8] out")),
+        1,
+        "an aliased constrained output cannot silently widen"
+    );
+}
+
+#[test]
+fn ranged_constructors_reject_implicit_output_widening() {
+    for (range, wider) in [
+        ("2..0", "7..0"),
+        ("6..4", "11..4"),
+        ("-1..-3", "4..-3"),
+        ("-3..-1", "-3..4"),
+    ] {
+        let source = format!(
+            "module m; entity E {{ a: unsigned[8] in, y: unsigned[{range}] out }}\n\
+             impl E {{ y = unsigned[{range}](a); }}\n"
+        );
+        assert_eq!(
+            check_src(&source),
+            0,
+            "a three-bit constructor fits ({range}): {:?}",
+            check_modules(&[(&format!("{source}{VEC}"), FileId(0))]).diagnostics()
+        );
+        assert_eq!(
+            check_src(&source.replace(
+                &format!("y: unsigned[{range}]"),
+                &format!("y: unsigned[{wider}]"),
+            )),
+            1,
+            "a ranged constructor is not an unconstrained output"
+        );
+    }
+}
+
+#[test]
 /// Operators the grammar reserves cannot be overloaded.
 fn reserved_operators_cannot_be_overloaded() {
     let header = "module m;\nattr precedence: integer for impl;\n\

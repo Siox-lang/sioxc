@@ -428,41 +428,44 @@ impl<'a> Lowering<'a> {
             // not arithmetic, and `"X100" & "1101"` should keep its `'X'` in
             // place rather than turn eight elements unknown.
             ast::Expr::Concat { parts, .. } => {
-                let mut acc = Expr::Const(0);
-                for part in parts {
-                    let w = self.concat_part_width(part);
-                    let value = self.lower_expr(part);
-                    // A `Logic` part joins as its value bit; its discriminant
-                    // is the element's companion nibble.
-                    let value = if self.is_logic_scalar(part) {
-                        let bit = self.logic_value_bit(&value, ast::expr_span(part));
-                        let mut arena = self.source_values.borrow_mut();
-                        let id = arena.append(&bit, ast::expr_span(part), None);
-                        arena.set_explicit_meta(id, value);
-                        arena.reference(id)
-                    } else {
-                        let mut arena = self.source_values.borrow_mut();
-                        let id = arena.append(&value, ast::expr_span(part), None);
-                        arena.reference(id)
-                    };
-                    let shifted = self.source_binary(
-                        BinOp::Shl,
-                        &acc,
-                        &Expr::Const(w as u64),
-                        ast::expr_span(e),
-                    );
-                    acc = self.source_binary(BinOp::Or, &shifted, &value, ast::expr_span(e));
-                    if let Expr::Canonical { value, .. } = &acc {
-                        self.source_values
-                            .borrow_mut()
-                            .disjoint_joins
-                            .insert(*value);
-                    }
-                }
-                acc
+                self.lower_concat_env(parts, &HashMap::new(), ast::expr_span(e))
             }
             _ => Expr::Unknown,
         }
+    }
+
+    pub(super) fn lower_concat_env(
+        &self,
+        parts: &[ast::Expr],
+        env: &HashMap<String, Val>,
+        span: crate::diag::Span,
+    ) -> Expr {
+        let mut acc = Expr::Const(0);
+        for part in parts {
+            let w = self.concat_part_width(part);
+            let value = self.lower_scalar_env(part, env);
+            // A Logic element contributes its value bit and companion nibble.
+            let value = if self.is_logic_scalar(part) {
+                let bit = self.logic_value_bit(&value, ast::expr_span(part));
+                let mut arena = self.source_values.borrow_mut();
+                let id = arena.append(&bit, ast::expr_span(part), None);
+                arena.set_explicit_meta(id, value);
+                arena.reference(id)
+            } else {
+                let mut arena = self.source_values.borrow_mut();
+                let id = arena.append(&value, ast::expr_span(part), None);
+                arena.reference(id)
+            };
+            let shifted = self.source_binary(BinOp::Shl, &acc, &Expr::Const(w as u64), span);
+            acc = self.source_binary(BinOp::Or, &shifted, &value, span);
+            if let Expr::Canonical { value, .. } = &acc {
+                self.source_values
+                    .borrow_mut()
+                    .disjoint_joins
+                    .insert(*value);
+            }
+        }
+        acc
     }
 
     /// The bit width of a source expression, for sizing concatenations. A nested
@@ -585,8 +588,12 @@ impl<'a> Lowering<'a> {
         if let Some(crate::types::Ty::Array { len, .. }) = self.promotion_of(e) {
             return *len;
         }
-        if let Some(width) = self
-            .source_call_layout(e)
+        let layout = if matches!(e, ast::Expr::Field { .. }) {
+            self.source_operand_layout(e, &HashMap::new())
+        } else {
+            self.source_call_layout(e)
+        };
+        if let Some(width) = layout
             .and_then(|layout| layout.bit_width())
             .and_then(|width| u32::try_from(width).ok())
         {
@@ -641,9 +648,13 @@ impl<'a> Lowering<'a> {
             }
             ast::Expr::Call { callee, args, .. } => match callee.as_ref() {
                 ast::Expr::Index { base, index, .. }
-                    if expr_path(base)
-                        .as_deref()
-                        .is_some_and(|h| self.array_families.contains(h)) =>
+                    if match base.as_ref() {
+                        ast::Expr::Path(path) => self.free_fns.struct_path_key(path),
+                        _ => None,
+                    }
+                    .or_else(|| expr_path(base))
+                    .as_deref()
+                    .is_some_and(|h| self.array_families.contains(h)) =>
                 {
                     // A width (`unsigned[8]`) or a range (`sfixed[3..-4]`).
                     match index.as_ref() {
@@ -662,8 +673,11 @@ impl<'a> Lowering<'a> {
                 // argument's.
                 ast::Expr::Path(p)
                     if args.len() == 1
-                        && p.segments.len() == 1
-                        && self.array_families.contains(&p.segments[0].text) =>
+                        && self
+                            .free_fns
+                            .struct_path_key(p)
+                            .or_else(|| (p.segments.len() == 1).then(|| p.segments[0].text.clone()))
+                            .is_some_and(|family| self.array_families.contains(&family)) =>
                 {
                     self.ast_width(&args[0])
                 }
@@ -925,10 +939,16 @@ impl<'a> Lowering<'a> {
             .as_ref()
             .and_then(crate::ir::lower_helpers::type_head_name)
             .is_some_and(|head| head == "Self" || family.rsplit("::").next() == Some(head));
+        let result_width = function
+            .ret
+            .as_ref()
+            .and_then(|ty| self.source_layout(ty, &self.cur_env).bit_width())
+            .and_then(|width| u32::try_from(width).ok())
+            .unwrap_or(width);
         match inlined {
-            Val::Scalar(value) if own && width > 1 => Some(Val::Scalar(self.source_slice(
+            Val::Scalar(value) if own && result_width > 1 => Some(Val::Scalar(self.source_slice(
                 &value,
-                width - 1,
+                result_width - 1,
                 0,
                 ast::expr_span(lhs).to(ast::expr_span(rhs)),
             ))),
@@ -983,6 +1003,14 @@ impl<'a> Lowering<'a> {
                     .and_then(|binding| self.declared_range(&binding.ty, &self.cur_env))
                     .or_else(|| self.persisted_range(&path))
             }
+            ast::Expr::Field { .. }
+            | ast::Expr::Binary {
+                op: ast::BinOp::Custom { .. },
+                ..
+            } => self
+                .source_operand_layout(e, env)
+                .and_then(|layout| layout.index_range())
+                .map(|range| (range.left, range.right)),
             // A literal operand has no range: `2 * a` is `a`'s format.
             ast::Expr::Binary { lhs, rhs, .. } => self
                 .operand_range(lhs, env)

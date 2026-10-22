@@ -18,7 +18,11 @@ use siox::syntax::pretty;
 struct Cli {
     /// The `.siox` file to compile. A sole structural root is selected by
     /// default; bare `sioxc foo.siox` compiles it like `rustc foo.rs`.
-    file: PathBuf,
+    #[arg(required_unless_present = "explain", conflicts_with = "explain")]
+    file: Option<PathBuf>,
+    /// Explain a diagnostic code without compiling a source file.
+    #[arg(long, value_name = "CODE")]
+    explain: Option<String>,
     /// The root entity to build (default: the sole uninstantiated entity).
     #[arg(long)]
     top: Option<String>,
@@ -98,6 +102,22 @@ pub fn run() -> ExitCode {
         Ok(cli) => cli,
         Err(error) => error.exit(),
     };
+    if let Some(code) = &cli.explain {
+        return match siox::diag::codes::explanation(code) {
+            Some(page) => {
+                print!("{page}");
+                ExitCode::SUCCESS
+            }
+            None => {
+                eprintln!("error: no explanation is available for diagnostic code `{code}`");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    let file = cli
+        .file
+        .as_ref()
+        .expect("clap requires a file without --explain");
     let lints = lint_levels(&matches, &cli);
     if cli.test && cli.emit != CliEmit::Object {
         eprintln!("error: --test currently requires --emit object");
@@ -118,7 +138,7 @@ pub fn run() -> ExitCode {
             CliEmit::LlvmIr => Emit::LlvmIr,
         }
     };
-    let mut request = CompileRequest::new(SourceInput::path(&cli.file), emit.clone())
+    let mut request = CompileRequest::new(SourceInput::path(file), emit.clone())
         .with_debug(cli.debug)
         .with_lint_levels(lints);
     if let Some(output) = cli.out {

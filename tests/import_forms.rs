@@ -12,7 +12,11 @@ const SHAPES: &[(&str, &str)] = &[
          pub enum Corner { NorthEast, SouthWest }\n\
          pub struct Packet<T> { pub valid: Bit, pub data: T }\n\
          pub type Pair<T> = Packet<T>;\n\
+         pub type Recursive<T> = (T, Recursive<(T, T)>);\n\
          pub type Hue = super::colors::Color;\n\
+         pub type ChainedWord = WordAlias;\n\
+         pub type WordAlias = WordBase;\n\
+         pub type WordBase = unsigned[6..4];\n\
          pub fn double(x: integer) -> integer { return x * 2; }\n\
          pub const SIDES: integer = 4;\n",
     ),
@@ -28,6 +32,85 @@ const SHAPES: &[(&str, &str)] = &[
         "module shapes::facade;\npub use std::math;\npub use super::geometry::*;\n",
     ),
 ];
+
+#[test]
+fn chained_alias_constructors_keep_their_declaration_scope() {
+    let (rendered, ok) = compile(
+        "chained_constructor",
+        "module main;\n\
+         use shapes::geometry::ChainedWord;\n\
+         use shapes::colors;\n\
+         type WordBase = unsigned[8];\n\
+         fn f() -> unsigned[3] { return ChainedWord(1); }\n",
+    );
+    assert!(
+        ok,
+        "constructor follows the alias's home scope:\n{rendered}"
+    );
+}
+
+#[test]
+fn cyclic_alias_constructors_report_an_error_without_expanding_forever() {
+    let (rendered, ok) = compile(
+        "cyclic_constructor",
+        "module main;\ntype A = B;\ntype B = A;\n\
+         fn f() -> integer { return integer(A(1)); }\n",
+    );
+    assert!(!ok, "a cyclic constructor must be rejected");
+    assert!(rendered.contains("cyclic"), "{rendered}");
+}
+
+#[test]
+fn recursive_generic_aliases_report_an_error_without_expanding_forever() {
+    for (name, source) in [
+        (
+            "generic_direct_cycle",
+            "module main; type Tree<T> = Tree<T>; entity Top { x: Tree<integer> in }",
+        ),
+        (
+            "generic_growing_cycle",
+            "module main; type Tree<T> = (T, Tree<(T, T)>); entity Top { x: Tree<integer> in }",
+        ),
+        (
+            "generic_mutual_cycle",
+            "module main; type A<T> = B<(T, T)>; type B<T> = A<(T, T)>; entity Top { x: A<integer> in }",
+        ),
+        (
+            "generic_imported_cycle",
+            "module main; use shapes::geometry::Recursive; use shapes::colors; entity Top { x: Recursive<integer> in }",
+        ),
+        (
+            "generic_constructor_cycle",
+            "module main; type Tree<T> = (T, Tree<(T, T)>); fn f() -> integer { return integer(Tree<integer>(1)); }",
+        ),
+    ] {
+        let (rendered, ok) = compile(name, source);
+        assert!(!ok, "{name}: a recursive alias must be rejected");
+        assert!(rendered.contains("error[E-P002]"), "{name}: {rendered}");
+        assert!(
+            rendered.contains("is defined in terms of itself"),
+            "{name}: {rendered}"
+        );
+    }
+}
+
+#[test]
+fn finite_nested_and_repeated_generic_aliases_still_expand() {
+    let (rendered, ok) = compile(
+        "generic_finite_nesting",
+        "module main;\n\
+         use shapes::geometry::Pair;\n\
+         use shapes::colors;\n\
+         type Identity<T> = T;\n\
+         type Twice<T> = (Identity<T>, Identity<T>);\n\
+         fn f(x: Twice<Identity<Identity<integer>>>, y: Twice<real>,\n\
+              p: Pair<Pair<unsigned[8]>>) -> integer { return x.0 + x.1; }\n",
+    );
+    assert!(
+        ok,
+        "finite alias applications must remain valid:\n{rendered}"
+    );
+}
 
 /// Compile `main` beside the shapes modules; the rendered diagnostics, and
 /// whether the compilation succeeded.

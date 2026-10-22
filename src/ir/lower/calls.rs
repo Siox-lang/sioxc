@@ -134,39 +134,6 @@ impl<'a> Lowering<'a> {
                 _ => "integer".to_string(),
             },
         };
-        if let (Some(_target_std), Some(source_std)) = (
-            super::source_processes::std_integer_vector_family(&target),
-            super::source_processes::std_integer_vector_family(&source),
-        ) {
-            let (left, right) = match index.as_ref() {
-                ast::Expr::Range { lo, hi, .. } => (
-                    self.eval_const(lo, &self.cur_env)?,
-                    self.eval_const(hi, &self.cur_env)?,
-                ),
-                width => (self.eval_const(width, &self.cur_env)? - 1, 0),
-            };
-            let target_width = u32::try_from(left.abs_diff(right) + 1).ok()?;
-            let source_width = self
-                .source_operand_layout(arg, env)
-                .and_then(|l| match l.kind {
-                    LayoutKind::Packed { width, .. } => Some(width),
-                    _ => None,
-                })
-                .unwrap_or_else(|| self.ast_width(arg));
-            if target_width > 64 && source_width > 0 {
-                return self.lower_wide_packed_resize(
-                    arg,
-                    env,
-                    source_std == "signed",
-                    source_width,
-                    target_width,
-                    &target,
-                    left,
-                    right,
-                    ast::expr_span(callee),
-                );
-            }
-        }
         let (f, _) = fns.iter().find(|(f, declared)| {
             declared.clone().or_else(|| {
                 f.params
@@ -185,99 +152,6 @@ impl<'a> Lowering<'a> {
             };
         }
         self.inline_in_format(f, index, callee, args, env)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn lower_wide_packed_resize(
-        &self,
-        arg: &ast::Expr,
-        env: &HashMap<String, Val>,
-        source_signed: bool,
-        source_width: u32,
-        target_width: u32,
-        target: &str,
-        left: i64,
-        right: i64,
-        span: crate::diag::Span,
-    ) -> Option<Expr> {
-        let v = self.lower_scalar_env(arg, env);
-        let elem = self
-            .expr_types
-            .get(&span)
-            .and_then(|ty| match ty {
-                crate::types::Ty::Array { elem, .. } => Some((**elem).clone()),
-                _ => None,
-            })
-            .unwrap_or(crate::types::Ty::Error);
-        let target_type = Some(crate::types::Ty::Array {
-            elem: Box::new(elem),
-            family: Some(target.to_string()),
-            len: target_width,
-            low: left.min(right),
-        });
-        let target_layout = Some(SourceLayout {
-            span,
-            kind: LayoutKind::Packed {
-                width: target_width,
-                family: target.to_string(),
-                range: Some(LayoutRange { left, right }),
-                element_enum: self.array_element_enum(target),
-            },
-        });
-        let mut source_values = self.source_values.borrow_mut();
-        let operand = source_values.append(&v, span, None);
-        let final_kind = if source_signed && target_width > source_width {
-            let resized = source_values.push_node(
-                ProcessValue {
-                    span,
-                    ty: None,
-                    bit_width: Some(target_width),
-                    kind: ProcessValueKind::RawResize { operand },
-                },
-                None,
-            );
-            let sign = source_values.push_node(
-                ProcessValue {
-                    span,
-                    ty: None,
-                    bit_width: Some(target_width),
-                    kind: ProcessValueKind::Number(ProcessNumber::Integer(
-                        super::source_processes::single_bit_words(source_width - 1),
-                    )),
-                },
-                None,
-            );
-            let flipped = source_values.push_node(
-                ProcessValue {
-                    span,
-                    ty: None,
-                    bit_width: Some(target_width),
-                    kind: ProcessValueKind::Binary {
-                        operation: ProcessBinaryOp::Xor,
-                        left: resized,
-                        right: sign,
-                    },
-                },
-                None,
-            );
-            ProcessValueKind::Binary {
-                operation: ProcessBinaryOp::Sub,
-                left: flipped,
-                right: sign,
-            }
-        } else {
-            ProcessValueKind::RawResize { operand }
-        };
-        let final_id = source_values.push_node(
-            ProcessValue {
-                span,
-                ty: target_type,
-                bit_width: Some(target_width),
-                kind: final_kind,
-            },
-            target_layout,
-        );
-        Some(source_values.reference(final_id))
     }
 
     /// Inline `f` with `Self'left`/`'right`/`'high`/`'low`/`'length`
@@ -403,7 +277,7 @@ impl<'a> Lowering<'a> {
             ));
         }
         let shapes = self.source_shape_scope(
-            HashMap::new(),
+            inspection.parameters.clone(),
             f.ret
                 .as_ref()
                 .map(|ty| self.source_layout(ty, &self.cur_env)),
@@ -428,10 +302,9 @@ impl<'a> Lowering<'a> {
         }
         let length = u32::try_from(left.abs_diff(right) + 1).ok()?;
         match out? {
-            Val::Scalar(value) if length < 64 => {
+            Val::Scalar(value) => {
                 Some(self.source_slice(&value, length - 1, 0, ast::expr_span(callee)))
             }
-            Val::Scalar(value) => Some(value),
             _ => None,
         }
     }
@@ -1415,7 +1288,10 @@ impl<'a> Lowering<'a> {
         }
         // Target: (is_resize, family, width). Width None = kernel integer.
         let head = |e: &ast::Expr| match e {
-            ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.clone()),
+            ast::Expr::Path(p) => self
+                .free_fns
+                .struct_path_key(p)
+                .or_else(|| (p.segments.len() == 1).then(|| p.segments[0].text.clone())),
             _ => None,
         };
         let (target_w, resize) = match callee {
@@ -1446,9 +1322,9 @@ impl<'a> Lowering<'a> {
             {
                 let w = match index.as_ref() {
                     ast::Expr::Range { lo, hi, .. } => {
-                        let lo = self.eval_const(lo, &self.cur_env)?;
-                        let hi = self.eval_const(hi, &self.cur_env)?;
-                        u32::try_from(lo.abs_diff(hi) + 1).ok()?
+                        let left = self.eval_const(lo, &self.cur_env)?;
+                        let right = self.eval_const(hi, &self.cur_env)?;
+                        u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?
                     }
                     _ => match self.lower_scalar_env(index, env) {
                         Expr::Const(c) => c as u32,
@@ -1506,18 +1382,17 @@ impl<'a> Lowering<'a> {
                 ast::expr_span(callee),
             );
         }
-        // `integer(x)` of a packed value is its raw word as a 64-bit kernel
-        // integer: the slice makes the backend evaluate it at that width, so
-        // the kernel arithmetic built on it does too. Left at the vector's
-        // width (16 bits for `sfixed<16, 8>`), a later signed step misread
-        // its top bit.
-        let packed_operand = target_w.is_none()
-            && self.operand_type_name(arg).is_some_and(|family| {
-                self.array_families.contains(&family) || self.enum_variants.contains_key(&family)
-            });
+        // Kernel integer arithmetic needs an integer-width boundary: a
+        // one-bit enum discriminant must not become signed -1 in its resolver.
+        let raw_operand = target_w.is_none()
+            && (self.operand_type_name(arg).is_some_and(|name| {
+                self.array_families.contains(&name) || self.out.enum_syms.contains_key(&name)
+            }) || self
+                .source_evaluated_width(&v)
+                .is_some_and(|width| width < 64));
         Some(match target_w {
-            Some(w) if w > 0 && w != 64 => self.source_slice(&v, w - 1, 0, ast::expr_span(callee)),
-            None if packed_operand => self.source_slice(&v, 63, 0, ast::expr_span(callee)),
+            Some(w) if w > 0 => self.source_slice(&v, w - 1, 0, ast::expr_span(callee)),
+            None if raw_operand => self.source_slice(&v, 63, 0, ast::expr_span(callee)),
             _ => v,
         })
     }
@@ -1609,6 +1484,9 @@ impl<'a> Lowering<'a> {
                     family: Some(family),
                     ..
                 }) => Some(self.free_fns.canonical_type_key(family)),
+                Some(crate::types::Ty::Named(definition)) => {
+                    self.free_fns.nominal_type_key(*definition)
+                }
                 _ => None,
             },
             ast::Expr::Int { .. } => Some("integer".to_string()),

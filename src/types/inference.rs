@@ -188,12 +188,17 @@ impl<'a> Checker<'a> {
                         Ty::Integer
                     )
                 );
-                if let Some(Some(output)) = self.operator_output(
+                if let Some(Some((output, declaration))) = self.operator_output(
                     op_str,
                     &lhs_ty,
                     &rhs_ty,
                     contextual_rhs || numeric_kernel_coercion,
                 ) {
+                    if let Some(ty) =
+                        self.constrained_operator_output(declaration.as_ref(), &lhs_ty)
+                    {
+                        return ty;
+                    }
                     if let Some(owner) = self.ty_head(&lhs_ty) {
                         if output == "Self" || output == owner {
                             return lhs_ty;
@@ -219,10 +224,15 @@ impl<'a> Checker<'a> {
                     // A literal on the left takes the right operand's type
                     // (`255 xor a`), as the operator check accepts it.
                     if Self::is_contextual_literal(lhs) && self.assignable(&rhs_ty, lhs, sym) {
-                        if let (Some(Some(output)), Some(owner)) = (
+                        if let (Some(Some((output, declaration))), Some(owner)) = (
                             self.operator_output(op_str, &rhs_ty, &rhs_ty, false),
                             self.ty_head(&rhs_ty),
                         ) {
+                            if let Some(ty) =
+                                self.constrained_operator_output(declaration.as_ref(), &rhs_ty)
+                            {
+                                return ty;
+                            }
                             if output == "Self" || output == owner {
                                 return rhs_ty;
                             }
@@ -285,11 +295,16 @@ impl<'a> Checker<'a> {
             } => {
                 let rhs_ty = self.type_of(rhs, sym);
                 if let Some(owner) = self.ty_head(&rhs_ty) {
-                    if let Some((_, Some(output))) = self
+                    if let Some((_, Some((output, declaration)))) = self
                         .operator_sigs
                         .get(&("not".to_string(), owner.clone()))
                         .and_then(|sigs| sigs.first())
                     {
+                        if let Some(ty) =
+                            self.constrained_operator_output(declaration.as_ref(), &rhs_ty)
+                        {
+                            return ty;
+                        }
                         if output == "Self" || output == &owner {
                             return rhs_ty;
                         }
@@ -476,16 +491,13 @@ impl<'a> Checker<'a> {
                         Expr::Path(path) => self.path_key(path),
                         _ => None,
                     };
-                    // `unsigned[WIDTH](x)` with a named constant is as
-                    // sized as `unsigned[16](x)`; unsized, it fit any width
-                    // (#240).
-                    let w = self.constant_value(index).unwrap_or(0).max(0) as u32;
+                    let (w, low) = self.index_shape(index);
                     match head.filter(|key| self.array_families.contains(key)) {
                         Some(head) => Ty::Array {
                             elem: Box::new(self.array_element_ty(&head)),
                             family: Some(head),
                             len: w,
-                            low: 0,
+                            low,
                         },
                         None => Ty::Error,
                     }

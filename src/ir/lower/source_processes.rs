@@ -4651,6 +4651,7 @@ fn widen_operand(
         process,
         context,
         Some(target),
+        context.resolved.declared(function.name.span),
     )
 }
 
@@ -6797,6 +6798,7 @@ fn lower_process_raw_resize(
                         process,
                         context,
                         target,
+                        context.resolved.declared(function.name.span),
                     ) {
                         return Some(value);
                     }
@@ -6824,6 +6826,7 @@ fn lower_process_raw_resize(
     if args.len() != 1 {
         return None;
     }
+    let declared = crate::ir::lower_helpers::expr_to_type(callee)?;
     let target = match callee.as_ref() {
         ast::Expr::Index { base, index, .. } => {
             let ast::Expr::Path(path) = base.as_ref() else {
@@ -6846,7 +6849,7 @@ fn lower_process_raw_resize(
                 ast::Expr::Range { lo, hi, .. } => {
                     let (left, right) = eval(lo).zip(eval(hi))?;
                     (
-                        u32::try_from(left.abs_diff(right) + 1).ok()?,
+                        u32::try_from(left.abs_diff(right).checked_add(1)?).ok()?,
                         left.min(right),
                     )
                 }
@@ -7006,7 +7009,13 @@ fn lower_process_raw_resize(
     }
     let kind = ProcessValueKind::RawResize { operand };
     let width = source_value_width(&kind, Some(&target), process, context)?;
-    Some(push_converted(*span, target, width, kind, context))
+    let value = push_converted(*span, target, width, kind, context);
+    if let Some(layout) = process_binding_layout(Some(&declared), *span, value, process, context)
+        .filter(|layout| layout.packed_width() == Some(width))
+    {
+        context.process_ir.value_layouts[value.0 as usize] = Some(layout);
+    }
+    Some(value)
 }
 
 /// A conversion's result with its target's vector layout, which a method on
@@ -7174,18 +7183,6 @@ fn lower_process_family_from(
     // The checker reads `family[range](x)` as a kernel conversion and records
     // no type for a literal argument, so the value says what it is.
     let checked = operand_type(argument, process, context);
-    if let Some(value) = lower_process_wide_packed_resize(
-        &family,
-        index,
-        argument,
-        checked.as_ref(),
-        *span,
-        process,
-        context,
-        return_type,
-    ) {
-        return Some(value);
-    }
     let operand = value_ref_with_type(argument, process, context, checked.as_ref());
     let source_type = checked
         .or_else(|| process_value_type(operand, context))
@@ -7272,122 +7269,8 @@ fn lower_process_family_from(
         process,
         context,
         return_type,
+        Some(definition),
     )
-}
-
-/// The leaf name of a std `signed`/`unsigned` family key, if it is one.
-pub(super) fn std_integer_vector_family(family: &str) -> Option<&'static str> {
-    match family.rsplit("::").next()? {
-        "signed" => Some("signed"),
-        "unsigned" => Some("unsigned"),
-        _ => None,
-    }
-}
-
-/// The two's-complement words of `1 << bit`.
-pub(super) fn single_bit_words(bit: u32) -> Vec<u64> {
-    let mut words = vec![0u64; bit as usize / 64 + 1];
-    words[bit as usize / 64] = 1u64 << (bit % 64);
-    words
-}
-
-/// `signed[N](x)` / `unsigned[N](x)` for a packed `signed`/`unsigned` `x`
-/// when either side is wider than the 64-bit kernel word. std's `From`
-/// bodies read their operand through `integer(..)`, which keeps only 64
-/// bits, so `signed[129](signed[81] ..)` lost every bit above 63. Resize the
-/// word itself instead: zero-extend (or truncate), and sign-extend a
-/// `signed` source as `(x ^ s) - s` evaluated at the target width, `s`
-/// being the source's sign bit.
-#[allow(clippy::too_many_arguments)]
-fn lower_process_wide_packed_resize(
-    family: &str,
-    index: &ast::Expr,
-    argument: &ast::Expr,
-    checked: Option<&crate::types::Ty>,
-    span: crate::diag::Span,
-    process: &ProcessCfg,
-    context: &mut LoweringContext<'_>,
-    return_type: Option<&crate::types::Ty>,
-) -> Option<ProcessValueId> {
-    std_integer_vector_family(family)?;
-    let Some(crate::types::Ty::Array {
-        family: Some(source_family),
-        len: source_len,
-        ..
-    }) = checked
-    else {
-        return None;
-    };
-    let source_signed = std_integer_vector_family(source_family)? == "signed";
-    let eval = |bound: &ast::Expr| {
-        crate::ir::eval_const_fns(bound, context.constant_integers, context.functions, 0)
-    };
-    let (left, right) = match index {
-        ast::Expr::Range { lo, hi, .. } => eval(lo).zip(eval(hi))?,
-        width => eval(width).map(|width| (width - 1, 0))?,
-    };
-    let target_width = u32::try_from(left.abs_diff(right) + 1).ok()?;
-    let first_value = context.process_ir.values.len();
-    let operand = value_ref_with_type(argument, process, context, checked);
-    let source_width = context.process_ir.values[operand.0 as usize]
-        .bit_width
-        .filter(|width| *width > 0)
-        .unwrap_or(*source_len);
-    if source_width == 0 || target_width.max(source_width) <= 64 {
-        truncate_process_values(context, first_value);
-        return None;
-    }
-    let elem = match return_type {
-        Some(crate::types::Ty::Array { elem, .. }) => elem.clone(),
-        _ => Box::new(crate::types::Ty::Error),
-    };
-    let target_type = crate::types::Ty::Array {
-        elem,
-        family: Some(family.to_owned()),
-        len: target_width,
-        low: left.min(right),
-    };
-    let resized = push_value(
-        span,
-        None,
-        Some(target_width),
-        ProcessValueKind::RawResize { operand },
-        context,
-    );
-    let kind = if source_signed && target_width > source_width {
-        let sign = push_value(
-            span,
-            None,
-            Some(target_width),
-            ProcessValueKind::Number(ProcessNumber::Integer(single_bit_words(source_width - 1))),
-            context,
-        );
-        let flipped = push_value(
-            span,
-            None,
-            Some(target_width),
-            ProcessValueKind::Binary {
-                operation: ProcessBinaryOp::Xor,
-                left: resized,
-                right: sign,
-            },
-            context,
-        );
-        ProcessValueKind::Binary {
-            operation: ProcessBinaryOp::Sub,
-            left: flipped,
-            right: sign,
-        }
-    } else {
-        ProcessValueKind::RawResize { operand: resized }
-    };
-    Some(push_converted(
-        span,
-        target_type,
-        target_width,
-        kind,
-        context,
-    ))
 }
 
 /// A conversion from an anonymous array's elements, typed `target`: inlined
@@ -7456,6 +7339,7 @@ fn inline_with_self_format(
     process: &ProcessCfg,
     context: &mut LoweringContext<'_>,
     return_type: Option<&crate::types::Ty>,
+    conversion: Option<crate::resolve::DefId>,
 ) -> Option<ProcessValueId> {
     let eval = |bound: &ast::Expr| {
         crate::ir::eval_const_fns(bound, context.constant_integers, context.functions, 0)
@@ -7515,8 +7399,8 @@ fn inline_with_self_format(
         },
     );
     context.self_formats.pop();
-    match result {
-        Some(result) if in_format => {
+    match (result, conversion) {
+        (Some(result), _) if in_format => {
             // Source result types retain the explicit target range, rather
             // than a generic width-only layout or the source operand's range.
             // The native result/argument widths remain executable decisions.
@@ -7539,8 +7423,34 @@ fn inline_with_self_format(
             }
             Some(inherit_receiver_layout(result, format, context))
         }
-        Some(result) => Some(result),
-        None => {
+        (Some(result), _) => Some(result),
+        (None, Some(conversion)) if in_format => {
+            let layout = context.process_ir.value_layouts[format.0 as usize].clone();
+            // Keep evaluated arguments; discard only the failed value expansion.
+            truncate_process_values(context, format.0 as usize);
+            let callee = push_value(
+                span,
+                None,
+                None,
+                ProcessValueKind::Definition(conversion),
+                context,
+            );
+            let result = push_value(
+                span,
+                Some(target_type),
+                Some(len),
+                ProcessValueKind::Call {
+                    callee,
+                    type_arguments: Vec::new(),
+                    arguments: operands.to_vec(),
+                    bang: false,
+                },
+                context,
+            );
+            context.process_ir.value_layouts[result.0 as usize] = layout;
+            Some(result)
+        }
+        (None, _) => {
             truncate_process_values(context, first_value);
             None
         }
@@ -7598,6 +7508,7 @@ fn lower_process_qualified_call(
         process,
         context,
         return_type,
+        None,
     )
 }
 
@@ -8987,7 +8898,10 @@ fn give_literal_parameter_layout(
             .value_layouts
             .get_mut(argument.0 as usize),
     ) {
-        *slot = Some(layout);
+        // Inspection must not change a contextual literal's executable width.
+        if layout.packed_width() == context.process_ir.values[argument.0 as usize].bit_width {
+            *slot = Some(layout);
+        }
     }
 }
 
@@ -10480,12 +10394,10 @@ fn value_ref_with_type(
     // Arithmetic on literals alone is exact in the vector it fills, as a
     // literal is: `0 - 17262465143367426459` into `signed[65]` wrapped in
     // the 64-bit kernel (also when promoted there) and came out positive.
-    if !matches!(expression, ast::Expr::Int { .. }) {
-        let span = ast::expr_span(expression);
-        let target = context
-            .typed
-            .promotion(span)
-            .or(contextual_type)
+    let span = ast::expr_span(expression);
+    // Numeric promotions must run the source-owned conversion, not fold raw target bits.
+    if !matches!(expression, ast::Expr::Int { .. }) && context.typed.promotion(span).is_none() {
+        let target = contextual_type
             .or_else(|| context.typed.expr_type(span))
             .cloned();
         if let (
@@ -11514,6 +11426,38 @@ fn value_ref_with_type_inner(
     }
     ty = ty.or_else(|| process_kind_type(&kind, context));
     let width = source_value_width(&kind, ty.as_ref(), process, context);
+    if let ProcessValueKind::Concat(parts) = &kind {
+        // Concatenation evaluates its parts at their own widths, then the
+        // consumer resizes the result; its target cannot enlarge a part.
+        let natural = parts.iter().try_fold(0u32, |width, part| {
+            let logic = process_value_type(*part, context)
+                .filter(|ty| matches!(ty, crate::types::Ty::Named(_)))
+                .and_then(|ty| process_type_key(&ty, context))
+                .is_some_and(|key| context.design.logic_encodings.contains_key(&key));
+            width.checked_add(if logic {
+                1
+            } else {
+                context.process_ir.values.get(part.0 as usize)?.bit_width?
+            })
+        });
+        if let Some(natural) = natural {
+            let target = ty.clone();
+            if let Some(crate::types::Ty::Array { len, .. }) = &mut ty {
+                *len = natural;
+            }
+            let value = push_value(span, ty, Some(natural), kind, context);
+            return match (target, width) {
+                (Some(target), Some(width)) if width != natural => push_converted(
+                    span,
+                    target,
+                    width,
+                    ProcessValueKind::RawResize { operand: value },
+                    context,
+                ),
+                _ => value,
+            };
+        }
+    }
     // The CFG under construction is not yet in process_ir.processes. Bind
     // local reads to its declaration now so nested fields/indices retain the
     // concrete layout during source lowering, not only after CFG publication.

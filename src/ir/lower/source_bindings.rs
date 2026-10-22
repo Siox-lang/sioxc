@@ -386,6 +386,16 @@ impl Lowering<'_> {
             return Some(layout);
         }
         match expression {
+            ast::Expr::Field { base, field, .. } => {
+                let layout = self.source_operand_layout(base, env)?;
+                let LayoutKind::Struct { fields, .. } = layout.kind else {
+                    return None;
+                };
+                fields
+                    .into_iter()
+                    .find(|candidate| candidate.name == field.text)
+                    .map(|field| field.layout)
+            }
             ast::Expr::SysAttr { base, attr, .. } if attr.text == "old" => {
                 self.source_operand_layout(base, env)
             }
@@ -395,11 +405,16 @@ impl Lowering<'_> {
                 }
                 // `unsigned(v)`: the argument's shape under the new family.
                 if let ast::Expr::Path(path) = callee.as_ref() {
-                    if let ([argument], [segment]) = (args.as_slice(), path.segments.as_slice()) {
-                        if self.array_families.contains(&segment.text) {
+                    if let ([argument], Some(family)) = (
+                        args.as_slice(),
+                        self.free_fns.struct_path_key(path).or_else(|| {
+                            (path.segments.len() == 1).then(|| path.segments[0].text.clone())
+                        }),
+                    ) {
+                        if self.array_families.contains(&family) {
                             let mut layout = self.source_operand_layout(argument, env)?;
-                            if let LayoutKind::Packed { family, .. } = &mut layout.kind {
-                                family.clone_from(&segment.text);
+                            if let LayoutKind::Packed { family: target, .. } = &mut layout.kind {
+                                *target = family;
                             }
                             return Some(layout);
                         }
@@ -410,8 +425,10 @@ impl Lowering<'_> {
                 // had no shape for `self[i]`.
                 if let ast::Expr::Index { base, index, .. } = callee.as_ref() {
                     if let ast::Expr::Path(path) = base.as_ref() {
-                        if let [segment] = path.segments.as_slice() {
-                            if self.array_families.contains(&segment.text) {
+                        if let Some(family) = self.free_fns.struct_path_key(path).or_else(|| {
+                            (path.segments.len() == 1).then(|| path.segments[0].text.clone())
+                        }) {
+                            if self.array_families.contains(&family) {
                                 let (left, right) = match index.as_ref() {
                                     ast::Expr::Range { lo, hi, .. } => (
                                         self.eval_const(lo, &self.cur_env)?,
@@ -419,7 +436,6 @@ impl Lowering<'_> {
                                     ),
                                     width => (self.eval_const(width, &self.cur_env)? - 1, 0),
                                 };
-                                let family = segment.text.clone();
                                 return Some(SourceLayout {
                                     span: ast::expr_span(expression),
                                     kind: LayoutKind::Packed {
@@ -514,6 +530,32 @@ impl Lowering<'_> {
             ast::Expr::Construct { ty: Some(ty), .. } => {
                 Some(self.source_layout(ty, &self.cur_env))
                     .filter(|layout| layout.bit_width().is_some())
+            }
+            ast::Expr::Binary {
+                op: ast::BinOp::Custom { symbol, .. },
+                lhs,
+                rhs,
+                ..
+            } => {
+                let receiver = if matches!(lhs.as_ref(), ast::Expr::Int { .. }) {
+                    rhs.as_ref()
+                } else {
+                    lhs.as_ref()
+                };
+                let family = self.operand_type_name(receiver)?;
+                let function = self.source_binary_operator(
+                    symbol,
+                    &family,
+                    self.operand_type_name(rhs).as_deref(),
+                    ast::expr_span(expression),
+                )?;
+                let declared = self.source_layout(function.ret.as_ref()?, &self.cur_env);
+                if declared.bit_width().is_some() {
+                    return Some(declared);
+                }
+                // A bare Self/family retains its receiver's format; only an
+                // explicit result constraint replaces that contextual shape.
+                self.source_operand_layout(receiver, env)
             }
             ast::Expr::Binary { lhs, .. } => self.source_operand_layout(lhs, env),
             ast::Expr::Unary { rhs, .. } => self.source_operand_layout(rhs, env),
@@ -928,11 +970,29 @@ impl Lowering<'_> {
                     else {
                         return None;
                     };
+                    let index_value = self.lower_scalar_env(index, env);
                     let indices = loop_range(range.left, range.right);
-                    let lowered = self.bind_source_expression(
-                        self.lower_scalar_env(index, env),
-                        ast::expr_span(index),
-                    );
+                    let nonnegative_word = self
+                        .constant_expr(&index_value)
+                        .is_some_and(|value| value >= 0)
+                        || (range.left.min(range.right) >= 0
+                            && matches!(self.expr_types.get(&ast::expr_span(index)),
+                            Some(crate::types::Ty::Array { family: Some(_), len, .. })
+                                if *len > 0 && *len < i64::BITS
+                                    && self.source_evaluated_width(&index_value) == Some(*len)));
+                    let lowered = if nonnegative_word {
+                        self.bind_source_expression(index_value, ast::expr_span(index))
+                    } else {
+                        // Kernel index arithmetic needs a word boundary: -1
+                        // must not evaluate in its literal operand's one bit.
+                        let index_value =
+                            self.source_slice(&index_value, 63, 0, ast::expr_span(index));
+                        self.bind_source_scalar(
+                            index_value,
+                            ast::expr_span(index),
+                            crate::types::Ty::Integer,
+                        )
+                    };
                     let span = ast::expr_span(index);
                     let (&first, rest) = indices.split_first()?;
                     let mut valid = self.source_binary(

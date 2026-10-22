@@ -1,9 +1,16 @@
 # Compiler foundations borrowed from rustc
 
-Status: **partially implemented; remaining work only**. Core loading, lang-item
-registration and library-declared built-in macros have landed. UI snapshots,
-structured diagnostics, shared constant evaluation, declaration-ID registries
+Status: **partially implemented**. Core loading, lang-item registration and
+library-declared built-in macros have landed. Diagnostic UI snapshots now have
+a runner and corpus fixtures; `--explain CODE` has embedded reference pages.
+See sections 1–2 for verification and usage.
+Structured diagnostics, shared constant evaluation, declaration-ID registries
 and residual name-based hook cleanup remain. Each part lands independently.
+
+Local integration acceptance (2026-10-22): both complete Rust suites, all
+23 DWARF tests per mode, strict frontend/all-target Clippy, both 255-program
+corpora and both 59-case UI suites pass. Fourteen ordinary/debug native VCD
+comparisons match. Full retained evidence is recorded in [chat.md](../../chat.md).
 
 siox is deliberately aligned with Rust at the language level. This proposal
 applies the same habit to the compiler: when sioxc has a structural problem,
@@ -31,7 +38,7 @@ produce. `compiletest` compiles it, normalizes paths, and diffs; `--bless`
 rewrites the snapshot after an intended change. Inline `//~ ERROR` annotations
 pin the important lines so a snapshot cannot drift silently.
 
-**Proposal.**
+**Implementation (2026-10-22).**
 
 - A `ui/` directory in `siox-tests`. Each `name.siox` is compiled with
   `sioxc --emit ir` (or `--test` when it names `// test`), and its rendered
@@ -43,13 +50,61 @@ pin the important lines so a snapshot cannot drift silently.
   snapshot matches.
 - `scripts/test-ui.sh <corpus>` runs them; `--bless` rewrites snapshots. CI and
   `ci-local.sh` run it after the corpus step.
-- Seed it with the negative probes this year's bug hunts produced, which today
-  live only in commit messages and scratch directories.
+- The initial 59 cases cover all 54 active error/warning codes, plus codeless
+  parser errors, warnings promoted to errors, primary/related spans, notes,
+  help and native test compilation. Auxiliary modules live in `ui/auxiliary/`
+  and are imported by cases rather than treated as independent tests.
 
-**Acceptance.** Every error and warning code has at least one UI test; a
-deliberately reworded message fails CI until blessed.
+The Bash entry point delegates to a dependency-free Python runner, following
+the existing artifact/VCD checkers. It builds the selected compiler before
+running cases and honors `SIOXC_FEATURES=bitpack`. Cases run the executable
+reported by Cargo, including custom target directories; Cargo is not rerun
+from fixture directories. `--compiler /path/to/sioxc`
+selects an already-built binary explicitly; the caller owns its freshness.
+Only stage-progress lines and checkout/temporary paths are normalized; messages,
+severity, line/column, snippets, labels, notes, help and exit status are retained.
+
+An annotation may omit its code for a codeless parser error. Multiple carets in
+`//~^^ ERROR E-P003` point two lines upward. Use an additional annotation line
+when one source line produces several diagnostics. Every error/warning must
+match an annotation exactly once. `--bless` validates annotations and the
+expected exit status first; a crash, timeout, extra diagnostic or wrong primary
+line cannot be blessed. A missing snapshot or empty suite fails normally.
+
+```bash
+bash scripts/test-ui.sh /path/to/siox-tests
+SIOXC_FEATURES=bitpack bash scripts/test-ui.sh /path/to/siox-tests
+bash scripts/test-ui.sh /path/to/siox-tests --bless
+python3 -m unittest discover -s scripts -p test_ui_test.py -v
+```
+
+On the shared development host, run builds and compiler tests through
+`bash scripts/guarded-run.sh COMMAND ...` as required by HOUSERULES.md. Review
+snapshot diffs after blessing; passing annotations do not approve a wording
+change automatically. UI tests complement runnable simulations, not replace them.
+
+**Coverage gate.** The runner reads `diag::codes` and requires every active
+error/warning code to appear in a passing UI case. Declarations documented as
+`Retired:` (currently the reserved scheduler code) are excluded, not silently
+reused. A new code therefore needs a new fixture. A deliberately reworded
+message fails comparison until blessed; a runner self-test verifies this.
 
 ## 2. Diagnostics: `--explain`, JSON, structured suggestions
+
+**Explanations implemented (2026-10-22); JSON and suggestions remain.**
+`sioxc --explain CODE` prints an embedded page without a source file, std tree
+or network. All declared codes, including the reserved retired scheduler code,
+have [reference pages](../diagnostics/README.md). Their lookup and the public
+`diag::codes::ALL` list come from the existing code declarations; a missing page
+fails compilation. Library tests check page identity and required sections, and
+CLI tests check every page, unknown codes, and source/explanation exclusivity.
+This does not change diagnostic rendering or language semantics.
+
+The catalogue follows rustc's documented
+[error-code registration model](https://rustc-dev-guide.rust-lang.org/diagnostics/error-codes.html):
+one registered identity requires its Markdown explanation. Siox retains its
+existing named constants and generates the lookup from those declarations,
+instead of maintaining a second list that can drift.
 
 **Problem.** Codes are stable but explain nothing beyond the one-line message.
 Output is human text only, so the language server and editors re-parse it.
@@ -65,10 +120,8 @@ which `cargo fix` applies.
 
 **Proposal.**
 
-- `docs/diagnostics/E-P014.md` etc., one page per code: what it means, a
-  failing example, the fix. `sioxc --explain E-P014` prints it (the pages are
-  `include_str!`-ed, so the binary is self-contained). A test fails when a code
-  in `diag::codes` has no page.
+- Implemented: `docs/diagnostics/E-P014.md` etc., one embedded page per code:
+  what it means, an example and the fix. The binary is self-contained.
 - `--error-format=json`: one object per diagnostic with `code`, `severity`,
   `message`, primary and labelled spans (file, byte range, line/column),
   `notes`, `help`, and suggestions.
@@ -182,10 +235,10 @@ behavior; unrelated same-leaf-name user types cannot acquire its compiler role.
 
 ## Order
 
-1. **UI tests** first. They are the safety net for everything after, and they
-   need no compiler change.
-2. **Diagnostics** (`--explain`, JSON). Small and independent. Suggestions
-   come with the next syntax migration that needs them.
+1. **UI tests** first: implemented runner, full active-code fixtures and CI/local
+   wiring. Preserve the coverage gate as diagnostics evolve.
+2. **Diagnostics**: `--explain` is implemented; JSON and structured suggestions
+   remain. Suggestions come with the next syntax migration that needs them.
 3. **One constant evaluator.** Medium-sized, fully covered by UI tests and the
    corpus once (1) exists.
 4. **The resolved tree.** The largest part, done registry by registry; it
@@ -193,11 +246,9 @@ behavior; unrelated same-leaf-name user types cannot acquire its compiler role.
 5. **Residual hook cleanup.** Use the existing lang table and resolved identities;
    do not reimplement core loading or macro declarations.
 
-## Open questions
+## Decisions and open questions
 
-- Should UI snapshots live in `siox-tests` (with the corpus) or in this repo
-  (with the compiler that produces them)? rustc keeps them with the compiler.
-  sioxc keeps programs in `siox-tests`, but diagnostics are compiler output,
-  not program behaviour.
+- UI programs and snapshots live in `siox-tests/ui/`, consistent with the house
+  rule for source programs. The runner and its self-tests live with the compiler.
 - Does `--fix` belong in `sioxc`, or in the future project tool, the way
   `cargo fix` wraps `rustc`?

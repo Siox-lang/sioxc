@@ -346,11 +346,30 @@ impl DiagnosticSink {
     }
 }
 
+// Keep code identities and embedded explanations in one catalogue.
+macro_rules! diagnostic_codes {
+    ($( $(#[$doc:meta])* pub const $name:ident: &str = $code:literal; )*) => {
+        $( $(#[$doc])* pub const $name: &str = $code; )*
+
+        /// Every declared diagnostic code, including reserved retired codes.
+        pub const ALL: &[&str] = &[$($code),*];
+
+        /// The self-contained reference page for a stable diagnostic code.
+        pub fn explanation(code: &str) -> Option<&'static str> {
+            match code {
+                $($code => Some(include_str!(concat!("../docs/diagnostics/", $code, ".md"))),)*
+                _ => None,
+            }
+        }
+    };
+}
+
 /// Stable diagnostic codes. Filled in as each stage lands its checks.
 ///
 /// Spec Stage 10 requires every diagnostic to carry a code, a main span, a
 /// clear message, optional help, and related spans.
 pub mod codes {
+    diagnostic_codes! {
     // Errors
     /// A name that resolution could not find in any scope in view.
     pub const UNKNOWN_NAME: &str = "E-P001";
@@ -504,12 +523,10 @@ pub mod codes {
     /// A match that does not cover every value of the
     /// scrutinee's type and has no wildcard arm.
     pub const NON_EXHAUSTIVE_MATCH: &str = "W-P007";
-    /// A comparison against a metavalue that cannot behave
-    /// as written — `x == 'X'` is never true in `std_logic_1164`, which
-    /// defines no ordinary equality against an unknown.
+    /// An enum-valued operand compared to a bare integer literal, which
+    /// compares its discriminant rather than a source value/variant literal.
     pub const SUSPICIOUS_LOGIC_COMPARE: &str = "W-P008";
-    /// A reset branch that does not put the design in a known
-    /// state, such as one leaving registers undriven.
+    /// A reset checked through an edge helper instead of its asserted level.
     pub const SUSPICIOUS_RESET: &str = "W-P009";
     /// A combinational cycle with no register in it, which has
     /// no settled value and makes the delta-cycle loop oscillate.
@@ -538,11 +555,29 @@ pub mod codes {
     /// A loop in hardware whose bound is not a constant: it simulates as a
     /// procedural process, but has no RTL form.
     pub const NON_CONSTANT_LOOP_BOUND: &str = "W-P019";
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_code_has_a_unique_self_contained_explanation() {
+        let mut seen = std::collections::HashSet::new();
+        for code in codes::ALL {
+            assert!(seen.insert(code), "duplicate diagnostic code {code}");
+            let page = codes::explanation(code).expect("every code has an explanation");
+            assert!(
+                page.starts_with(&format!("# {code}:")),
+                "wrong page for {code}"
+            );
+            assert!(page.contains("## Example"), "missing example for {code}");
+            assert!(page.contains("## How to fix"), "missing fix for {code}");
+        }
+        assert!(codes::explanation("E-P000").is_none());
+        assert!(codes::explanation("").is_none());
+    }
 
     /// The caret row must line up with the text row, including the gutter that
     /// carries the line number. Both the compiler's diagnostics and a runtime
