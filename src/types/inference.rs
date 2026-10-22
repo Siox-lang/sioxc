@@ -476,7 +476,10 @@ impl<'a> Checker<'a> {
                         Expr::Path(path) => self.path_key(path),
                         _ => None,
                     };
-                    let w = signed_lit(index).unwrap_or(0).max(0) as u32;
+                    // `unsigned[WIDTH](x)` with a named constant is as
+                    // sized as `unsigned[16](x)`; unsized, it fit any width
+                    // (#240).
+                    let w = self.constant_value(index).unwrap_or(0).max(0) as u32;
                     match head.filter(|key| self.array_families.contains(key)) {
                         Some(head) => Ty::Array {
                             elem: Box::new(self.array_element_ty(&head)),
@@ -506,7 +509,12 @@ impl<'a> Checker<'a> {
                     "Char" => self.ty_from_head("Char"),
                     // resize keeps the argument's family at the new width.
                     "resize" => {
-                        let w = args.get(1).and_then(signed_lit).unwrap_or(0).max(0) as u32;
+                        // A named width too: `resize(v, WIDTH)` (#239).
+                        let w = args
+                            .get(1)
+                            .and_then(|width| self.constant_value(width))
+                            .unwrap_or(0)
+                            .max(0) as u32;
                         let family = match args.first().map(|a| self.type_of(a, sym)) {
                             Some(Ty::Array { family, .. }) => family,
                             _ => None,

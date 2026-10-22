@@ -608,6 +608,83 @@ impl<'a> Checker<'a> {
                 );
             }
         }
+        self.check_instantiation(function, &generics, &params, args, sym);
+    }
+
+    /// Check a generic function's body for this call's type arguments: the
+    /// spec checks "each call", but no call did, so `x.no_such_method()` in a
+    /// generic body failed only in lowering (#241). Each distinct set of
+    /// arguments is checked once; the tables lowering reads are left as the
+    /// abstract body had them.
+    fn check_instantiation(
+        &mut self,
+        function: DefId,
+        generics: &[Param],
+        params: &[Option<Type>],
+        args: &[Expr],
+        sym: &HashMap<String, Ty>,
+    ) {
+        let Some(declaration) = self.generic_bodies.get(&function).copied() else {
+            return;
+        };
+        let Some(body) = declaration.body.as_ref() else {
+            return;
+        };
+        if self.instantiating.borrow().contains(&function) {
+            return;
+        }
+        let mut bindings = HashMap::new();
+        for gp in generics {
+            let value_parameter = gp
+                .bound
+                .as_ref()
+                .and_then(type_head_name)
+                .is_some_and(|head| head == "integer");
+            if value_parameter {
+                continue;
+            }
+            let bound = params.iter().zip(args).find_map(|(declared, argument)| {
+                Self::bind_type_param(
+                    declared.as_ref()?,
+                    &self.type_of(argument, sym),
+                    &gp.name.text,
+                )
+            });
+            match bound {
+                Some(ty) if !matches!(ty, Ty::Error) => {
+                    bindings.insert(gp.name.text.clone(), ty);
+                }
+                _ => return,
+            }
+        }
+        if bindings.is_empty() {
+            return;
+        }
+        let mut shown: Vec<String> = bindings
+            .iter()
+            .map(|(name, ty)| format!("{name}={}", self.ty_display(ty)))
+            .collect();
+        shown.sort();
+        if !self
+            .instantiated
+            .borrow_mut()
+            .insert(format!("{function:?}:{}", shown.join(",")))
+        {
+            return;
+        }
+        let expr_types = self.expr_types.borrow().clone();
+        let promotions = self.promotions.clone();
+        let type_attr_reads = self.type_attr_reads.clone();
+        let covered = self.covered_tuple_matches.clone();
+        let saved = self.type_bindings.replace(bindings);
+        self.instantiating.borrow_mut().push(function);
+        self.check_function_block(declaration, body, None, false);
+        self.instantiating.borrow_mut().pop();
+        self.type_bindings.replace(saved);
+        self.expr_types.replace(expr_types);
+        self.promotions = promotions;
+        self.type_attr_reads = type_attr_reads;
+        self.covered_tuple_matches = covered;
     }
 
     /// Whether a type is exactly the bare parameter `name`, rather than
