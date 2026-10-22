@@ -46,7 +46,7 @@ step() {
     return 1
 }
 step "fmt"                       "${cargo[@]}" fmt --all --check
-step "diagnostic runner"         python3 -m unittest discover -s "$(dirname "$0")" -p test_ui_test.py -v
+step "diagnostic runners"        python3 -m unittest discover -s "$(dirname "$0")" -p '*_test.py' -v
 step "Phase 1 example artifacts" python3 "$(dirname "$0")/check-phase1-examples.py" "$corpus"
 step "check (frontend only)"     "${cargo[@]}" check --locked --no-default-features --lib
 step "clippy (frontend only)"    "${cargo[@]}" clippy --locked --no-default-features --lib -- -D warnings
@@ -61,10 +61,13 @@ step "clippy (all targets)"      "${cargo[@]}" clippy --locked --all-targets --a
 if [ "$built" = 1 ]; then
     step "corpus"                bash "$(dirname "$0")/test-corpus.sh" "$corpus"
     step "diagnostic snapshots"  bash "$(dirname "$0")/test-ui.sh" "$corpus"
+    step "JSON diagnostics"      bash "$(dirname "$0")/test-json.sh" "$corpus"
     SIOXC_FEATURES=bitpack \
     step "corpus (bitpack)"      bash "$(dirname "$0")/test-corpus.sh" "$corpus"
     SIOXC_FEATURES=bitpack \
     step "diagnostic snapshots (bitpack)" bash "$(dirname "$0")/test-ui.sh" "$corpus"
+    SIOXC_FEATURES=bitpack \
+    step "JSON diagnostics (bitpack)" bash "$(dirname "$0")/test-json.sh" "$corpus"
 else
     printf '%-44s %s\n' "corpus" "SKIPPED (build failed; the binary on disk is stale)"
 fi

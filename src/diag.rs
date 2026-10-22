@@ -9,6 +9,7 @@
 
 use std::ops::Range;
 
+mod json;
 pub mod lints;
 
 /// Identifies a single loaded source file within a [`SourceMap`].
@@ -170,6 +171,49 @@ pub enum Severity {
     Help,
 }
 
+impl Severity {
+    /// Stable spelling shared by text and JSON diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warning => "warning",
+            Self::Note => "note",
+            Self::Help => "help",
+        }
+    }
+}
+
+/// Whether a tool can apply an edit without asking the user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Applicability {
+    /// Preserves the intended meaning and contains no placeholders.
+    MachineApplicable,
+    /// Plausible, but needs human review.
+    MaybeIncorrect,
+    /// The user must fill in part of the replacement.
+    HasPlaceholders,
+    /// The producer cannot classify its confidence.
+    Unspecified,
+}
+
+/// One replacement against the original source, using half-open byte offsets.
+#[derive(Clone, Debug)]
+pub struct SuggestionEdit {
+    /// Source to replace; an empty span inserts at that offset.
+    pub span: Span,
+    /// Replacement text; an empty string deletes the range.
+    pub replacement: String,
+}
+
+/// An atomic fix: every edit applies together, never just a subset.
+#[derive(Clone, Debug)]
+pub struct Suggestion {
+    /// Confidence in the entire fix.
+    pub applicability: Applicability,
+    /// Non-overlapping replacements against one unchanged source snapshot.
+    pub edits: Vec<SuggestionEdit>,
+}
+
 /// A secondary span attached to a diagnostic ("declared here", etc.).
 #[derive(Clone, Debug)]
 pub struct Label {
@@ -202,6 +246,8 @@ pub struct Diagnostic {
     /// Supporting facts, rendered as `= note:` lines before the help, such
     /// as where a lint's level was set.
     pub notes: Vec<String>,
+    /// Structured fixes for tools; `help` retains their human-readable advice.
+    pub suggestions: Vec<Suggestion>,
 }
 
 impl Diagnostic {
@@ -216,6 +262,7 @@ impl Diagnostic {
             labels: Vec::new(),
             help: None,
             notes: Vec::new(),
+            suggestions: Vec::new(),
         }
     }
 
@@ -257,6 +304,37 @@ impl Diagnostic {
     /// Attach a supporting note.
     pub fn note(mut self, note: impl Into<String>) -> Self {
         self.notes.push(note.into());
+        self
+    }
+
+    /// Suggest one replacement. This never modifies source files.
+    pub fn suggest(
+        self,
+        span: Span,
+        replacement: impl Into<String>,
+        applicability: Applicability,
+    ) -> Self {
+        self.suggest_edits(
+            vec![SuggestionEdit {
+                span,
+                replacement: replacement.into(),
+            }],
+            applicability,
+        )
+    }
+
+    /// Suggest an atomic multipart fix, such as moving metadata inside an impl.
+    pub fn suggest_edits(
+        mut self,
+        edits: Vec<SuggestionEdit>,
+        applicability: Applicability,
+    ) -> Self {
+        if !edits.is_empty() {
+            self.suggestions.push(Suggestion {
+                applicability,
+                edits,
+            });
+        }
         self
     }
 }

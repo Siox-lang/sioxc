@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 
-use crate::diag::{Diagnostic, DiagnosticSink, FileId, Severity, SourceMap};
+use crate::diag::{Diagnostic, DiagnosticSink, FileId, SourceMap};
 use crate::elab::Hierarchy;
 use crate::ir::Design;
 use crate::resolve::{DefId, Resolved};
@@ -347,12 +347,7 @@ impl Compilation {
     pub fn render_diagnostics(&self) -> String {
         let mut out = String::new();
         for diagnostic in self.diagnostics() {
-            let severity = match diagnostic.severity {
-                Severity::Error => "error",
-                Severity::Warning => "warning",
-                Severity::Note => "note",
-                Severity::Help => "help",
-            };
+            let severity = diagnostic.severity.as_str();
             match diagnostic.code {
                 Some(code) => {
                     let _ = writeln!(out, "{severity}[{code}]: {}", diagnostic.message);
@@ -383,6 +378,20 @@ impl Compilation {
             if let Some(help) = &diagnostic.help {
                 let _ = writeln!(out, "   = help: {help}");
             }
+        }
+        out
+    }
+
+    /// Newline-delimited JSON diagnostics, including non-language failures.
+    /// Artifacts and progress messages are not part of this stream.
+    pub fn render_diagnostics_json(&self) -> String {
+        let mut out = String::new();
+        for diagnostic in self.diagnostics() {
+            let _ = writeln!(out, "{}", diagnostic.render_json(&self.sources));
+        }
+        if let Some(failure) = &self.failure {
+            let diagnostic = Diagnostic::error(failure.to_string());
+            let _ = writeln!(out, "{}", diagnostic.render_json(&self.sources));
         }
         out
     }

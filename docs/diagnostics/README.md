@@ -5,6 +5,8 @@ std. The same pages are embedded in the compiler and available through
 `siox::diag::codes::explanation(code)`; no network or installed source tree is
 needed at runtime. Unknown codes return no page and the CLI exits unsuccessfully.
 
+For machine consumers, see the [JSON diagnostics and structured edit format](JSON.md).
+
 Every declaration in `diag::codes` generates its explanation lookup and the
 `ALL` catalogue. Adding a code without its Markdown page fails the build.
 Pages include an example and a fix, checked by the library tests. Examples

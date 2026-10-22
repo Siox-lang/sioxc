@@ -137,6 +137,30 @@ def run_case(source, command, std, bless):
     return {key[1] for key in actual if key[1]}
 
 
+def compiler_command(compiler=None):
+    """Build once and use Cargo's exact executable, shared by diagnostic gates."""
+    if compiler:
+        return [str(compiler.resolve())]
+    cargo_args = ["--quiet", "--locked", "--manifest-path", str(ROOT / "Cargo.toml"),
+                  "--bin", "sioxc"]
+    if features := os.environ.get("SIOXC_FEATURES"):
+        cargo_args += ["--features", features]
+    result = subprocess.run(
+        ["cargo", "build", *cargo_args, "--message-format=json-render-diagnostics"],
+        cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True, encoding="utf-8",
+    )
+    artifacts = (json.loads(line) for line in result.stdout.splitlines())
+    executable = next((
+        artifact["executable"] for artifact in artifacts
+        if artifact.get("reason") == "compiler-artifact"
+        and artifact.get("target", {}).get("name") == "sioxc"
+        and artifact.get("executable")
+    ), None)
+    if executable is None:
+        raise ValueError("Cargo did not report the sioxc executable")
+    return [executable]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("corpus", nargs="?", type=Path, default=ROOT.parent / "siox-tests")
@@ -146,31 +170,11 @@ def main():
     cases = sorted((options.corpus / "ui").glob("*.siox"))
     if not cases:
         parser.error(f"no UI cases in {options.corpus / 'ui'}")
-    if options.compiler:
-        command = [str(options.compiler.resolve())]
-    else:
-        cargo_args = ["--quiet", "--locked", "--manifest-path", str(ROOT / "Cargo.toml"),
-                      "--bin", "sioxc"]
-        if features := os.environ.get("SIOXC_FEATURES"):
-            cargo_args += ["--features", features]
-        try:
-            result = subprocess.run(
-                ["cargo", "build", *cargo_args, "--message-format=json-render-diagnostics"],
-                cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True, encoding="utf-8",
-            )
-            artifacts = (json.loads(line) for line in result.stdout.splitlines())
-            executable = next((
-                artifact["executable"] for artifact in artifacts
-                if artifact.get("reason") == "compiler-artifact"
-                and artifact.get("target", {}).get("name") == "sioxc"
-                and artifact.get("executable")
-            ), None)
-            if executable is None:
-                raise ValueError("Cargo did not report the sioxc executable")
-        except (OSError, ValueError, subprocess.CalledProcessError) as error:
-            print(f"cannot build compiler: {error}", file=sys.stderr)
-            return 1
-        command = [executable]
+    try:
+        command = compiler_command(options.compiler)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"cannot build compiler: {error}", file=sys.stderr)
+        return 1
     failures = 0
     covered = set()
     for case in cases:

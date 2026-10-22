@@ -3,14 +3,16 @@
 Status: **partially implemented**. Core loading, lang-item registration and
 library-declared built-in macros have landed. Diagnostic UI snapshots now have
 a runner and corpus fixtures; `--explain CODE` has embedded reference pages.
-See sections 1–2 for verification and usage.
-Structured diagnostics, shared constant evaluation, declaration-ID registries
+See sections 1–2 for verification and usage. JSON diagnostics and atomic
+migration suggestions are implemented. Shared constant evaluation, declaration-ID registries
 and residual name-based hook cleanup remain. Each part lands independently.
 
-Local integration acceptance (2026-10-22): both complete Rust suites, all
-23 DWARF tests per mode, strict frontend/all-target Clippy, both 255-program
-corpora and both 59-case UI suites pass. Fourteen ordinary/debug native VCD
-comparisons match. Full retained evidence is recorded in [chat.md](../../chat.md).
+Local acceptance (2026-10-22): both complete Rust suites, all 23 DWARF tests
+per mode, 516 frontend-only tests, strict Clippy and both 255-program corpora
+pass. Both modes pass 61 human UI and 61 JSON/schema cases, cover all 54 active
+codes and apply/recompile both migration fixtures. The earlier compiler-fix
+integration also matched 14 ordinary/debug native VCD comparisons. Retained
+evidence and the fixture-only correction are recorded in [chat.md](../../chat.md).
 
 siox is deliberately aligned with Rust at the language level. This proposal
 applies the same habit to the compiler: when sioxc has a structural problem,
@@ -91,7 +93,7 @@ message fails comparison until blessed; a runner self-test verifies this.
 
 ## 2. Diagnostics: `--explain`, JSON, structured suggestions
 
-**Explanations implemented (2026-10-22); JSON and suggestions remain.**
+**Explanations, JSON and initial structured suggestions implemented (2026-10-22).**
 `sioxc --explain CODE` prints an embedded page without a source file, std tree
 or network. All declared codes, including the reserved retired scheduler code,
 have [reference pages](../diagnostics/README.md). Their lookup and the public
@@ -99,6 +101,20 @@ have [reference pages](../diagnostics/README.md). Their lookup and the public
 fails compilation. Library tests check page identity and required sections, and
 CLI tests check every page, unknown codes, and source/explanation exclusivity.
 This does not change diagnostic rendering or language semantics.
+
+`--error-format=json` now exposes the existing sink through newline-delimited
+JSON on stderr, including labels, notes/help, source byte ranges and Unicode
+scalar columns. It suppresses plain progress/status messages without changing
+the pipeline or artifact production. Input/selection/backend failures and
+early compiler-option errors are structured too; Clap usage/help remain text.
+See the [wire format and consumer contract](../diagnostics/JSON.md).
+
+`Diagnostic::suggest` and `suggest_edits` carry applicability-tagged, atomic
+fixes. Label and metadata migrations are the first producers; moving metadata
+inside an impl is one multipart group, not independently applicable deletion
+and insertion suggestions. Human help is unchanged. Dedicated corpus fixtures
+apply the emitted fixes and recompile; recovered/comment-bearing metadata is
+not automatically applicable. JSON/schema tests exercise every active code.
 
 The catalogue follows rustc's documented
 [error-code registration model](https://rustc-dev-guide.rust-lang.org/diagnostics/error-codes.html):
@@ -122,10 +138,10 @@ which `cargo fix` applies.
 
 - Implemented: `docs/diagnostics/E-P014.md` etc., one embedded page per code:
   what it means, an example and the fix. The binary is self-contained.
-- `--error-format=json`: one object per diagnostic with `code`, `severity`,
+- Implemented: `--error-format=json`, one object per diagnostic with `code`, `severity`,
   `message`, primary and labelled spans (file, byte range, line/column),
   `notes`, `help`, and suggestions.
-- `Diagnostic::suggest(span, replacement, Applicability)` beside `.help()`.
+- Implemented: `Diagnostic::suggest(span, replacement, Applicability)` beside `.help()`.
   Migration diagnostics are the first users, since their help text is already
   a replacement.
 - Later, `sioxc --fix file.siox` applies the machine-applicable suggestions in
@@ -237,8 +253,9 @@ behavior; unrelated same-leaf-name user types cannot acquire its compiler role.
 
 1. **UI tests** first: implemented runner, full active-code fixtures and CI/local
    wiring. Preserve the coverage gate as diagnostics evolve.
-2. **Diagnostics**: `--explain` is implemented; JSON and structured suggestions
-   remain. Suggestions come with the next syntax migration that needs them.
+2. **Diagnostics**: explanations, JSON and atomic suggestions for the existing
+   label/attribute migrations are implemented. Add suggestions with future
+   migration diagnostics; automatic source rewriting remains deferred.
 3. **One constant evaluator.** Medium-sized, fully covered by UI tests and the
    corpus once (1) exists.
 4. **The resolved tree.** The largest part, done registry by registry; it

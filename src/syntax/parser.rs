@@ -15,7 +15,7 @@
 //!   text); a dedicated literal node can be added when a later stage needs it.
 
 use crate::diag::lints::{Level, LintDirective};
-use crate::diag::{Diagnostic, DiagnosticSink, Span};
+use crate::diag::{Applicability, Diagnostic, DiagnosticSink, Span, SuggestionEdit};
 use crate::syntax::ast::*;
 use crate::syntax::token::{Token, TokenKind};
 use std::collections::HashMap;
@@ -664,9 +664,13 @@ impl<'a> Parser<'a> {
             TokenKind::Entity => {
                 let entity = self.parse_entity(attrs, is_pub, is_extern);
                 let name = entity.name.text.clone();
-                self.reject_metadata(&entity.attrs, |binding| {
-                    format!("after the entity, write `{}`", binding(Some(&name)))
-                });
+                let after = Span::new(entity.span.file, entity.span.end..entity.span.end);
+                self.reject_metadata(
+                    &entity.attrs,
+                    Some(&name),
+                    Some(after),
+                    "after the entity, write",
+                );
                 Item::Entity(entity)
             }
             TokenKind::Impl => {
@@ -676,11 +680,7 @@ impl<'a> Parser<'a> {
                         "an `impl` block has no visibility; mark inherent methods `pub` individually",
                     );
                 }
-                let implementation = self.parse_impl(attrs);
-                self.reject_metadata(&implementation.attrs, |binding| {
-                    format!("inside the impl, write `{}`", binding(None))
-                });
-                Item::Impl(implementation)
+                Item::Impl(self.parse_impl(attrs))
             }
             TokenKind::Trait => Item::Trait(self.parse_trait(is_pub)),
             TokenKind::Macro => Item::Macro(self.parse_macro(is_pub)),
@@ -813,7 +813,9 @@ impl<'a> Parser<'a> {
     fn reject_metadata(
         &mut self,
         attrs: &[Attr],
-        help: impl Fn(&dyn Fn(Option<&str>) -> String) -> String,
+        object: Option<&str>,
+        insert_at: Option<Span>,
+        hint: &str,
     ) {
         for attr in attrs {
             let name = attr.name.segments.last().map_or("", |s| s.text.as_str());
@@ -831,18 +833,72 @@ impl<'a> Parser<'a> {
                 .value
                 .as_ref()
                 .map_or_else(|| "true".to_string(), crate::syntax::pretty::expr);
-            let binding = |object: Option<&str>| match object {
+            let binding = match object {
                 Some(object) => format!("attr {path} for {object} = {value};"),
                 None => format!("attr {path} = {value};"),
             };
-            self.sink.emit(
-                Diagnostic::error(format!(
-                    "`#[{path}]` is metadata; `#[...]` is only for compiler directives"
-                ))
-                .with_code(crate::diag::codes::METADATA_IN_DIRECTIVE)
-                .at(attr.span)
-                .help(help(&binding)),
-            );
+            let mut diagnostic = Diagnostic::error(format!(
+                "`#[{path}]` is metadata; `#[...]` is only for compiler directives"
+            ))
+            .with_code(crate::diag::codes::METADATA_IN_DIRECTIVE)
+            .at(attr.span)
+            .help(format!("{hint} `{binding}`"));
+            if let Some(original) = self
+                .src
+                .get(attr.span.start as usize..attr.span.end as usize)
+                .filter(|text| {
+                    self.texts.is_none() && text.starts_with("#[") && text.ends_with(']')
+                })
+            {
+                // Copy value spelling rather than reprinting user expressions.
+                let value = attr.value.as_ref().map_or(Some("true"), |_| {
+                    // Expression spans omit grouping parentheses; use the whole value tail.
+                    (attr.name.span.file == attr.span.file)
+                        .then(|| {
+                            self.src
+                                .get(attr.name.span.end as usize..attr.span.end as usize - 1)
+                        })
+                        .flatten()?
+                        .trim_start()
+                        .strip_prefix('=')
+                        .map(str::trim_start)
+                });
+                if let Some(value) = value {
+                    let replacement = match object {
+                        Some(object) => format!("attr {path} for {object} = {value};"),
+                        None => format!("attr {path} = {value};"),
+                    };
+                    // Comments in the old wrapper may need to be relocated by hand.
+                    let recovered = self.sink.diagnostics().iter().any(|diagnostic| {
+                        diagnostic.severity == crate::diag::Severity::Error
+                            && diagnostic.code != Some(crate::diag::codes::METADATA_IN_DIRECTIVE)
+                    });
+                    let applicability =
+                        if recovered || original.contains("//") || original.contains("/*") {
+                            Applicability::MaybeIncorrect
+                        } else {
+                            Applicability::MachineApplicable
+                        };
+                    if let Some(at) = insert_at {
+                        diagnostic = diagnostic.suggest_edits(
+                            vec![
+                                SuggestionEdit {
+                                    span: attr.span,
+                                    replacement: String::new(),
+                                },
+                                SuggestionEdit {
+                                    span: at,
+                                    replacement: format!("\n{replacement}\n"),
+                                },
+                            ],
+                            applicability,
+                        );
+                    } else if object.is_some() {
+                        diagnostic = diagnostic.suggest(attr.span, replacement, applicability);
+                    }
+                }
+            }
+            self.sink.emit(diagnostic);
         }
     }
 
@@ -1476,7 +1532,12 @@ impl<'a> Parser<'a> {
             self.bump();
             let trait_ = Some(head_path);
             let target = self.parse_type();
+            let inside = self.at(TokenKind::LBrace).then(|| {
+                let brace = self.span();
+                Span::new(brace.file, brace.end..brace.end)
+            });
             let items = self.parse_impl_body();
+            self.reject_metadata(&attrs, None, inside, "inside the impl, write");
             return ImplDecl {
                 attrs,
                 params,
@@ -1518,7 +1579,12 @@ impl<'a> Parser<'a> {
                 span: head_span.to(self.prev_span()),
             };
         }
+        let inside = self.at(TokenKind::LBrace).then(|| {
+            let brace = self.span();
+            Span::new(brace.file, brace.end..brace.end)
+        });
         let items = self.parse_impl_body();
+        self.reject_metadata(&attrs, None, inside, "inside the impl, write");
         ImplDecl {
             attrs,
             params,
@@ -1615,9 +1681,7 @@ impl<'a> Parser<'a> {
                 let name = self.parse_ident();
                 let declaration = self.parse_let_rest(attrs, start, name);
                 let name = declaration.name.text.clone();
-                self.reject_metadata(&declaration.attrs, |binding| {
-                    format!("write `{}`", binding(Some(&name)))
-                });
+                self.reject_metadata(&declaration.attrs, Some(&name), None, "write");
                 Some(ImplItem::Let(declaration))
             }
             TokenKind::Fn => {
@@ -1630,17 +1694,28 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Process => {
                 let start = label.as_ref().map_or(self.span(), |label| label.span);
-                self.bump();
+                let keyword = self.bump().span;
                 let mut label = label;
                 if self.at(TokenKind::Ident) {
                     // The removed `process update { ... }` spelling: say what
                     // replaces it and keep the name as the label.
                     let old = self.parse_ident();
-                    self.sink.emit(
+                    let mut diagnostic =
                         Diagnostic::error("a process name goes in front, as a label")
                             .at(old.span)
-                            .help(format!("write `{}: process {{ ... }}`", old.text)),
-                    );
+                            .help(format!("write `{}: process {{ ... }}`", old.text));
+                    if label.is_none() && self.texts.is_none() {
+                        if let Some(between) =
+                            self.src.get(keyword.end as usize..old.span.start as usize)
+                        {
+                            diagnostic = diagnostic.suggest(
+                                keyword.to(old.span),
+                                format!("{}:{between}process", old.text),
+                                Applicability::MachineApplicable,
+                            );
+                        }
+                    }
+                    self.sink.emit(diagnostic);
                     label.get_or_insert(old);
                 }
                 self.sequential += 1;
@@ -5458,6 +5533,66 @@ mod tests {
         );
         let (m, _) = parse(src);
         assert!(matches!(&m.items[1], Item::Entity(e) if e.attrs.len() == 1));
+    }
+
+    #[test]
+    fn migration_edits_reparse_and_preserve_process_comments_and_attribute_values() {
+        for source in [
+            "module m; entity E {} impl E { process /* clock domain */ update {} }",
+            "module m; #[one = 1_000] #[two = 2 + 3] entity E {}",
+            "module m; #[one = (1_000 + 1) * 2] entity E {}",
+            "module m; entity E {} #[one = 1_000] #[two = 2 + 3] impl E {}",
+            "module m; entity E {} impl E { #[one = 1_000] let x: integer; }",
+        ] {
+            let diags = diagnostics(source);
+            assert!(!diags.is_empty());
+            let mut edits = Vec::new();
+            for diagnostic in &diags {
+                assert_eq!(diagnostic.suggestions.len(), 1, "{diagnostic:?}");
+                let suggestion = &diagnostic.suggestions[0];
+                assert_eq!(suggestion.applicability, Applicability::MachineApplicable);
+                edits.extend(suggestion.edits.iter());
+            }
+            // Apply against original offsets; reverse ties preserve insertion order.
+            let mut indexed: Vec<_> = edits.into_iter().enumerate().collect();
+            indexed.sort_by_key(|(index, edit)| (edit.span.start, *index));
+            let mut fixed = source.to_string();
+            for (_, edit) in indexed.into_iter().rev() {
+                fixed.replace_range(
+                    edit.span.start as usize..edit.span.end as usize,
+                    &edit.replacement,
+                );
+            }
+            assert!(diagnostics(&fixed).is_empty(), "{fixed}");
+            if source.contains("clock domain") {
+                assert!(fixed.contains("/* clock domain */"));
+            }
+            if source.contains("1_000") {
+                assert!(fixed.contains("1_000"));
+            }
+        }
+    }
+
+    #[test]
+    fn recovered_or_commented_metadata_is_not_an_automatic_fix() {
+        for source in [
+            "module m; #[keep /* explanation */] entity E {}",
+            "module m; #[keep] entity E { broken }",
+        ] {
+            let diagnostics = diagnostics(source);
+            let diagnostic = diagnostics
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic.code == Some(crate::diag::codes::METADATA_IN_DIRECTIVE)
+                })
+                .unwrap();
+            assert!(
+                diagnostic.suggestions.iter().all(|suggestion| {
+                    suggestion.applicability != Applicability::MachineApplicable
+                }),
+                "{diagnostic:?}"
+            );
+        }
     }
 
     /// Lint directives govern the item, member or statement they precede;

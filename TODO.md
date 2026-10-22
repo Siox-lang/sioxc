@@ -48,12 +48,16 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
   token spans so diagnostics in a macro body identify the invocation that
   produced them, including nested expansions. Macro syntax, hygiene,
   repetition, built-ins and runtime call-site reporting are already implemented.
-- 🟡 **Compiler foundations followups.** Add JSON diagnostics/structured
-  suggestions, a shared constant evaluator and declaration-ID registries. Hook
+- 🟡 **Compiler foundations followups.** Add a shared constant evaluator and
+  declaration-ID registries. Hook
   lang-item registration and core loading are implemented; diagnostic UI
   snapshots cover all active codes, and `--explain CODE` has embedded pages for
-  the complete catalogue. Residual leaf-name lookups still need removal. See
+  the complete catalogue. JSON diagnostics and atomic structured migration edits
+  are implemented; residual leaf-name lookups still need removal. See
   [the remaining proposal](docs/proposals/compiler-foundations.md).
+  Include metadata attribute-value validation in constant-evaluation cleanup:
+  integer metadata currently accepts only literal AST nodes, rejecting
+  arithmetic constant expressions as `E-P007`.
 - 🔴 **Incremental/query interface.** Add demand-driven caching only when the
   LSP or future project tool needs incremental multi-file recomputation; keep
   the current explicit phase products as the public boundary.

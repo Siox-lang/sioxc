@@ -23,6 +23,9 @@ struct Cli {
     /// Explain a diagnostic code without compiling a source file.
     #[arg(long, value_name = "CODE")]
     explain: Option<String>,
+    /// Diagnostic encoding on stderr; artifacts are unchanged.
+    #[arg(long, value_enum, default_value_t = ErrorFormat::Human)]
+    error_format: ErrorFormat,
     /// The root entity to build (default: the sole uninstantiated entity).
     #[arg(long)]
     top: Option<String>,
@@ -96,6 +99,23 @@ enum CliEmit {
     LlvmIr,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ErrorFormat {
+    Human,
+    Json,
+}
+
+impl ErrorFormat {
+    fn error(self, message: impl Into<String>) -> ExitCode {
+        let diagnostic = siox::diag::Diagnostic::error(message);
+        match self {
+            Self::Human => eprintln!("error: {}", diagnostic.message),
+            Self::Json => eprintln!("{}", diagnostic.render_json(&siox::diag::SourceMap::new())),
+        }
+        ExitCode::FAILURE
+    }
+}
+
 pub fn run() -> ExitCode {
     let matches = Cli::command().get_matches();
     let cli = match Cli::from_arg_matches(&matches) {
@@ -108,10 +128,9 @@ pub fn run() -> ExitCode {
                 print!("{page}");
                 ExitCode::SUCCESS
             }
-            None => {
-                eprintln!("error: no explanation is available for diagnostic code `{code}`");
-                ExitCode::FAILURE
-            }
+            None => cli.error_format.error(format!(
+                "no explanation is available for diagnostic code `{code}`"
+            )),
         };
     }
     let file = cli
@@ -120,8 +139,9 @@ pub fn run() -> ExitCode {
         .expect("clap requires a file without --explain");
     let lints = lint_levels(&matches, &cli);
     if cli.test && cli.emit != CliEmit::Object {
-        eprintln!("error: --test currently requires --emit object");
-        return ExitCode::FAILURE;
+        return cli
+            .error_format
+            .error("--test currently requires --emit object");
     }
     let emit = if cli.test {
         Emit::TestExecutable
@@ -146,6 +166,18 @@ pub fn run() -> ExitCode {
     }
 
     let compilation = Compiler::new(cli.std).compile(request);
+    if matches!(cli.error_format, ErrorFormat::Json) {
+        eprint!("{}", compilation.render_diagnostics_json());
+        // Token dumps historically use stderr; JSON mode reserves it for diagnostics.
+        if let Some(Artifact::Text(text)) = &compilation.artifact {
+            print!("{text}");
+        }
+        return if compilation.succeeded() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
     report_stages(&compilation, &emit);
     if cli.verbose {
         report_frontend(&compilation);

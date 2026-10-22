@@ -35,8 +35,8 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-      - name: Test diagnostic snapshot runner
-        run: python3 -m unittest discover -s scripts -p test_ui_test.py -v
+      - name: Test diagnostic runners
+        run: python3 -m unittest discover -s scripts -p '*_test.py' -v
 
       - name: Check frontend without CLI or LLVM
         run: cargo check --locked --no-default-features --lib
@@ -140,6 +140,9 @@ jobs:
       - name: Check diagnostic snapshots
         run: bash scripts/test-ui.sh "$GITHUB_WORKSPACE/siox-tests"
 
+      - name: Check JSON diagnostics and migration fixes
+        run: bash scripts/test-json.sh "$GITHUB_WORKSPACE/siox-tests"
+
       # The packed value representation was reached only by the unit tests.
       # The corpus is what exercises a backend end to end.
       - name: Compile and run corpus (bitpack)
@@ -147,3 +150,6 @@ jobs:
 
       - name: Check diagnostic snapshots (bitpack)
         run: SIOXC_FEATURES=bitpack bash scripts/test-ui.sh "$GITHUB_WORKSPACE/siox-tests"
+
+      - name: Check JSON diagnostics and migration fixes (bitpack)
+        run: SIOXC_FEATURES=bitpack bash scripts/test-json.sh "$GITHUB_WORKSPACE/siox-tests"

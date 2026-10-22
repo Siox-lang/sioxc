@@ -18970,3 +18970,83 @@ all 59 UI snapshots in both modes. Unit
 siox-job-3000-1792691918583497160-1759205 exited/success/0, peak1660747776
 bytes. Whitespace checks now pass for every staged file. No compiler logic,
 std or corpus source changes after full matrix 1709718; no snapshots blessed.
+### 2026-10-22 — Codex — structured diagnostics ownership
+
+Continuing compiler-foundations section 2 after ece29b7/b9cbba7 acceptance.
+Own diag data/JSON writer, compiler render adapter, CLI --error-format and
+existing parser label/attribute migration diagnostics plus tests/docs. No
+syntax change, std, IR, LLVM or runtime edits. Use the existing sink and source
+map; preserve text output. JSON stderr must not contain progress/status text;
+expose source spans, labels, notes/help and applicability-tagged edits. Exercise
+real compilation failures, source Unicode/escaping and apply/recompile checks.
+No new dependency or commit/push before full required gates are green.
+### 2026-10-22 — Codex — JSON implementation and focused evidence
+
+Implemented NDJSON diagnostics through the existing sink/API, --error-format,
+Unicode-scalar coordinates with raw byte ranges, safe escaping and structured
+single/multipart suggestions. Human rendering remains unchanged. CLI JSON mode
+suppresses plain progress/status output; input/selection/backend and early
+compiler-option failures are JSON. Clap usage/help/version intentionally remain
+text. No dependencies, std/IR/LLVM/runtime edits or language grammar changes.
+
+Focused frontend diagnostic tests and all 61 parser tests passed in unit
+siox-job-3000-1792692844329451555-1762194 (success/0, peak1591660544).
+All-target/all-feature Clippy, all 61 real JSON/schema cases, both initial
+apply/recompile migration probes and all 61 unchanged/new human UI cases passed
+in siox-job-3000-1792693137869524875-1763741 (success/0, peak800337920).
+The preceding Clippy focus caught a deliberately reversed test range, rewritten
+as dynamic endpoints so the invalid-span test remains without a lint allow.
+
+Post-focus review found AST expression spans omit grouping parentheses, so
+attribute edits now copy the complete source value tail rather than an AST
+span; add grouped-value round-trip coverage. Suppress source edits for reparsed
+macro tokens until expansion identity can prove them safe. Comment-bearing/
+recovered metadata needs review; process comments and raw numeric spelling are
+retained. The test applier rejects overlapping edits, including insertions
+inside replacements, and preserves same-offset insertion order. All 24 current
+Python runner self-tests pass. CI/local CI and the wire-format/proposal docs
+are updated. The final full acceptance matrix is still required before commit.
+### 2026-10-22 — Codex — full JSON gate terminal; fixture-only correction
+
+Unit siox-job-3000-1792693551391532997-1764884 terminated exit1, peak1881653248.
+Both complete Rust suites (23 DWARF each), all516 frontend-only tests, all24
+runner tests, strict Clippy, both actual255-program corpora and both61-case
+human UI suites passed. Both JSON gates cover54/54 codes but failed only the
+metadata migration apply/recompile fixture (E-P007), plus its missing-fix
+summary. Manual post-run hashes still match source70b47837c005d115 and corpus
+7808e68c2ab62765, proving no live-source drift despite early script exit.
+
+The copied arithmetic payload was preserved correctly but the attribute-value
+checker currently accepts only Expr::Int for integer metadata. Correct the
+dedicated full-compile fixture to the valid parenthesized literal ((7)), keep
+the compound-expression parser regression and every apply/recompile assertion.
+Record the metadata constant-expression limitation under shared-consteval TODO.
+No compiler logic or Rust test source changes. Recheck fresh default/bitpack
+JSON/UI gates before committing; no old golden snapshots are reblessed.
+### 2026-10-22 — Codex — JSON and atomic suggestions acceptance complete
+
+Combined acceptance is green: full unit1764884 passed both complete Rust suites
+(all23 DWARF tests each), all516 frontend-only tests, all24 runner self-tests,
+strict frontend/all-target/all-feature Clippy and both actual255-program
+corpora. Its only red steps were the metadata fixture's unsupported arithmetic
+payload in each JSON apply/recompile check, not a compiler-code regression.
+The terminal job source/corpus hashes were manually verified unchanged before
+correcting that fixture; all compiler logic and Rust test sources stay identical.
+
+After the fixture-only correction to ((7)), final unit
+siox-job-3000-1792695251706234984-1815312 is exited/success/0, peak91414528.
+Fresh default/bitpack binaries each pass61 JSON/schema cases,54/54 active
+codes, both complete atomic-edit apply/recompile migrations and all61 human
+snapshots. Focused diagnostics/parser tests and all24 runner tests pass too.
+Hashes f57a87cd2e3e7d1b / cf825c14f3ab3f92 match before/after this final run.
+No existing59 golden snapshots were reblessed. No source-rewriting CLI was added.
+Metadata constant-expression support is explicitly retained in TODO. AST graph
+6498/17859 is current for the compiler code; vendor extraction warnings remain.
+
+Commit only owned diagnostic/CLI/parser migration API, runners/CI, docs and
+the two new corpus fixtures. Preserve all root/peer work and unrelated corpus
+probes/artifacts. No std/IR/LLVM/runtime/dependency changes. Completion estimate:
+compiler-foundations proposal roughly35% (engineering estimate), with diagnostic
+snapshots/explanations/JSON/initial atomic suggestions complete; shared const
+evaluation, declaration-ID registries and residual hook cleanup still remain.
+Keep commits local; no push. The broader proposals goal is not complete.
