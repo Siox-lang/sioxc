@@ -1,6 +1,7 @@
 //! IR expression builders, widths, and constant evaluation.
 
 use super::*;
+use crate::types::consteval::{self, Binding, Environment, IntegerDomain};
 
 /// Whether a pattern matches everything, including a `_` written inside an
 /// alternation (`A | _`).
@@ -309,136 +310,112 @@ pub(in crate::ir) fn eval_const(e: &ast::Expr, env: &HashMap<String, i64>) -> Op
     eval_const_fns(e, env, &fns, 0)
 }
 
-/// `eval_const` with module functions in scope: a call whose arguments
-/// const-evaluate runs the function body statically (recursion allowed to a
-/// bounded depth) — `clog2(DEPTH)` works in width positions.
+/// Widths, constants and const-fn calls use the shared interpreter.
 pub fn eval_const_fns(
     e: &ast::Expr,
     env: &HashMap<String, i64>,
     fns: &FunctionIndex<'_>,
     depth: u32,
 ) -> Option<i64> {
-    if depth > 64 {
-        return None;
-    }
-    match e {
-        ast::Expr::Int { text, .. } => parse_int(text).map(|v| v as i64),
-        ast::Expr::Path(path) => fns
-            .constant_path_key(path)
-            .and_then(|key| env.get(&key).copied()),
-        // A bound argument's range attribute (`v'low`), as the caller binds it.
-        ast::Expr::SysAttr { base, attr, .. } => match base.as_ref() {
-            ast::Expr::Path(path) if path.segments.len() == 1 => env
-                .get(&format!("{}::{}", path.segments[0].text, attr.text))
-                .copied(),
-            _ => None,
-        },
-        ast::Expr::IfExpr {
-            cond, then, els, ..
-        } => {
-            if eval_const_fns(cond, env, fns, depth + 1)? != 0 {
-                eval_const_fns(then, env, fns, depth + 1)
-            } else {
-                eval_const_fns(els, env, fns, depth + 1)
-            }
-        }
-        ast::Expr::Call { callee, args, .. } => {
-            let name = call_fn_key(callee)?;
-            // Kernel conversions are value-transparent in const context.
-            if name == "integer" || name == "Char" {
-                return eval_const_fns(args.first()?, env, fns, depth + 1);
-            }
-            let f = fns.get(callee)?;
-            let body = f.body.as_ref()?;
-            // Parameters shadow local leaves, while resolver-qualified module
-            // constants remain available inside the called function body.
-            // Starting from an empty map made `fn f() { return VALUE; }`
-            // cease to be constant even though `VALUE` was in the caller's
-            // compile-time environment.
-            let mut fenv = env.clone();
-            for (p, a) in f.params.iter().filter(|p| !p.is_self).zip(args) {
-                let n = p.name.as_ref()?;
-                fenv.insert(n.text.clone(), eval_const_fns(a, env, fns, depth + 1)?);
-            }
-            eval_const_stmts(&body.stmts, &fenv, fns, depth + 1)
-        }
-        ast::Expr::Unary { op, rhs, .. } => {
-            let v = eval_const_fns(rhs, env, fns, depth + 1)?;
-            match op {
-                ast::UnOp::Neg => v.checked_neg(),
-                ast::UnOp::Not => Some((v == 0) as i64),
-            }
-        }
-        ast::Expr::Binary { op, lhs, rhs, .. } => {
-            let (a, b) = (
-                eval_const_fns(lhs, env, fns, depth + 1)?,
-                eval_const_fns(rhs, env, fns, depth + 1)?,
-            );
-            match op {
-                ast::BinOp::Add => a.checked_add(b),
-                ast::BinOp::Sub => a.checked_sub(b),
-                ast::BinOp::Mul => a.checked_mul(b),
-                ast::BinOp::Div => a.checked_div(b),
-                ast::BinOp::Rem => a.checked_rem(b),
-                ast::BinOp::Shl => u32::try_from(b).ok().and_then(|shift| a.checked_shl(shift)),
-                ast::BinOp::Shr => u32::try_from(b).ok().and_then(|shift| a.checked_shr(shift)),
-                ast::BinOp::Eq => Some((a == b) as i64),
-                ast::BinOp::Ne => Some((a != b) as i64),
-                ast::BinOp::Lt => Some((a < b) as i64),
-                ast::BinOp::Le => Some((a <= b) as i64),
-                ast::BinOp::Gt => Some((a > b) as i64),
-                ast::BinOp::Ge => Some((a >= b) as i64),
-                ast::BinOp::And => Some((a != 0 && b != 0) as i64),
-                ast::BinOp::Or => Some((a != 0 || b != 0) as i64),
-                ast::BinOp::Custom { .. } => None,
-            }
-        }
-        _ => None,
-    }
+    consteval::evaluate(e, &WordConstants { env, fns }, depth)
+        .ok()
+        .and_then(|value| i64::try_from(value).ok())
 }
 
-/// Statically execute a const-fn body: `return`s and `if`/`else` chains.
+/// Evaluate a pure function body through the shared constant interpreter.
 pub fn eval_const_stmts(
     stmts: &[ast::Stmt],
     env: &HashMap<String, i64>,
     fns: &FunctionIndex<'_>,
     depth: u32,
 ) -> Option<i64> {
-    for st in stmts {
-        match st {
-            ast::Stmt::Return { value, .. } => {
-                return eval_const_fns(value.as_ref()?, env, fns, depth);
-            }
-            ast::Stmt::If(iff) => {
-                if eval_const_fns(&iff.cond, env, fns, depth)? != 0 {
-                    if let Some(v) = eval_const_stmts(&iff.then.stmts, env, fns, depth) {
-                        return Some(v);
-                    }
-                } else {
-                    match iff.else_.as_deref() {
-                        Some(ast::ElseBranch::Block(b)) => {
-                            if let Some(v) = eval_const_stmts(&b.stmts, env, fns, depth) {
-                                return Some(v);
-                            }
-                        }
-                        Some(ast::ElseBranch::If(inner)) => {
-                            if let Some(v) = eval_const_stmts(
-                                std::slice::from_ref(&ast::Stmt::If(inner.clone())),
-                                env,
-                                fns,
-                                depth,
-                            ) {
-                                return Some(v);
-                            }
-                        }
-                        None => {}
-                    }
-                }
-            }
-            _ => return None,
+    consteval::evaluate_statements(stmts, &WordConstants { env, fns }, depth)
+        .ok()
+        .flatten()
+        .and_then(|value| i64::try_from(value).ok())
+}
+
+struct WordConstants<'a, 'r> {
+    env: &'a HashMap<String, i64>,
+    fns: &'a FunctionIndex<'r>,
+}
+
+impl Environment for WordConstants<'_, '_> {
+    fn domain(&self) -> IntegerDomain {
+        IntegerDomain::NativeWord
+    }
+
+    fn literal(&self, text: &str) -> Option<i128> {
+        parse_int(text).map(|value| i128::from(value as i64))
+    }
+
+    fn binding(&self, path: &ast::Path) -> Option<Binding<'_>> {
+        self.fns
+            .constant_path_key(path)
+            .and_then(|key| self.env.get(&key))
+            .map(|value| Binding::Value(i128::from(*value)))
+    }
+
+    fn local_name<'p>(&self, path: &'p ast::Path) -> Option<&'p str> {
+        let [name] = path.segments.as_slice() else {
+            return None;
+        };
+        (self.fns.constant_path_key(path).as_deref() == Some(name.text.as_str()))
+            .then_some(name.text.as_str())
+    }
+
+    fn attribute(&self, base: &ast::Expr, attr: &ast::Ident) -> Option<i128> {
+        let ast::Expr::Path(path) = base else {
+            return None;
+        };
+        let [name] = path.segments.as_slice() else {
+            return None;
+        };
+        self.env
+            .get(&format!("{}::{}", name.text, attr.text))
+            .copied()
+            .map(i128::from)
+    }
+
+    fn function(&self, callee: &ast::Expr) -> Option<&ast::FnDecl> {
+        self.fns.get(callee)
+    }
+
+    fn transparent_conversion(&self, callee: &ast::Expr) -> bool {
+        matches!(call_fn_key(callee).as_deref(), Some("integer" | "Char"))
+    }
+
+    // shortcut: retain legacy scalar predicates until typed source-owned
+    // operator/condition evaluation replaces raw integer binding environments.
+    fn unary(&self, expression: &ast::Expr, value: i128) -> Option<i128> {
+        match expression {
+            ast::Expr::Unary {
+                op: ast::UnOp::Not, ..
+            } => Some((value == 0) as i128),
+            _ => None,
         }
     }
-    None
+
+    fn binary(&self, expression: &ast::Expr, a: i128, b: i128) -> Option<i128> {
+        let ast::Expr::Binary { op, .. } = expression else {
+            return None;
+        };
+        Some(match op {
+            ast::BinOp::Eq => (a == b) as i128,
+            ast::BinOp::Ne => (a != b) as i128,
+            ast::BinOp::Lt => (a < b) as i128,
+            ast::BinOp::Le => (a <= b) as i128,
+            ast::BinOp::Gt => (a > b) as i128,
+            ast::BinOp::Ge => (a >= b) as i128,
+            ast::BinOp::And => (a != 0 && b != 0) as i128,
+            ast::BinOp::Or => (a != 0 || b != 0) as i128,
+            _ => return None,
+        })
+    }
+
+    fn condition(&self, value: i128) -> Option<bool> {
+        Some(value != 0)
+    }
 }
 
 /// Evaluate the deliberately small pure subset used by `LogicEncoding` and

@@ -161,16 +161,16 @@ fixes.
 | `types/calls.rs` | `const_fold` | removed; uses shared integer analysis |
 | `types/indexing.rs` | `const_literal` | shared-evaluator adapter |
 | `types/patterns.rs` | `const_int_at` | removed; `const_int` supplies resolver-selected constants |
-| `elab.rs` | `eval` | pending |
-| `ir/lower_helpers/builders.rs` | `eval_const`, `eval_const_fns`, `eval_const_stmts` | pending |
+| `elab.rs` | `eval` | shared-interpreter parameter adapter |
+| `ir/lower_helpers/builders.rs` | `eval_const`, `eval_const_fns`, `eval_const_stmts` | shared-interpreter binding/function adapters |
 | `ir/lower_helpers/substitute.rs` | `fold_const` | already an IR evaluator adapter |
 | `ir/lower/collect.rs` | `fold_const`, `eval_const` | aggregate collection and an IR evaluator adapter |
 
-The remaining implementations have different reach. Only `eval_const_fns`
-calls const functions; integer analysis in `types` still sees no generic or
-loop bindings, while `elab`'s `eval`
-and the IR's `eval_const` take an environment. So the same expression can be a
-constant in one stage and not in the next, and each fix lands in one copy.
+The traversal is now shared, but binding contexts still have different reach.
+The IR adapter supplies functions and bound attributes; checker analysis
+supplies declared constants; elaboration supplies parameter/loop values.
+These contexts still need the same resolved, typed declaration registry so an
+expression's constant status does not depend on which stage asks.
 
 **rustc.** One evaluator, the MIR interpreter (the core of Miri), answers every
 constant question: array lengths, const generics, `const` items, and
@@ -204,12 +204,41 @@ every previously returned value. New tests cover failure spans, zero divisors,
 overflow, shifts, named constants, shadowing and cycles. Literal parsing is
 still the existing parser's domain; this is not yet full typed const evaluation.
 
-**Remaining.** Migrate elaboration and IR with their function/binding context.
-Their current logical/bitwise disagreement cannot be resolved from untyped
-integer bits: preserve library operator implementations and value types.
-Include static attributes, directional ranges, packed-width semantics and
-metadata constant-expression validation. Do not mark the proposal complete
-just because the checker's duplicated arithmetic is gone.
+**Implemented cross-stage traversal.** Elaboration and IR now use the same
+interpreter as checker analysis. It owns arithmetic, expression traversal and
+pure `return`/`if`/`else` function control flow. Contexts supply declarations,
+parameters and attributes without upward imports from `types` to IR. Analysis
+keeps its wider integer intermediates; the existing native-word interfaces
+retain checked arithmetic and kernel shift truncation, including the checked
+signed-minimum remainder boundary. These domains do not limit packed values.
+
+Calls borrow the root environment and parameter names, allocating only their
+local binding/value frames rather than cloning every module constant. Failed
+selected branches propagate a reason instead of being mistaken for empty
+branches and falling through to a later return. `else if` chains are walked
+without cloning their ASTs or consuming function-recursion depth. Tests live
+beside the interpreter in `types/consteval/tests.rs`.
+
+Before deleting the old elaboration/expression/function walkers, temporary
+side-by-side checks passed the complete Rust suite and actual 256-program
+corpus with agreement for every old successful result. The added
+`consteval_calls_test.siox` exercises module constants versus same-named
+parameters, restored nested frames and recursive widths in hardware/processes.
+
+**Remaining.** Raw scalar logical/bitwise hooks are explicitly transitional
+(`shortcut:` comments), not a second definition of operators. Their disagreement
+cannot be resolved from untyped integer bits: replace them with typed,
+source-owned operator and condition evaluation. Unify function/attribute
+availability through the earlier resolved registry; then include enum and
+packed values, directional ranges, all statically sized attributes, additional
+pure-function statements and metadata constant-expression validation.
+
+An additional integer folder was found in `resolve::check_generic_arity`.
+Move that width analysis to the owning later stage (or share the appropriately
+earlier primitive layer), never introduce a `resolve -> types` import. The
+source-owned enum operator-table evaluator also remains separate until values
+carry their enum identity. Do not mark the proposal complete merely because
+the scalar traversal is shared.
 
 **Acceptance.** Duplicate expression interpreters are gone (thin adapters may
 remain); `E-P021` ("not a constant") and range errors agree across stages.

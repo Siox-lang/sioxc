@@ -51,8 +51,13 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
 - 🟡 **Compiler foundations followups.** Finish shared constant evaluation and
   declaration-ID registries. Checked integer analysis for conversions, widths,
   indices and pattern bounds now shares `types::consteval`, including named
-  constants selected by `DefId`. Elaboration/IR evaluation, typed operators,
-  const-function calls and static attributes still need migration. Hook
+  constants selected by `DefId`. Elaboration and IR now share its expression
+  traversal, arithmetic and const-function control flow, with borrowed call
+  frames instead of cloned constant maps. Replace the explicitly transitional
+  scalar logical/bitwise adapters with typed source-owned operators; unify
+  function/attribute bindings across stages and migrate the earlier generic-width
+  folder out of resolve without breaking layering. Enum/packed values, ranges
+  and full pure-function statement support remain. Hook
   lang-item registration and core loading are implemented; diagnostic UI
   snapshots cover all active codes, and `--explain CODE` has embedded pages for
   the complete catalogue. JSON diagnostics and atomic structured migration edits

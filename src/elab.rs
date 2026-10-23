@@ -23,6 +23,7 @@ use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
 use crate::resolve::{DefId, Resolved};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
+use crate::types::consteval::{self, Binding, Environment, IntegerDomain};
 use crate::types::{Ty, Typed};
 
 /// Index into [`Hierarchy::instances`].
@@ -1608,50 +1609,62 @@ fn loop_range(a: i64, b: i64) -> Vec<i64> {
 /// Constant-evaluate a parameter expression (spec 3.3 const exprs), resolving
 /// bare identifiers against `env`.
 fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
-    use ParamValue::{Int, Unknown};
-    match e {
-        Expr::Int { text, .. } => parse_int(text).map(Int).unwrap_or(Unknown),
-        Expr::Path(p) if p.segments.len() == 1 => env
-            .get(&p.segments[0].text)
+    consteval::evaluate(e, &Parameters(env), 0)
+        .ok()
+        .and_then(|value| i64::try_from(value).ok())
+        .map(ParamValue::Int)
+        .unwrap_or(ParamValue::Unknown)
+}
+
+struct Parameters<'a>(&'a HashMap<String, i64>);
+
+impl Environment for Parameters<'_> {
+    fn domain(&self) -> IntegerDomain {
+        IntegerDomain::NativeWord
+    }
+
+    fn literal(&self, text: &str) -> Option<i128> {
+        parse_int(text).map(i128::from)
+    }
+
+    fn binding(&self, path: &Path) -> Option<Binding<'_>> {
+        let [name] = path.segments.as_slice() else {
+            return None;
+        };
+        self.0
+            .get(&name.text)
             .copied()
-            .map(Int)
-            .unwrap_or(Unknown),
-        Expr::Unary { op, rhs, .. } => match (op, eval(rhs, env)) {
-            (UnOp::Neg, Int(v)) => v.checked_neg().map(Int).unwrap_or(Unknown),
-            (UnOp::Not, Int(v)) => Int(!v),
-            _ => Unknown,
-        },
-        Expr::Binary { op, lhs, rhs, .. } => match (eval(lhs, env), eval(rhs, env)) {
-            (Int(a), Int(b)) => match op {
-                BinOp::Add => a.checked_add(b).map(Int).unwrap_or(Unknown),
-                BinOp::Sub => a.checked_sub(b).map(Int).unwrap_or(Unknown),
-                BinOp::Mul => a.checked_mul(b).map(Int).unwrap_or(Unknown),
-                BinOp::Div => a.checked_div(b).map(Int).unwrap_or(Unknown),
-                BinOp::Rem => a.checked_rem(b).map(Int).unwrap_or(Unknown),
-                BinOp::Shl => u32::try_from(b)
-                    .ok()
-                    .and_then(|shift| a.checked_shl(shift))
-                    .map(Int)
-                    .unwrap_or(Unknown),
-                BinOp::Shr => u32::try_from(b)
-                    .ok()
-                    .and_then(|shift| a.checked_shr(shift))
-                    .map(Int)
-                    .unwrap_or(Unknown),
-                BinOp::And => Int(a & b),
-                BinOp::Or => Int(a | b),
-                // Comparisons yield 1/0, for `if`-generate conditions.
-                BinOp::Eq => Int((a == b) as i64),
-                BinOp::Ne => Int((a != b) as i64),
-                BinOp::Lt => Int((a < b) as i64),
-                BinOp::Le => Int((a <= b) as i64),
-                BinOp::Gt => Int((a > b) as i64),
-                BinOp::Ge => Int((a >= b) as i64),
-                _ => Unknown,
-            },
-            _ => Unknown,
-        },
-        _ => Unknown,
+            .map(|value| Binding::Value(i128::from(value)))
+    }
+
+    // shortcut: retain legacy parameter bit operations until typed source-owned
+    // operator/condition evaluation replaces raw integer parameter bindings.
+    fn unary(&self, expression: &Expr, value: i128) -> Option<i128> {
+        match expression {
+            Expr::Unary { op: UnOp::Not, .. } => Some(i128::from(!(value as i64))),
+            _ => None,
+        }
+    }
+
+    fn binary(&self, expression: &Expr, a: i128, b: i128) -> Option<i128> {
+        let Expr::Binary { op, .. } = expression else {
+            return None;
+        };
+        Some(match op {
+            BinOp::Eq => (a == b) as i128,
+            BinOp::Ne => (a != b) as i128,
+            BinOp::Lt => (a < b) as i128,
+            BinOp::Le => (a <= b) as i128,
+            BinOp::Gt => (a > b) as i128,
+            BinOp::Ge => (a >= b) as i128,
+            BinOp::And => a & b,
+            BinOp::Or => a | b,
+            _ => return None,
+        })
+    }
+
+    fn condition(&self, value: i128) -> Option<bool> {
+        Some(value != 0)
     }
 }
 

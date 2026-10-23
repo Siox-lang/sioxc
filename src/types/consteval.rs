@@ -1,11 +1,12 @@
-//! Checked integer constant analysis, shared by widths, indices and patterns.
+//! Shared constant expression and pure-function interpreter.
 //!
-//! This evaluates mathematical integer expressions, not packed values or
-//! library-defined operators. Keep the wider analysis domain until the caller
-//! checks its own bound; narrowing intermediates would change pattern coverage.
+//! Bindings and non-integer operators belong to the caller's semantic context;
+//! traversal, checked arithmetic and control flow have one implementation.
 
 use crate::diag::Span;
-use crate::syntax::ast::{expr_span, BinOp, Expr, Path, UnOp};
+use crate::syntax::ast::{
+    expr_span, stmt_span, BinOp, ElseBranch, Expr, FnDecl, Ident, IfStmt, Path, Stmt, UnOp,
+};
 
 use super::helpers::unsigned_lit_text;
 
@@ -17,6 +18,7 @@ pub(crate) enum Reason {
     DivisionByZero,
     InvalidShift,
     RecursionLimit,
+    ArityMismatch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,249 +27,328 @@ pub(crate) struct NotConstant {
     pub reason: Reason,
 }
 
-/// Evaluate an integer expression. The caller supplies resolver-selected
-/// declarations, so this module need not know about checker or IR registries.
+/// The checker's wider analysis domain is not a packed-value width limit.
+/// NativeWord retains the existing kernel integer ABI's checked intermediates.
+#[derive(Clone, Copy)]
+pub(crate) enum IntegerDomain {
+    Analysis,
+    NativeWord,
+}
+
+impl IntegerDomain {
+    fn check(self, value: i128) -> Option<i128> {
+        match self {
+            Self::Analysis => Some(value),
+            Self::NativeWord => i64::try_from(value).ok().map(i128::from),
+        }
+    }
+
+    fn bits(self) -> u32 {
+        match self {
+            Self::Analysis => i128::BITS,
+            Self::NativeWord => i64::BITS,
+        }
+    }
+}
+
+pub(crate) enum Binding<'a> {
+    Value(i128),
+    Expression(&'a Expr),
+}
+
+/// A stage supplies declaration identities and bound values without upward
+/// dependencies. Unsupported operations remain unknown, never fabricated.
+pub(crate) trait Environment {
+    fn binding(&self, path: &Path) -> Option<Binding<'_>>;
+
+    fn domain(&self) -> IntegerDomain {
+        IntegerDomain::Analysis
+    }
+
+    fn literal(&self, text: &str) -> Option<i128> {
+        unsigned_lit_text(text).map(i128::from)
+    }
+
+    /// A module constant must not be captured by a caller's same-named local.
+    fn local_name<'p>(&self, path: &'p Path) -> Option<&'p str> {
+        match path.segments.as_slice() {
+            [name] => Some(&name.text),
+            _ => None,
+        }
+    }
+
+    fn attribute(&self, _base: &Expr, _attr: &Ident) -> Option<i128> {
+        None
+    }
+
+    fn function(&self, _callee: &Expr) -> Option<&FnDecl> {
+        None
+    }
+
+    fn transparent_conversion(&self, _callee: &Expr) -> bool {
+        false
+    }
+
+    fn unary(&self, _expression: &Expr, _value: i128) -> Option<i128> {
+        None
+    }
+
+    fn binary(&self, _expression: &Expr, _left: i128, _right: i128) -> Option<i128> {
+        None
+    }
+
+    fn condition(&self, _value: i128) -> Option<bool> {
+        None
+    }
+}
+
+struct Declarations<'a, F>(F, std::marker::PhantomData<&'a Expr>);
+
+impl<'a, F: Fn(&Path) -> Option<&'a Expr>> Environment for Declarations<'a, F> {
+    fn binding(&self, path: &Path) -> Option<Binding<'_>> {
+        (self.0)(path).map(Binding::Expression)
+    }
+}
+
+/// Integer analysis with resolver-selected constant declarations. Narrow only
+/// at the consumer boundary, retaining the pattern checker's wider domain.
 pub(crate) fn integer<'a>(
     expression: &Expr,
     constant: impl Fn(&Path) -> Option<&'a Expr>,
 ) -> Result<i128, NotConstant> {
-    eval(expression, &constant, 0)
+    evaluate(
+        expression,
+        &Declarations(constant, std::marker::PhantomData),
+        0,
+    )
 }
 
-fn eval<'a>(
+pub(crate) fn evaluate(
     expression: &Expr,
-    constant: &impl Fn(&Path) -> Option<&'a Expr>,
+    environment: &dyn Environment,
     depth: u32,
 ) -> Result<i128, NotConstant> {
-    let failure = |reason| NotConstant {
-        span: expr_span(expression),
-        reason,
-    };
-    // Bound both cyclic constants and adversarially deep expressions.
-    if depth > 64 {
-        return Err(failure(Reason::RecursionLimit));
+    Interpreter {
+        environment,
+        locals: Vec::new(),
     }
-    let child = |e: &Expr| eval(e, constant, depth + 1);
-    match expression {
-        Expr::Int { text, .. } => unsigned_lit_text(text)
-            .map(i128::from)
-            .ok_or_else(|| failure(Reason::Overflow)),
-        Expr::Path(path) => {
-            let value = constant(path).ok_or_else(|| failure(Reason::UnknownConstant))?;
-            child(value)
+    .expression(expression, depth)
+}
+
+pub(crate) fn evaluate_statements(
+    statements: &[Stmt],
+    environment: &dyn Environment,
+    depth: u32,
+) -> Result<Option<i128>, NotConstant> {
+    Interpreter {
+        environment,
+        locals: Vec::new(),
+    }
+    .statements(statements, depth)
+}
+
+struct Interpreter<'a> {
+    environment: &'a dyn Environment,
+    locals: Vec<Vec<(&'a str, i128)>>,
+}
+
+impl<'a> Interpreter<'a> {
+    fn expression(&mut self, expression: &Expr, depth: u32) -> Result<i128, NotConstant> {
+        let fail = |reason| NotConstant {
+            span: expr_span(expression),
+            reason,
+        };
+        if depth > 64 {
+            return Err(fail(Reason::RecursionLimit));
         }
-        Expr::Unary {
-            op: UnOp::Neg, rhs, ..
-        } => child(rhs)?
-            .checked_neg()
-            .ok_or_else(|| failure(Reason::Overflow)),
-        Expr::Binary { op, lhs, rhs, .. } => {
-            if !matches!(
-                op,
-                BinOp::Add
-                    | BinOp::Sub
-                    | BinOp::Mul
-                    | BinOp::Div
-                    | BinOp::Rem
-                    | BinOp::Shl
-                    | BinOp::Shr
-            ) {
-                return Err(failure(Reason::Unsupported));
-            }
-            let (a, b) = (child(lhs)?, child(rhs)?);
-            let value = match op {
-                BinOp::Add => a.checked_add(b),
-                BinOp::Sub => a.checked_sub(b),
-                BinOp::Mul => a.checked_mul(b),
-                BinOp::Div | BinOp::Rem if b == 0 => {
-                    return Err(failure(Reason::DivisionByZero));
-                }
-                BinOp::Div => a.checked_div(b),
-                BinOp::Rem => a.checked_rem(b),
-                BinOp::Shl | BinOp::Shr => {
-                    let shift = u32::try_from(b)
-                        .ok()
-                        .filter(|shift| *shift < i128::BITS)
-                        .ok_or_else(|| failure(Reason::InvalidShift))?;
-                    if matches!(op, BinOp::Shl) {
-                        a.checked_shl(shift)
-                    } else {
-                        a.checked_shr(shift)
+        let environment = self.environment;
+        let value = match expression {
+            Expr::Int { text, .. } => environment
+                .literal(text)
+                .ok_or_else(|| fail(Reason::Overflow))?,
+            Expr::Path(path) => {
+                let local = environment.local_name(path).and_then(|name| {
+                    self.locals
+                        .iter()
+                        .rev()
+                        .flat_map(|scope| scope.iter())
+                        .find(|(key, _)| *key == name)
+                        .map(|(_, value)| *value)
+                });
+                if let Some(value) = local {
+                    value
+                } else {
+                    match environment
+                        .binding(path)
+                        .ok_or_else(|| fail(Reason::UnknownConstant))?
+                    {
+                        Binding::Value(value) => value,
+                        Binding::Expression(value) => self.expression(value, depth + 1)?,
                     }
                 }
-                _ => unreachable!(),
+            }
+            Expr::SysAttr { base, attr, .. } => environment
+                .attribute(base, attr)
+                .ok_or_else(|| fail(Reason::Unsupported))?,
+            Expr::Unary { op, rhs, .. } => {
+                let value = self.expression(rhs, depth + 1)?;
+                match op {
+                    UnOp::Neg => value.checked_neg().ok_or_else(|| fail(Reason::Overflow))?,
+                    _ => environment
+                        .unary(expression, value)
+                        .ok_or_else(|| fail(Reason::Unsupported))?,
+                }
+            }
+            Expr::Binary { op, lhs, rhs, .. } => {
+                let (a, b) = (
+                    self.expression(lhs, depth + 1)?,
+                    self.expression(rhs, depth + 1)?,
+                );
+                match op {
+                    BinOp::Add => a.checked_add(b).ok_or_else(|| fail(Reason::Overflow))?,
+                    BinOp::Sub => a.checked_sub(b).ok_or_else(|| fail(Reason::Overflow))?,
+                    BinOp::Mul => a.checked_mul(b).ok_or_else(|| fail(Reason::Overflow))?,
+                    BinOp::Div | BinOp::Rem if b == 0 => return Err(fail(Reason::DivisionByZero)),
+                    BinOp::Div | BinOp::Rem
+                        if matches!(environment.domain(), IntegerDomain::NativeWord)
+                            && a == i128::from(i64::MIN)
+                            && b == -1 =>
+                    {
+                        return Err(fail(Reason::Overflow));
+                    }
+                    BinOp::Div => a.checked_div(b).ok_or_else(|| fail(Reason::Overflow))?,
+                    BinOp::Rem => a.checked_rem(b).ok_or_else(|| fail(Reason::Overflow))?,
+                    BinOp::Shl | BinOp::Shr => {
+                        let shift = u32::try_from(b)
+                            .ok()
+                            .filter(|shift| *shift < environment.domain().bits())
+                            .ok_or_else(|| fail(Reason::InvalidShift))?;
+                        let value = if matches!(op, BinOp::Shl) {
+                            a.checked_shl(shift)
+                        } else {
+                            a.checked_shr(shift)
+                        }
+                        .ok_or_else(|| fail(Reason::Overflow))?;
+                        // Kernel shifts discard bits outside their word, unlike
+                        // checked addition; retain that ABI distinction.
+                        match environment.domain() {
+                            IntegerDomain::Analysis => value,
+                            IntegerDomain::NativeWord => i128::from(value as i64),
+                        }
+                    }
+                    _ => environment
+                        .binary(expression, a, b)
+                        .ok_or_else(|| fail(Reason::Unsupported))?,
+                }
+            }
+            Expr::IfExpr {
+                cond, then, els, ..
+            } => {
+                let value = self.expression(cond, depth + 1)?;
+                let selected = environment
+                    .condition(value)
+                    .ok_or_else(|| fail(Reason::Unsupported))?;
+                self.expression(if selected { then } else { els }, depth + 1)?
+            }
+            Expr::Call { callee, args, .. } => {
+                if environment.transparent_conversion(callee) {
+                    if args.len() != 1 {
+                        return Err(fail(Reason::ArityMismatch));
+                    }
+                    return self.expression(&args[0], depth + 1);
+                }
+                let function = environment
+                    .function(callee)
+                    .ok_or_else(|| fail(Reason::Unsupported))?;
+                let body = function
+                    .body
+                    .as_ref()
+                    .ok_or_else(|| fail(Reason::Unsupported))?;
+                let parameters = function
+                    .params
+                    .iter()
+                    .filter(|parameter| !parameter.is_self);
+                if parameters.clone().count() != args.len() {
+                    return Err(fail(Reason::ArityMismatch));
+                }
+                let bindings = parameters
+                    .zip(args)
+                    .map(|(parameter, argument)| {
+                        let name = parameter
+                            .name
+                            .as_ref()
+                            .ok_or_else(|| fail(Reason::Unsupported))?;
+                        Ok((name.text.as_str(), self.expression(argument, depth + 1)?))
+                    })
+                    .collect::<Result<Vec<_>, NotConstant>>()?;
+                // Borrow module bindings; only this call's parameters allocate.
+                self.locals.push(bindings);
+                let result = self.statements(&body.stmts, depth + 1);
+                self.locals.pop();
+                result?.ok_or_else(|| fail(Reason::Unsupported))?
+            }
+            _ => return Err(fail(Reason::Unsupported)),
+        };
+        environment
+            .domain()
+            .check(value)
+            .ok_or_else(|| fail(Reason::Overflow))
+    }
+
+    fn statements(&mut self, statements: &[Stmt], depth: u32) -> Result<Option<i128>, NotConstant> {
+        for statement in statements {
+            let fail = |reason| NotConstant {
+                span: stmt_span(statement),
+                reason,
             };
-            value.ok_or_else(|| failure(Reason::Overflow))
+            if depth > 64 {
+                return Err(fail(Reason::RecursionLimit));
+            }
+            match statement {
+                Stmt::Return { value, .. } => {
+                    return self
+                        .expression(
+                            value.as_ref().ok_or_else(|| fail(Reason::Unsupported))?,
+                            depth,
+                        )
+                        .map(Some);
+                }
+                Stmt::If(branch) => {
+                    if let Some(value) = self.branch(branch, depth)? {
+                        return Ok(Some(value));
+                    }
+                }
+                _ => return Err(fail(Reason::Unsupported)),
+            }
         }
-        _ => Err(failure(Reason::Unsupported)),
+        Ok(None)
+    }
+
+    fn branch(&mut self, branch: &IfStmt, depth: u32) -> Result<Option<i128>, NotConstant> {
+        if depth > 64 {
+            return Err(NotConstant {
+                span: expr_span(&branch.cond),
+                reason: Reason::RecursionLimit,
+            });
+        }
+        let mut branch = branch;
+        loop {
+            let value = self.expression(&branch.cond, depth)?;
+            let condition = self.environment.condition(value).ok_or(NotConstant {
+                span: expr_span(&branch.cond),
+                reason: Reason::Unsupported,
+            })?;
+            if condition {
+                return self.statements(&branch.then.stmts, depth);
+            }
+            match branch.else_.as_deref() {
+                Some(ElseBranch::Block(block)) => return self.statements(&block.stmts, depth),
+                Some(ElseBranch::If(nested)) => branch = nested,
+                None => return Ok(None),
+            }
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::diag::{DiagnosticSink, FileId};
-    use crate::syntax::{ast::Item, parse_module};
-
-    fn expression(text: &str) -> Expr {
-        let source = format!("module constants; const VALUE: integer = {text};");
-        let mut sink = DiagnosticSink::default();
-        let module = parse_module(FileId(0), &source, &mut sink);
-        assert!(!sink.has_errors(), "{text}: {:?}", sink.diagnostics());
-        let Item::Const(value) = module.items.into_iter().next().unwrap() else {
-            panic!("expected a constant");
-        };
-        value.value
-    }
-
-    fn literal(text: &str) -> Result<i128, NotConstant> {
-        integer(&expression(text), |_| None)
-    }
-
-    #[test]
-    fn arithmetic_keeps_the_analysis_domain() {
-        for (text, expected) in [
-            ("0xF_f + 0b1_0", 257),
-            ("-(2 + 3) * 4", -20),
-            ("17 / 3 + 17 % 3", 7),
-            ("(3 << 5) >> 2", 24),
-            ("-0x8000_0000_0000_0000", i128::from(i64::MIN)),
-            ("0xffff_ffff_ffff_ffff", i128::from(u64::MAX)),
-            ("(-0x8000_0000_0000_0000) / -1", 1i128 << 63),
-            ("(-0x8000_0000_0000_0000) % -1", 0),
-            ("(0x7fff_ffff_ffff_ffff + 1) - 1", i128::from(i64::MAX)),
-        ] {
-            assert_eq!(literal(text), Ok(expected), "{text}");
-        }
-    }
-
-    #[test]
-    fn failures_are_spanned_and_do_not_panic() {
-        for (text, expected) in [
-            ("5 / 0", Reason::DivisionByZero),
-            ("5 % 0", Reason::DivisionByZero),
-            ("1 << -1", Reason::InvalidShift),
-            ("1 << 128", Reason::InvalidShift),
-            ("1 >> 4294967296", Reason::InvalidShift),
-            (
-                "0xffff_ffff_ffff_ffff * 0xffff_ffff_ffff_ffff",
-                Reason::Overflow,
-            ),
-            ("(-1 << 127) / -1", Reason::Overflow),
-            ("(-1 << 127) % -1", Reason::Overflow),
-            ("-(-1 << 127)", Reason::Overflow),
-            ("RUNTIME", Reason::UnknownConstant),
-            ("3 and 2", Reason::Unsupported),
-            ("not 0", Reason::Unsupported),
-            ("3 == 3", Reason::Unsupported),
-            ("function(2)", Reason::Unsupported),
-        ] {
-            let expression = expression(text);
-            let error = integer(&expression, |_| None).unwrap_err();
-            assert_eq!(error.reason, expected, "{text}");
-            assert_eq!(error.span, expr_span(&expression));
-        }
-    }
-
-    #[test]
-    fn declarations_are_supplied_by_identity_not_leaf_name() {
-        let value = expression("6 * 7");
-        let alias = expression("library::VALUE");
-        let expr = expression("ALIAS + 1");
-        let result = integer(&expr, |path| {
-            let names: Vec<_> = path.segments.iter().map(|s| s.text.as_str()).collect();
-            match names.as_slice() {
-                ["ALIAS"] => Some(&alias),
-                ["library", "VALUE"] => Some(&value),
-                _ => None,
-            }
-        });
-        assert_eq!(result, Ok(43));
-        assert_eq!(
-            integer(&expression("VALUE"), |_| None).unwrap_err().reason,
-            Reason::UnknownConstant
-        );
-    }
-
-    #[test]
-    fn cyclic_declarations_stop() {
-        let a = expression("B");
-        let b = expression("A");
-        let result = integer(&a, |path| match path.segments[0].text.as_str() {
-            "A" => Some(&a),
-            "B" => Some(&b),
-            _ => None,
-        });
-        assert_eq!(result.unwrap_err().reason, Reason::RecursionLimit);
-    }
-
-    #[test]
-    fn checker_literal_boundary_is_checked_after_evaluation() {
-        use super::super::Checker;
-
-        for (text, expected) in [
-            ("-0x8000_0000_0000_0000", Some(i64::MIN)),
-            ("(-0x8000_0000_0000_0000) / -1", None),
-            ("(-0x8000_0000_0000_0000) % -1", Some(0)),
-            ("0xffff_ffff_ffff_ffff", None),
-            ("(0x7fff_ffff_ffff_ffff + 1) - 1", Some(i64::MAX)),
-            ("-(2 + 3)", Some(-5)),
-            ("5 / 0", None),
-        ] {
-            assert_eq!(
-                Checker::const_literal(&expression(text)),
-                expected,
-                "{text}"
-            );
-        }
-    }
-
-    #[test]
-    fn checker_keeps_qualified_constants_and_parameter_shadowing() {
-        use super::super::Checker;
-
-        let mut sink = DiagnosticSink::default();
-        let modules: Vec<_> = [
-            "module alpha; pub const VALUE: integer = 300;",
-            "module beta; pub const VALUE: integer = 2;",
-            "module client; const TOTAL: integer = alpha::VALUE + beta::VALUE;
-             fn identity(VALUE: integer) -> integer { return VALUE; }",
-        ]
-        .iter()
-        .enumerate()
-        .map(|(i, source)| parse_module(FileId(i as u32), source, &mut sink))
-        .collect();
-        let resolved = crate::resolve::resolve(&modules, &mut sink);
-        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
-        let mut checker = Checker::new(&mut sink, &resolved, &modules);
-        checker.collect(&modules);
-        let Item::Const(total) = &modules[2].items[0] else {
-            panic!("expected constant")
-        };
-        assert_eq!(checker.const_int(&total.value), Some(302));
-        assert_eq!(checker.constant_value(&total.value), Some(302));
-        assert_eq!(Checker::const_literal(&total.value), None);
-        let Item::Fn(function) = &modules[2].items[1] else {
-            panic!("expected function")
-        };
-        let crate::syntax::ast::Stmt::Return {
-            value: Some(value), ..
-        } = &function.body.as_ref().unwrap().stmts[0]
-        else {
-            panic!("expected return")
-        };
-        assert_eq!(checker.const_int(value), None);
-        assert_eq!(checker.constant_value(value), None);
-    }
-
-    #[test]
-    fn failure_points_to_the_operand_that_could_not_be_evaluated() {
-        let e = expression("1 + (2 / 0)");
-        let Expr::Binary { rhs, .. } = &e else {
-            unreachable!()
-        };
-        let error = integer(&e, |_| None).unwrap_err();
-        assert_eq!(error.reason, Reason::DivisionByZero);
-        assert_eq!(error.span, expr_span(rhs));
-    }
-}
+mod tests;

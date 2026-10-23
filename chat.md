@@ -19098,3 +19098,63 @@ Completion estimate: compiler-foundations roughly40%, an engineering estimate.
 Elab/IR and full typed const evaluation, metadata constants, declaration-ID
 registries and hook cleanup remain; broader language proposals are not done.
 Keep the commit local on feat/proposal-foundations; no push.
+
+### 2026-10-23 — Codex — cross-stage constant interpreter
+
+Own types/consteval.rs, elab.rs parameter adapter and IR builders.rs constant
+function adapters. Share expression traversal, checked arithmetic and pure
+function control flow, with explicit analysis/native-word domains and borrowed
+binding context. Keep legacy scalar logical/bitwise hooks visibly transitional
+pending typed source-owned operators. Preserve module constant identities and
+parameter shadowing, avoid cloning whole maps on calls, and propagate a
+selected branch's failure rather than silently falling through to a later
+return. Compare legacy answers on actual Rust/corpus sources before removal.
+Found an additional early folder in resolve::check_generic_arity; migration
+must respect resolve -> types layering. No unrelated issue fixes or push.
+
+### 2026-10-23 — Codex — cross-stage parity passed; final gate next
+
+Guarded siox-job-3000-1792712818923996669-2025417 is exited/success/0,
+peak1881366528. All531 frontend tests, the complete default Rust suite
+(all23 DWARF cases) and actual256-program corpus pass with old/new expression
+and statement oracles: every previous successful answer agreed. Removed all
+temporary oracles and legacy walkers afterwards. Final focused2051782 is
+exited/success/0: all16 evaluator tests and strict frontend Clippy pass.
+
+The shared interpreter borrows root bindings and parameter names, preserves
+analysis versus native-word intermediates, rejects failed selected branches
+instead of silently falling through, and walks long else-if chains without
+AST clones or extra function depth. The actual corpus has one owned new
+constant-call/width example and its README entry; peer probes are untouched.
+Explicit legacy scalar operator hooks remain transitional and are documented,
+not presented as completed typed source-owned evaluation. Additional resolve
+width folding and enum-valued table folding remain tracked with layering intact.
+
+Freeze code/docs for final full default+bitpack Rust/corpus/UI/JSON/Clippy gates,
+AST-only graph update and16 direct native ordinary/debug runs with VCD checks.
+Keep changes local until green; no push. Compiler-foundations roughly50%
+engineering estimate; typed const semantics and declaration-ID registries remain.
+
+### 2026-10-23 — Codex — cross-stage scalar interpreter accepted
+
+Final guarded siox-job-3000-1792713740082085988-2052370 is
+exited/success/0, peak1881489408 bytes. Logs and per-stage evidence live in
+/home/max/.cache/siox-jobs/crossstage-consteval-final-20261023 and the service
+log. Final code passes all532 frontend tests, both complete Rust suites
+(all23 DWARF cases each), strict frontend/all-target/all-feature Clippy,
+formatting, runner self-tests and required examples. Both actual256-program
+corpora pass; both61-case human and JSON gates cover54/54 active codes and
+two atomic fix/recompile migrations. All16 directly built/executed ordinary
+and debug native examples plus VCD checks pass across default/bitpack.
+Sourcebc84cf60d78e22c9 and corpusa480e83df37c3512 match before/after.
+
+No legacy walkers or migration assertions remain. Parameter names/root values
+and else-if ASTs are borrowed, not cloned; scalar logical/bitwise compatibility
+hooks remain explicitly marked and tracked pending typed source-owned values.
+AST-only graph6603/18056 is current for code (existing four vendor extraction
+warnings remain). No std, LLVM, runtime, dependency or surface-syntax change.
+Commit only the owned seven compiler files and the sibling corpus's two owned
+regression/doc files. Preserve peer probes and the dirty root. Keep commits
+local; no push. Compiler-foundations roughly50% engineering estimate, with
+typed semantics, shared binding registries, metadata and hook cleanup open.
+The broad proposals goal is not complete.
