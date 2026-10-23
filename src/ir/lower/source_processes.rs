@@ -173,10 +173,9 @@ fn process_functions<'a>(
         })
         .collect::<std::collections::HashMap<_, _>>();
     for item in modules.iter().flat_map(|module| &module.items) {
-        match item {
-            ast::Item::Fn(function) => functions.insert_free(function),
-            ast::Item::ExternBlock { abi, fns, .. } => functions.insert_extern(abi, fns),
-            _ => {}
+        functions.insert_declaration(item);
+        if let ast::Item::ExternBlock { abi, fns, .. } = item {
+            functions.insert_extern(abi, fns);
         }
     }
     for implementation in modules

@@ -122,14 +122,12 @@ impl<'a> Lowering<'a> {
         let mut constant_decls = Vec::new();
         for m in modules {
             for item in &m.items {
+                self.free_fns.insert_declaration(item);
                 match item {
                     ast::Item::Entity(e) => {
                         if let Some(id) = self.resolved.declared(e.name.span) {
                             self.entities.insert(id, e);
                         }
-                    }
-                    ast::Item::Fn(f) => {
-                        self.free_fns.insert_free(f);
                     }
                     ast::Item::ExternBlock { abi, fns, .. } => {
                         self.free_fns.insert_extern(abi, fns);

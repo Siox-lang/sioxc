@@ -11,16 +11,6 @@ impl<'a> Checker<'a> {
         resolved: &'a Resolved,
         modules: &'a [Module],
     ) -> Self {
-        let generic_bodies = modules
-            .iter()
-            .flat_map(|m| &m.items)
-            .filter_map(|item| match item {
-                Item::Fn(f) if !f.generics.params.is_empty() && f.body.is_some() => {
-                    Some((resolved.declared(f.name.span)?, f))
-                }
-                _ => None,
-            })
-            .collect();
         // Seed the std::attrs targets so the standard attributes validate while
         // `std/` is still empty (mirrors the builtins seeded in siox-resolve).
         let mut attr_targets = HashMap::new();
@@ -100,7 +90,7 @@ impl<'a> Checker<'a> {
             })
             .collect();
         Checker {
-            generic_bodies,
+            declarations: declarations::DeclarationIndex::collect(resolved, modules),
             type_bindings: std::cell::RefCell::new(HashMap::new()),
             instantiated: std::cell::RefCell::new(HashSet::new()),
             instantiating: std::cell::RefCell::new(Vec::new()),
@@ -138,11 +128,6 @@ impl<'a> Checker<'a> {
             array_elements: HashMap::new(),
             blanket_array_impls: HashMap::new(),
             generic_fns: HashMap::new(),
-            fn_arity: HashMap::new(),
-            fn_param_types: HashMap::new(),
-            fn_return_types: HashMap::new(),
-            const_types: HashMap::new(),
-            const_values: HashMap::new(),
             suffix_types: HashMap::new(),
             prefix_types: HashMap::new(),
             aliases: HashMap::new(),
@@ -669,72 +654,18 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Item::ExternBlock { fns, .. } => {
-                for f in fns {
-                    let Some(id) = self.resolved.declared(f.name.span) else {
-                        continue;
-                    };
-                    self.fn_arity
-                        .insert(id, f.params.iter().filter(|p| !p.is_self).count());
-                    self.fn_param_types.insert(
-                        id,
-                        f.params
-                            .iter()
-                            .filter(|p| !p.is_self)
-                            .map(|p| p.ty.clone())
-                            .collect(),
-                    );
-                    self.fn_return_types.insert(id, f.ret.clone());
-                }
-            }
-            Item::Const(constant) => {
-                if let Some(id) = self.resolved.declared(constant.name.span) {
-                    self.const_types.insert(id, constant.ty.clone());
-                    self.const_values.insert(id, constant.value.clone());
-                }
-            }
             Item::Fn(f) if !f.generics.params.is_empty() => {
                 let Some(id) = self.resolved.declared(f.name.span) else {
                     return;
                 };
-                self.fn_arity
-                    .insert(id, f.params.iter().filter(|p| !p.is_self).count());
                 let params = f
                     .params
                     .iter()
-                    .filter(|p| !p.is_self)
-                    .map(|p| p.ty.clone())
+                    .filter(|parameter| !parameter.is_self)
+                    .map(|parameter| parameter.ty.clone())
                     .collect();
                 self.generic_fns
                     .insert(id, (f.generics.params.clone(), params));
-                self.fn_param_types.insert(
-                    id,
-                    f.params
-                        .iter()
-                        .filter(|p| !p.is_self)
-                        .map(|p| p.ty.clone())
-                        .collect(),
-                );
-                self.fn_return_types.insert(id, f.ret.clone());
-            }
-            Item::Fn(f) => {
-                let Some(id) = self.resolved.declared(f.name.span) else {
-                    return;
-                };
-                self.fn_arity
-                    .insert(id, f.params.iter().filter(|p| !p.is_self).count());
-                // Concrete functions can validate every parameter directly;
-                // the generic arm above records the same shape and defers only
-                // type-parameter substitution to each call site.
-                self.fn_param_types.insert(
-                    id,
-                    f.params
-                        .iter()
-                        .filter(|p| !p.is_self)
-                        .map(|p| p.ty.clone())
-                        .collect(),
-                );
-                self.fn_return_types.insert(id, f.ret.clone());
             }
             Item::Struct(st) => {
                 let Some(struct_key) = self.declaration_key(st.name.span) else {

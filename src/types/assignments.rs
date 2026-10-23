@@ -624,7 +624,11 @@ impl<'a> Checker<'a> {
         args: &[Expr],
         sym: &HashMap<String, Ty>,
     ) {
-        let Some(declaration) = self.generic_bodies.get(&function).copied() else {
+        let Some(declaration) = self
+            .declarations
+            .function(function)
+            .filter(|declaration| !declaration.generics.params.is_empty())
+        else {
             return;
         };
         let Some(body) = declaration.body.as_ref() else {

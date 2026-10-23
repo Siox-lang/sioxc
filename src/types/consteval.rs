@@ -8,6 +8,7 @@ use crate::syntax::ast::{
     expr_span, stmt_span, BinOp, ElseBranch, Expr, FnDecl, Ident, IfStmt, Path, Stmt, UnOp,
 };
 
+use super::declarations::DeclarationIndex;
 use super::helpers::unsigned_lit_text;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,9 +103,27 @@ pub(crate) trait Environment {
     }
 }
 
-struct Declarations<'a, F>(F, std::marker::PhantomData<&'a Expr>);
+impl Environment for DeclarationIndex<'_> {
+    fn binding(&self, path: &Path) -> Option<Binding<'_>> {
+        self.integer_constant_path(path)
+            .map(|declaration| Binding::Expression(&declaration.value))
+    }
 
-impl<'a, F: Fn(&Path) -> Option<&'a Expr>> Environment for Declarations<'a, F> {
+    fn function(&self, callee: &Expr) -> Option<&FnDecl> {
+        let Expr::Path(path) = callee else {
+            return None;
+        };
+        self.integer_function_path(path)
+    }
+
+    fn local_name<'p>(&self, path: &'p Path) -> Option<&'p str> {
+        DeclarationIndex::local_name(self, path)
+    }
+}
+
+struct ConstantExpressions<'a, F>(F, std::marker::PhantomData<&'a Expr>);
+
+impl<'a, F: Fn(&Path) -> Option<&'a Expr>> Environment for ConstantExpressions<'a, F> {
     fn binding(&self, path: &Path) -> Option<Binding<'_>> {
         (self.0)(path).map(Binding::Expression)
     }
@@ -118,7 +137,7 @@ pub(crate) fn integer<'a>(
 ) -> Result<i128, NotConstant> {
     evaluate(
         expression,
-        &Declarations(constant, std::marker::PhantomData),
+        &ConstantExpressions(constant, std::marker::PhantomData),
         0,
     )
 }

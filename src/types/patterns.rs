@@ -597,14 +597,7 @@ impl<'a> Checker<'a> {
     /// integer arithmetic over them. Anything else (a signal, a typed
     /// literal, an overflow) is unknown.
     pub(super) fn const_int(&self, e: &Expr) -> Option<i128> {
-        consteval::integer(e, |path| {
-            let id = self
-                .resolved
-                .resolved(path.span)
-                .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Const))?;
-            self.const_values.get(&id)
-        })
-        .ok()
+        consteval::evaluate(e, &self.declarations, 0).ok()
     }
 
     /// Append the value ranges a numeric pattern covers, folding constant

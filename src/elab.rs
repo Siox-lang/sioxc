@@ -24,6 +24,7 @@ use crate::resolve::{DefId, Resolved};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
 use crate::types::consteval::{self, Binding, Environment, IntegerDomain};
+use crate::types::declarations::DeclarationIndex;
 use crate::types::{Ty, Typed};
 
 /// Index into [`Hierarchy::instances`].
@@ -479,6 +480,7 @@ fn elaborate_roots(
     let mut e = Elaborator {
         sink,
         resolved,
+        declarations: DeclarationIndex::collect(resolved, modules),
         misplaced: std::cell::RefCell::new(Vec::new()),
         collisions: std::cell::RefCell::new(Vec::new()),
         entities: HashMap::new(),
@@ -535,6 +537,8 @@ struct Elaborator<'a> {
     sink: &'a mut DiagnosticSink,
     /// Name resolution results this walk looks definitions up in.
     resolved: &'a Resolved,
+    /// Borrowed module constants and free functions, by resolved identity.
+    declarations: DeclarationIndex<'a>,
     /// Instances found where structural elaboration cannot reach them: inside
     /// a behavioural `if`, whose condition is not a constant and so is a
     /// process, not a generate. Recorded during gathering (which borrows
@@ -646,7 +650,7 @@ impl<'a> Elaborator<'a> {
                 // Args may reference this instance's params; ports substitute
                 // the child's resolved params.
                 self.check_generic_arg_names(sub_decl, spec.ty, spec.site);
-                let cparams = eval_params(sub_decl, spec.ty, &env);
+                let cparams = eval_params(sub_decl, spec.ty, &env, &self.declarations);
                 self.check_params_bound(sub_decl, &cparams, spec.site);
                 let child_env = param_env(&cparams);
                 // Ports this instance drives post-declaration (`inst.p = x;`)
@@ -848,15 +852,16 @@ impl<'a> Elaborator<'a> {
                 }
                 let declared = match index.as_ref() {
                     Expr::Range { lo, hi, .. } => {
-                        let (ParamValue::Int(left), ParamValue::Int(right)) =
-                            (eval(lo, env), eval(hi, env))
-                        else {
+                        let (ParamValue::Int(left), ParamValue::Int(right)) = (
+                            eval(lo, env, &self.declarations),
+                            eval(hi, env, &self.declarations),
+                        ) else {
                             continue;
                         };
                         loop_range(left, right)
                     }
                     width => {
-                        let ParamValue::Int(width) = eval(width, env) else {
+                        let ParamValue::Int(width) = eval(width, env, &self.declarations) else {
                             continue;
                         };
                         if width < 0 {
@@ -994,7 +999,7 @@ impl<'a> Elaborator<'a> {
                 ..
             } => {
                 out.push(InstanceSpec {
-                    name: render_signal(target, env),
+                    name: render_signal(target, env, &self.declarations),
                     ty,
                     args: args.clone(),
                     attrs: &[],
@@ -1009,7 +1014,10 @@ impl<'a> Elaborator<'a> {
                 body,
                 ..
             } => {
-                if let (ParamValue::Int(a), ParamValue::Int(b)) = (eval(lo, env), eval(hi, env)) {
+                if let (ParamValue::Int(a), ParamValue::Int(b)) = (
+                    eval(lo, env, &self.declarations),
+                    eval(hi, env, &self.declarations),
+                ) {
                     // Inclusive, directional range (`0..2` -> 0,1,2;
                     // `2..0` -> 2,1,0), matching slices/array ranges.
                     for i in loop_range(a, b) {
@@ -1134,7 +1142,7 @@ impl<'a> Elaborator<'a> {
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
     ) {
-        match eval(&iff.cond, env) {
+        match eval(&iff.cond, env, &self.declarations) {
             ParamValue::Int(0) => match iff.else_.as_deref() {
                 Some(ElseBranch::Block(b)) => {
                     for st in &b.stmts {
@@ -1338,8 +1346,8 @@ impl<'a> Elaborator<'a> {
                     continue;
                 }
             }
-            let signal = render_signal(e, render_env);
-            let ty = concrete_ty(port_ty, env);
+            let signal = render_signal(e, render_env, &self.declarations);
+            let ty = concrete_ty(port_ty, env, &self.declarations);
             connected.insert(port.clone());
             conns.push(Connection {
                 port,
@@ -1388,7 +1396,10 @@ impl<'a> Elaborator<'a> {
         let mut sigs = HashMap::new();
         if let Some(edecl) = self.entities.get(&entity_id) {
             for p in &edecl.ports {
-                sigs.insert(p.name.text.clone(), concrete_ty(&p.ty, env));
+                sigs.insert(
+                    p.name.text.clone(),
+                    concrete_ty(&p.ty, env, &self.declarations),
+                );
             }
         }
         if let Some(impls) = self.impls.get(&entity_id) {
@@ -1396,7 +1407,10 @@ impl<'a> Elaborator<'a> {
                 for item in &im.items {
                     if let ImplItem::Let(l) = item {
                         if let Some(t) = &l.ty {
-                            sigs.insert(l.name.text.clone(), concrete_ty(t, env));
+                            sigs.insert(
+                                l.name.text.clone(),
+                                concrete_ty(t, env, &self.declarations),
+                            );
                         }
                     }
                 }
@@ -1505,6 +1519,7 @@ fn eval_params(
     edecl: &EntityDecl,
     ty: &Type,
     env: &HashMap<String, i64>,
+    declarations: &DeclarationIndex<'_>,
 ) -> Vec<(String, ParamValue)> {
     let args: &[GenericArg] = match ty {
         Type::Generic { args, .. } => args,
@@ -1513,7 +1528,9 @@ fn eval_params(
     let mut out = Vec::new();
     for (i, arg) in args.iter().enumerate() {
         match arg {
-            GenericArg::Named { name, value } => out.push((name.text.clone(), eval(value, env))),
+            GenericArg::Named { name, value } => {
+                out.push((name.text.clone(), eval(value, env, declarations)))
+            }
             GenericArg::NamedType { name, .. } => {
                 out.push((name.text.clone(), ParamValue::Unknown));
             }
@@ -1524,7 +1541,7 @@ fn eval_params(
                     .get(i)
                     .map(|p| p.name.text.clone())
                     .unwrap_or_else(|| format!("arg{i}"));
-                out.push((name, eval(value, env)));
+                out.push((name, eval(value, env, declarations)));
             }
             GenericArg::PositionalType(_) => {
                 let name = edecl
@@ -1608,17 +1625,27 @@ fn loop_range(a: i64, b: i64) -> Vec<i64> {
 
 /// Constant-evaluate a parameter expression (spec 3.3 const exprs), resolving
 /// bare identifiers against `env`.
-fn eval(e: &Expr, env: &HashMap<String, i64>) -> ParamValue {
-    consteval::evaluate(e, &Parameters(env), 0)
-        .ok()
-        .and_then(|value| i64::try_from(value).ok())
-        .map(ParamValue::Int)
-        .unwrap_or(ParamValue::Unknown)
+fn eval(e: &Expr, env: &HashMap<String, i64>, declarations: &DeclarationIndex<'_>) -> ParamValue {
+    consteval::evaluate(
+        e,
+        &Parameters {
+            values: env,
+            declarations,
+        },
+        0,
+    )
+    .ok()
+    .and_then(|value| i64::try_from(value).ok())
+    .map(ParamValue::Int)
+    .unwrap_or(ParamValue::Unknown)
 }
 
-struct Parameters<'a>(&'a HashMap<String, i64>);
+struct Parameters<'a, 'd> {
+    values: &'a HashMap<String, i64>,
+    declarations: &'a DeclarationIndex<'d>,
+}
 
-impl Environment for Parameters<'_> {
+impl Environment for Parameters<'_, '_> {
     fn domain(&self) -> IntegerDomain {
         IntegerDomain::NativeWord
     }
@@ -1628,13 +1655,25 @@ impl Environment for Parameters<'_> {
     }
 
     fn binding(&self, path: &Path) -> Option<Binding<'_>> {
-        let [name] = path.segments.as_slice() else {
-            return None;
-        };
-        self.0
-            .get(&name.text)
+        if let Some(declaration) = self.declarations.integer_constant_path(path) {
+            return Some(Binding::Expression(&declaration.value));
+        }
+        let name = self.declarations.local_name(path)?;
+        self.values
+            .get(name)
             .copied()
             .map(|value| Binding::Value(i128::from(value)))
+    }
+
+    fn local_name<'p>(&self, path: &'p Path) -> Option<&'p str> {
+        self.declarations.local_name(path)
+    }
+
+    fn function(&self, callee: &Expr) -> Option<&FnDecl> {
+        let Expr::Path(path) = callee else {
+            return None;
+        };
+        self.declarations.integer_function_path(path)
     }
 
     // shortcut: retain legacy parameter bit operations until typed source-owned
@@ -1669,7 +1708,7 @@ impl Environment for Parameters<'_> {
 }
 
 /// Resolve a port/signal type to a structured [`EType`] with `env` substituted.
-fn concrete_ty(t: &Type, env: &HashMap<String, i64>) -> EType {
+fn concrete_ty(t: &Type, env: &HashMap<String, i64>, declarations: &DeclarationIndex<'_>) -> EType {
     match t {
         // A bare type name — `integer`, a bit-vector family (`unsigned`), a scalar
         // enum (`Bit`), or a struct — is just its name here (no width; the
@@ -1679,32 +1718,40 @@ fn concrete_ty(t: &Type, env: &HashMap<String, i64>) -> EType {
             None => EType::Other(String::new()),
         },
         Type::Indexed { base, index, .. } => {
-            let len = index.as_deref().and_then(|i| index_width(i, env));
+            let len = index
+                .as_deref()
+                .and_then(|i| index_width(i, env, declarations));
             EType::Array {
-                elem: Box::new(concrete_ty(base, env)),
+                elem: Box::new(concrete_ty(base, env, declarations)),
                 len,
             }
         }
         // Bus-mode and generic types don't carry a simple scalar width; keep a
         // rendered form for display and skip width checking on them.
         Type::Generic { .. } | Type::View { .. } | Type::Tuple { .. } => {
-            EType::Other(render_concrete(t, env))
+            EType::Other(render_concrete(t, env, declarations))
         }
     }
 }
 
 /// The bit width implied by a type index: a single value is the width itself
 /// (`unsigned[8]` -> 8); a descending/ascending range is its span (`[31..0]` -> 32).
-fn index_width(index: &Expr, env: &HashMap<String, i64>) -> Option<u32> {
+fn index_width(
+    index: &Expr,
+    env: &HashMap<String, i64>,
+    declarations: &DeclarationIndex<'_>,
+) -> Option<u32> {
     if let Expr::Range { lo, hi, .. } = index {
-        if let (ParamValue::Int(a), ParamValue::Int(b)) = (eval(lo, env), eval(hi, env)) {
+        if let (ParamValue::Int(a), ParamValue::Int(b)) =
+            (eval(lo, env, declarations), eval(hi, env, declarations))
+        {
             return u32::try_from((i128::from(a) - i128::from(b)).unsigned_abs())
                 .ok()?
                 .checked_add(1);
         }
         return None;
     }
-    match eval(index, env) {
+    match eval(index, env, declarations) {
         ParamValue::Int(v) if v >= 0 => u32::try_from(v).ok(),
         _ => None,
     }
@@ -1712,7 +1759,11 @@ fn index_width(index: &Expr, env: &HashMap<String, i64>) -> Option<u32> {
 
 /// Render a port type with parameter widths substituted (`unsigned[W]` with `W=8`
 /// becomes `unsigned[8]`; unresolved widths keep their symbolic form).
-fn render_concrete(t: &Type, env: &HashMap<String, i64>) -> String {
+fn render_concrete(
+    t: &Type,
+    env: &HashMap<String, i64>,
+    declarations: &DeclarationIndex<'_>,
+) -> String {
     match t {
         Type::Path(p) => p
             .segments
@@ -1724,28 +1775,28 @@ fn render_concrete(t: &Type, env: &HashMap<String, i64>) -> String {
             Some(index) => {
                 format!(
                     "{}[{}]",
-                    render_concrete(base, env),
-                    render_index(index, env)
+                    render_concrete(base, env, declarations),
+                    render_index(index, env, declarations)
                 )
             }
-            None => format!("{}[]", render_concrete(base, env)),
+            None => format!("{}[]", render_concrete(base, env, declarations)),
         },
         Type::Generic { base, args, .. } => {
             let inner = args
                 .iter()
                 .map(|a| match a {
-                    GenericArg::Positional(e) => render_index(e, env),
-                    GenericArg::PositionalType(ty) => render_concrete(ty, env),
+                    GenericArg::Positional(e) => render_index(e, env, declarations),
+                    GenericArg::PositionalType(ty) => render_concrete(ty, env, declarations),
                     GenericArg::Named { name, value } => {
-                        format!("{} = {}", name.text, render_index(value, env))
+                        format!("{} = {}", name.text, render_index(value, env, declarations))
                     }
                     GenericArg::NamedType { name, ty } => {
-                        format!("{} = {}", name.text, render_concrete(ty, env))
+                        format!("{} = {}", name.text, render_concrete(ty, env, declarations))
                     }
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("{}<{inner}>", render_concrete(base, env))
+            format!("{}<{inner}>", render_concrete(base, env, declarations))
         }
         Type::View { view, target, .. } => format!(
             "{} {}",
@@ -1754,13 +1805,13 @@ fn render_concrete(t: &Type, env: &HashMap<String, i64>) -> String {
                 .map(|s| s.text.as_str())
                 .collect::<Vec<_>>()
                 .join("::"),
-            render_concrete(target, env)
+            render_concrete(target, env, declarations)
         ),
         Type::Tuple { elems, .. } => format!(
             "({})",
             elems
                 .iter()
-                .map(|elem| render_concrete(elem, env))
+                .map(|elem| render_concrete(elem, env, declarations))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -1768,8 +1819,12 @@ fn render_concrete(t: &Type, env: &HashMap<String, i64>) -> String {
 }
 
 /// Render a type-index expression, substituting a constant value when known.
-fn render_index(e: &Expr, env: &HashMap<String, i64>) -> String {
-    match eval(e, env) {
+fn render_index(
+    e: &Expr,
+    env: &HashMap<String, i64>,
+    declarations: &DeclarationIndex<'_>,
+) -> String {
+    match eval(e, env, declarations) {
         ParamValue::Int(v) => v.to_string(),
         ParamValue::Unknown => render_expr(e),
     }
@@ -1893,7 +1948,11 @@ fn is_connection_target(e: &Expr) -> bool {
 
 /// Render the signal path an expression names, substituting any elaboration
 /// parameters it indexes with.
-fn render_signal(e: &Expr, env: &HashMap<String, i64>) -> String {
+fn render_signal(
+    e: &Expr,
+    env: &HashMap<String, i64>,
+    declarations: &DeclarationIndex<'_>,
+) -> String {
     match e {
         Expr::Path(p) => p
             .segments
@@ -1906,13 +1965,15 @@ fn render_signal(e: &Expr, env: &HashMap<String, i64>) -> String {
         // An indexed connection (`wires[i]`) names the flattened element
         // signal, with the (loop/const) index evaluated.
         Expr::Index { base, index, .. } => {
-            let b = render_signal(base, env);
-            match eval(index, env) {
+            let b = render_signal(base, env, declarations);
+            match eval(index, env, declarations) {
                 ParamValue::Int(i) => format!("{b}[{i}]"),
                 _ => format!("{b}[<expr>]"),
             }
         }
-        Expr::Field { base, field, .. } => format!("{}.{}", render_signal(base, env), field.text),
+        Expr::Field { base, field, .. } => {
+            format!("{}.{}", render_signal(base, env, declarations), field.text)
+        }
         _ => "<expr>".to_string(),
     }
 }
@@ -1990,6 +2051,68 @@ mod tests {
         let before = sink.error_count();
         elaborate_for_check(modules, &resolved, &typed, &mut sink);
         sink.error_count() - before
+    }
+
+    #[test]
+    fn constant_function_bindings_set_parameters_and_connection_widths() {
+        let source = "module m;
+            const OFFSET: integer = 6;
+            fn width(n: integer) -> integer { return n + OFFSET; }
+            entity Cell<W: integer> { q: unsigned[W] out }
+            impl<W: integer> Cell<W> { q = 0; }
+            entity Outer<OFFSET: integer> {}
+            impl<OFFSET: integer> Outer<OFFSET> {
+                let link: unsigned[8];
+                let cell: Cell<W = width(2)> = { .q = link };
+            }
+            entity Top {}
+            impl Top { let outer: Outer<OFFSET = 90> = {}; }";
+        let (hierarchy, errors) = elaborate_src(source);
+        assert_eq!(errors, 0);
+        let cell = hierarchy
+            .instances
+            .iter()
+            .find(|instance| instance.name == "cell")
+            .unwrap();
+        assert_eq!(cell.params, [("W".into(), ParamValue::Int(8))]);
+        assert!(matches!(
+            cell.connections[0].ty,
+            EType::Array { len: Some(8), .. }
+        ));
+        let (_, errors) = elaborate_src(&source.replace("link: unsigned[8]", "link: unsigned[9]"));
+        assert_eq!(
+            errors, 1,
+            "known const-function widths must no longer skip mismatch checks"
+        );
+    }
+
+    #[test]
+    fn recursive_free_functions_are_available_during_elaboration() {
+        let source = "module m;
+            const DEPTH: integer = 8;
+            fn width(n: integer) -> integer {
+                if n <= 1 { return 0; }
+                return 1 + width(n / 2);
+            }
+            entity Cell<W: integer> { q: unsigned[W] out }
+            impl<W: integer> Cell<W> { q = 0; }
+            entity Top {}
+            impl Top {
+                let link: unsigned[3];
+                let cell: Cell<W = width(DEPTH)> = { .q = link };
+            }";
+        let (hierarchy, errors) = elaborate_src(source);
+        assert_eq!(errors, 0);
+        let cell = hierarchy
+            .instances
+            .iter()
+            .find(|instance| instance.name == "cell")
+            .unwrap();
+        assert_eq!(cell.params, [("W".into(), ParamValue::Int(3))]);
+        assert!(matches!(
+            cell.connections[0].ty,
+            EType::Array { len: Some(3), .. }
+        ));
     }
 
     #[test]

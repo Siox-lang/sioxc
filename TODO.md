@@ -55,7 +55,7 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
   traversal, arithmetic and const-function control flow, with borrowed call
   frames instead of cloned constant maps. Replace the explicitly transitional
   scalar logical/bitwise adapters with typed source-owned operators; unify
-  function/attribute bindings across stages and migrate the earlier generic-width
+  typed value/attribute bindings across stages and migrate the earlier generic-width
   folder out of resolve without breaking layering. Enum/packed values, ranges
   and full pure-function statement support remain. Hook
   lang-item registration and core loading are implemented; diagnostic UI
@@ -63,6 +63,13 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
   the complete catalogue. JSON diagnostics and atomic structured migration edits
   are implemented; residual leaf-name lookups still need removal. See
   [the remaining proposal](docs/proposals/compiler-foundations.md).
+  The shared `DefId` declaration index now supplies free/foreign function
+  contracts, constant declarations and transparent integer aliases; the checker
+  no longer clones six declaration/signature maps. Elaboration evaluates
+  resolved integer constants and integer-signature free functions before IR,
+  including recursive widths. Associated methods and other declaration
+  registries still need migration. Non-integer calls remain unknown to integer
+  analysis rather than discarding return/argument conversions.
   Include metadata attribute-value validation in constant-evaluation cleanup:
   integer metadata currently accepts only literal AST nodes, rejecting
   arithmetic constant expressions as `E-P007`.

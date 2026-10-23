@@ -162,8 +162,8 @@ impl<'a> Checker<'a> {
                     Expr::Path(path) => match self
                         .resolved
                         .resolved(path.span)
-                        .and_then(|id| self.const_types.get(&id))
-                        .and_then(|ty| self.declared_index_bounds(ty))
+                        .and_then(|id| self.declarations.constant(id))
+                        .and_then(|declaration| self.declared_index_bounds(&declaration.ty))
                     {
                         Some((left, right)) => (left.min(right), left.max(right), "element"),
                         None => return,

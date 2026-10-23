@@ -19158,3 +19158,68 @@ regression/doc files. Preserve peer probes and the dirty root. Keep commits
 local; no push. Compiler-foundations roughly50% engineering estimate, with
 typed semantics, shared binding registries, metadata and hook cleanup open.
 The broad proposals goal is not complete.
+
+### 2026-10-23 — Codex — shared declaration index
+
+Own types/declarations.rs, checker declaration/signature consumers, IR
+FunctionIndex/free-function/constant adapters and elab.rs constant contexts in
+/home/max/siox-proposal-integration (feat/proposal-foundations). Build one
+DefId-keyed borrowed declaration index for module constants/free/foreign fns;
+remove checker AST/signature copies and IR's duplicate free-function map.
+Thread this context through elaboration helpers so resolved module constants
+and free functions are available in parameters, widths and generate conditions.
+Keep associated-method identities and typed operators explicitly pending.
+Test equal names, aliases, shadowing, foreign prototypes and cross-stage values.
+Respect phase layering and mutable-AST boundaries: rebuild borrowed indexes
+after rewrites, never retain dangling pre-rewrite AST references. Guard all
+gates, preserve peer/root work, and keep commits local; no push.
+
+### 2026-10-23 — Codex — declaration index focused validation
+
+Borrowed DefId index now supplies checker contracts/constant initializers,
+IR free-function lookup and elaboration contexts. Removed six checker maps
+and IR's free-function map; aliases are followed by identity with cycle safety.
+Elaboration learns module constants/free integer functions for parameters,
+widths and generate/rendered indices. New unit and CLI tests prove a child
+W=8 is known before IR and a9-bit connection is rejected at the tree stage.
+Caller OFFSET=90 cannot replace the module OFFSET=6.
+
+Focused2108690 passed all541 frontend tests and both CLI tree/native tests,
+including explicit packed-return narrowing. Its strict Clippy step identified
+only a single-match style issue from simplifying the collector; fix applied.
+Earlier failures were new fixture syntax/privacy/tree-text assumptions, not
+accepted changes to import grammar, visibility or rendering. No old snapshots
+are reblessed. Integer query signature/type guards keep unsupported real/packed
+values unknown rather than erase their conversion semantics. Full typed values,
+associated identities, attrs and remaining registries stay open.
+
+Freeze code/docs for full default+bitpack Rust/corpus/UI/JSON/Clippy gates,
+AST-only graph update and ordinary/debug native/VCD checks. Source corpus has
+one owned new declaration-context example and README entry; peer files remain.
+Keep changes local until green; no push. Compiler-foundations roughly55%
+engineering estimate, not a full proposal completion claim.
+
+### 2026-10-23 — Codex — shared declaration index acceptance complete
+
+Final guarded siox-job-3000-1792718465722505481-2110284 is
+exited/success/0, peak1882779648. Evidence is retained in
+/home/max/.cache/siox-jobs/declaration-index-final-20261023 and its service log.
+All541 frontend tests, both complete Rust suites (all23 DWARF cases each),
+strict frontend/all-target/all-feature Clippy, formatting, runner self-tests
+and required examples pass. Both actual257-program corpora pass. Both61-case
+human/JSON gates retain54/54 active codes and2 atomic fix/recompile checks.
+All20 directly built/run ordinary/debug native examples plus VCD checks pass.
+Sourced949870695e5410d / corpus0fde3751d5f388af match before/after.
+
+New CLI tests prove parameters/widths are known at emit-tree time, mismatches
+are rejected before IR, and packed-return explicit narrowing remains valid.
+Seven new declaration-index tests plus two elaboration tests cover aliases,
+renamed imports, equal leaves, borrowed contracts, no unresolved-name fallback,
+foreign prototypes and rebuilding after AST rewrites. AST-only graph6661/18185
+is current for code, with existing vendor extraction warnings only.
+
+Commit only the owned19 compiler files and two sibling corpus files. Preserve
+all root/peer edits and untracked probes. No std/LLVM/runtime/dependency/surface
+syntax changes or push. Compiler-foundations roughly55% engineering estimate:
+typed enum/packed/real values, associated identities, other registries, metadata
+and hook cleanup remain; broad proposals are not complete.

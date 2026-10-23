@@ -26,6 +26,7 @@ mod ast_types;
 mod calls;
 mod collect;
 pub(crate) mod consteval;
+pub(crate) mod declarations;
 mod expand;
 mod expressions;
 mod helpers;
@@ -287,9 +288,8 @@ struct MemberVisibility {
 /// rather than registries: they track where in the tree the checker
 /// currently is, and are borrowed from `&self` methods.
 struct Checker<'a> {
-    /// Generic module functions' declarations, checked once per distinct set
-    /// of type arguments at their calls (spec: "each call is").
-    generic_bodies: HashMap<DefId, &'a FnDecl>,
+    /// Original free-function/constant declarations, borrowed by identity.
+    declarations: declarations::DeclarationIndex<'a>,
     /// Type parameters bound while a generic body is checked for one call.
     type_bindings: std::cell::RefCell<HashMap<String, Ty>>,
     /// Instantiations already checked, by function and type arguments.
@@ -393,25 +393,6 @@ struct Checker<'a> {
     /// Generic module fns: definition -> (type params with bounds, value params).
     /// Bounds are checked at each call (spec: generic bounds).
     generic_fns: HashMap<DefId, GenericFnSignature>,
-    /// Declared free function -> its parameter count, for call-arity checking.
-    /// Covers module `fn`s and `extern "C"` declarations; runtime-provided std
-    /// functions (rand/fs) have no declaration and are not listed.
-    fn_arity: HashMap<DefId, usize>,
-    /// Free-function definition -> its declared parameter types. Arguments were
-    /// checked for count but never for type, so a value of the wrong type was
-    /// reinterpreted bit-for-bit at the call.
-    fn_param_types: HashMap<DefId, Vec<Option<Type>>>,
-    /// Free-function definition -> its declared return type. A call expression used
-    /// to type as `Error` even for a known declaration, suppressing checks in
-    /// assignments, conditions, arguments, and enclosing expressions.
-    fn_return_types: HashMap<DefId, Option<Type>>,
-    /// Module constant definition -> its declared value type. Constant paths
-    /// are values, not nominal types; retaining the declaration identity lets
-    /// equal leaves in different modules keep distinct contracts.
-    const_types: HashMap<DefId, Type>,
-    /// Constant definition -> its initializer, folded on demand where a
-    /// static analysis needs a value (match-arm ranges).
-    const_values: HashMap<DefId, Expr>,
     /// Literal suffix -> the type names defining it via `impl Suffix<sym, _>
     /// for T` (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,

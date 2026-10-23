@@ -166,11 +166,12 @@ fixes.
 | `ir/lower_helpers/substitute.rs` | `fold_const` | already an IR evaluator adapter |
 | `ir/lower/collect.rs` | `fold_const`, `eval_const` | aggregate collection and an IR evaluator adapter |
 
-The traversal is now shared, but binding contexts still have different reach.
-The IR adapter supplies functions and bound attributes; checker analysis
-supplies declared constants; elaboration supplies parameter/loop values.
-These contexts still need the same resolved, typed declaration registry so an
-expression's constant status does not depend on which stage asks.
+The traversal and a borrowed declaration index are now shared. Free/foreign
+function contracts, constants and transparent aliases are selected by `DefId`.
+Checker analysis and elaboration can evaluate integer-signature free functions;
+elaboration also supplies parameter/loop values, and IR supplies bound
+attributes and legacy scalar values. Typed enum/packed/real values and uniform
+attribute context remain necessary so constant status does not depend on stage.
 
 **rustc.** One evaluator, the MIR interpreter (the core of Miri), answers every
 constant question: array lengths, const generics, `const` items, and
@@ -229,7 +230,7 @@ parameters, restored nested frames and recursive widths in hardware/processes.
 (`shortcut:` comments), not a second definition of operators. Their disagreement
 cannot be resolved from untyped integer bits: replace them with typed,
 source-owned operator and condition evaluation. Unify function/attribute
-availability through the earlier resolved registry; then include enum and
+availability through the shared resolved registry; then include enum and
 packed values, directional ranges, all statically sized attributes, additional
 pure-function statements and metadata constant-expression validation.
 
@@ -272,6 +273,29 @@ point resolves a name again. Typeck writes its results to side tables keyed by
   stages call it.
 - An `xtask`-style check, or a clippy lint, flags `HashMap<String, …>`
   registries outside `resolve` so the rule stays enforced.
+
+**Implemented first registry.** `types::declarations::DeclarationIndex` borrows
+module constants, free/foreign functions and non-generic transparent aliases,
+keyed by `DefId`. The checker reads contracts/initializers directly instead of
+keeping separate `generic_bodies`, `const_types`, `const_values`, `fn_arity`,
+`fn_param_types` and `fn_return_types` maps. IR's separate free-function map is
+gone; its existing API delegates to this index. The same item collector builds
+the index in each immutable phase, after source rewrites rather than retaining
+references across a mutable AST pass. `Typed` therefore keeps its owned side
+tables without acquiring a source lifetime.
+
+Elaboration now resolves module constants and free integer functions in
+parameters, widths, generate conditions and rendered indices. Source constants
+cannot be captured by same-named caller parameters. Integer analysis follows
+transparent integer aliases, but leaves real/packed/generic value conversions
+unknown: an integer-only interpreter must not invent their semantics or reject
+valid explicit packed narrowing. Associated methods, trait/attribute/type
+registries and fully typed values still need migration.
+
+Tests cover equal function/constant leaves, imports/renames, constant aliases,
+borrowed contracts, foreign prototypes and rebuilding after rewrites. Tree
+and native tests verify known parameters before IR and a width mismatch
+rejected during elaboration, plus the packed-result narrowing boundary.
 
 **Acceptance.** No stage after `resolve` looks a declaration up by its leaf
 name; equal leaf names in different modules are covered by a test per

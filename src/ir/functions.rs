@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::resolve::{is_compiler_trait, DefId, Resolved};
 use crate::syntax::ast;
+use crate::types::declarations::DeclarationIndex;
 
 use super::OperatorImpls;
 
@@ -27,7 +28,7 @@ pub struct FunctionIndex<'a> {
     /// Resolution this index was built over, for definition lookup.
     resolved: &'a Resolved,
     /// Module-level and foreign functions, by declaration identity.
-    free: HashMap<DefId, &'a ast::FnDecl>,
+    declarations: DeclarationIndex<'a>,
     /// Static associated functions, keyed by `Type::name` because they do
     /// not yet receive a `DefId` of their own.
     /// Keyed owner first, then name, so a lookup borrows both.
@@ -54,7 +55,7 @@ impl<'a> FunctionIndex<'a> {
     pub fn new(resolved: &'a Resolved) -> Self {
         Self {
             resolved,
-            free: HashMap::new(),
+            declarations: DeclarationIndex::new(resolved),
             associated: HashMap::new(),
             operators: OperatorImpls::default(),
             blanket_array_operators: HashMap::new(),
@@ -127,9 +128,15 @@ impl<'a> FunctionIndex<'a> {
 
     /// Register a module-level or foreign function declaration.
     pub fn insert_free(&mut self, function: &'a ast::FnDecl) {
-        if let Some(id) = self.resolved.declared(function.name.span) {
-            self.free.insert(id, function);
-        }
+        self.declarations.insert_function(function);
+    }
+
+    pub(crate) fn insert_declaration(&mut self, item: &'a ast::Item) {
+        self.declarations.insert_item(item);
+    }
+
+    pub(crate) fn declarations(&self) -> &DeclarationIndex<'a> {
+        &self.declarations
     }
 
     /// Register a static associated function, replacing an inherited default.
@@ -381,7 +388,7 @@ impl<'a> FunctionIndex<'a> {
 
     /// Retrieve a free function using a canonical callee's resolved identity.
     pub(crate) fn get_definition(&self, definition: DefId) -> Option<&'a ast::FnDecl> {
-        self.free.get(&definition).copied()
+        self.declarations.function(definition)
     }
 
     /// Stable owner key for an already-resolved nominal type. This is the
@@ -424,7 +431,7 @@ impl<'a> FunctionIndex<'a> {
         if let ast::Expr::Path(path) = callee {
             if let Some(id) = self.resolved.resolved(path.span) {
                 if self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Fn) {
-                    return self.free.get(&id).copied();
+                    return self.declarations.function(id);
                 }
             }
             if let Some(key) = self.associated_path_key(path) {

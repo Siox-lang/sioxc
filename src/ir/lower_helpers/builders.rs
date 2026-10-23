@@ -354,14 +354,16 @@ impl Environment for WordConstants<'_, '_> {
             .constant_path_key(path)
             .and_then(|key| self.env.get(&key))
             .map(|value| Binding::Value(i128::from(*value)))
+            .or_else(|| {
+                self.fns
+                    .declarations()
+                    .integer_constant_path(path)
+                    .map(|declaration| Binding::Expression(&declaration.value))
+            })
     }
 
     fn local_name<'p>(&self, path: &'p ast::Path) -> Option<&'p str> {
-        let [name] = path.segments.as_slice() else {
-            return None;
-        };
-        (self.fns.constant_path_key(path).as_deref() == Some(name.text.as_str()))
-            .then_some(name.text.as_str())
+        self.fns.declarations().local_name(path)
     }
 
     fn attribute(&self, base: &ast::Expr, attr: &ast::Ident) -> Option<i128> {

@@ -104,7 +104,8 @@ impl<'a> Checker<'a> {
                     .resolved
                     .resolved(p.span)
                     .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Const))
-                    .and_then(|id| self.const_types.get(&id))
+                    .and_then(|id| self.declarations.constant(id))
+                    .map(|declaration| &declaration.ty)
                 {
                     return self.ast_ty(ty);
                 }

@@ -387,14 +387,13 @@ impl<'a> Checker<'a> {
         let Some(function) = self.function_id(path) else {
             return self.runtime_call_return_type(name);
         };
-        let Some(declared) = self.fn_return_types.get(&function) else {
+        let Some(declaration) = self.declarations.function(function) else {
             return self.runtime_call_return_type(name);
         };
-        let Some(declared) = declared else {
+        let Some(declared) = &declaration.ret else {
             return Ty::Void;
         };
-        let declared = declared.clone();
-        self.call_return_type(&declared, function, args, sym)
+        self.call_return_type(declared, function, args, sym)
     }
 
     /// One declared return type at a call site: a bare generic parameter
@@ -552,9 +551,14 @@ impl<'a> Checker<'a> {
             }
             return;
         };
-        let Some(&want) = self.fn_arity.get(&function) else {
+        let Some(declaration) = self.declarations.function(function) else {
             return;
         };
+        let want = declaration
+            .params
+            .iter()
+            .filter(|parameter| !parameter.is_self)
+            .count();
         if args.len() != want {
             self.error(
                 codes::TYPE_MISMATCH,
@@ -581,15 +585,20 @@ impl<'a> Checker<'a> {
         args: &[Expr],
         sym: &HashMap<String, Ty>,
     ) {
-        let Some(params) = self.fn_param_types.get(&function).cloned() else {
+        let Some(declaration) = self.declarations.function(function) else {
             return;
         };
         // A generic callee binds its own parameters: inside an instantiation
         // (`f((x, x))` in `f<T>` with `T = integer`) the outer binding does
         // not apply to its `x: T`.
         let generic = self.generic_fns.contains_key(&function);
-        for (arg, pty) in args.iter().zip(params.iter()) {
-            let Some(pty) = pty else { continue };
+        for (arg, parameter) in args.iter().zip(
+            declaration
+                .params
+                .iter()
+                .filter(|parameter| !parameter.is_self),
+        ) {
+            let Some(pty) = &parameter.ty else { continue };
             let saved = generic.then(|| self.type_bindings.replace(HashMap::new()));
             let want = self.ast_ty(pty);
             if let Some(saved) = saved {
@@ -926,7 +935,7 @@ impl<'a> Checker<'a> {
 
     /// Whether a bare call name is something the language declares somewhere:
     /// a `fn`, a type used as a conversion, or one of the runtime-provided std
-    /// functions that never reach `fn_arity`. Anything else does not exist.
+    /// functions with no source declaration. Anything else does not exist.
     pub(super) fn callee_is_declared(&self, name: &str) -> bool {
         // Runtime-provided (std::rand, std::fs) — declared by the runtime, not
         // by a `fn`. Kept beside `check_runtime_call_arity`'s list.
