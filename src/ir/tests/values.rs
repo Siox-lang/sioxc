@@ -2,6 +2,29 @@
 
 use super::*;
 
+#[test]
+fn kernel_number_queries_keep_sign_without_reinterpreting_raw_words() {
+    for integer in [-2i64, i64::MIN, i64::MAX] {
+        for typed in [false, true] {
+            let value = ProcessValue {
+                span: crate::diag::Span::new(crate::diag::FileId(0), 0..1),
+                ty: typed.then_some(crate::types::Ty::Integer),
+                bit_width: crate::types::Ty::Integer.bit_width(),
+                kind: ProcessValueKind::Number(ProcessNumber::Integer(vec![integer as u64])),
+            };
+            let expected = if typed {
+                i128::from(integer)
+            } else {
+                i128::from(integer as u64)
+            };
+            assert_eq!(
+                arena_constant_integer(ProcessValueId(0), &[value]),
+                Some(expected)
+            );
+        }
+    }
+}
+
 /// `{ ..base, .z = 7 }` copied one value per *top-level* field, so a field
 /// holding a struct read as a scalar (Unknown) and every leaf under it was
 /// silently dropped — the spread carried over nothing nested.

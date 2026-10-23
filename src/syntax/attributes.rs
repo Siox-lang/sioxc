@@ -3,8 +3,8 @@
 //! Metadata is declared once (`attr keep: Bool for let, port = false;`),
 //! bound from outside the declaration it describes (`attr keep for probe =
 //! true;`, or objectless `attr precedence = 40;` for the enclosing item), and
-//! read back with the tick (`probe'keep`). This pass runs once over every
-//! loaded module, after parsing and before name resolution:
+//! read back with the tick (`probe'keep`). Binding runs before resolution;
+//! read substitution runs after resolution, preserving binding-site identities:
 //!
 //! - **Bindings** are copied onto their target as an applied [`Attr`], the
 //!   form every later stage already reads (target and value checks, the
@@ -13,7 +13,8 @@
 //! - **Reads** of a declared attribute are replaced by the value they denote:
 //!   the binding on that object, else (for an instance) the binding on its
 //!   entity, else the declaration's default. Bindings are elaboration-time
-//!   constants, so a read is folded here rather than carried as an operation.
+//!   constants, so a read is substituted here rather than carried as an operation.
+//!   Integer values are evaluated by `types` before elaboration.
 //!
 //! Objects are found by name: a named binding inside an implementation names
 //! one of that entity's `let`s (in any of its implementation blocks in the
@@ -45,13 +46,18 @@ enum Target {
     Port { item: usize, port: usize },
 }
 
-/// Attach every attribute binding to its target, then fold every read of a
-/// declared attribute into its value. See the module documentation.
+/// Attach bindings before resolution. Call [`fold_reads`] after resolution,
+/// so copied expressions keep their declaration's meaning, not the reader's.
 pub fn attach(modules: &mut [Module], sink: &mut DiagnosticSink) {
     let declared = declarations(modules);
     for module in modules.iter_mut() {
         bind_module(module, &declared, sink);
     }
+}
+
+/// Substitute reads after resolving bindings/defaults in their original scopes.
+pub fn fold_reads(modules: &mut [Module], sink: &mut DiagnosticSink) {
+    let declared = declarations(modules);
     let entity_attrs = entity_attrs(modules);
     for index in 0..modules.len() {
         let visible = visible_attrs(&modules[index], modules);
@@ -724,6 +730,7 @@ mod tests {
             sink.diagnostics()
         );
         attach(&mut modules, &mut sink);
+        fold_reads(&mut modules, &mut sink);
         (modules, sink.diagnostics().to_vec())
     }
 

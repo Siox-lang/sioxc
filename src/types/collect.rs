@@ -151,6 +151,7 @@ impl<'a> Checker<'a> {
             entity_names,
             type_attrs: HashMap::new(),
             type_attr_reads: HashMap::new(),
+            metadata_constants: HashMap::new(),
             promotions: HashMap::new(),
         }
     }
@@ -160,6 +161,7 @@ impl<'a> Checker<'a> {
         Typed {
             expr_types: self.expr_types.into_inner(),
             type_attr_reads: self.type_attr_reads,
+            metadata_constants: self.metadata_constants,
             promotions: self.promotions,
             covered_tuple_matches: self.covered_tuple_matches,
         }

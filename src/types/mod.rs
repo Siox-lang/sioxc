@@ -120,6 +120,8 @@ pub struct Typed {
     /// span, to the attribute's declared value in terms of `self`. See
     /// [`expand_type_attrs`].
     type_attr_reads: HashMap<Span, Expr>,
+    /// Checked integer metadata values, including copied reads, by value span.
+    metadata_constants: HashMap<Span, i64>,
     /// Each operand of a mixed numeric operation that widens, keyed by its
     /// span, to the type it widens to (spec 3.17, ``From``).
     promotions: HashMap<Span, Ty>,
@@ -156,7 +158,9 @@ impl Typed {
     }
 }
 
-pub use expand::{expand_type_attrs, fold_value_lengths, inline_loop_ranges};
+pub use expand::{
+    expand_type_attrs, fold_metadata_constants, fold_value_lengths, inline_loop_ranges,
+};
 pub use tuples::{lower_tuples, tuple_struct_arity, tuple_struct_name};
 
 /// Type-check resolved modules.
@@ -472,6 +476,7 @@ struct Checker<'a> {
     /// Each type attribute read, by span, to the declared value it expands
     /// to; handed on in [`Typed`].
     type_attr_reads: HashMap<Span, Expr>,
+    metadata_constants: HashMap<Span, i64>,
     /// Operand promotions of mixed numeric operations; handed on in [`Typed`].
     promotions: HashMap<Span, Ty>,
 }

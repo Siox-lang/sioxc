@@ -271,6 +271,44 @@ fn integer_domains_keep_checked_intermediates_and_native_shift_bits() {
         Reason::Overflow
     );
     assert_eq!(analysis.eval("(1 << 63) % -1"), Ok(0));
+    assert_eq!(
+        word.eval("-0x8000_0000_0000_0000"),
+        Ok(i128::from(i64::MIN))
+    );
+    assert_eq!(
+        word.eval("0x8000_0000_0000_0000").unwrap_err().reason,
+        Reason::Overflow
+    );
+    assert_eq!(
+        word.eval("-(-0x8000_0000_0000_0000)").unwrap_err().reason,
+        Reason::Overflow
+    );
+}
+
+#[test]
+fn minimum_literal_does_not_require_a_context_to_accept_its_positive_magnitude() {
+    struct SignedLiterals;
+    impl Environment for SignedLiterals {
+        fn domain(&self) -> IntegerDomain {
+            IntegerDomain::NativeWord
+        }
+        fn binding(&self, _: &Path) -> Option<Binding<'_>> {
+            None
+        }
+        fn literal(&self, text: &str) -> Option<i128> {
+            text.parse::<i64>().ok().map(i128::from)
+        }
+    }
+    assert_eq!(
+        evaluate(&expression("-9223372036854775808"), &SignedLiterals, 0),
+        Ok(i128::from(i64::MIN))
+    );
+    assert_eq!(
+        evaluate(&expression("9223372036854775808"), &SignedLiterals, 0)
+            .unwrap_err()
+            .reason,
+        Reason::Overflow
+    );
 }
 
 #[test]

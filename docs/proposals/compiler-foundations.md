@@ -4,14 +4,17 @@ Status: **partially implemented**. Core loading, lang-item registration and
 library-declared built-in macros have landed. Diagnostic UI snapshots now have
 a runner and corpus fixtures; `--explain CODE` has embedded reference pages.
 See sections 1–2 for verification and usage. JSON diagnostics and atomic
-migration suggestions are implemented. Shared constant evaluation, declaration-ID registries
-and residual name-based hook cleanup remain. Each part lands independently.
+migration suggestions are implemented. Scalar traversal and the first resolved
+declaration registry are shared across stages; fully typed constant evaluation,
+the remaining declaration-ID registries and residual name-based hook cleanup
+remain. Each part lands independently.
 
-Local acceptance (2026-10-22): both complete Rust suites, all 23 DWARF tests
-per mode, 516 frontend-only tests, strict Clippy and both 255-program corpora
+Local acceptance (2026-10-23, declaration-index baseline): both complete Rust
+suites, all 23 DWARF tests per mode, 541 frontend-only tests, strict Clippy and
+both 257-program corpora
 pass. Both modes pass 61 human UI and 61 JSON/schema cases, cover all 54 active
 codes and apply/recompile both migration fixtures. The earlier compiler-fix
-integration also matched 14 ordinary/debug native VCD comparisons. Retained
+integration was followed by 20 ordinary/debug native runs and VCD checks. Retained
 evidence and the fixture-only correction are recorded in [chat.md](../../chat.md).
 
 siox is deliberately aligned with Rust at the language level. This proposal
@@ -232,7 +235,33 @@ cannot be resolved from untyped integer bits: replace them with typed,
 source-owned operator and condition evaluation. Unify function/attribute
 availability through the shared resolved registry; then include enum and
 packed values, directional ranges, all statically sized attributes, additional
-pure-function statements and metadata constant-expression validation.
+pure-function statements. Metadata validation now shares scalar evaluation as
+described below; arbitrary typed attribute values remain open.
+
+**Implemented integer metadata.** Bindings attach before resolution; reads are
+substituted afterward, retaining the original binding/default expression spans
+and resolved constants/functions. Instance `let` metadata now goes through
+resolution too. This prevents a reader's same-named constants/functions from
+capturing imported metadata. The shared interpreter validates integer defaults
+and bindings in the native integer domain, and an owned `Typed` side table
+records the concrete values for a post-check expansion pass. Applied attrs,
+source bindings/defaults and their copied reads all receive those values before
+elaboration; rejecting arithmetic or carrying unevaluated calls to tools is no
+longer the default behavior. Negative results keep an explicit unary AST node.
+
+The minimum signed literal is checked after negating its magnitude. A native
+boundary regression also caught contextual widening sign-extending a negative
+literal's positive magnitude before completing the negation. Source IR now
+materializes a checked negative kernel literal as one integer value before its
+consumer widens it. General context-width arithmetic and packed conversions
+retain their existing semantics; packed widths are not limited by this fix.
+
+Precedence remains literal-only: operator grouping is discovered before normal
+parsing/resolution, and accepting an expression only in the later checker would
+silently ignore its value. Bool/string/enum metadata and pure-function statement
+coverage still need the typed-value work; no new mini evaluator or truth table
+was added. Tests cover invalid/nonconstant arithmetic, domain boundaries,
+normalization, both module orders and hardware/native imported metadata reads.
 
 An additional integer folder was found in `resolve::check_generic_arity`.
 Move that width analysis to the owning later stage (or share the appropriately

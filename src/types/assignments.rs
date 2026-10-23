@@ -3,6 +3,27 @@
 
 use super::*;
 
+/// Metadata integers use the kernel integer domain, not wider analysis results.
+struct MetadataIntegers<'a, 's>(&'a declarations::DeclarationIndex<'s>);
+
+impl consteval::Environment for MetadataIntegers<'_, '_> {
+    fn domain(&self) -> consteval::IntegerDomain {
+        consteval::IntegerDomain::NativeWord
+    }
+
+    fn binding(&self, path: &Path) -> Option<consteval::Binding<'_>> {
+        consteval::Environment::binding(self.0, path)
+    }
+
+    fn function(&self, callee: &Expr) -> Option<&FnDecl> {
+        consteval::Environment::function(self.0, callee)
+    }
+
+    fn local_name<'p>(&self, path: &'p Path) -> Option<&'p str> {
+        self.0.local_name(path)
+    }
+}
+
 impl<'a> Checker<'a> {
     /// Spec 3.18: flag a write to an `in` port. Three shapes are illegal: the
     /// bare port (`a = ..`), an `in` bus-mode leaf (`bus.ready = ..`), and any
@@ -222,7 +243,24 @@ impl<'a> Checker<'a> {
                 matches!(value, Expr::Path(p) if p.segments.len() == 2 && p.segments[0].text == "Bool")
             }
             Some(AttrValueTy::Str) => matches!(value, Expr::StrLit { .. }),
-            Some(AttrValueTy::Integer) => matches!(value, Expr::Int { .. }),
+            // Precedence is consumed before parsing/resolution. Never accept a
+            // value here that the bootstrap operator discovery cannot apply.
+            Some(AttrValueTy::Integer) if name == "precedence" => {
+                matches!(value, Expr::Int { .. })
+            }
+            Some(AttrValueTy::Integer) => {
+                match consteval::evaluate(value, &MetadataIntegers(&self.declarations), 0) {
+                    Ok(integer) => {
+                        self.metadata_constants.insert(
+                            expr_span(value),
+                            i64::try_from(integer)
+                                .expect("metadata uses the native integer domain"),
+                        );
+                        true
+                    }
+                    Err(_) => false,
+                }
+            }
             // Unknown attribute (reported by resolve) or an `Other`-typed one.
             _ => true,
         };

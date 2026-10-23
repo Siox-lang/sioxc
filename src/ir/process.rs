@@ -1233,6 +1233,13 @@ pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]
             for &word in words.iter().rev() {
                 result = result.checked_shl(64)?.checked_add(i128::from(word))?;
             }
+            // Kernel numbers store a signed value's bits; packed/untyped words
+            // keep their raw mathematical interpretation.
+            if matches!(&value.ty, Some(ty @ crate::types::Ty::Integer)
+                if ty.bit_width() == value.bit_width)
+            {
+                result = i128::from(result as u64 as i64);
+            }
             Some(result)
         }
         ProcessValueKind::Unary {

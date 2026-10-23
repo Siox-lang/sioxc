@@ -1964,6 +1964,9 @@ impl<'a> Resolver<'a> {
                 self.resolving_const = None;
             }
             ImplItem::Let(l) => {
+                for attr in &l.attrs {
+                    self.resolve_attr(attr);
+                }
                 if let Some(t) = &l.ty {
                     self.resolve_type(t);
                 }

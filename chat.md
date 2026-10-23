@@ -19223,3 +19223,152 @@ all root/peer edits and untracked probes. No std/LLVM/runtime/dependency/surface
 syntax changes or push. Compiler-foundations roughly55% engineering estimate:
 typed enum/packed/real values, associated identities, other registries, metadata
 and hook cleanup remain; broad proposals are not complete.
+
+### 2026-10-23 — Codex — metadata constant expressions and binding-site identity
+
+Continuing compiler-foundations section3 in isolated feat/proposal-foundations
+worktree /home/max/siox-proposal-integration. Own syntax/attributes pass split,
+compiler pass ordering, types metadata validation/normalization and focused
+Rust/corpus regressions. Resolve metadata values before substituting reads so
+copied constants/functions retain declaration-site identities. Keep precedence
+literal-only because grouping is discovered before resolution; do not silently
+accept arithmetic that the parser ignores. Reuse the shared evaluator, retain
+spans, update caller helpers and docs. No std/LLVM/runtime/dependency changes.
+Preserve dirty root/paper files and corpus probes. Guard all builds; full both-
+mode gates before local commits, no push. Last turn verified existing green
+acceptance but added no implementation; this turn resumes concrete work.
+
+### 2026-10-23 — Codex — resolve applied let metadata values
+
+The new native metadata regression exposed an existing omission: impl let
+attributes never pass through resolution, so function/constant-valued bindings
+on instances have no declaration identity. Extend resolve_impl_item's let arm
+to resolve its applied attributes as other targets already do; leave unknown-
+attribute ownership in the resolver to avoid duplicate checker diagnostics.
+This is part of the same isolated metadata change, no peer/shared-root code
+edits or pushes. Frontend545 currently green; native regression correctly red
+until this omission is fixed, so no completed gate is claimed.
+
+### 2026-10-23 — Codex — kernel-width boundary in contextual LLVM widening
+
+The metadata minimum-integer native regression is red despite correct typed
+Process IR. Signed comparisons widen to65bits, and process_value_at recomputes
+a typed64bit negation there after sign-extending its positive boundary literal,
+turning minimum into positive. Own isolated src/llvm/process/value_types.rs
+fixed-width guard: fully sized kernel integer results, like sized packed
+vectors, finish in their type width before extension. Derive width from Ty,
+not a new global limit. Add direct ordinary/debug native regression through
+metadata tests and corpus; preserve abstract/minimal-width arithmetic widening.
+No worktree/root LLVM peer edits, no runtime/dependency changes or push.
+
+### 2026-10-23 — Codex — metadata freeze for full acceptance
+
+Focused guarded2168328 exited/success/0: both new CLI/API metadata tests and
+strict all-target/all-feature Clippy pass. Guarded2169459 exited/success/0:
+61 human UI and61 JSON cases retain54/54 active codes, and both atomic fixes
+apply/recompile. The metadata migration now preserves and compiles arithmetic
+((1 + 2) * 3), replacing the earlier literal-only workaround; only its two
+expected snapshot lines were intentionally changed, no blanket blessing.
+The actual new corpus native program and VCD check pass. Frontend546 passed in
+previous focused2166194; native minimum failure there is fixed by the shared
+kernel-width guard and covered again by2168328. No red parent gate called green.
+
+Freeze code, fixtures and docs for full default/bitpack Rust, corpus, UI/JSON,
+Clippy, runner and example gates, AST-only graph update and24 direct native/VCD
+runs (six programs x ordinary/debug x two representations). Preserve unrelated
+root, paper and corpus files. Review/stage only owned files after all gates;
+keep commits local. Compiler-foundations estimated58%, not full completion:
+typed values/operators, attribute/associated registries, scalar hooks and more
+pure-function statements remain.
+
+### 2026-10-23 — Codex — corrected signed-extension guard ready for final gate
+
+Initial full2170272 is stopped/failed acceptance: the first guard suppressed
+explicit wider arithmetic formats, caught by the existing shared-debug-call
+regression (601/602). Restrict the kernel-width preservation to signed widening,
+leaving explicit unsigned/wide arithmetic contexts unchanged. Focused2180151 is
+exited/success/0: all602 default library tests, including that existing debug
+format test, and both new CLI/API native tests pass. No old tests weakened.
+
+Companion language documentation now lives alone in
+/home/max/siox-paper-proposal-foundations, docs/metadata-constant-expressions;
+only my two metadata/precedence hunks moved there. Shared paper main is back to
+its exact pre-existing90-line diff, with peers' three files preserved.
+Run a fresh full v2 frozen gate (not a partial rerun) in both representations,
+then24 ordinary/debug native/VCD checks. No pushes or completed-proposal claim.
+
+### 2026-10-23 — Codex — move minimum-literal fix to source IR
+
+Full v2 gate2181659 passed602 library tests and all23 DWARF cases, but later
+wide_signed_conversions failed its existing minimum-integer conversion check.
+Stopped the known-red gate, not accepted. The contextual LLVM width guard is
+too broad even when limited to signed consumers; remove my LLVM hunk entirely.
+Own isolated ir/lower/source_processes.rs negative integer literal normalization:
+complete the signed literal in its checked kernel type before a signed consumer
+can extend its otherwise out-of-domain positive magnitude. Reuse existing
+literal_arithmetic for this literal-only case; preserve general consumer-width
+arithmetic and every old conversion/debug test. Explicitly bind the new overflow
+probe to integer before comparing, rather than imposing a new expression-width
+rule on inline arithmetic. This is corrective scope control, not bypassing any
+existing assertion. Revalidate focused library/native/wide conversion checks,
+then rerun the complete frozen matrix. No peer IR/LLVM work or push.
+
+### 2026-10-23 — Codex — signed constant queries after literal materialization
+
+Focused2294226 exited/success/0: all602 library tests, new metadata native tests,
+existing wide_signed_conversions and strict all-feature/all-target Clippy pass.
+No LLVM diff remains. Audit every arena_constant_integer caller (index bounds,
+widths, canonical calls and debug queries): a typed kernel Number must decode
+its sign, unlike raw/packed words. Own ir/process.rs number decoding plus one
+IR unit test and negative-labelled metadata indexing native/corpus assertions.
+This prevents materialized negative literals becoming huge positive bounds.
+Then freeze and run the full matrix again; no old test assertions changed.
+
+### 2026-10-23 — Codex — freeze corrected metadata/IR changes for full v3 gate
+
+Focused2300133 is exited/success/0: all603 library tests, native metadata tests
+including negative-labelled indexing, the existing wide signed-conversion test
+and strict all-target/all-feature Clippy pass. The new number-query test proves
+typed kernel words decode signed while untyped words retain raw values. One
+additional shared-interpreter test now covers minimum literals in contexts
+whose literal parser only accepts signed magnitudes. Expected frontend547 /
+default library604 after that test; let the full gate establish those counts.
+
+No LLVM file differs from HEAD. The fix completes a checked negative literal
+at source-IR lowering, rather than changing arbitrary arithmetic widening or
+old tests. Metadata values/defaults resolve before read substitution, then
+normalize through the shared evaluator/Typed values before elaboration.
+All old debug/wide assertions remain intact. v1/v2 were known-red and stopped;
+only a new complete frozen v3 gate can approve this source. Both full Rust
+suites, actual258-program corpus, human/JSON migration checks, Clippy, examples,
+AST graph and24 ordinary/debug native/VCD runs next. No push. Foundations
+estimated58% with typed values/operators and other registries still open.
+
+### 2026-10-23 — Codex — metadata constant-expression acceptance complete
+
+Final guarded siox-job-3000-1792787189294002338-2304913 is
+exited/success/0, peak1881120768 (within2GiB). Retained evidence:
+/home/max/.cache/siox-jobs/metadata-constants-final-v3-20261023 and service log.
+All548 frontend tests, complete default+bitpack Rust suites (604/583 library
+cases; all23 DWARF each,116.18s/115.29s), strict frontend/all-target/all-feature
+Clippy, fmt,24 Python runner checks and12 required example artifacts pass.
+Both actual258-program corpora pass. Both61-case human and JSON/schema gates
+cover54/54 active codes; both atomic fix/apply/recompile migrations pass in
+both modes, including restored arithmetic metadata. All24 direct native/VCD
+runs (six programs x ordinary/debug x two representations) pass.
+
+Frozen hashes match before/after: compiler403555812f9664aac76953e33016efa2
+cedc7ff07067fe4fa82b5a5a9b275d20; corpusfe5f427656d58ae2dd4756d3263977b2
+29dd3e9d902e37195527fa1324f3f472; paperda42aa8d22b61b13b4fbae521f8f2601
+dd8788d369954731e97e96b9d8722fc3. Only this acceptance log is appended afterward.
+AST graph6697/18252 is current, with existing third-party extraction warnings
+only (four partially parsed vendor files and six files without symbols).
+
+Commit only20 owned compiler files, five corpus files and the one owned language
+doc in /home/max/siox-paper-proposal-foundations. No final LLVM, std, runtime,
+dependency or CLI/surface-grammar changes. Preserve all peer/root/paper-main
+edits and probes. Earlier v1/v2 were stopped known-red gates, not acceptance.
+Compiler-foundations roughly58% engineering estimate: typed enum/packed/real
+values and source-owned conditions/operators, additional pure statements,
+associated/attribute/other registries and hook cleanup remain. Do not mark the
+whole proposal/goal complete or push.

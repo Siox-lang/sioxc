@@ -70,9 +70,11 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
   including recursive widths. Associated methods and other declaration
   registries still need migration. Non-integer calls remain unknown to integer
   analysis rather than discarding return/argument conversions.
-  Include metadata attribute-value validation in constant-evaluation cleanup:
-  integer metadata currently accepts only literal AST nodes, rejecting
-  arithmetic constant expressions as `E-P007`.
+  Integer metadata now shares checked constant evaluation and is materialized
+  before elaboration, including defaults, negative values and integer-function
+  bindings. Resolve bindings before substituting reads so imported metadata
+  keeps its declaration-site identities. Precedence remains bootstrap-literal
+  only; typed Bool/string/enum metadata and remaining pure statements stay open.
 - 🔴 **Incremental/query interface.** Add demand-driven caching only when the
   LSP or future project tool needs incremental multi-file recomputation; keep
   the current explicit phase products as the public boundary.

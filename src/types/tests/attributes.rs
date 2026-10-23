@@ -87,6 +87,7 @@ fn a_bound_value_must_match_the_declared_type() {
         let mut module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         crate::syntax::attributes::attach(std::slice::from_mut(&mut module), &mut sink);
         let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+        crate::syntax::attributes::fold_reads(std::slice::from_mut(&mut module), &mut sink);
         check(std::slice::from_ref(&module), &resolved, &mut sink);
         sink.diagnostics()
             .iter()
@@ -126,6 +127,168 @@ fn a_bound_value_must_match_the_declared_type() {
         1,
         "a default of the wrong type"
     );
+}
+
+fn checked_metadata(sources: &[&str]) -> (Vec<Module>, DiagnosticSink) {
+    let mut sink = DiagnosticSink::new();
+    let mut modules: Vec<_> = sources
+        .iter()
+        .enumerate()
+        .map(|(i, source)| crate::syntax::parse_module(FileId(i as u32), source, &mut sink))
+        .collect();
+    crate::syntax::attributes::attach(&mut modules, &mut sink);
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    crate::syntax::attributes::fold_reads(&mut modules, &mut sink);
+    let typed = check(&modules, &resolved, &mut sink);
+    fold_metadata_constants(&mut modules, &typed);
+    (modules, sink)
+}
+
+#[test]
+fn integer_metadata_materializes_defaults_bindings_and_reads() {
+    let (modules, sink) = checked_metadata(&["module m;
+        attr score: integer for entity, let, port = (1 + 2) * 3;
+        const BASE: integer = 6;
+        fn amount(n: integer) -> integer { return n * BASE; }
+        entity E { p: integer out }
+        attr score for E = amount(7);
+        impl E {
+            attr score for p = -(3 + 4);
+            attr score for v = 5 * 2;
+            let v: integer = 0;
+            p = E'score + v'score;
+        }"]);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let printed = crate::syntax::pretty::print_module(&modules[0]);
+    for expected in [
+        "attr score: integer for entity, let, port = 9;",
+        "attr score for E = 42;",
+        "attr score for v = 10;",
+        "p = 42 + 10;",
+    ] {
+        assert!(printed.contains(expected), "missing {expected}: {printed}");
+    }
+    let entity = modules[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Entity(entity) => Some(entity),
+            _ => None,
+        })
+        .unwrap();
+    assert!(matches!(&entity.attrs[0].value, Some(Expr::Int { text, .. }) if text == "42"));
+    assert!(matches!(&entity.ports[0].attrs[0].value,
+        Some(Expr::Unary { op: UnOp::Neg, rhs, .. })
+        if matches!(rhs.as_ref(), Expr::Int { text, .. } if text == "7")));
+}
+
+#[test]
+fn integer_metadata_rejects_runtime_and_invalid_constant_values() {
+    for value in [
+        "\"fast\"",
+        "1.5",
+        "missing",
+        "cycle",
+        "1 / 0",
+        "1 << 64",
+        "0x7fff_ffff_ffff_ffff + 1",
+        "packed()",
+        "real_value()",
+    ] {
+        let source = format!(
+            "module m;
+            attr score: integer for entity;
+            const cycle: integer = cycle;
+            fn packed() -> integer[8] {{ return 0; }}
+            fn real_value() -> real {{ return 1.5; }}
+            entity E {{}}
+            attr score for E = {value};"
+        );
+        let (_, sink) = checked_metadata(&[&source]);
+        assert_eq!(
+            sink.diagnostics()
+                .iter()
+                .filter(|d| d.code == Some(codes::INVALID_ATTR_VALUE_TYPE))
+                .count(),
+            1,
+            "{value}: {:?}",
+            sink.diagnostics()
+        );
+    }
+}
+
+#[test]
+fn copied_metadata_preserves_default_and_binding_site_resolution() {
+    let provider = "module provider;
+        const BASE: integer = 6;
+        fn amount(n: integer) -> integer { return n * BASE; }
+        pub attr score: integer for entity, let = BASE + 1;
+        pub entity Cell { q: integer out }
+        impl Cell { attr score = amount(7); q = Cell'score; }
+        pub entity Plain { q: integer out }
+        impl Plain { q = Plain'score; }";
+    let client = "module client;
+        use provider::{Cell, Plain, score};
+        const BASE: integer = 90;
+        fn amount(n: integer) -> integer { return n * BASE; }
+        entity Top { inherited: integer out, defaulted: integer out }
+        impl Top {
+            let cell: Cell = {};
+            let plain: Plain = {};
+            inherited = cell'score;
+            defaulted = plain'score;
+        }";
+    for sources in [[client, provider], [provider, client]] {
+        let (modules, sink) = checked_metadata(&sources);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let module = modules
+            .iter()
+            .find(|m| m.path.segments[0].text == "client")
+            .unwrap();
+        let printed = crate::syntax::pretty::print_module(module);
+        assert!(printed.contains("inherited = 42;"), "{printed}");
+        assert!(printed.contains("defaulted = 7;"), "{printed}");
+    }
+}
+
+#[test]
+fn precedence_stays_literal_only_until_bootstrap_can_evaluate_it() {
+    let (_, sink) = checked_metadata(&["module m;
+        attr precedence: integer for impl;
+        struct S {}
+        impl S { attr precedence = 20 + 20; }"]);
+    assert_eq!(
+        sink.diagnostics()
+            .iter()
+            .filter(|d| d.code == Some(codes::INVALID_ATTR_VALUE_TYPE))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn integer_metadata_keeps_kernel_boundaries_and_radix_values() {
+    for (value, expected) in [
+        ("0x2a", 42i64),
+        ("0b101010", 42),
+        ("-(5 + 3)", -8),
+        ("-0x8000_0000_0000_0000", i64::MIN),
+        ("0x7fff_ffff_ffff_ffff", i64::MAX),
+    ] {
+        let source = format!(
+            "module m; attr score: integer for entity;
+            entity E {{}} attr score for E = {value};"
+        );
+        let (modules, sink) = checked_metadata(&[&source]);
+        assert!(!sink.has_errors(), "{value}: {:?}", sink.diagnostics());
+        let Item::Entity(entity) = &modules[0].items[1] else {
+            unreachable!()
+        };
+        assert_eq!(
+            Checker::const_literal(entity.attrs[0].value.as_ref().unwrap()),
+            Some(expected)
+        );
+    }
 }
 
 /// `std::attrs` declares attributes no stage reads. They resolve and apply

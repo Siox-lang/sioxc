@@ -191,11 +191,7 @@ impl<'a> Checker<'a> {
                             .map(|s| s.text.as_str())
                             .unwrap_or("");
                         if !self.attr_targets.contains_key(name) {
-                            self.error(
-                                codes::UNKNOWN_NAME,
-                                a.name.span,
-                                format!("unknown attribute `{name}`"),
-                            );
+                            // Resolution already reported the unknown attribute.
                             continue;
                         }
                         self.check_attr_target(a, "let", type_name.as_deref());

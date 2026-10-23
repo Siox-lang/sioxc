@@ -10399,6 +10399,26 @@ fn value_ref_with_type(
         let target = contextual_type
             .or_else(|| context.typed.expr_type(span))
             .cloned();
+        // A signed literal's positive magnitude need not fit its kernel type;
+        // complete the literal before a consumer extends that magnitude.
+        if matches!(target.as_ref(), Some(crate::types::Ty::Integer))
+            && matches!(expression, ast::Expr::Unary { op: ast::UnOp::Neg, rhs, .. }
+                if matches!(rhs.as_ref(), ast::Expr::Int { .. }))
+        {
+            if let Some(integer) =
+                literal_arithmetic(expression).and_then(|v| i64::try_from(v).ok())
+            {
+                let ty = crate::types::Ty::Integer;
+                let width = ty.bit_width();
+                return push_value(
+                    span,
+                    Some(ty),
+                    width,
+                    ProcessValueKind::Number(ProcessNumber::Integer(vec![integer as u64])),
+                    context,
+                );
+            }
+        }
         if let (
             Some(
                 ty @ crate::types::Ty::Array {

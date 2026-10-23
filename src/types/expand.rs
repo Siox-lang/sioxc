@@ -175,6 +175,38 @@ pub fn expand_type_attrs(modules: &mut [Module], typed: &Typed) {
     }
 }
 
+/// Materialize checked metadata in both applied attributes and substituted reads.
+pub fn fold_metadata_constants(modules: &mut [Module], typed: &Typed) {
+    if typed.metadata_constants.is_empty() {
+        return;
+    }
+    let mut fold = |e: &mut Expr| {
+        let span = expr_span(e);
+        let Some(&value) = typed.metadata_constants.get(&span) else {
+            return true;
+        };
+        let literal = Expr::Int {
+            text: value.unsigned_abs().to_string(),
+            span,
+        };
+        *e = if value < 0 {
+            Expr::Unary {
+                op: UnOp::Neg,
+                rhs: Box::new(literal),
+                span,
+            }
+        } else {
+            literal
+        };
+        false
+    };
+    for module in modules {
+        for item in &mut module.items {
+            walk_item(item, &mut fold);
+        }
+    }
+}
+
 /// `[10, 20, 30]'length` and `arr[0..2]'length`: the length of a value that
 /// is not a name, from its checked type. Lowering read the attribute of a
 /// declaration only, and these did not lower or read the element's width
@@ -292,11 +324,14 @@ fn walk_item(item: &mut Item, f: &mut impl FnMut(&mut Expr) -> bool) {
         }
         Item::Fn(function) => walk_fn(function, f),
         Item::Entity(entity) => {
+            walk_attrs(&mut entity.attrs, f);
             for port in &mut entity.ports {
+                walk_attrs(&mut port.attrs, f);
                 walk_type(&mut port.ty, f);
             }
         }
         Item::Impl(implementation) => {
+            walk_attrs(&mut implementation.attrs, f);
             for member in &mut implementation.items {
                 match member {
                     ImplItem::Const(constant) => {
@@ -308,7 +343,12 @@ fn walk_item(item: &mut Item, f: &mut impl FnMut(&mut Expr) -> bool) {
                     ImplItem::Process(process) => walk_block(&mut process.body, f),
                     ImplItem::Stmt(statement) => walk_stmt(statement, f),
                     ImplItem::AttrBinding(binding) => walk_expr(&mut binding.value, f),
-                    ImplItem::ModeField { .. } | ImplItem::Attr(_) => {}
+                    ImplItem::Attr(declaration) => {
+                        if let Some(value) = &mut declaration.default {
+                            walk_expr(value, f);
+                        }
+                    }
+                    ImplItem::ModeField { .. } => {}
                 }
             }
         }
@@ -317,6 +357,12 @@ fn walk_item(item: &mut Item, f: &mut impl FnMut(&mut Expr) -> bool) {
                 walk_fn(function, f);
             }
         }
+        Item::AttrDecl(declaration) => {
+            if let Some(value) = &mut declaration.default {
+                walk_expr(value, f);
+            }
+        }
+        Item::AttrBinding(binding) => walk_expr(&mut binding.value, f),
         _ => {}
     }
 }
@@ -336,11 +382,20 @@ fn walk_fn(function: &mut FnDecl, f: &mut impl FnMut(&mut Expr) -> bool) {
 }
 
 fn walk_let(declaration: &mut LetDecl, f: &mut impl FnMut(&mut Expr) -> bool) {
+    walk_attrs(&mut declaration.attrs, f);
     if let Some(ty) = &mut declaration.ty {
         walk_type(ty, f);
     }
     if let Some(value) = &mut declaration.value {
         walk_expr(value, f);
+    }
+}
+
+fn walk_attrs(attrs: &mut [Attr], f: &mut impl FnMut(&mut Expr) -> bool) {
+    for attr in attrs {
+        if let Some(value) = &mut attr.value {
+            walk_expr(value, f);
+        }
     }
 }
 

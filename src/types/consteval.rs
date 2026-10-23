@@ -210,6 +210,16 @@ impl<'a> Interpreter<'a> {
                 .attribute(base, attr)
                 .ok_or_else(|| fail(Reason::Unsupported))?,
             Expr::Unary { op, rhs, .. } => {
+                // The minimum signed literal has a positive magnitude outside
+                // its domain; negate that magnitude before checking the result.
+                if matches!(op, UnOp::Neg)
+                    && matches!(environment.domain(), IntegerDomain::NativeWord)
+                    && depth < 64
+                    && matches!(rhs.as_ref(), Expr::Int { text, .. }
+                        if unsigned_lit_text(text) == Some(i64::MIN.unsigned_abs()))
+                {
+                    return Ok(i128::from(i64::MIN));
+                }
                 let value = self.expression(rhs, depth + 1)?;
                 match op {
                     UnOp::Neg => value.checked_neg().ok_or_else(|| fail(Reason::Overflow))?,
