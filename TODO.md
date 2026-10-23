@@ -67,7 +67,12 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
   contracts, constant declarations and transparent integer aliases; the checker
   no longer clones six declaration/signature maps. Elaboration evaluates
   resolved integer constants and integer-signature free functions before IR,
-  including recursive widths. Associated methods and other declaration
+  including recursive widths. Metadata schemas, bindings, defaults, named
+  targets and entity fallbacks now retain resolved declaration identities;
+  equal names in different modules and renamed imports cannot share a schema
+  or binding. Standard metadata hooks use source-registered lang roles, and
+  exported user metadata names are canonical module-qualified paths.
+  Associated methods and other declaration
   registries still need migration. Non-integer calls remain unknown to integer
   analysis rather than discarding return/argument conversions.
   Integer metadata now shares checked constant evaluation and is materialized

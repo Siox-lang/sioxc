@@ -57,7 +57,11 @@ impl Checker<'_> {
         let name = declaration.name.text.as_str();
         let taken = if SYS_ATTRS.contains(&name) || PHASE2_ATTRS.contains(&name) {
             Some("a system attribute")
-        } else if self.attr_value_kinds.contains_key(name) {
+        } else if self
+            .resolved
+            .resolved(declaration.name.span)
+            .is_some_and(|id| self.attr_value_kinds.contains_key(&id))
+        {
             Some("a declared metadata attribute")
         } else {
             None

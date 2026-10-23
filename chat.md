@@ -19372,3 +19372,115 @@ Compiler-foundations roughly58% engineering estimate: typed enum/packed/real
 values and source-owned conditions/operators, additional pure statements,
 associated/attribute/other registries and hook cleanup remain. Do not mark the
 whole proposal/goal complete or push.
+
+### 2026-10-23 — Codex — metadata attribute identities, foundations section4
+
+Continuing on isolated feat/proposal-foundations at73eea58. Own metadata
+resolution/attachment/read processing, types attribute registries and scoped
+regressions. Current syntax maps declarations/entities by leaf; checker maps
+attribute kinds/targets by leaf; duplicate bindings compare spelling. Add a
+failing equal-name cross-module test first, then carry resolved attribute and
+owner identities through every affected consumer. Move metadata processing
+into the resolution layer if needed rather than introducing syntax->resolve
+imports. Preserve binding-site expression identities, literal precedence and
+all existing diagnostic codes; handle imports/renames and unrelated metadata
+with std-like names. No LLVM/runtime/std/dependency/surface syntax changes.
+Update docs/corpus, guard all builds, full both-mode gates before local commit,
+no push. Preserve dirty root, peer probes and shared paper main. Previous turn
+made progress with three accepted local commits; foundations remain partial.
+
+### 2026-10-23 — Codex — resolve-layer metadata and standard attribute lang roles
+
+Guarded2401740 reproduces E-P007 cross-module leakage and wrong entity binding
+selection. Keep the regression focused on metadata (do not require a raw string
+port in a minimal frontend fixture). Move syntax/attributes.rs into resolve/
+attributes.rs and resolve raw binding names/values and tick names before
+attachment. Resolved attribute/entity IDs then select declarations/defaults and
+check duplicates; types registries use DefId. Resolve concrete named target
+types as well, instead of comparing their leaf spelling.
+
+Own core/attrs.siox and std/attrs.siox only to register existing standard
+metadata with existing attr-lang roles. This updates the earlier no-std-change
+plan: identity-based hooks need source-owned roles, not new name heuristics.
+Share reserved tick-name tables in the lower syntax layer to preserve system
+attributes through aliases without upward imports. No new dependency, grammar,
+LLVM or runtime work. Migrate all compiler/test callers and docs; full gate
+before any local commit, no push.
+
+### 2026-10-23 — Codex — attribute-ID frontend green; elaboration output names
+
+Focused2430754 exited/success/0 with all554 frontend tests. The earlier three
+operator failures were local fake precedence declarations: remove only those
+fixture declarations so they use the existing standard fallback/role. All old
+assertions unchanged. New tests cover schema-type collisions, entity binding
+collisions, renamed imports, same-ID duplicate aliases, concrete target IDs,
+std-like user names and visibility-scoped type-attribute conflicts.
+
+Own elab.rs metadata-name serialization to retain canonical definition names
+for user metadata and standard presentation for registered standard roles.
+Without this, two separately resolved same-leaf attributes on one instance
+would still export an ambiguous pair of identical strings. Keep the public
+Vec<(String, Option<String>)> API; no new side tables or backend mechanism.
+Add native/actual-corpus collision coverage plus role/alias negatives, update
+docs and then full both-mode gates. No LLVM/runtime/dependency/grammar work.
+
+### 2026-10-23 — Codex — metadata identity corpus and documentation ownership
+
+Strict all-target/all-feature Clippy2448222 is exited/success/0 (663158784-byte
+peak). Own the new actual-corpus metadata_identity_test.siox and helper modules,
+its README entry, compiler TODO/proposal progress, and owned paper language,
+architecture and std metadata paragraphs on docs/metadata-constant-expressions.
+Shared paper main and dirty root feature work remain untouched. Document raw
+resolution before binding/read substitution, DefId-based collisions and canonical
+user metadata output names. Add source-role regression coverage and correct the
+old precedence help to current attr-binding syntax. Then freeze code/docs/corpus
+for the full both-mode gate; no local commits before green and no push.
+
+### 2026-10-23 — Codex — metadata identity gate freeze
+
+Guarded2456704 exited/success/0: all558 frontend tests pass, including role
+renames, private precedence lookalikes and rejecting reads of the test directive.
+Owned compiler sources/core/std, proposal/TODO, actual-corpus259 programs and
+owned paper language/architecture/std paragraphs are frozen for the final gate.
+No peer probe/root/paper-main files changed. Operator-bootstrap aliases and
+computed precedence remain explicitly deferred; transparent named-target aliases
+and fully typed metadata are not claimed complete.
+
+Run guarded metadata-identities-final-20261023.sh with one Cargo worker and
+1792MiB soft/2GiB hard limits: frontend, AST-only graph refresh, both full Rust
+suites, strict Clippy, actual corpora and UI/JSON, plus28 ordinary/debug native
+VCD runs over seven programs. Fingerprint all three owned trees before/after,
+including a missing-file marker for the syntax->resolve module move. Retain
+all evidence; no commit until completed green, no push. Graph has >5000 nodes,
+so its viewer uses aggregated communities; inspect extraction warnings.
+
+### 2026-10-24 — Codex — metadata identity final acceptance
+
+Guarded siox-job-3000-1792791594908893646-2460177.service is exited/success/0,
+MemoryPeak1881403392. Retained evidence lives under
+/home/max/.cache/siox-jobs/metadata-identities-final-20261023 and its service
+log. All558 frontend tests, both complete Rust suites (614/593 library tests,
+23 DWARF cases each in116.34/116.48s), strict Clippy, formatting,24 runner
+checks and12 specified examples pass. Both actual259-program corpora pass;
+each mode passes61 human UI and61 JSON cases,54/54 active codes, and two
+apply/recompile migrations. All28 explicit ordinary/debug native/VCD runs over
+seven programs pass, including metadata_identity_test.
+
+Frozen compiler/corpus/owned-paper fingerprints match before/after:
+compiler316e98b0925e6783caba0d9b0bb0f046a40927f62e9e5233863834774dcab039;
+corpusd3a4070f05bf41dcbd9d490bd67344249cd1e896f253c69a3aaa82f978f04017;
+paper2a97e8cc87729764d0e3dceed1698ece0107f6304ea1569b83989a49bde78424.
+Only this acceptance log is appended afterward. AST-only graph6729/18337 is
+current: four existing partially parsed vendor files and six files without
+symbols remain; community labels are stale (348 saved vs352 current), and
+refreshing those would require a separate semantic-label operation. Do not
+silently run paid semantic extraction.
+
+Local commits may include only the reviewed owned compiler metadata-ID files,
+README plus three new corpus sources, and three owned paper documentation files.
+No LLVM/runtime/dependency/grammar change or peer/root/paper-main sweep; no push.
+Foundations roughly63% engineering estimate: integer evaluation/declaration
+contracts and module-aware metadata IDs are shared and green. Fully typed
+values/conditions/operators, additional pure statements, entity/trait/associated
+registries, generic-width folder placement, bootstrap precedence aliases and
+remaining hooks are still open. Do not mark the whole proposal/goal complete.

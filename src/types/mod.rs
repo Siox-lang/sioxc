@@ -194,26 +194,6 @@ pub fn check<'a>(
     checker.finish()
 }
 
-/// Analogue (Phase-2) system attributes that must error rather than be silently
-/// accepted in Phase 1 (spec Stage 4). The full analogue set is a Phase-2
-/// concern; `::ddt` is kept here only as the guard the spec calls out.
-const PHASE2_ATTRS: &[&str] = &["ddt"];
-
-/// Every system attribute the compiler implements (spec 3.9 / 3.23). Anything
-/// else after a `'` is reported rather than lowered: an unrecognized one used
-/// to pass every stage and become an `Unknown` in the IR, surfacing only as
-/// "no engine can run this design" with nothing naming the attribute.
-const SYS_ATTRS: &[&str] = &[
-    "event",
-    "old",
-    "length",
-    "high",
-    "low",
-    "left",
-    "right",
-    "ascending",
-];
-
 /// A port as seen by the checker: its name, resolved type, and direction.
 struct PortInfo {
     /// Port name as declared.
@@ -329,10 +309,10 @@ struct Checker<'a> {
     resolved: &'a Resolved,
     /// Entity name -> its ports.
     entities: HashMap<String, Vec<PortInfo>>,
-    /// Attribute name -> the target keywords it may be applied to.
-    attr_targets: HashMap<String, Vec<String>>,
-    /// Attribute name -> the value type it expects.
-    attr_value_kinds: HashMap<String, AttrValueTy>,
+    /// Resolved attribute identity -> allowed target kinds or type references.
+    attr_targets: HashMap<DefId, Vec<Ident>>,
+    /// Resolved attribute identity -> the value type it expects.
+    attr_value_kinds: HashMap<DefId, AttrValueTy>,
     /// Trait name -> set of type (head) names that implement it.
     trait_impls: HashMap<String, HashSet<String>>,
     /// Trait name -> its defaulted methods (name -> declared return type). A

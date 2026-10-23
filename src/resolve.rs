@@ -32,6 +32,8 @@ use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
 
+pub mod attributes;
+
 /// Trait names the compiler itself provides: the hooks expression syntax
 /// dispatches to, including the named operator traits (`Add`, … `Not`, spec
 /// 3.25) and `CustomOperator` for user symbols. They stay reachable as
@@ -222,9 +224,14 @@ pub struct Resolved {
     lang: HashMap<String, DefId>,
     /// The reverse of `lang`, including the builtin fallbacks.
     lang_of: HashMap<DefId, String>,
+    /// Compiler-provided attribute fallbacks, distinct from source declarations.
+    builtin_attrs: HashMap<String, DefId>,
 }
 
 impl Resolved {
+    pub(crate) fn builtin_attribute(&self, name: &str) -> Option<DefId> {
+        self.builtin_attrs.get(name).copied()
+    }
     /// The declaration that plays `role` for the compiler (`"operator"`,
     /// `"bool"`, `"test"`, …): a lang item, or its builtin fallback when no
     /// library declares one.
@@ -488,10 +495,6 @@ struct Resolver<'a> {
     /// Names explicitly imported into each source module. Re-exports retain
     /// their public flag here instead of mutating the target declaration.
     module_imports: HashMap<(String, String), (DefId, bool, Span)>,
-    /// Compiler-provided attribute fallbacks. Declared attributes themselves
-    /// are module-qualified in `module_attrs`, just like ordinary definitions;
-    /// equal leaves in different modules must not collide.
-    builtin_attrs: HashMap<String, DefId>,
     /// Enum `DefId` -> (variant name -> variant `DefId`).
     enum_variants: HashMap<DefId, HashMap<String, DefId>>,
     /// Lexical scopes for params/locals, innermost last.
@@ -553,7 +556,6 @@ impl<'a> Resolver<'a> {
             module_defs: HashMap::new(),
             module_attrs: HashMap::new(),
             module_imports: HashMap::new(),
-            builtin_attrs: HashMap::new(),
             enum_variants: HashMap::new(),
             scopes: Vec::new(),
             import_sites: Vec::new(),
@@ -608,7 +610,10 @@ impl<'a> Resolver<'a> {
             "forbid",
         ] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
-            self.builtin_attrs.insert(name.to_string(), id);
+            self.out.builtin_attrs.insert(name.to_string(), id);
+            if matches!(name, "keep" | "library" | "name" | "precedence") {
+                self.seed_lang(&format!("metadata_{name}"), id);
+            }
             if name == "test" {
                 self.seed_lang("test", id);
             }
@@ -1700,13 +1705,20 @@ impl<'a> Resolver<'a> {
             }
             Item::AttrDecl(a) => {
                 self.resolve_type(&a.ty);
+                for target in &a.targets {
+                    if !attributes::is_target_kind(&target.text) {
+                        self.resolve_type_path(&Path {
+                            segments: vec![target.clone()],
+                            span: target.span,
+                        });
+                    }
+                }
                 if let Some(default) = &a.default {
                     self.resolve_expr(default);
                 }
             }
-            // `syntax::attributes::attach` copied every binding onto its
-            // target as an applied attribute, which is resolved there.
-            Item::AttrBinding(_) | Item::Macro(_) | Item::MacroCall { .. } => {}
+            Item::AttrBinding(binding) => self.resolve_attr_binding(binding),
+            Item::Macro(_) | Item::MacroCall { .. } => {}
         }
     }
 
@@ -1992,10 +2004,13 @@ impl<'a> Resolver<'a> {
                 self.resolve_block(&process.body)
             }
             ImplItem::Stmt(s) => self.resolve_stmt(s),
-            ImplItem::AttrBinding(_) => {}
+            ImplItem::AttrBinding(binding) => self.resolve_attr_binding(binding),
             // A type attribute's value reads `self`'s shape, as a method
             // body reads its receiver.
             ImplItem::Attr(declaration) => {
+                if let Some(id) = self.lookup_attr(&declaration.name.text) {
+                    self.out.uses.insert(declaration.name.span, id);
+                }
                 self.resolve_type(&declaration.ty);
                 self.enter();
                 self.bind_synthetic_local("self");
@@ -2120,7 +2135,7 @@ impl<'a> Resolver<'a> {
     /// capture `#[allow(..)]`.
     fn resolve_directive_word(&mut self, directive: &crate::diag::lints::LintDirective) {
         let word = directive.level.word();
-        match self.builtin_attrs.get(word).copied() {
+        match self.out.builtin_attrs.get(word).copied() {
             Some(id) => {
                 self.out.uses.insert(directive.word, id);
             }
@@ -2146,18 +2161,45 @@ impl<'a> Resolver<'a> {
                     a.name.span,
                     "directives are built in and have no path; write `#[test]`".to_string(),
                 );
-            } else if let Some(&id) = self.builtin_attrs.get("test") {
+            } else if let Some(&id) = self.out.builtin_attrs.get("test") {
                 self.out.uses.insert(a.name.span, id);
             }
             return;
         }
+        self.resolve_attr_name(&a.name);
+        if let Some(v) = &a.value {
+            self.resolve_expr(v);
+        }
+    }
+
+    fn resolve_attr_binding(&mut self, binding: &AttrBinding) {
+        if matches!(binding.name.segments.as_slice(), [name] if name.text == "lang")
+            && (self
+                .current_module
+                .as_deref()
+                .is_some_and(is_library_module)
+                || self.lookup_attr("lang").is_none_or(|id| {
+                    self.out
+                        .def(id)
+                        .is_none_or(|d| d.module.as_deref() == Some("core::attrs"))
+                }))
+        {
+            return; // collect_lang_items owns compiler lang bindings/errors.
+        }
+        self.resolve_attr_name(&binding.name);
+        self.resolve_expr(&binding.value);
+    }
+
+    fn resolve_attr_name(&mut self, name: &Path) {
+        let segs = &name.segments;
+        let last = segs.last().map(|s| s.text.as_str()).unwrap_or("");
         if segs.len() == 1 {
             if let Some(id) = self.lookup_attr(last) {
-                self.out.uses.insert(a.name.span, id);
+                self.record_qualified_use(name.span, id);
             } else {
                 self.error(
                     codes::UNKNOWN_NAME,
-                    a.name.span,
+                    name.span,
                     format!("unknown attribute `{last}` (declare it with `attr` before use)"),
                 );
             }
@@ -2168,17 +2210,14 @@ impl<'a> Resolver<'a> {
                 .collect::<Vec<_>>()
                 .join("::");
             if let Some(id) = self.lookup_module_export(&module, last, true) {
-                self.record_qualified_use(a.name.span, id);
+                self.record_qualified_use(name.span, id);
             } else {
                 self.error(
                     codes::UNKNOWN_NAME,
-                    a.name.span,
-                    format!("unknown attribute `{}`", path_text(&a.name)),
+                    name.span,
+                    format!("unknown attribute `{}`", path_text(name)),
                 );
             }
-        }
-        if let Some(v) = &a.value {
-            self.resolve_expr(v);
         }
     }
 
@@ -2336,7 +2375,18 @@ impl<'a> Resolver<'a> {
                 }
             }
             Expr::Field { base, .. } => self.resolve_expr(base),
-            Expr::SysAttr { base, .. } => self.resolve_expr(base),
+            Expr::SysAttr { base, attr, .. } => {
+                self.resolve_expr(base);
+                if !SYS_ATTRS.contains(&attr.text.as_str())
+                    && !PHASE2_ATTRS.contains(&attr.text.as_str())
+                {
+                    if let Some(id) = self.lookup_attr(&attr.text) {
+                        if self.out.builtin_attribute("test") != Some(id) {
+                            self.record_qualified_use(attr.span, id);
+                        }
+                    }
+                }
+            }
             Expr::Index { base, index, .. } => {
                 self.resolve_expr(base);
                 self.resolve_expr(index);
@@ -3082,7 +3132,7 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
-        self.builtin_attrs.get(name).copied()
+        self.out.builtin_attrs.get(name).copied()
     }
 
     /// Find a name exported by `module`, honouring `pub use` re-exports. The
@@ -3180,8 +3230,8 @@ mod tests {
         let mut sink = DiagnosticSink::new();
         let mut module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
-        crate::syntax::attributes::attach(std::slice::from_mut(&mut module), &mut sink);
         let resolved = resolve(std::slice::from_ref(&module), &mut sink);
+        attributes::attach(std::slice::from_mut(&mut module), &resolved, &mut sink);
         (resolved, sink.error_count())
     }
 
@@ -4307,8 +4357,8 @@ mod tests {
             &mut sink,
         );
         let mut modules = [attrs, user];
-        crate::syntax::attributes::attach(&mut modules, &mut sink);
-        resolve(&modules, &mut sink);
+        let resolved = resolve(&modules, &mut sink);
+        attributes::attach(&mut modules, &resolved, &mut sink);
         assert!(sink.diagnostics().iter().any(|diagnostic| {
             diagnostic.code == Some(codes::UNKNOWN_NAME)
                 && diagnostic.message.contains("attrs::missing")

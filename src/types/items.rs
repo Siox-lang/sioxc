@@ -94,12 +94,16 @@ impl<'a> Checker<'a> {
                 for port in &e.ports {
                     self.check_applied_view(&port.ty);
                     for a in &port.attrs {
-                        self.check_attr_target(a, "port", type_head_name(&port.ty));
+                        self.check_attr_target(
+                            a,
+                            "port",
+                            crate::resolve::attributes::type_identity(&port.ty, self.resolved),
+                        );
                         self.check_attr_value(a);
                     }
                 }
                 for a in &e.attrs {
-                    self.check_attr_target(a, "entity", Some(e.name.text.as_str()));
+                    self.check_attr_target(a, "entity", self.resolved.declared(e.name.span));
                     self.check_attr_value(a);
                     if let Some(v) = &a.value {
                         self.check_expr(v, sym);
@@ -854,19 +858,32 @@ impl<'a> Checker<'a> {
     /// the `Pll` entity or on declarations/instances of `Pll` (per-instance
     /// vendor metadata, preserved for external tools). Unknown attribute
     /// names on entities are reported by name resolution.
-    pub(super) fn check_attr_target(&mut self, a: &Attr, kind: &str, type_name: Option<&str>) {
+    pub(super) fn check_attr_target(&mut self, a: &Attr, kind: &str, type_id: Option<DefId>) {
         let name = a
             .name
             .segments
             .last()
             .map(|s| s.text.as_str())
             .unwrap_or("");
-        let verdict = self.attr_targets.get(name).map(|targets| {
-            let ok = targets
-                .iter()
-                .any(|t| t == kind || Some(t.as_str()) == type_name);
-            (ok, targets.join(", "))
-        });
+        let verdict = self
+            .attr_identity(a)
+            .and_then(|id| self.attr_targets.get(&id))
+            .map(|targets| {
+                let ok = targets.iter().any(|t| {
+                    t.text == kind
+                        || (!crate::resolve::attributes::is_target_kind(&t.text)
+                            && type_id.is_some()
+                            && self.resolved.resolved(t.span) == type_id)
+                });
+                (
+                    ok,
+                    targets
+                        .iter()
+                        .map(|t| t.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )
+            });
         if let Some((false, allowed)) = verdict {
             self.error(
                 codes::INVALID_ATTR_TARGET,
@@ -874,24 +891,29 @@ impl<'a> Checker<'a> {
                 format!("attribute `{name}` cannot be applied to this {kind} (allowed: {allowed})"),
             );
         }
-        self.warn_unimplemented_attr(name, a.name.span);
+        self.warn_unimplemented_attr(a);
     }
 
     /// Attributes `std::attrs` declares and the compiler resolves, but which
     /// no stage reads. Writing one has no effect, and nothing else says so —
     /// `#[name = "foo"]` looks like it renames the emitted entity and does
     /// nothing at all.
-    pub(super) fn warn_unimplemented_attr(&mut self, name: &str, span: Span) {
-        let purpose = match name {
-            "keep" => "preserving a signal through optimization",
-            "library" => "the emitted library name",
-            "name" => "the emitted entity name",
+    pub(super) fn warn_unimplemented_attr(&mut self, attr: &Attr) {
+        let Some(id) = self.attr_identity(attr) else {
+            return;
+        };
+        let purpose = match self.resolved.lang_of(id) {
+            Some("metadata_keep") => "preserving a signal through optimization",
+            Some("metadata_library") => "the emitted library name",
+            Some("metadata_name") => "the emitted entity name",
             _ => return,
         };
+        let name = self.resolved.def(id).map_or("", |d| d.name.as_str());
+        let message = format!("attribute `{name}` has no effect yet");
         self.warn(
             codes::UNIMPLEMENTED_ATTR,
-            span,
-            format!("attribute `{name}` has no effect yet"),
+            attr.name.span,
+            message,
             &format!("it is reserved for {purpose}; nothing reads it today"),
         );
     }

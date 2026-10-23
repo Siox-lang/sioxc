@@ -85,9 +85,13 @@ fn a_bound_value_must_match_the_declared_type() {
         let src = format!("{src}{VEC}");
         let mut sink = DiagnosticSink::new();
         let mut module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-        crate::syntax::attributes::attach(std::slice::from_mut(&mut module), &mut sink);
         let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-        crate::syntax::attributes::fold_reads(std::slice::from_mut(&mut module), &mut sink);
+        crate::resolve::attributes::attach(std::slice::from_mut(&mut module), &resolved, &mut sink);
+        crate::resolve::attributes::fold_reads(
+            std::slice::from_mut(&mut module),
+            &resolved,
+            &mut sink,
+        );
         check(std::slice::from_ref(&module), &resolved, &mut sink);
         sink.diagnostics()
             .iter()
@@ -136,9 +140,9 @@ fn checked_metadata(sources: &[&str]) -> (Vec<Module>, DiagnosticSink) {
         .enumerate()
         .map(|(i, source)| crate::syntax::parse_module(FileId(i as u32), source, &mut sink))
         .collect();
-    crate::syntax::attributes::attach(&mut modules, &mut sink);
     let resolved = crate::resolve::resolve(&modules, &mut sink);
-    crate::syntax::attributes::fold_reads(&mut modules, &mut sink);
+    crate::resolve::attributes::attach(&mut modules, &resolved, &mut sink);
+    crate::resolve::attributes::fold_reads(&mut modules, &resolved, &mut sink);
     let typed = check(&modules, &resolved, &mut sink);
     fold_metadata_constants(&mut modules, &typed);
     (modules, sink)
@@ -252,9 +256,198 @@ fn copied_metadata_preserves_default_and_binding_site_resolution() {
 }
 
 #[test]
+fn equal_metadata_names_keep_their_own_types_targets_and_defaults() {
+    let count = "module count;
+        pub attr label: integer for entity, let = 3;
+        pub entity Data {}
+        impl Data { attr label = 7; }";
+    let text = "module text;
+        pub attr label: string for entity, let = \"default\";
+        pub entity Data {}
+        impl Data { attr label = \"bound\"; }";
+    for sources in [[count, text], [text, count]] {
+        let (modules, sink) = checked_metadata(&sources);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let count = modules
+            .iter()
+            .find(|m| m.path.segments[0].text == "count")
+            .unwrap();
+        let text = modules
+            .iter()
+            .find(|m| m.path.segments[0].text == "text")
+            .unwrap();
+        assert!(crate::syntax::pretty::print_module(count).contains("attr label = 7;"));
+        assert!(crate::syntax::pretty::print_module(text).contains("attr label = \"bound\";"));
+    }
+}
+
+#[test]
+fn equal_entity_names_keep_their_own_metadata_bindings() {
+    let common = "module common; pub attr mark: integer for entity, let = 1;";
+    let left = "module left; use common::mark; pub entity Data { value: integer out }
+        impl Data { attr mark = 7; value = Data'mark; }";
+    let right = "module right; use common::mark; pub entity Data { value: integer out }
+        impl Data { attr mark = 11; value = Data'mark; }";
+    let caller = "module caller; use common::mark; use L = left::Data; use R = right::Data;
+        entity Top { a: integer out, b: integer out }
+        impl Top { let l: L = {}; let r: R = {}; a = l'mark; b = r'mark; }";
+    for sources in [[common, left, right, caller], [caller, right, left, common]] {
+        let (modules, sink) = checked_metadata(&sources);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let caller_module = modules
+            .iter()
+            .find(|m| m.path.segments[0].text == "caller")
+            .unwrap();
+        let printed = crate::syntax::pretty::print_module(caller_module);
+        assert!(printed.contains("a = 7;"), "{printed}");
+        assert!(printed.contains("b = 11;"), "{printed}");
+        let qualified = caller.replace(
+            "a = l'mark; b = r'mark;",
+            "a = left::Data'mark; b = right::Data'mark;",
+        );
+        let (modules, sink) = checked_metadata(&[common, left, right, &qualified]);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let printed = crate::syntax::pretty::print_module(&modules[3]);
+        assert!(printed.contains("a = 7;"), "{printed}");
+        assert!(printed.contains("b = 11;"), "{printed}");
+    }
+}
+
+#[test]
+fn renamed_attributes_select_by_identity_and_detect_duplicate_alias_bindings() {
+    let left = "module left; pub attr mark: integer for entity = 1;";
+    let right = "module right; pub attr mark: integer for entity = 2;";
+    let caller = "module caller; use a = left::mark; use b = right::mark;
+        entity E { value: integer out }
+        attr a for E = 7; attr b for E = 11;
+        impl E { value = E'a + E'b; }";
+    let (modules, sink) = checked_metadata(&[left, right, caller]);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let printed = crate::syntax::pretty::print_module(&modules[2]);
+    assert!(printed.contains("value = 7 + 11;"), "{printed}");
+    let duplicate = caller.replace("b = right::mark", "b = left::mark");
+    let (_, sink) = checked_metadata(&[left, right, &duplicate]);
+    assert_eq!(
+        sink.diagnostics()
+            .iter()
+            .filter(|d| d.code == Some(codes::DUPLICATE_ATTR_BINDING))
+            .count(),
+        1,
+        "{:?}",
+        sink.diagnostics()
+    );
+}
+
+#[test]
+fn named_attribute_targets_compare_resolved_types_not_spelling() {
+    let left = "module left; pub entity Gate {} pub attr tag: integer for Gate = 0;";
+    let right = "module right; pub entity Gate {}";
+    let caller = "module caller; use tag = left::tag; use A = left::Gate; use B = right::Gate;
+        entity Top {}
+        impl Top { attr tag for a = 1; let a: A = {}; attr tag for b = 1; let b: B = {}; }";
+    let (_, sink) = checked_metadata(&[left, right, caller]);
+    let errors: Vec<_> = sink
+        .diagnostics()
+        .iter()
+        .filter(|d| d.severity == crate::diag::Severity::Error)
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].code, Some(codes::INVALID_ATTR_TARGET));
+}
+
+#[test]
+fn standard_like_attribute_names_do_not_gain_compiler_roles() {
+    let (_, sink) = checked_metadata(&["module m;
+        attr keep: integer for entity = 1;
+        attr name: integer for entity = 1;
+        attr library: integer for entity = 1;
+        attr precedence: integer for impl = 1;
+        entity E {}
+        impl E { attr keep = 2; attr name = 3; attr library = 4; attr precedence = 20 + 20; }"]);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    assert!(
+        !sink
+            .diagnostics()
+            .iter()
+            .any(|d| d.code == Some(codes::UNIMPLEMENTED_ATTR)),
+        "{:?}",
+        sink.diagnostics()
+    );
+}
+
+#[test]
+fn type_attribute_conflicts_only_with_visible_metadata() {
+    let metadata = "module metadata; pub attr tag: integer for entity = 1;";
+    let ty = "module values; struct Q(integer); impl Q { pub attr tag: integer = 1; }";
+    let (_, sink) = checked_metadata(&[metadata, ty]);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let visible = ty.replace("module values;", "module values; use metadata::tag;");
+    let (_, sink) = checked_metadata(&[metadata, &visible]);
+    assert_eq!(
+        sink.diagnostics()
+            .iter()
+            .filter(|d| d.code == Some(codes::INVALID_TYPE_ATTR))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn imported_metadata_cannot_shadow_system_tick_names() {
+    let provider = "module provider; pub attr mark: integer for let = 99;";
+    let source = "module m; use length = provider::mark;
+        entity E { a: integer[3] in, n: integer out } impl E { n = a'length; }";
+    let (modules, sink) = checked_metadata(&[provider, source]);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    assert!(crate::syntax::pretty::print_module(&modules[1]).contains("n = a'length;"));
+}
+
+#[test]
+fn a_metadata_test_name_does_not_collide_with_the_test_directive() {
+    let (modules, sink) = checked_metadata(&["module m; attr test: integer for entity = 1;
+        #[test] entity E {} attr test for E = 7;
+        fn value() -> integer { return E'test; }"]);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    assert!(crate::syntax::pretty::print_module(&modules[0]).contains("return 7;"));
+}
+
+#[test]
+fn renamed_standard_metadata_retains_its_compiler_role() {
+    let core = "module core::attrs;
+        pub attr keep: integer for let = 0;
+        attr lang for keep = \"metadata_keep\";";
+    let source = "module m; use preserve = core::attrs::keep;
+        entity E {} impl E { attr preserve for x = 2; let x: integer = 0; }";
+    let (_, sink) = checked_metadata(&[core, source]);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    assert_eq!(
+        sink.diagnostics()
+            .iter()
+            .filter(|d| d.code == Some(codes::UNIMPLEMENTED_ATTR))
+            .count(),
+        1,
+        "{:?}",
+        sink.diagnostics()
+    );
+}
+
+#[test]
+fn the_test_directive_is_not_readable_metadata() {
+    let (_, sink) = checked_metadata(&["module m;
+        #[test] entity E {} fn value() -> integer { return E'test; }"]);
+    assert!(
+        sink.diagnostics()
+            .iter()
+            .any(|d| d.code == Some(codes::UNKNOWN_NAME)
+                && d.message.contains("unknown system attribute")),
+        "{:?}",
+        sink.diagnostics()
+    );
+}
+
+#[test]
 fn precedence_stays_literal_only_until_bootstrap_can_evaluate_it() {
     let (_, sink) = checked_metadata(&["module m;
-        attr precedence: integer for impl;
         struct S {}
         impl S { attr precedence = 20 + 20; }"]);
     assert_eq!(

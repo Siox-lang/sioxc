@@ -48,10 +48,10 @@ fn check_src(src: &str) -> usize {
     let src = src.as_str();
     let mut sink = DiagnosticSink::new();
     let mut module = crate::syntax::parse_module(FileId(0), src, &mut sink);
-    crate::syntax::attributes::attach(std::slice::from_mut(&mut module), &mut sink);
     assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
     let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-    crate::syntax::attributes::fold_reads(std::slice::from_mut(&mut module), &mut sink);
+    crate::resolve::attributes::attach(std::slice::from_mut(&mut module), &resolved, &mut sink);
+    crate::resolve::attributes::fold_reads(std::slice::from_mut(&mut module), &resolved, &mut sink);
     let parse_resolve_errors = sink.error_count();
     check(std::slice::from_ref(&module), &resolved, &mut sink);
     sink.error_count() - parse_resolve_errors
@@ -64,9 +64,9 @@ fn check_modules(sources: &[(&str, FileId)]) -> DiagnosticSink {
         .iter()
         .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
         .collect();
-    crate::syntax::attributes::attach(&mut modules, &mut sink);
     let resolved = crate::resolve::resolve(&modules, &mut sink);
-    crate::syntax::attributes::fold_reads(&mut modules, &mut sink);
+    crate::resolve::attributes::attach(&mut modules, &resolved, &mut sink);
+    crate::resolve::attributes::fold_reads(&mut modules, &resolved, &mut sink);
     check(&modules, &resolved, &mut sink);
     sink
 }
@@ -76,9 +76,9 @@ fn diag_codes(src: &str) -> Vec<String> {
     let src = format!("{src}{VEC}");
     let mut sink = DiagnosticSink::new();
     let mut module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-    crate::syntax::attributes::attach(std::slice::from_mut(&mut module), &mut sink);
     let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-    crate::syntax::attributes::fold_reads(std::slice::from_mut(&mut module), &mut sink);
+    crate::resolve::attributes::attach(std::slice::from_mut(&mut module), &resolved, &mut sink);
+    crate::resolve::attributes::fold_reads(std::slice::from_mut(&mut module), &resolved, &mut sink);
     check(std::slice::from_ref(&module), &resolved, &mut sink);
     sink.diagnostics()
         .iter()
@@ -92,9 +92,9 @@ fn warnings(src: &str, code: &str) -> usize {
     let src = src.as_str();
     let mut sink = DiagnosticSink::new();
     let mut module = crate::syntax::parse_module(FileId(0), src, &mut sink);
-    crate::syntax::attributes::attach(std::slice::from_mut(&mut module), &mut sink);
     let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-    crate::syntax::attributes::fold_reads(std::slice::from_mut(&mut module), &mut sink);
+    crate::resolve::attributes::attach(std::slice::from_mut(&mut module), &resolved, &mut sink);
+    crate::resolve::attributes::fold_reads(std::slice::from_mut(&mut module), &resolved, &mut sink);
     check(std::slice::from_ref(&module), &resolved, &mut sink);
     sink.diagnostics()
         .iter()

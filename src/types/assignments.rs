@@ -25,6 +25,12 @@ impl consteval::Environment for MetadataIntegers<'_, '_> {
 }
 
 impl<'a> Checker<'a> {
+    pub(super) fn attr_identity(&self, attr: &Attr) -> Option<DefId> {
+        self.resolved
+            .resolved(attr.name.span)
+            .or_else(|| self.resolved.declared(attr.name.span))
+    }
+
     /// Spec 3.18: flag a write to an `in` port. Three shapes are illegal: the
     /// bare port (`a = ..`), an `in` bus-mode leaf (`bus.ready = ..`), and any
     /// field/index of a plain (non-bus) `in` port (`a[3] = ..`, `p.f = ..`).
@@ -214,7 +220,11 @@ impl<'a> Checker<'a> {
             // synthesis or constraint backend reading it found an attribute with
             // no number in it. `Bool` is exempt: a bare flag reads as `true`, the
             // way Bool flag attributes such as `#[test]` do.
-            match self.attr_value_kinds.get(name).copied() {
+            match self
+                .attr_identity(a)
+                .and_then(|id| self.attr_value_kinds.get(&id))
+                .copied()
+            {
                 Some(AttrValueTy::Integer) => self.error_with_help(
                     codes::INVALID_ATTR_VALUE_TYPE,
                     a.name.span,
@@ -237,7 +247,8 @@ impl<'a> Checker<'a> {
             }
             return;
         };
-        let expected = self.attr_value_kinds.get(name).copied();
+        let id = self.attr_identity(a);
+        let expected = id.and_then(|id| self.attr_value_kinds.get(&id)).copied();
         let ok = match expected {
             Some(AttrValueTy::Bool) => {
                 matches!(value, Expr::Path(p) if p.segments.len() == 2 && p.segments[0].text == "Bool")
@@ -245,7 +256,9 @@ impl<'a> Checker<'a> {
             Some(AttrValueTy::Str) => matches!(value, Expr::StrLit { .. }),
             // Precedence is consumed before parsing/resolution. Never accept a
             // value here that the bootstrap operator discovery cannot apply.
-            Some(AttrValueTy::Integer) if name == "precedence" => {
+            Some(AttrValueTy::Integer)
+                if id.and_then(|id| self.resolved.lang_of(id)) == Some("metadata_precedence") =>
+            {
                 matches!(value, Expr::Int { .. })
             }
             Some(AttrValueTy::Integer) => {

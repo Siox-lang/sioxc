@@ -63,7 +63,10 @@ impl<'a> Checker<'a> {
                 if type_attr.is_none()
                     && !PHASE2_ATTRS.contains(&a)
                     && !SYS_ATTRS.contains(&a)
-                    && !self.attr_value_kinds.contains_key(a)
+                    && !self
+                        .resolved
+                        .resolved(attr.span)
+                        .is_some_and(|id| self.attr_value_kinds.contains_key(&id))
                 {
                     // The edge helpers are ordinary trait methods now, so this
                     // is the one wrong attribute worth a migration hint.

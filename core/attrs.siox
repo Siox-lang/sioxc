@@ -8,6 +8,7 @@ module core::attrs;
 
 // Binding power for a custom infix operator implementation; `0` means none.
 pub attr precedence: integer for impl = 0;
+attr lang for precedence = "metadata_precedence";
 
 // What a `core` or `std` declaration is to the compiler: `attr lang for
 // Add = "add";`. Only `core` and `std` may bind it.

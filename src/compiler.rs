@@ -552,10 +552,14 @@ impl Compiler {
             result.diagnostics.emit(warning);
         }
         crate::syntax::imports::desugar(&mut result.modules, &mut result.diagnostics);
-        crate::syntax::attributes::attach(&mut result.modules, &mut result.diagnostics);
         let resolved = crate::resolve::resolve(&result.modules, &mut result.diagnostics);
         result.stats.definitions = Some(resolved.defs().len());
-        crate::syntax::attributes::fold_reads(&mut result.modules, &mut result.diagnostics);
+        crate::resolve::attributes::attach(&mut result.modules, &resolved, &mut result.diagnostics);
+        crate::resolve::attributes::fold_reads(
+            &mut result.modules,
+            &resolved,
+            &mut result.diagnostics,
+        );
         crate::types::inline_loop_ranges(&mut result.modules, &resolved);
         let typed = crate::types::check(&result.modules, &resolved, &mut result.diagnostics);
         crate::types::fold_metadata_constants(&mut result.modules, &typed);
@@ -1403,8 +1407,8 @@ mod tests {
             ),
         ];
         let mut modules = modules;
-        syntax::attributes::attach(&mut modules, &mut sink);
         let resolved = resolve::resolve(&modules, &mut sink);
+        resolve::attributes::attach(&mut modules, &resolved, &mut sink);
         assert!(!sink.has_errors(), "{:#?}", sink.diagnostics());
         let crate::syntax::ast::Item::Entity(preferred) = &modules[0].items[0] else {
             panic!("expected preferred entity");

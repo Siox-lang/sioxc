@@ -1,14 +1,14 @@
-//! Declarative attributes: bindings and reads (spec 3.5).
+//! Resolved declarative attributes: bindings and reads (spec 3.5).
 //!
 //! Metadata is declared once (`attr keep: Bool for let, port = false;`),
 //! bound from outside the declaration it describes (`attr keep for probe =
 //! true;`, or objectless `attr precedence = 40;` for the enclosing item), and
-//! read back with the tick (`probe'keep`). Binding runs before resolution;
-//! read substitution runs after resolution, preserving binding-site identities:
+//! read back with the tick (`probe'keep`). Raw names and values resolve first;
+//! attachment and read substitution then retain those declaration identities:
 //!
 //! - **Bindings** are copied onto their target as an applied [`Attr`], the
 //!   form every later stage already reads (target and value checks, the
-//!   elaborated `Instance::attrs`, test discovery). The binding item stays in
+//!   elaborated `Instance::attrs`). The binding item stays in
 //!   the tree for the printer and is otherwise ignored.
 //! - **Reads** of a declared attribute are replaced by the value they denote:
 //!   the binding on that object, else (for an instance) the binding on its
@@ -27,10 +27,57 @@
 //! twice on one declaration is `E-P030` (a later binding never overrides); a
 //! read with neither a binding nor a default is `E-P031`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
+use super::{DefId, Resolved};
 use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
 use crate::syntax::ast::*;
+
+pub(crate) fn is_target_kind(name: &str) -> bool {
+    matches!(
+        name,
+        "entity"
+            | "let"
+            | "port"
+            | "impl"
+            | "struct"
+            | "enum"
+            | "view"
+            | "trait"
+            | "fn"
+            | "attr"
+            | "type"
+            | "module"
+    )
+}
+
+/// The identity of a written type head, never a leaf-name search.
+pub(crate) fn type_identity(ty: &Type, resolved: &Resolved) -> Option<DefId> {
+    match ty {
+        Type::Path(path) => resolved.resolved(path.span),
+        Type::Generic { base, .. } | Type::Indexed { base, .. } => type_identity(base, resolved),
+        Type::View { view, .. } => resolved.resolved(view.span),
+        Type::Tuple { .. } => None,
+    }
+}
+
+/// Output strings retain identity even when imports used aliases or equal leaves.
+pub(crate) fn output_name(attr: &Attr, resolved: &Resolved) -> String {
+    if let Some(id) = resolved.resolved(attr.name.span) {
+        if matches!(
+            resolved.lang_of(id),
+            Some("metadata_keep" | "metadata_library" | "metadata_name" | "metadata_precedence")
+        ) {
+            if let Some(definition) = resolved.def(id) {
+                return definition.name.clone();
+            }
+        }
+        if let Some(name) = resolved.qualified_name_str(id) {
+            return name.to_string();
+        }
+    }
+    path_text(&attr.name)
+}
 
 /// What a declaration says about one attribute.
 struct Declared {
@@ -46,42 +93,32 @@ enum Target {
     Port { item: usize, port: usize },
 }
 
-/// Attach bindings before resolution. Call [`fold_reads`] after resolution,
-/// so copied expressions keep their declaration's meaning, not the reader's.
-pub fn attach(modules: &mut [Module], sink: &mut DiagnosticSink) {
-    let declared = declarations(modules);
+/// Attach resolved bindings to their targets, then call [`fold_reads`].
+pub fn attach(modules: &mut [Module], resolved: &Resolved, sink: &mut DiagnosticSink) {
+    let declared = declarations(modules, resolved);
     for module in modules.iter_mut() {
-        bind_module(module, &declared, sink);
+        bind_module(module, &declared, resolved, sink);
     }
 }
 
 /// Substitute reads after resolving bindings/defaults in their original scopes.
-pub fn fold_reads(modules: &mut [Module], sink: &mut DiagnosticSink) {
-    let declared = declarations(modules);
-    let entity_attrs = entity_attrs(modules);
-    for index in 0..modules.len() {
-        let visible = visible_attrs(&modules[index], modules);
-        let names: HashSet<&str> = declared
-            .keys()
-            .map(String::as_str)
-            .filter(|name| visible.contains(*name))
-            .collect();
-        if names.is_empty() {
-            continue;
-        }
-        let reads = Reads {
-            names: &names,
-            declared: &declared,
-            entity_attrs: &entity_attrs,
-        };
-        reads.fold_module(&mut modules[index], sink);
+pub fn fold_reads(modules: &mut [Module], resolved: &Resolved, sink: &mut DiagnosticSink) {
+    let declared = declarations(modules, resolved);
+    let entity_attrs = entity_attrs(modules, resolved);
+    let reads = Reads {
+        declared: &declared,
+        entity_attrs: &entity_attrs,
+        resolved,
+    };
+    for module in modules {
+        reads.fold_module(module, sink);
     }
 }
 
-/// Every attribute declaration, by name. The standard ones are seeded so
+/// Every attribute declaration, by resolved identity. The standard ones are seeded so
 /// bindings of them work even before `std::attrs` is loaded, mirroring the
 /// type checker's seeds.
-fn declarations(modules: &[Module]) -> HashMap<String, Declared> {
+fn declarations(modules: &[Module], resolved: &Resolved) -> HashMap<DefId, Declared> {
     let mut out = HashMap::new();
     for (name, targets) in [
         ("test", &["entity"][..]),
@@ -90,8 +127,11 @@ fn declarations(modules: &[Module]) -> HashMap<String, Declared> {
         ("name", &["entity"][..]),
         ("precedence", &["impl"][..]),
     ] {
+        let Some(id) = resolved.builtin_attribute(name) else {
+            continue;
+        };
         out.insert(
-            name.to_string(),
+            id,
             Declared {
                 targets: targets.iter().map(|t| t.to_string()).collect(),
                 default: None,
@@ -101,8 +141,11 @@ fn declarations(modules: &[Module]) -> HashMap<String, Declared> {
     for module in modules {
         for item in &module.items {
             if let Item::AttrDecl(declaration) = item {
+                let Some(id) = resolved.declared(declaration.name.span) else {
+                    continue;
+                };
                 out.insert(
-                    declaration.name.text.clone(),
+                    id,
                     Declared {
                         targets: declaration.targets.iter().map(|t| t.text.clone()).collect(),
                         default: declaration.default.clone(),
@@ -114,41 +157,15 @@ fn declarations(modules: &[Module]) -> HashMap<String, Declared> {
     out
 }
 
-/// Attribute names a module can read by their bare name: its own
-/// declarations, its imports, and the prelude's re-exports.
-fn visible_attrs(module: &Module, modules: &[Module]) -> HashSet<String> {
-    let mut out = HashSet::new();
-    let mut collect = |module: &Module, only_pub: bool| {
-        for item in &module.items {
-            match item {
-                Item::AttrDecl(declaration) => {
-                    out.insert(declaration.name.text.clone());
-                }
-                Item::Using(using) if !only_pub || using.is_pub => {
-                    if let UsingKind::Import { names, .. } = &using.kind {
-                        out.extend(names.iter().map(|name| name.binding().text.clone()));
-                    }
-                }
-                _ => {}
-            }
-        }
-    };
-    collect(module, false);
-    for prelude in ["core::prelude", "std::prelude"] {
-        if let Some(prelude) = modules.iter().find(|m| path_is(&m.path, prelude)) {
-            collect(prelude, true);
-        }
-    }
-    out
-}
-
-/// Every entity's applied attributes after binding, by entity name.
-fn entity_attrs(modules: &[Module]) -> HashMap<String, Vec<Attr>> {
+/// Every entity's applied attributes after binding, by resolved entity identity.
+fn entity_attrs(modules: &[Module], resolved: &Resolved) -> HashMap<DefId, Vec<Attr>> {
     let mut out = HashMap::new();
     for module in modules {
         for item in &module.items {
             if let Item::Entity(entity) = item {
-                out.insert(entity.name.text.clone(), entity.attrs.clone());
+                if let Some(id) = resolved.declared(entity.name.span) {
+                    out.insert(id, entity.attrs.clone());
+                }
             }
         }
     }
@@ -158,7 +175,8 @@ fn entity_attrs(modules: &[Module]) -> HashMap<String, Vec<Attr>> {
 /// Resolve and apply one module's bindings.
 fn bind_module(
     module: &mut Module,
-    declared: &HashMap<String, Declared>,
+    declared: &HashMap<DefId, Declared>,
+    resolved: &Resolved,
     sink: &mut DiagnosticSink,
 ) {
     let mut plan: Vec<(Target, Attr, Option<Ident>)> = Vec::new();
@@ -210,8 +228,17 @@ fn bind_module(
                         continue;
                     };
                     let target = match &binding.object {
-                        Some(object) => member_named(module, implementation, &object.text),
-                        None => Some(enclosing(module, index, implementation, binding, declared)),
+                        Some(object) => {
+                            member_named(module, implementation, &object.text, resolved)
+                        }
+                        None => Some(enclosing(
+                            module,
+                            index,
+                            implementation,
+                            binding,
+                            declared,
+                            resolved,
+                        )),
                     };
                     match target {
                         Some(target) => {
@@ -247,7 +274,11 @@ fn bind_module(
             },
         };
         let name = attr_name(&attr);
-        if let Some(previous) = attrs.iter().find(|a| attr_name(a) == name) {
+        let id = resolved.resolved(attr.name.span);
+        if let Some(previous) = attrs
+            .iter()
+            .find(|a| id.is_some() && resolved.resolved(a.name.span) == id)
+        {
             let on = object
                 .as_ref()
                 .map(|o| format!("`{}`", o.text))
@@ -285,18 +316,19 @@ fn enclosing(
     index: usize,
     implementation: &ImplDecl,
     binding: &AttrBinding,
-    declared: &HashMap<String, Declared>,
+    declared: &HashMap<DefId, Declared>,
+    resolved: &Resolved,
 ) -> Target {
-    let targets_impl = binding
-        .name
-        .segments
-        .last()
-        .and_then(|name| declared.get(&name.text))
+    let targets_impl = resolved
+        .resolved(binding.name.span)
+        .and_then(|id| declared.get(&id))
         .is_none_or(|d| d.targets.iter().any(|t| t == "impl"));
     if !targets_impl && implementation.trait_.is_none() {
-        if let Some(entity) =
-            type_name(&implementation.target).and_then(|n| entity_named(module, n))
-        {
+        if let Some(entity) = entity_with_id(
+            module,
+            type_identity(&implementation.target, resolved),
+            resolved,
+        ) {
             return Target::Entity(entity);
         }
     }
@@ -306,13 +338,18 @@ fn enclosing(
 /// The `let` or port called `name` that a binding inside `implementation`
 /// names: a `let` in any of the same entity's implementation blocks in this
 /// module, then a port of the entity.
-fn member_named(module: &Module, implementation: &ImplDecl, name: &str) -> Option<Target> {
-    let owner = type_name(&implementation.target)?;
+fn member_named(
+    module: &Module,
+    implementation: &ImplDecl,
+    name: &str,
+    resolved: &Resolved,
+) -> Option<Target> {
+    let owner = type_identity(&implementation.target, resolved)?;
     for (item, candidate) in module.items.iter().enumerate() {
         let Item::Impl(candidate) = candidate else {
             continue;
         };
-        if candidate.trait_.is_some() || type_name(&candidate.target) != Some(owner) {
+        if candidate.trait_.is_some() || type_identity(&candidate.target, resolved) != Some(owner) {
             continue;
         }
         for (member, declaration) in candidate.items.iter().enumerate() {
@@ -321,7 +358,7 @@ fn member_named(module: &Module, implementation: &ImplDecl, name: &str) -> Optio
             }
         }
     }
-    let item = entity_named(module, owner)?;
+    let item = entity_with_id(module, Some(owner), resolved)?;
     let Item::Entity(entity) = &module.items[item] else {
         return None;
     };
@@ -338,6 +375,14 @@ fn entity_named(module: &Module, name: &str) -> Option<usize> {
         .items
         .iter()
         .position(|item| matches!(item, Item::Entity(entity) if entity.name.text == name))
+}
+
+fn entity_with_id(module: &Module, id: Option<DefId>, resolved: &Resolved) -> Option<usize> {
+    let id = id?;
+    module.items.iter().position(|item| {
+        matches!(item, Item::Entity(entity)
+        if resolved.declared(entity.name.span) == Some(id))
+    })
 }
 
 /// Report a named binding whose object does not exist where it looks.
@@ -360,18 +405,17 @@ fn unknown_object(sink: &mut DiagnosticSink, binding: &AttrBinding, expected: &s
 
 /// Folding attribute reads in one module.
 struct Reads<'r> {
-    /// Declared attribute names this module can read.
-    names: &'r HashSet<&'r str>,
-    declared: &'r HashMap<String, Declared>,
+    declared: &'r HashMap<DefId, Declared>,
     /// Every entity's attributes after binding, for instance fallbacks.
-    entity_attrs: &'r HashMap<String, Vec<Attr>>,
+    entity_attrs: &'r HashMap<DefId, Vec<Attr>>,
+    resolved: &'r Resolved,
 }
 
 /// The names a read can address inside one implementation: its `let`s (with
 /// their attributes and, for an instance, its entity) and its ports.
 #[derive(Default)]
 struct Scope {
-    members: HashMap<String, (Vec<Attr>, Option<String>)>,
+    members: HashMap<String, (Vec<Attr>, Option<DefId>)>,
 }
 
 impl Reads<'_> {
@@ -381,7 +425,7 @@ impl Reads<'_> {
             .items
             .iter()
             .map(|item| match item {
-                Item::Impl(implementation) => scope_of(module, implementation),
+                Item::Impl(implementation) => scope_of(module, implementation, self.resolved),
                 _ => Scope::default(),
             })
             .collect();
@@ -482,7 +526,11 @@ impl Reads<'_> {
 
     fn fold_expr(&self, expression: &mut Expr, scope: &Scope, sink: &mut DiagnosticSink) {
         if let Expr::SysAttr { base, attr, span } = expression {
-            if self.names.contains(attr.text.as_str()) {
+            if self
+                .resolved
+                .resolved(attr.span)
+                .is_some_and(|id| self.declared.contains_key(&id))
+            {
                 if let Some(value) = self.read(base, attr, *span, scope, sink) {
                     *expression = value;
                 }
@@ -569,8 +617,9 @@ impl Reads<'_> {
         sink: &mut DiagnosticSink,
     ) -> Option<Expr> {
         let name = attr.text.as_str();
-        let object = match base {
-            Expr::Path(path) if path.segments.len() == 1 => path.segments[0].text.as_str(),
+        let id = self.resolved.resolved(attr.span)?;
+        let path = match base {
+            Expr::Path(path) => path,
             _ => {
                 sink.emit(
                     Diagnostic::error(format!("`'{name}` reads a declaration's attribute"))
@@ -581,15 +630,20 @@ impl Reads<'_> {
                 return None;
             }
         };
-        let bound = if let Some((attrs, entity)) = scope.members.get(object) {
-            find(attrs, name).or_else(|| {
+        let object = path_text(path);
+        let bound = if let Some((attrs, entity)) = scope.members.get(&object) {
+            find(attrs, id, self.resolved).or_else(|| {
                 entity
                     .as_ref()
                     .and_then(|entity| self.entity_attrs.get(entity))
-                    .and_then(|attrs| find(attrs, name))
+                    .and_then(|attrs| find(attrs, id, self.resolved))
             })
-        } else if let Some(attrs) = self.entity_attrs.get(object) {
-            find(attrs, name)
+        } else if let Some(attrs) = self
+            .resolved
+            .resolved(path.span)
+            .and_then(|entity| self.entity_attrs.get(&entity))
+        {
+            find(attrs, id, self.resolved)
         } else {
             sink.emit(
                 Diagnostic::error(format!("`{object}'{name}` names no declaration"))
@@ -612,7 +666,7 @@ impl Reads<'_> {
                 span: attr.span,
             })),
             Some(Attr { value, .. }) => value.clone(),
-            None => self.declared.get(name).and_then(|d| d.default.clone()),
+            None => self.declared.get(&id).and_then(|d| d.default.clone()),
         };
         if value.is_none() {
             sink.emit(
@@ -630,30 +684,36 @@ impl Reads<'_> {
 }
 
 /// The members a read inside `implementation` can name.
-fn scope_of(module: &Module, implementation: &ImplDecl) -> Scope {
+fn scope_of(module: &Module, implementation: &ImplDecl, resolved: &Resolved) -> Scope {
     let mut scope = Scope::default();
-    let Some(owner) = type_name(&implementation.target) else {
+    let Some(owner) = type_identity(&implementation.target, resolved) else {
         return scope;
     };
     for item in &module.items {
         match item {
             Item::Impl(candidate)
-                if candidate.trait_.is_none() && type_name(&candidate.target) == Some(owner) =>
+                if candidate.trait_.is_none()
+                    && type_identity(&candidate.target, resolved) == Some(owner) =>
             {
                 for member in &candidate.items {
                     if let ImplItem::Let(declaration) = member {
                         let entity = match &declaration.value {
-                            Some(Expr::Construct { ty: Some(ty), .. }) => type_name(ty),
-                            _ => declaration.ty.as_ref().and_then(type_name),
+                            Some(Expr::Construct { ty: Some(ty), .. }) => {
+                                type_identity(ty, resolved)
+                            }
+                            _ => declaration
+                                .ty
+                                .as_ref()
+                                .and_then(|ty| type_identity(ty, resolved)),
                         };
                         scope.members.insert(
                             declaration.name.text.clone(),
-                            (declaration.attrs.clone(), entity.map(str::to_string)),
+                            (declaration.attrs.clone(), entity),
                         );
                     }
                 }
             }
-            Item::Entity(entity) if entity.name.text == owner => {
+            Item::Entity(entity) if resolved.declared(entity.name.span) == Some(owner) => {
                 for port in &entity.ports {
                     scope
                         .members
@@ -667,9 +727,11 @@ fn scope_of(module: &Module, implementation: &ImplDecl) -> Scope {
     scope
 }
 
-/// The applied attribute called `name` among `attrs`.
-fn find<'a>(attrs: &'a [Attr], name: &str) -> Option<&'a Attr> {
-    attrs.iter().find(|a| attr_name(a) == name)
+/// The applied attribute with identity `id` among `attrs`.
+fn find<'a>(attrs: &'a [Attr], id: DefId, resolved: &Resolved) -> Option<&'a Attr> {
+    attrs
+        .iter()
+        .find(|a| resolved.resolved(a.name.span) == Some(id))
 }
 
 /// The last segment of an applied attribute's name.
@@ -679,6 +741,7 @@ fn attr_name(attr: &Attr) -> &str {
 
 /// The declared name a type expression names, for an instance or an impl
 /// target: the last segment of its path. An array of instances is not one.
+#[cfg(test)]
 fn type_name(ty: &Type) -> Option<&str> {
     match ty {
         Type::Path(path) => path.segments.last().map(|s| s.text.as_str()),
@@ -729,8 +792,17 @@ mod tests {
             "parse errors: {:#?}",
             sink.diagnostics()
         );
-        attach(&mut modules, &mut sink);
-        fold_reads(&mut modules, &mut sink);
+        let count = modules.len();
+        for source in [
+            "module fixtures; pub enum Bool { false, true } pub enum Bit { '0', '1' } pub struct unsigned(integer);",
+            "module std::prelude; pub use fixtures::{Bool, Bit, unsigned};",
+        ] {
+            modules.push(crate::syntax::parse_module(FileId(modules.len() as u32), source, &mut sink));
+        }
+        let resolved = super::super::resolve(&modules, &mut sink);
+        attach(&mut modules, &resolved, &mut sink);
+        fold_reads(&mut modules, &resolved, &mut sink);
+        modules.truncate(count);
         (modules, sink.diagnostics().to_vec())
     }
 

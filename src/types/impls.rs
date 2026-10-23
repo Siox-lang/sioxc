@@ -127,7 +127,11 @@ impl<'a> Checker<'a> {
         if is_blanket_array_impl(im) {
             let sym = HashMap::new();
             for attr in &im.attrs {
-                self.check_attr_target(attr, "impl", type_head_name(&im.target));
+                self.check_attr_target(
+                    attr,
+                    "impl",
+                    crate::resolve::attributes::type_identity(&im.target, self.resolved),
+                );
                 self.check_attr_value(attr);
                 if let Some(value) = &attr.value {
                     self.check_expr(value, &sym);
@@ -138,7 +142,11 @@ impl<'a> Checker<'a> {
         let (dirs, sym, ranged) = self.impl_env(im);
         let index_bounds = self.array_bounds.borrow().clone();
         for a in &im.attrs {
-            self.check_attr_target(a, "impl", type_head_name(&im.target));
+            self.check_attr_target(
+                a,
+                "impl",
+                crate::resolve::attributes::type_identity(&im.target, self.resolved),
+            );
             self.check_attr_value(a);
             if let Some(v) = &a.value {
                 self.check_expr(v, &sym);
@@ -177,24 +185,23 @@ impl<'a> Checker<'a> {
                     // Per-instance attributes: valid for `let` targets or when
                     // a named target matches the declaration's type (the
                     // instance's entity, or the annotated type head).
-                    let type_name: Option<String> = match &l.value {
+                    let type_id = match &l.value {
                         Some(Expr::Construct { ty: Some(t), .. }) => {
-                            type_head_name(t).map(str::to_string)
+                            crate::resolve::attributes::type_identity(t, self.resolved)
                         }
-                        _ => l.ty.as_ref().and_then(type_head_name).map(str::to_string),
+                        _ => l.ty.as_ref().and_then(|ty| {
+                            crate::resolve::attributes::type_identity(ty, self.resolved)
+                        }),
                     };
                     for a in &l.attrs {
-                        let name = a
-                            .name
-                            .segments
-                            .last()
-                            .map(|s| s.text.as_str())
-                            .unwrap_or("");
-                        if !self.attr_targets.contains_key(name) {
+                        if !self
+                            .attr_identity(a)
+                            .is_some_and(|id| self.attr_targets.contains_key(&id))
+                        {
                             // Resolution already reported the unknown attribute.
                             continue;
                         }
-                        self.check_attr_target(a, "let", type_name.as_deref());
+                        self.check_attr_target(a, "let", type_id);
                         self.check_attr_value(a);
                     }
                     if let Some(v) = &l.value {

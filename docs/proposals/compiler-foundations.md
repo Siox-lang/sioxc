@@ -238,8 +238,9 @@ packed values, directional ranges, all statically sized attributes, additional
 pure-function statements. Metadata validation now shares scalar evaluation as
 described below; arbitrary typed attribute values remain open.
 
-**Implemented integer metadata.** Bindings attach before resolution; reads are
-substituted afterward, retaining the original binding/default expression spans
+**Implemented integer metadata.** Raw bindings/defaults resolve first; the
+resolve-layer attribute pass then attaches bindings and substitutes reads,
+retaining the original binding/default expression spans
 and resolved constants/functions. Instance `let` metadata now goes through
 resolution too. This prevents a reader's same-named constants/functions from
 capturing imported metadata. The shared interpreter validates integer defaults
@@ -256,7 +257,8 @@ materializes a checked negative kernel literal as one integer value before its
 consumer widens it. General context-width arithmetic and packed conversions
 retain their existing semantics; packed widths are not limited by this fix.
 
-Precedence remains literal-only: operator grouping is discovered before normal
+Core precedence remains literal-only and uses its canonical spelling during
+bootstrap discovery: operator grouping is discovered before normal
 parsing/resolution, and accepting an expression only in the later checker would
 silently ignore its value. Bool/string/enum metadata and pure-function statement
 coverage still need the typed-value work; no new mini evaluator or truth table
@@ -275,7 +277,7 @@ remain); `E-P021` ("not a constant") and range errors agree across stages.
 
 ## 4. A resolved tree between `types` and `elab`
 
-**Problem.** Resolution produces `DefId`s, but every later stage walks the
+**Problem at proposal start.** Resolution produces `DefId`s, but every later stage walks the
 original AST and re-derives what resolution already decided, often by leaf
 name. The type checker's registries are keyed by `String` (`entities`,
 `attr_targets`, `attr_value_kinds`, `trait_impls`, `trait_impls_by_type`, …),
@@ -318,13 +320,39 @@ parameters, widths, generate conditions and rendered indices. Source constants
 cannot be captured by same-named caller parameters. Integer analysis follows
 transparent integer aliases, but leaves real/packed/generic value conversions
 unknown: an integer-only interpreter must not invent their semantics or reject
-valid explicit packed narrowing. Associated methods, trait/attribute/type
+valid explicit packed narrowing. Associated methods and trait/type
 registries and fully typed values still need migration.
 
 Tests cover equal function/constant leaves, imports/renames, constant aliases,
 borrowed contracts, foreign prototypes and rebuilding after rewrites. Tree
 and native tests verify known parameters before IR and a width mismatch
 rejected during elaboration, plus the packed-result narrowing boundary.
+
+**Implemented metadata registries.** `resolve::attributes` runs after raw name
+resolution, not in `syntax`: binding names/defaults/values retain their original
+IDs without violating stage layering. Declaration schemas, target/value kinds,
+entity binding fallbacks and duplicate checks are keyed by resolved `DefId`.
+Concrete named targets compare their resolved type heads rather than equal leaf
+names; this does not yet normalize transparent type aliases. Type attributes
+conflict only with metadata visible in their declaration scope.
+
+Imports and renames retain identity: two aliases of one attribute are duplicate
+bindings, while two same-leaf attributes from different modules coexist. System
+tick names remain reserved even through imports. The four existing standard
+hooks register `metadata_keep`, `metadata_library`, `metadata_name` and
+`metadata_precedence` lang roles in core/std. A user's same-leaf declaration
+does not acquire a hook, warning or literal-only restriction. The test directive
+remains separate from ordinary metadata named `test`.
+
+Elaborated `Instance::attrs` keeps its existing string-pair API. User metadata
+exports canonical module-qualified declaration names, independent of the alias
+used at the binding; registered standard hooks keep their short output names.
+Frontend regressions cover module order, conflicting types/defaults, entity
+fallbacks, target identity, import aliases and private lookalike hooks. API/native
+tests verify unambiguous hierarchy output, diagnostics and test discovery.
+The pre-resolution operator bootstrap still requires literal
+`attr precedence = N;` spelling; resolving aliases and expressions during that
+discovery is separate work, not implied by the metadata-ID migration.
 
 **Acceptance.** No stage after `resolve` looks a declaration up by its leaf
 name; equal leaf names in different modules are covered by a test per

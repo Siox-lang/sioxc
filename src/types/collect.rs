@@ -21,9 +21,18 @@ impl<'a> Checker<'a> {
             ("name", &["entity"][..]),
             ("precedence", &["impl"][..]),
         ] {
+            let Some(id) = resolved.builtin_attribute(name) else {
+                continue;
+            };
             attr_targets.insert(
-                name.to_string(),
-                targets.iter().map(|s| s.to_string()).collect(),
+                id,
+                targets
+                    .iter()
+                    .map(|s| Ident {
+                        text: s.to_string(),
+                        span: Span::new(crate::diag::FileId(0), 0..0),
+                    })
+                    .collect(),
             );
         }
         let mut attr_value_kinds = HashMap::new();
@@ -34,7 +43,9 @@ impl<'a> Checker<'a> {
             ("name", AttrValueTy::Str),
             ("precedence", AttrValueTy::Integer),
         ] {
-            attr_value_kinds.insert(name.to_string(), ty);
+            if let Some(id) = resolved.builtin_attribute(name) {
+                attr_value_kinds.insert(id, ty);
+            }
         }
         let file_modules: HashMap<crate::diag::FileId, String> = modules
             .iter()
@@ -250,15 +261,17 @@ impl<'a> Checker<'a> {
     pub(super) fn collect_decl(&mut self, item: &Item) {
         match item {
             Item::AttrDecl(a) => {
-                let targets = a.targets.iter().map(|t| t.text.clone()).collect();
-                self.attr_targets.insert(a.name.text.clone(), targets);
+                let Some(id) = self.resolved.declared(a.name.span) else {
+                    return;
+                };
+                self.attr_targets.insert(id, a.targets.clone());
                 let kind = match type_head_name(&a.ty) {
                     Some("Bool") => AttrValueTy::Bool,
                     Some("string") | Some("str") => AttrValueTy::Str,
                     Some("integer") => AttrValueTy::Integer,
                     _ => AttrValueTy::Other,
                 };
-                self.attr_value_kinds.insert(a.name.text.clone(), kind);
+                self.attr_value_kinds.insert(id, kind);
             }
             Item::Impl(im) => {
                 if matches!(im.target, Type::Indexed { index: None, .. }) {
@@ -426,10 +439,10 @@ impl<'a> Checker<'a> {
                                 );
                             } else if !crate::syntax::ast::is_builtin_operator(symbol) {
                                 let precedence = im.attrs.iter().find_map(|a| {
-                                    (a.name
-                                        .segments
-                                        .last()
-                                        .is_some_and(|n| n.text == "precedence"))
+                                    (self
+                                        .attr_identity(a)
+                                        .and_then(|id| self.resolved.lang_of(id))
+                                        == Some("metadata_precedence"))
                                     .then_some(a)
                                     .and_then(|a| a.value.as_ref())
                                     .and_then(|v| match v {
@@ -465,7 +478,7 @@ impl<'a> Checker<'a> {
                                         codes::TYPE_MISMATCH,
                                         im.span,
                                         format!(
-                                            "custom operator `{symbol}` requires `#[precedence = N]`"
+                                            "custom operator `{symbol}` requires the core attribute binding `attr precedence = N;`"
                                         ),
                                     ),
                                 }

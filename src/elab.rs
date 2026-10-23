@@ -125,7 +125,9 @@ pub struct Instance {
     /// Instance name (the `let` binding; equals the entity name for a root).
     pub name: String,
     /// Metadata bound on the instance `let` (`attr external_clock for p =
-    /// true;`) — (name, pretty-printed value). Preserved for external tools
+    /// true;`) — (canonical name, pretty-printed value). User metadata names
+    /// are module-qualified; known standard roles retain their short name.
+    /// Preserved for external tools
     /// (netlist/constraint emission, spec 3.5).
     pub attrs: Vec<(String, Option<String>)>,
     /// Entity type being instantiated.
@@ -669,12 +671,7 @@ impl<'a> Elaborator<'a> {
                     .attrs
                     .iter()
                     .map(|a| {
-                        let name = a
-                            .name
-                            .segments
-                            .last()
-                            .map(|s| s.text.clone())
-                            .unwrap_or_default();
+                        let name = crate::resolve::attributes::output_name(a, self.resolved);
                         (
                             name,
                             a.value.as_ref().map(crate::syntax::pretty::expr_string),

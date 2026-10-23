@@ -7,6 +7,19 @@
 
 use crate::diag::Span;
 
+/// Reserved tick attributes are shared by resolution and type checking.
+pub(crate) const SYS_ATTRS: &[&str] = &[
+    "event",
+    "old",
+    "length",
+    "high",
+    "low",
+    "left",
+    "right",
+    "ascending",
+];
+pub(crate) const PHASE2_ATTRS: &[&str] = &["ddt"];
+
 /// A parsed source file: `module <path>;` followed by items.
 #[derive(Clone, Debug)]
 pub struct Module {
@@ -1128,11 +1141,11 @@ pub enum BinOp {
     /// Disjunction, `or`, with the same type-directed meaning as [`BinOp::And`].
     Or,
     /// A library/user-defined textual infix operator. Its binding power comes
-    /// from the implementation's `#[precedence = N]` metadata.
+    /// from the implementation's `attr precedence = N;` metadata.
     Custom {
         /// The operator symbol as written, such as `xor` or `nand`.
         symbol: String,
-        /// Binding power taken from the implementation's `#[precedence = N]`.
+        /// Binding power taken from the implementation's `attr precedence = N;`.
         precedence: u8,
     },
     /// Left shift, `<<`.

@@ -576,7 +576,6 @@ fn logical_operator_template_controls_output_type() {
 /// A custom operator selects both its input and output templates.
 fn custom_operator_selects_input_and_output_templates() {
     let ok = "module m;\n\
-            attr precedence: integer for impl;\n\
             enum Left { L } enum Right { R } enum Result { Yes }\n\
             impl CustomOperator<\"merge\", Right, Result> for Left {\n\
               attr precedence = 45;\n\
@@ -729,7 +728,7 @@ fn ranged_constructors_reject_implicit_output_widening() {
 #[test]
 /// Operators the grammar reserves cannot be overloaded.
 fn reserved_operators_cannot_be_overloaded() {
-    let header = "module m;\nattr precedence: integer for impl;\n\
+    let header = "module m;\n\
             enum A { A0 }\n";
     // Grammar symbols (assignment, path, ranges) and the derived
     // comparisons cannot be claimed by an operator impl.
@@ -753,7 +752,7 @@ fn reserved_operators_cannot_be_overloaded() {
 /// A custom operator must declare a precedence, and declare it consistently
 /// across impls.
 fn custom_operator_precedence_is_required_and_consistent() {
-    let header = "module m;\nattr precedence: integer for impl;\n\
+    let header = "module m;\n\
             enum A { A0 } enum B { B0 }\n";
     let missing = format!(
             "{header}impl CustomOperator<\"join\", A, A> for A {{ fn apply(self, rhs: A) -> A {{ return self; }} }}\n"
@@ -766,4 +765,21 @@ fn custom_operator_precedence_is_required_and_consistent() {
              impl CustomOperator<\"join\", B, B> for B {{ attr precedence = 30; fn apply(self, rhs: B) -> B {{ return self; }} }}\n"
         );
     assert_eq!(check_src(&conflict), 1);
+
+    let shadowed = format!(
+        "{header}attr precedence: integer for impl = 40;
+         impl CustomOperator<\"join\", A, A> for A {{
+             attr precedence = 40;
+             fn apply(self, rhs: A) -> A {{ return self; }}
+         }}"
+    );
+    let sink = check_modules(&[(&shadowed, FileId(0))]);
+    assert_eq!(sink.error_count(), 1, "{:?}", sink.diagnostics());
+    assert!(
+        sink.diagnostics().iter().any(|d| d
+            .message
+            .contains("requires the core attribute binding `attr precedence = N;`")),
+        "{:?}",
+        sink.diagnostics()
+    );
 }

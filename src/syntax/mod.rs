@@ -5,7 +5,6 @@
 //! "AST should represent" in Stage 2.
 
 pub mod ast;
-pub mod attributes;
 pub mod format;
 pub mod imports;
 pub mod lexer;
