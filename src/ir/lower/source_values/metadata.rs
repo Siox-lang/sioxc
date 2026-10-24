@@ -173,6 +173,8 @@ mod tests {
                 integer_args: vec![],
                 f64_ret: false,
                 integer_ret: true,
+                c_args: Vec::new(),
+                c_ret: None,
             },
             span,
             Some(crate::types::Ty::Integer),

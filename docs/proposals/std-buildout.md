@@ -1,7 +1,7 @@
 # Remaining standard-library build-out
 
 Status: active proposal; implemented exports live in [std.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/std.md).
-Outstanding items are tracked under [std in TODO.md](../../TODO.md#std).
+Outstanding items are tracked on [the project board](https://github.com/orgs/Siox-lang/projects/1) (Area: std).
 
 ## Boundary
 

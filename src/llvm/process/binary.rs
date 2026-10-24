@@ -141,11 +141,13 @@ fn binary_right_activity<'ctx>(
 /// Emit a normalized scalar binary operation with the same defined corner
 /// cases as the established hardware LLVM path.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn process_binary<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     design: &Design,
+    id: ProcessValueId,
     operation: &ProcessBinaryOp,
     left: ProcessValueId,
     right: ProcessValueId,
@@ -156,6 +158,8 @@ pub(super) fn process_binary<'ctx>(
 ) -> Option<IntValue<'ctx>> {
     let left_width = design.process_ir.values.get(left.0 as usize)?.bit_width?;
     let right_width = design.process_ir.values.get(right.0 as usize)?.bit_width?;
+    let span = design.process_ir.values.get(id.0 as usize)?.span;
+    let (left_id, right_id) = (left, right);
 
     if matches!(
         operation,
@@ -455,7 +459,97 @@ pub(super) fn process_binary<'ctx>(
             .ok()?;
         fit(builder, value, result_width)
     };
+    // An `integer` division by zero has no value: a run-time error. A
+    // logic vector (`signed`) keeps its total division.
+    // ponytail: `integer` `+ - *` overflow is not checked yet. std still uses
+    // `integer` as a raw 64-bit word (float encodings, `signed` shifts), whose
+    // wide intermediates are right only modulo 2^64; checking them needs
+    // those words moved onto `natural` or `unsigned` first.
+    // Hardware values carry no checked type, so a vector is told apart by
+    // its own or an operand's type or packed layout.
+    let vector = |id: ProcessValueId| {
+        design
+            .process_ir
+            .values
+            .get(id.0 as usize)
+            .is_some_and(|value| matches!(value.ty, Some(crate::types::Ty::Array { .. })))
+            || matches!(
+                process_value_layout(design, id).map(|layout| &layout.kind),
+                Some(LayoutKind::Packed { .. })
+            )
+    };
+    let integer = !(vector(id) || vector(left_id) || vector(right_id));
+    // A `natural` (typed, or laid out as one in hardware) is mathematical
+    // too: its `+ - *` must stay in 0..2^64 and its divisor must not be 0.
+    let natural_value = |id: ProcessValueId| {
+        design
+            .process_ir
+            .values
+            .get(id.0 as usize)
+            .is_some_and(|value| matches!(value.ty, Some(crate::types::Ty::Natural)))
+            || matches!(
+                process_value_layout(design, id).map(|layout| &layout.kind),
+                Some(LayoutKind::Scalar {
+                    domain: siox::ir::ScalarDomain::Natural,
+                    ..
+                })
+            )
+    };
+    let natural = natural_value(id) || natural_value(left_id) || natural_value(right_id);
+    let fail = |failed: IntValue<'ctx>, kind: ArithmeticFailure| {
+        latch_arithmetic_failure(context, module, builder, design, failed, kind, active, span)
+    };
+    // `natural` `+ - *`: LLVM's overflow intrinsics at 64 bits; a wider
+    // operation is exact, and its result must keep the bits above 64 clear.
+    let natural_checked = |name: &str| -> Option<IntValue<'ctx>> {
+        let ty = left.get_type();
+        if ty.get_bit_width() > 64 {
+            let result = match name {
+                "uadd" => builder.build_int_add(left, right, "pv.natural.add"),
+                "usub" => builder.build_int_sub(left, right, "pv.natural.sub"),
+                _ => builder.build_int_mul(left, right, "pv.natural.mul"),
+            }
+            .ok()?;
+            let high = builder
+                .build_right_shift(result, ty.const_int(64, false), false, "pv.natural.high")
+                .ok()?;
+            let failed = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    high,
+                    ty.const_zero(),
+                    "pv.natural.outside",
+                )
+                .ok()?;
+            fail(failed, ArithmeticFailure::NaturalRange)?;
+            return Some(result);
+        }
+        let intrinsic =
+            inkwell::intrinsics::Intrinsic::find(&format!("llvm.{name}.with.overflow"))?;
+        let function = intrinsic.get_declaration(module, &[ty.into()])?;
+        let inkwell::values::ValueKind::Basic(pair) = builder
+            .build_call(function, &[left.into(), right.into()], "pv.natural")
+            .ok()?
+            .try_as_basic_value()
+        else {
+            return None;
+        };
+        let pair = pair.into_struct_value();
+        let result = builder
+            .build_extract_value(pair, 0, "pv.natural.result")
+            .ok()?
+            .into_int_value();
+        let failed = builder
+            .build_extract_value(pair, 1, "pv.natural.overflow")
+            .ok()?
+            .into_int_value();
+        fail(failed, ArithmeticFailure::NaturalRange)?;
+        Some(result)
+    };
     let result = match operation {
+        ProcessBinaryOp::Add if natural => natural_checked("uadd")?,
+        ProcessBinaryOp::Sub if natural => natural_checked("usub")?,
+        ProcessBinaryOp::Mul if natural => natural_checked("umul")?,
         ProcessBinaryOp::Add | ProcessBinaryOp::SignedAdd => {
             builder.build_int_add(left, right, "pv.add").ok()?
         }
@@ -471,6 +565,9 @@ pub(super) fn process_binary<'ctx>(
             let is_zero = builder
                 .build_int_compare(IntPredicate::EQ, right, zero, "pv.div.zero")
                 .ok()?;
+            if natural {
+                fail(is_zero, ArithmeticFailure::DivisionByZero)?;
+            }
             let safe = builder
                 .build_select(is_zero, one, right, "pv.div.denominator")
                 .ok()?
@@ -489,6 +586,9 @@ pub(super) fn process_binary<'ctx>(
             let is_zero = builder
                 .build_int_compare(IntPredicate::EQ, right, zero, "pv.rem.zero")
                 .ok()?;
+            if natural {
+                fail(is_zero, ArithmeticFailure::DivisionByZero)?;
+            }
             let safe = builder
                 .build_select(is_zero, one, right, "pv.rem.denominator")
                 .ok()?
@@ -517,6 +617,18 @@ pub(super) fn process_binary<'ctx>(
                 .ok()?;
             // `x % 1` and `x % -1` are both 0, so a divisor of 1 stands in
             // for -1 (dodging `MIN % -1`) and for zero.
+            if integer {
+                latch_arithmetic_failure(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    is_zero,
+                    ArithmeticFailure::DivisionByZero,
+                    active,
+                    span,
+                )?;
+            }
             let unsafe_divisor = builder
                 .build_or(is_zero, is_negative_one, "pv.srem.unsafe")
                 .ok()?;
@@ -555,6 +667,18 @@ pub(super) fn process_binary<'ctx>(
             let overflow = builder
                 .build_and(is_minimum, is_negative_one, "pv.sdiv.overflow")
                 .ok()?;
+            if integer {
+                latch_arithmetic_failure(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    is_zero,
+                    ArithmeticFailure::DivisionByZero,
+                    active,
+                    span,
+                )?;
+            }
             let unsafe_divisor = builder.build_or(is_zero, overflow, "pv.sdiv.unsafe").ok()?;
             let safe = builder
                 .build_select(unsafe_divisor, one, right, "pv.sdiv.denominator")

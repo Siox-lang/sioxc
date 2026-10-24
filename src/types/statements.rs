@@ -81,6 +81,9 @@ impl<'a> Checker<'a> {
         if require_complete_return {
             self.check_function_fallthrough(function, body, &names);
         }
+        let saved = self
+            .current_fn
+            .replace(self.resolved.declared(function.name.span));
         self.check_block_with(
             body,
             &PortDirs::default(),
@@ -89,6 +92,7 @@ impl<'a> Checker<'a> {
             &index_bounds,
             expected.as_ref(),
         );
+        self.current_fn.set(saved);
     }
 
     /// A value-returning function is an expression once inlined, so every

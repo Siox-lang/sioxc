@@ -1,7 +1,7 @@
 # Cooperative and parallel Process runtime
 
 Status: proposal; multithreading is not implemented. Updated 2026-10-06.
-Scope: the Phase 2 runtime optimization in [TODO.md](../../TODO.md#output),
+Scope: the Phase 2 runtime optimization in [the project board](https://github.com/orgs/Siox-lang/projects/1) (Area: Output),
 not a replacement for the Phase 1 compiler pipeline.
 
 ## Decision

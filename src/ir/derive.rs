@@ -466,6 +466,10 @@ pub(super) fn digital_node(
                 ProcessUnaryOp::Not => UnOp::Not,
                 ProcessUnaryOp::RealToInteger => UnOp::RealToInt,
                 ProcessUnaryOp::IntegerToReal => UnOp::IntToReal,
+                ProcessUnaryOp::IntegerToNatural => UnOp::IntToNatural,
+                ProcessUnaryOp::NaturalToInteger => UnOp::NaturalToInt,
+                ProcessUnaryOp::RealToNatural => UnOp::RealToNatural,
+                ProcessUnaryOp::NaturalToReal => UnOp::NaturalToReal,
                 ProcessUnaryOp::Real(function) => UnOp::Real(*function),
             },
             rhs: recurse(*operand)?,
@@ -532,6 +536,9 @@ pub(super) fn digital_node(
             integer_arguments,
             float_result,
             integer_result,
+            c_arguments,
+            c_result,
+            ..
         } => Expr::CCall {
             name: name.clone(),
             args: arguments
@@ -542,6 +549,8 @@ pub(super) fn digital_node(
             integer_args: integer_arguments.clone(),
             f64_ret: *float_result,
             integer_ret: *integer_result,
+            c_args: c_arguments.clone(),
+            c_ret: *c_result,
         },
         ProcessValueKind::Invalid => Expr::Unknown,
         other => {

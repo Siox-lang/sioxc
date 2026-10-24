@@ -566,6 +566,9 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
                     integer_arguments: Vec::new(),
                     float_result: false,
                     integer_result: true,
+                    void_result: false,
+                    c_arguments: Vec::new(),
+                    c_result: None,
                 }),
                 node(ProcessValueKind::Number(ProcessNumber::Integer(vec![1]))),
                 node(ProcessValueKind::Binary {

@@ -11,7 +11,7 @@ Also inspect:
 
 - `git status` before editing, because several agents may share one worktree;
 - the latest entries in [`chat.md`](chat.md) for active ownership and handoffs;
-- [`TODO.md`](TODO.md) for current work rather than completed history.
+- [the project board](https://github.com/orgs/Siox-lang/projects/1) for current work rather than completed history (it replaces `TODO.md`).
 
 Append a dated entry to `chat.md` before touching a shared subsystem named in
 the house rules. Preserve other agents' uncommitted changes and never include

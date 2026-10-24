@@ -395,6 +395,30 @@ pub(super) fn emit_source_locations<'ctx>(
         &range_locations,
     );
 
+    let arithmetic_locations = design
+        .arithmetic_sites()
+        .iter()
+        .map(|span| {
+            sources
+                .and_then(|sources| sources.location(*span))
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    u32_global(
+        context,
+        module,
+        "sx_arith_site_count",
+        u32::try_from(arithmetic_locations.len())
+            .expect("runtime arithmetic site count exceeds its ABI index"),
+    );
+    string_table(
+        context,
+        module,
+        "sx_arith_site_locations",
+        "sx.arith.location",
+        &arithmetic_locations,
+    );
+
     // Ranged testbench storages and locals follow the signals, numbered by
     // [`ranged_places`].
     let places = ranged_places(design);

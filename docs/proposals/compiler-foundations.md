@@ -20,6 +20,13 @@ gate. Retained evidence and fixture migrations are recorded in
 [chat.md](../../chat.md). This is local acceptance, not a claim that the remaining
 proposal sections are complete.
 
+Upstream integration acceptance (2026-10-25): the same full matrix passes with
+compiler main `a1c5d0f` and paper main `e8e995e` merged into the owned proposal
+branches. This includes the new natural/math, C ABI, void-extern effect and
+macro-expansion API tests. Shared declaration contracts remain borrowed; the
+effect call graph does not restore the removed cloned signature/constant maps.
+Source, actual corpus and paper fingerprints again match before/after the gate.
+
 siox is deliberately aligned with Rust at the language level. This proposal
 applies the same habit to the compiler: when sioxc has a structural problem,
 check how rustc is built before inventing a new shape. It stops where hardware

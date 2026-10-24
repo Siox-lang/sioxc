@@ -1055,6 +1055,9 @@ pub(super) fn process_value<'ctx>(
             integer_arguments,
             float_result,
             integer_result,
+            void_result,
+            c_arguments,
+            c_result,
         } => {
             use inkwell::types::BasicMetadataTypeEnum as MetadataType;
             use inkwell::values::BasicMetadataValueEnum as MetadataValue;
@@ -1084,28 +1087,55 @@ pub(super) fn process_value<'ctx>(
                     index_sites,
                     cache,
                 )?;
-                if float_arguments.get(index).copied().unwrap_or(false) {
-                    parameter_types.push(float.into());
-                    argument_values.push(
-                        builder
+                let (ty, value): (MetadataType, MetadataValue) =
+                    if float_arguments.get(index).copied().unwrap_or(false) {
+                        let value = builder
                             .build_bit_cast(argument, float, "pv.foreign.float_argument")
                             .ok()?
-                            .into_float_value()
-                            .into(),
-                    );
-                } else {
-                    parameter_types.push(context.i64_type().into());
-                    argument_values.push(argument.into());
+                            .into_float_value();
+                        (float.into(), value.into())
+                    } else {
+                        (context.i64_type().into(), argument.into())
+                    };
+                match c_arguments.get(index).copied().flatten() {
+                    Some(scalar) => {
+                        parameter_types.push(crate::llvm::foreign::c_type(context, scalar).into());
+                        argument_values.push(crate::llvm::foreign::c_argument(
+                            context, builder, value, scalar,
+                        )?);
+                    }
+                    None => {
+                        parameter_types.push(ty);
+                        argument_values.push(value);
+                    }
                 }
             }
             let function = module.get_function(name).unwrap_or_else(|| {
-                let signature = if *float_result {
+                let signature = if *void_result {
+                    context.void_type().fn_type(&parameter_types, false)
+                } else if let Some(scalar) = c_result {
+                    inkwell::types::BasicType::fn_type(
+                        &crate::llvm::foreign::c_type(context, *scalar),
+                        &parameter_types,
+                        false,
+                    )
+                } else if *float_result {
                     float.fn_type(&parameter_types, false)
                 } else {
                     context.i64_type().fn_type(&parameter_types, false)
                 };
-                module.add_function(name, signature, Some(Linkage::External))
+                let function = module.add_function(name, signature, Some(Linkage::External));
+                crate::llvm::foreign::mark_extensions(context, function, c_arguments, *c_result);
+                function
             });
+            // `fn srand(seed: integer);`: called for its effect, read as 0.
+            if *void_result {
+                builder.build_call(function, &argument_values, "").ok()?;
+                cache.clear();
+                let zero = context.i64_type().const_zero();
+                cache.evaluated_calls.insert((id, active), zero);
+                return fit(builder, zero, width);
+            }
             let returned = match builder
                 .build_call(function, &argument_values, "pv.foreign")
                 .ok()?
@@ -1113,6 +1143,12 @@ pub(super) fn process_value<'ctx>(
             {
                 inkwell::values::ValueKind::Basic(value) => value,
                 _ => return None,
+            };
+            let returned = match c_result {
+                Some(scalar) => {
+                    crate::llvm::foreign::c_result(context, builder, returned, *scalar)?
+                }
+                None => returned,
             };
             // Foreign code may call public signal accessors. Later arena reads
             // must observe that mutation rather than reuse an earlier load.
@@ -1655,10 +1691,158 @@ pub(super) fn process_value<'ctx>(
                     .build_bit_cast(operand, context.f64_type(), "pv.real.bits")
                     .ok()?
                     .into_float_value();
+                // Only a `real` in [-2^63, 2^63) has an `integer`; LLVM's
+                // conversion of anything else (NaN included) is poison.
+                let span = design.process_ir.values.get(id.0 as usize)?.span;
+                let float = context.f64_type();
+                let low = builder
+                    .build_float_compare(
+                        inkwell::FloatPredicate::OGE,
+                        real,
+                        float.const_float(-9_223_372_036_854_775_808.0),
+                        "pv.real.integer.low",
+                    )
+                    .ok()?;
+                let high = builder
+                    .build_float_compare(
+                        inkwell::FloatPredicate::OLT,
+                        real,
+                        float.const_float(9_223_372_036_854_775_808.0),
+                        "pv.real.integer.high",
+                    )
+                    .ok()?;
+                let fits = builder.build_and(low, high, "pv.real.integer.fits").ok()?;
+                let failed = builder.build_not(fits, "pv.real.integer.failed").ok()?;
+                latch_arithmetic_failure(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    failed,
+                    ArithmeticFailure::Overflow,
+                    active,
+                    span,
+                )?;
+                let real = builder
+                    .build_select(fits, real, float.const_zero(), "pv.real.integer.safe")
+                    .ok()?
+                    .into_float_value();
                 let integer = builder
                     .build_float_to_signed_int(real, context.i64_type(), "pv.real.integer")
                     .ok()?;
                 fit_signed(builder, integer, width)?
+            }
+            // `natural(i)` and `integer(n)`: the same 64-bit word, whose
+            // number must lie in the target. `-1` has no natural and 2^63 no
+            // integer: both read as negative in the signed view.
+            ProcessUnaryOp::IntegerToNatural | ProcessUnaryOp::NaturalToInteger => {
+                let word = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    64,
+                    matches!(operation, ProcessUnaryOp::IntegerToNatural),
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let failed = builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        word,
+                        context.i64_type().const_zero(),
+                        "pv.natural.outside",
+                    )
+                    .ok()?;
+                let kind = if matches!(operation, ProcessUnaryOp::IntegerToNatural) {
+                    ArithmeticFailure::NaturalRange
+                } else {
+                    ArithmeticFailure::Overflow
+                };
+                let span = design.process_ir.values.get(id.0 as usize)?.span;
+                latch_arithmetic_failure(
+                    context, module, builder, design, failed, kind, active, span,
+                )?;
+                fit(builder, word, width)?
+            }
+            ProcessUnaryOp::RealToNatural => {
+                let operand = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    64,
+                    false,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let float = context.f64_type();
+                let real = builder
+                    .build_bit_cast(operand, float, "pv.real.bits")
+                    .ok()?
+                    .into_float_value();
+                let low = builder
+                    .build_float_compare(
+                        inkwell::FloatPredicate::OGE,
+                        real,
+                        float.const_zero(),
+                        "pv.real.natural.low",
+                    )
+                    .ok()?;
+                let high = builder
+                    .build_float_compare(
+                        inkwell::FloatPredicate::OLT,
+                        real,
+                        float.const_float(18_446_744_073_709_551_616.0),
+                        "pv.real.natural.high",
+                    )
+                    .ok()?;
+                let fits = builder.build_and(low, high, "pv.real.natural.fits").ok()?;
+                let failed = builder.build_not(fits, "pv.real.natural.failed").ok()?;
+                let span = design.process_ir.values.get(id.0 as usize)?.span;
+                latch_arithmetic_failure(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    failed,
+                    ArithmeticFailure::NaturalRange,
+                    active,
+                    span,
+                )?;
+                let real = builder
+                    .build_select(fits, real, float.const_zero(), "pv.real.natural.safe")
+                    .ok()?
+                    .into_float_value();
+                let natural = builder
+                    .build_float_to_unsigned_int(real, context.i64_type(), "pv.real.natural")
+                    .ok()?;
+                fit(builder, natural, width)?
+            }
+            ProcessUnaryOp::NaturalToReal => {
+                let operand = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    64,
+                    false,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let real = builder
+                    .build_unsigned_int_to_float(operand, context.f64_type(), "pv.natural.real")
+                    .ok()?;
+                builder
+                    .build_bit_cast(real, context.i64_type(), "pv.real.bits")
+                    .ok()?
+                    .into_int_value()
             }
             ProcessUnaryOp::IntegerToReal => {
                 // Extended by the operand's own signedness: `1 << 4` held in
@@ -1790,6 +1974,7 @@ pub(super) fn process_value<'ctx>(
                 module,
                 builder,
                 design,
+                id,
                 operation,
                 *left,
                 *right,

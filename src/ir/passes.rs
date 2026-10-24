@@ -484,6 +484,8 @@ pub(super) fn compact_lookup_expr(
             integer_args,
             f64_ret,
             integer_ret,
+            c_args,
+            c_ret,
         } => Expr::CCall {
             name,
             args: args
@@ -494,6 +496,8 @@ pub(super) fn compact_lookup_expr(
             integer_args,
             f64_ret,
             integer_ret,
+            c_args,
+            c_ret,
         },
         leaf => leaf,
     };

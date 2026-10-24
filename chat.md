@@ -20058,3 +20058,44 @@ Foundations remains~75%: this finishes Boolean result-role consumers and their
 fixture migration, not other library/literal hooks,typed values,remaining
 registries or dynamic constructor routing. Preserve all peers and20 corpus
 probes; broader goal remains active after these commits.
+
+### 2026-10-24 — Codex — merge current upstream while preserving foundations
+
+Fetched remotes; integrate frozen compiler origin/main a1c5d0f (18 commits from
+common59583ae) into clean local f026c4d with --no-commit. Preserve proposal IDs,
+const traversal,alias normalization,Boolean roles and event support. Resolve4
+conflicts: board-pointer TODO replaces history; natural and tuple projection
+builtins both stay; slice flattening and metadata folding exports both stay;
+new void-extern/effect callgraph state stays without restoring removed cloned
+function/constant maps. Source signatures continue through DeclarationIndex.
+Owned paper also merges frozen origin/main e8e995e (6 commits), cleanly, keeping
+local alias/Boolean docs. Actual corpus097f3cb is13 ahead/0 behind origin and
+keeps all20 peer probes. Root dirty main and paper-main remain untouched. No
+new feature mixed in; full combined native/Rust/actual corpus gate required
+before local merge commits. Board workflow replaces TODO entries; no push.
+
+### 2026-10-24 — Codex — integration focused gate green, full gate frozen
+
+Focused162109 is exited/success/0:573 frontend,20 integration tests (natural,
+mathematical numbers,void/C ABI,effect graph,macro API and aliases),Clippy.
+UI180209 is exited/success/0:61 human,61 JSON,54 codes,2 migrations,unchanged
+fixtures. Recovered interrupted launch: full job did not start. Freeze source,
+actual265 corpus and owned paper and launch upstream-foundations-final-20261024
+for52 native/VCD runs,both Rust/corpus configurations,UI/JSON,runners,graph
+update and matching before/after hashes. No feature additions or push.
+
+### 2026-10-25 — Codex — upstream foundations integration full gate accepted
+
+Busy208489 exited75 without tests; replacement211388 is terminal exited/success/0,
+peak1881120768. Both full Rust suites pass (630/609 library,23 GDB each),573
+frontend,52 ordinary/debug native/VCD checks,both actual265 corpora,Clippy,
+34 runners,12 Phase1 examples,both61 UI/JSON cases,54 codes,2 migrations.
+All fingerprints match: compiler1635f456126ba64c002d33eb6b8ff4ae0b40c218b253d0e781b6a722874bf7cd,
+corpus4d8329e67ee3cb5b7748c6d94f170a6827e6f95e0376cce3653c8cc4f6a7219f,
+paperac422d2de1362a6685c7561b21b4aca00eb41e6e6b088a61740d7239572c1963.
+Retained logs upstream-foundations-20261024; AST graph6962 nodes/18821 edges/
+344 communities,existing vendor/no-symbol/stale-label caveats remain. No LLM
+rebuild. Only acceptance docs/log edits follow; source/tests remain tested.
+Commit owned compiler and paper merges locally; no corpus changes or push.
+Foundations remains~75%; next inspect literal/hook identity cleanup. Preserve
+shared root/paper dirty files and20 corpus probes; overall goal still active.

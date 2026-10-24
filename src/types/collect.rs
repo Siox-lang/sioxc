@@ -129,6 +129,11 @@ impl<'a> Checker<'a> {
             array_elements: HashMap::new(),
             blanket_array_impls: HashMap::new(),
             generic_fns: HashMap::new(),
+            void_extern_fns: HashSet::new(),
+            current_fn: std::cell::Cell::new(None),
+            testbench_only_fns: Default::default(),
+            fn_callees: Default::default(),
+            hardware_fn_calls: Default::default(),
             suffix_types: HashMap::new(),
             prefix_types: HashMap::new(),
             aliases: HashMap::new(),
@@ -650,6 +655,16 @@ impl<'a> Checker<'a> {
                 if let Some(t) = &e.repr {
                     if let Some(base) = self.type_key(t) {
                         self.enum_bases.insert(enum_key, base);
+                    }
+                }
+            }
+            Item::ExternBlock { fns, .. } => {
+                for f in fns {
+                    let Some(id) = self.resolved.declared(f.name.span) else {
+                        continue;
+                    };
+                    if f.ret.is_none() {
+                        self.void_extern_fns.insert(id);
                     }
                 }
             }

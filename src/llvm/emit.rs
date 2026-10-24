@@ -221,6 +221,7 @@ mod bitpack_tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let llvm = emit_module_ir(&design).unwrap();
         assert!(
@@ -622,6 +623,15 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .add_global(self.ctx.i64_type(), None, "index_value");
         index_value.set_initializer(&self.ctx.i64_type().const_zero());
         index_value.set_linkage(Linkage::Internal);
+        // A mathematical value (`integer`, `real`) whose result left what
+        // its type holds: the site (an index into `Design::arithmetic_sites`
+        // plus one) and what went wrong (overflow, division by zero, or a
+        // `real` that is not finite).
+        for name in ["arith_error", "arith_kind"] {
+            let global = self.module.add_global(self.ctx.i32_type(), None, name);
+            global.set_initializer(&self.ctx.i32_type().const_zero());
+            global.set_linkage(Linkage::Internal);
+        }
         self.lookup_globals();
         self.state_globals();
         self.process_staging_globals();
@@ -1863,6 +1873,27 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .into_int_value();
         self.builder.build_return(Some(&value)).unwrap();
 
+        // i32 sx_arith_error(void) / sx_arith_kind(void): the first failed
+        // arithmetic site plus one, and its `ArithmeticFailure`.
+        for name in ["arith_error", "arith_kind"] {
+            let f = self
+                .module
+                .add_function(&format!("sx_{name}"), i32.fn_type(&[], false), None);
+            self.builder
+                .position_at_end(self.ctx.append_basic_block(f, "e"));
+            let global = self
+                .module
+                .get_global(name)
+                .expect("arithmetic failure global")
+                .as_pointer_value();
+            let value = self
+                .builder
+                .build_load(i32, global, name)
+                .unwrap()
+                .into_int_value();
+            self.builder.build_return(Some(&value)).unwrap();
+        }
+
         // void sx_set(i32 sig, i64 val): cur[sig] = val  (bounded switch).
         let f = self.module.add_function(
             "sx_set",
@@ -3024,6 +3055,40 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                             .into_int_value();
                         self.fit(bits, self.value_ty(width))
                     }
+                    // The same word: the Process IR path checks the range.
+                    UnOp::IntToNatural | UnOp::NaturalToInt => self.fit(a, self.value_ty(width)),
+                    UnOp::RealToNatural => {
+                        let f = self
+                            .builder
+                            .build_bit_cast(
+                                self.fit(a, self.ctx.i64_type()),
+                                self.ctx.f64_type(),
+                                "rbits",
+                            )
+                            .unwrap()
+                            .into_float_value();
+                        let n = self
+                            .builder
+                            .build_float_to_unsigned_int(f, self.ctx.i64_type(), "rton")
+                            .unwrap();
+                        self.fit(n, self.value_ty(width))
+                    }
+                    UnOp::NaturalToReal => {
+                        let f = self
+                            .builder
+                            .build_unsigned_int_to_float(
+                                self.fit(a, self.ctx.i64_type()),
+                                self.ctx.f64_type(),
+                                "ntor",
+                            )
+                            .unwrap();
+                        let bits = self
+                            .builder
+                            .build_bit_cast(f, self.ctx.i64_type(), "rbits")
+                            .unwrap()
+                            .into_int_value();
+                        self.fit(bits, self.value_ty(width))
+                    }
                     // A built-in `real` function: its LLVM intrinsic on the
                     // operand's f64 bits.
                     UnOp::Real(function) => {
@@ -3153,9 +3218,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 integer_args,
                 f64_ret,
                 integer_ret,
+                c_args,
+                c_ret,
             } => {
                 // Foreign C call: `real` params are doubles (bit-cast from the
-                // word), everything else i64. Native linking resolves symbols.
+                // word), everything else i64, each narrowed to the C scalar its
+                // `std::ffi` type names. Native linking resolves symbols.
                 use inkwell::types::BasicMetadataTypeEnum as MT;
                 use inkwell::values::BasicMetadataValueEnum as MV;
                 let f64t = self.ctx.f64_type();
@@ -3167,28 +3235,54 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     } else {
                         self.emit_at(a, 64)
                     };
-                    if f64_args.get(i).copied().unwrap_or(false) {
-                        ptypes.push(f64t.into());
-                        vals.push(
-                            self.builder
-                                .build_bit_cast(v, f64t, "farg")
-                                .unwrap()
-                                .into_float_value()
-                                .into(),
-                        );
+                    let (ty, value): (MT, MV) = if f64_args.get(i).copied().unwrap_or(false) {
+                        let value = self
+                            .builder
+                            .build_bit_cast(v, f64t, "farg")
+                            .unwrap()
+                            .into_float_value();
+                        (f64t.into(), value.into())
                     } else {
-                        ptypes.push(self.i64t().into());
-                        vals.push(v.into());
+                        (self.i64t().into(), v.into())
+                    };
+                    match c_args.get(i).copied().flatten() {
+                        Some(scalar) => {
+                            ptypes.push(crate::llvm::foreign::c_type(self.ctx, scalar).into());
+                            vals.push(
+                                crate::llvm::foreign::c_argument(
+                                    self.ctx,
+                                    &self.builder,
+                                    value,
+                                    scalar,
+                                )
+                                .unwrap(),
+                            );
+                        }
+                        None => {
+                            ptypes.push(ty);
+                            vals.push(value);
+                        }
                     }
                 }
                 let f = self.module.get_function(name).unwrap_or_else(|| {
-                    let fnty = if *f64_ret {
+                    let fnty = if let Some(scalar) = c_ret {
+                        inkwell::types::BasicType::fn_type(
+                            &crate::llvm::foreign::c_type(self.ctx, *scalar),
+                            &ptypes,
+                            false,
+                        )
+                    } else if *f64_ret {
                         f64t.fn_type(&ptypes, false)
                     } else {
                         self.i64t().fn_type(&ptypes, false)
                     };
-                    self.module
-                        .add_function(name, fnty, Some(inkwell::module::Linkage::External))
+                    let f = self.module.add_function(
+                        name,
+                        fnty,
+                        Some(inkwell::module::Linkage::External),
+                    );
+                    crate::llvm::foreign::mark_extensions(self.ctx, f, c_args, *c_ret);
+                    f
                 });
                 let r = match self
                     .builder
@@ -3198,6 +3292,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 {
                     inkwell::values::ValueKind::Basic(v) => v,
                     _ => panic!("extern fn returns a value"),
+                };
+                let r = match c_ret {
+                    Some(scalar) => {
+                        crate::llvm::foreign::c_result(self.ctx, &self.builder, r, *scalar).unwrap()
+                    }
+                    None => r,
                 };
                 // Foreign code may call the public state accessors. Preserve
                 // expression evaluation order, but force every later state
@@ -3754,6 +3854,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         // State layout, accessors, settle, and the add+mask are present. The
@@ -4195,6 +4296,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(ll.contains("i512"), "{ll}");
@@ -4226,6 +4328,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(
@@ -4259,6 +4362,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let error = emit_module_ir(&design).unwrap_err();
         assert!(error.contains("E.enormous"), "{error}");
@@ -4297,6 +4401,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(
@@ -4363,6 +4468,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(
@@ -4412,6 +4518,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(
@@ -4464,6 +4571,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(ll.contains("fptosi double"), "missing conversion:\n{ll}");
@@ -4531,6 +4639,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         // In the settle body, the store to b's slot precedes the store to y's.

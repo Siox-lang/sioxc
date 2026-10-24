@@ -303,6 +303,9 @@ pub struct Compilation {
     pub failure: Option<CompileFailure>,
     /// Counts from the phases that completed.
     pub stats: CompilationStats,
+    /// Every macro call expanded, in expansion order, for editor views that
+    /// tell generated code from handwritten source.
+    pub macro_expansions: Vec<crate::syntax::macros::MacroExpansion>,
 }
 
 impl Compilation {
@@ -323,6 +326,7 @@ impl Compilation {
             artifact: None,
             failure: None,
             stats: CompilationStats::default(),
+            macro_expansions: Vec::new(),
         }
     }
 
@@ -534,8 +538,12 @@ impl Compiler {
         for mismatch in mismatches {
             result.diagnostics.emit(mismatch);
         }
-        let macro_warnings =
-            crate::syntax::macros::expand(&mut result.modules, &operators, &mut result.diagnostics);
+        let (macro_warnings, expansions) = crate::syntax::macros::expand_logged(
+            &mut result.modules,
+            &operators,
+            &mut result.diagnostics,
+        );
+        result.macro_expansions = expansions;
         if request.emit == Emit::Expanded {
             result.artifact = result.entry().map(pretty::print_module).map(Artifact::Text);
             return result;
@@ -567,6 +575,7 @@ impl Compiler {
         // `x'integers` -> `x'high + 1`: later stages see system attributes only.
         crate::types::expand_type_attrs(&mut result.modules, &typed);
         crate::types::fold_value_lengths(&mut result.modules, &typed);
+        crate::types::flatten_slice_chains(&mut result.modules);
         // Tuples become the generic structs they are; see `types::tuples`.
         crate::types::lower_tuples(&mut result.modules, &typed);
         result.resolved = Some(resolved);

@@ -391,6 +391,10 @@ fn process_packed_meta_uncached<'ctx>(
             }
             ProcessUnaryOp::RealToInteger
             | ProcessUnaryOp::IntegerToReal
+            | ProcessUnaryOp::IntegerToNatural
+            | ProcessUnaryOp::NaturalToInteger
+            | ProcessUnaryOp::RealToNatural
+            | ProcessUnaryOp::NaturalToReal
             | ProcessUnaryOp::Real(_) => None,
         },
         ProcessValueKind::Binary {

@@ -336,6 +336,19 @@ impl Lower<'_> {
                 *arg = GenericArg::PositionalType(ty);
             }
         }
+        // `Container<T = (Logic, Logic)>`: a named tuple argument too (#260).
+        if let GenericArg::Named {
+            name,
+            value: e @ Expr::Tuple { .. },
+        } = arg
+        {
+            if let Some(ty) = as_type(e) {
+                *arg = GenericArg::NamedType {
+                    name: name.clone(),
+                    ty,
+                };
+            }
+        }
         match arg {
             GenericArg::Positional(e) | GenericArg::Named { value: e, .. } => self.expr(e),
             GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => self.ty(ty),

@@ -231,18 +231,10 @@ impl<'a> Checker<'a> {
             };
             self.check_extern_c_type(function, ty, "parameter");
         }
-        match &function.ret {
-            Some(ty) => self.check_extern_c_type(function, ty, "return type"),
-            None => self.error_with_help(
-                codes::TYPE_MISMATCH,
-                function.name.span,
-                format!(
-                    "void extern C function `{}` is not supported yet",
-                    function.name.text
-                ),
-                "extern calls currently need a scalar return value; statement-only C calls have no hardware IR representation"
-                    .to_string(),
-            ),
+        // No return type is a C `void` function, called for its effect from
+        // a testbench or a function body (checked at the call).
+        if let Some(ty) = &function.ret {
+            self.check_extern_c_type(function, ty, "return type");
         }
     }
 
@@ -250,7 +242,7 @@ impl<'a> Checker<'a> {
     /// type: `real` maps to `double`, integer-shaped types to 64-bit words.
     pub(super) fn check_extern_c_type(&mut self, function: &FnDecl, ty: &Type, position: &str) {
         let checked = self.ast_ty(ty);
-        let supported = matches!(checked, Ty::Integer | Ty::Real)
+        let supported = matches!(checked, Ty::Integer | Ty::Natural | Ty::Real)
             || matches!(
                 checked,
                 Ty::Array {
@@ -275,7 +267,7 @@ impl<'a> Checker<'a> {
             }
             Ty::Char => "Char has no declared C character ABI".to_string(),
             Ty::Void => "void is not a value ABI type".to_string(),
-            Ty::Integer | Ty::Real | Ty::Error => unreachable!(),
+            Ty::Integer | Ty::Natural | Ty::Real | Ty::Error => unreachable!(),
         };
         self.error_with_help(
             codes::TYPE_MISMATCH,

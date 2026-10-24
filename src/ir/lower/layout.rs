@@ -157,7 +157,8 @@ impl<'a> Lowering<'a> {
                 let signal = &mut self.out.signals[id.0 as usize];
                 signal.range = *value_range;
                 match domain {
-                    ScalarDomain::Bits => {}
+                    // A `natural` is an unsigned 64-bit word, as unflagged.
+                    ScalarDomain::Bits | ScalarDomain::Natural => {}
                     ScalarDomain::Integer => signal.integer = true,
                     ScalarDomain::Real => signal.real = true,
                     ScalarDomain::Character => {
@@ -386,6 +387,7 @@ impl<'a> Lowering<'a> {
         let domain = match head.as_deref() {
             Some("real") => Some(ScalarDomain::Real),
             Some("integer") => Some(ScalarDomain::Integer),
+            Some("natural") => Some(ScalarDomain::Natural),
             Some("Char") => Some(ScalarDomain::Character),
             Some(name) if struct_derives_kernel(name, "real", &self.structs, &self.free_fns) => {
                 Some(ScalarDomain::Real)
@@ -405,8 +407,9 @@ impl<'a> Lowering<'a> {
                 kind: LayoutKind::Scalar {
                     width,
                     domain,
-                    nominal: head
-                        .filter(|name| !matches!(name.as_str(), "integer" | "real" | "Char")),
+                    nominal: head.filter(|name| {
+                        !matches!(name.as_str(), "integer" | "natural" | "real" | "Char")
+                    }),
                     value_range: None,
                 },
             },

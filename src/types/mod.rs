@@ -51,6 +51,10 @@ pub enum Ty {
     /// a bit collection. Coerces to/from bit vectors, supports arithmetic and
     /// comparison, but has NO per-bit boolean operators (unlike unsigned/signed).
     Integer,
+    /// The kernel base type `natural`: the unsigned counterpart of `integer`,
+    /// a mathematical number from 0 to 2^64 - 1 (C's `unsigned long`). It
+    /// mixes with `integer` only through `natural(x)` / `integer(n)`.
+    Natural,
     /// The kernel base type `real` (f64 in simulation).
     Real,
     /// The kernel character scalar. Unlike library enums, its value set is the
@@ -91,7 +95,7 @@ impl Ty {
     /// metadata and therefore return `None` here.
     pub fn bit_width(&self) -> Option<u32> {
         match self {
-            Ty::Integer | Ty::Real => Some(64),
+            Ty::Integer | Ty::Natural | Ty::Real => Some(64),
             Ty::Char => Some(32),
             Ty::Array {
                 elem, len, family, ..
@@ -159,7 +163,8 @@ impl Typed {
 }
 
 pub use expand::{
-    expand_type_attrs, fold_metadata_constants, fold_value_lengths, inline_loop_ranges,
+    expand_type_attrs, flatten_slice_chains, fold_metadata_constants, fold_value_lengths,
+    inline_loop_ranges,
 };
 pub use tuples::{lower_tuples, tuple_struct_arity, tuple_struct_name};
 
@@ -191,6 +196,7 @@ pub fn check<'a>(
             checker.check_item(item);
         }
     }
+    checker.check_hardware_fn_calls();
     checker.finish()
 }
 
@@ -377,6 +383,18 @@ struct Checker<'a> {
     /// Generic module fns: definition -> (type params with bounds, value params).
     /// Bounds are checked at each call (spec: generic bounds).
     generic_fns: HashMap<DefId, GenericFnSignature>,
+    /// `extern "C"` functions declared without a result: C `void`.
+    void_extern_fns: HashSet<DefId>,
+    /// The function whose body is being checked, if any.
+    current_fn: std::cell::Cell<Option<DefId>>,
+    /// Functions whose bodies call an operation only a testbench can run
+    /// (a C `void` function, `rand`), with that operation's name.
+    testbench_only_fns: std::cell::RefCell<HashMap<DefId, String>>,
+    /// The functions each function body calls.
+    fn_callees: std::cell::RefCell<HashMap<DefId, Vec<DefId>>>,
+    /// Calls from hardware to functions, checked once every body has been
+    /// seen against `testbench_only_fns`.
+    hardware_fn_calls: std::cell::RefCell<Vec<(DefId, Span, String)>>,
     /// Literal suffix -> the type names defining it via `impl Suffix<sym, _>
     /// for T` (more than one is an ambiguity error at the use site).
     suffix_types: HashMap<String, Vec<String>>,

@@ -425,6 +425,10 @@ fn normalized_value_width(
         ProcessValueKind::Unary { operation, operand } => match operation {
             ProcessUnaryOp::RealToInteger
             | ProcessUnaryOp::IntegerToReal
+            | ProcessUnaryOp::IntegerToNatural
+            | ProcessUnaryOp::NaturalToInteger
+            | ProcessUnaryOp::RealToNatural
+            | ProcessUnaryOp::NaturalToReal
             | ProcessUnaryOp::Real(_) => Some(64),
             ProcessUnaryOp::Neg => {
                 let natural = width(operand)?;
@@ -655,6 +659,8 @@ mod tests {
                 integer_args: vec![true],
                 f64_ret: false,
                 integer_ret: true,
+                c_args: Vec::new(),
+                c_ret: None,
             },
             assignment_span,
             None,
