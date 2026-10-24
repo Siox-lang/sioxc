@@ -12,6 +12,7 @@
 
 mod aot;
 mod emit;
+mod foreign;
 mod process;
 
 pub use aot::{emit_object, emit_object_with_debug, emit_object_with_sources};

@@ -3153,9 +3153,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 integer_args,
                 f64_ret,
                 integer_ret,
+                c_args,
+                c_ret,
             } => {
                 // Foreign C call: `real` params are doubles (bit-cast from the
-                // word), everything else i64. Native linking resolves symbols.
+                // word), everything else i64, each narrowed to the C scalar its
+                // `std::ffi` type names. Native linking resolves symbols.
                 use inkwell::types::BasicMetadataTypeEnum as MT;
                 use inkwell::values::BasicMetadataValueEnum as MV;
                 let f64t = self.ctx.f64_type();
@@ -3167,28 +3170,50 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                     } else {
                         self.emit_at(a, 64)
                     };
-                    if f64_args.get(i).copied().unwrap_or(false) {
-                        ptypes.push(f64t.into());
-                        vals.push(
-                            self.builder
-                                .build_bit_cast(v, f64t, "farg")
-                                .unwrap()
-                                .into_float_value()
-                                .into(),
-                        );
+                    let (ty, value): (MT, MV) = if f64_args.get(i).copied().unwrap_or(false) {
+                        let value = self
+                            .builder
+                            .build_bit_cast(v, f64t, "farg")
+                            .unwrap()
+                            .into_float_value();
+                        (f64t.into(), value.into())
                     } else {
-                        ptypes.push(self.i64t().into());
-                        vals.push(v.into());
+                        (self.i64t().into(), v.into())
+                    };
+                    match c_args.get(i).copied().flatten() {
+                        Some(scalar) => {
+                            ptypes.push(crate::llvm::foreign::c_type(self.ctx, scalar).into());
+                            vals.push(
+                                crate::llvm::foreign::c_argument(
+                                    self.ctx,
+                                    &self.builder,
+                                    value,
+                                    scalar,
+                                )
+                                .unwrap(),
+                            );
+                        }
+                        None => {
+                            ptypes.push(ty);
+                            vals.push(value);
+                        }
                     }
                 }
                 let f = self.module.get_function(name).unwrap_or_else(|| {
-                    let fnty = if *f64_ret {
+                    let fnty = if let Some(scalar) = c_ret {
+                        crate::llvm::foreign::c_type(self.ctx, *scalar).fn_type(&ptypes, false)
+                    } else if *f64_ret {
                         f64t.fn_type(&ptypes, false)
                     } else {
                         self.i64t().fn_type(&ptypes, false)
                     };
-                    self.module
-                        .add_function(name, fnty, Some(inkwell::module::Linkage::External))
+                    let f = self.module.add_function(
+                        name,
+                        fnty,
+                        Some(inkwell::module::Linkage::External),
+                    );
+                    crate::llvm::foreign::mark_extensions(self.ctx, f, c_args, *c_ret);
+                    f
                 });
                 let r = match self
                     .builder
@@ -3198,6 +3223,12 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 {
                     inkwell::values::ValueKind::Basic(v) => v,
                     _ => panic!("extern fn returns a value"),
+                };
+                let r = match c_ret {
+                    Some(scalar) => {
+                        crate::llvm::foreign::c_result(self.ctx, &self.builder, r, *scalar).unwrap()
+                    }
+                    None => r,
                 };
                 // Foreign code may call the public state accessors. Preserve
                 // expression evaluation order, but force every later state

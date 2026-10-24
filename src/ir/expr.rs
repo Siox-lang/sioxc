@@ -156,9 +156,84 @@ pub enum Expr {
         f64_ret: bool,
         /// Whether the result is a signed kernel `integer`.
         integer_ret: bool,
+        /// Per argument, the narrower C scalar its `std::ffi` type names.
+        c_args: Vec<Option<CScalar>>,
+        /// The narrower C scalar the result's `std::ffi` type names.
+        c_ret: Option<CScalar>,
     },
     /// A reference that could not be lowered (unknown signal, unsupported form).
     Unknown,
+}
+
+/// A C scalar a `std::ffi` type names in an `extern "C"` signature, passed at
+/// its C width instead of as the 64-bit ABI word or a `double`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CScalar {
+    /// `signed char`.
+    I8,
+    /// `unsigned char`.
+    U8,
+    /// `short`.
+    I16,
+    /// `unsigned short`.
+    U16,
+    /// `int`.
+    I32,
+    /// `unsigned int`.
+    U32,
+    /// `long`: the build host's width.
+    Long,
+    /// `unsigned long`: the build host's width.
+    ULong,
+    /// `float`.
+    Float,
+}
+
+impl CScalar {
+    /// The C scalar a `std::ffi` lang item stands for.
+    pub fn from_lang(role: &str) -> Option<Self> {
+        Some(match role {
+            "c_schar" => Self::I8,
+            "c_uchar" => Self::U8,
+            "c_short" => Self::I16,
+            "c_ushort" => Self::U16,
+            "c_int" => Self::I32,
+            "c_uint" => Self::U32,
+            "c_long" => Self::Long,
+            "c_ulong" => Self::ULong,
+            "c_float" => Self::Float,
+            _ => return None,
+        })
+    }
+
+    /// Whether a C result of this type widens by sign extension.
+    pub fn signed(self) -> bool {
+        matches!(self, Self::I8 | Self::I16 | Self::I32 | Self::Long)
+    }
+
+    /// The C scalar `ty` names, directly or through type aliases; `alias`
+    /// gives the type one alias path stands for.
+    pub fn of<'t>(
+        ty: &'t crate::syntax::ast::Type,
+        resolved: &crate::resolve::Resolved,
+        alias: impl Fn(&crate::syntax::ast::Path) -> Option<&'t crate::syntax::ast::Type>,
+    ) -> Option<Self> {
+        let mut ty = ty;
+        // The bound stops an alias cycle, which the checker reports.
+        for _ in 0..64 {
+            let crate::syntax::ast::Type::Path(path) = ty else {
+                return None;
+            };
+            if let Some(role) = resolved
+                .resolved(path.span)
+                .and_then(|id| resolved.lang_of(id))
+            {
+                return Self::from_lang(role);
+            }
+            ty = alias(path)?;
+        }
+        None
+    }
 }
 
 /// A `real` function the compiler emits natively, as a simulator builds in
