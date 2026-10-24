@@ -27,7 +27,7 @@ pub enum Intrinsic {
 pub struct FunctionIndex<'a> {
     /// Resolution this index was built over, for definition lookup.
     resolved: &'a Resolved,
-    /// Module-level and foreign functions, by declaration identity.
+    /// Borrowed entities, constants, aliases and free/foreign functions by identity.
     declarations: DeclarationIndex<'a>,
     /// Static associated functions, keyed by `Type::name` because they do
     /// not yet receive a `DefId` of their own.
@@ -62,6 +62,15 @@ impl<'a> FunctionIndex<'a> {
             conversions: HashMap::new(),
             intrinsics: std::collections::HashSet::new(),
         }
+    }
+
+    /// Entity source declarations share the resolved declaration index.
+    pub(crate) fn entity(&self, id: DefId) -> Option<&'a ast::EntityDecl> {
+        self.declarations.entity(id)
+    }
+
+    pub(crate) fn entity_type_id(&self, ty: &ast::Type) -> Option<DefId> {
+        self.declarations.entity_type_id(ty)
     }
 
     /// Register the executable body of an exact `From<Source>` conversion.

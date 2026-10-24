@@ -3,6 +3,14 @@
 use super::*;
 
 impl<'a> Checker<'a> {
+    /// A checked entity type already carries its resolver-selected identity.
+    pub(super) fn entity_id(&self, ty: &Ty) -> Option<DefId> {
+        match ty {
+            Ty::Named(id) => self.declarations.entity(*id).map(|_| *id),
+            _ => None,
+        }
+    }
+
     /// The visibility of a field, following nominal derivation to wherever it
     /// was declared.
     pub(super) fn field_visibility_for(&self, head: &str, field: &str) -> Option<MemberVisibility> {

@@ -72,8 +72,11 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
   equal names in different modules and renamed imports cannot share a schema
   or binding. Standard metadata hooks use source-registered lang roles, and
   exported user metadata names are canonical module-qualified paths.
-  Associated methods and other declaration
-  registries still need migration. Non-integer calls remain unknown to integer
+  Entity declarations now use the same borrowed index in type checking,
+  elaboration and IR; checked port facts, test membership and private-member
+  owners are keyed by `DefId`. Associated methods and trait/type registries
+  still need migration, as does shared transparent entity-alias normalization.
+  Non-integer calls remain unknown to integer
   analysis rather than discarding return/argument conversions.
   Integer metadata now shares checked constant evaluation and is materialized
   before elaboration, including defaults, negative values and integer-function

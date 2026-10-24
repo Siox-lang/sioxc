@@ -298,29 +298,12 @@ pub fn structural_root_entities(modules: &[Module], resolved: &Resolved) -> Hash
 /// Entity names used as the type of an instance `let` anywhere. Such a name is
 /// reached through its parent, so `check` need not root it itself.
 fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<DefId> {
-    let declared: HashMap<DefId, &EntityDecl> = modules
-        .iter()
-        .flat_map(|m| &m.items)
-        .filter_map(|item| match item {
-            Item::Entity(entity) => resolved.declared(entity.name.span).map(|id| (id, entity)),
-            _ => None,
-        })
-        .collect();
+    let declared = DeclarationIndex::collect(resolved, modules);
     let mut out = HashSet::new();
 
-    /// Record an entity instantiated by a type mention, skipping names bound to
-    /// the enclosing declaration's own type parameters.
-    fn record_type(
-        ty: &Type,
-        type_params: &HashSet<String>,
-        declared: &HashMap<DefId, &EntityDecl>,
-        resolved: &Resolved,
-        out: &mut HashSet<DefId>,
-    ) {
-        if type_head_name(ty).is_some_and(|name| type_params.contains(name)) {
-            return;
-        }
-        if let Some(id) = type_def_id(ty, resolved).filter(|id| declared.contains_key(id)) {
+    /// Type parameters resolve to their own identities, never to an entity.
+    fn record_type(ty: &Type, declared: &DeclarationIndex<'_>, out: &mut HashSet<DefId>) {
+        if let Some(id) = declared.entity_type_id(ty) {
             out.insert(id);
         }
     }
@@ -329,30 +312,22 @@ fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<Def
     /// initializer's construction site.
     fn record_let(
         declaration: &LetDecl,
-        type_params: &HashSet<String>,
-        declared: &HashMap<DefId, &EntityDecl>,
-        resolved: &Resolved,
+        declared: &DeclarationIndex<'_>,
         out: &mut HashSet<DefId>,
     ) {
         if let Some(Expr::Construct { ty: Some(ty), .. }) = &declaration.value {
-            record_type(ty, type_params, declared, resolved, out);
+            record_type(ty, declared, out);
             return;
         }
         if let Some(ty) = &declaration.ty {
-            record_type(ty, type_params, declared, resolved, out);
+            record_type(ty, declared, out);
         }
     }
 
     /// Record entities instantiated anywhere within a block.
-    fn record_block(
-        block: &Block,
-        type_params: &HashSet<String>,
-        declared: &HashMap<DefId, &EntityDecl>,
-        resolved: &Resolved,
-        out: &mut HashSet<DefId>,
-    ) {
+    fn record_block(block: &Block, declared: &DeclarationIndex<'_>, out: &mut HashSet<DefId>) {
         for statement in &block.stmts {
-            record_statement(statement, type_params, declared, resolved, out);
+            record_statement(statement, declared, out);
         }
     }
 
@@ -360,41 +335,33 @@ fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<Def
     /// blocks.
     fn record_statement(
         statement: &Stmt,
-        type_params: &HashSet<String>,
-        declared: &HashMap<DefId, &EntityDecl>,
-        resolved: &Resolved,
+        declared: &DeclarationIndex<'_>,
         out: &mut HashSet<DefId>,
     ) {
         match statement {
             Stmt::Use(_) => {}
-            Stmt::Let(declaration) => record_let(declaration, type_params, declared, resolved, out),
+            Stmt::Let(declaration) => record_let(declaration, declared, out),
             Stmt::Assign {
                 value: Expr::Construct { ty: Some(ty), .. },
                 ..
-            } => record_type(ty, type_params, declared, resolved, out),
+            } => record_type(ty, declared, out),
             Stmt::If(statement) => {
-                record_block(&statement.then, type_params, declared, resolved, out);
+                record_block(&statement.then, declared, out);
                 if let Some(branch) = statement.else_.as_deref() {
                     match branch {
-                        ElseBranch::Block(block) => {
-                            record_block(block, type_params, declared, resolved, out)
+                        ElseBranch::Block(block) => record_block(block, declared, out),
+                        ElseBranch::If(statement) => {
+                            record_statement(&Stmt::If(statement.clone()), declared, out)
                         }
-                        ElseBranch::If(statement) => record_statement(
-                            &Stmt::If(statement.clone()),
-                            type_params,
-                            declared,
-                            resolved,
-                            out,
-                        ),
                     }
                 }
             }
             Stmt::Match(statement) => {
                 for arm in &statement.arms {
-                    record_block(&arm.body, type_params, declared, resolved, out);
+                    record_block(&arm.body, declared, out);
                 }
             }
-            Stmt::For { body, .. } => record_block(body, type_params, declared, resolved, out),
+            Stmt::For { body, .. } => record_block(body, declared, out),
             Stmt::Assign { .. } | Stmt::Expr(_) | Stmt::Return { .. } => {}
         }
     }
@@ -402,27 +369,13 @@ fn instantiated_entities(modules: &[Module], resolved: &Resolved) -> HashSet<Def
     for m in modules {
         for item in &m.items {
             let Item::Impl(im) = item else { continue };
-            let Some(owner) = type_def_id(&im.target, resolved) else {
+            let Some(_) = declared.entity_type_id(&im.target) else {
                 continue;
             };
-            let Some(entity) = declared.get(&owner) else {
-                continue;
-            };
-            let type_params: HashSet<String> = entity
-                .params
-                .params
-                .iter()
-                .filter(|parameter| parameter.bound.is_none())
-                .map(|parameter| parameter.name.text.clone())
-                .collect();
             for it in &im.items {
                 match it {
-                    ImplItem::Let(declaration) => {
-                        record_let(declaration, &type_params, &declared, resolved, &mut out)
-                    }
-                    ImplItem::Stmt(statement) => {
-                        record_statement(statement, &type_params, &declared, resolved, &mut out)
-                    }
+                    ImplItem::Let(declaration) => record_let(declaration, &declared, &mut out),
+                    ImplItem::Stmt(statement) => record_statement(statement, &declared, &mut out),
                     ImplItem::Const(_)
                     | ImplItem::Fn(_)
                     | ImplItem::ModeField { .. }
@@ -485,7 +438,6 @@ fn elaborate_roots(
         declarations: DeclarationIndex::collect(resolved, modules),
         misplaced: std::cell::RefCell::new(Vec::new()),
         collisions: std::cell::RefCell::new(Vec::new()),
-        entities: HashMap::new(),
         impls: HashMap::new(),
         record_structs: modules
             .iter()
@@ -539,7 +491,7 @@ struct Elaborator<'a> {
     sink: &'a mut DiagnosticSink,
     /// Name resolution results this walk looks definitions up in.
     resolved: &'a Resolved,
-    /// Borrowed module constants and free functions, by resolved identity.
+    /// Borrowed entity, constant and function declarations, by resolved identity.
     declarations: DeclarationIndex<'a>,
     /// Instances found where structural elaboration cannot reach them: inside
     /// a behavioural `if`, whose condition is not a constant and so is a
@@ -551,8 +503,6 @@ struct Elaborator<'a> {
     /// `(name, later site, first site)`. Recorded while gathering (which
     /// borrows `&self`) and reported once per site, like `misplaced`.
     collisions: std::cell::RefCell<Vec<(String, Span, Span)>>,
-    /// Entity declarations by definition, for instantiation lookup.
-    entities: HashMap<DefId, &'a EntityDecl>,
     /// Entity identity -> its inherent impls (where instances live).
     impls: HashMap<DefId, Vec<&'a ImplDecl>>,
     /// Names of structs with fields, which are connected field by field.
@@ -570,7 +520,6 @@ impl<'a> Elaborator<'a> {
                 match item {
                     Item::Entity(e) => {
                         if let Some(id) = self.resolved.declared(e.name.span) {
-                            self.entities.insert(id, e);
                             if let Some(name) = self.resolved.qualified_name(id) {
                                 self.out.entity_names.insert(id, name);
                             }
@@ -601,13 +550,13 @@ impl<'a> Elaborator<'a> {
         stack: &mut Vec<DefId>,
     ) -> InstanceId {
         let entity_name = self
-            .entities
-            .get(&entity_id)
+            .declarations
+            .entity(entity_id)
             .map(|entity| entity.name.text.as_str())
             .unwrap_or("<unknown>");
         // Cycle guard: an entity may not (transitively) instantiate itself.
         if stack.contains(&entity_id) {
-            let span = self.entities.get(&entity_id).map(|e| e.name.span);
+            let span = self.declarations.entity(entity_id).map(|e| e.name.span);
             if let Some(span) = span {
                 self.error(
                     codes::DUPLICATE_ITEM,
@@ -629,8 +578,8 @@ impl<'a> Elaborator<'a> {
         }
 
         let is_extern = self
-            .entities
-            .get(&entity_id)
+            .declarations
+            .entity(entity_id)
             .map(|e| e.is_extern)
             .unwrap_or(true);
         let env = self.with_impl_binders(entity_id, param_env(&params));
@@ -648,7 +597,7 @@ impl<'a> Elaborator<'a> {
             };
             // Only entity constructions are instances; struct/data constructs
             // are ignored here.
-            if let Some(sub_decl) = self.entities.get(&sub_id).copied() {
+            if let Some(sub_decl) = self.declarations.entity(sub_id) {
                 // Args may reference this instance's params; ports substitute
                 // the child's resolved params.
                 self.check_generic_arg_names(sub_decl, spec.ty, spec.site);
@@ -710,7 +659,7 @@ impl<'a> Elaborator<'a> {
         mut env: HashMap<String, i64>,
     ) -> HashMap<String, i64> {
         let (Some(edecl), Some(impls)) = (
-            self.entities.get(&entity_id).copied(),
+            self.declarations.entity(entity_id),
             self.impls.get(&entity_id),
         ) else {
             return env;
@@ -755,8 +704,8 @@ impl<'a> Elaborator<'a> {
         // whose type is the bound argument (`unsigned[8]`), never an instance — even
         // when an entity happens to be named `T`.
         let tparams: HashSet<String> = self
-            .entities
-            .get(&entity_id)
+            .declarations
+            .entity(entity_id)
             .map(|e| {
                 e.params
                     .params
@@ -789,9 +738,8 @@ impl<'a> Elaborator<'a> {
         // value is gathered here too, and dropped later by `build`, so a
         // reassigned struct is not a second instance named `r`.
         let mut first: HashMap<&str, Span> = HashMap::new();
-        let is_instance = |spec: &InstanceSpec<'_>| {
-            type_def_id(spec.ty, self.resolved).is_some_and(|id| self.entities.contains_key(&id))
-        };
+        let is_instance =
+            |spec: &InstanceSpec<'_>| self.declarations.entity_type_id(spec.ty).is_some();
         for spec in specs.iter().filter(|spec| is_instance(spec)) {
             if let Some(&earlier) = first.get(spec.name.as_str()) {
                 self.collisions
@@ -819,8 +767,8 @@ impl<'a> Elaborator<'a> {
             return out;
         };
         let type_params: HashSet<&str> = self
-            .entities
-            .get(&entity_id)
+            .declarations
+            .entity(entity_id)
             .into_iter()
             .flat_map(|entity| &entity.params.params)
             .filter(|parameter| parameter.bound.is_none())
@@ -841,10 +789,7 @@ impl<'a> Elaborator<'a> {
                 };
                 let base_parameter =
                     type_head_name(base).is_some_and(|name| type_params.contains(name));
-                if base_parameter
-                    || !type_def_id(base, self.resolved)
-                        .is_some_and(|id| self.entities.contains_key(&id))
-                {
+                if base_parameter || self.declarations.entity_type_id(base).is_none() {
                     continue;
                 }
                 let declared = match index.as_ref() {
@@ -922,9 +867,7 @@ impl<'a> Elaborator<'a> {
         if type_head_name(ann).is_some_and(|n| tparams.contains(n)) {
             return None;
         }
-        if !type_def_id(ann, self.resolved).is_some_and(|id| self.entities.contains_key(&id)) {
-            return None;
-        }
+        self.declarations.entity_type_id(ann)?;
         match &l.value {
             // `let x: Entity = { .a = a }` — dotted name-less construct.
             Some(Expr::Construct { ty: None, args, .. }) => Some((ann, args.clone(), l.span)),
@@ -1097,7 +1040,7 @@ impl<'a> Elaborator<'a> {
                         // even when an entity happens to share its name — the
                         // same exclusion `gather_instances` makes.
                         if type_def_id(l.ty.as_ref().expect("checked above"), self.resolved)
-                            .is_some_and(|id| self.entities.contains_key(&id))
+                            .is_some_and(|id| self.declarations.entity(id).is_some())
                             && !tparams.contains(head)
                         {
                             self.misplaced
@@ -1391,7 +1334,7 @@ impl<'a> Elaborator<'a> {
         env: &HashMap<String, i64>,
     ) -> HashMap<String, EType> {
         let mut sigs = HashMap::new();
-        if let Some(edecl) = self.entities.get(&entity_id) {
+        if let Some(edecl) = self.declarations.entity(entity_id) {
             for p in &edecl.ports {
                 sigs.insert(
                     p.name.text.clone(),
@@ -2413,7 +2356,7 @@ mod tests {
         // signal: `Buf` has no child instances.
         let src = "module m;\n\
             entity Buf<T> { a: T in, y: T out }\n\
-            impl Buf<T> {\n\
+            impl<T> Buf<T> {\n\
               let s: T;\n\
               let values: T[2];\n\
               s = a;\n\

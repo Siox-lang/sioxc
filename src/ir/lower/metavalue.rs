@@ -295,7 +295,7 @@ impl<'a> Lowering<'a> {
         let mut inputs = std::collections::BTreeSet::new();
         for &root in &hierarchy.roots {
             let entity = hierarchy.instance(root).entity_id;
-            let Some(declaration) = self.entities.get(&entity) else {
+            let Some(declaration) = self.free_fns.entity(entity) else {
                 continue;
             };
             if !is_test_entity(declaration, self.resolved) {

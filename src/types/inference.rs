@@ -612,9 +612,9 @@ impl<'a> Checker<'a> {
                     // An instance's port (`dut.z`): its declared type. As an
                     // error it read untyped, and `print!("{}", dut.z)` of an
                     // aggregate port found no way to print it.
-                    None => head
-                        .as_ref()
-                        .and_then(|head| self.entities.get(head))
+                    None => self
+                        .entity_id(&recv)
+                        .and_then(|id| self.entities.get(&id))
                         .and_then(|ports| ports.iter().find(|port| port.name == field.text))
                         .map(|port| port.ty.clone())
                         .unwrap_or(Ty::Error),

@@ -27,6 +27,88 @@ fn constant<'a>(module: &'a Module, name: &str) -> &'a ConstDecl {
 }
 
 #[test]
+fn entity_declarations_are_borrowed_and_import_renames_keep_identity() {
+    let left = "module left; pub entity Cell { value: integer out }";
+    let right = "module right; pub entity Cell { value: real out }";
+    let caller = "module caller; use L = left::Cell; use R = right::Cell;
+        entity Top {} impl Top { let l: L; let r: R; }";
+    for sources in [[left, right, caller], [caller, right, left]] {
+        let (modules, resolved) = parse(&sources);
+        let index = DeclarationIndex::collect(&resolved, &modules);
+        let declaration = |module_name: &str| {
+            modules
+                .iter()
+                .find(|module| module.path.segments[0].text == module_name)
+                .and_then(|module| {
+                    module.items.iter().find_map(|item| match item {
+                        Item::Entity(entity) => Some(entity),
+                        _ => None,
+                    })
+                })
+                .unwrap()
+        };
+        let left = declaration("left");
+        let right = declaration("right");
+        let left_id = resolved.declared(left.name.span).unwrap();
+        let right_id = resolved.declared(right.name.span).unwrap();
+        assert_ne!(left_id, right_id);
+        assert!(std::ptr::eq(index.entity(left_id).unwrap(), left));
+        assert!(std::ptr::eq(index.entity(right_id).unwrap(), right));
+        assert!(index.function(left_id).is_none());
+        assert!(index.constant(right_id).is_none());
+        let module = modules
+            .iter()
+            .find(|m| m.path.segments[0].text == "caller")
+            .unwrap();
+        let implementation = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Impl(implementation) => Some(implementation),
+                _ => None,
+            })
+            .unwrap();
+        for (item, expected) in implementation.items.iter().zip([left_id, right_id]) {
+            let crate::syntax::ast::ImplItem::Let(declaration) = item else {
+                unreachable!()
+            };
+            assert_eq!(
+                index.entity_type_id(declaration.ty.as_ref().unwrap()),
+                Some(expected)
+            );
+        }
+    }
+}
+
+#[test]
+fn entity_classification_uses_resolved_wrappers_not_shadowed_or_missing_names() {
+    let (modules, resolved) = parse(&["module m; entity Cell {}
+        entity Buffer<T> {} impl<T> Buffer<T> { let data: T; }
+        entity Top {} impl Top { let cells: Cell[2]; let buffer: Buffer<integer>; }"]);
+    let index = DeclarationIndex::collect(&resolved, &modules);
+    for item in &modules[0].items {
+        let Item::Impl(implementation) = item else {
+            continue;
+        };
+        for item in &implementation.items {
+            let crate::syntax::ast::ImplItem::Let(declaration) = item else {
+                continue;
+            };
+            assert_eq!(
+                index
+                    .entity_type_id(declaration.ty.as_ref().unwrap())
+                    .is_some(),
+                declaration.name.text != "data"
+            );
+        }
+    }
+    let mut sink = DiagnosticSink::default();
+    let missing =
+        crate::syntax::parse_module(FileId(99), "module missing; const c: Cell = 1;", &mut sink);
+    assert!(index.entity_type_id(&constant(&missing, "c").ty).is_none());
+}
+
+#[test]
 fn declarations_and_contracts_borrow_the_original_ast() {
     let (modules, resolved) = parse(&["module a;
         const VALUE: integer = 40 + 2;

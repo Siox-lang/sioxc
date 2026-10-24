@@ -607,8 +607,8 @@ impl<'a> Lowering<'a> {
         entity_id: DefId,
     ) -> Vec<(String, ast::Expr)> {
         let order: Vec<String> = self
-            .entities
-            .get(&entity_id)
+            .free_fns
+            .entity(entity_id)
             .map(|d| d.ports.iter().map(|p| p.name.text.clone()).collect())
             .unwrap_or_default();
         conns
@@ -624,8 +624,8 @@ impl<'a> Lowering<'a> {
                 // (`.p = { 7, 8 }`) is a struct literal, not the concat it
                 // lexes as. It connected nothing and the child read zeros.
                 let port_ty = self
-                    .entities
-                    .get(&entity_id)
+                    .free_fns
+                    .entity(entity_id)
                     .and_then(|d| d.ports.iter().find(|p| p.name.text == port))
                     .map(|p| p.ty.clone());
                 let value = self.as_struct_literal(port_ty.as_ref(), &c.value.clone()?);

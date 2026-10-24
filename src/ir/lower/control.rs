@@ -41,7 +41,7 @@ impl<'a> Lowering<'a> {
         // worked, and so did a scalar connection in a loop, which merely
         // lowered to a value nobody used.
         if let ast::Stmt::Let(l) = stmt {
-            if instance_let_parts(l, &self.entities, self.resolved).is_some() {
+            if instance_let_parts(l, &self.free_fns).is_some() {
                 return;
             }
         }
@@ -55,7 +55,7 @@ impl<'a> Lowering<'a> {
             ..
         } = stmt
         {
-            if type_def_id(t, self.resolved).is_some_and(|id| self.entities.contains_key(&id)) {
+            if type_def_id(t, self.resolved).is_some_and(|id| self.free_fns.entity(id).is_some()) {
                 return;
             }
         }

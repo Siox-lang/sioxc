@@ -55,8 +55,9 @@ impl<'a> Checker<'a> {
         // Stimulus primitives are meaningful in a testbench; in an entity body
         // lowering dropped them without a word.
         let saved_tb = self.in_testbench.replace(
-            self.type_key(&im.target)
-                .is_some_and(|key| self.test_entities.contains(&key)),
+            self.declarations
+                .entity_type_id(&im.target)
+                .is_some_and(|id| self.test_entities.contains(&id)),
         );
         let saved_params = self.push_type_params(im.params.params.iter().map(|p| &p.name.text));
         let concrete_self = self.ast_ty(self_ty(im));
@@ -65,13 +66,14 @@ impl<'a> Checker<'a> {
         let backing = self
             .type_key(self_ty(im))
             .unwrap_or_else(|| "<error>".to_string());
+        let entity = self.declarations.entity_type_id(self_ty(im));
         for item in &im.items {
             if let ImplItem::Attr(declaration) = item {
                 self.check_type_attr_decl(declaration, im.trait_.is_some());
                 continue;
             }
             if let ImplItem::Process(process) = item {
-                if im.trait_.is_some() || !self.entity_names.contains(&backing) {
+                if im.trait_.is_some() || entity.is_none() {
                     self.error_with_help(
                         codes::PROCESS_PLACEMENT,
                         process.span,
@@ -94,7 +96,7 @@ impl<'a> Checker<'a> {
                 );
             }
             if function.is_pub
-                && self.entity_names.contains(&backing)
+                && entity.is_some()
                 && function.params.iter().any(|parameter| parameter.is_self)
             {
                 self.error_with_help(
@@ -164,8 +166,9 @@ impl<'a> Checker<'a> {
                     // waveform held two `a`s in one scope.
                     if im.trait_.is_none() {
                         let port = self
-                            .type_key(&im.target)
-                            .and_then(|key| self.entities.get(&key))
+                            .declarations
+                            .entity_type_id(&im.target)
+                            .and_then(|id| self.entities.get(&id))
                             .is_some_and(|ports| ports.iter().any(|p| p.name == l.name.text));
                         if port {
                             self.error_with_help(
@@ -321,8 +324,9 @@ impl<'a> Checker<'a> {
         self.array_bounds.borrow_mut().clear();
         if im.trait_.is_none() {
             if let Some(ports) = self
-                .type_key(&im.target)
-                .and_then(|key| self.entities.get(&key))
+                .declarations
+                .entity_type_id(&im.target)
+                .and_then(|id| self.entities.get(&id))
             {
                 for p in ports {
                     sym.insert(p.name.clone(), p.ty.clone());

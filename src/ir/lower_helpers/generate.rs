@@ -29,11 +29,10 @@ pub(in crate::ir) fn literal_leaves<'a>(
 /// - `let x: Entity = { .. }` (type from the annotation, name-less construct),
 /// - `let x: Entity;` (type from the annotation, no connections).
 ///
-/// `entities` decides whether an annotation names an entity.
+/// The shared declaration index decides whether an annotation names an entity.
 pub(in crate::ir) fn instance_let_parts(
     l: &ast::LetDecl,
-    entities: &HashMap<DefId, &ast::EntityDecl>,
-    resolved: &Resolved,
+    fns: &FunctionIndex<'_>,
 ) -> Option<(ast::Type, Vec<ast::ConnectArg>)> {
     // A *named* construction is a sub-instance only when the name is an
     // entity's. Every other branch below checks that; this one did not, so
@@ -48,7 +47,7 @@ pub(in crate::ir) fn instance_let_parts(
         ..
     }) = &l.value
     {
-        if type_def_id(cty, resolved).is_some_and(|id| entities.contains_key(&id)) {
+        if fns.entity_type_id(cty).is_some() {
             return Some((cty.clone(), args.clone()));
         }
     }
@@ -58,9 +57,7 @@ pub(in crate::ir) fn instance_let_parts(
     if matches!(ann, ast::Type::Indexed { .. }) {
         return None;
     }
-    if !type_def_id(ann, resolved).is_some_and(|id| entities.contains_key(&id)) {
-        return None;
-    }
+    fns.entity_type_id(ann)?;
     match &l.value {
         // Dotted name-less construct `{ .a = a }`.
         Some(ast::Expr::Construct { ty: None, args, .. }) => Some((ann.clone(), args.clone())),
@@ -91,14 +88,12 @@ pub(in crate::ir) fn gather_generate(
     s: &ast::Stmt,
     env: &HashMap<String, i64>,
     at: &GenPath,
-    entities: &HashMap<DefId, &ast::EntityDecl>,
-    resolved: &Resolved,
     fns: &FunctionIndex<'_>,
     out: &mut Vec<(String, ast::Type, Vec<ast::ConnectArg>)>,
 ) {
     match s {
         ast::Stmt::Let(l) => {
-            if let Some((cty, args)) = instance_let_parts(l, entities, resolved) {
+            if let Some((cty, args)) = instance_let_parts(l, fns) {
                 // Named by the elaborator's own rule (`s_0`, `stages[0].s`).
                 out.push((at.name(&l.name.text), cty, args));
             }
@@ -140,7 +135,7 @@ pub(in crate::ir) fn gather_generate(
                         // `Sub<W=i>` and `wires[i]` become concrete before the
                         // instance is recorded.
                         let st = subst_stmt(st, &var.text, i);
-                        gather_generate(&st, &e, &at, entities, resolved, fns, out);
+                        gather_generate(&st, &e, &at, fns, out);
                     }
                 }
             }
@@ -153,25 +148,17 @@ pub(in crate::ir) fn gather_generate(
             if let Some(c) = eval_const_fns(&iff.cond, env, fns, 0) {
                 if c != 0 {
                     for st in &iff.then.stmts {
-                        gather_generate(st, env, at, entities, resolved, fns, out);
+                        gather_generate(st, env, at, fns, out);
                     }
                 } else {
                     match iff.else_.as_deref() {
                         Some(ast::ElseBranch::Block(b)) => {
                             for st in &b.stmts {
-                                gather_generate(st, env, at, entities, resolved, fns, out);
+                                gather_generate(st, env, at, fns, out);
                             }
                         }
                         Some(ast::ElseBranch::If(inner)) => {
-                            gather_generate(
-                                &ast::Stmt::If(inner.clone()),
-                                env,
-                                at,
-                                entities,
-                                resolved,
-                                fns,
-                                out,
-                            );
+                            gather_generate(&ast::Stmt::If(inner.clone()), env, at, fns, out);
                         }
                         None => {}
                     }

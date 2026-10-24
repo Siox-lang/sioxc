@@ -282,7 +282,7 @@ struct Checker<'a> {
     instantiating: std::cell::RefCell<Vec<DefId>>,
     /// Entities carrying `#[test]`: testbenches, where the stimulus
     /// primitives (`await`, `assert!`, `print!`, `warn!`) are meaningful.
-    test_entities: HashSet<String>,
+    test_entities: HashSet<DefId>,
     /// Whether the statements being checked belong to a testbench impl.
     in_testbench: std::cell::Cell<bool>,
     /// Whether the statements being checked are a function body. `return`
@@ -307,8 +307,8 @@ struct Checker<'a> {
     sink: &'a mut DiagnosticSink,
     /// Name resolution results, for definition lookup.
     resolved: &'a Resolved,
-    /// Entity name -> its ports.
-    entities: HashMap<String, Vec<PortInfo>>,
+    /// Entity identity -> its checked port facts.
+    entities: HashMap<DefId, Vec<PortInfo>>,
     /// Resolved attribute identity -> allowed target kinds or type references.
     attr_targets: HashMap<DefId, Vec<Ident>>,
     /// Resolved attribute identity -> the value type it expects.
@@ -421,7 +421,7 @@ struct Checker<'a> {
     /// interface. Keep its declaration site so `instance.hidden` is diagnosed
     /// as a privacy violation instead of falling through as an unchecked
     /// field access.
-    private_entity_members: HashMap<(String, String), Span>,
+    private_entity_members: HashMap<(DefId, String), Span>,
     /// Named view -> per-field directions.
     view_dirs: HashMap<String, HashMap<String, Direction>>,
     /// Persistent Stage-4 facts keyed by the AST expression's stable span.
@@ -447,9 +447,6 @@ struct Checker<'a> {
     /// Source file to its declared module path. Privacy belongs to the
     /// module, never to the file that happened to hold the declaration.
     file_modules: HashMap<crate::diag::FileId, String>,
-    /// Every entity name, so a type that is not an entity is not mistaken
-    /// for an instantiation.
-    entity_names: HashSet<String>,
     /// (type key, name) -> a type attribute its implementation declares
     /// (`pub attr integers: integer = self'high + 1;`).
     type_attrs: HashMap<(String, String), AttrDecl>,

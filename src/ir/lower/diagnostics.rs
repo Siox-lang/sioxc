@@ -313,7 +313,7 @@ impl<'a> Lowering<'a> {
     pub(super) fn has_unbound_parameters(&self) -> bool {
         self.lower_stack
             .last()
-            .and_then(|entity| self.entities.get(entity))
+            .and_then(|entity| self.free_fns.entity(*entity))
             .is_some_and(|decl| {
                 decl.params.params.iter().any(|param| {
                     param.bound.is_some() && !self.cur_env.contains_key(&param.name.text)

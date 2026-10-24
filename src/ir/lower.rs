@@ -261,8 +261,6 @@ struct Lowering<'a> {
     /// Signals given a default by a match wildcard arm — excluded from the
     /// possible-latch lint even though their lowered drivers are conditional.
     lint_defaulted: std::collections::HashSet<u32>,
-    /// Entity declarations by definition identity.
-    entities: HashMap<DefId, &'a ast::EntityDecl>,
     /// Entity identity to its impl bodies, for recursive hierarchy
     /// lowering.
     impls: HashMap<DefId, Vec<&'a ast::ImplDecl>>,

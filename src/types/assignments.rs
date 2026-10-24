@@ -324,18 +324,13 @@ impl<'a> Checker<'a> {
     /// An entity is a hardware instance, not a compile-time value, so it may be
     /// declared with `let` but never `const` (`const dut: Counter = ..`).
     pub(super) fn check_const_not_entity(&mut self, c: &ConstDecl) {
-        let Some(head) = self.type_key(&c.ty) else {
+        let Some(id) = self.declarations.entity_type_id(&c.ty) else {
             return;
         };
         // Use the resolved definition so a generic parameter that shadows an
         // entity name isn't misjudged.
-        let is_entity = type_head_span(&c.ty)
-            .and_then(|s| self.resolved.resolved(s))
-            .and_then(|id| self.resolved.def(id))
-            .map(|d| d.kind == DefKind::Entity)
-            .unwrap_or_else(|| self.entities.contains_key(&head));
-        if is_entity {
-            let shown = self.key_leaf(&head);
+        if let Some(entity) = self.declarations.entity(id) {
+            let shown = &entity.name.text;
             self.error(
                 codes::CONST_ENTITY_INSTANCE,
                 c.span,

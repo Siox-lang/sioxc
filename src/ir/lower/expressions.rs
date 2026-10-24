@@ -150,7 +150,7 @@ impl<'a> Lowering<'a> {
                 let parametric = self
                     .lower_stack
                     .last()
-                    .and_then(|entity| self.entities.get(entity))
+                    .and_then(|entity| self.free_fns.entity(*entity))
                     .is_some_and(|decl| decl.params.params.iter().any(|q| q.name.text == leaf));
                 if parametric {
                     self.parametric_unknown.set(true);

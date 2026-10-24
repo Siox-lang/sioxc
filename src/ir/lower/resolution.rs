@@ -21,7 +21,7 @@ impl<'a> Lowering<'a> {
         let ast::Type::Generic { args, .. } = ty else {
             return out;
         };
-        let decl = self.entities.get(&entity_id);
+        let decl = self.free_fns.entity(entity_id);
         for (i, a) in args.iter().enumerate() {
             match a {
                 ast::GenericArg::Named { name, value } => {
@@ -56,7 +56,7 @@ impl<'a> Lowering<'a> {
         entity_id: DefId,
     ) -> HashMap<String, ast::Type> {
         let mut out = HashMap::new();
-        let (Some(decl), ast::Type::Generic { args, .. }) = (self.entities.get(&entity_id), ty)
+        let (Some(decl), ast::Type::Generic { args, .. }) = (self.free_fns.entity(entity_id), ty)
         else {
             return out;
         };

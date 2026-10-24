@@ -52,13 +52,17 @@ impl<'a> Checker<'a> {
         // implementation. Previously every non-port field returned silently
         // here because entities are not structs, so `instance.hidden` could
         // survive semantic checking even though lowering had no such member.
-        if let Some(ports) = self.entities.get(&head) {
-            if ports.iter().any(|port| port.name == field.text) {
+        if let Some(entity) = self.entity_id(&base_ty) {
+            if self
+                .entities
+                .get(&entity)
+                .is_some_and(|ports| ports.iter().any(|port| port.name == field.text))
+            {
                 return;
             }
             if let Some(declaration) = self
                 .private_entity_members
-                .get(&(head.clone(), field.text.clone()))
+                .get(&(entity, field.text.clone()))
                 .copied()
             {
                 self.sink.emit(
@@ -249,7 +253,7 @@ impl<'a> Checker<'a> {
         };
         let key = (head.clone(), field.text.clone());
         if self.methods.contains_key(&key) {
-            if self.entity_names.contains(&head) && !is_self_value(base) {
+            if self.entity_id(&recv).is_some() && !is_self_value(base) {
                 self.error_with_help(
                     codes::PRIVATE_MEMBER,
                     *span,

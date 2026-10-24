@@ -58,7 +58,7 @@ impl<'a> Lowering<'a> {
         aliases: &HashMap<String, SignalId>,
         is_root: bool,
     ) -> HashMap<String, (SignalId, Option<ast::Direction>)> {
-        let Some(edecl) = self.entities.get(&entity_id).copied() else {
+        let Some(edecl) = self.free_fns.entity(entity_id) else {
             return HashMap::new();
         };
 
@@ -199,8 +199,6 @@ impl<'a> Lowering<'a> {
                         s,
                         env,
                         &crate::elab::GenPath::default(),
-                        &self.entities,
-                        self.resolved,
                         &self.free_fns,
                         &mut subinsts,
                     );
@@ -216,8 +214,7 @@ impl<'a> Lowering<'a> {
                     // e.g. `unsigned[8]`) is a signal even when some entity is also
                     // named `T` — let it fall through to the signal path, where
                     // `add_typed_signal` substitutes `T` via `cur_type_env`.
-                    if let Some((cty, args)) = instance_let_parts(l, &self.entities, self.resolved)
-                    {
+                    if let Some((cty, args)) = instance_let_parts(l, &self.free_fns) {
                         let is_type_param =
                             type_head_name(&cty).is_some_and(|h| self.cur_type_env.contains_key(h));
                         if !is_type_param {
@@ -402,7 +399,7 @@ impl<'a> Lowering<'a> {
                     // built element-wise, not driven — never a signal to check.
                     let is_instance_array = l.ty.as_ref().is_some_and(|ty| {
                         type_def_id(ty, self.resolved)
-                            .is_some_and(|id| self.entities.contains_key(&id))
+                            .is_some_and(|id| self.free_fns.entity(id).is_some())
                             && !type_head_name(ty)
                                 .is_some_and(|head| self.cur_type_env.contains_key(head))
                     });
@@ -578,7 +575,7 @@ impl<'a> Lowering<'a> {
             // order), used both for inout aliasing and the wiring below.
             let norm = self.norm_conns(conns, sub_id);
             let mut aliases: HashMap<String, SignalId> = HashMap::new();
-            if let Some(decl) = self.entities.get(&sub_id).copied() {
+            if let Some(decl) = self.free_fns.entity(sub_id) {
                 // `child.io = io;` after the instance drives the port one way:
                 // the child's own drivers never reached the parent net (#191).
                 // An inout shares its net only through the construction.

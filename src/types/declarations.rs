@@ -6,9 +6,12 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::resolve::{DefId, DefKind, Resolved};
-use crate::syntax::ast::{ConstDecl, FnDecl, Item, Module, Path, Type, Using, UsingKind};
+use crate::syntax::ast::{
+    ConstDecl, EntityDecl, FnDecl, Item, Module, Path, Type, Using, UsingKind,
+};
 
 enum Declaration<'a> {
+    Entity(&'a EntityDecl),
     Function(&'a FnDecl),
     Constant(&'a ConstDecl),
     Alias(&'a Type),
@@ -37,6 +40,12 @@ impl<'a> DeclarationIndex<'a> {
 
     pub(crate) fn insert_item(&mut self, item: &'a Item) {
         match item {
+            Item::Entity(declaration) => {
+                if let Some(id) = self.resolved.declared(declaration.name.span) {
+                    self.declarations
+                        .insert(id, Declaration::Entity(declaration));
+                }
+            }
             Item::Const(declaration) => self.insert_constant(declaration),
             Item::Fn(declaration) => self.insert_function(declaration),
             Item::ExternBlock { fns, .. } => {
@@ -75,6 +84,26 @@ impl<'a> DeclarationIndex<'a> {
         {
             self.declarations
                 .insert(id, Declaration::Constant(declaration));
+        }
+    }
+
+    pub(crate) fn entity(&self, id: DefId) -> Option<&'a EntityDecl> {
+        match self.declarations.get(&id)? {
+            Declaration::Entity(declaration) => Some(declaration),
+            _ => None,
+        }
+    }
+
+    /// Entity identity through application/index wrappers, never a spelling lookup.
+    pub(crate) fn entity_type_id(&self, ty: &Type) -> Option<DefId> {
+        // shortcut: aliases keep their written heads; normalize them at a shared typed boundary.
+        match ty {
+            Type::Path(path) => {
+                let id = self.resolved.resolved(path.span)?;
+                self.entity(id).map(|_| id)
+            }
+            Type::Generic { base, .. } | Type::Indexed { base, .. } => self.entity_type_id(base),
+            Type::View { .. } | Type::Tuple { .. } => None,
         }
     }
 

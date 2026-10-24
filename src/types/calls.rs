@@ -996,10 +996,9 @@ impl<'a> Checker<'a> {
         let Some(alias) = self.aliases.get(name) else {
             return false;
         };
-        self.resolve_alias_type(alias)
-            .as_ref()
-            .and_then(|ty| self.type_key(ty))
-            .is_some_and(|head| !self.entities.contains_key(&head))
+        self.resolve_alias_type(alias).as_ref().is_some_and(|ty| {
+            self.type_key(ty).is_some() && self.declarations.entity_type_id(ty).is_none()
+        })
     }
 
     /// The write restrictions `self` carries inside an impl on a view: each
@@ -1047,14 +1046,12 @@ impl<'a> Checker<'a> {
     /// Instantiating from a function would also mean a function could bring a
     /// process into being, which only an entity may do.
     pub(super) fn check_instance_placement(&mut self, l: &LetDecl) {
-        let Some(head) = l.ty.as_ref().and_then(|ty| self.type_key(ty)) else {
+        let Some(_) =
+            l.ty.as_ref()
+                .and_then(|ty| self.declarations.entity_type_id(ty))
+        else {
             return;
         };
-        if !self.entities.contains_key(&head)
-            || self.type_params.borrow().contains(self.key_leaf(&head))
-        {
-            return;
-        }
         let context = if self.in_fn_body.get() {
             "a function"
         } else if self.in_match_arm.get() {

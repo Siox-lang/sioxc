@@ -2,6 +2,74 @@
 
 use super::*;
 
+#[test]
+fn entity_ports_and_private_members_follow_resolved_imports_in_both_module_orders() {
+    let left = "module left; pub entity Cell { value: integer out }
+        impl Cell { let hidden: integer = 7; value = hidden; }";
+    let right = "module right; pub entity Cell { value: real out }
+        impl Cell { let hidden: real = 2.5; value = hidden; }";
+    let caller = "module caller; use L = left::Cell; use R = right::Cell;
+        entity Top { a: integer out, b: real out }
+        impl Top { let l: L = {}; let r: R = {}; a = l.value; b = r.value; }";
+    for sources in [[left, right, caller], [caller, right, left]] {
+        let sources: Vec<_> = sources
+            .iter()
+            .enumerate()
+            .map(|(i, source)| (*source, FileId(i as u32)))
+            .collect();
+        let sink = check_modules(&sources);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    }
+    let wrong_type = caller.replace("a = l.value", "a = r.value");
+    let sink = check_modules(&[
+        (left, FileId(0)),
+        (right, FileId(1)),
+        (&wrong_type, FileId(2)),
+    ]);
+    assert_eq!(sink.error_count(), 1, "{:?}", sink.diagnostics());
+    assert!(sink
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == Some(codes::TYPE_MISMATCH)));
+    for expression in ["l.hidden", "r.hidden"] {
+        let private = caller.replace("l.value", expression);
+        let sink = check_modules(&[(left, FileId(0)), (right, FileId(1)), (&private, FileId(2))]);
+        assert_eq!(sink.error_count(), 1, "{:?}", sink.diagnostics());
+        assert!(sink
+            .diagnostics()
+            .iter()
+            .any(|d| d.code == Some(codes::PRIVATE_MEMBER)));
+    }
+}
+
+#[test]
+fn entity_port_and_test_facts_are_keyed_by_defid() {
+    let mut sink = DiagnosticSink::new();
+    let modules: Vec<_> = [
+        "module left; #[test] pub entity Cell { value: integer out }",
+        "module right; pub entity Cell { value: real out }",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, source)| crate::syntax::parse_module(FileId(i as u32), source, &mut sink))
+    .collect();
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let mut checker = Checker::new(&mut sink, &resolved, &modules);
+    checker.collect(&modules);
+    for (module, expected, test) in [
+        (&modules[0], Ty::Integer, true),
+        (&modules[1], Ty::Real, false),
+    ] {
+        let Item::Entity(entity) = &module.items[0] else {
+            unreachable!()
+        };
+        let id = resolved.declared(entity.name.span).unwrap();
+        assert_eq!(checker.entities[&id][0].ty, expected);
+        assert_eq!(checker.test_entities.contains(&id), test);
+    }
+}
+
 /// A bus port types as its *view*, which owns no fields, so the field
 /// check found no struct behind it and returned silently — every field
 /// access through a bus went unchecked, whether the entity was

@@ -354,6 +354,25 @@ The pre-resolution operator bootstrap still requires literal
 `attr precedence = N;` spelling; resolving aliases and expressions during that
 discovery is separate work, not implied by the metadata-ID migration.
 
+**Implemented entity declarations.** The shared `DeclarationIndex` now borrows
+entity declarations too. Elaboration, structural-root collection and IR use it
+instead of constructing separate entity declaration maps. IR's existing
+`FunctionIndex` facade delegates entity lookup to that index rather than owning
+another table. The checker owns only computed port facts, keyed by `DefId`;
+test membership and private entity member owners also use resolver IDs. Valid
+generic parameters retain their own identities, without reconstructing a
+module-qualified entity name during these checks.
+
+This removes duplicate indexing and string-key reconstruction; it is not a
+claim that every prior qualified-string registry had a leaf collision. Tests
+cover borrowed source pointers, both module orders, equal entity names with
+different port types, import renames, private members, generic wrappers and
+native parameter binding. One stale elaboration fixture used an unbound
+`impl Buf<T>` and now uses the already-required `impl<T> Buf<T>` syntax.
+No new implicit binder or grammar rule is introduced. Transparent entity
+`type` aliases still require normalization at a shared typed boundary; import
+renames and type aliases are not interchangeable implementation mechanisms.
+
 **Acceptance.** No stage after `resolve` looks a declaration up by its leaf
 name; equal leaf names in different modules are covered by a test per
 registry.

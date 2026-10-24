@@ -19484,3 +19484,103 @@ contracts and module-aware metadata IDs are shared and green. Fully typed
 values/conditions/operators, additional pure statements, entity/trait/associated
 registries, generic-width folder placement, bootstrap precedence aliases and
 remaining hooks are still open. Do not mark the whole proposal/goal complete.
+
+### 2026-10-24 — Codex — entity declaration IDs, foundations section4
+
+Previous turn is verified progress: compiler8e6af73, corpusf98e74c and paper
+e071cb0 are local and accepted by guarded2460177. Continue on isolated
+feat/proposal-foundations. Graph query (entity/port/declaration/resolve/checker/
+collect/instance/alias) points to Checker, DeclarationIndex and Elaborator.
+Most entity keys are already qualified, so do not invent a same-leaf collision
+claim. Remaining duplication: string-keyed checker ports/entity/test membership,
+private entity members, and elaboration's separate borrowed entity map/root
+collector. Own types declaration index and entity consumers, elab entity lookup,
+focused frontend/API/native/corpus tests, and accompanying proposal/TODO/paper
+docs. Reproduce transparent-alias placement/root behavior before deciding whether
+alias normalization must accompany this migration. If canonical IR needs alias
+integration, announce that scope before touching it; no LLVM/runtime work planned.
+Preserve all root/paper-main dirty edits and corpus probes. Guard heavy jobs,
+full both-mode acceptance before local commits, no push or whole-goal completion.
+
+### 2026-10-24 — Codex — shared entity-index scope reaches canonical IR
+
+IR lowering also holds a duplicate DefId->EntityDecl map alongside FunctionIndex's
+shared DeclarationIndex. Own that entity-only integration in ir/functions.rs,
+ir/lower.rs, lower entity consumers and lower_helpers/generate.rs; delete the
+extra entity maps rather than wrapping them. FunctionIndex remains the existing
+IR facade. Entity IDs come from resolver paths/checked Ty::Named, with checked
+port facts still owned by types. Keep import renames, same-name modules, generic
+shadowing, placement/privacy, test selection, generate arrays and native output
+under regression coverage. No new grammar, LLVM/runtime or alias-expansion pass.
+Transparent type-alias normalization is distinct from import renames and remains
+explicit followup unless a concrete reproduction requires it for this migration.
+
+### 2026-10-24 — Codex — entity-ID focused acceptance and documentation ownership
+
+Guarded2565585 exposed one stale elab-only fixture: impl Buf<T> omitted its
+required explicit binder, and its helper ignored resolution errors. Migrate
+only that fixture to impl<T> Buf<T>; do not reintroduce implicit binders.
+Guarded2569620 passes562 frontend cases and the new native entity_identity API
+case, then fails only three changed-expression Clippy lints. Simplify those
+expressions using the shared entity_type_id helper; strict all-target/all-feature
+Clippy2574532 is now exited/success/0 (609292288 peak).
+
+Own paper architecture's declaration-index paragraphs on the isolated docs
+branch, compiler TODO/proposal progress, and the four new corpus files (README
+plus entity_identity_test and two helper modules). Document entity declarations
+borrowed through the shared index in types/elab/IR; checked ports, test membership
+and private-member owners use DefId rather than reconstructed qualified strings.
+Import renames are covered; transparent type aliases remain a recorded shortcut,
+not a feature silently claimed by this migration. No library/surface grammar,
+LLVM/runtime/dependency changes. Full frozen both-mode gate plus32 direct native/
+VCD runs before any local commit; no push, preserve peers and goal scope.
+
+### 2026-10-24 — Codex — entity-ID final gate freeze
+
+Freeze owned compiler sources/tests/proposal/TODO, actual260-program corpus and
+owned paper architecture paragraphs for entity-identities-final-20261024.sh.
+Focused562 frontend and native identity case pass; strict Clippy2574532 is green.
+No further source/doc/corpus edits during acceptance. Graph refresh is AST-only;
+its >5000-node viewer must aggregate communities and retain vendor/label warnings.
+
+Guard one Cargo worker with1792MiB soft/2GiB hard limits. Full frontend, both
+complete Rust suites and DWARF, strict Clippy, both actual corpora/UI/JSON gates,
+plus32 ordinary/debug native/VCD runs across eight programs. Fingerprint all
+three owned trees before/after. Keep fixtures/probes and shared paper-main edits,
+record terminal unit status rather than launch success, commit scoped work only
+if green, no push. Entity registry migration is internal; aliases, other type/
+trait/method registries and fully typed constants remain active proposal work.
+
+### 2026-10-24 — Codex — entity declaration IDs final acceptance
+
+Guarded siox-job-3000-1792794301621643371-2578788.service is exited/success/0,
+MemoryPeak1881378816. Retained evidence is in
+/home/max/.cache/siox-jobs/entity-identities-final-20261024 and the service log.
+All562 frontend cases, both full Rust suites (618/597 library cases and23
+DWARF tests each in115.63/115.97s), strict Clippy, formatting,24 runner tests
+and12 specified examples pass. Both actual260-program corpora pass. Each mode
+passes61 human UI and61 JSON cases,54/54 active codes and two apply/recompile
+migrations. All32 explicit ordinary/debug native/VCD runs over eight programs
+pass, including entity_identity_test with distinct integer/real ports and an
+import-renamed parameterized entity.
+
+Compiler/corpus/owned-paper fingerprints match before/after:
+compiler0457e419f28d135acb90aa47672fd6d8a5cca67c0fc1217047afcf491efbfa1a;
+corpusf7b3e78fc31c57d575fb8eb6c4b2c2de9f64c34cb6419ff9da82b37af71caae0;
+paper0dee6b04bd99ec4f8e780dfa7e8d04cbba503eb2252963c995eefed9dcc31c99.
+Only this acceptance log is appended afterward. AST graph6749/18365 is current;
+four existing partially parsed vendor files and six files without symbols
+remain. Community labeling is stale (352 saved vs341 current); no paid semantic
+extraction/relabeling was run.
+
+Commit only reviewed owned entity-index/compiler/tests/proposal/TODO/log files,
+README plus the three new actual-corpus sources, and owned paper architecture.
+Preserve all root/paper-main edits and20 pre-existing corpus probes/artifacts.
+No syntax/library/LLVM/runtime/dependency changes, blanket snapshot updates or
+push. One old elab fixture now uses the already-required explicit impl binder;
+all its existing assertions remain. Foundations roughly66% engineering estimate:
+shared entity declarations and DefId port/test/private-owner facts are green.
+Transparent entity aliases still need shared typed-boundary normalization;
+trait/type/associated registries, typed constants/operators, additional pure
+statements, generic-width folder placement and remaining hooks are still open.
+Keep the full proposal/goal active, not marked complete.

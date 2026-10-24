@@ -60,16 +60,6 @@ impl<'a> Checker<'a> {
                 (module.span.file, name)
             })
             .collect();
-        let entity_names = modules
-            .iter()
-            .flat_map(|module| module.items.iter())
-            .filter_map(|item| match item {
-                Item::Entity(entity) => resolved
-                    .declared(entity.name.span)
-                    .and_then(|id| resolved.qualified_name(id)),
-                _ => None,
-            })
-            .collect();
         let trait_visibility = modules
             .iter()
             .flat_map(|module| module.items.iter())
@@ -159,7 +149,6 @@ impl<'a> Checker<'a> {
             current_self_ty: std::cell::RefCell::new(None),
             current_impl_owner: std::cell::RefCell::new(None),
             file_modules,
-            entity_names,
             type_attrs: HashMap::new(),
             type_attr_reads: HashMap::new(),
             metadata_constants: HashMap::new(),
@@ -225,7 +214,7 @@ impl<'a> Checker<'a> {
         for m in modules {
             for item in &m.items {
                 if let Item::Entity(e) = item {
-                    let Some(entity_key) = self.declaration_key(e.name.span) else {
+                    let Some(entity_id) = self.resolved.declared(e.name.span) else {
                         continue;
                     };
                     let ports = e
@@ -246,9 +235,9 @@ impl<'a> Checker<'a> {
                     if e.attrs.iter().any(|attribute| {
                         crate::resolve::is_enabled_std_test_attribute(self.resolved, attribute)
                     }) {
-                        self.test_entities.insert(entity_key.clone());
+                        self.test_entities.insert(entity_id);
                     }
-                    self.entities.insert(entity_key, ports);
+                    self.entities.insert(entity_id, ports);
                 }
             }
         }
@@ -284,7 +273,18 @@ impl<'a> Checker<'a> {
                 // Record every impl method by (type head, name) with its
                 // declared return type, so `recv.method(args)` types (spec 3.20).
                 if let Some(ty) = self.type_key(&im.target) {
+                    let entity = self.declarations.entity_type_id(&im.target);
                     for it in &im.items {
+                        let private = match it {
+                            ImplItem::Let(declaration) => Some(&declaration.name),
+                            ImplItem::Const(constant) => Some(&constant.name),
+                            ImplItem::ModeField { name, .. } => Some(name),
+                            _ => None,
+                        };
+                        if let (Some(id), Some(name)) = (entity, private) {
+                            self.private_entity_members
+                                .insert((id, name.text.clone()), name.span);
+                        }
                         match it {
                             ImplItem::Fn(f) => {
                                 let key = (ty.clone(), f.name.text.clone());
@@ -335,22 +335,6 @@ impl<'a> Checker<'a> {
                                             .unwrap_or(f.name.span),
                                     },
                                 );
-                            }
-                            ImplItem::Let(declaration) if self.entity_names.contains(&ty) => {
-                                self.private_entity_members.insert(
-                                    (ty.clone(), declaration.name.text.clone()),
-                                    declaration.name.span,
-                                );
-                            }
-                            ImplItem::Const(constant) if self.entity_names.contains(&ty) => {
-                                self.private_entity_members.insert(
-                                    (ty.clone(), constant.name.text.clone()),
-                                    constant.name.span,
-                                );
-                            }
-                            ImplItem::ModeField { name, .. } if self.entity_names.contains(&ty) => {
-                                self.private_entity_members
-                                    .insert((ty.clone(), name.text.clone()), name.span);
                             }
                             ImplItem::Attr(declaration) => {
                                 self.type_attrs.insert(

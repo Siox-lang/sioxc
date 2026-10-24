@@ -38,7 +38,6 @@ impl<'a> Lowering<'a> {
             widening: std::cell::RefCell::new(HashSet::new()),
             base_dir: std::path::PathBuf::new(),
             lint_defaulted: std::collections::HashSet::new(),
-            entities: HashMap::new(),
             impls: HashMap::new(),
             inherent_impls: HashMap::new(),
             trait_decls: HashMap::new(),
@@ -124,11 +123,6 @@ impl<'a> Lowering<'a> {
             for item in &m.items {
                 self.free_fns.insert_declaration(item);
                 match item {
-                    ast::Item::Entity(e) => {
-                        if let Some(id) = self.resolved.declared(e.name.span) {
-                            self.entities.insert(id, e);
-                        }
-                    }
                     ast::Item::ExternBlock { abi, fns, .. } => {
                         self.free_fns.insert_extern(abi, fns);
                     }
@@ -352,7 +346,7 @@ impl<'a> Lowering<'a> {
     /// Lower one entity instance: its ports, state and behavior, under
     /// `root_path`.
     pub(super) fn lower_entity(&mut self, entity_id: DefId, root_path: &str) {
-        let Some(edecl) = self.entities.get(&entity_id).copied() else {
+        let Some(edecl) = self.free_fns.entity(entity_id) else {
             return;
         };
         // Extern entities are black boxes.
@@ -418,7 +412,7 @@ impl<'a> Lowering<'a> {
                 let ast::ImplItem::Let(declaration) = item else {
                     continue;
                 };
-                if instance_let_parts(declaration, &self.entities, self.resolved).is_some() {
+                if instance_let_parts(declaration, &self.free_fns).is_some() {
                     continue;
                 }
                 let Some(ty) = declaration.ty.as_ref() else {
@@ -483,8 +477,7 @@ impl<'a> Lowering<'a> {
         for im in &impls {
             for item in &im.items {
                 if let ast::ImplItem::Let(l) = item {
-                    if let Some((cty, args)) = instance_let_parts(l, &self.entities, self.resolved)
-                    {
+                    if let Some((cty, args)) = instance_let_parts(l, &self.free_fns) {
                         if let Some(sub) = type_def_id(&cty, self.resolved) {
                             let sub_path = format!("{name}.{}", l.name.text);
                             let mut sub_env = self.consts.clone();
