@@ -332,8 +332,8 @@ fn extern_c_signatures_are_limited_to_the_implemented_scalar_abi() {
     );
     assert_eq!(
         check_src("module m;\nextern \"C\" { fn aggregate(x: unsigned[8][2]) -> integer; }\n"),
-        1,
-        "an array has no scalar C ABI mapping"
+        0,
+        "an array of C scalars crosses by pointer"
     );
     assert_eq!(
         check_src(
