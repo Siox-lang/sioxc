@@ -1058,6 +1058,7 @@ pub(super) fn process_value<'ctx>(
             void_result,
             c_arguments,
             c_result,
+            pointer_arguments,
         } => {
             use inkwell::types::BasicMetadataTypeEnum as MetadataType;
             use inkwell::values::BasicMetadataValueEnum as MetadataValue;
@@ -1072,9 +1073,59 @@ pub(super) fn process_value<'ctx>(
             }
 
             let float = context.f64_type();
+            let mut write_backs = Vec::new();
             let mut parameter_types = Vec::<MetadataType>::with_capacity(arguments.len());
             let mut argument_values = Vec::<MetadataValue>::with_capacity(arguments.len());
             for (index, argument) in arguments.iter().enumerate() {
+                // A struct or array crosses by pointer to a copy laid out as
+                // C lays it out, kept for `ForeignOut` to read back.
+                if pointer_arguments.get(index).copied().unwrap_or(false) {
+                    // A local is packed as it is stored, which can be wider
+                    // than its type's own layout (a ranged element).
+                    let local = match design.process_ir.values.get(argument.0 as usize)?.kind {
+                        ProcessValueKind::Local { process, local } => Some((process, local)),
+                        _ => None,
+                    };
+                    let layout = match local {
+                        Some((process, local)) => design
+                            .process_ir
+                            .processes
+                            .get(process.0 as usize)?
+                            .locals
+                            .get(local.0 as usize)?
+                            .layout
+                            .as_ref()?,
+                        None => process_value_layout(design, *argument)?,
+                    };
+                    let aggregate = crate::llvm::foreign::c_aggregate(context, layout)?;
+                    let packed = process_value_in_layout(
+                        context,
+                        module,
+                        builder,
+                        design,
+                        *argument,
+                        layout,
+                        active,
+                        index_sites,
+                        cache,
+                    )?;
+                    let buffer = crate::llvm::foreign::c_aggregate_store(
+                        context, builder, &aggregate, packed,
+                    )?;
+                    parameter_types.push(context.ptr_type(inkwell::AddressSpace::default()).into());
+                    argument_values.push(buffer.into());
+                    // A process-local variable receives what C writes.
+                    if let Some((process, local)) = local {
+                        let width = layout.packed_width()?;
+                        write_backs.push((
+                            buffer,
+                            aggregate,
+                            local_state_name(process, local),
+                            width,
+                        ));
+                    }
+                    continue;
+                }
                 let argument = process_value_at(
                     context,
                     module,
@@ -1128,9 +1179,20 @@ pub(super) fn process_value<'ctx>(
                 crate::llvm::foreign::mark_extensions(context, function, c_arguments, *c_result);
                 function
             });
+            // What C wrote through a pointer reaches the variable passed.
+            let write_back = |builder: &Builder<'ctx>| -> Option<()> {
+                for (buffer, aggregate, name, width) in &write_backs {
+                    let packed = crate::llvm::foreign::c_aggregate_load(
+                        context, builder, aggregate, *buffer, *width,
+                    )?;
+                    store_state(module, builder, name, *width, packed)?;
+                }
+                Some(())
+            };
             // `fn srand(seed: integer);`: called for its effect, read as 0.
             if *void_result {
                 builder.build_call(function, &argument_values, "").ok()?;
+                write_back(builder)?;
                 cache.clear();
                 let zero = context.i64_type().const_zero();
                 cache.evaluated_calls.insert((id, active), zero);
@@ -1144,6 +1206,7 @@ pub(super) fn process_value<'ctx>(
                 inkwell::values::ValueKind::Basic(value) => value,
                 _ => return None,
             };
+            write_back(builder)?;
             let returned = match c_result {
                 Some(scalar) => {
                     crate::llvm::foreign::c_result(context, builder, returned, *scalar)?

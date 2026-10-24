@@ -1168,6 +1168,10 @@ pub enum ProcessValueKind {
         c_arguments: Vec<Option<crate::ir::CScalar>>,
         /// The narrower C scalar the result's `std::ffi` type names.
         c_result: Option<crate::ir::CScalar>,
+        /// Per argument, whether it is a struct or array passed by pointer to
+        /// a copy laid out as C lays it out; missing entries are scalars. A
+        /// process-local variable passed so receives what C writes.
+        pointer_arguments: Vec<bool>,
     },
     /// A value-producing operation owned by the fixed simulation runtime.
     HostCall {
@@ -1486,6 +1490,7 @@ impl ProcessIr {
                 void_result: false,
                 c_arguments: c_args.clone(),
                 c_result: *c_ret,
+                pointer_arguments: Vec::new(),
             },
             Expr::Unknown => ProcessValueKind::Invalid,
         };

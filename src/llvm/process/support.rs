@@ -676,11 +676,16 @@ pub(super) fn supported_process_values(design: &Design) -> ProcessValueSupport {
                 arguments,
                 float_arguments,
                 integer_arguments,
+                pointer_arguments,
                 ..
             } => {
                 arguments.len() == float_arguments.len()
                     && arguments.len() == integer_arguments.len()
-                    && arguments.iter().all(|argument| has(&supported, *argument))
+                    && arguments.iter().enumerate().all(|(index, argument)| {
+                        // An aggregate is emitted in its own layout.
+                        has(&supported, *argument)
+                            || pointer_arguments.get(index).copied().unwrap_or(false)
+                    })
             }
             ProcessValueKind::HostCall {
                 operation,

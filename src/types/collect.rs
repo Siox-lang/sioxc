@@ -142,6 +142,7 @@ impl<'a> Checker<'a> {
             fn_param_types: HashMap::new(),
             fn_return_types: HashMap::new(),
             void_extern_fns: HashSet::new(),
+            aggregate_extern_fns: HashSet::new(),
             current_fn: std::cell::Cell::new(None),
             testbench_only_fns: Default::default(),
             fn_callees: Default::default(),
