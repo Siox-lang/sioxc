@@ -293,18 +293,16 @@ checks and read-only inspection/debugger limits are recorded in the
 Owns stable boundaries used by editors, project tools, simulators, debuggers,
 and foreign integrations.
 
-- 🔴 **Editor macro expansion views.** Expose generated declarations and their
-  originating invocation through the compiler API so the separate LSP can
-  distinguish expansion output from handwritten source.
 - 🔴 **Multi-file user crates.** Define module discovery and crate boundaries
   in the future project tool, then expose its loaded source set through the
   compiler API. `sioxc` continues to compile an explicit entry/input.
 - 🔴 **cocotb/VPI-GPI integration.** Finish the isolated `feature/cocotb`
   experiment: name-to-handle lookup, get/put/force/release, timed and
   value-change callbacks, and read-write/read-only scheduler phases.
-- 🟡 **General foreign-function ABI.** Define pointer/handle ownership,
-  aggregate and multiword layouts, explicit void/side-effect scheduling, and
-  platform-aware C scalar widths. Library discovery and linker flags belong in
+- 🟡 **General foreign-function ABI.** Void C functions run as testbench
+  statements (#269). Remaining: pointer/handle ownership, aggregate and
+  multiword layouts, and platform-aware C scalar widths (a C `int` is passed
+  as a 64-bit word today). Library discovery and linker flags belong in
   the future project tool; `sioxc` consumes explicit inputs.
 - 🔴 **Project/test tool.** Build a Cargo-like executable for package discovery,
   dependency builds, caching, directory-wide test compilation/execution,
