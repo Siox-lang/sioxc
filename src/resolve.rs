@@ -33,6 +33,7 @@ use crate::syntax::ast::*;
 use crate::syntax::Module;
 
 pub mod attributes;
+pub(crate) mod declarations;
 
 /// Trait names the compiler itself provides: the hooks expression syntax
 /// dispatches to, including the named operator traits (`Add`, … `Not`, spec
@@ -226,9 +227,18 @@ pub struct Resolved {
     lang_of: HashMap<DefId, String>,
     /// Compiler-provided attribute fallbacks, distinct from source declarations.
     builtin_attrs: HashMap<String, DefId>,
+    /// Transparent aliases whose normalized head denotes an entity.
+    entity_aliases: HashMap<DefId, DefId>,
 }
 
 impl Resolved {
+    pub(crate) fn entity_id(&self, id: DefId) -> Option<DefId> {
+        if self.kind_of(id) == Some(DefKind::Entity) {
+            Some(id)
+        } else {
+            self.entity_aliases.get(&id).copied()
+        }
+    }
     pub(crate) fn builtin_attribute(&self, name: &str) -> Option<DefId> {
         self.builtin_attrs.get(name).copied()
     }
@@ -385,6 +395,8 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     r.lint_private_imports(&std_files);
     r.lint_unused_imports(&std_files);
     r.lint_unused_params(&std_files);
+    r.out.entity_aliases =
+        declarations::DeclarationIndex::collect(&r.out, modules).entity_aliases();
     r.out
 }
 

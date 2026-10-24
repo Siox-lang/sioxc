@@ -5,6 +5,7 @@ use crate::diag::FileId;
 
 mod attributes;
 mod calls;
+mod declaration_index;
 mod declarations;
 mod matches;
 mod operators;

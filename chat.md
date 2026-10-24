@@ -19584,3 +19584,123 @@ Transparent entity aliases still need shared typed-boundary normalization;
 trait/type/associated registries, typed constants/operators, additional pure
 statements, generic-width folder placement and remaining hooks are still open.
 Keep the full proposal/goal active, not marked complete.
+
+### 2026-10-24 — Codex — transparent entity aliases, foundations continuation
+
+Previous turn is verified progress: compiler e044a8a, corpus8f69db1 and paper
+036874c are accepted by guarded2578788 and remain local. Continue on isolated
+feat/proposal-foundations, preserving dirty root/paper-main and corpus probes.
+Graph query alias/entity/type/declaration/params/instance/resolve scopes Params,
+DeclarationIndex, FunctionIndex and elaboration binding consumers. Own resolved
+entity-alias identity facts, metadata entity fallback/target handling, the shared
+raw declaration index and its tests, checker entity classifications, elaboration
+canonical entity shapes, and IR entity/generate/ordered connection consumers.
+
+Add failing API/native/tree and placement/const regressions first. Move the raw
+borrowed declaration index to resolve (tests stay in types) so metadata can
+reuse alias identity without an upward import. Normalize alias chains once in
+that shared index, retaining generic/index shape and declaration-site spans;
+borrow unchanged source types and copy only changed wrappers. Resolver may own
+derived alias->entity ID facts, not cloned alias ASTs or another evaluator.
+Cover import renames, same-leaf providers, parameter-name collisions, arrays,
+cycles/unknowns and native/debug/VCD output. No new syntax/dependency/LLVM/runtime
+work planned. Update TODO/proposal and owned paper language/architecture docs;
+announce std/other shared expansion if required. Guard all builds; full both-mode
+gates before local commit, no push or whole-goal completion claim.
+
+### 2026-10-24 — Codex — alias reproductions and ordered array connections
+
+Guarded2741960 was a new-fixture parse failure (generic arithmetic needs
+parentheses). Correct it, then2743374 confirms real gaps: aliased entity const
+unexpectedly compiles, an alias child is checked as a signal initializer, and
+native alias/array values lose layouts. After shared normalization,2752450 has
+all562 frontend cases and structural-root regression green; remaining fixture
+process label was corrected to existing worker: process syntax. Guarded2767178
+passes const/placement/root regressions, while native execution exposes omitted
+array DUTs in testbench lowering (only let-style instances had been collected).
+Reuse gather_generate for that path and share ordered constructor connection
+handling for assignment-style entity construction, preserving runtime values.
+No LLVM/runtime or new grammar changes.
+
+Guarded2771518 and2775148 both exited75: NOT acceptance and NOT compiler crashes.
+The actual lock owner is live flock PID2777213 in a peer tmux scope, building
+/home/max/siox-conv; siox-job service-name filtering alone did not show it.
+Do not kill, restart or bypass the peer/guard. Continue safe source/test work,
+then revalidate the real lock holder before another heavy launch. Preserve all
+peer files. Current owned changes stay uncommitted pending a completed green
+full gate. Source index moved to resolve so aliases and metadata keep layering;
+the full proposal remains active, including other registries and typed values.
+
+### 2026-10-24 — Codex — alias docs, corpus and semantic wave checks ownership
+
+Own only isolated paper language/architecture alias paragraphs and compiler
+proposal/TODO progress. Shared paper main remains its existing2/1,71/1,17/3
+peer hunks. Add actual-corpus entity_aliases_test and entity_alias_connections_test
+plus one shared provider and README entries. Own check-vcd.py's two matching
+profiles and new check_vcd_test.py so direct/native corpus gates inspect final
+values for each alias/array child, not only waveform syntax. Four small Python
+profile checks pass (including bad/missing child rejection); this is not the
+Rust/native acceptance gate.
+
+The peer full CI still holds the shared lock, now flock2791528 with cargo child
+2806790 running bitpack tests. Wait without bypassing/restarting/killing it.
+No acceptance is claimed for unstarted275/277 guard retries. Current source is
+uncommitted until guarded Rust/native/default+bitpack/corpus/UI/JSON validation
+completes. Preserve unsupported dynamic runtime array-constructor routing as an
+explicit diagnostic, not silently dropped function/connection evaluation; direct
+named array-element and let connections share the existing lowering helper.
+
+
+### 2026-10-24 — Codex — continue approved integration and revalidation
+
+User approved integrating and revalidating the existing local fixes and corpus
+migrations, keeping compiler changes local until green. Continue only in owned
+proposal-foundations worktree and its announced alias/corpus/paper paths. Root
+peer edits remain untouched. Confirmed peer flock2791528 is live and now running
+actual-corpus CI; no guard bypass or duplicate Rust job. Reviewed ordered
+connection helper spans and migrated testbench instance collection; next gate
+covers frontend, native alias regressions and strict Clippy before full matrix.
+
+
+### 2026-10-24 — Codex — alias focused gate green; freeze final validation
+
+Peer corpus lock released; guarded2880440 completed exited/success/0, peak
+1325871104 bytes. All565 frontend tests, all6 entity_aliases API/native tests,
+and strict all-target/all-feature Clippy passed. In particular fixed-array DUT
+collection, runtime source order, metadata targets/fallbacks, structural roots,
+const/placement restrictions and dynamic connection rejection are green.
+Remove temporary verbose Process IR failure dump; no production code changes.
+Freeze announced compiler/corpus/owned-paper paths for full default+bitpack
+Rust/corpus/UI/JSON gate and40 direct ordinary/debug native/VCD runs. Graph
+AST-only update included; HTML aggregates the6749-node graph and existing vendor
+extraction/label caveats remain. Generic alias substitution and full dynamic
+runtime constructor routing remain explicit followups. No commit/push yet.
+
+
+### 2026-10-24 — Codex — entity aliases accepted by complete local gate
+
+Guard2884713 was busy75, not a test result. After waiting for peer2880734,
+final siox-job-3000-1792843379636171839-2888148.service completed
+exited/success/0, peak1881407488 bytes under2GiB (one Cargo worker). Retained
+logs: /home/max/.cache/siox-jobs/entity-aliases-final-20261024 and the unit log.
+
+Acceptance:565 frontend; full default/bitpack Rust suites (621/600 library
+cases, all integration tests including6 alias cases each,23 DWARF tests each in
+117.69/117.08s); strict Clippy/fmt;28 Python runner tests;12 Phase1 artifact
+examples. Actual /home/max/siox-tests corpus262/262 in BOTH modes;61 UI and61
+JSON cases per mode,54/54 diagnostic codes and2 migration apply/recompile
+roundtrips per mode. All40 direct ordinary/debug native/VCD runs passed over10
+programs in both modes, including static/ordered aliases. No LLVM, runtime,
+dependency, std or grammar changes. Generic alias substitution, full dynamic
+runtime constructor routing, associated registries and typed evaluation remain.
+
+Before/after source fingerprints matched for all three owned trees:
+compiler72098801ce205b310c021df11b3b1da41efaa19192767e839188760625189cb5;
+corpus2349f3bb08bb81736d1540aa10158c29b28a59aedf56279e923d2cd2b0c345ee;
+paper62327dfe6ca191453ddf1481291a308979ece46e36e51214386b075ced4f34eb.
+AST-only graph update:6784 nodes/18451 edges; aggregated344-community viewer.
+Existing four partial vendor extractions/six no-symbol files and changed label
+warnings remain; no paid semantic extraction. Keep all peer root/paper-main
+hunks and20 corpus probes/artifacts. Commit ONLY announced owned files locally
+with compiler-foundations estimate~70% and evidence/remaining work. No push and
+no whole-goal completion claim.

@@ -17,6 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
+use crate::resolve::declarations::DeclarationIndex;
 use crate::resolve::{is_compiler_trait, DefId, DefKind, Resolved};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
@@ -26,7 +27,6 @@ mod ast_types;
 mod calls;
 mod collect;
 pub(crate) mod consteval;
-pub(crate) mod declarations;
 mod expand;
 mod expressions;
 mod helpers;
@@ -273,7 +273,7 @@ struct MemberVisibility {
 /// currently is, and are borrowed from `&self` methods.
 struct Checker<'a> {
     /// Original free-function/constant declarations, borrowed by identity.
-    declarations: declarations::DeclarationIndex<'a>,
+    declarations: DeclarationIndex<'a>,
     /// Type parameters bound while a generic body is checked for one call.
     type_bindings: std::cell::RefCell<HashMap<String, Ty>>,
     /// Instantiations already checked, by function and type arguments.

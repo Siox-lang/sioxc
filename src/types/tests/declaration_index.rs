@@ -1,5 +1,6 @@
 use super::*;
 use crate::diag::{DiagnosticSink, FileId};
+use crate::resolve::declarations::DeclarationIndex;
 use crate::syntax::ast::Expr;
 use crate::types::consteval::{evaluate, Reason};
 
@@ -24,6 +25,113 @@ fn constant<'a>(module: &'a Module, name: &str) -> &'a ConstDecl {
             _ => None,
         })
         .unwrap()
+}
+
+#[test]
+fn entity_alias_normalization_retains_shape_and_borrows_unchanged_types() {
+    let (modules, resolved) = parse(&[
+        "module provider; const BASE: integer = 6;
+         pub entity Cell<W: integer> {}
+         pub type Fixed = Cell<(BASE + 1)>; pub type Link = Fixed; pub type Group = Link[2];",
+        "module caller; use provider::{Cell, Link, Group}; const BASE: integer = 99;
+         const direct: Cell<7> = 0; const linked: Link = 0;
+         const grouped: Group = 0; const wrapped: Link[3] = 0;",
+    ]);
+    let index = DeclarationIndex::collect(&resolved, &modules);
+    let direct = &constant(&modules[1], "direct").ty;
+    let normalized = index.normalize_type(direct).unwrap();
+    assert!(matches!(normalized, std::borrow::Cow::Borrowed(_)));
+    assert!(std::ptr::eq(normalized.as_ref(), direct));
+    let target = modules[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Using(Using {
+                kind: UsingKind::Alias { name, ty, .. },
+                ..
+            }) if name.text == "Fixed" => Some(ty),
+            _ => None,
+        })
+        .unwrap();
+    let linked = index
+        .normalize_type(&constant(&modules[1], "linked").ty)
+        .unwrap();
+    assert!(matches!(linked, std::borrow::Cow::Borrowed(_)));
+    assert!(std::ptr::eq(linked.as_ref(), target));
+    let Type::Generic { args, .. } = linked.as_ref() else {
+        unreachable!()
+    };
+    let GenericArg::Positional(value) = &args[0] else {
+        unreachable!()
+    };
+    assert_eq!(evaluate(value, &index, 0), Ok(7));
+    for name in ["linked", "grouped", "wrapped"] {
+        assert_eq!(
+            index.entity_type_id(&constant(&modules[1], name).ty),
+            index.entity_type_id(direct)
+        );
+    }
+    let wrapped = index
+        .normalize_type(&constant(&modules[1], "wrapped").ty)
+        .unwrap();
+    assert!(matches!(wrapped, std::borrow::Cow::Owned(_)));
+    let Type::Indexed {
+        base,
+        index: Some(size),
+        ..
+    } = wrapped.as_ref()
+    else {
+        unreachable!()
+    };
+    assert!(matches!(base.as_ref(), Type::Generic { .. }));
+    assert_eq!(evaluate(size, &index, 0), Ok(3));
+}
+
+#[test]
+fn same_leaf_entity_aliases_select_their_own_definitions_and_values() {
+    let (modules, resolved) = parse(&[
+        "module left; pub entity Cell<W: integer> {} pub type Link = Cell<7>;",
+        "module right; pub entity Cell<W: integer> {} pub type Link = Cell<11>;",
+        "module caller; use L = left::Link; use R = right::Link;
+         const l: L = 0; const r: R = 0;",
+    ]);
+    let index = DeclarationIndex::collect(&resolved, &modules);
+    let l = &constant(&modules[2], "l").ty;
+    let r = &constant(&modules[2], "r").ty;
+    assert_ne!(index.entity_type_id(l), index.entity_type_id(r));
+    for (ty, expected) in [(l, 7), (r, 11)] {
+        let normalized = index.normalize_type(ty).unwrap();
+        let Type::Generic { args, .. } = normalized.as_ref() else {
+            unreachable!()
+        };
+        let GenericArg::Positional(value) = &args[0] else {
+            unreachable!()
+        };
+        assert_eq!(evaluate(value, &index, 0), Ok(expected));
+        let Type::Path(path) = ty else { unreachable!() };
+        assert_eq!(
+            resolved.entity_id(resolved.resolved(path.span).unwrap()),
+            index.entity_type_id(ty)
+        );
+    }
+}
+
+#[test]
+fn cyclic_or_unresolved_aliases_do_not_invent_an_entity() {
+    for source in [
+        "module m; type A = B; type B = A; const c: A = 0;",
+        "module m; type A = Missing; const c: A = 0;",
+    ] {
+        let mut sink = DiagnosticSink::default();
+        let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+        let modules = [module];
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        assert!(sink.has_errors());
+        let index = DeclarationIndex::collect(&resolved, &modules);
+        let ty = &constant(&modules[0], "c").ty;
+        assert!(index.normalize_type(ty).is_none());
+        assert!(index.entity_type_id(ty).is_none());
+    }
 }
 
 #[test]

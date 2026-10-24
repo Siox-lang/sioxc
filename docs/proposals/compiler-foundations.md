@@ -305,7 +305,7 @@ point resolves a name again. Typeck writes its results to side tables keyed by
 - An `xtask`-style check, or a clippy lint, flags `HashMap<String, …>`
   registries outside `resolve` so the rule stays enforced.
 
-**Implemented first registry.** `types::declarations::DeclarationIndex` borrows
+**Implemented first registry.** `resolve::declarations::DeclarationIndex` borrows
 module constants, free/foreign functions and non-generic transparent aliases,
 keyed by `DefId`. The checker reads contracts/initializers directly instead of
 keeping separate `generic_bodies`, `const_types`, `const_values`, `fn_arity`,
@@ -333,7 +333,8 @@ resolution, not in `syntax`: binding names/defaults/values retain their original
 IDs without violating stage layering. Declaration schemas, target/value kinds,
 entity binding fallbacks and duplicate checks are keyed by resolved `DefId`.
 Concrete named targets compare their resolved type heads rather than equal leaf
-names; this does not yet normalize transparent type aliases. Type attributes
+names; entity aliases normalize to that entity head, while other transparent
+named-target aliases still need migration. Type attributes
 conflict only with metadata visible in their declaration scope.
 
 Imports and renames retain identity: two aliases of one attribute are duplicate
@@ -369,9 +370,29 @@ cover borrowed source pointers, both module orders, equal entity names with
 different port types, import renames, private members, generic wrappers and
 native parameter binding. One stale elaboration fixture used an unbound
 `impl Buf<T>` and now uses the already-required `impl<T> Buf<T>` syntax.
-No new implicit binder or grammar rule is introduced. Transparent entity
-`type` aliases still require normalization at a shared typed boundary; import
-renames and type aliases are not interchangeable implementation mechanisms.
+No new implicit binder or grammar rule is introduced.
+
+**Non-generic entity-alias normalization.** The raw declaration index now belongs
+to `resolve`, so metadata does not need an upward dependency on `types`. One
+normalizer follows resolved alias IDs and preserves applied generic arguments,
+index wrappers and the original expression spans. Unchanged types and bare alias
+targets are borrowed; only a changed outer wrapper is copied. Cycles and missing
+identities yield no invented entity. Resolver products retain derived
+alias-to-entity IDs (not cloned alias trees) for metadata and ordered process
+classification.
+
+Checking, structural-root selection, metadata fallbacks and named entity targets
+use those identities; elaboration and IR consume the canonical shape when binding
+parameters and collecting arrays. A caller's same-named constant cannot capture
+an argument written in the alias definition. Alias instances remain structural,
+so `const` and function/process placement checks apply to them too. Testbench
+lowering uses the existing generate collector for assignment-style array DUTs,
+and constructor statements share ordered connection lowering instead of becoming
+packed data assignments. Fixed named element connections retain runtime source
+order. Dynamic destinations whose runtime connections cannot be routed remain
+an explicit `E-P017`, never silently discarded calls; full dynamic constructor
+routing is still open. Generic alias applications also remain open: their own
+parameters require shared substitution, not just type-head normalization.
 
 **Acceptance.** No stage after `resolve` looks a declaration up by its leaf
 name; equal leaf names in different modules are covered by a test per

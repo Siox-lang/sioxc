@@ -91,7 +91,7 @@ impl<'a> Checker<'a> {
             })
             .collect();
         Checker {
-            declarations: declarations::DeclarationIndex::collect(resolved, modules),
+            declarations: DeclarationIndex::collect(resolved, modules),
             type_bindings: std::cell::RefCell::new(HashMap::new()),
             instantiated: std::cell::RefCell::new(HashSet::new()),
             instantiating: std::cell::RefCell::new(Vec::new()),

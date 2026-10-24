@@ -398,8 +398,7 @@ impl<'a> Lowering<'a> {
                     // An instance array (`let stage: Inc[N]`, Inc an entity) is
                     // built element-wise, not driven — never a signal to check.
                     let is_instance_array = l.ty.as_ref().is_some_and(|ty| {
-                        type_def_id(ty, self.resolved)
-                            .is_some_and(|id| self.free_fns.entity(id).is_some())
+                        self.free_fns.entity_type_id(ty).is_some()
                             && !type_head_name(ty)
                                 .is_some_and(|head| self.cur_type_env.contains_key(head))
                     });
@@ -554,7 +553,7 @@ impl<'a> Lowering<'a> {
         // parent's. The recursion saves/restores this body's scope, so the
         // parent's names resolve again here.
         for (inst, cty, conns) in &subinsts {
-            let Some(sub_id) = type_def_id(cty, self.resolved) else {
+            let Some(sub_id) = self.free_fns.entity_type_id(cty) else {
                 continue;
             };
             // Cyclic instantiation (already diagnosed by the elaborator): don't

@@ -2070,9 +2070,7 @@ fn declaration_is_entity(declaration: &ast::LetDecl, resolved: &Resolved) -> boo
         .ty
         .as_ref()
         .and_then(|ty| declaration_type_definition(ty, resolved))
-        .is_some_and(|definition| {
-            resolved.kind_of(definition) == Some(crate::resolve::DefKind::Entity)
-        })
+        .is_some_and(|definition| resolved.entity_id(definition).is_some())
 }
 
 /// Whether a connection expression is independent of testbench runtime
@@ -2159,12 +2157,19 @@ fn instance_has_runtime_connections(declaration: &ast::LetDecl, resolved: &Resol
     if !declaration_is_entity(declaration, resolved) {
         return false;
     }
-    let values = match declaration.value.as_ref() {
-        Some(ast::Expr::Construct { args, .. }) => args
+    declaration
+        .value
+        .as_ref()
+        .is_some_and(|value| instance_value_has_runtime_connections(value, resolved))
+}
+
+fn instance_value_has_runtime_connections(value: &ast::Expr, resolved: &Resolved) -> bool {
+    let values = match value {
+        ast::Expr::Construct { args, .. } => args
             .iter()
             .filter_map(|argument| argument.value.as_ref())
             .collect::<Vec<_>>(),
-        Some(ast::Expr::Concat { parts, .. }) => parts.iter().collect(),
+        ast::Expr::Concat { parts, .. } => parts.iter().collect(),
         _ => return false,
     };
     values.into_iter().any(|value| {
@@ -2196,17 +2201,45 @@ fn lower_ordered_instance_connections(
     process: &mut ProcessCfg,
     block: ProcessBlockId,
 ) -> Option<ProcessBlockId> {
+    let Some(value) = declaration.value.as_ref() else {
+        return Some(block);
+    };
+    lower_instance_value_connections(
+        &declaration.name.text,
+        value,
+        declaration.span,
+        context,
+        process,
+        block,
+    )
+}
+
+fn lower_instance_value_connections(
+    name: &str,
+    value: &ast::Expr,
+    span: crate::diag::Span,
+    context: &mut LoweringContext<'_>,
+    process: &mut ProcessCfg,
+    block: ProcessBlockId,
+) -> Option<ProcessBlockId> {
     let Some(child) = context
         .hierarchy
         .instance(process.owner)
         .children
         .iter()
         .map(|child| context.hierarchy.instance(*child))
-        .find(|child| child.name == declaration.name.text)
+        .find(|child| child.name == name)
     else {
-        return Some(block);
-    };
-    let Some(value) = declaration.value.as_ref() else {
+        if instance_value_has_runtime_connections(value, context.resolved) {
+            // shortcut: dynamic constructor destinations need routing before their calls can execute.
+            context.rejected.borrow_mut().push(
+                crate::diag::Diagnostic::error(format!(
+                    "cannot bind run-time connections to structural instance `{name}`"
+                ))
+                .with_code(crate::diag::codes::UNSUPPORTED_EXPR)
+                .at(span),
+            );
+        }
         return Some(block);
     };
     let pairs = match value {
@@ -2242,7 +2275,7 @@ fn lower_ordered_instance_connections(
         {
             continue;
         }
-        let path = format!("{}.{}.{}", context.root_path, declaration.name.text, port);
+        let path = format!("{}.{}.{}", context.root_path, name, port);
         if !matches!(
             port_direction(
                 context.modules,
@@ -2287,7 +2320,7 @@ fn lower_ordered_instance_connections(
             });
         let width = context.design.signal_width(signal_id);
         let target = push_value(
-            declaration.span,
+            span,
             target_type.clone(),
             width,
             ProcessValueKind::Signal {
@@ -2316,7 +2349,7 @@ fn lower_ordered_instance_connections(
         operation: ProcessSuspendOp::Settle,
         arguments: Vec::new(),
         resume,
-        span: declaration.span,
+        span,
     };
     Some(resume)
 }
@@ -2432,6 +2465,16 @@ fn lower_statement(
 ) -> Option<ProcessBlockId> {
     match statement {
         Stmt::Use(_) => Some(block),
+        Stmt::Assign {
+            target,
+            value: value @ ast::Expr::Construct { ty: Some(ty), .. },
+            span,
+            ..
+        } if context.functions.entity_type_id(ty).is_some() => {
+            // Construction connects an elaborated instance, not a packed data value.
+            let name = crate::syntax::pretty::expr_string(target);
+            lower_instance_value_connections(&name, value, *span, context, process, block)
+        }
         // `let b: Box<(integer, integer)> = { .val = (10, 20) }`: a generic
         // struct's construct has no field types to give its values, but the
         // local is laid out from its declaration (#196). Declared bare and

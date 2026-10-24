@@ -3,9 +3,10 @@
 //! Rebuild this index at immutable phase boundaries after AST rewrites; keeping
 //! references in a long-lived typed product would prevent those rewrites.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
-use crate::resolve::{DefId, DefKind, Resolved};
+use super::{DefId, DefKind, Resolved};
 use crate::syntax::ast::{
     ConstDecl, EntityDecl, FnDecl, Item, Module, Path, Type, Using, UsingKind,
 };
@@ -94,17 +95,90 @@ impl<'a> DeclarationIndex<'a> {
         }
     }
 
-    /// Entity identity through application/index wrappers, never a spelling lookup.
-    pub(crate) fn entity_type_id(&self, ty: &Type) -> Option<DefId> {
-        // shortcut: aliases keep their written heads; normalize them at a shared typed boundary.
+    /// Normalize type-head aliases without losing applied parameters or array shape.
+    pub(crate) fn normalize_type<'t>(&self, ty: &'t Type) -> Option<Cow<'t, Type>>
+    where
+        'a: 't,
+    {
+        self.normalize_type_inner(ty, &mut HashSet::new())
+    }
+
+    fn normalize_type_inner<'t>(
+        &self,
+        ty: &'t Type,
+        seen: &mut HashSet<DefId>,
+    ) -> Option<Cow<'t, Type>>
+    where
+        'a: 't,
+    {
         match ty {
             Type::Path(path) => {
                 let id = self.resolved.resolved(path.span)?;
-                self.entity(id).map(|_| id)
+                let Some(Declaration::Alias(target)) = self.declarations.get(&id) else {
+                    return Some(Cow::Borrowed(ty));
+                };
+                if !seen.insert(id) {
+                    return None;
+                }
+                let normalized = self.normalize_type_inner(target, seen);
+                seen.remove(&id);
+                normalized
             }
-            Type::Generic { base, .. } | Type::Indexed { base, .. } => self.entity_type_id(base),
-            Type::View { .. } | Type::Tuple { .. } => None,
+            Type::Generic { base, args, span } => {
+                let normalized = self.normalize_type_inner(base, seen)?;
+                if std::ptr::eq(normalized.as_ref(), base.as_ref()) {
+                    Some(Cow::Borrowed(ty))
+                } else {
+                    Some(Cow::Owned(Type::Generic {
+                        base: Box::new(normalized.into_owned()),
+                        args: args.clone(),
+                        span: *span,
+                    }))
+                }
+            }
+            Type::Indexed { base, index, span } => {
+                let normalized = self.normalize_type_inner(base, seen)?;
+                if std::ptr::eq(normalized.as_ref(), base.as_ref()) {
+                    Some(Cow::Borrowed(ty))
+                } else {
+                    Some(Cow::Owned(Type::Indexed {
+                        base: Box::new(normalized.into_owned()),
+                        index: index.clone(),
+                        span: *span,
+                    }))
+                }
+            }
+            Type::View { .. } | Type::Tuple { .. } => Some(Cow::Borrowed(ty)),
         }
+    }
+
+    /// Entity identity through normalized application/index wrappers.
+    pub(crate) fn entity_type_id(&self, ty: &Type) -> Option<DefId> {
+        let normalized = self.normalize_type(ty)?;
+        let mut head = normalized.as_ref();
+        loop {
+            match head {
+                Type::Path(path) => {
+                    let id = self.resolved.resolved(path.span)?;
+                    return self.entity(id).map(|_| id);
+                }
+                Type::Generic { base, .. } | Type::Indexed { base, .. } => head = base,
+                Type::View { .. } | Type::Tuple { .. } => return None,
+            }
+        }
+    }
+
+    /// An owned resolution fact; it keeps no borrow of the mutable module tree.
+    pub(crate) fn entity_aliases(&self) -> HashMap<DefId, DefId> {
+        self.declarations
+            .iter()
+            .filter_map(|(&id, declaration)| {
+                let Declaration::Alias(target) = declaration else {
+                    return None;
+                };
+                self.entity_type_id(target).map(|entity| (id, entity))
+            })
+            .collect()
     }
 
     pub(crate) fn function(&self, id: DefId) -> Option<&'a FnDecl> {
@@ -191,6 +265,3 @@ impl<'a> DeclarationIndex<'a> {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

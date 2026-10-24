@@ -4,7 +4,7 @@
 use super::*;
 
 /// Metadata integers use the kernel integer domain, not wider analysis results.
-struct MetadataIntegers<'a, 's>(&'a declarations::DeclarationIndex<'s>);
+struct MetadataIntegers<'a, 's>(&'a DeclarationIndex<'s>);
 
 impl consteval::Environment for MetadataIntegers<'_, '_> {
     fn domain(&self) -> consteval::IntegerDomain {

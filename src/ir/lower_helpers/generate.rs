@@ -48,10 +48,11 @@ pub(in crate::ir) fn instance_let_parts(
     }) = &l.value
     {
         if fns.entity_type_id(cty).is_some() {
-            return Some((cty.clone(), args.clone()));
+            return Some((fns.normalize_type(cty)?.into_owned(), args.clone()));
         }
     }
-    let ann = l.ty.as_ref()?;
+    let normalized = fns.normalize_type(l.ty.as_ref()?)?;
+    let ann = normalized.as_ref();
     // An entity *array* (`let stage: Inc[N]`) is built element-wise, not a
     // single instance.
     if matches!(ann, ast::Type::Indexed { .. }) {
@@ -112,7 +113,9 @@ pub(in crate::ir) fn gather_generate(
             ..
         } => {
             if let Some(name) = expr_path(target) {
-                out.push((name, cty.clone(), args.clone()));
+                if let Some(ty) = fns.normalize_type(cty) {
+                    out.push((name, ty.into_owned(), args.clone()));
+                }
             }
         }
         ast::Stmt::For {

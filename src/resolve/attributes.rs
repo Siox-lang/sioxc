@@ -54,7 +54,9 @@ pub(crate) fn is_target_kind(name: &str) -> bool {
 /// The identity of a written type head, never a leaf-name search.
 pub(crate) fn type_identity(ty: &Type, resolved: &Resolved) -> Option<DefId> {
     match ty {
-        Type::Path(path) => resolved.resolved(path.span),
+        Type::Path(path) => resolved
+            .resolved(path.span)
+            .map(|id| resolved.entity_id(id).unwrap_or(id)),
         Type::Generic { base, .. } | Type::Indexed { base, .. } => type_identity(base, resolved),
         Type::View { view, .. } => resolved.resolved(view.span),
         Type::Tuple { .. } => None,
@@ -641,6 +643,7 @@ impl Reads<'_> {
         } else if let Some(attrs) = self
             .resolved
             .resolved(path.span)
+            .and_then(|id| self.resolved.entity_id(id))
             .and_then(|entity| self.entity_attrs.get(&entity))
         {
             find(attrs, id, self.resolved)

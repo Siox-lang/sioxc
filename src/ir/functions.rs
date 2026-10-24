@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
+use crate::resolve::declarations::DeclarationIndex;
 use crate::resolve::{is_compiler_trait, DefId, Resolved};
 use crate::syntax::ast;
-use crate::types::declarations::DeclarationIndex;
 
 use super::OperatorImpls;
 
@@ -71,6 +71,16 @@ impl<'a> FunctionIndex<'a> {
 
     pub(crate) fn entity_type_id(&self, ty: &ast::Type) -> Option<DefId> {
         self.declarations.entity_type_id(ty)
+    }
+
+    pub(crate) fn normalize_type<'t>(
+        &self,
+        ty: &'t ast::Type,
+    ) -> Option<std::borrow::Cow<'t, ast::Type>>
+    where
+        'a: 't,
+    {
+        self.declarations.normalize_type(ty)
     }
 
     /// Register the executable body of an exact `From<Source>` conversion.
@@ -565,9 +575,9 @@ impl<'a> FunctionIndex<'a> {
     /// functions and therefore need the same stable owner identity as types.
     pub fn entity_path_key(&self, path: &ast::Path) -> Option<String> {
         let id = self.resolved.resolved(path.span)?;
-        (self.resolved.kind_of(id) == Some(crate::resolve::DefKind::Entity))
-            .then(|| self.resolved.qualified_name(id))
-            .flatten()
+        self.resolved
+            .entity_id(id)
+            .and_then(|id| self.resolved.qualified_name(id))
     }
 
     /// Stable table key for a view declaration.

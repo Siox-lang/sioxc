@@ -8,8 +8,8 @@ use crate::syntax::ast::{
     expr_span, stmt_span, BinOp, ElseBranch, Expr, FnDecl, Ident, IfStmt, Path, Stmt, UnOp,
 };
 
-use super::declarations::DeclarationIndex;
 use super::helpers::unsigned_lit_text;
+use crate::resolve::declarations::DeclarationIndex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Reason {

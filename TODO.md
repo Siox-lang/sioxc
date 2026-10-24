@@ -75,7 +75,12 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
   Entity declarations now use the same borrowed index in type checking,
   elaboration and IR; checked port facts, test membership and private-member
   owners are keyed by `DefId`. Associated methods and trait/type registries
-  still need migration, as does shared transparent entity-alias normalization.
+  still need migration. Transparent entity aliases now normalize through the
+  shared resolve-layer declaration index, retaining applied parameters, array
+  shape and definition-site expression identities. Dynamic runtime constructor
+  destinations still need ordered connection routing; unresolved destinations
+  must report an error rather than discard calls. Generic alias applications
+  still need shared parameter substitution.
   Non-integer calls remain unknown to integer
   analysis rather than discarding return/argument conversions.
   Integer metadata now shares checked constant evaluation and is materialized

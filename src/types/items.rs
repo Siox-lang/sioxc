@@ -873,7 +873,11 @@ impl<'a> Checker<'a> {
                     t.text == kind
                         || (!crate::resolve::attributes::is_target_kind(&t.text)
                             && type_id.is_some()
-                            && self.resolved.resolved(t.span) == type_id)
+                            && self
+                                .resolved
+                                .resolved(t.span)
+                                .map(|id| self.resolved.entity_id(id).unwrap_or(id))
+                                == type_id)
                 });
                 (
                     ok,

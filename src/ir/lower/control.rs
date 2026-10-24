@@ -55,7 +55,7 @@ impl<'a> Lowering<'a> {
             ..
         } = stmt
         {
-            if type_def_id(t, self.resolved).is_some_and(|id| self.free_fns.entity(id).is_some()) {
+            if self.free_fns.entity_type_id(t).is_some() {
                 return;
             }
         }

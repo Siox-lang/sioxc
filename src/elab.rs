@@ -16,15 +16,16 @@
 //! Generated instances (loops/arrays), applied-view leaf expansion, and full
 //! direction analysis are noted as follow-ups.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::diag::{codes, Diagnostic, DiagnosticSink, Span};
+use crate::resolve::declarations::DeclarationIndex;
 use crate::resolve::{DefId, Resolved};
 use crate::syntax::ast::*;
 use crate::syntax::Module;
 use crate::types::consteval::{self, Binding, Environment, IntegerDomain};
-use crate::types::declarations::DeclarationIndex;
 use crate::types::{Ty, Typed};
 
 /// Index into [`Hierarchy::instances`].
@@ -592,7 +593,7 @@ impl<'a> Elaborator<'a> {
         stack.push(entity_id);
         let mut children = Vec::new();
         for spec in specs {
-            let Some(sub_id) = type_def_id(spec.ty, self.resolved) else {
+            let Some(sub_id) = self.declarations.entity_type_id(spec.ty.as_ref()) else {
                 continue;
             };
             // Only entity constructions are instances; struct/data constructs
@@ -600,8 +601,8 @@ impl<'a> Elaborator<'a> {
             if let Some(sub_decl) = self.declarations.entity(sub_id) {
                 // Args may reference this instance's params; ports substitute
                 // the child's resolved params.
-                self.check_generic_arg_names(sub_decl, spec.ty, spec.site);
-                let cparams = eval_params(sub_decl, spec.ty, &env, &self.declarations);
+                self.check_generic_arg_names(sub_decl, spec.ty.as_ref(), spec.site);
+                let cparams = eval_params(sub_decl, spec.ty.as_ref(), &env, &self.declarations);
                 self.check_params_bound(sub_decl, &cparams, spec.site);
                 let child_env = param_env(&cparams);
                 // Ports this instance drives post-declaration (`inst.p = x;`)
@@ -739,7 +740,7 @@ impl<'a> Elaborator<'a> {
         // reassigned struct is not a second instance named `r`.
         let mut first: HashMap<&str, Span> = HashMap::new();
         let is_instance =
-            |spec: &InstanceSpec<'_>| self.declarations.entity_type_id(spec.ty).is_some();
+            |spec: &InstanceSpec<'_>| self.declarations.entity_type_id(spec.ty.as_ref()).is_some();
         for spec in specs.iter().filter(|spec| is_instance(spec)) {
             if let Some(&earlier) = first.get(spec.name.as_str()) {
                 self.collisions
@@ -779,11 +780,17 @@ impl<'a> Elaborator<'a> {
                 let ImplItem::Let(l) = item else {
                     continue;
                 };
-                let Some(Type::Indexed {
+                let Some(annotation) =
+                    l.ty.as_ref()
+                        .and_then(|ty| self.declarations.normalize_type(ty))
+                else {
+                    continue;
+                };
+                let Type::Indexed {
                     base,
                     index: Some(index),
                     ..
-                }) = l.ty.as_ref()
+                } = annotation.as_ref()
                 else {
                     continue;
                 };
@@ -844,7 +851,7 @@ impl<'a> Elaborator<'a> {
         &self,
         l: &'a LetDecl,
         tparams: &HashSet<String>,
-    ) -> Option<(&'a Type, Vec<ConnectArg>, Span)> {
+    ) -> Option<(Cow<'a, Type>, Vec<ConnectArg>, Span)> {
         // Old form: `= Entity { .. }`.
         if let Some(Expr::Construct {
             ty: Some(ty),
@@ -853,21 +860,21 @@ impl<'a> Elaborator<'a> {
             ..
         }) = &l.value
         {
-            return Some((ty, args.clone(), *span));
+            return Some((self.declarations.normalize_type(ty)?, args.clone(), *span));
         }
         // New forms need a bare entity-typed annotation. An *array* of an
         // entity (`let stage: Inc[N]`) is an instance array, built element-wise
         // by `stage[i] = Inc { .. }` assignments — not a single instance here.
-        let ann = l.ty.as_ref()?;
-        if matches!(ann, Type::Indexed { .. }) {
+        let ann = self.declarations.normalize_type(l.ty.as_ref()?)?;
+        if matches!(ann.as_ref(), Type::Indexed { .. }) {
             return None;
         }
         // A bare type parameter (`let s: T` in `impl Buf<T>`) is data, not an
         // instance, even when an entity is named `T`.
-        if type_head_name(ann).is_some_and(|n| tparams.contains(n)) {
+        if type_head_name(ann.as_ref()).is_some_and(|n| tparams.contains(n)) {
             return None;
         }
-        self.declarations.entity_type_id(ann)?;
+        self.declarations.entity_type_id(ann.as_ref())?;
         match &l.value {
             // `let x: Entity = { .a = a }` — dotted name-less construct.
             Some(Expr::Construct { ty: None, args, .. }) => Some((ann, args.clone(), l.span)),
@@ -940,7 +947,10 @@ impl<'a> Elaborator<'a> {
             } => {
                 out.push(InstanceSpec {
                     name: render_signal(target, env, &self.declarations),
-                    ty,
+                    ty: match self.declarations.normalize_type(ty) {
+                        Some(ty) => ty,
+                        None => return,
+                    },
                     args: args.clone(),
                     attrs: &[],
                     site: *span,
@@ -1039,8 +1049,10 @@ impl<'a> Elaborator<'a> {
                         // A bare type parameter names data, not an instance,
                         // even when an entity happens to share its name — the
                         // same exclusion `gather_instances` makes.
-                        if type_def_id(l.ty.as_ref().expect("checked above"), self.resolved)
-                            .is_some_and(|id| self.declarations.entity(id).is_some())
+                        if self
+                            .declarations
+                            .entity_type_id(l.ty.as_ref().expect("checked above"))
+                            .is_some()
                             && !tparams.contains(head)
                         {
                             self.misplaced
@@ -1430,7 +1442,7 @@ struct InstanceSpec<'a> {
     /// Instance name as written at the construction site.
     name: String,
     /// Entity type being instantiated, with its generic arguments.
-    ty: &'a Type,
+    ty: Cow<'a, Type>,
     /// Port connections written at this site.
     args: Vec<ConnectArg>,
     /// Attributes attached to the instance.

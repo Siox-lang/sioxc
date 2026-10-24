@@ -474,151 +474,158 @@ impl<'a> Lowering<'a> {
             String,
             Vec<(SignalId, Option<ast::Direction>, crate::diag::Span)>,
         > = HashMap::new();
+        let mut instances = Vec::new();
         for im in &impls {
             for item in &im.items {
-                if let ast::ImplItem::Let(l) = item {
-                    if let Some((cty, args)) = instance_let_parts(l, &self.free_fns) {
-                        if let Some(sub) = type_def_id(&cty, self.resolved) {
-                            let sub_path = format!("{name}.{}", l.name.text);
-                            let mut sub_env = self.consts.clone();
-                            sub_env.extend(self.construct_params(&cty, sub, env));
-                            let sub_tenv = self.construct_type_params(&cty, sub);
-                            let sub_ports = self.lower_body(
-                                sub,
-                                &sub_path,
-                                &sub_env,
-                                &sub_tenv,
-                                &HashMap::new(),
-                                false,
-                            );
-                            for (port, value) in self.norm_conns(&args, sub) {
-                                // A testbench place binds persistent storage
-                                // to the port. A value that depends only on
-                                // compile-time data is instead a canonical
-                                // combinational driver. Keep expressions that
-                                // read testbench storage with the stimulus
-                                // adapter until Process IR owns that dataflow;
-                                // attempting ordinary hardware lowering on
-                                // `a + 1` here would report the testbench local
-                                // `a` as an unknown hardware signal.
-                                let tbname = expr_path(&value);
-                                if connection_value_is_static(&value, self.resolved) {
-                                    // A scalar input connected directly to a
-                                    // value is a constant combinational driver,
-                                    // not testbench setup. Keeping it in the
-                                    // canonical driver graph gives Process IR
-                                    // the same normalized semantics as hardware
-                                    // lowering. Expressions that still depend
-                                    // on testbench-only state lower to Unknown
-                                    // here and remain with the stimulus adapter
-                                    // until that state is canonical Process IR.
-                                    if let Some(&(signal, direction)) = sub_ports.get(&port) {
-                                        if direction != Some(ast::Direction::Out) {
-                                            let expression = self.lower_expr(&value);
-                                            if !matches!(expression, Expr::Unknown) {
-                                                let ctx = self.next_ctx_at(ast::expr_span(&value));
-                                                self.hardware.drivers.push(Driver {
-                                                    span: Some(ast::expr_span(&value)),
-                                                    target: signal,
-                                                    cond: None,
-                                                    expr: expression,
-                                                    meta: None,
-                                                    ctx,
-                                                });
-                                            }
-                                        }
-                                        continue;
-                                    }
+                match item {
+                    ast::ImplItem::Let(l) => {
+                        if let Some((ty, args)) = instance_let_parts(l, &self.free_fns) {
+                            instances.push((l.name.text.clone(), ty, args));
+                        }
+                    }
+                    ast::ImplItem::Stmt(statement) => gather_generate(
+                        statement,
+                        env,
+                        &crate::elab::GenPath::default(),
+                        &self.free_fns,
+                        &mut instances,
+                    ),
+                    _ => {}
+                }
+            }
+        }
+        for (instance_name, cty, args) in instances {
+            if let Some(sub) = self.free_fns.entity_type_id(&cty) {
+                let sub_path = format!("{name}.{instance_name}");
+                let mut sub_env = self.consts.clone();
+                sub_env.extend(self.construct_params(&cty, sub, env));
+                let sub_tenv = self.construct_type_params(&cty, sub);
+                let sub_ports =
+                    self.lower_body(sub, &sub_path, &sub_env, &sub_tenv, &HashMap::new(), false);
+                for (port, value) in self.norm_conns(&args, sub) {
+                    // A testbench place binds persistent storage
+                    // to the port. A value that depends only on
+                    // compile-time data is instead a canonical
+                    // combinational driver. Keep expressions that
+                    // read testbench storage with the stimulus
+                    // adapter until Process IR owns that dataflow;
+                    // attempting ordinary hardware lowering on
+                    // `a + 1` here would report the testbench local
+                    // `a` as an unknown hardware signal.
+                    let tbname = expr_path(&value);
+                    if connection_value_is_static(&value, self.resolved) {
+                        // A scalar input connected directly to a
+                        // value is a constant combinational driver,
+                        // not testbench setup. Keeping it in the
+                        // canonical driver graph gives Process IR
+                        // the same normalized semantics as hardware
+                        // lowering. Expressions that still depend
+                        // on testbench-only state lower to Unknown
+                        // here and remain with the stimulus adapter
+                        // until that state is canonical Process IR.
+                        if let Some(&(signal, direction)) = sub_ports.get(&port) {
+                            if direction != Some(ast::Direction::Out) {
+                                let expression = self.lower_expr(&value);
+                                if !matches!(expression, Expr::Unknown) {
+                                    let ctx = self.next_ctx_at(ast::expr_span(&value));
+                                    self.hardware.drivers.push(Driver {
+                                        span: Some(ast::expr_span(&value)),
+                                        target: signal,
+                                        cond: None,
+                                        expr: expression,
+                                        meta: None,
+                                        ctx,
+                                    });
+                                }
+                            }
+                            continue;
+                        }
 
-                                    // Composite ports have no signal at the
-                                    // port root. A constant aggregate still
-                                    // belongs in the canonical hardware graph:
-                                    // flatten it against the child's retained
-                                    // leaves instead of silently dropping it.
-                                    if let ast::Expr::Construct {
-                                        args, spread: None, ..
-                                    } = &value
-                                    {
-                                        let mut fields = HashMap::new();
-                                        literal_leaves(args, "", &mut fields);
-                                        // `sub_ports` is a `HashMap`: drive the
-                                        // leaves in name order, as the entity
-                                        // path does, so builds are identical.
-                                        let mut ports: Vec<_> = sub_ports.iter().collect();
-                                        ports.sort_by(|a, b| a.0.cmp(b.0));
-                                        for (name, &(signal, direction)) in ports {
-                                            let Some(suffix) = name.strip_prefix(&port) else {
-                                                continue;
-                                            };
-                                            if direction == Some(ast::Direction::Out) {
-                                                continue;
-                                            }
-                                            let Some(field) = fields.get(suffix) else {
-                                                continue;
-                                            };
-                                            let expression = self.lower_expr(field);
-                                            if matches!(expression, Expr::Unknown) {
-                                                continue;
-                                            }
-                                            let ctx = self.next_ctx_at(ast::expr_span(field));
-                                            self.hardware.drivers.push(Driver {
-                                                span: Some(ast::expr_span(field)),
-                                                target: signal,
-                                                cond: None,
-                                                expr: expression,
-                                                meta: None,
-                                                ctx,
-                                            });
-                                        }
-                                    } else if let ast::Expr::Array { elems, .. } = &value {
-                                        let prefix = format!("{port}[");
-                                        let mut leaves = sub_ports
-                                            .iter()
-                                            .filter_map(|(name, &(signal, direction))| {
-                                                let label = name
-                                                    .strip_prefix(&prefix)?
-                                                    .strip_suffix(']')?
-                                                    .parse::<i64>()
-                                                    .ok()?;
-                                                Some((label, signal, direction))
-                                            })
-                                            .collect::<Vec<_>>();
-                                        leaves.sort_by_key(|(label, _, _)| *label);
-                                        for ((_, signal, direction), element) in
-                                            leaves.into_iter().zip(elems)
-                                        {
-                                            if direction == Some(ast::Direction::Out) {
-                                                continue;
-                                            }
-                                            let expression = self.lower_expr(element);
-                                            if matches!(expression, Expr::Unknown) {
-                                                continue;
-                                            }
-                                            let ctx = self.next_ctx_at(ast::expr_span(element));
-                                            self.hardware.drivers.push(Driver {
-                                                span: Some(ast::expr_span(element)),
-                                                target: signal,
-                                                cond: None,
-                                                expr: expression,
-                                                meta: None,
-                                                ctx,
-                                            });
-                                        }
-                                    }
+                        // Composite ports have no signal at the
+                        // port root. A constant aggregate still
+                        // belongs in the canonical hardware graph:
+                        // flatten it against the child's retained
+                        // leaves instead of silently dropping it.
+                        if let ast::Expr::Construct {
+                            args, spread: None, ..
+                        } = &value
+                        {
+                            let mut fields = HashMap::new();
+                            literal_leaves(args, "", &mut fields);
+                            // `sub_ports` is a `HashMap`: drive the
+                            // leaves in name order, as the entity
+                            // path does, so builds are identical.
+                            let mut ports: Vec<_> = sub_ports.iter().collect();
+                            ports.sort_by(|a, b| a.0.cmp(b.0));
+                            for (name, &(signal, direction)) in ports {
+                                let Some(suffix) = name.strip_prefix(&port) else {
+                                    continue;
+                                };
+                                if direction == Some(ast::Direction::Out) {
                                     continue;
                                 }
-                                // A testbench output into a slice has no storage
-                                // write to make: it read as lowering left
-                                // incomplete when the test ran.
-                                if let ast::Expr::Index { index, .. } = &value {
-                                    if matches!(
-                                        index.as_ref(),
-                                        ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
-                                    ) {
-                                        if let Some(&(_, Some(ast::Direction::Out))) =
-                                            sub_ports.get(&port)
-                                        {
-                                            self.sink.emit(
+                                let Some(field) = fields.get(suffix) else {
+                                    continue;
+                                };
+                                let expression = self.lower_expr(field);
+                                if matches!(expression, Expr::Unknown) {
+                                    continue;
+                                }
+                                let ctx = self.next_ctx_at(ast::expr_span(field));
+                                self.hardware.drivers.push(Driver {
+                                    span: Some(ast::expr_span(field)),
+                                    target: signal,
+                                    cond: None,
+                                    expr: expression,
+                                    meta: None,
+                                    ctx,
+                                });
+                            }
+                        } else if let ast::Expr::Array { elems, .. } = &value {
+                            let prefix = format!("{port}[");
+                            let mut leaves = sub_ports
+                                .iter()
+                                .filter_map(|(name, &(signal, direction))| {
+                                    let label = name
+                                        .strip_prefix(&prefix)?
+                                        .strip_suffix(']')?
+                                        .parse::<i64>()
+                                        .ok()?;
+                                    Some((label, signal, direction))
+                                })
+                                .collect::<Vec<_>>();
+                            leaves.sort_by_key(|(label, _, _)| *label);
+                            for ((_, signal, direction), element) in leaves.into_iter().zip(elems) {
+                                if direction == Some(ast::Direction::Out) {
+                                    continue;
+                                }
+                                let expression = self.lower_expr(element);
+                                if matches!(expression, Expr::Unknown) {
+                                    continue;
+                                }
+                                let ctx = self.next_ctx_at(ast::expr_span(element));
+                                self.hardware.drivers.push(Driver {
+                                    span: Some(ast::expr_span(element)),
+                                    target: signal,
+                                    cond: None,
+                                    expr: expression,
+                                    meta: None,
+                                    ctx,
+                                });
+                            }
+                        }
+                        continue;
+                    }
+                    // A testbench output into a slice has no storage
+                    // write to make: it read as lowering left
+                    // incomplete when the test ran.
+                    if let ast::Expr::Index { index, .. } = &value {
+                        if matches!(
+                            index.as_ref(),
+                            ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                        ) {
+                            if let Some(&(_, Some(ast::Direction::Out))) = sub_ports.get(&port) {
+                                self.sink.emit(
                                                 crate::diag::Diagnostic::error(format!(
                                                     "output `{port}` cannot drive a slice of a testbench signal"
                                                 ))
@@ -629,44 +636,41 @@ impl<'a> Lowering<'a> {
                                                      slice it where it is read",
                                                 ),
                                             );
-                                        }
-                                        continue;
-                                    }
-                                }
-                                let Some(tbname) = tbname else {
-                                    continue;
-                                };
-                                if let Some(&(sig, dir)) = sub_ports.get(&port) {
-                                    bindings.entry(tbname).or_default().push((
-                                        sig,
-                                        dir,
-                                        ast::expr_span(&value),
-                                    ));
-                                    continue;
-                                }
-                                // A struct/bus port is not one signal: it is
-                                // flattened into leaves (`bus.valid`, ...), so
-                                // the scalar lookup above finds nothing and the
-                                // binding used to be dropped — two testbench
-                                // DUTs sharing a struct local were left
-                                // unconnected, silently. Bind each leaf to the
-                                // matching leaf of the testbench name.
-                                // An array port's leaves are indexed
-                                // (`down[2].valid`), so match `[` as well.
-                                for (pname, &(sig, dir)) in sub_ports.iter() {
-                                    let Some(leaf) = pname
-                                        .strip_prefix(&port)
-                                        .filter(|rest| rest.starts_with(['.', '[']))
-                                    else {
-                                        continue;
-                                    };
-                                    bindings
-                                        .entry(format!("{tbname}{leaf}"))
-                                        .or_default()
-                                        .push((sig, dir, ast::expr_span(&value)));
-                                }
                             }
+                            continue;
                         }
+                    }
+                    let Some(tbname) = tbname else {
+                        continue;
+                    };
+                    if let Some(&(sig, dir)) = sub_ports.get(&port) {
+                        bindings.entry(tbname).or_default().push((
+                            sig,
+                            dir,
+                            ast::expr_span(&value),
+                        ));
+                        continue;
+                    }
+                    // A struct/bus port is not one signal: it is
+                    // flattened into leaves (`bus.valid`, ...), so
+                    // the scalar lookup above finds nothing and the
+                    // binding used to be dropped — two testbench
+                    // DUTs sharing a struct local were left
+                    // unconnected, silently. Bind each leaf to the
+                    // matching leaf of the testbench name.
+                    // An array port's leaves are indexed
+                    // (`down[2].valid`), so match `[` as well.
+                    for (pname, &(sig, dir)) in sub_ports.iter() {
+                        let Some(leaf) = pname
+                            .strip_prefix(&port)
+                            .filter(|rest| rest.starts_with(['.', '[']))
+                        else {
+                            continue;
+                        };
+                        bindings
+                            .entry(format!("{tbname}{leaf}"))
+                            .or_default()
+                            .push((sig, dir, ast::expr_span(&value)));
                     }
                 }
             }
