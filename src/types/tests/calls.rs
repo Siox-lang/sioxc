@@ -345,8 +345,8 @@ fn extern_c_signatures_are_limited_to_the_implemented_scalar_abi() {
     );
     assert_eq!(
         check_src("module m;\nextern \"C\" { fn side_effect(x: integer); }\n"),
-        1,
-        "void calls must not be accepted and then dropped"
+        0,
+        "a C `void` function is declared like any other; its calls are checked"
     );
 }
 
