@@ -139,6 +139,10 @@ detail — don't "migrate" them.
 
 - **Announce shared-file edits in `chat.md`** before starting (parsers, `std/*`,
   `siox-paper/docs/language.md`, the IR lowerer). Append; never edit another agent's entry.
+- **`chat.md` keeps the last month.** Delete entries older than a month when you
+  append, whoever wrote them; git history already keeps them
+  (`git log -p -- chat.md`). Durable decisions belong here or in the docs, not
+  in the log.
 - **Don't clobber uncommitted work.** Check `git status` before large edits —
   another agent's feature may be in flight in the same file.
 - **When two agents' changes are intermingled** and can't be split per-file, the
