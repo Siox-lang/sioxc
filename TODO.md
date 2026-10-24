@@ -300,9 +300,8 @@ and foreign integrations.
   experiment: name-to-handle lookup, get/put/force/release, timed and
   value-change callbacks, and read-write/read-only scheduler phases.
 - 🟡 **General foreign-function ABI.** Void C functions run as testbench
-  statements (#269). Remaining: pointer/handle ownership, aggregate and
-  multiword layouts, and platform-aware C scalar widths (a C `int` is passed
-  as a 64-bit word today). Library discovery and linker flags belong in
+  statements (#269) and `std::ffi` types cross at their C widths (#271).
+  Remaining: pointer/handle ownership and aggregate/multiword layouts. Library discovery and linker flags belong in
   the future project tool; `sioxc` consumes explicit inputs.
 - 🔴 **Project/test tool.** Build a Cargo-like executable for package discovery,
   dependency builds, caching, directory-wide test compilation/execution,
