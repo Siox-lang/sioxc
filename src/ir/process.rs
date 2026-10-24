@@ -1155,6 +1155,11 @@ pub enum ProcessValueKind {
         /// Whether the C function returns nothing: called for its effect,
         /// it reads as 0.
         void_result: bool,
+        /// Per argument, the narrower C scalar its `std::ffi` type names;
+        /// missing entries are the 64-bit word or `double`.
+        c_arguments: Vec<Option<crate::ir::CScalar>>,
+        /// The narrower C scalar the result's `std::ffi` type names.
+        c_result: Option<crate::ir::CScalar>,
     },
     /// A value-producing operation owned by the fixed simulation runtime.
     HostCall {
@@ -1450,6 +1455,8 @@ impl ProcessIr {
                 integer_args,
                 f64_ret,
                 integer_ret,
+                c_args,
+                c_ret,
             } => ProcessValueKind::ForeignCall {
                 name: name.clone(),
                 arguments: args
@@ -1461,6 +1468,8 @@ impl ProcessIr {
                 float_result: *f64_ret,
                 integer_result: *integer_ret,
                 void_result: false,
+                c_arguments: c_args.clone(),
+                c_result: *c_ret,
             },
             Expr::Unknown => ProcessValueKind::Invalid,
         };

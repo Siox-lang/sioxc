@@ -1,0 +1,34 @@
+// `std::ffi` types pass C scalars at their C widths. Each libc function here
+// returns a wrong value if its result or argument crosses as the 64-bit word:
+// `ilogb(0.25)` is an `int` -2 (sign extension), `sqrtf` takes and returns a
+// `float`, `htonl` an `unsigned int`.
+module ffi_scalars;
+
+use std::ffi::{c_int, c_uint, c_long, c_float, c_double};
+
+extern "C" {
+    fn ilogb(x: c_double) -> c_int;
+    fn sqrtf(x: c_float) -> c_float;
+    fn htonl(x: c_uint) -> c_uint;
+    fn labs(x: c_long) -> c_long;
+}
+
+entity Hardware { x: real in, e: integer out, r: real out, }
+impl Hardware { e = ilogb(x); r = sqrtf(x); }
+
+#[test]
+entity CScalarsTest {}
+impl CScalarsTest {
+    let x: real = 0.25;
+    let e: integer;
+    let r: real;
+    let hardware: Hardware = { .x = x, .e = e, .r = r };
+    process {
+        await 1ns;
+        assert!(e == -2 and r == 0.5, "C scalars in a hardware driver");
+        assert!(ilogb(0.25) == -2, "an int result sign-extends");
+        assert!(sqrtf(2.25) == 1.5, "a float crosses as a float");
+        assert!(htonl(1) == 16777216, "an unsigned int crosses as one");
+        assert!(labs(-7) == 7, "a long is the host's");
+    }
+}

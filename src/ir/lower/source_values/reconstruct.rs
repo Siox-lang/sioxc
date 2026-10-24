@@ -831,6 +831,8 @@ mod tests {
                     integer_args: vec![],
                     f64_ret: false,
                     integer_ret: true,
+                    c_args: Vec::new(),
+                    c_ret: None,
                 }),
                 valid: Box::new(Expr::Const(1)),
                 left: 7,

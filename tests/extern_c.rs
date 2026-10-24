@@ -37,6 +37,32 @@ fn scalar_extern_c_calls_run_in_hardware_and_testbench_code() {
 }
 
 #[test]
+fn std_ffi_types_cross_at_their_c_widths() {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let output = std::env::temp_dir().join(format!("siox_c_scalars_{}", std::process::id()));
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .args(["--test", "tests/fixtures/extern_c_scalars_test.siox", "-o"])
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "C scalar fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&output).output().unwrap();
+    let report =
+        String::from_utf8_lossy(&run.stdout).to_string() + &String::from_utf8_lossy(&run.stderr);
+    assert!(
+        run.status.success() && report.contains("CScalarsTest ... ok"),
+        "C scalar fixture failed:\n{report}"
+    );
+    let _ = std::fs::remove_file(output);
+}
+
+#[test]
 fn unsupported_extern_c_shapes_stop_before_lowering() {
     let root = env!("CARGO_MANIFEST_DIR");
     let source =

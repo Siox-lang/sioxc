@@ -1,0 +1,36 @@
+module std::ffi;
+
+// C scalar types for `extern "C"` signatures, as Rust's `core::ffi`. Each is
+// an ordinary siox type whose range is the C type's, so values check as
+// usual; in a foreign signature the compiler passes it at the C width and
+// extends a C result back into the 64-bit word.
+//
+// `c_long` and `c_ulong` follow the build host: 64 bits on Linux and macOS,
+// 32 on Windows, where their siox range is still the 64-bit one.
+// `c_longlong`, `c_ulonglong` and `c_double` are the default ABI word and
+// `double`, so they need no compiler role.
+
+use std::bits::unsigned;
+
+pub type c_schar = integer<-128..127>;
+pub type c_uchar = integer<0..255>;
+pub type c_short = integer<-32768..32767>;
+pub type c_ushort = integer<0..65535>;
+pub type c_int = integer<-2147483648..2147483647>;
+pub type c_uint = integer<0..4294967295>;
+pub type c_long = integer;
+pub type c_ulong = unsigned[64];
+pub type c_longlong = integer;
+pub type c_ulonglong = unsigned[64];
+pub type c_float = real;
+pub type c_double = real;
+
+attr lang for c_schar = "c_schar";
+attr lang for c_uchar = "c_uchar";
+attr lang for c_short = "c_short";
+attr lang for c_ushort = "c_ushort";
+attr lang for c_int = "c_int";
+attr lang for c_uint = "c_uint";
+attr lang for c_long = "c_long";
+attr lang for c_ulong = "c_ulong";
+attr lang for c_float = "c_float";

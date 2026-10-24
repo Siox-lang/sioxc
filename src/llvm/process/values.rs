@@ -1056,6 +1056,8 @@ pub(super) fn process_value<'ctx>(
             float_result,
             integer_result,
             void_result,
+            c_arguments,
+            c_result,
         } => {
             use inkwell::types::BasicMetadataTypeEnum as MetadataType;
             use inkwell::values::BasicMetadataValueEnum as MetadataValue;
@@ -1085,29 +1087,46 @@ pub(super) fn process_value<'ctx>(
                     index_sites,
                     cache,
                 )?;
-                if float_arguments.get(index).copied().unwrap_or(false) {
-                    parameter_types.push(float.into());
-                    argument_values.push(
-                        builder
+                let (ty, value): (MetadataType, MetadataValue) =
+                    if float_arguments.get(index).copied().unwrap_or(false) {
+                        let value = builder
                             .build_bit_cast(argument, float, "pv.foreign.float_argument")
                             .ok()?
-                            .into_float_value()
-                            .into(),
-                    );
-                } else {
-                    parameter_types.push(context.i64_type().into());
-                    argument_values.push(argument.into());
+                            .into_float_value();
+                        (float.into(), value.into())
+                    } else {
+                        (context.i64_type().into(), argument.into())
+                    };
+                match c_arguments.get(index).copied().flatten() {
+                    Some(scalar) => {
+                        parameter_types.push(crate::llvm::foreign::c_type(context, scalar).into());
+                        argument_values.push(crate::llvm::foreign::c_argument(
+                            context, builder, value, scalar,
+                        )?);
+                    }
+                    None => {
+                        parameter_types.push(ty);
+                        argument_values.push(value);
+                    }
                 }
             }
             let function = module.get_function(name).unwrap_or_else(|| {
                 let signature = if *void_result {
                     context.void_type().fn_type(&parameter_types, false)
+                } else if let Some(scalar) = c_result {
+                    inkwell::types::BasicType::fn_type(
+                        &crate::llvm::foreign::c_type(context, *scalar),
+                        &parameter_types,
+                        false,
+                    )
                 } else if *float_result {
                     float.fn_type(&parameter_types, false)
                 } else {
                     context.i64_type().fn_type(&parameter_types, false)
                 };
-                module.add_function(name, signature, Some(Linkage::External))
+                let function = module.add_function(name, signature, Some(Linkage::External));
+                crate::llvm::foreign::mark_extensions(context, function, c_arguments, *c_result);
+                function
             });
             // `fn srand(seed: integer);`: called for its effect, read as 0.
             if *void_result {
@@ -1124,6 +1143,12 @@ pub(super) fn process_value<'ctx>(
             {
                 inkwell::values::ValueKind::Basic(value) => value,
                 _ => return None,
+            };
+            let returned = match c_result {
+                Some(scalar) => {
+                    crate::llvm::foreign::c_result(context, builder, returned, *scalar)?
+                }
+                None => returned,
             };
             // Foreign code may call public signal accessors. Later arena reads
             // must observe that mutation rather than reuse an earlier load.

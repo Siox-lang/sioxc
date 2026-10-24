@@ -7746,13 +7746,45 @@ fn lower_process_foreign_call(
         return None;
     }
 
+    // The declared type's leaf, through any aliases (`std::ffi::c_double`).
+    let alias_leaf = |declared: &ast::Type| {
+        let mut ty = declared;
+        // The bound stops an alias cycle, which the checker reports.
+        for _ in 0..64 {
+            let ast::Type::Path(path) = ty else {
+                break;
+            };
+            match context
+                .resolved
+                .resolved(path.span)
+                .and_then(|id| context.type_aliases.get(&id))
+            {
+                Some(alias) => ty = alias,
+                None => break,
+            }
+        }
+        type_leaf(ty).map(str::to_string)
+    };
     let abi_kind = |declared: Option<&ast::Type>, actual: Option<&crate::types::Ty>| {
-        let leaf = declared.and_then(type_leaf);
+        let leaf = declared.and_then(alias_leaf);
         (
-            leaf == Some("real") || matches!(actual, Some(crate::types::Ty::Real)),
-            leaf == Some("integer") || matches!(actual, Some(crate::types::Ty::Integer)),
+            leaf.as_deref() == Some("real") || matches!(actual, Some(crate::types::Ty::Real)),
+            leaf.as_deref() == Some("integer") || matches!(actual, Some(crate::types::Ty::Integer)),
         )
     };
+    let c_scalar = |ty: Option<&ast::Type>| {
+        crate::ir::CScalar::of(ty?, context.resolved, |path| {
+            context
+                .type_aliases
+                .get(&context.resolved.resolved(path.span)?)
+                .copied()
+        })
+    };
+    let c_arguments = parameters
+        .iter()
+        .map(|parameter| c_scalar(parameter.ty.as_ref()))
+        .collect();
+    let c_result = c_scalar(function.ret.as_ref());
     let mut arguments = Vec::with_capacity(args.len());
     let mut float_arguments = Vec::with_capacity(args.len());
     let mut integer_arguments = Vec::with_capacity(args.len());
@@ -7788,6 +7820,8 @@ fn lower_process_foreign_call(
         float_result,
         integer_result,
         void_result,
+        c_arguments,
+        c_result,
     };
     let width = source_value_width(&kind, ty.as_ref(), process, context);
     Some(push_value(*span, ty, width, kind, context))

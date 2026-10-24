@@ -735,6 +735,18 @@ impl<'a> Lowering<'a> {
                 .collect();
             let f64_ret = is_type(&f.ret, "real");
             let integer_ret = is_type(&f.ret, "integer");
+            let c_scalar = |t: &Option<ast::Type>| {
+                crate::ir::CScalar::of(t.as_ref()?, self.resolved, |path| {
+                    self.aliases.get(&self.free_fns.type_alias_path_key(path)?)
+                })
+            };
+            let c_arguments = f
+                .params
+                .iter()
+                .filter(|p| !p.is_self)
+                .map(|p| c_scalar(&p.ty))
+                .collect();
+            let c_result = c_scalar(&f.ret);
             let arguments = args
                 .iter()
                 .map(|a| {
@@ -758,6 +770,8 @@ impl<'a> Lowering<'a> {
                         float_result: f64_ret,
                         integer_result: integer_ret,
                         void_result: false,
+                        c_arguments,
+                        c_result,
                     },
                 },
                 None,

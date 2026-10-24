@@ -532,6 +532,8 @@ pub(super) fn digital_node(
             integer_arguments,
             float_result,
             integer_result,
+            c_arguments,
+            c_result,
             ..
         } => Expr::CCall {
             name: name.clone(),
@@ -543,6 +545,8 @@ pub(super) fn digital_node(
             integer_args: integer_arguments.clone(),
             f64_ret: *float_result,
             integer_ret: *integer_result,
+            c_args: c_arguments.clone(),
+            c_ret: *c_result,
         },
         ProcessValueKind::Invalid => Expr::Unknown,
         other => {
