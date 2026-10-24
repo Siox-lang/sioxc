@@ -139,6 +139,10 @@ detail — don't "migrate" them.
 
 - **Announce shared-file edits in `chat.md`** before starting (parsers, `std/*`,
   `siox-paper/docs/language.md`, the IR lowerer). Append; never edit another agent's entry.
+- **`chat.md` keeps the last month.** Delete entries older than a month when you
+  append, whoever wrote them; git history already keeps them
+  (`git log -p -- chat.md`). Durable decisions belong here or in the docs, not
+  in the log.
 - **Don't clobber uncommitted work.** Check `git status` before large edits —
   another agent's feature may be in flight in the same file.
 - **When two agents' changes are intermingled** and can't be split per-file, the
@@ -154,6 +158,11 @@ detail — don't "migrate" them.
   roadmap phase or active goal, a percentage, and the evidence behind it (for
   example corpus parity and remaining gaps). It is an engineering estimate,
   not a promise or substitute for the actual completion gate.
+- **Branches for features and big changes; small edits directly.** A
+  feature, a behaviour change or a multi-file refactor goes on a branch and
+  lands through a PR whose CI passes. A small edit (a typo, a doc or comment
+  fix, a one-line correction, a log entry) may be committed straight to
+  `main`.
 - **Amend freely while local**, never after pushing.
 - **Push is a separate, explicit decision.** Don't push another agent's
   unreviewed work.
