@@ -36,6 +36,30 @@ use crate::syntax::token::TokenKind;
 /// How deep expansions may nest: rustc's default `recursion_limit`.
 pub const RECURSION_LIMIT: usize = 128;
 
+/// One macro call as it was expanded, for an editor's expansion view:
+/// which macro, where it was called, and what the call became. A call
+/// written inside a macro body is expanded too, and names the expansion it
+/// came from, so a view can show expansion output apart from handwritten
+/// source and walk nested expansions back to the call a user wrote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MacroExpansion {
+    /// The macro, qualified by its module (`demo::twice`).
+    pub name: String,
+    /// The invoked form's name in its `macro` declaration.
+    pub definition: Span,
+    /// The whole `name!(..)` call. For a nested expansion this lies inside
+    /// the parent macro's body.
+    pub call: Span,
+    /// The expansion this call was written in, as an index into the same
+    /// list; `None` for a call in handwritten source.
+    pub parent: Option<usize>,
+    /// How many expansions enclose this one; 0 for handwritten source.
+    pub depth: usize,
+    /// The expansion as source, before any macro call it contains is itself
+    /// expanded.
+    pub text: String,
+}
+
 /// Expand every user macro in `modules`. Warnings that lint levels govern
 /// (an unused macro import) are returned rather than emitted, because the
 /// expansion's own `#[allow(..)]` directives are not in force yet.
@@ -44,6 +68,17 @@ pub fn expand(
     operators: &HashMap<String, u8>,
     sink: &mut DiagnosticSink,
 ) -> Vec<Diagnostic> {
+    expand_logged(modules, operators, sink).0
+}
+
+/// [`expand`], also returning every expansion in the order it was made.
+pub fn expand_logged(
+    modules: &mut [Module],
+    operators: &HashMap<String, u8>,
+    sink: &mut DiagnosticSink,
+) -> (Vec<Diagnostic>, Vec<MacroExpansion>) {
+    let mut expansions = Vec::new();
+    let mut open = Vec::new();
     let index = Index::new(modules);
     // Every diagnostic inside a body says which macro it belongs to.
     let mut bodies = Vec::new();
@@ -72,6 +107,8 @@ pub fn expand(
             trusted: HashSet::new(),
             site: None,
             bodies: &bodies,
+            expansions: &mut expansions,
+            open: &mut open,
         };
         let items = std::mem::take(&mut module.items);
         module.items = expander.items(items, 0);
@@ -136,7 +173,7 @@ pub fn expand(
                     if names.is_empty()))
         });
     }
-    warnings
+    (warnings, expansions)
 }
 
 /// What every module declares and imports, for finding macros and for
@@ -304,6 +341,10 @@ struct Expander<'a> {
     site: Option<Span>,
     /// Every macro body's extent.
     bodies: &'a [(Span, bool)],
+    /// The expansions made so far, for [`expand_logged`].
+    expansions: &'a mut Vec<MacroExpansion>,
+    /// The expansions enclosing the current one, innermost last.
+    open: &'a mut Vec<usize>,
 }
 
 impl Expander<'_> {
@@ -459,6 +500,24 @@ impl Expander<'_> {
         };
         merge_macro_args(&mut self.args, parser.take_macro_args());
         self.lints.extend(parser.take_lints());
+        // Expansion is depth-first, so the enclosing expansion is the last
+        // one opened at a lesser depth.
+        self.open.truncate(depth);
+        let text = crate::syntax::pretty::with_macro_args(&self.args, || match &expansion {
+            Expansion::Expr(expression) => crate::syntax::pretty::expr_string(expression),
+            Expansion::Stmts(stmts) => crate::syntax::pretty::print_stmts(stmts),
+            Expansion::Members(members) => crate::syntax::pretty::print_impl_items(members),
+            Expansion::Items(items) => crate::syntax::pretty::print_items(items),
+        });
+        self.expansions.push(MacroExpansion {
+            name: format!("{}::{}", key.0, key.1),
+            definition: form.name.span,
+            call: span,
+            parent: self.open.last().copied(),
+            depth,
+            text,
+        });
+        self.open.push(self.expansions.len() - 1);
         for diagnostic in scratch.diagnostics() {
             self.sink.emit(
                 diagnostic

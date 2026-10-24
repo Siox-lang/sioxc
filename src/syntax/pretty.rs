@@ -24,6 +24,54 @@ pub fn print_module(module: &Module) -> String {
     p.out
 }
 
+/// Run `print` with `args` as the macro-call argument table, so a call
+/// inside a printed fragment shows its arguments.
+pub fn with_macro_args<T>(args: &MacroArgTable, print: impl FnOnce() -> T) -> T {
+    let saved = MACRO_ARGS.with(|table| table.replace(args.clone()));
+    let out = print();
+    MACRO_ARGS.with(|table| table.replace(saved));
+    out
+}
+
+/// A printer with no module context: for fragments such as one macro
+/// expansion's output.
+fn fragment_printer() -> Printer {
+    Printer {
+        out: String::new(),
+        indent: 0,
+        lints: Vec::new(),
+        pending: Vec::new(),
+    }
+}
+
+/// Statements as source, one per line.
+pub fn print_stmts(stmts: &[Stmt]) -> String {
+    let mut p = fragment_printer();
+    for stmt in stmts {
+        p.stmt(stmt);
+    }
+    p.flush_lets();
+    p.out
+}
+
+/// Implementation members as source.
+pub fn print_impl_items(items: &[ImplItem]) -> String {
+    let mut p = fragment_printer();
+    for item in items {
+        p.impl_item(item);
+    }
+    p.out
+}
+
+/// Module items as source.
+pub fn print_items(items: &[Item]) -> String {
+    let mut p = fragment_printer();
+    for item in items {
+        p.item(item);
+    }
+    p.out
+}
+
 thread_local! {
     /// The module being printed's macro arguments, for the calls whose
     /// arguments are not expressions. Expression printing is a free function
