@@ -307,6 +307,8 @@ mod tests {
                     integer_args: vec![],
                     f64_ret: true,
                     integer_ret: false,
+                    c_args: Vec::new(),
+                    c_ret: None,
                 },
                 call_span,
                 Some(crate::types::Ty::Real),

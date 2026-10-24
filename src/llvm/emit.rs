@@ -3201,7 +3201,11 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                 }
                 let f = self.module.get_function(name).unwrap_or_else(|| {
                     let fnty = if let Some(scalar) = c_ret {
-                        crate::llvm::foreign::c_type(self.ctx, *scalar).fn_type(&ptypes, false)
+                        inkwell::types::BasicType::fn_type(
+                            &crate::llvm::foreign::c_type(self.ctx, *scalar),
+                            &ptypes,
+                            false,
+                        )
                     } else if *f64_ret {
                         f64t.fn_type(&ptypes, false)
                     } else {

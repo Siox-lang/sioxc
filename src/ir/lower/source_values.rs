@@ -871,6 +871,8 @@ mod tests {
                 integer_args: vec![true],
                 f64_ret: false,
                 integer_ret: true,
+                c_args: Vec::new(),
+                c_ret: None,
             },
             span,
             None,
