@@ -3055,6 +3055,40 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
                             .into_int_value();
                         self.fit(bits, self.value_ty(width))
                     }
+                    // The same word: the Process IR path checks the range.
+                    UnOp::IntToNatural | UnOp::NaturalToInt => self.fit(a, self.value_ty(width)),
+                    UnOp::RealToNatural => {
+                        let f = self
+                            .builder
+                            .build_bit_cast(
+                                self.fit(a, self.ctx.i64_type()),
+                                self.ctx.f64_type(),
+                                "rbits",
+                            )
+                            .unwrap()
+                            .into_float_value();
+                        let n = self
+                            .builder
+                            .build_float_to_unsigned_int(f, self.ctx.i64_type(), "rton")
+                            .unwrap();
+                        self.fit(n, self.value_ty(width))
+                    }
+                    UnOp::NaturalToReal => {
+                        let f = self
+                            .builder
+                            .build_unsigned_int_to_float(
+                                self.fit(a, self.ctx.i64_type()),
+                                self.ctx.f64_type(),
+                                "ntor",
+                            )
+                            .unwrap();
+                        let bits = self
+                            .builder
+                            .build_bit_cast(f, self.ctx.i64_type(), "rbits")
+                            .unwrap()
+                            .into_int_value();
+                        self.fit(bits, self.value_ty(width))
+                    }
                     // A built-in `real` function: its LLVM intrinsic on the
                     // operand's f64 bits.
                     UnOp::Real(function) => {

@@ -709,6 +709,8 @@ pub(super) enum ArithmeticFailure {
     Overflow = 1,
     /// A division or remainder by zero.
     DivisionByZero = 2,
+    /// The result does not fit `natural` (negative, or 2^64 and beyond).
+    NaturalRange = 3,
 }
 
 /// Record the first active arithmetic failure: `failed` at the arithmetic
@@ -840,12 +842,18 @@ fn index_never_fails(design: &Design, index: ProcessValueId, low: i64, high: i64
 /// graph rather than keying emission by it.
 pub(super) fn arithmetic_can_fail(design: &Design, kind: &ProcessValueKind) -> bool {
     use siox::ir::ProcessBinaryOp as B;
-    let (operation, right) = match kind {
+    let (operation, left, right) = match kind {
         ProcessValueKind::Binary {
-            operation, right, ..
-        } => (operation, *right),
+            operation,
+            left,
+            right,
+        } => (operation, *left, *right),
         ProcessValueKind::Unary {
-            operation: siox::ir::ProcessUnaryOp::RealToInteger,
+            operation:
+                siox::ir::ProcessUnaryOp::RealToInteger
+                | siox::ir::ProcessUnaryOp::IntegerToNatural
+                | siox::ir::ProcessUnaryOp::NaturalToInteger
+                | siox::ir::ProcessUnaryOp::RealToNatural,
             ..
         } => return true,
         _ => return false,
@@ -853,6 +861,26 @@ pub(super) fn arithmetic_can_fail(design: &Design, kind: &ProcessValueKind) -> b
     let constant = |id: ProcessValueId| {
         siox::ir::process::arena_constant_integer(id, &design.process_ir.values)
     };
+    // A `natural` operand (typed, or laid out as one in hardware).
+    let natural = |id: ProcessValueId| {
+        design
+            .process_ir
+            .values
+            .get(id.0 as usize)
+            .is_some_and(|value| matches!(value.ty, Some(siox::types::Ty::Natural)))
+            || matches!(
+                super::value_types::process_value_layout(design, id).map(|layout| &layout.kind),
+                Some(LayoutKind::Scalar {
+                    domain: siox::ir::ScalarDomain::Natural,
+                    ..
+                })
+            )
+    };
+    if matches!(operation, B::Add | B::Sub | B::Mul | B::Div | B::Rem)
+        && (natural(left) || natural(right))
+    {
+        return true;
+    }
     match operation {
         B::SignedDiv | B::SignedRem => {
             !constant(right).is_some_and(|value| value != 0 && value != -1)

@@ -199,6 +199,7 @@ impl<'a> Checker<'a> {
             Ty::Named(id) => self.definition_key(*id)?,
             Ty::Real => "real".to_string(),
             Ty::Integer => "integer".to_string(),
+            Ty::Natural => "natural".to_string(),
             Ty::Char => "Char".to_string(),
             Ty::Array {
                 family: Some(name), ..
@@ -212,6 +213,7 @@ impl<'a> Checker<'a> {
     pub(super) fn ty_from_head(&self, name: &str) -> Ty {
         match name {
             "integer" => Ty::Integer,
+            "natural" => Ty::Natural,
             "real" => Ty::Real,
             "Char" => Ty::Char,
             name if self.is_array_family(name) => Ty::Array {

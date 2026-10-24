@@ -427,6 +427,30 @@ impl<'a> Checker<'a> {
                 }
             )
         };
+        // `natural` mixes with itself and with a literal, which takes its
+        // type; `integer`, `real` and vectors reach it only by conversion.
+        if matches!(left, Ty::Natural) || matches!(right, Ty::Natural) {
+            let natural = |ty: &Ty, operand: &Expr| {
+                matches!(ty, Ty::Natural) || Self::is_contextual_literal(operand)
+            };
+            let shift_count = matches!(op, BinOp::Shl | BinOp::Shr)
+                && matches!(left, Ty::Natural)
+                && matches!(right, Ty::Integer);
+            if !(natural(&left, lhs) && natural(&right, rhs) || shift_count) {
+                let other = if matches!(left, Ty::Natural) {
+                    &right
+                } else {
+                    &left
+                };
+                self.error_with_help(
+                    codes::TYPE_MISMATCH,
+                    span,
+                    format!("`natural` and `{}` do not mix", self.ty_display(other)),
+                    "convert one side: `natural(x)` or `integer(n)`".to_string(),
+                );
+            }
+            return;
+        }
         let valid = match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
                 matches!(
@@ -489,6 +513,7 @@ impl<'a> Checker<'a> {
                         family: Some(_),
                         ..
                     } | Ty::Integer
+                        | Ty::Natural
                         | Ty::Real
                         | Ty::Error
                 )

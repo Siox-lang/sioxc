@@ -607,7 +607,7 @@ impl<'a> Resolver<'a> {
     fn seed_builtins(&mut self) {
         // The numeric and character kernels are intrinsic. Digital scalar
         // enums and indexed families come from std declarations.
-        for name in ["integer", "real", "Char", "string", "range"] {
+        for name in ["integer", "natural", "real", "Char", "string", "range"] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
             self.builtins.insert(name.to_string(), id);

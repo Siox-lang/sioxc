@@ -311,6 +311,7 @@ fn declared_process_type(ty: &ast::Type, resolved: &Resolved) -> Option<crate::t
     };
     match path.segments.last()?.text.as_str() {
         "integer" => Some(crate::types::Ty::Integer),
+        "natural" => Some(crate::types::Ty::Natural),
         "real" => Some(crate::types::Ty::Real),
         "Char" => Some(crate::types::Ty::Char),
         _ => {
@@ -568,6 +569,7 @@ fn process_type_from_layout(
             .and_then(|name| nominal_type_from_name(name, resolved))
             .or_else(|| match domain {
                 crate::ir::ScalarDomain::Integer => Some(crate::types::Ty::Integer),
+                crate::ir::ScalarDomain::Natural => Some(crate::types::Ty::Natural),
                 crate::ir::ScalarDomain::Real => Some(crate::types::Ty::Real),
                 crate::ir::ScalarDomain::Character => Some(crate::types::Ty::Char),
                 crate::ir::ScalarDomain::Enum(name) => nominal_type_from_name(name, resolved),
@@ -627,6 +629,7 @@ fn process_layout_with_type(
     if matches!(concrete.kind, LayoutKind::Opaque { width: None, .. }) {
         let domain = match ty {
             Some(crate::types::Ty::Integer) => Some(crate::ir::ScalarDomain::Integer),
+            Some(crate::types::Ty::Natural) => Some(crate::ir::ScalarDomain::Natural),
             Some(crate::types::Ty::Real) => Some(crate::ir::ScalarDomain::Real),
             Some(crate::types::Ty::Char) => Some(crate::ir::ScalarDomain::Character),
             _ => None,
@@ -760,6 +763,12 @@ fn process_layout_for_type(
         crate::types::Ty::Integer => LayoutKind::Scalar {
             width: 64,
             domain: crate::ir::ScalarDomain::Integer,
+            nominal: None,
+            value_range: None,
+        },
+        crate::types::Ty::Natural => LayoutKind::Scalar {
+            width: 64,
+            domain: crate::ir::ScalarDomain::Natural,
             nominal: None,
             value_range: None,
         },
@@ -4344,6 +4353,7 @@ fn process_display_kind_for_type(
 ) -> Option<ProcessDisplayKind> {
     match ty {
         crate::types::Ty::Integer => Some(ProcessDisplayKind::Signed),
+        crate::types::Ty::Natural => Some(ProcessDisplayKind::Unsigned),
         crate::types::Ty::Real => Some(ProcessDisplayKind::Real),
         crate::types::Ty::Char => Some(ProcessDisplayKind::Character),
         crate::types::Ty::Array { elem, family, .. } => {
@@ -4393,11 +4403,14 @@ fn process_display_kind_from_value(
             .as_ref()
             .and_then(|ty| process_display_kind_for_type(ty, context))
             .or(match operation {
-                ProcessUnaryOp::Neg | ProcessUnaryOp::RealToInteger => {
-                    Some(ProcessDisplayKind::Signed)
-                }
-                ProcessUnaryOp::IntegerToReal | ProcessUnaryOp::Real(_) => {
-                    Some(ProcessDisplayKind::Real)
+                ProcessUnaryOp::Neg
+                | ProcessUnaryOp::RealToInteger
+                | ProcessUnaryOp::NaturalToInteger => Some(ProcessDisplayKind::Signed),
+                ProcessUnaryOp::IntegerToReal
+                | ProcessUnaryOp::NaturalToReal
+                | ProcessUnaryOp::Real(_) => Some(ProcessDisplayKind::Real),
+                ProcessUnaryOp::IntegerToNatural | ProcessUnaryOp::RealToNatural => {
+                    Some(ProcessDisplayKind::Unsigned)
                 }
                 ProcessUnaryOp::Not => Some(ProcessDisplayKind::Unsigned),
             }),
@@ -6352,6 +6365,7 @@ fn conversion_source_key(ty: &crate::types::Ty, context: &LoweringContext<'_>) -
 fn process_type_key(ty: &crate::types::Ty, context: &LoweringContext<'_>) -> Option<String> {
     match ty {
         crate::types::Ty::Integer => Some("integer".into()),
+        crate::types::Ty::Natural => Some("natural".into()),
         crate::types::Ty::Real => Some("real".into()),
         crate::types::Ty::Char => Some("Char".into()),
         crate::types::Ty::Named(definition) => context.functions.nominal_type_key(*definition),
@@ -6527,6 +6541,7 @@ fn lower_process_kernel_conversion(
     let name = definition.name.clone();
     let target = match name.as_str() {
         "integer" => crate::types::Ty::Integer,
+        "natural" => crate::types::Ty::Natural,
         "Char" => crate::types::Ty::Char,
         "real" => crate::types::Ty::Real,
         _ => return None,
@@ -6557,7 +6572,18 @@ fn lower_process_kernel_conversion(
     }
     let operand_is_real = matches!(operand_type, Some(crate::types::Ty::Real))
         || process_value_is_real(operand, context);
-    let kind = if name == "integer" && operand_is_real {
+    let natural_operand = matches!(operand_type, Some(crate::types::Ty::Natural));
+    let integer_operand = matches!(operand_type, Some(crate::types::Ty::Integer));
+    let checked = |operation| ProcessValueKind::Unary { operation, operand };
+    let kind = if name == "natural" && operand_is_real {
+        checked(ProcessUnaryOp::RealToNatural)
+    } else if name == "natural" && integer_operand {
+        checked(ProcessUnaryOp::IntegerToNatural)
+    } else if name == "integer" && natural_operand {
+        checked(ProcessUnaryOp::NaturalToInteger)
+    } else if name == "real" && natural_operand {
+        checked(ProcessUnaryOp::NaturalToReal)
+    } else if name == "integer" && operand_is_real {
         ProcessValueKind::Unary {
             operation: ProcessUnaryOp::RealToInteger,
             operand,
@@ -8929,7 +8955,12 @@ fn shared_process_function(
         let value = &context.process_ir.values[operand.0 as usize];
         let natural = value.bit_width.unwrap_or(0);
         let width = match (&value.ty, layout.as_ref()) {
-            (Some(crate::types::Ty::Integer | crate::types::Ty::Real), _) => Some(64),
+            (
+                Some(
+                    crate::types::Ty::Integer | crate::types::Ty::Natural | crate::types::Ty::Real,
+                ),
+                _,
+            ) => Some(64),
             (_, Some(layout)) => layout.packed_width(),
             _ => None,
         }
@@ -9198,7 +9229,11 @@ fn expand_process_function(
         .filter(|ty| is_concrete_type(ty, context))
         .cloned();
     let return_type = match declared {
-        Some(declared @ (crate::types::Ty::Integer | crate::types::Ty::Real)) => Some(declared),
+        Some(
+            declared @ (crate::types::Ty::Integer
+            | crate::types::Ty::Natural
+            | crate::types::Ty::Real),
+        ) => Some(declared),
         declared => return_type
             .filter(|ty| is_concrete_type(ty, context))
             .cloned()
@@ -12097,6 +12132,10 @@ fn source_value_width(
         ProcessValueKind::Unary { operation, operand } => match operation {
             ProcessUnaryOp::RealToInteger
             | ProcessUnaryOp::IntegerToReal
+            | ProcessUnaryOp::IntegerToNatural
+            | ProcessUnaryOp::NaturalToInteger
+            | ProcessUnaryOp::RealToNatural
+            | ProcessUnaryOp::NaturalToReal
             | ProcessUnaryOp::Real(_) => Some(64),
             ProcessUnaryOp::Neg => {
                 let natural = value_width(operand)?;
@@ -12475,7 +12514,8 @@ fn lower_binary_operator(
     // A contextual integer literal adopts the numeric vector family beside
     // it. `unsigned[4] * 2` is therefore unsigned even though the standalone
     // literal's fallback type is the signed kernel integer; a `signed`
-    // family beside that same literal selects signed operations.
+    // family beside that same literal selects signed operations, and a
+    // `natural` unsigned ones (`n + 1`).
     let types = [left, right].into_iter().flatten().collect::<Vec<_>>();
     let signed = types
         .iter()
@@ -12484,6 +12524,7 @@ fn lower_binary_operator(
                 family: Some(family),
                 ..
             } => Some(family.rsplit("::").next() == Some("signed")),
+            crate::types::Ty::Natural => Some(false),
             _ => None,
         })
         .unwrap_or_else(|| types.iter().copied().any(process_type_is_signed));

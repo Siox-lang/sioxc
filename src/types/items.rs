@@ -238,7 +238,7 @@ impl<'a> Checker<'a> {
     /// type: `real` maps to `double`, integer-shaped types to 64-bit words.
     pub(super) fn check_extern_c_type(&mut self, function: &FnDecl, ty: &Type, position: &str) {
         let checked = self.ast_ty(ty);
-        let supported = matches!(checked, Ty::Integer | Ty::Real)
+        let supported = matches!(checked, Ty::Integer | Ty::Natural | Ty::Real)
             || matches!(
                 checked,
                 Ty::Array {
@@ -263,7 +263,7 @@ impl<'a> Checker<'a> {
             }
             Ty::Char => "Char has no declared C character ABI".to_string(),
             Ty::Void => "void is not a value ABI type".to_string(),
-            Ty::Integer | Ty::Real | Ty::Error => unreachable!(),
+            Ty::Integer | Ty::Natural | Ty::Real | Ty::Error => unreachable!(),
         };
         self.error_with_help(
             codes::TYPE_MISMATCH,

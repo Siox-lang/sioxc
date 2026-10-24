@@ -227,7 +227,7 @@ pub(super) fn compatible(lhs: &Ty, rhs: &Ty) -> bool {
         return true;
     }
     match (lhs, rhs) {
-        (Real, Real) | (Char, Char) => true,
+        (Real, Real) | (Char, Char) | (Natural, Natural) => true,
         // `integer` is the number kernel; it coerces to/from any bit vector
         // (a unsigned[8] accepts `42`, and a vector's value is an integer).
         (Integer, Integer) => true,
@@ -310,6 +310,7 @@ pub(super) fn ty_name(t: &Ty) -> String {
     match t {
         Ty::Real => "real".to_string(),
         Ty::Integer => "integer".to_string(),
+        Ty::Natural => "natural".to_string(),
         Ty::Char => "Char".to_string(),
         Ty::Named(_) => "a named type".to_string(),
         Ty::Array {

@@ -822,6 +822,14 @@ pub enum ProcessUnaryOp {
     RealToInteger,
     /// Convert a signed kernel integer to the IEEE-754 real of its value.
     IntegerToReal,
+    /// `natural(i)`: the same number, which must not be negative.
+    IntegerToNatural,
+    /// `integer(n)`: the same number, which must be below 2^63.
+    NaturalToInteger,
+    /// `natural(r)`: an IEEE-754 real in [0, 2^64), truncated toward zero.
+    RealToNatural,
+    /// `real(n)`: the IEEE-754 real of an unsigned kernel natural.
+    NaturalToReal,
     /// A built-in `real` function (`core::intrinsics::sqrt`).
     Real(super::RealFunction),
 }
@@ -1268,7 +1276,7 @@ pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]
                 left = as_i64(*left_id, left);
                 right = as_i64(*right_id, right);
             }
-            match operation {
+            let result = match operation {
                 ProcessBinaryOp::Add | ProcessBinaryOp::SignedAdd => left.checked_add(right),
                 ProcessBinaryOp::Sub | ProcessBinaryOp::SignedSub => left.checked_sub(right),
                 ProcessBinaryOp::Mul | ProcessBinaryOp::SignedMul => left.checked_mul(right),
@@ -1300,7 +1308,11 @@ pub(crate) fn arena_constant_integer(id: ProcessValueId, values: &[ProcessValue]
                 | ProcessBinaryOp::FloatGt
                 | ProcessBinaryOp::FloatGe
                 | ProcessBinaryOp::Custom(_) => None,
-            }
+            }?;
+            // A `natural` result outside 0..2^64 is an error, not a value:
+            // leave it to the run-time check rather than fold its wrap.
+            let natural = matches!(value.ty, Some(crate::types::Ty::Natural));
+            (!natural || u64::try_from(result).is_ok()).then_some(result)
         }
         ProcessValueKind::Select {
             condition,
@@ -1400,6 +1412,10 @@ impl ProcessIr {
                     UnOp::Not => ProcessUnaryOp::Not,
                     UnOp::RealToInt => ProcessUnaryOp::RealToInteger,
                     UnOp::IntToReal => ProcessUnaryOp::IntegerToReal,
+                    UnOp::IntToNatural => ProcessUnaryOp::IntegerToNatural,
+                    UnOp::NaturalToInt => ProcessUnaryOp::NaturalToInteger,
+                    UnOp::RealToNatural => ProcessUnaryOp::RealToNatural,
+                    UnOp::NaturalToReal => ProcessUnaryOp::NaturalToReal,
                     UnOp::Real(function) => ProcessUnaryOp::Real(*function),
                 },
                 operand: self.import_test_fragment(rhs, fallback_span),

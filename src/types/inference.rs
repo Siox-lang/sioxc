@@ -248,7 +248,14 @@ impl<'a> Checker<'a> {
                 }
                 // An integer literal joins the other operand's numeric type
                 // (`100 / r` with r: signed[8] is an signed[8], via the std
-                // `impl Div<signed> for integer`).
+                // `impl Div<signed> for integer`; `1 + n` with n: natural is
+                // a natural).
+                if matches!(lhs_ty, Ty::Integer)
+                    && Self::is_contextual_literal(lhs)
+                    && matches!(self.type_of(rhs, sym), Ty::Natural)
+                {
+                    return Ty::Natural;
+                }
                 if matches!(lhs_ty, Ty::Integer) {
                     if let r @ Ty::Array {
                         family: Some(_), ..
@@ -506,6 +513,7 @@ impl<'a> Checker<'a> {
                         self.path_ty(p)
                     }
                     "integer" => Ty::Integer,
+                    "natural" => Ty::Natural,
                     "Char" => self.ty_from_head("Char"),
                     // resize keeps the argument's family at the new width.
                     "resize" => {

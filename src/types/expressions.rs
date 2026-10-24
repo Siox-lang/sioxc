@@ -710,7 +710,7 @@ impl<'a> Checker<'a> {
                             let kernel = path.segments.len() == 1
                                 && matches!(
                                     path.segments[0].text.as_str(),
-                                    "integer" | "real" | "Bool" | "Char"
+                                    "integer" | "natural" | "real" | "Bool" | "Char"
                                 );
                             let record = key.as_ref().is_some_and(|key| {
                                 self.structs
@@ -775,7 +775,7 @@ impl<'a> Checker<'a> {
                 if matches!(callee.as_ref(), Expr::Index { .. })
                     || matches!(callee.as_ref(), Expr::Path(path)
                     if matches!(path.segments.as_slice(), [only]
-                        if matches!(only.text.as_str(), "real" | "integer" | "Char")))
+                        if matches!(only.text.as_str(), "real" | "integer" | "natural" | "Char")))
                 {
                     for a in args {
                         self.type_of(a, sym);

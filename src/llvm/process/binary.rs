@@ -479,7 +479,77 @@ pub(super) fn process_binary<'ctx>(
             )
     };
     let integer = !(vector(id) || vector(left_id) || vector(right_id));
+    // A `natural` (typed, or laid out as one in hardware) is mathematical
+    // too: its `+ - *` must stay in 0..2^64 and its divisor must not be 0.
+    let natural_value = |id: ProcessValueId| {
+        design
+            .process_ir
+            .values
+            .get(id.0 as usize)
+            .is_some_and(|value| matches!(value.ty, Some(crate::types::Ty::Natural)))
+            || matches!(
+                process_value_layout(design, id).map(|layout| &layout.kind),
+                Some(LayoutKind::Scalar {
+                    domain: siox::ir::ScalarDomain::Natural,
+                    ..
+                })
+            )
+    };
+    let natural = natural_value(id) || natural_value(left_id) || natural_value(right_id);
+    let fail = |failed: IntValue<'ctx>, kind: ArithmeticFailure| {
+        latch_arithmetic_failure(context, module, builder, design, failed, kind, active, span)
+    };
+    // `natural` `+ - *`: LLVM's overflow intrinsics at 64 bits; a wider
+    // operation is exact, and its result must keep the bits above 64 clear.
+    let natural_checked = |name: &str| -> Option<IntValue<'ctx>> {
+        let ty = left.get_type();
+        if ty.get_bit_width() > 64 {
+            let result = match name {
+                "uadd" => builder.build_int_add(left, right, "pv.natural.add"),
+                "usub" => builder.build_int_sub(left, right, "pv.natural.sub"),
+                _ => builder.build_int_mul(left, right, "pv.natural.mul"),
+            }
+            .ok()?;
+            let high = builder
+                .build_right_shift(result, ty.const_int(64, false), false, "pv.natural.high")
+                .ok()?;
+            let failed = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    high,
+                    ty.const_zero(),
+                    "pv.natural.outside",
+                )
+                .ok()?;
+            fail(failed, ArithmeticFailure::NaturalRange)?;
+            return Some(result);
+        }
+        let intrinsic =
+            inkwell::intrinsics::Intrinsic::find(&format!("llvm.{name}.with.overflow"))?;
+        let function = intrinsic.get_declaration(module, &[ty.into()])?;
+        let inkwell::values::ValueKind::Basic(pair) = builder
+            .build_call(function, &[left.into(), right.into()], "pv.natural")
+            .ok()?
+            .try_as_basic_value()
+        else {
+            return None;
+        };
+        let pair = pair.into_struct_value();
+        let result = builder
+            .build_extract_value(pair, 0, "pv.natural.result")
+            .ok()?
+            .into_int_value();
+        let failed = builder
+            .build_extract_value(pair, 1, "pv.natural.overflow")
+            .ok()?
+            .into_int_value();
+        fail(failed, ArithmeticFailure::NaturalRange)?;
+        Some(result)
+    };
     let result = match operation {
+        ProcessBinaryOp::Add if natural => natural_checked("uadd")?,
+        ProcessBinaryOp::Sub if natural => natural_checked("usub")?,
+        ProcessBinaryOp::Mul if natural => natural_checked("umul")?,
         ProcessBinaryOp::Add | ProcessBinaryOp::SignedAdd => {
             builder.build_int_add(left, right, "pv.add").ok()?
         }
@@ -495,6 +565,9 @@ pub(super) fn process_binary<'ctx>(
             let is_zero = builder
                 .build_int_compare(IntPredicate::EQ, right, zero, "pv.div.zero")
                 .ok()?;
+            if natural {
+                fail(is_zero, ArithmeticFailure::DivisionByZero)?;
+            }
             let safe = builder
                 .build_select(is_zero, one, right, "pv.div.denominator")
                 .ok()?
@@ -513,6 +586,9 @@ pub(super) fn process_binary<'ctx>(
             let is_zero = builder
                 .build_int_compare(IntPredicate::EQ, right, zero, "pv.rem.zero")
                 .ok()?;
+            if natural {
+                fail(is_zero, ArithmeticFailure::DivisionByZero)?;
+            }
             let safe = builder
                 .build_select(is_zero, one, right, "pv.rem.denominator")
                 .ok()?
