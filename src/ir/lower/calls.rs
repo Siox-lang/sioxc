@@ -1438,7 +1438,7 @@ impl<'a> Lowering<'a> {
             // never got there and lowered to `Unknown`.
             ast::Expr::Path(p)
                 if p.segments.len() == 1
-                    && matches!(p.segments[0].text.as_str(), "integer" | "real") =>
+                    && matches!(p.segments[0].text.as_str(), "integer" | "natural" | "real") =>
             {
                 (None, false)
             }
@@ -1493,6 +1493,30 @@ impl<'a> Lowering<'a> {
         // rather than the number.
         let to_real = matches!(callee, ast::Expr::Path(p) if p.segments.len() == 1
             && p.segments[0].text == "real");
+        // `natural(x)` and `integer(n)` keep the word and check its range;
+        // `real(n)` of a natural reads it unsigned.
+        let target = match callee {
+            ast::Expr::Path(p) if p.segments.len() == 1 => Some(p.segments[0].text.as_str()),
+            _ => None,
+        };
+        let from_natural = self.operand_type_name(arg).as_deref() == Some("natural");
+        let natural_conversion = match target {
+            Some("natural") if self.is_real_expr(&v) => Some(ProcessUnaryOp::RealToNatural),
+            Some("natural") if !from_natural => Some(ProcessUnaryOp::IntegerToNatural),
+            Some("integer") if from_natural => Some(ProcessUnaryOp::NaturalToInteger),
+            Some("real") if from_natural => Some(ProcessUnaryOp::NaturalToReal),
+            _ => None,
+        };
+        if let Some(operation) = natural_conversion {
+            return Some(self.source_values.borrow_mut().unary(
+                operation,
+                &v,
+                ast::expr_span(callee),
+            ));
+        }
+        if target == Some("natural") {
+            return Some(v);
+        }
         // `real(x)` for a type with `impl From<S> for real` (`real(ufixed)`)
         // is that conversion, not the kernel reading of its word.
         if to_real {

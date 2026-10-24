@@ -997,7 +997,7 @@ impl<'a> Checker<'a> {
     /// Whether `name` is one of the built-in conversions rather than an ordinary
     /// call.
     pub(super) fn is_conversion_name(&self, name: &str) -> bool {
-        if matches!(name, "integer" | "real" | "Char" | "string")
+        if matches!(name, "integer" | "natural" | "real" | "Char" | "string")
             || self.is_array_family(name)
             || self.structs.contains_key(name)
             || self.enum_variants.contains_key(name)

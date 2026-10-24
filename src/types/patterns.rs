@@ -820,6 +820,7 @@ impl<'a> Checker<'a> {
     pub(super) fn type_kind_name(&self, t: &Ty) -> Option<String> {
         match t {
             Ty::Integer => Some("integer".to_string()),
+            Ty::Natural => Some("natural".to_string()),
             Ty::Real => Some("real".to_string()),
             Ty::Char => Some("Char".to_string()),
             Ty::Named(id) => self.definition_key(*id),

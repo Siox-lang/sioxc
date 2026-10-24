@@ -1732,6 +1732,118 @@ pub(super) fn process_value<'ctx>(
                     .ok()?;
                 fit_signed(builder, integer, width)?
             }
+            // `natural(i)` and `integer(n)`: the same 64-bit word, whose
+            // number must lie in the target. `-1` has no natural and 2^63 no
+            // integer: both read as negative in the signed view.
+            ProcessUnaryOp::IntegerToNatural | ProcessUnaryOp::NaturalToInteger => {
+                let word = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    64,
+                    matches!(operation, ProcessUnaryOp::IntegerToNatural),
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let failed = builder
+                    .build_int_compare(
+                        IntPredicate::SLT,
+                        word,
+                        context.i64_type().const_zero(),
+                        "pv.natural.outside",
+                    )
+                    .ok()?;
+                let kind = if matches!(operation, ProcessUnaryOp::IntegerToNatural) {
+                    ArithmeticFailure::NaturalRange
+                } else {
+                    ArithmeticFailure::Overflow
+                };
+                let span = design.process_ir.values.get(id.0 as usize)?.span;
+                latch_arithmetic_failure(
+                    context, module, builder, design, failed, kind, active, span,
+                )?;
+                fit(builder, word, width)?
+            }
+            ProcessUnaryOp::RealToNatural => {
+                let operand = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    64,
+                    false,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let float = context.f64_type();
+                let real = builder
+                    .build_bit_cast(operand, float, "pv.real.bits")
+                    .ok()?
+                    .into_float_value();
+                let low = builder
+                    .build_float_compare(
+                        inkwell::FloatPredicate::OGE,
+                        real,
+                        float.const_zero(),
+                        "pv.real.natural.low",
+                    )
+                    .ok()?;
+                let high = builder
+                    .build_float_compare(
+                        inkwell::FloatPredicate::OLT,
+                        real,
+                        float.const_float(18_446_744_073_709_551_616.0),
+                        "pv.real.natural.high",
+                    )
+                    .ok()?;
+                let fits = builder.build_and(low, high, "pv.real.natural.fits").ok()?;
+                let failed = builder.build_not(fits, "pv.real.natural.failed").ok()?;
+                let span = design.process_ir.values.get(id.0 as usize)?.span;
+                latch_arithmetic_failure(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    failed,
+                    ArithmeticFailure::NaturalRange,
+                    active,
+                    span,
+                )?;
+                let real = builder
+                    .build_select(fits, real, float.const_zero(), "pv.real.natural.safe")
+                    .ok()?
+                    .into_float_value();
+                let natural = builder
+                    .build_float_to_unsigned_int(real, context.i64_type(), "pv.real.natural")
+                    .ok()?;
+                fit(builder, natural, width)?
+            }
+            ProcessUnaryOp::NaturalToReal => {
+                let operand = process_value_at(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *operand,
+                    64,
+                    false,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let real = builder
+                    .build_unsigned_int_to_float(operand, context.f64_type(), "pv.natural.real")
+                    .ok()?;
+                builder
+                    .build_bit_cast(real, context.i64_type(), "pv.real.bits")
+                    .ok()?
+                    .into_int_value()
+            }
             ProcessUnaryOp::IntegerToReal => {
                 // Extended by the operand's own signedness: `1 << 4` held in
                 // five bits is 16, not -16.

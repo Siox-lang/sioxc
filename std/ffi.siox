@@ -10,8 +10,6 @@ module std::ffi;
 // `c_longlong`, `c_ulonglong` and `c_double` are the default ABI word and
 // `double`, so they need no compiler role.
 
-use std::bits::unsigned;
-
 pub type c_schar = integer<-128..127>;
 pub type c_uchar = integer<0..255>;
 pub type c_short = integer<-32768..32767>;
@@ -19,9 +17,9 @@ pub type c_ushort = integer<0..65535>;
 pub type c_int = integer<-2147483648..2147483647>;
 pub type c_uint = integer<0..4294967295>;
 pub type c_long = integer;
-pub type c_ulong = unsigned[64];
+pub type c_ulong = natural;
 pub type c_longlong = integer;
-pub type c_ulonglong = unsigned[64];
+pub type c_ulonglong = natural;
 pub type c_float = real;
 pub type c_double = real;
 

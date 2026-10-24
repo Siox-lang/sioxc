@@ -49,6 +49,10 @@ pub enum Ty {
     /// a bit collection. Coerces to/from bit vectors, supports arithmetic and
     /// comparison, but has NO per-bit boolean operators (unlike unsigned/signed).
     Integer,
+    /// The kernel base type `natural`: the unsigned counterpart of `integer`,
+    /// a mathematical number from 0 to 2^64 - 1 (C's `unsigned long`). It
+    /// mixes with `integer` only through `natural(x)` / `integer(n)`.
+    Natural,
     /// The kernel base type `real` (f64 in simulation).
     Real,
     /// The kernel character scalar. Unlike library enums, its value set is the
@@ -89,7 +93,7 @@ impl Ty {
     /// metadata and therefore return `None` here.
     pub fn bit_width(&self) -> Option<u32> {
         match self {
-            Ty::Integer | Ty::Real => Some(64),
+            Ty::Integer | Ty::Natural | Ty::Real => Some(64),
             Ty::Char => Some(32),
             Ty::Array {
                 elem, len, family, ..

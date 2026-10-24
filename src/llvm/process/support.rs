@@ -436,7 +436,13 @@ pub(super) fn process_packed_meta_supported(
             },
         ),
         ProcessValueKind::Unary {
-            operation: ProcessUnaryOp::RealToInteger | ProcessUnaryOp::IntegerToReal,
+            operation:
+                ProcessUnaryOp::RealToInteger
+                | ProcessUnaryOp::IntegerToReal
+                | ProcessUnaryOp::IntegerToNatural
+                | ProcessUnaryOp::NaturalToInteger
+                | ProcessUnaryOp::RealToNatural
+                | ProcessUnaryOp::NaturalToReal,
             ..
         } => false,
         ProcessValueKind::Binary {

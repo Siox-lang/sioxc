@@ -157,8 +157,8 @@ pub(in crate::ir) fn type_width_at(
             total.saturating_add(type_width_at(elem, env, fns, structs, ranges, seen))
         }),
         ast::Type::Path(_) => match fns.type_head_key(t).as_deref() {
-            Some("integer") | Some("real") => 64, // native kernel word / f64 bits
-            Some("Char") => 32,                   // symbol storage (implementation detail)
+            Some("integer") | Some("natural") | Some("real") => 64, // native kernel word / f64 bits
+            Some("Char") => 32, // symbol storage (implementation detail)
             // A derived type inherits its base array's size/range: `struct Byte
             // : Logic[8]` is 8 bits, `struct Word : unsigned[16]` is 16 (spec:
             // nominal derivation reuses the base representation).

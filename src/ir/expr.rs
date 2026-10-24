@@ -306,6 +306,14 @@ pub enum UnOp {
     /// `real(x)` on an integer: the integer's *value* as an f64, not its bits
     /// reinterpreted.
     IntToReal,
+    /// `natural(i)`: the same word (checked only on the Process IR path).
+    IntToNatural,
+    /// `integer(n)`: the same word (checked only on the Process IR path).
+    NaturalToInt,
+    /// `natural(r)`: the f64's value, truncated toward zero, unsigned.
+    RealToNatural,
+    /// `real(n)`: an unsigned natural's value as an f64.
+    NaturalToReal,
     /// A built-in `real` function (`core::intrinsics::sqrt`).
     Real(RealFunction),
 }

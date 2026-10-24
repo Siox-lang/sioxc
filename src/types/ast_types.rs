@@ -128,6 +128,7 @@ impl<'a> Checker<'a> {
         if p.segments.len() == 1 {
             match p.segments[0].text.as_str() {
                 "integer" => Ty::Integer,
+                "natural" => Ty::Natural,
                 "real" => Ty::Real,
                 "Char" => Ty::Char,
                 "Self" => self

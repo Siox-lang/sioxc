@@ -169,9 +169,11 @@ pub enum ProcessKind {
 
 impl Design {
     /// The arithmetic whose result can leave what its mathematical type
-    /// holds: `integer` `/ %` and a `real` converted to an `integer`. (`real`
-    /// arithmetic is IEEE-754, as VHDL's.) Each source site appears once, in
-    /// value order; a failure reports its index plus one.
+    /// holds: `integer` `/ %`, `natural` `+ - * / %`, and conversions between
+    /// `integer`, `natural` and `real`. (`real` arithmetic is IEEE-754, as
+    /// VHDL's.) Unsigned operations are listed whatever their type, since a
+    /// hardware `natural` is known only by its layout. Each source site
+    /// appears once, in value order; a failure reports its index plus one.
     pub fn arithmetic_sites(&self) -> &[crate::diag::Span] {
         &self.arithmetic_site_table().0
     }
@@ -191,9 +193,16 @@ impl Design {
             let mut index = HashMap::new();
             for value in &ir.values {
                 let checked = match &value.kind {
-                    K::Binary { operation, .. } => matches!(operation, B::SignedDiv | B::SignedRem),
+                    K::Binary { operation, .. } => matches!(
+                        operation,
+                        B::SignedDiv | B::SignedRem | B::Add | B::Sub | B::Mul | B::Div | B::Rem
+                    ),
                     K::Unary {
-                        operation: U::RealToInteger,
+                        operation:
+                            U::RealToInteger
+                            | U::IntegerToNatural
+                            | U::NaturalToInteger
+                            | U::RealToNatural,
                         ..
                     } => true,
                     _ => false,
@@ -826,8 +835,9 @@ fn un_sym(op: UnOp) -> &'static str {
     match op {
         UnOp::Not => "not ",
         UnOp::Neg => "-",
-        UnOp::RealToInt => "integer",
-        UnOp::IntToReal => "real",
+        UnOp::RealToInt | UnOp::NaturalToInt => "integer",
+        UnOp::IntToReal | UnOp::NaturalToReal => "real",
+        UnOp::IntToNatural | UnOp::RealToNatural => "natural",
         UnOp::Real(function) => match function {
             crate::ir::RealFunction::Sqrt => "sqrt",
             crate::ir::RealFunction::Sin => "sin",

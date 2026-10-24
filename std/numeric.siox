@@ -5,13 +5,13 @@ module std::numeric;
 // stores in the smallest width covering its range (two's complement when
 // the range dips below zero). A constant outside the range is a compile
 // error; a value that leaves it while simulating is reported at run time with
-// the signal's path.
+// the signal's path. The kernel `natural` is the unsigned 64-bit number, so
+// it is not declared here.
 
 pub type Byte = integer<0..255>;
 pub type Short = integer<-32768..32767>;
 pub type Int = integer<-2147483648..2147483647>;
 pub type Long = integer<-9223372036854775808..9223372036854775807>;
-pub type Natural = integer<0..9223372036854775807>;
 pub type Positive = integer<1..9223372036854775807>;
 
 // Address-width helper (SV's $clog2): the number of bits needed to index

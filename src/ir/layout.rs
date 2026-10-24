@@ -42,6 +42,8 @@ pub enum ScalarDomain {
     Bits,
     /// The signed kernel `integer`.
     Integer,
+    /// The unsigned kernel `natural`.
+    Natural,
     /// A `real`; the slot holds an f64 bit pattern.
     Real,
     /// A `Char`; the slot holds a Unicode code point.

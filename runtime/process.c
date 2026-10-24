@@ -1747,8 +1747,11 @@ static int sx_design_failed(void) {
         case 1:
             sx_set_error("an `integer` result does not fit in 64 bits");
             break;
-        default:
+        case 2:
             sx_set_error("division by zero");
+            break;
+        default:
+            sx_set_error("a `natural` result is outside 0 to 2^64 - 1");
             break;
         }
         if (arith <= sx_arith_site_count)

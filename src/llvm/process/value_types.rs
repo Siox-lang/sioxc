@@ -569,7 +569,7 @@ fn process_value_signed_here(
         | ProcessValueKind::RawResize { .. } => false,
         ProcessValueKind::Unary { operation, .. } => matches!(
             operation,
-            ProcessUnaryOp::Neg | ProcessUnaryOp::RealToInteger
+            ProcessUnaryOp::Neg | ProcessUnaryOp::RealToInteger | ProcessUnaryOp::NaturalToInteger
         ),
         ProcessValueKind::Binary { operation, .. } => matches!(
             operation,
