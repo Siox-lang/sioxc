@@ -63,6 +63,10 @@ extern uint8_t sx_process_storage_changed(uint32_t storage);
 extern uint32_t sx_index_error(void);
 extern int64_t sx_index_value(void);
 extern uint32_t sx_range_error(void);
+extern uint32_t sx_arith_error(void);
+extern uint32_t sx_arith_kind(void);
+extern const uint32_t sx_arith_site_count;
+extern const char *const sx_arith_site_locations[];
 extern int64_t sx_range_value(void);
 extern uint32_t sx_range_site(void);
 extern uint8_t sx_process_apply_scheduled(uint32_t site, uint32_t offset,
@@ -1735,6 +1739,20 @@ static int sx_design_failed(void) {
             sx_set_error("runtime index failure at site %u: index %lld",
                          (unsigned)site, (long long)sx_index_value());
         }
+        return 1;
+    }
+    uint32_t arith = sx_arith_error();
+    if (arith) {
+        switch (sx_arith_kind()) {
+        case 1:
+            sx_set_error("an `integer` result does not fit in 64 bits");
+            break;
+        default:
+            sx_set_error("division by zero");
+            break;
+        }
+        if (arith <= sx_arith_site_count)
+            sx_append_error_location(sx_arith_site_locations[arith - 1]);
         return 1;
     }
     uint32_t signal = sx_range_error();

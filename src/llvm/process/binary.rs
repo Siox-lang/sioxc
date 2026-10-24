@@ -141,11 +141,13 @@ fn binary_right_activity<'ctx>(
 /// Emit a normalized scalar binary operation with the same defined corner
 /// cases as the established hardware LLVM path.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn process_binary<'ctx>(
     context: &'ctx Context,
     module: &Module<'ctx>,
     builder: &Builder<'ctx>,
     design: &Design,
+    id: ProcessValueId,
     operation: &ProcessBinaryOp,
     left: ProcessValueId,
     right: ProcessValueId,
@@ -156,6 +158,8 @@ pub(super) fn process_binary<'ctx>(
 ) -> Option<IntValue<'ctx>> {
     let left_width = design.process_ir.values.get(left.0 as usize)?.bit_width?;
     let right_width = design.process_ir.values.get(right.0 as usize)?.bit_width?;
+    let span = design.process_ir.values.get(id.0 as usize)?.span;
+    let (left_id, right_id) = (left, right);
 
     if matches!(
         operation,
@@ -455,6 +459,26 @@ pub(super) fn process_binary<'ctx>(
             .ok()?;
         fit(builder, value, result_width)
     };
+    // An `integer` division by zero has no value: a run-time error. A
+    // logic vector (`signed`) keeps its total division.
+    // ponytail: `integer` `+ - *` overflow is not checked yet. std still uses
+    // `integer` as a raw 64-bit word (float encodings, `signed` shifts), whose
+    // wide intermediates are right only modulo 2^64; checking them needs
+    // those words moved onto `natural` or `unsigned` first.
+    // Hardware values carry no checked type, so a vector is told apart by
+    // its own or an operand's type or packed layout.
+    let vector = |id: ProcessValueId| {
+        design
+            .process_ir
+            .values
+            .get(id.0 as usize)
+            .is_some_and(|value| matches!(value.ty, Some(crate::types::Ty::Array { .. })))
+            || matches!(
+                process_value_layout(design, id).map(|layout| &layout.kind),
+                Some(LayoutKind::Packed { .. })
+            )
+    };
+    let integer = !(vector(id) || vector(left_id) || vector(right_id));
     let result = match operation {
         ProcessBinaryOp::Add | ProcessBinaryOp::SignedAdd => {
             builder.build_int_add(left, right, "pv.add").ok()?
@@ -517,6 +541,18 @@ pub(super) fn process_binary<'ctx>(
                 .ok()?;
             // `x % 1` and `x % -1` are both 0, so a divisor of 1 stands in
             // for -1 (dodging `MIN % -1`) and for zero.
+            if integer {
+                latch_arithmetic_failure(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    is_zero,
+                    ArithmeticFailure::DivisionByZero,
+                    active,
+                    span,
+                )?;
+            }
             let unsafe_divisor = builder
                 .build_or(is_zero, is_negative_one, "pv.srem.unsafe")
                 .ok()?;
@@ -555,6 +591,18 @@ pub(super) fn process_binary<'ctx>(
             let overflow = builder
                 .build_and(is_minimum, is_negative_one, "pv.sdiv.overflow")
                 .ok()?;
+            if integer {
+                latch_arithmetic_failure(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    is_zero,
+                    ArithmeticFailure::DivisionByZero,
+                    active,
+                    span,
+                )?;
+            }
             let unsafe_divisor = builder.build_or(is_zero, overflow, "pv.sdiv.unsafe").ok()?;
             let safe = builder
                 .build_select(unsafe_divisor, one, right, "pv.sdiv.denominator")

@@ -2797,13 +2797,16 @@ pub(in crate::llvm::process) fn requires_source_selection(
         let Some(value) = design.process_ir.values.get(id.0 as usize) else {
             return true;
         };
+        // Arithmetic that can fail (`x / 0`) must not run on an unselected
+        // arm either.
         if matches!(
             value.kind,
             ProcessValueKind::InlineCall { .. }
                 | ProcessValueKind::ForeignCall { .. }
                 | ProcessValueKind::HostCall { .. }
                 | ProcessValueKind::CheckedIndex { .. }
-        ) {
+        ) || super::super::state::arithmetic_can_fail(design, &value.kind)
+        {
             return true;
         }
         crate::ir::for_each_process_value_dependency(&value.kind, |id| pending.push(id));

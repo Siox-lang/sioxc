@@ -168,6 +168,45 @@ pub enum ProcessKind {
 }
 
 impl Design {
+    /// The arithmetic whose result can leave what its mathematical type
+    /// holds: `integer` `/ %` and a `real` converted to an `integer`. (`real`
+    /// arithmetic is IEEE-754, as VHDL's.) Each source site appears once, in
+    /// value order; a failure reports its index plus one.
+    pub fn arithmetic_sites(&self) -> &[crate::diag::Span] {
+        &self.arithmetic_site_table().0
+    }
+
+    /// The index plus one of the arithmetic site at `span`.
+    pub fn arithmetic_site(&self, span: crate::diag::Span) -> Option<u32> {
+        self.arithmetic_site_table().1.get(&span).copied()
+    }
+
+    fn arithmetic_site_table(&self) -> &(Vec<crate::diag::Span>, HashMap<crate::diag::Span, u32>) {
+        self.arithmetic_sites.get_or_init(|| {
+            use crate::ir::process::{
+                ProcessBinaryOp as B, ProcessUnaryOp as U, ProcessValueKind as K,
+            };
+            let ir = &self.process_ir;
+            let mut sites = Vec::new();
+            let mut index = HashMap::new();
+            for value in &ir.values {
+                let checked = match &value.kind {
+                    K::Binary { operation, .. } => matches!(operation, B::SignedDiv | B::SignedRem),
+                    K::Unary {
+                        operation: U::RealToInteger,
+                        ..
+                    } => true,
+                    _ => false,
+                };
+                if checked && !index.contains_key(&value.span) {
+                    sites.push(value.span);
+                    index.insert(value.span, sites.len() as u32);
+                }
+            }
+            (sites, index)
+        })
+    }
+
     /// The assignment sites a dynamic range failure (spec 3.26) can be blamed
     /// on: the distinct source spans of the drivers and next-state updates
     /// that write a ranged signal, in lowering order.

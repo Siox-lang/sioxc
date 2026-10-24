@@ -120,6 +120,9 @@ pub struct Design {
     /// identity. Lexical-only process values need the same representation as
     /// types that happen to occur in ports or persistent instance storage.
     pub type_layouts: HashMap<crate::resolve::DefId, SourceLayout>,
+    /// [`Design::arithmetic_sites`], computed once the design is final.
+    pub(crate) arithmetic_sites:
+        std::sync::OnceLock<(Vec<crate::diag::Span>, HashMap<crate::diag::Span, u32>)>,
 }
 
 /// Elaborated semantics for one multi-valued logic enum.

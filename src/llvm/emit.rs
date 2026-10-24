@@ -221,6 +221,7 @@ mod bitpack_tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let llvm = emit_module_ir(&design).unwrap();
         assert!(
@@ -622,6 +623,15 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .add_global(self.ctx.i64_type(), None, "index_value");
         index_value.set_initializer(&self.ctx.i64_type().const_zero());
         index_value.set_linkage(Linkage::Internal);
+        // A mathematical value (`integer`, `real`) whose result left what
+        // its type holds: the site (an index into `Design::arithmetic_sites`
+        // plus one) and what went wrong (overflow, division by zero, or a
+        // `real` that is not finite).
+        for name in ["arith_error", "arith_kind"] {
+            let global = self.module.add_global(self.ctx.i32_type(), None, name);
+            global.set_initializer(&self.ctx.i32_type().const_zero());
+            global.set_linkage(Linkage::Internal);
+        }
         self.lookup_globals();
         self.state_globals();
         self.process_staging_globals();
@@ -1862,6 +1872,27 @@ impl<'ctx, 'd> Codegen<'ctx, 'd> {
             .unwrap()
             .into_int_value();
         self.builder.build_return(Some(&value)).unwrap();
+
+        // i32 sx_arith_error(void) / sx_arith_kind(void): the first failed
+        // arithmetic site plus one, and its `ArithmeticFailure`.
+        for name in ["arith_error", "arith_kind"] {
+            let f = self
+                .module
+                .add_function(&format!("sx_{name}"), i32.fn_type(&[], false), None);
+            self.builder
+                .position_at_end(self.ctx.append_basic_block(f, "e"));
+            let global = self
+                .module
+                .get_global(name)
+                .expect("arithmetic failure global")
+                .as_pointer_value();
+            let value = self
+                .builder
+                .build_load(i32, global, name)
+                .unwrap()
+                .into_int_value();
+            self.builder.build_return(Some(&value)).unwrap();
+        }
 
         // void sx_set(i32 sig, i64 val): cur[sig] = val  (bounded switch).
         let f = self.module.add_function(
@@ -3789,6 +3820,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         // State layout, accessors, settle, and the add+mask are present. The
@@ -4230,6 +4262,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(ll.contains("i512"), "{ll}");
@@ -4261,6 +4294,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(
@@ -4294,6 +4328,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let error = emit_module_ir(&design).unwrap_err();
         assert!(error.contains("E.enormous"), "{error}");
@@ -4332,6 +4367,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(
@@ -4398,6 +4434,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(
@@ -4447,6 +4484,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(
@@ -4499,6 +4537,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         assert!(ll.contains("fptosi double"), "missing conversion:\n{ll}");
@@ -4566,6 +4605,7 @@ mod tests {
             array_element_of_family: Default::default(),
             source_layouts: Default::default(),
             type_layouts: Default::default(),
+            arithmetic_sites: Default::default(),
         };
         let ll = emit_module_ir(&design).unwrap();
         // In the settle body, the store to b's slot precedes the store to y's.
