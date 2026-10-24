@@ -184,6 +184,7 @@ pub fn check<'a>(
     let mut checker = Checker::new(sink, resolved, modules);
     checker.collect(modules);
     checker.check_struct_field_cycles();
+    checker.collect_aggregate_extern_fns(modules);
     for m in modules {
         for item in &m.items {
             checker.check_item(item);
@@ -409,6 +410,9 @@ struct Checker<'a> {
     fn_return_types: HashMap<DefId, Option<Type>>,
     /// `extern "C"` functions declared without a result: C `void`.
     void_extern_fns: HashSet<DefId>,
+    /// `extern "C"` functions taking a struct or array by pointer, which only
+    /// a testbench can call (hardware holds an aggregate as separate leaves).
+    aggregate_extern_fns: HashSet<DefId>,
     /// The function whose body is being checked, if any.
     current_fn: std::cell::Cell<Option<DefId>>,
     /// Functions whose bodies call an operation only a testbench can run

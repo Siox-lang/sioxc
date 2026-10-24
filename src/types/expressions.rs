@@ -568,7 +568,10 @@ impl<'a> Checker<'a> {
                         .resolved
                         .resolved(path.span)
                         .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Fn));
-                    let void = callee_id.is_some_and(|id| self.void_extern_fns.contains(&id));
+                    let aggregate =
+                        callee_id.is_some_and(|id| self.aggregate_extern_fns.contains(&id));
+                    let void =
+                        callee_id.is_some_and(|id| self.void_extern_fns.contains(&id)) || aggregate;
                     match (callee_id, self.current_fn.get()) {
                         (Some(id), Some(current)) if self.in_fn_body.get() => {
                             if void {
@@ -599,14 +602,23 @@ impl<'a> Checker<'a> {
                         _ => {}
                     }
                     if void && !self.in_testbench.get() && !self.in_fn_body.get() {
+                        let name = crate::syntax::pretty::expr_string(callee);
+                        let (message, help) = if aggregate {
+                            (
+                                format!("`{name}` takes an aggregate by pointer, so it can only be called in a testbench"),
+                                "hardware holds a struct or array as separate signals; pass C scalars instead",
+                            )
+                        } else {
+                            (
+                                format!("`{name}` returns nothing, so it can only be called in a testbench"),
+                                "give the C function a scalar result to use it in hardware",
+                            )
+                        };
                         self.error_with_help(
                             codes::INVALID_METHOD_CALL,
                             expr_span(callee),
-                            format!(
-                                "`{}` returns nothing, so it can only be called in a testbench",
-                                crate::syntax::pretty::expr_string(callee)
-                            ),
-                            "give the C function a scalar result to use it in hardware".to_string(),
+                            message,
+                            help.to_string(),
                         );
                     }
                 }

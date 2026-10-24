@@ -3375,6 +3375,7 @@ mod demand_tests {
                 void_result: false,
                 c_arguments: Vec::new(),
                 c_result: None,
+                pointer_arguments: Vec::new(),
             },
             ProcessValueKind::CheckedIndex {
                 index: ProcessValueId(0),

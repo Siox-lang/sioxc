@@ -7814,9 +7814,16 @@ fn lower_process_foreign_call(
     let mut arguments = Vec::with_capacity(args.len());
     let mut float_arguments = Vec::with_capacity(args.len());
     let mut integer_arguments = Vec::with_capacity(args.len());
+    let mut pointer_arguments = Vec::with_capacity(args.len());
     for (argument, parameter) in args.iter().zip(parameters) {
         let actual = context.typed.expr_type(ast::expr_span(argument)).cloned();
         let (float, integer) = abi_kind(parameter.ty.as_ref(), actual.as_ref());
+        // A struct or fixed array crosses by pointer (checked by the types
+        // pass).
+        pointer_arguments.push(matches!(
+            actual,
+            Some(crate::types::Ty::Named(_) | crate::types::Ty::Array { family: None, .. })
+        ));
         arguments.push(value_ref_with_type(
             argument,
             process,
@@ -7848,6 +7855,7 @@ fn lower_process_foreign_call(
         void_result,
         c_arguments,
         c_result,
+        pointer_arguments,
     };
     let width = source_value_width(&kind, ty.as_ref(), process, context);
     Some(push_value(*span, ty, width, kind, context))

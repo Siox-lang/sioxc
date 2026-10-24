@@ -490,6 +490,7 @@ fn shared_debug_calls_emit_one_body_per_consumer_format() {
                     void_result: false,
                     c_arguments: Vec::new(),
                     c_result: None,
+                    pointer_arguments: Vec::new(),
                 }),
                 node(ProcessValueKind::Number(ProcessNumber::Integer(vec![1]))),
                 node(ProcessValueKind::Binary {
