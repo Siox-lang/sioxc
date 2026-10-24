@@ -335,6 +335,7 @@ pub(super) fn process_value_at<'ctx>(
                 module,
                 builder,
                 design,
+                id,
                 operation,
                 *left,
                 *right,

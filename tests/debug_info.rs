@@ -2626,7 +2626,10 @@ fn checked_total(value: integer, index: integer, enabled: Bool) -> integer {
 }
 #[inline(HINT)]
 fn quotients(value: integer, divisor: integer) -> Pair {
-    return Pair { .right = 10 / (divisor - 1), .left = value / divisor };
+    return Pair {
+        .right = if divisor == 1 { 0 } else { 10 / (divisor - 1) },
+        .left = if divisor == 0 { 0 } else { value / divisor },
+    };
 }
 #[inline(HINT)]
 fn quotient_total(value: integer, divisor: integer) -> integer {

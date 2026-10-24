@@ -701,6 +701,73 @@ pub(super) fn latch_index_failure<'ctx>(
     Some(())
 }
 
+/// What a mathematical value's failed arithmetic did, as the runtime reports
+/// it (`sx_arith_kind`).
+#[derive(Clone, Copy)]
+pub(super) enum ArithmeticFailure {
+    /// The result does not fit the type (`integer` beyond 64 bits).
+    Overflow = 1,
+    /// A division or remainder by zero.
+    DivisionByZero = 2,
+}
+
+/// Record the first active arithmetic failure: `failed` at the arithmetic
+/// site of `span`. An unselected branch's arithmetic, evaluated eagerly,
+/// cannot latch, as with an index failure.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn latch_arithmetic_failure<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    failed: IntValue<'ctx>,
+    kind: ArithmeticFailure,
+    active: Option<IntValue<'ctx>>,
+    span: siox::diag::Span,
+) -> Option<()> {
+    if active.is_some_and(|active| active.get_zero_extended_constant() == Some(0)) {
+        return Some(());
+    }
+    let Some(site) = design.arithmetic_site(span) else {
+        return Some(());
+    };
+    let failed = match active {
+        Some(active) => builder.build_and(active, failed, "pv.arith.active").ok()?,
+        None => failed,
+    };
+    let i32 = context.i32_type();
+    let error = module.get_global("arith_error")?.as_pointer_value();
+    let previous = builder
+        .build_load(i32, error, "pv.arith.previous")
+        .ok()?
+        .into_int_value();
+    let empty = builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            previous,
+            i32.const_zero(),
+            "pv.arith.empty",
+        )
+        .ok()?;
+    let record = builder.build_and(empty, failed, "pv.arith.record").ok()?;
+    for (name, value) in [
+        ("arith_error", u64::from(site)),
+        ("arith_kind", kind as u64),
+    ] {
+        let pointer = module.get_global(name)?.as_pointer_value();
+        let old = builder
+            .build_load(i32, pointer, "pv.arith.old")
+            .ok()?
+            .into_int_value();
+        let next = builder
+            .build_select(record, i32.const_int(value, false), old, "pv.arith.next")
+            .ok()?
+            .into_int_value();
+        builder.build_store(pointer, next).ok()?;
+    }
+    Some(())
+}
+
 /// Stage a ranged signal's pre-narrowed value and source site. The commit
 /// helper performs the actual check after all writes in the delta, so a later
 /// assignment that overwrites this one also overwrites its candidate failure.
@@ -762,6 +829,38 @@ fn index_never_fails(design: &Design, index: ProcessValueId, low: i64, high: i64
             .is_some_and(|width| low <= 0 && high >= (1_i64 << width) - 1)
 }
 
+/// Whether mathematical arithmetic can fail at run time, so an unselected
+/// path must not evaluate it: an `integer` division fails on a zero
+/// divisor, and a `real` converted to an `integer` can lie beyond it.
+/// `real` arithmetic is IEEE-754, as VHDL's: infinity and NaN are values.
+///
+/// Keying `integer` `+ - *` by activity made std's float `sqrt` (chains of
+/// significand arithmetic through selects) exceed 3 GB to lower; when their
+/// overflow is checked, compute each check's activity once over the value
+/// graph rather than keying emission by it.
+pub(super) fn arithmetic_can_fail(design: &Design, kind: &ProcessValueKind) -> bool {
+    use siox::ir::ProcessBinaryOp as B;
+    let (operation, right) = match kind {
+        ProcessValueKind::Binary {
+            operation, right, ..
+        } => (operation, *right),
+        ProcessValueKind::Unary {
+            operation: siox::ir::ProcessUnaryOp::RealToInteger,
+            ..
+        } => return true,
+        _ => return false,
+    };
+    let constant = |id: ProcessValueId| {
+        siox::ir::process::arena_constant_integer(id, &design.process_ir.values)
+    };
+    match operation {
+        B::SignedDiv | B::SignedRem => {
+            !constant(right).is_some_and(|value| value != 0 && value != -1)
+        }
+        _ => false,
+    }
+}
+
 /// Compute which arena nodes need their source activity predicate: checked
 /// accesses and host/foreign effects must be inert on unselected paths.
 /// One shared table serves every process/block in the module.
@@ -787,6 +886,7 @@ pub(super) fn activity_sensitive_process_values(design: &Design) -> Vec<bool> {
             } => !index_never_fails(design, *index, (*left).min(*right), (*left).max(*right)),
             ProcessValueKind::ForeignCall { .. } | ProcessValueKind::HostCall { .. } => true,
             ProcessValueKind::Parameter { .. } => false,
+            kind if arithmetic_can_fail(design, kind) => true,
             ProcessValueKind::Field { base, .. }
             | ProcessValueKind::BitSlice { base, .. }
             | ProcessValueKind::PackedSlice { base, .. }

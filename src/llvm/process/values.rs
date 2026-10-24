@@ -1691,6 +1691,42 @@ pub(super) fn process_value<'ctx>(
                     .build_bit_cast(operand, context.f64_type(), "pv.real.bits")
                     .ok()?
                     .into_float_value();
+                // Only a `real` in [-2^63, 2^63) has an `integer`; LLVM's
+                // conversion of anything else (NaN included) is poison.
+                let span = design.process_ir.values.get(id.0 as usize)?.span;
+                let float = context.f64_type();
+                let low = builder
+                    .build_float_compare(
+                        inkwell::FloatPredicate::OGE,
+                        real,
+                        float.const_float(-9_223_372_036_854_775_808.0),
+                        "pv.real.integer.low",
+                    )
+                    .ok()?;
+                let high = builder
+                    .build_float_compare(
+                        inkwell::FloatPredicate::OLT,
+                        real,
+                        float.const_float(9_223_372_036_854_775_808.0),
+                        "pv.real.integer.high",
+                    )
+                    .ok()?;
+                let fits = builder.build_and(low, high, "pv.real.integer.fits").ok()?;
+                let failed = builder.build_not(fits, "pv.real.integer.failed").ok()?;
+                latch_arithmetic_failure(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    failed,
+                    ArithmeticFailure::Overflow,
+                    active,
+                    span,
+                )?;
+                let real = builder
+                    .build_select(fits, real, float.const_zero(), "pv.real.integer.safe")
+                    .ok()?
+                    .into_float_value();
                 let integer = builder
                     .build_float_to_signed_int(real, context.i64_type(), "pv.real.integer")
                     .ok()?;
@@ -1826,6 +1862,7 @@ pub(super) fn process_value<'ctx>(
                 module,
                 builder,
                 design,
+                id,
                 operation,
                 *left,
                 *right,
