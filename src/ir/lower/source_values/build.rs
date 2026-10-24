@@ -531,6 +531,7 @@ mod tests {
                     c_arguments: Vec::new(),
                     c_result: None,
                     pointer_arguments: Vec::new(),
+                    aggregate_result: false,
                 },
             },
             None,

@@ -128,6 +128,8 @@ enum LeafKind {
     Int { bytes: u32, signed: bool },
     /// A `real`, stored as a `double`.
     Double,
+    /// A `std::ffi::c_float`, stored as a `float`.
+    Float,
 }
 
 /// One scalar leaf of an aggregate crossing to C: where it sits in the
@@ -149,7 +151,7 @@ pub(crate) struct CAggregate<'c> {
 }
 
 /// The C object a struct or array layout crosses as, or `None` when a leaf
-/// has no C scalar (an enum, a `Char`, a vector wider than 64 bits).
+/// has no C scalar (an enum, a `Char`).
 pub(crate) fn c_aggregate<'c>(
     context: &'c Context,
     layout: &crate::ir::SourceLayout,
@@ -188,6 +190,13 @@ fn aggregate_type<'c>(
         Some(LeafKind::Int { bytes, signed })
     };
     let kind = match &layout.kind {
+        // `c_float` is a `real` by type; its name says it is a C `float`.
+        LayoutKind::Scalar {
+            width: 64,
+            domain: ScalarDomain::Real,
+            nominal: Some(name),
+            ..
+        } if name.rsplit("::").next() == Some("c_float") => Some(LeafKind::Float),
         LayoutKind::Scalar {
             width,
             domain: ScalarDomain::Real,
@@ -208,12 +217,29 @@ fn aggregate_type<'c>(
             domain: ScalarDomain::Natural | ScalarDomain::Bits,
             ..
         } => int(*width, false),
-        LayoutKind::Packed {
-            width,
-            family,
-            element_enum: None,
-            ..
-        } => int(*width, family.rsplit("::").next() == Some("signed")),
+        // A packed vector's value plane holds one bit per element, whatever
+        // its element type (`unsigned`'s are `Bit`).
+        LayoutKind::Packed { width, family, .. } if *width <= 64 => {
+            int(*width, family.rsplit("::").next() == Some("signed"))
+        }
+        // Wider than a word: little-endian 64-bit words, the low word first.
+        LayoutKind::Packed { width, .. } => {
+            let words = width.div_ceil(64);
+            for word in 0..words {
+                path.push(word);
+                leaves.push(CLeaf {
+                    offset: offset.checked_add(word * 64)?,
+                    width: (width - word * 64).min(64),
+                    kind: LeafKind::Int {
+                        bytes: 8,
+                        signed: false,
+                    },
+                    path: path.clone(),
+                });
+                path.pop();
+            }
+            return Some(context.i64_type().array_type(words).into());
+        }
         LayoutKind::Struct { fields, .. } => {
             let mut types = Vec::with_capacity(fields.len());
             let mut at = offset;
@@ -262,6 +288,7 @@ fn aggregate_type<'c>(
     });
     Some(match kind {
         LeafKind::Double => context.f64_type().into(),
+        LeafKind::Float => context.f32_type().into(),
         LeafKind::Int { bytes, .. } => context
             .custom_width_int_type(std::num::NonZeroU32::new(bytes * 8)?)
             .ok()?
@@ -269,13 +296,128 @@ fn aggregate_type<'c>(
     })
 }
 
-/// A buffer for `aggregate` in the function's entry block (a loop must not
-/// take new stack on every pass), filled from the packed `value`.
-pub(crate) fn c_aggregate_store<'c>(
+/// Size and alignment of a C object of `ty`, under the natural alignment
+/// C gives these scalars on x86-64 and AArch64.
+fn size_align(ty: BasicTypeEnum<'_>) -> (u64, u64) {
+    match ty {
+        BasicTypeEnum::IntType(t) => {
+            let bytes = u64::from(t.get_bit_width()).div_ceil(8);
+            (bytes, bytes)
+        }
+        BasicTypeEnum::ArrayType(t) => {
+            let (size, align) = size_align(t.get_element_type());
+            (size * u64::from(t.len()), align)
+        }
+        BasicTypeEnum::StructType(t) => {
+            let (mut end, mut align) = (0u64, 1u64);
+            for field in t.get_field_types() {
+                let (size, field_align) = size_align(field);
+                end = end.next_multiple_of(field_align) + size;
+                align = align.max(field_align);
+            }
+            (end.next_multiple_of(align), align)
+        }
+        _ => (8, 8),
+    }
+}
+
+/// The byte offset of the element `path` names inside a C object of `ty`.
+fn byte_offset(ty: BasicTypeEnum<'_>, path: &[u32]) -> u64 {
+    let Some((&first, rest)) = path.split_first() else {
+        return 0;
+    };
+    match ty {
+        BasicTypeEnum::ArrayType(t) => {
+            let element = t.get_element_type();
+            size_align(element).0 * u64::from(first) + byte_offset(element, rest)
+        }
+        BasicTypeEnum::StructType(t) => {
+            let fields = t.get_field_types();
+            let mut at = 0u64;
+            for field in &fields[..first as usize] {
+                let (size, align) = size_align(*field);
+                at = at.next_multiple_of(align) + size;
+            }
+            let field = fields[first as usize];
+            at.next_multiple_of(size_align(field).1) + byte_offset(field, rest)
+        }
+        _ => 0,
+    }
+}
+
+/// How the platform returns a C aggregate.
+pub(crate) enum CReturn<'c> {
+    /// In registers, as this LLVM type (stored to memory to read the fields).
+    Direct(BasicTypeEnum<'c>),
+    /// Through a caller-allocated buffer passed as a hidden `sret` pointer.
+    Indirect,
+}
+
+/// The build host's convention for returning `aggregate` (x86-64 SysV or
+/// AAPCS64), or `None` on another platform.
+pub(crate) fn c_return<'c>(
+    context: &'c Context,
+    aggregate: &CAggregate<'c>,
+) -> Option<CReturn<'c>> {
+    let triple = inkwell::targets::TargetMachine::get_default_triple();
+    let triple = triple.as_str().to_string_lossy().into_owned();
+    let (size, _) = size_align(aggregate.ty);
+    let all = |kind: fn(&LeafKind) -> bool| aggregate.leaves.iter().all(|leaf| kind(&leaf.kind));
+    let doubles = all(|kind| matches!(kind, LeafKind::Double));
+    let floats = all(|kind| matches!(kind, LeafKind::Float));
+    if triple.starts_with("x86_64") && !triple.contains("windows") {
+        if size > 16 {
+            return Some(CReturn::Indirect);
+        }
+        // Each eightbyte is SSE when only doubles or floats fill it, else
+        // INTEGER. An SSE eightbyte comes back in a vector register's low 64
+        // bits, read here as a `double` whatever floats it holds.
+        let eightbytes = size.div_ceil(8);
+        let parts = (0..eightbytes)
+            .map(|index| -> Option<BasicTypeEnum> {
+                let (start, end) = (index * 8, index * 8 + 8);
+                let mut inside = aggregate.leaves.iter().filter(|leaf| {
+                    let at = byte_offset(aggregate.ty, &leaf.path);
+                    at >= start && at < end
+                });
+                if inside.all(|leaf| matches!(leaf.kind, LeafKind::Double | LeafKind::Float)) {
+                    Some(context.f64_type().into())
+                } else {
+                    let bits = std::num::NonZeroU32::new((size - start).min(8) as u32 * 8)?;
+                    Some(context.custom_width_int_type(bits).ok()?.into())
+                }
+            })
+            .collect::<Option<Vec<_>>>()?;
+        return Some(CReturn::Direct(match parts.as_slice() {
+            [one] => *one,
+            _ => context.struct_type(&parts, false).into(),
+        }));
+    }
+    if triple.starts_with("aarch64") || triple.starts_with("arm64") {
+        // A homogeneous aggregate of up to four doubles (or floats) returns
+        // in v0-v3.
+        let count = aggregate.leaves.len() as u32;
+        if doubles && count <= 4 {
+            return Some(CReturn::Direct(context.f64_type().array_type(count).into()));
+        }
+        if floats && count <= 4 {
+            return Some(CReturn::Direct(context.f32_type().array_type(count).into()));
+        }
+        return Some(match size {
+            0..=8 => CReturn::Direct(context.i64_type().into()),
+            9..=16 => CReturn::Direct(context.i64_type().array_type(2).into()),
+            _ => CReturn::Indirect,
+        });
+    }
+    None
+}
+
+/// A buffer of `ty` in the function's entry block: a loop must not take
+/// new stack on every pass.
+pub(crate) fn entry_alloca<'c>(
     context: &'c Context,
     builder: &Builder<'c>,
-    aggregate: &CAggregate<'c>,
-    value: inkwell::values::IntValue<'c>,
+    ty: BasicTypeEnum<'c>,
 ) -> Option<inkwell::values::PointerValue<'c>> {
     let function = builder.get_insert_block()?.get_parent()?;
     let entry = function.get_first_basic_block()?;
@@ -284,7 +426,17 @@ pub(crate) fn c_aggregate_store<'c>(
         Some(first) => at_entry.position_before(&first),
         None => at_entry.position_at_end(entry),
     }
-    let buffer = at_entry.build_alloca(aggregate.ty, "c.aggregate").ok()?;
+    at_entry.build_alloca(ty, "c.aggregate").ok()
+}
+
+/// A buffer for `aggregate`, filled from the packed `value`.
+pub(crate) fn c_aggregate_store<'c>(
+    context: &'c Context,
+    builder: &Builder<'c>,
+    aggregate: &CAggregate<'c>,
+    value: inkwell::values::IntValue<'c>,
+) -> Option<inkwell::values::PointerValue<'c>> {
+    let buffer = entry_alloca(context, builder, aggregate.ty)?;
     // Padding is zero, not whatever the stack held, before C sees it: an
     // aggregate store leaves padding undefined, so clear the bytes.
     builder
@@ -318,6 +470,16 @@ pub(crate) fn c_aggregate_store<'c>(
             LeafKind::Double => builder
                 .build_bit_cast(bits, context.f64_type(), "c.double")
                 .ok()?,
+            LeafKind::Float => {
+                let double = builder
+                    .build_bit_cast(bits, context.f64_type(), "c.double")
+                    .ok()?
+                    .into_float_value();
+                builder
+                    .build_float_trunc(double, context.f32_type(), "c.float")
+                    .ok()?
+                    .into()
+            }
             LeafKind::Int { bytes, signed } => {
                 let ty = context
                     .custom_width_int_type(std::num::NonZeroU32::new(bytes * 8)?)
@@ -362,6 +524,19 @@ pub(crate) fn c_aggregate_load<'c>(
                     .ok()?;
                 builder
                     .build_bit_cast(value, leaf_type, "c.leaf")
+                    .ok()?
+                    .into_int_value()
+            }
+            LeafKind::Float => {
+                let value = builder
+                    .build_load(context.f32_type(), pointer, "c.float")
+                    .ok()?
+                    .into_float_value();
+                let double = builder
+                    .build_float_ext(value, context.f64_type(), "c.double")
+                    .ok()?;
+                builder
+                    .build_bit_cast(double, leaf_type, "c.leaf")
                     .ok()?
                     .into_int_value()
             }

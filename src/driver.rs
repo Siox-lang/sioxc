@@ -52,6 +52,10 @@ struct Cli {
     /// As `--deny`, and no `#[allow]` in the source may lower it.
     #[arg(short = 'F', long = "forbid", value_name = "LINT")]
     forbid: Vec<String>,
+    /// An object file or library to link into the test executable: the C
+    /// side of its `extern "C"` declarations (repeatable).
+    #[arg(long, value_name = "FILE")]
+    link: Vec<PathBuf>,
 }
 
 /// The `-A`/`-W`/`-D`/`-F` levels in the order they were written, which is
@@ -103,6 +107,10 @@ pub fn run() -> ExitCode {
         eprintln!("error: --test currently requires --emit object");
         return ExitCode::FAILURE;
     }
+    if !cli.link.is_empty() && !cli.test {
+        eprintln!("error: --link links a test executable; pass --test");
+        return ExitCode::FAILURE;
+    }
     let emit = if cli.test {
         Emit::TestExecutable
     } else {
@@ -120,7 +128,8 @@ pub fn run() -> ExitCode {
     };
     let mut request = CompileRequest::new(SourceInput::path(&cli.file), emit.clone())
         .with_debug(cli.debug)
-        .with_lint_levels(lints);
+        .with_lint_levels(lints)
+        .with_link(cli.link);
     if let Some(output) = cli.out {
         request = request.with_output(output);
     }

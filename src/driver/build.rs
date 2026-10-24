@@ -37,6 +37,8 @@ pub(super) struct BuildRequest<'a> {
     /// Source-level DWARF from the direct LLVM Process backend.
     pub debug: bool,
     pub output: &'a Path,
+    /// Objects and libraries linked in, as given (the C side of `extern "C"`).
+    pub link: &'a [std::path::PathBuf],
 }
 
 pub(super) fn build(request: BuildRequest<'_>) -> Result<(), String> {
@@ -45,13 +47,14 @@ pub(super) fn build(request: BuildRequest<'_>) -> Result<(), String> {
         sources,
         debug,
         output,
+        link,
         ..
     } = request;
     let issues = design.validate();
     if !issues.is_empty() {
         return Err(issues.join("; "));
     }
-    link_process_runtime(design, sources, output, debug)
+    link_process_runtime(design, sources, output, debug, link)
 }
 
 fn native_build_dir() -> PathBuf {
@@ -73,6 +76,7 @@ fn link_process_runtime(
     sources: &siox::diag::SourceMap,
     output_path: &Path,
     debug: bool,
+    link: &[PathBuf],
 ) -> Result<(), String> {
     let temporary = native_build_dir();
     std::fs::create_dir_all(&temporary).map_err(|error| error.to_string())?;
@@ -99,6 +103,7 @@ fn link_process_runtime(
 
         let mut clang = Command::new("clang");
         clang.arg(&object);
+        clang.args(link);
         if precompiled {
             let objects = [
                 ("process_runtime.o", PROCESS_RUNTIME_O),

@@ -7818,12 +7818,13 @@ fn lower_process_foreign_call(
     for (argument, parameter) in args.iter().zip(parameters) {
         let actual = context.typed.expr_type(ast::expr_span(argument)).cloned();
         let (float, integer) = abi_kind(parameter.ty.as_ref(), actual.as_ref());
-        // A struct or fixed array crosses by pointer (checked by the types
-        // pass).
-        pointer_arguments.push(matches!(
-            actual,
-            Some(crate::types::Ty::Named(_) | crate::types::Ty::Array { family: None, .. })
-        ));
+        // A struct, fixed array or wide packed value crosses by pointer
+        // (checked by the types pass).
+        pointer_arguments.push(
+            actual
+                .as_ref()
+                .is_some_and(crate::types::Ty::is_c_aggregate),
+        );
         arguments.push(value_ref_with_type(
             argument,
             process,
@@ -7845,6 +7846,7 @@ fn lower_process_foreign_call(
             .cloned()
             .or_else(|| declared_return.and_then(|ty| declared_process_type(ty, context.resolved)))
     };
+    let aggregate_result = ty.as_ref().is_some_and(crate::types::Ty::is_c_aggregate);
     let kind = ProcessValueKind::ForeignCall {
         name: function.name.text.clone(),
         arguments,
@@ -7856,9 +7858,21 @@ fn lower_process_foreign_call(
         c_arguments,
         c_result,
         pointer_arguments,
+        aggregate_result,
     };
-    let width = source_value_width(&kind, ty.as_ref(), process, context);
-    Some(push_value(*span, ty, width, kind, context))
+    // A struct result is the whole aggregate, laid out by its type.
+    let layout = aggregate_result
+        .then(|| process_layout_for_type(ty.as_ref()?, *span, context))
+        .flatten();
+    let width = match &layout {
+        Some(layout) => layout.packed_width(),
+        None => source_value_width(&kind, ty.as_ref(), process, context),
+    };
+    let call = push_value(*span, ty, width, kind, context);
+    if layout.is_some() {
+        context.process_ir.value_layouts[call.0 as usize] = layout;
+    }
+    Some(call)
 }
 
 /// Normalize deterministic randomization before it can become a generic

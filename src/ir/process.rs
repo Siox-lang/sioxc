@@ -1172,6 +1172,9 @@ pub enum ProcessValueKind {
         /// a copy laid out as C lays it out; missing entries are scalars. A
         /// process-local variable passed so receives what C writes.
         pointer_arguments: Vec<bool>,
+        /// Whether the result is a struct, array or wide packed value,
+        /// returned by the platform's struct-return rules.
+        aggregate_result: bool,
     },
     /// A value-producing operation owned by the fixed simulation runtime.
     HostCall {
@@ -1491,6 +1494,7 @@ impl ProcessIr {
                 c_arguments: c_args.clone(),
                 c_result: *c_ret,
                 pointer_arguments: Vec::new(),
+                aggregate_result: false,
             },
             Expr::Unknown => ProcessValueKind::Invalid,
         };

@@ -3,6 +3,47 @@
 use super::*;
 
 /// Whether a layout is a kernel-integer scalar.
+/// A struct field or array element read as a value of `width` bits. A
+/// ranged integer is stored in its range's width (a `c_int` field in 32
+/// bits), so it widens as the number it holds; any other mismatch has no
+/// reading.
+#[allow(clippy::too_many_arguments)]
+fn scalar_in_layout<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    id: ProcessValueId,
+    layout: &SourceLayout,
+    width: u32,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let stored = layout_width(layout)?;
+    if stored != width && !matches!(layout.kind, LayoutKind::Scalar { .. }) {
+        return None;
+    }
+    let value = process_value_in_layout(
+        context,
+        module,
+        builder,
+        design,
+        id,
+        layout,
+        active,
+        index_sites,
+        cache,
+    )?;
+    if stored == width {
+        Some(value)
+    } else if process_layout_is_signed(layout) {
+        fit_signed(builder, value, width)
+    } else {
+        fit(builder, value, width)
+    }
+}
+
 fn integer_scalar(layout: &SourceLayout) -> bool {
     matches!(
         layout.kind,
@@ -1059,6 +1100,7 @@ pub(super) fn process_value<'ctx>(
             c_arguments,
             c_result,
             pointer_arguments,
+            aggregate_result,
         } => {
             use inkwell::types::BasicMetadataTypeEnum as MetadataType;
             use inkwell::values::BasicMetadataValueEnum as MetadataValue;
@@ -1086,15 +1128,18 @@ pub(super) fn process_value<'ctx>(
                         ProcessValueKind::Local { process, local } => Some((process, local)),
                         _ => None,
                     };
-                    let layout = match local {
-                        Some((process, local)) => design
+                    let stored = local.and_then(|(process, local)| {
+                        design
                             .process_ir
                             .processes
                             .get(process.0 as usize)?
                             .locals
                             .get(local.0 as usize)?
                             .layout
-                            .as_ref()?,
+                            .as_ref()
+                    });
+                    let layout = match stored {
+                        Some(layout) => layout,
                         None => process_value_layout(design, *argument)?,
                     };
                     let aggregate = crate::llvm::foreign::c_aggregate(context, layout)?;
@@ -1161,9 +1206,36 @@ pub(super) fn process_value<'ctx>(
                     }
                 }
             }
+            // A struct result follows the platform's struct-return rules: in
+            // registers, or through a buffer passed as a hidden first `sret`
+            // pointer.
+            let aggregate_return = match aggregate_result {
+                true => {
+                    let layout = process_value_layout(design, id)?;
+                    let aggregate = crate::llvm::foreign::c_aggregate(context, layout)?;
+                    let convention = crate::llvm::foreign::c_return(context, &aggregate)?;
+                    Some((aggregate, convention))
+                }
+                false => None,
+            };
+            let sret = match &aggregate_return {
+                Some((aggregate, crate::llvm::foreign::CReturn::Indirect)) => {
+                    let buffer =
+                        crate::llvm::foreign::entry_alloca(context, builder, aggregate.ty)?;
+                    parameter_types
+                        .insert(0, context.ptr_type(inkwell::AddressSpace::default()).into());
+                    argument_values.insert(0, buffer.into());
+                    Some((buffer, aggregate.ty))
+                }
+                _ => None,
+            };
             let function = module.get_function(name).unwrap_or_else(|| {
-                let signature = if *void_result {
+                let signature = if *void_result || sret.is_some() {
                     context.void_type().fn_type(&parameter_types, false)
+                } else if let Some((_, crate::llvm::foreign::CReturn::Direct(ty))) =
+                    &aggregate_return
+                {
+                    inkwell::types::BasicType::fn_type(ty, &parameter_types, false)
                 } else if let Some(scalar) = c_result {
                     inkwell::types::BasicType::fn_type(
                         &crate::llvm::foreign::c_type(context, *scalar),
@@ -1176,7 +1248,28 @@ pub(super) fn process_value<'ctx>(
                     context.i64_type().fn_type(&parameter_types, false)
                 };
                 let function = module.add_function(name, signature, Some(Linkage::External));
-                crate::llvm::foreign::mark_extensions(context, function, c_arguments, *c_result);
+                match sret {
+                    Some((_, ty)) => {
+                        let kind = inkwell::attributes::Attribute::get_named_enum_kind_id("sret");
+                        function.add_attribute(
+                            inkwell::attributes::AttributeLoc::Param(0),
+                            context.create_type_attribute(
+                                kind,
+                                inkwell::types::AnyType::as_any_type_enum(&ty),
+                            ),
+                        );
+                        let shifted: Vec<_> = std::iter::once(None)
+                            .chain(c_arguments.iter().copied())
+                            .collect();
+                        crate::llvm::foreign::mark_extensions(context, function, &shifted, None);
+                    }
+                    None => crate::llvm::foreign::mark_extensions(
+                        context,
+                        function,
+                        c_arguments,
+                        *c_result,
+                    ),
+                }
                 function
             });
             // What C wrote through a pointer reaches the variable passed.
@@ -1189,6 +1282,33 @@ pub(super) fn process_value<'ctx>(
                 }
                 Some(())
             };
+            if let Some((aggregate, convention)) = &aggregate_return {
+                let call = builder
+                    .build_call(function, &argument_values, "pv.foreign.aggregate")
+                    .ok()?;
+                let buffer = match (convention, sret) {
+                    (_, Some((buffer, _))) => buffer,
+                    (crate::llvm::foreign::CReturn::Direct(ty), None) => {
+                        let inkwell::values::ValueKind::Basic(returned) = call.try_as_basic_value()
+                        else {
+                            return None;
+                        };
+                        // The register type covers the struct; read its fields
+                        // back through memory, as C does.
+                        let buffer = crate::llvm::foreign::entry_alloca(context, builder, *ty)?;
+                        builder.build_store(buffer, returned).ok()?;
+                        buffer
+                    }
+                    (crate::llvm::foreign::CReturn::Indirect, None) => return None,
+                };
+                write_back(builder)?;
+                cache.clear();
+                let packed = crate::llvm::foreign::c_aggregate_load(
+                    context, builder, aggregate, buffer, width,
+                )?;
+                cache.evaluated_calls.insert((id, active), packed);
+                return Some(packed);
+            }
             // `fn srand(seed: integer);`: called for its effect, read as 0.
             if *void_result {
                 builder.build_call(function, &argument_values, "").ok()?;
@@ -2162,16 +2282,14 @@ pub(super) fn process_value<'ctx>(
         }
         ProcessValueKind::Field { .. } => {
             let layout = process_value_layout(design, id)?;
-            if layout_width(layout)? != width {
-                return None;
-            }
-            process_value_in_layout(
+            scalar_in_layout(
                 context,
                 module,
                 builder,
                 design,
                 id,
                 layout,
+                width,
                 active,
                 index_sites,
                 cache,
@@ -2182,16 +2300,14 @@ pub(super) fn process_value<'ctx>(
             match &base_layout.kind {
                 LayoutKind::Array { .. } => {
                     let layout = process_value_layout(design, id)?;
-                    if layout_width(layout)? != width {
-                        return None;
-                    }
-                    process_value_in_layout(
+                    scalar_in_layout(
                         context,
                         module,
                         builder,
                         design,
                         id,
                         layout,
+                        width,
                         active,
                         index_sites,
                         cache,
