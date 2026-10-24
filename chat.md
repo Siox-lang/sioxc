@@ -19957,3 +19957,104 @@ resolved normalization; fully typed evaluation, associated registries, residual
 hook lookup cleanup and dynamic constructor routing remain. Explicit-file local
 compiler/corpus/paper commits only, preserving root/paper-main peers and20 corpus
 probes/artifacts. No push. The broader proposal-implementation goal stays active.
+
+### 2026-10-24 — Codex — Boolean result role identity
+
+Start next foundations cleanup after accepted82fe446: use registered bool DefId
+for compiler-created comparison,event,ascending and exists results. Add raw
+renamed-core/order-independent and missing-role same-leaf regressions, then
+remove that production spelling fallback. Load real core::primitive in VEC
+fixtures and migrate manual VEC callers to the shared fixture loader. Scope:
+types/keys,inference,calls,types/tests and affected subtests; no std value tables,
+LLVM/runtime changes or new dependencies. Full both-mode Rust/actual corpus gate
+before local commit, no push. Other proposal sections remain active.
+
+### 2026-10-24 — Codex — Boolean role red check queued and fixtures migrated
+
+Busy4037202 is not a result. Waiter2987 waits for confirmed live peer4014168
+before running only lang_items regressions with production fallback unchanged.
+Shared VEC and its manual checker callers now load real core::primitive. Add
+native bool_hook_identity_test in actual corpus + README; source assertions
+cover distinct user Bool and all four result producers. Owned proposal/paper
+architecture updates will document only this result-type identity step, not
+claim complete hook/literal cleanup. No dependency/std/runtime/codegen changes.
+
+### 2026-10-24 — Codex — Boolean result identity red evidence and implementation
+
+Red4060352 completed failed/101, peak753856512: both new raw tests fail on old
+production lookup (unregistered user Bool selected;4 renamed-role return errors).
+Shared fixture migration compiles. bool_ty now reuses Resolved::lang("bool")
+like IR; comparison,event,ascending,exists use it, absence returns Ty::Error.
+No spelling fallback or values added. Draft proposal/paper architecture describe
+this partial hook migration; full acceptance pending. Cache script
+bool-role-final-20261024.sh preserves52 direct native/VCD checks plus both full
+Rust/actual265 corpus/UI/JSON gates and source fingerprints. No commit/push.
+
+### 2026-10-24 — Codex — Boolean result role focused validation passed
+
+4123084 is terminal exited/success/0, peak1264734208:573 frontend tests,5 core
+library API tests,existing native equal-enum identity case and strict Clippy
+pass. Both raw role regressions failed on old production lookup and now pass;
+all fixture users load source-owned core Bool. Freeze all owned compiler/corpus/
+paper paths for bool-role-final-20261024.sh:52 direct ordinary/debug native/VCD,
+both full Rust suites,actual265 corpora,UI/JSON/runner checks,AST graph and source
+fingerprints. This focused result is not final acceptance. No commit/push yet.
+
+### 2026-10-24 — Codex — native result-role coverage exposes unsupported block
+
+4131876 is failed/1, peak229482496:573 frontend and graph update passed, first
+native Boolean corpus build succeeds but executable reports process1 block1
+unsupported. Later full gate stages were not reached; no acceptance. After user
+pause/resume, no own running job remains. Split corpus coverage into four named
+processes, retaining all assertions, to isolate which producer fails before
+touching IR/LLVM. Checker stays focused-green4123084; unfreeze corpus test only.
+
+### 2026-10-24 — Codex — storage-event layout preflight mismatch
+
+Isolate4167774 failed1, peak28123136, at process3/activity_check. Comparison and
+direction processes run first and pass. Existing LLVM storage-event emitter and
+arena checks support this1-bit value, but destination-layout preflight rejects
+all StorageState except Old. Add a regression and narrow Event branch in
+src/llvm/process/support.rs + tests.rs, preserving all guards and all native
+producer cases. No scheduler/runtime change, truth table, or broader LLVM work.
+Root board handoff read: do not edit TODO.md for new work. Full validation still
+required before local commit; failed full4131876 is not acceptance.
+
+### 2026-10-24 — Codex — precise storage-event preflight fix
+
+4176018 failed/101, peak1088016384: valid event is arena-supported yet rejected
+in one-bit destination layout. Add only the Event arm requiring width1 && has(id)
+in destination-layout preflight. Unit also rejects wider target/value widths
+and absent storage. Existing emitter/runtime unchanged. Revalidate unit,
+frontend573,core API/native identity and all four named native producer cases;
+full gate must rerun with a fresh retained evidence directory before commit.
+
+### 2026-10-24 — Codex — focused Boolean identity and event storage tests green
+
+4182254 exited/success/0, peak1404268544: new preflight unit,573 frontend,5 core
+API tests,existing native enum identity,strict Clippy and new four-process
+Boolean native/VCD case pass. Retain all producer assertions. Freeze owned
+compiler/corpus/paper for full bool-role-eventfix-20261024 evidence:52 direct
+ordinary/debug native/VCD checks,both complete Rust suites,actual265 corpora,
+UI/JSON/runner gates,AST graph and before/after source fingerprints. No commit
+until terminal full green. Other hook/literal/typed-evaluation work remains.
+
+### 2026-10-24 — Codex — Boolean result identity and event locals accepted
+
+Full siox-job-3000-1792865476609275312-4189569.service completed
+exited/success/0, peak1881346048. Both full Rust suites pass (630/609 library
+tests,23 actual GDB18.1 checks each),573 frontend,52 ordinary/debug native/VCD
+runs, both actual265 corpora,strict Clippy,34 runner checks,12 Phase1 artifacts,
+both61 UI and61 JSON cases covering54/54 codes and2 apply/recompile migrations.
+Before/after compiler80b47a2078be54acea4fa867d9f15d9085560398e7d01c88e0a1e7cd1ffe5c01,
+corpus4d8329e67ee3cb5b7748c6d94f170a6827e6f95e0376cce3653c8cc4f6a7219f,
+paper0420512c1141dab228548f016fbe54c31257ce6063d333628787542685d0e147 all MATCH.
+Retained evidence bool-role-eventfix-20261024. AST graph6878nodes/18646edges/
+352communities,aggregatedHTML; existing vendor/no-symbol/label caveats remain.
+No paid extraction. Only acceptance docs/log/stage-scope clarification follow;
+production/test sources remain exactly tested. Make explicit-path local commits
+only. No new TODO.md work (project-board workflow), no board mutation or push.
+Foundations remains~75%: this finishes Boolean result-role consumers and their
+fixture migration, not other library/literal hooks,typed values,remaining
+registries or dynamic constructor routing. Preserve all peers and20 corpus
+probes; broader goal remains active after these commits.

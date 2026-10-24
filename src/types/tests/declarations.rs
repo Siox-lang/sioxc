@@ -111,8 +111,9 @@ fn typed_records_expression_types() {
     );
     let mut sink = DiagnosticSink::new();
     let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-    let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-    let typed = check(std::slice::from_ref(&module), &resolved, &mut sink);
+    let modules = with_core(vec![module], &mut sink);
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    let typed = check(&modules, &resolved, &mut sink);
     assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
     let logic = resolved
         .defs()
@@ -444,9 +445,9 @@ fn duplicate_literal_field_and_named_type_rendering() {
     let mut sink = DiagnosticSink::new();
     let src = format!("{bound}{VEC}");
     let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-    let modules = std::slice::from_ref(&module);
-    let resolved = crate::resolve::resolve(modules, &mut sink);
-    check(modules, &resolved, &mut sink);
+    let modules = with_core(vec![module], &mut sink);
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    check(&modules, &resolved, &mut sink);
     assert!(
         sink.diagnostics()
             .iter()

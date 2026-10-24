@@ -84,15 +84,12 @@ fn a_bound_value_must_match_the_declared_type() {
     let count = |src: &str| {
         let src = format!("{src}{VEC}");
         let mut sink = DiagnosticSink::new();
-        let mut module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-        crate::resolve::attributes::attach(std::slice::from_mut(&mut module), &resolved, &mut sink);
-        crate::resolve::attributes::fold_reads(
-            std::slice::from_mut(&mut module),
-            &resolved,
-            &mut sink,
-        );
-        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+        let mut modules = with_core(vec![module], &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        crate::resolve::attributes::attach(&mut modules, &resolved, &mut sink);
+        crate::resolve::attributes::fold_reads(&mut modules, &resolved, &mut sink);
+        check(&modules, &resolved, &mut sink);
         sink.diagnostics()
             .iter()
             .filter(|d| d.code == Some(codes::INVALID_ATTR_VALUE_TYPE))

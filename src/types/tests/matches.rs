@@ -21,8 +21,9 @@ fn a_numeric_match_reports_the_range_it_leaves_out() {
         );
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        let modules = with_core(vec![module], &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        check(&modules, &resolved, &mut sink);
         let found = sink
             .diagnostics()
             .iter()
@@ -51,8 +52,9 @@ fn a_numeric_match_covering_its_domain_is_quiet() {
         );
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        let modules = with_core(vec![module], &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        check(&modules, &resolved, &mut sink);
         let warned = sink
             .diagnostics()
             .iter()
@@ -260,8 +262,9 @@ fn a_character_pattern_needs_a_character_valued_enum() {
         let src = format!("{src}{VEC}");
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        let modules = with_core(vec![module], &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        check(&modules, &resolved, &mut sink);
         sink.diagnostics()
             .iter()
             .filter(|d| {

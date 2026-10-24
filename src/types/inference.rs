@@ -142,18 +142,18 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::SysAttr { base, attr, .. } => match attr.text.as_str() {
-                // `::event` is Bool; the edge helpers are `ClockLike` methods now.
-                "event" => self.ty_from_head("Bool"),
+                // `'event` has the registered Boolean type.
+                "event" => self.bool_ty(),
                 "old" => self.type_of(base, sym),
                 "length" | "high" | "low" | "left" | "right" => Ty::Integer,
-                "ascending" => self.ty_from_head("Bool"),
+                "ascending" => self.bool_ty(),
                 name => self
                     .type_attr(base, name, sym)
                     .map_or(Ty::Error, |(_, declaration)| self.ast_ty(&declaration.ty)),
             },
             Expr::Binary { op, lhs, rhs, .. } => {
                 if is_comparison(op) {
-                    return self.ty_from_head("Bool");
+                    return self.bool_ty();
                 }
                 let lhs_ty = self.type_of(lhs, sym);
                 let rhs_ty = self.type_of(rhs, sym);

@@ -1,6 +1,85 @@
 use super::*;
 
 #[test]
+fn storage_events_fit_boolean_layouts_without_inheriting_storage_width() {
+    let span = Span::new(siox::diag::FileId(0), 0..1);
+    let mut design = Design {
+        process_ir: ProcessIr {
+            storages: vec![siox::ir::ProcessStorage {
+                id: ProcessStorageId(0),
+                owner: siox::elab::InstanceId(0),
+                name: "counter".into(),
+                source: None,
+                span,
+                ty: Some(siox::types::Ty::Integer),
+                layout: Some(SourceLayout {
+                    span,
+                    kind: LayoutKind::Scalar {
+                        width: 64,
+                        domain: siox::ir::ScalarDomain::Integer,
+                        nominal: None,
+                        value_range: None,
+                    },
+                }),
+                initializer: None,
+                bindings: Vec::new(),
+            }],
+            values: vec![ProcessValue {
+                span,
+                ty: None,
+                bit_width: Some(1),
+                kind: ProcessValueKind::StorageState {
+                    storage: ProcessStorageId(0),
+                    state: ProcessSignalState::Event,
+                },
+            }],
+            ..ProcessIr::default()
+        },
+        ..Design::default()
+    };
+    let layout = |width| SourceLayout {
+        span,
+        kind: LayoutKind::Scalar {
+            width,
+            domain: siox::ir::ScalarDomain::Enum("Condition".into()),
+            nominal: Some("Condition".into()),
+            value_range: None,
+        },
+    };
+    let supported = supported_process_values(&design);
+    assert!(supported[0], "the arena already supports this event value");
+    assert!(process_value_supported_in_layout(
+        &design,
+        ProcessValueId(0),
+        &layout(1),
+        &supported
+    ));
+    assert!(!process_value_supported_in_layout(
+        &design,
+        ProcessValueId(0),
+        &layout(2),
+        &supported
+    ));
+    design.process_ir.values[0].bit_width = Some(2);
+    let supported = supported_process_values(&design);
+    assert!(!process_value_supported_in_layout(
+        &design,
+        ProcessValueId(0),
+        &layout(1),
+        &supported
+    ));
+    design.process_ir.values[0].bit_width = Some(1);
+    design.process_ir.storages.clear();
+    let supported = supported_process_values(&design);
+    assert!(!process_value_supported_in_layout(
+        &design,
+        ProcessValueId(0),
+        &layout(1),
+        &supported
+    ));
+}
+
+#[test]
 #[cfg(all(target_arch = "x86_64", not(target_os = "windows")))]
 fn string_return_boundary_preserves_array_types_and_payload_widths() {
     use siox::ir::{ProcessValueInline, ScalarDomain};

@@ -499,7 +499,7 @@ impl<'a> Checker<'a> {
         match name {
             "rand" | "randint" => Ty::Integer,
             "uniform" => Ty::Real,
-            "exists" => self.ty_from_head("Bool"),
+            "exists" => self.bool_ty(),
             "seed" | "print" | "assert" | "warn" | "write" | "await" | "wait" | "tick"
             | "clock" | "stop" | "finish" => Ty::Void,
             "read" | "resize" => Ty::Error,

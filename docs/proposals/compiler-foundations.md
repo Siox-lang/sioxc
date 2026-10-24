@@ -9,14 +9,14 @@ declaration registry are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-24, resolved alias migration): both complete Rust
-suites pass, including 627 default/606 bitpack library tests and all 23 DWARF
-tests per mode. The gate also passes 571 frontend-only tests, strict Clippy,
-34 runner tests, 48 ordinary/debug native and VCD checks, and both actual
-264-program corpora. Both modes pass 61 human UI and 61 JSON/schema cases,
+Local acceptance (2026-10-24, Boolean result identities and resolved aliases):
+both complete Rust suites pass, including 630 default/609 bitpack library tests
+and all 23 DWARF tests per mode. The gate also passes 573 frontend-only tests,
+strict Clippy, 34 runner tests, 52 ordinary/debug native and VCD checks, and both
+actual 265-program corpora. Both modes pass 61 human UI and 61 JSON/schema cases,
 cover all 54 active codes and apply/recompile both migration fixtures.
 Compiler, corpus and documentation fingerprints match before/after the frozen
-gate. Retained evidence and recursive-fixture isolation are recorded in
+gate. Retained evidence and fixture migrations are recorded in
 [chat.md](../../chat.md). This is local acceptance, not a claim that the remaining
 proposal sections are complete.
 
@@ -458,6 +458,21 @@ spelling checks with resolved identities, lang roles or source-owned layout/
 encoding metadata as appropriate. Keep the grammar's kernel types distinct
 from ordinary library declarations. Remove fixture fallbacks only when their
 callers load core or explicitly supply equivalent identities.
+
+**Implemented Boolean result types (2026-10-24).** Comparisons, `'event`, `'ascending` and
+the runtime `exists` contract now request the registered `bool` declaration,
+matching the IR's existing lookup. A missing role stays unknown; an unrelated
+type named `Bool` cannot supply it. Raw tests cover a renamed registered enum,
+both module orders and absence of the role. Lightweight checker fixtures load
+the actual `core::primitive` source instead of retaining a production spelling
+fallback for their local stand-in. Native corpus coverage keeps a user `Bool`
+distinct across hardware and named processes. The full gate above validates
+this migration; remaining library-type classification and literal desugaring
+are separate work.
+The native event case also exposed an existing destination-layout preflight gap:
+one-bit storage-event values were emit-capable but rejected as local
+initializers. The support check now accepts that already-supported one-bit case
+without permitting wider layouts or invalid storage references.
 
 `#[test]` and lint directives are compiler built-ins, not importable declarations;
 do not recreate `std::attrs::test` or make test discovery depend on metadata.

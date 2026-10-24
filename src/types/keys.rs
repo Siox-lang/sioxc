@@ -215,6 +215,11 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// Compiler-produced Boolean values use the registered declaration only.
+    pub(super) fn bool_ty(&self) -> Ty {
+        self.resolved.lang("bool").map_or(Ty::Error, Ty::Named)
+    }
+
     /// The checked type a head name denotes, mapping the kernel names to their
     /// built-in types.
     pub(super) fn ty_from_head(&self, name: &str) -> Ty {
@@ -238,11 +243,11 @@ impl<'a> Checker<'a> {
                 .enumerate()
                 .filter(|(_, definition)| is_type_kind(definition.kind))
                 .find(|(index, _)| self.definition_key_str(DefId(*index as u32)) == Some(name))
-                // Compiler-created values such as comparison results and
-                // system attributes name their library type by its stable
-                // kernel leaf. Prefer the canonical std declaration before
+                // Packed literals still name their library element by its
+                // leaf while their classification is migrated. Prefer the
+                // canonical library declaration before
                 // the compatibility leaf fallback, otherwise an unrelated
-                // user enum called `Bool` or `Logic` can retarget every such
+                // user enum called `Logic` can retarget every such
                 // value merely by appearing earlier in the module list.
                 .or_else(|| {
                     self.resolved

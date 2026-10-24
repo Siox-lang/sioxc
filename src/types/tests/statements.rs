@@ -64,8 +64,9 @@ fn an_entity_cannot_be_instantiated_outside_a_generate() {
         let src = format!("{src}{VEC}");
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        let modules = with_core(vec![module], &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        check(&modules, &resolved, &mut sink);
         sink.diagnostics()
             .iter()
             .filter(|d| d.code == Some(codes::INSTANCE_PLACEMENT))
@@ -143,8 +144,9 @@ fn a_statement_with_no_effect_is_reported() {
         let src = format!("{src}{VEC}");
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        let modules = with_core(vec![module], &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        check(&modules, &resolved, &mut sink);
         sink.diagnostics()
             .iter()
             .filter(|d| d.code == Some(codes::NO_EFFECT_STATEMENT))

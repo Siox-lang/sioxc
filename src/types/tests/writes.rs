@@ -63,8 +63,9 @@ fn conversion_help_names_only_a_defined_conversion() {
         );
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        let modules = with_core(vec![module], &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        check(&modules, &resolved, &mut sink);
         sink.diagnostics()
             .iter()
             .filter(|d| d.code == Some(codes::TYPE_MISMATCH))
@@ -257,8 +258,9 @@ fn a_view_method_cannot_drive_an_input_leaf() {
         let src = format!("{src}{VEC}");
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        let modules = with_core(vec![module], &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        check(&modules, &resolved, &mut sink);
         sink.diagnostics()
             .iter()
             .filter(|d| d.code == Some(codes::WRITE_TO_INPUT_PORT))
@@ -362,8 +364,9 @@ fn an_impl_function_cannot_assign_to_a_const() {
         let src = format!("{src}{VEC}");
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        let modules = with_core(vec![module], &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        check(&modules, &resolved, &mut sink);
         sink.diagnostics()
             .iter()
             .filter(|d| d.code == Some(codes::INVALID_ASSIGN_TARGET))
@@ -411,8 +414,9 @@ fn an_impl_function_checks_ranged_assignments() {
         let src = format!("{src}{VEC}");
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        let modules = with_core(vec![module], &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        check(&modules, &resolved, &mut sink);
         sink.diagnostics()
             .iter()
             .filter(|d| d.message.contains("outside the range"))
@@ -464,8 +468,9 @@ fn an_impl_function_checks_widths_of_its_own_parameters() {
         let src = format!("{src}{VEC}");
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-        let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-        check(std::slice::from_ref(&module), &resolved, &mut sink);
+        let modules = with_core(vec![module], &mut sink);
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        check(&modules, &resolved, &mut sink);
         sink.diagnostics()
             .iter()
             .filter(|d| d.message.contains("without an explicit conversion"))

@@ -7,6 +7,7 @@ mod attributes;
 mod calls;
 mod declaration_index;
 mod declarations;
+mod lang_items;
 mod matches;
 mod operators;
 mod statements;
@@ -17,7 +18,7 @@ mod writes;
 const VEC: &str = "\n\
         enum Bit { '0', '1' }\n\
         enum Logic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\n\
-        enum Bool { false, true }\n\
+        use core::primitive::Bool;\n\
         enum Ordering { Less, Equal, Greater }\n\
         trait ClockLike { fn rising(self) -> Bool; }\n\
         impl Boolean for Bit { fn as_bool(self) -> Bool { return true; } }\n\
@@ -48,23 +49,25 @@ fn check_src(src: &str) -> usize {
     let src = format!("{src}{VEC}");
     let src = src.as_str();
     let mut sink = DiagnosticSink::new();
-    let mut module = crate::syntax::parse_module(FileId(0), src, &mut sink);
+    let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
+    let mut modules = with_core(vec![module], &mut sink);
     assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
-    let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-    crate::resolve::attributes::attach(std::slice::from_mut(&mut module), &resolved, &mut sink);
-    crate::resolve::attributes::fold_reads(std::slice::from_mut(&mut module), &resolved, &mut sink);
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    crate::resolve::attributes::attach(&mut modules, &resolved, &mut sink);
+    crate::resolve::attributes::fold_reads(&mut modules, &resolved, &mut sink);
     let parse_resolve_errors = sink.error_count();
-    check(std::slice::from_ref(&module), &resolved, &mut sink);
+    check(&modules, &resolved, &mut sink);
     sink.error_count() - parse_resolve_errors
 }
 
 /// Type-check several sources as one program and return the sink.
 fn check_modules(sources: &[(&str, FileId)]) -> DiagnosticSink {
     let mut sink = DiagnosticSink::new();
-    let mut modules: Vec<Module> = sources
+    let modules: Vec<Module> = sources
         .iter()
         .map(|(source, file)| crate::syntax::parse_module(*file, source, &mut sink))
         .collect();
+    let mut modules = with_core(modules, &mut sink);
     let resolved = crate::resolve::resolve(&modules, &mut sink);
     crate::resolve::attributes::attach(&mut modules, &resolved, &mut sink);
     crate::resolve::attributes::fold_reads(&mut modules, &resolved, &mut sink);
@@ -76,11 +79,12 @@ fn check_modules(sources: &[(&str, FileId)]) -> DiagnosticSink {
 fn diag_codes(src: &str) -> Vec<String> {
     let src = format!("{src}{VEC}");
     let mut sink = DiagnosticSink::new();
-    let mut module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-    let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-    crate::resolve::attributes::attach(std::slice::from_mut(&mut module), &resolved, &mut sink);
-    crate::resolve::attributes::fold_reads(std::slice::from_mut(&mut module), &resolved, &mut sink);
-    check(std::slice::from_ref(&module), &resolved, &mut sink);
+    let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+    let mut modules = with_core(vec![module], &mut sink);
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    crate::resolve::attributes::attach(&mut modules, &resolved, &mut sink);
+    crate::resolve::attributes::fold_reads(&mut modules, &resolved, &mut sink);
+    check(&modules, &resolved, &mut sink);
     sink.diagnostics()
         .iter()
         .map(|d| format!("{:?}", d.code))
@@ -92,13 +96,41 @@ fn warnings(src: &str, code: &str) -> usize {
     let src = format!("{src}{VEC}");
     let src = src.as_str();
     let mut sink = DiagnosticSink::new();
-    let mut module = crate::syntax::parse_module(FileId(0), src, &mut sink);
-    let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
-    crate::resolve::attributes::attach(std::slice::from_mut(&mut module), &resolved, &mut sink);
-    crate::resolve::attributes::fold_reads(std::slice::from_mut(&mut module), &resolved, &mut sink);
-    check(std::slice::from_ref(&module), &resolved, &mut sink);
+    let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
+    let mut modules = with_core(vec![module], &mut sink);
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    crate::resolve::attributes::attach(&mut modules, &resolved, &mut sink);
+    crate::resolve::attributes::fold_reads(&mut modules, &resolved, &mut sink);
+    check(&modules, &resolved, &mut sink);
     sink.diagnostics()
         .iter()
         .filter(|d| d.code == Some(code))
         .count()
+}
+
+/// Use the real Boolean declaration instead of a spelling-based test fallback.
+fn with_core(mut modules: Vec<Module>, sink: &mut DiagnosticSink) -> Vec<Module> {
+    if !modules.iter().any(|module| {
+        module
+            .path
+            .segments
+            .iter()
+            .map(|part| part.text.as_str())
+            .eq(["core", "primitive"])
+    }) {
+        let file = FileId(
+            modules
+                .iter()
+                .map(|module| module.span.file.0)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
+        modules.push(crate::syntax::parse_module(
+            file,
+            include_str!("../../core/primitive.siox"),
+            sink,
+        ));
+    }
+    modules
 }

@@ -177,6 +177,10 @@ pub(super) fn process_value_supported_in_layout(
             storage,
             state: ProcessSignalState::Old,
         } => storage_state_width(design, *storage) == Some(width),
+        ProcessValueKind::StorageState {
+            state: ProcessSignalState::Event,
+            ..
+        } => width == 1 && has(id),
         ProcessValueKind::StorageState { .. } => false,
         ProcessValueKind::Local { process, local } => local_width(design, *process, *local)
             .is_some_and(|local_width| {
