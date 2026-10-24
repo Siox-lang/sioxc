@@ -3235,7 +3235,7 @@ fn lower_call(
             if context
                 .functions
                 .get(callee)
-                .is_some_and(|function| function.body.is_none() && function.ret.is_some())
+                .is_some_and(|function| function.body.is_none())
             {
                 let call = ast::Expr::Call {
                     callee: Box::new(callee.clone()),
@@ -7770,9 +7770,16 @@ fn lower_process_foreign_call(
     }
     let declared_return = function.ret.as_ref();
     let (float_result, integer_result) = abi_kind(declared_return, return_type);
-    let ty = return_type
-        .cloned()
-        .or_else(|| declared_return.and_then(|ty| declared_process_type(ty, context.resolved)));
+    // A C function with no result is called for its effect and reads as a
+    // 0 word, which the statement that called it drops.
+    let void_result = declared_return.is_none();
+    let ty = if void_result {
+        Some(crate::types::Ty::Integer)
+    } else {
+        return_type
+            .cloned()
+            .or_else(|| declared_return.and_then(|ty| declared_process_type(ty, context.resolved)))
+    };
     let kind = ProcessValueKind::ForeignCall {
         name: function.name.text.clone(),
         arguments,
@@ -7780,6 +7787,7 @@ fn lower_process_foreign_call(
         integer_arguments,
         float_result,
         integer_result,
+        void_result,
     };
     let width = source_value_width(&kind, ty.as_ref(), process, context);
     Some(push_value(*span, ty, width, kind, context))

@@ -48,7 +48,6 @@ fn unsupported_extern_c_shapes_stop_before_lowering() {
            extern "C" {
                fn too_wide(value: unsigned[65]) -> integer;
                fn aggregate() -> Pair;
-               fn side_effect(value: integer);
            }"#,
     )
     .unwrap();
@@ -64,10 +63,6 @@ fn unsupported_extern_c_shapes_stop_before_lowering() {
     assert!(stderr.contains("packed value is 65 bits"), "{stderr}");
     assert!(
         stderr.contains("aggregate and nominal values have no C layout mapping"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("void extern C function `side_effect` is not supported yet"),
         "{stderr}"
     );
     assert!(

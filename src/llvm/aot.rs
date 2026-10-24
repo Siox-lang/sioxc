@@ -229,6 +229,7 @@ mod tests {
                         integer_arguments: vec![false],
                         float_result: false,
                         integer_result: false,
+                        void_result: false,
                     },
                 },
                 ProcessValue {

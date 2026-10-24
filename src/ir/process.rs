@@ -1152,6 +1152,9 @@ pub enum ProcessValueKind {
         float_result: bool,
         /// Whether the non-float result is a signed kernel integer.
         integer_result: bool,
+        /// Whether the C function returns nothing: called for its effect,
+        /// it reads as 0.
+        void_result: bool,
     },
     /// A value-producing operation owned by the fixed simulation runtime.
     HostCall {
@@ -1457,6 +1460,7 @@ impl ProcessIr {
                 integer_arguments: integer_args.clone(),
                 float_result: *f64_ret,
                 integer_result: *integer_ret,
+                void_result: false,
             },
             Expr::Unknown => ProcessValueKind::Invalid,
         };

@@ -269,6 +269,7 @@ impl<'a> Checker<'a> {
                         }
                         let expected = f.ret.as_ref().map(|ty| self.ast_ty(ty));
                         self.check_function_fallthrough(f, b, &body_sym);
+                        let saved_fn = self.current_fn.replace(self.resolved.declared(f.name.span));
                         self.check_block_with(
                             b,
                             &body_dirs,
@@ -277,6 +278,7 @@ impl<'a> Checker<'a> {
                             &body_index_bounds,
                             expected.as_ref(),
                         );
+                        self.current_fn.set(saved_fn);
                         *self.type_params.borrow_mut() = saved;
                     }
                 }

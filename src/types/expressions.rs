@@ -558,6 +558,58 @@ impl<'a> Checker<'a> {
                 span,
                 ..
             } => {
+                // A C `void` function runs for its effect, which only a
+                // testbench (or a function it calls) can order; hardware has
+                // no place to put the call. A call from hardware to a function
+                // is checked once every body is seen, for whether the function
+                // reaches such an operation.
+                if let Expr::Path(path) = callee.as_ref() {
+                    let callee_id = self
+                        .resolved
+                        .resolved(path.span)
+                        .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Fn));
+                    let void = callee_id.is_some_and(|id| self.void_extern_fns.contains(&id));
+                    match (callee_id, self.current_fn.get()) {
+                        (Some(id), Some(current)) if self.in_fn_body.get() => {
+                            if void {
+                                self.testbench_only_fns
+                                    .borrow_mut()
+                                    .insert(current, crate::syntax::pretty::expr_string(callee));
+                            }
+                            self.fn_callees
+                                .borrow_mut()
+                                .entry(current)
+                                .or_default()
+                                .push(id);
+                        }
+                        // A signal initializer runs at elaboration, where a
+                        // function's `read` is compile-time file I/O.
+                        (Some(id), _)
+                            if !void
+                                && !self.in_testbench.get()
+                                && !self.in_fn_body.get()
+                                && !self.in_initializer.get() =>
+                        {
+                            self.hardware_fn_calls.borrow_mut().push((
+                                id,
+                                expr_span(callee),
+                                crate::syntax::pretty::expr_string(callee),
+                            ));
+                        }
+                        _ => {}
+                    }
+                    if void && !self.in_testbench.get() && !self.in_fn_body.get() {
+                        self.error_with_help(
+                            codes::INVALID_METHOD_CALL,
+                            expr_span(callee),
+                            format!(
+                                "`{}` returns nothing, so it can only be called in a testbench",
+                                crate::syntax::pretty::expr_string(callee)
+                            ),
+                            "give the C function a scalar result to use it in hardware".to_string(),
+                        );
+                    }
+                }
                 // The runtime's random numbers and file queries run in a
                 // testbench; in hardware they lowered to an intrinsic the
                 // scheduler could not evaluate (#252). A signal initializer's
@@ -571,6 +623,13 @@ impl<'a> Checker<'a> {
                         let name = segment.text.as_str();
                         let random = matches!(name, "rand" | "randint" | "uniform" | "seed");
                         let file = matches!(name, "read" | "exists") && !self.in_initializer.get();
+                        if runtime && (random || file) && self.in_fn_body.get() {
+                            if let Some(current) = self.current_fn.get() {
+                                self.testbench_only_fns
+                                    .borrow_mut()
+                                    .insert(current, name.to_string());
+                            }
+                        }
                         if runtime
                             && (random || file)
                             && !self.in_testbench.get()
@@ -922,6 +981,38 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Int { .. } | Expr::CharLit { .. } | Expr::StrLit { .. } => {}
+        }
+    }
+
+    /// Report each call from hardware to a function that reaches, through
+    /// any chain of calls, an operation only a testbench can run. It used to
+    /// fail in lowering, with no word of which call was at fault.
+    pub(super) fn check_hardware_fn_calls(&mut self) {
+        let calls = std::mem::take(&mut *self.hardware_fn_calls.borrow_mut());
+        for (id, span, name) in calls {
+            let mut seen = HashSet::new();
+            let mut stack = vec![id];
+            let mut found = None;
+            while let Some(next) = stack.pop() {
+                if !seen.insert(next) {
+                    continue;
+                }
+                if let Some(operation) = self.testbench_only_fns.borrow().get(&next) {
+                    found = Some(operation.clone());
+                    break;
+                }
+                stack.extend(self.fn_callees.borrow().get(&next).into_iter().flatten());
+            }
+            if let Some(operation) = found {
+                self.error_with_help(
+                    codes::INVALID_METHOD_CALL,
+                    span,
+                    format!("`{name}` reaches `{operation}`, which only a testbench can run"),
+                    format!(
+                        "call `{name}` from a `#[test]` entity, or keep `{operation}` out of it"
+                    ),
+                );
+            }
         }
     }
 }
