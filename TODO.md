@@ -12,7 +12,62 @@ standard library, both 225-program corpora, native VCD/FST results and the full
 local CI gate. See the [acceptance evidence](https://github.com/Siox-lang/siox-paper/blob/main/docs/phase1-audit.md). The tasks
 below are remaining extensions and later-phase work, not completed history.
 
-Legend: 🔴 not started · 🟡 partial / constrained.
+Legend: 🔴 not started · 🟡 partial / constrained · ❓ needs a design decision.
+
+## Open issues and decisions
+
+As of 2026-10-24 every GitHub issue Antigravity filed through #266 is fixed
+and closed, except these:
+
+- 🟡 **#143, #144 — custom-operator result aliases (Codex).** Chained custom
+  operators fed into built-in ones, and an alias of an operator result
+  compared with its underlying type. Codex's fixes (`9d84a3c`, `0cffa4d`) are
+  being integrated on its unpushed `feat/proposal-foundations` branch.
+
+Choices made while fixing issues, where the spec was silent or the reporter
+expected something else. Each has a comment on its issue; confirm or change:
+
+- ❓ **Slice labels (#224 vs #262).** An index into a slice counts positions
+  from the slice's left end, Rust-style (`arr[1..3][0]` is `arr[1]`), but a
+  slice's attributes keep the labels it selects, VHDL-style
+  (`arr[2..1]'left` is 2). Pick one rule for both.
+- ❓ **Generic newtypes (#220).** `struct Box<T>(T)` is an error, because
+  derivation needs a known representation. Supporting it means substituting
+  the base everywhere a layout is derived.
+- ❓ **Width-only vector direction (#232).** `unsigned[8]` is labelled `0..7`
+  ascending, so `v[..3]` is `v[0..3]`, the low nibble bit-reversed. VHDL
+  defaults to `downto`.
+- ❓ **`integer(s)` of a `signed` (#246).** The raw word by the spec, with
+  `sext(s)` giving the value. Closed as not planned; reopen if `integer(s)`
+  should mean the value.
+- ❓ **Concatenation targets (#249).** `{x, y} = c` is most significant (highest
+  label) first, per the spec, not VHDL's positional `(x, y) <= c`.
+- ❓ **`Complex` in std.** Multiplication, division, equality, magnitude,
+  conjugate and mixing with `real` were proposed and await a decision.
+
+Limitations these fixes turned from silent miscompiles into diagnostics. Each
+is now an error with a suggested rewrite; supporting it is future work:
+
+- 🔴 **Run-time slice bounds in testbenches** (#173, #195, #209, #219):
+  `v[hi..lo]` and `arr[hi..lo]` with non-constant bounds. A packed slice could
+  lower to a shift and mask when the target width is known.
+- 🔴 **Newtypes over non-bit arrays** (#176, #206): `struct T(Point[])`,
+  `struct T(integer[])` and `struct T(unsigned[8][4])`. Array families record
+  one element type by name, so their elements would read as single bits.
+  Supporting them needs a family element layout.
+- 🔴 **`inout` ports wired by assignment** (#191): `child.io = net` is
+  rejected; only the construction literal aliases the net. Supporting it means
+  aliasing at the assignment and removing the one-way driver.
+- 🔴 **Polymorphic recursion** (#175): a generic function that calls itself
+  with other argument types has no finite expansion and is an error, which is
+  likely final.
+- 🟡 **Per-call checks of generic bodies** (#241, #250): a generic body is
+  type-checked once per distinct set of type arguments. Its diagnostics point
+  into the body, with no note naming the call that instantiated it.
+- 🟡 **Attribute folding of compound values** (#203, #224): `'length`,
+  `'left`, `'right`, `'high`, `'low` and `'ascending` fold for literals and
+  slices with literal bounds only. A slice with constant but non-literal
+  bounds still needs a declaration.
 
 ## Phase 1 exit criteria
 
@@ -81,18 +136,6 @@ the [ingress invariants](https://github.com/Siox-lang/siox-paper/blob/main/docs/
 when extending the IR; executable extensions and optimization measurements are
 listed under LLVM and Output below.
 
-- 🔴 **Type inference is quadratic on long operator chains.**
-  `Checker::type_of` records each expression's type but never reads it back,
-  so every level of a left-deep chain re-infers the whole chain below it:
-  `y = x + x + … + x` takes 1.9 s at 1000 terms, 6.7 s at 2000 and 28 s at
-  4000 (`--emit metadata`). A span-keyed memo must respect that one span can
-  be checked under different symbol tables (generic bodies). Found
-  2026-10-13 while probing stack depth.
-- 🔴 **Nested `xor` in hardware.** `y = a xor b xor c` (or
-  `(a xor b) xor c`) on `unsigned[8]` ports fails E-P017 ("cannot derive a
-  digital scheduler expression from Invalid"); one `xor`, `and`/`or` chains
-  and `xor` mixed with `or` all lower. Found 2026-10-13 writing the benchmark
-  workload; reproduces on current main.
 - 🔴 **Hardware scalar packed-index metavalues.** A pure source function
   returning a `Logic` element from a packed struct port currently loses the
   discriminant in hardware lowering (`copy.data[6]` on `"01XZUWLH-"` returns
