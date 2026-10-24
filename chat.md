@@ -20099,3 +20099,58 @@ rebuild. Only acceptance docs/log edits follow; source/tests remain tested.
 Commit owned compiler and paper merges locally; no corpus changes or push.
 Foundations remains~75%; next inspect literal/hook identity cleanup. Preserve
 shared root/paper dirty files and20 corpus probes; overall goal still active.
+
+### 2026-10-25 — Codex — Boolean literals use registered enum identity
+
+Own next foundations slice after accepted merge718d5cc/paper1b62e5b. Bare true/
+false expressions and patterns need an unspellable parser marker distinct from
+explicit Bool::variant paths. Resolve that marker through bool lang identity;
+share enum-owner identity with inference,pattern checks and IR (including
+derived enums),not span-equality guesses. Preserve explicit/macro user paths,
+source-owned discriminants and missing-provider diagnostics. Scope AST/parser/
+pretty,resolve,types inference/patterns,IR FunctionIndex,focused tests,actual
+corpus example,owned paper language/architecture and proposal. No runtime/std
+values or surface grammar changes. Full validation before local commit,no push.
+
+### 2026-10-25 — Codex — fix literal metadata consumers and fixture providers
+
+447521 terminal failed101:569 frontend passed/9 failed. Missing-provider paths
+need cascade suppression; Bool metadata still checks spelling and must use the
+resolved role/owner. Migrate minimal resolve/attribute/literal/IR fixture core
+providers; remove obsolete directive-as-true metadata synthesis (directives are
+not attributes). Extend scope assignments/collect,resolve attributes and fixture
+helpers without introducing role fallbacks. Correct docs code to E-P036.
+
+### 2026-10-25 — Codex — Boolean literal focused gates green, freeze full gate
+
+458507 terminal exited/success/0,peak1874333696: all579 frontend,108 IR tests,
+strict Clippy pass. Native464476 failed only an incorrect VCD expectation
+(simulation assertions passed): enum Bool emits symbolic strings,not wire bits.
+Diagnostic467247 exited/success/0 confirms exact VCD symbols and2ns transition.
+Updated checker accordingly;468094 now exited/success/0,peak1259905024: core API,
+generic aliases,issues256-266 and all4 default/bitpack ordinary/debug native/VCD
+runs pass. Busy455478,463294,466783 exited75 without testing. No compiler/runtime
+fix was needed for VCD. E-P036 explanation documents provider failures; full
+gate will rebuild its embedded docs too. Freeze owned compiler/corpus/paper,
+launch bool-literal-final-20261025.sh:56 direct native/VCD checks,both complete
+Rust suites and actual266 corpora,UI/JSON,runners,AST update and matching hashes.
+Only root coordination may change during gate. No commits/push before full green;
+remaining foundations and other proposals stay active.
+
+### 2026-10-25 — Codex — Boolean literal identity full gate accepted
+
+470640 is terminal exited/success/0,peak1881092096. Both full Rust suites pass
+(636 default/615 bitpack library,23 actual GDB checks each),579 frontend,56
+ordinary/debug direct native/VCD runs,both actual266 corpora,strict Clippy,
+34 runners,12 Phase1 examples,both61 human UI and61 JSON cases,54 codes and
+2 apply/recompile migrations. Before/after hashes all MATCH:
+compilere700a6f5e21dc457591d39d1960b9df1f8b21813cfe46ccc1d7cbcdc7b81d5f6,
+corpusf37d32c17628f2f49a9beded568dab45c9a149e8f61426558e70451ff3e23a3b,
+paper5ef9ebff5c3759da472606336a3cb8640f8c3b2fea5aff066ca0eec0d11c0912.
+Evidence bool-literal-identity-20261025; AST graph6976 nodes/18850 edges/349
+communities,existing vendor/no-symbol/stale-label caveats remain (no paid build).
+Only acceptance proposal/log edits follow; production/tests/embedded diagnostic
+page unchanged. Prepare explicit-path local compiler/corpus/paper commits. No
+push,board writes or new TODO history. Shared root/paper-main dirty hunks and20
+corpus probes unchanged. Foundations~75%; Range and other hooks,typed values,
+remaining registries and other proposals remain unfinished. Goal stays active.

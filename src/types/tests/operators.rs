@@ -485,9 +485,10 @@ fn literals_default_to_their_core_types() {
     let ty = |src: &str| {
         let mut sink = DiagnosticSink::new();
         let m = crate::syntax::parse_module(FileId(0), src, &mut sink);
-        let r = crate::resolve::resolve(std::slice::from_ref(&m), &mut sink);
-        let c = Checker::new(&mut sink, &r, std::slice::from_ref(&m));
-        c.type_of(&value_expr(&m), &HashMap::new())
+        let modules = with_core(vec![m], &mut sink);
+        let r = crate::resolve::resolve(&modules, &mut sink);
+        let c = Checker::new(&mut sink, &r, &modules);
+        c.type_of(&value_expr(&modules[0]), &HashMap::new())
     };
     // helper: the value in `impl E { y = <value>; }`
     /// The value expression of the first item, for tests that inspect one
@@ -511,8 +512,7 @@ fn literals_default_to_their_core_types() {
         ty("module m;\nimpl E { y = \"abc\"; }\n"),
         Ty::Array { .. }
     ));
-    // `true`/`false` desugar to `Bool::true`/`Bool::false`, so std's `Bool`
-    // The enum must be in scope for them to resolve as a named type.
+    // The registered core type, not the same-leaf user enum.
     assert!(matches!(
         ty("module m;\nenum Bool { false, true }\nimpl E { y = true; }\n"),
         Ty::Named(_)

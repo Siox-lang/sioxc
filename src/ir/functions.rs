@@ -675,12 +675,7 @@ impl<'a> FunctionIndex<'a> {
         if definition.kind != crate::resolve::DefKind::EnumVariant {
             return None;
         }
-        let written_owner = path
-            .segments
-            .get(path.segments.len().checked_sub(2)?)
-            .and_then(|name| self.resolved.resolved(name.span))
-            .filter(|id| self.resolved.kind_of(*id) == Some(crate::resolve::DefKind::Enum));
-        let owner = self.enum_id_key(written_owner.or(definition.parent)?)?;
+        let owner = self.enum_id_key(self.resolved.enum_owner(path)?)?;
         Some((owner, definition.name.clone()))
     }
 

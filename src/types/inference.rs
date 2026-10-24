@@ -112,30 +112,15 @@ impl<'a> Checker<'a> {
                 if p.segments.len() == 1 {
                     sym.get(&p.segments[0].text).cloned().unwrap_or(Ty::Error)
                 } else {
-                    // `Enum::Variant` has the enum's type, not the variant's.
-                    // `Bool`'s variants (`true`/`false`, desugared to
-                    // `Bool::true`) are ordinary enum values.
+                    // `Enum::Variant` and Boolean literals carry their
+                    // resolver-selected owner, including inherited variants.
                     match self
                         .resolved
                         .resolved(p.span)
                         .and_then(|id| self.resolved.def(id))
                     {
                         Some(d) if d.kind == DefKind::EnumVariant => {
-                            // The enum *named at the use site* decides the
-                            // type, not the one that declares the variant.
-                            // `enum Mid(Base)` inherits Base's variants, so
-                            // `Mid::B` resolves to Base's `B` — typing it as
-                            // `Base` would leave a newtype's own variants
-                            // impossible to assign to a value of that newtype.
-                            let qualifier = p
-                                .segments
-                                .get(p.segments.len().saturating_sub(2))
-                                .and_then(|s| self.resolved.resolved(s.span))
-                                .filter(|id| self.resolved.kind_of(*id) == Some(DefKind::Enum));
-                            match qualifier.or(d.parent) {
-                                Some(pid) => Ty::Named(pid),
-                                None => Ty::Error,
-                            }
+                            self.resolved.enum_owner(p).map_or(Ty::Error, Ty::Named)
                         }
                         _ => self.named_ty(p.span),
                     }

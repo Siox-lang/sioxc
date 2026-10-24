@@ -657,17 +657,7 @@ impl Reads<'_> {
             return None;
         };
         let value = match bound {
-            // `#[keep]` is the flag shorthand for `= true`.
-            Some(Attr { value: None, .. }) => Some(Expr::Path(Path {
-                segments: ["Bool", "true"]
-                    .iter()
-                    .map(|text| Ident {
-                        text: text.to_string(),
-                        span: attr.span,
-                    })
-                    .collect(),
-                span: attr.span,
-            })),
+            // Compiler directives do not synthesize Boolean metadata values.
             Some(Attr { value, .. }) => value.clone(),
             None => self.declared.get(&id).and_then(|d| d.default.clone()),
         };
@@ -797,8 +787,9 @@ mod tests {
         );
         let count = modules.len();
         for source in [
-            "module fixtures; pub enum Bool { false, true } pub enum Bit { '0', '1' } pub struct unsigned(integer);",
-            "module std::prelude; pub use fixtures::{Bool, Bit, unsigned};",
+            include_str!("../../core/primitive.siox"),
+            "module fixtures; pub enum Bit { '0', '1' } pub struct unsigned(integer);",
+            "module std::prelude; pub use core::primitive::Bool; pub use fixtures::{Bit, unsigned};",
         ] {
             modules.push(crate::syntax::parse_module(FileId(modules.len() as u32), source, &mut sink));
         }

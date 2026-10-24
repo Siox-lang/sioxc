@@ -247,11 +247,18 @@ impl<'a> Checker<'a> {
             }
             return;
         };
+        if matches!(value, Expr::Path(path)
+            if path.is_boolean_literal() && self.resolved.resolved(path.span).is_none())
+        {
+            return; // Keep the resolver's provider error as the primary diagnostic.
+        }
         let id = self.attr_identity(a);
         let expected = id.and_then(|id| self.attr_value_kinds.get(&id)).copied();
         let ok = match expected {
             Some(AttrValueTy::Bool) => {
-                matches!(value, Expr::Path(p) if p.segments.len() == 2 && p.segments[0].text == "Bool")
+                matches!(value, Expr::Path(path)
+                    if self.resolved.enum_owner(path).is_some_and(|owner|
+                        self.resolved.lang_of(owner) == Some("bool")))
             }
             Some(AttrValueTy::Str) => matches!(value, Expr::StrLit { .. }),
             // Precedence is consumed before parsing/resolution. Never accept a

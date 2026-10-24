@@ -957,6 +957,9 @@ pub fn dir_str(d: Direction) -> &'static str {
 
 /// Render a path as its `::`-joined segments.
 fn path(p: &Path) -> String {
+    if p.is_boolean_literal() {
+        return p.segments[1].text.clone();
+    }
     p.segments
         .iter()
         .map(|s| s.text.clone())
@@ -1199,15 +1202,6 @@ fn expr_inner(e: &Expr) -> (String, u8) {
         Expr::BitStrLit { base, digits, .. } => (format!("{base}\"{digits}\""), u8::MAX),
         Expr::CharLit { ch, .. } => (format!("'{ch}'"), u8::MAX),
         Expr::StrLit { text, .. } => (format!("\"{}\"", escape_str(text)), u8::MAX),
-        // `true`/`false` desugar to `Bool::true`/`Bool::false`; print them back
-        // in their surface form so source round-trips.
-        Expr::Path(p)
-            if p.segments.len() == 2
-                && p.segments[0].text == "Bool"
-                && matches!(p.segments[1].text.as_str(), "true" | "false") =>
-        {
-            (p.segments[1].text.clone(), u8::MAX)
-        }
         Expr::Path(p) => (path(p), u8::MAX),
         Expr::Field { base, field, .. } => (
             format!("{}.{}", expr_prec(base, POSTFIX_PREC), field.text),
@@ -1360,6 +1354,32 @@ fn expr_inner(e: &Expr) -> (String, u8) {
 mod tests {
     use super::*;
     use crate::diag::{DiagnosticSink, FileId};
+
+    #[test]
+    fn boolean_literals_roundtrip_without_rewriting_explicit_paths() {
+        let source = "module user; enum Bool { false, true }
+            fn literal() -> core::primitive::Bool { return true; }
+            fn explicit() -> Bool { return Bool::true; }
+            fn choose(value: core::primitive::Bool) -> integer {
+                return match value { true => 1, false => 0 };
+            }
+            fn user_choose(value: Bool) -> integer {
+                return match value { Bool::true => 1, Bool::false => 0 };
+            }";
+        roundtrip(source);
+        let mut sink = DiagnosticSink::default();
+        let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+        let printed = print_module(&module);
+        for spelling in [
+            "return true;",
+            "return Bool::true;",
+            "true =>",
+            "Bool::true =>",
+        ] {
+            assert!(printed.contains(spelling), "{printed}");
+        }
+        assert!(!printed.contains("(bool)"), "{printed}");
+    }
 
     /// Assert that printing a parsed module reproduces `src` exactly, and that
     /// reparsing the result is stable. Every case below is one grammar shape

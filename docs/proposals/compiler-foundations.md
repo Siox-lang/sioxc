@@ -9,11 +9,11 @@ declaration registry are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-24, Boolean result identities and resolved aliases):
-both complete Rust suites pass, including 630 default/609 bitpack library tests
-and all 23 DWARF tests per mode. The gate also passes 573 frontend-only tests,
-strict Clippy, 34 runner tests, 52 ordinary/debug native and VCD checks, and both
-actual 265-program corpora. Both modes pass 61 human UI and 61 JSON/schema cases,
+Local acceptance (2026-10-25, Boolean literal/result identities and resolved aliases):
+both complete Rust suites pass, including 636 default/615 bitpack library tests
+and all 23 DWARF tests per mode. The gate also passes 579 frontend-only tests,
+strict Clippy, 34 runner tests, 56 ordinary/debug native and VCD checks, and both
+actual 266-program corpora. Both modes pass 61 human UI and 61 JSON/schema cases,
 cover all 54 active codes and apply/recompile both migration fixtures.
 Compiler, corpus and documentation fingerprints match before/after the frozen
 gate. Retained evidence and fixture migrations are recorded in
@@ -474,12 +474,30 @@ both module orders and absence of the role. Lightweight checker fixtures load
 the actual `core::primitive` source instead of retaining a production spelling
 fallback for their local stand-in. Native corpus coverage keeps a user `Bool`
 distinct across hardware and named processes. The full gate above validates
-this migration; remaining library-type classification and literal desugaring
+this migration; library-type classification and the literal migration below
 are separate work.
 The native event case also exposed an existing destination-layout preflight gap:
 one-bit storage-event values were emit-capable but rejected as local
 initializers. The support check now accepts that already-supported one-bit case
 without permitting wider layouts or invalid storage references.
+
+**Implemented Boolean literal identity (2026-10-25).** Bare `true`/`false`
+expressions and patterns now use a parser-internal marker, resolved through the
+registered `bool` enum rather than a visible declaration named `Bool`. The shared
+enum-owner query serves typing, pattern domains and IR, including a registered
+derived enum whose variants belong to its base. Explicit enum paths stay
+explicit through printing and macro expansion, even with coincident generated
+spans. Missing/non-enum providers and missing variants receive `E-P036`, never
+an inferred user-type fallback. Source declarations still own the discriminants.
+Renamed/reordered providers, both module orders, negative pattern domains,
+round trips and macros have regressions; native coverage also exercises hardware
+and named processes. The full matrix above passes with unchanged compiler,
+corpus and paper fingerprints; these checks do not finish other hook consumers.
+Boolean metadata checks use the registered type/owner too, not the qualifier's
+spelling. The old directive-to-`true` metadata synthesis is removed: compiler
+directives are not attribute values. Waveform checks retain the runtime's
+symbolic enum representation, including `true`/`false` transitions, rather than
+assuming Boolean ports are encoded as VCD wire bits.
 
 `#[test]` and lint directives are compiler built-ins, not importable declarations;
 do not recreate `std::attrs::test` or make test discovery depend on metadata.

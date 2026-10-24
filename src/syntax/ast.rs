@@ -171,6 +171,33 @@ pub struct Path {
     pub span: Span,
 }
 
+/// Internal qualifier for bare Boolean literals, which no source path can spell.
+const BOOLEAN_LITERAL: &str = "(bool)";
+
+impl Path {
+    /// Keep literal syntax separate from an explicitly written enum path.
+    pub(crate) fn boolean_literal(variant: String, span: Span) -> Self {
+        Self {
+            segments: vec![
+                Ident {
+                    text: BOOLEAN_LITERAL.to_string(),
+                    span,
+                },
+                Ident {
+                    text: variant,
+                    span,
+                },
+            ],
+            span,
+        }
+    }
+
+    /// A parser-created Boolean literal, not an equal-spelled user declaration.
+    pub(crate) fn is_boolean_literal(&self) -> bool {
+        matches!(self.segments.as_slice(), [owner, _] if owner.text == BOOLEAN_LITERAL)
+    }
+}
+
 /// A single identifier token, kept with its span so later stages can point at
 /// the name the user wrote rather than at a synthesized one.
 #[derive(Clone, Debug)]

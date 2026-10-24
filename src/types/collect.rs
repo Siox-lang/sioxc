@@ -259,8 +259,10 @@ impl<'a> Checker<'a> {
                     return;
                 };
                 self.attr_targets.insert(id, a.targets.clone());
+                let boolean = matches!(self.ast_ty(&a.ty), Ty::Named(id)
+                    if self.resolved.lang_of(id) == Some("bool"));
                 let kind = match type_head_name(&a.ty) {
-                    Some("Bool") => AttrValueTy::Bool,
+                    _ if boolean => AttrValueTy::Bool,
                     Some("string") | Some("str") => AttrValueTy::Str,
                     Some("integer") => AttrValueTy::Integer,
                     _ => AttrValueTy::Other,

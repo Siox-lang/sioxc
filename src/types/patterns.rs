@@ -192,21 +192,22 @@ impl<'a> Checker<'a> {
             Pattern::Path(path) if path.segments.len() == 2 => {
                 let qualifier = &path.segments[0];
                 let qualifier_key = self
-                    .ident_key(qualifier)
+                    .resolved
+                    .enum_owner(path)
+                    .and_then(|id| self.definition_key(id))
+                    .or_else(|| self.ident_key(qualifier))
                     .unwrap_or_else(|| qualifier.text.clone());
-                // `true`/`false` desugar to `Bool::…` with one span for both
-                // segments, so the qualifier resolves as the variant (#256).
-                let desugared = qualifier.span == path.span;
+                if path.is_boolean_literal() && self.resolved.enum_owner(path).is_none() {
+                    return; // Resolution already diagnosed the missing provider/variant.
+                }
                 match self.enum_operand_name(ty) {
                     Some(expected) if qualifier_key == expected => {}
-                    Some(expected)
-                        if desugared && expected.rsplit("::").next() == Some(qualifier.text.as_str()) => {}
                     Some(expected) => self.error_with_help(
                         codes::TYPE_MISMATCH,
                         path.span,
                         format!(
                             "pattern `{}` belongs to enum `{}`, but the matched value is `{expected}`",
-                            path.segments[1].text, qualifier.text
+                            path.segments[1].text, qualifier_key
                         ),
                         format!(
                             "use a `{}::…` variant in this match",
@@ -218,7 +219,7 @@ impl<'a> Checker<'a> {
                         path.span,
                         format!(
                             "enum pattern `{}::{}` cannot match a {} value",
-                            qualifier.text,
+                            qualifier_key,
                             path.segments[1].text,
                             self.ty_display(ty)
                         ),

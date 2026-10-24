@@ -6,7 +6,7 @@ use crate::diag::FileId;
 /// A minimal `ClockLike` impl so self-contained test sources can use the
 /// `clk.rising()` edge methods (std provides these for real designs).
 const CLK_PRELUDE: &str = "\n\
-        enum Bool { false, true }\n\
+        use core::primitive::Bool;\n\
         enum Bit { '0', '1' }\n\
         enum ULogic { 'U' = 4, 'X' = 3, '0' = 0, '1' = 1, 'Z' = 2, 'W' = 5, 'L' = 6, 'H' = 7, '-' = 8 }\n\
         enum Logic(ULogic);\n\
@@ -164,7 +164,12 @@ fn lower_src(src: &str) -> Design {
     let mut sink = DiagnosticSink::new();
     let module = crate::syntax::parse_module(FileId(0), src, &mut sink);
     assert_eq!(sink.error_count(), 0, "parse errors:\n{src}");
-    let modules = std::slice::from_ref(&module);
+    let core = crate::syntax::parse_module(
+        FileId(1),
+        include_str!("../../core/primitive.siox"),
+        &mut sink,
+    );
+    let modules = &[module, core];
     let resolved = crate::resolve::resolve(modules, &mut sink);
     let typed = crate::types::check(modules, &resolved, &mut sink);
     let hier = crate::elab::elaborate(modules, &resolved, &typed, &mut sink);
@@ -210,7 +215,12 @@ fn lower_diagnostics(src: &str) -> Vec<crate::diag::Diagnostic> {
     let src = format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n{CLK_PRELUDE}");
     let mut sink = DiagnosticSink::new();
     let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-    let modules = std::slice::from_ref(&module);
+    let core = crate::syntax::parse_module(
+        FileId(1),
+        include_str!("../../core/primitive.siox"),
+        &mut sink,
+    );
+    let modules = &[module, core];
     let resolved = crate::resolve::resolve(modules, &mut sink);
     let typed = crate::types::check(modules, &resolved, &mut sink);
     let hier = crate::elab::elaborate(modules, &resolved, &typed, &mut sink);

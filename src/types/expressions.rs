@@ -954,6 +954,9 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Path(path) => {
+                if path.is_boolean_literal() && self.resolved.resolved(path.span).is_none() {
+                    return; // Resolution already diagnosed the missing provider/variant.
+                }
                 let local = path
                     .segments
                     .first()

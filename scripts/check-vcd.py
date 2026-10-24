@@ -60,7 +60,15 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
 
 
 def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile in ("entity_aliases_test", "entity_alias_connections_test"):
+    if profile == "bool_literal_identity_test":
+        root = "BoolLiterals.dut."
+        assert values(changes, root + "yes") == ["true"]
+        assert values(changes, root + "no") == ["false"]
+        assert changes[root + "enabled"] == [(0, "true"), (2_000_000, "false")]
+        assert changes[root + "selected"] == [
+            (0, f"{13:064b}"), (2_000_000, f"{29:064b}")
+        ]
+    elif profile in ("entity_aliases_test", "entity_alias_connections_test"):
         root, expected = (
             ("AliasTest", (7, 7, 7)) if profile == "entity_aliases_test"
             else ("AliasOrder", (13, 13, 17))

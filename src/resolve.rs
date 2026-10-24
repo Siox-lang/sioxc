@@ -300,6 +300,23 @@ impl Resolved {
     pub fn kind_of(&self, id: DefId) -> Option<DefKind> {
         self.def(id).map(|d| d.kind)
     }
+
+    /// The enum selected by a variant path, including inherited variants and
+    /// Boolean literals whose compiler role is independent of lexical scope.
+    pub(crate) fn enum_owner(&self, path: &Path) -> Option<DefId> {
+        let variant = self.def(self.resolved(path.span)?)?;
+        if variant.kind != DefKind::EnumVariant {
+            return None;
+        }
+        if path.is_boolean_literal() {
+            return self.lang("bool");
+        }
+        path.segments
+            .get(path.segments.len().checked_sub(2)?)
+            .and_then(|owner| self.resolved(owner.span))
+            .filter(|id| self.kind_of(*id) == Some(DefKind::Enum))
+            .or(variant.parent)
+    }
 }
 
 /// Resolve a crate's worth of parsed modules.
@@ -2593,6 +2610,33 @@ impl<'a> Resolver<'a> {
     /// Resolve a value path: a local, a constant, or an enum variant. A
     /// qualified path checks the exact module rather than any in scope.
     fn resolve_value_path(&mut self, p: &Path) {
+        if p.is_boolean_literal() {
+            let variant = &p.segments[1].text;
+            let Some(owner) = self.out.lang("bool") else {
+                self.error(
+                    codes::LANG_ITEM,
+                    p.span,
+                    format!("Boolean literal `{variant}` requires the registered `bool` enum"),
+                );
+                return;
+            };
+            if self.out.kind_of(owner) != Some(DefKind::Enum) {
+                self.error(
+                    codes::LANG_ITEM,
+                    p.span,
+                    "Boolean literals require the `bool` lang role to name an enum".to_string(),
+                );
+            } else if let Some(id) = self.variant(owner, variant) {
+                self.out.uses.insert(p.span, id);
+            } else {
+                self.error(
+                    codes::LANG_ITEM,
+                    p.span,
+                    format!("the registered Boolean enum has no variant `{variant}`"),
+                );
+            }
+            return;
+        }
         if p.segments.len() >= 2 {
             let enum_position = p.segments.len() - 2;
             let head = p.segments[enum_position].text.clone();
@@ -2629,10 +2673,8 @@ impl<'a> Resolver<'a> {
                             // here says which type the value has. It also marks
                             // the enum itself used, for the import lint.
                             //
-                            // Skip it when the spans coincide: a desugared path
-                            // (`true` -> `Bool::true`) synthesizes a qualifier
-                            // over the whole path, and overwriting that entry
-                            // would lose the variant the path resolves to.
+                            // Macro expansion can give all segments one span;
+                            // keep the path's variant identity in that case.
                             if p.segments[enum_position].span != p.span {
                                 self.record_qualified_use(p.segments[enum_position].span, id);
                             }
@@ -3330,17 +3372,23 @@ mod tests {
     const DIGITAL_PRELUDE: &str = "\n\
         enum Bit { '0', '1' }\n\
         enum Logic { '0', '1', 'Z', 'X', 'U', 'W', 'L', 'H', '-' }\n\
-        enum Bool { false, true }\n";
+        use core::primitive::Bool;\n";
 
     /// Resolve `src` with the digital prelude appended, returning the resolution
     /// and its error count.
     fn resolve_src(src: &str) -> (Resolved, usize) {
         let src = format!("{src}{DIGITAL_PRELUDE}");
         let mut sink = DiagnosticSink::new();
-        let mut module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
+        let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
         assert_eq!(sink.error_count(), 0, "source failed to parse:\n{src}");
-        let resolved = resolve(std::slice::from_ref(&module), &mut sink);
-        attributes::attach(std::slice::from_mut(&mut module), &resolved, &mut sink);
+        let core = crate::syntax::parse_module(
+            FileId(1),
+            include_str!("../core/primitive.siox"),
+            &mut sink,
+        );
+        let mut modules = [module, core];
+        let resolved = resolve(&modules, &mut sink);
+        attributes::attach(&mut modules, &resolved, &mut sink);
         (resolved, sink.error_count())
     }
 
@@ -3389,7 +3437,12 @@ mod tests {
         let src = format!("{src}{DIGITAL_PRELUDE}");
         let mut sink = DiagnosticSink::new();
         let module = crate::syntax::parse_module(FileId(0), &src, &mut sink);
-        resolve(std::slice::from_ref(&module), &mut sink);
+        let core = crate::syntax::parse_module(
+            FileId(1),
+            include_str!("../core/primitive.siox"),
+            &mut sink,
+        );
+        resolve(&[module, core], &mut sink);
         sink
     }
 

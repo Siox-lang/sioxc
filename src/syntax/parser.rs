@@ -2554,20 +2554,11 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Pattern::Wildcard
             }
-            // `true`/`false` are `Bool`'s variants, as in expression position:
-            // left bare they named no variant, and a `match` on a `Bool`
-            // could not cover it (#256).
+            // Patterns and expressions select the registered Boolean enum.
             TokenKind::Ident if self.cur_text() == "true" || self.cur_text() == "false" => {
                 let variant = self.cur_text().to_string();
                 let t = self.bump();
-                let seg = |text: &str| Ident {
-                    text: text.to_string(),
-                    span: t.span,
-                };
-                Pattern::Path(Path {
-                    segments: vec![seg("Bool"), seg(&variant)],
-                    span: t.span,
-                })
+                Pattern::Path(Path::boolean_literal(variant, t.span))
             }
             // A radix bit pattern `x"A?"` / `o"7?"` (spec 3.22): a one-letter
             // prefix glued to a string; `?` masks one radix group (nibble/triad)
@@ -3457,20 +3448,11 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenKind::Ident if self.cur_text() == "true" || self.cur_text() == "false" => {
-                // `true`/`false` are not primitives — they are the two variants
-                // of std's `enum Bool`. Desugar to the `Bool::<variant>` path so
-                // they resolve, type, and evaluate through the ordinary
-                // enum-variant machinery; std owns their values, not the parser.
+                // Std owns the variants and values; resolution selects the
+                // registered enum without looking up a user-spellable qualifier.
                 let variant = self.cur_text().to_string();
                 let t = self.bump();
-                let seg = |text: &str| Ident {
-                    text: text.to_string(),
-                    span: t.span,
-                };
-                Expr::Path(Path {
-                    segments: vec![seg("Bool"), seg(&variant)],
-                    span: t.span,
-                })
+                Expr::Path(Path::boolean_literal(variant, t.span))
             }
             // A one-letter prefix glued to a string is a bit-string literal:
             // `x"123ABC"` (hex) / `o"17"` (octal). The parser only recognizes
