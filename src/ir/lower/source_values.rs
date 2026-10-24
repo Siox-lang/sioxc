@@ -1233,6 +1233,7 @@ mod tests {
                     integer_arguments: Vec::new(),
                     float_result: false,
                     integer_result: true,
+                    void_result: false,
                 },
             },
             None,

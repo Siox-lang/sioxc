@@ -1055,6 +1055,7 @@ pub(super) fn process_value<'ctx>(
             integer_arguments,
             float_result,
             integer_result,
+            void_result,
         } => {
             use inkwell::types::BasicMetadataTypeEnum as MetadataType;
             use inkwell::values::BasicMetadataValueEnum as MetadataValue;
@@ -1099,13 +1100,23 @@ pub(super) fn process_value<'ctx>(
                 }
             }
             let function = module.get_function(name).unwrap_or_else(|| {
-                let signature = if *float_result {
+                let signature = if *void_result {
+                    context.void_type().fn_type(&parameter_types, false)
+                } else if *float_result {
                     float.fn_type(&parameter_types, false)
                 } else {
                     context.i64_type().fn_type(&parameter_types, false)
                 };
                 module.add_function(name, signature, Some(Linkage::External))
             });
+            // `fn srand(seed: integer);`: called for its effect, read as 0.
+            if *void_result {
+                builder.build_call(function, &argument_values, "").ok()?;
+                cache.clear();
+                let zero = context.i64_type().const_zero();
+                cache.evaluated_calls.insert((id, active), zero);
+                return fit(builder, zero, width);
+            }
             let returned = match builder
                 .build_call(function, &argument_values, "pv.foreign")
                 .ok()?

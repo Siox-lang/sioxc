@@ -532,6 +532,7 @@ pub(super) fn digital_node(
             integer_arguments,
             float_result,
             integer_result,
+            ..
         } => Expr::CCall {
             name: name.clone(),
             args: arguments

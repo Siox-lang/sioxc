@@ -141,6 +141,11 @@ impl<'a> Checker<'a> {
             fn_arity: HashMap::new(),
             fn_param_types: HashMap::new(),
             fn_return_types: HashMap::new(),
+            void_extern_fns: HashSet::new(),
+            current_fn: std::cell::Cell::new(None),
+            testbench_only_fns: Default::default(),
+            fn_callees: Default::default(),
+            hardware_fn_calls: Default::default(),
             const_types: HashMap::new(),
             const_values: HashMap::new(),
             suffix_types: HashMap::new(),
@@ -673,6 +678,9 @@ impl<'a> Checker<'a> {
                             .collect(),
                     );
                     self.fn_return_types.insert(id, f.ret.clone());
+                    if f.ret.is_none() {
+                        self.void_extern_fns.insert(id);
+                    }
                 }
             }
             Item::Const(constant) => {

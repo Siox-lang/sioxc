@@ -3369,6 +3369,7 @@ mod demand_tests {
                 integer_arguments: vec![true],
                 float_result: false,
                 integer_result: true,
+                void_result: false,
             },
             ProcessValueKind::CheckedIndex {
                 index: ProcessValueId(0),

@@ -227,18 +227,10 @@ impl<'a> Checker<'a> {
             };
             self.check_extern_c_type(function, ty, "parameter");
         }
-        match &function.ret {
-            Some(ty) => self.check_extern_c_type(function, ty, "return type"),
-            None => self.error_with_help(
-                codes::TYPE_MISMATCH,
-                function.name.span,
-                format!(
-                    "void extern C function `{}` is not supported yet",
-                    function.name.text
-                ),
-                "extern calls currently need a scalar return value; statement-only C calls have no hardware IR representation"
-                    .to_string(),
-            ),
+        // No return type is a C `void` function, called for its effect from
+        // a testbench or a function body (checked at the call).
+        if let Some(ty) = &function.ret {
+            self.check_extern_c_type(function, ty, "return type");
         }
     }
 

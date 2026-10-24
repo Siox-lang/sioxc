@@ -757,6 +757,7 @@ impl<'a> Lowering<'a> {
                         integer_arguments: integer_args,
                         float_result: f64_ret,
                         integer_result: integer_ret,
+                        void_result: false,
                     },
                 },
                 None,

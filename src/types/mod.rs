@@ -185,6 +185,7 @@ pub fn check<'a>(
             checker.check_item(item);
         }
     }
+    checker.check_hardware_fn_calls();
     checker.finish()
 }
 
@@ -402,6 +403,18 @@ struct Checker<'a> {
     /// to type as `Error` even for a known declaration, suppressing checks in
     /// assignments, conditions, arguments, and enclosing expressions.
     fn_return_types: HashMap<DefId, Option<Type>>,
+    /// `extern "C"` functions declared without a result: C `void`.
+    void_extern_fns: HashSet<DefId>,
+    /// The function whose body is being checked, if any.
+    current_fn: std::cell::Cell<Option<DefId>>,
+    /// Functions whose bodies call an operation only a testbench can run
+    /// (a C `void` function, `rand`), with that operation's name.
+    testbench_only_fns: std::cell::RefCell<HashMap<DefId, String>>,
+    /// The functions each function body calls.
+    fn_callees: std::cell::RefCell<HashMap<DefId, Vec<DefId>>>,
+    /// Calls from hardware to functions, checked once every body has been
+    /// seen against `testbench_only_fns`.
+    hardware_fn_calls: std::cell::RefCell<Vec<(DefId, Span, String)>>,
     /// Module constant definition -> its declared value type. Constant paths
     /// are values, not nominal types; retaining the declaration identity lets
     /// equal leaves in different modules keep distinct contracts.

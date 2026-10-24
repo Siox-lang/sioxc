@@ -525,6 +525,7 @@ mod tests {
                     integer_arguments: vec![true],
                     float_result: false,
                     integer_result: true,
+                    void_result: false,
                 },
             },
             None,
