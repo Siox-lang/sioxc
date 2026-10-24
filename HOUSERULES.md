@@ -158,6 +158,11 @@ detail — don't "migrate" them.
   roadmap phase or active goal, a percentage, and the evidence behind it (for
   example corpus parity and remaining gaps). It is an engineering estimate,
   not a promise or substitute for the actual completion gate.
+- **Branches for features and big changes; small edits directly.** A
+  feature, a behaviour change or a multi-file refactor goes on a branch and
+  lands through a PR whose CI passes. A small edit (a typo, a doc or comment
+  fix, a one-line correction, a log entry) may be committed straight to
+  `main`.
 - **Amend freely while local**, never after pushing.
 - **Push is a separate, explicit decision.** Don't push another agent's
   unreviewed work.
