@@ -68,6 +68,18 @@ def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> No
         for instance, value in zip(("direct", "group[0]", "group[1]"), expected):
             path = f"{root}.{instance}.value"
             assert values(changes, path)[-1] == f"{value:064b}", path
+    elif profile == "generic_entity_aliases_test":
+        root = "GenericAliases."
+        for instance, value in (("direct", 9), ("group[0]", 10), ("group[1]", 10), ("selected", 11)):
+            path = root + instance + ".count"
+            assert values(changes, path)[-1] == f"{value:064b}", path
+        for instance, value in (("group[0]", 11), ("group[1]", 22), ("selected", 31)):
+            path = root + instance + ".value"
+            assert values(changes, path)[-1] == f"{value:064b}", path
+        assert float(values(changes, root + "direct.value")[-1]) == 2.5
+    elif profile == "generic_data_aliases_test":
+        assert values(changes, "AliasData.wire.value")[-1] == f"{6:09b}"
+        assert values(changes, "AliasData.wide.value")[-1] == f"{11:010b}"
     elif profile == "concurrent_process_test":
         for signal, when in [("a", 2_000_000), ("b", 1_000_000)]:
             expected = [(0, "0"), (when, "1")]

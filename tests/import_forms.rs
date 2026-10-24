@@ -4,7 +4,7 @@
 
 use siox::compiler::{CompileRequest, Compiler, Emit, SourceInput};
 
-/// The modules every test imports from.
+/// Auxiliary modules, loaded on demand; recursive declarations are negative fixtures.
 const SHAPES: &[(&str, &str)] = &[
     (
         "shapes/geometry.siox",
@@ -12,13 +12,17 @@ const SHAPES: &[(&str, &str)] = &[
          pub enum Corner { NorthEast, SouthWest }\n\
          pub struct Packet<T> { pub valid: Bit, pub data: T }\n\
          pub type Pair<T> = Packet<T>;\n\
-         pub type Recursive<T> = (T, Recursive<(T, T)>);\n\
          pub type Hue = super::colors::Color;\n\
          pub type ChainedWord = WordAlias;\n\
          pub type WordAlias = WordBase;\n\
          pub type WordBase = unsigned[6..4];\n\
          pub fn double(x: integer) -> integer { return x * 2; }\n\
          pub const SIDES: integer = 4;\n",
+    ),
+    (
+        "shapes/recursive.siox",
+        "module shapes::recursive;\n\
+         pub type Recursive<T> = (T, Recursive<(T, T)>);\n",
     ),
     (
         "shapes/colors.siox",
@@ -57,7 +61,11 @@ fn cyclic_alias_constructors_report_an_error_without_expanding_forever() {
          fn f() -> integer { return integer(A(1)); }\n",
     );
     assert!(!ok, "a cyclic constructor must be rejected");
-    assert!(rendered.contains("cyclic"), "{rendered}");
+    assert!(rendered.contains("error[E-P002]"), "{rendered}");
+    assert!(
+        rendered.contains("is defined in terms of itself"),
+        "{rendered}"
+    );
 }
 
 #[test]
@@ -66,6 +74,10 @@ fn recursive_generic_aliases_report_an_error_without_expanding_forever() {
         (
             "generic_direct_cycle",
             "module main; type Tree<T> = Tree<T>; entity Top { x: Tree<integer> in }",
+        ),
+        (
+            "generic_unused_cycle",
+            "module main; type Tree<T> = (T, Tree<(T, T)>); fn valid() -> integer { return 1; }",
         ),
         (
             "generic_growing_cycle",
@@ -77,7 +89,7 @@ fn recursive_generic_aliases_report_an_error_without_expanding_forever() {
         ),
         (
             "generic_imported_cycle",
-            "module main; use shapes::geometry::Recursive; use shapes::colors; entity Top { x: Recursive<integer> in }",
+            "module main; use shapes::recursive::Recursive; entity Top { x: Recursive<integer> in }",
         ),
         (
             "generic_constructor_cycle",

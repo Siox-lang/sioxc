@@ -12,6 +12,7 @@ pub mod macros;
 pub mod parser;
 pub mod pretty;
 pub mod token;
+pub(crate) mod visit;
 
 pub use ast::Module;
 

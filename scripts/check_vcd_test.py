@@ -32,5 +32,46 @@ class EntityAliasWaveforms(unittest.TestCase):
             check_profile("entity_aliases_test", changes)
 
 
+class GenericAliasWaveforms(unittest.TestCase):
+    def wave(self):
+        data = {
+            f"GenericAliases.{instance}.{field}": [(0, f"{value:064b}")]
+            for instance, field, value in (
+                ("direct", "count", 9), ("group[0]", "count", 10),
+                ("group[1]", "count", 10), ("selected", "count", 11),
+                ("group[0]", "value", 11), ("group[1]", "value", 22),
+                ("selected", "value", 31),
+            )
+        }
+        data["GenericAliases.direct.value"] = [(0, "2.5")]
+        return data
+
+    def test_generic_entity_parameters_and_values(self):
+        check_profile("generic_entity_aliases_test", self.wave())
+
+    def test_wrong_parameter_value_is_rejected(self):
+        data = self.wave()
+        data["GenericAliases.direct.count"] = [(0, f"{103:064b}")]
+        with self.assertRaises(AssertionError):
+            check_profile("generic_entity_aliases_test", data)
+
+    def test_wrong_real_value_is_rejected(self):
+        data = self.wave()
+        data["GenericAliases.direct.value"] = [(0, "3.5")]
+        with self.assertRaises(AssertionError):
+            check_profile("generic_entity_aliases_test", data)
+
+    def test_generic_data_alias(self):
+        check_profile("generic_data_aliases_test", {"AliasData.wire.value": [(0, f"{6:09b}")], "AliasData.wide.value": [(0, f"{11:010b}")]})
+
+    def test_wrong_wider_alias_value_is_rejected(self):
+        with self.assertRaises(AssertionError):
+            check_profile("generic_data_aliases_test", {"AliasData.wire.value": [(0, f"{6:09b}")], "AliasData.wide.value": [(0, f"{6:010b}")]})
+
+    def test_wrong_generic_width_is_rejected(self):
+        with self.assertRaises(AssertionError):
+            check_profile("generic_data_aliases_test", {"AliasData.wire.value": [(0, f"{6:08b}")]})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,13 +9,16 @@ declaration registry are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-23, declaration-index baseline): both complete Rust
-suites, all 23 DWARF tests per mode, 541 frontend-only tests, strict Clippy and
-both 257-program corpora
-pass. Both modes pass 61 human UI and 61 JSON/schema cases, cover all 54 active
-codes and apply/recompile both migration fixtures. The earlier compiler-fix
-integration was followed by 20 ordinary/debug native runs and VCD checks. Retained
-evidence and the fixture-only correction are recorded in [chat.md](../../chat.md).
+Local acceptance (2026-10-24, resolved alias migration): both complete Rust
+suites pass, including 627 default/606 bitpack library tests and all 23 DWARF
+tests per mode. The gate also passes 571 frontend-only tests, strict Clippy,
+34 runner tests, 48 ordinary/debug native and VCD checks, and both actual
+264-program corpora. Both modes pass 61 human UI and 61 JSON/schema cases,
+cover all 54 active codes and apply/recompile both migration fixtures.
+Compiler, corpus and documentation fingerprints match before/after the frozen
+gate. Retained evidence and recursive-fixture isolation are recorded in
+[chat.md](../../chat.md). This is local acceptance, not a claim that the remaining
+proposal sections are complete.
 
 siox is deliberately aligned with Rust at the language level. This proposal
 applies the same habit to the compiler: when sioxc has a structural problem,
@@ -306,7 +309,7 @@ point resolves a name again. Typeck writes its results to side tables keyed by
   registries outside `resolve` so the rule stays enforced.
 
 **Implemented first registry.** `resolve::declarations::DeclarationIndex` borrows
-module constants, free/foreign functions and non-generic transparent aliases,
+module constants, free/foreign functions and transparent alias contracts,
 keyed by `DefId`. The checker reads contracts/initializers directly instead of
 keeping separate `generic_bodies`, `const_types`, `const_values`, `fn_arity`,
 `fn_param_types` and `fn_return_types` maps. IR's separate free-function map is
@@ -372,7 +375,7 @@ native parameter binding. One stale elaboration fixture used an unbound
 `impl Buf<T>` and now uses the already-required `impl<T> Buf<T>` syntax.
 No new implicit binder or grammar rule is introduced.
 
-**Non-generic entity-alias normalization.** The raw declaration index now belongs
+**Transparent alias normalization.** The raw declaration index now belongs
 to `resolve`, so metadata does not need an upward dependency on `types`. One
 normalizer follows resolved alias IDs and preserves applied generic arguments,
 index wrappers and the original expression spans. Unchanged types and bare alias
@@ -391,8 +394,47 @@ and constructor statements share ordered connection lowering instead of becoming
 packed data assignments. Fixed named element connections retain runtime source
 order. Dynamic destinations whose runtime connections cannot be routed remain
 an explicit `E-P017`, never silently discarded calls; full dynamic constructor
-routing is still open. Generic alias applications also remain open: their own
-parameters require shared substitution, not just type-head normalization.
+routing is still open.
+
+Generic aliases now remain declarations through raw resolution: parameters and
+their uses receive identities in the alias's scope. `resolve::normalize_aliases`
+then instantiates applications through the same declaration index, before
+metadata attachment and type checking. Substitution selects parameter `DefId`s,
+not equal spellings, so private constants/functions keep their definition-site
+bindings and arguments keep their caller bindings. Type/value kinds, names,
+duplicates and arity are checked; already-reported count errors do not cascade.
+
+Matching postorder read/write AST walks collect only changed owned shapes while
+contracts are borrowed, then apply them without copying whole modules. Queues
+distinguish the rewritten node kind and preserve repeated-span traversal order,
+including tuple `let` projections. Actual nested type arguments normalize before
+the definition-cycle guard, so `Select<Select<integer>>` is not a false cycle.
+Alias arrays, view targets, tuples, trait arguments, constructor chains and integer-signature
+classification reuse the same normalizer. Old ordinary-alias substitution and
+declaration removal are gone from `syntax::imports`; only the separate
+format-struct syntax rewrite remains there. Typed evaluation, additional
+declaration registries and dynamic constructor routing are still open.
+
+Non-generic constructors use this resolved boundary too. This removes syntax's
+second alias-target map, cloned per-module scopes and constructor qualification
+walk, and prevents a private width function/constant from being rebound to an
+equal name in the caller. Standalone ordinary aliases keep their existing type
+checking behavior; this does not change unconstrained-array sizing rules.
+
+Recursive aliases hidden inside tuples or transformed generic arguments are
+checked through that same normalization path, not just the derivation-head
+graph. This retains the existing rejection of `type Tree<T> = (T, Tree<(T, T)>);`
+after deleting syntax's early expansion. The complete Rust and corpus gates
+cover that rejection alongside valid finite nesting.
+Like direct derivation cycles, nested alias cycles are invalid even when unused.
+Import tests isolate their intentionally recursive declaration in a negative
+module rather than loading it as a dependency of unrelated positive fixtures.
+
+The AST walk includes trait implementation arguments as well as method
+signatures, so an operator's aliased input/output contract is materialized at
+the same boundary. Raw traversal and native addition regressions cover both.
+Parameter-kind classification follows resolved trait heads through applications,
+so `T: Trait<Args>` remains a type parameter rather than a value parameter.
 
 **Acceptance.** No stage after `resolve` looks a declaration up by its leaf
 name; equal leaf names in different modules are covered by a test per

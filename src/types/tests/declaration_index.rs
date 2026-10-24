@@ -28,6 +28,109 @@ fn constant<'a>(module: &'a Module, name: &str) -> &'a ConstDecl {
 }
 
 #[test]
+fn generic_aliases_substitute_resolved_type_and_value_parameters() {
+    let (modules, resolved) = parse(&[
+        "module provider; const BASE: integer = 6; const N: integer = 40;
+         pub entity Device<T, N: integer> {}
+         pub type Pipe<T, N: integer> = Device<T, (N + BASE)>;
+         pub type Route<T, Count: integer> = Pipe<T, Count>;
+         pub type Group<T, Count: integer> = Route<T, Count>[2];
+         pub type Select<T> = T;",
+        "module caller; use provider::{Route, Group, Select, Pipe}; const BASE: integer = 99;
+         const a: Route<real, 3> = 0; const b: Route<Count = 4, T = integer> = 0;
+         const group: Group<integer, 4> = 0; const forwarded: Select<Pipe<integer, 5>> = 0;",
+    ]);
+    let index = DeclarationIndex::collect(&resolved, &modules);
+    for (name, expected) in [("a", 9), ("b", 10), ("forwarded", 11)] {
+        let ty = &constant(&modules[1], name).ty;
+        assert!(index.entity_type_id(ty).is_some(), "{name}");
+        let normalized = index.normalize_type(ty).unwrap();
+        let Type::Generic { args, .. } = normalized.as_ref() else {
+            panic!("{name}: {normalized:?}")
+        };
+        let GenericArg::Positional(value) = &args[1] else {
+            panic!("{args:?}")
+        };
+        assert_eq!(evaluate(value, &index, 0), Ok(expected));
+        assert!(matches!(args[0], GenericArg::PositionalType(_)));
+    }
+    let group = index
+        .normalize_type(&constant(&modules[1], "group").ty)
+        .unwrap();
+    assert!(
+        matches!(group.as_ref(), Type::Indexed { base, .. } if matches!(base.as_ref(), Type::Generic { .. }))
+    );
+}
+
+#[test]
+fn nested_applications_are_not_alias_definition_cycles() {
+    let (modules, resolved) = parse(&["module m; type Select<T> = T;
+        const x: Select<Select<integer>> = 0;"]);
+    let index = DeclarationIndex::collect(&resolved, &modules);
+    let normalized = index
+        .normalize_type(&constant(&modules[0], "x").ty)
+        .unwrap();
+    assert!(matches!(normalized.as_ref(), Type::Path(path) if path.segments[0].text == "integer"));
+}
+
+#[test]
+fn generic_aliases_share_integer_contract_classification() {
+    let (modules, resolved) = parse(&["module m; type Select<T> = T;
+        fn plus(n: Select<integer>) -> Select<integer> { return n + 1; }
+        const RESULT: Select<integer> = plus(6);
+        const AGAIN: integer = RESULT + 1;"]);
+    let index = DeclarationIndex::collect(&resolved, &modules);
+    assert_eq!(
+        evaluate(&constant(&modules[0], "RESULT").value, &index, 0),
+        Ok(7)
+    );
+    assert_eq!(
+        evaluate(&constant(&modules[0], "AGAIN").value, &index, 0),
+        Ok(8)
+    );
+}
+
+#[test]
+fn aliases_inside_tuples_and_view_targets_normalize_recursively() {
+    let (modules, resolved) = parse(&["module m;
+        struct Box<T> { pub value: T }
+        struct Bus<T> { pub data: T }
+        view Source<T> for Bus<T> { data out }
+        type Holder<T> = Box<T>; type Transport<T> = Bus<T>;
+        type Pair<T> = (Holder<T>, Transport<T> Source);
+        const C: Pair<integer> = 0;"]);
+    let index = DeclarationIndex::collect(&resolved, &modules);
+    let normalized = index
+        .normalize_type(&constant(&modules[0], "C").ty)
+        .unwrap();
+    let Type::Tuple { elems, .. } = normalized.as_ref() else {
+        panic!("{normalized:?}")
+    };
+    for (ty, expected) in [(&elems[0], "Box"), (&elems[1], "Bus")] {
+        let target = match ty {
+            Type::View { target, .. } => target.as_ref(),
+            other => other,
+        };
+        let Type::Generic { base, args, .. } = target else {
+            panic!("{target:?}")
+        };
+        let Type::Path(path) = base.as_ref() else {
+            panic!("{base:?}")
+        };
+        assert_eq!(
+            resolved
+                .def(resolved.resolved(path.span).unwrap())
+                .unwrap()
+                .name,
+            expected
+        );
+        assert!(
+            matches!(&args[0], GenericArg::PositionalType(Type::Path(p)) if p.segments[0].text == "integer")
+        );
+    }
+}
+
+#[test]
 fn entity_alias_normalization_retains_shape_and_borrows_unchanged_types() {
     let (modules, resolved) = parse(&[
         "module provider; const BASE: integer = 6;
@@ -393,4 +496,58 @@ fn indexes_rebuilt_after_rewrites_see_the_current_body() {
         evaluate(&constant(&modules[0], "RESULT").value, &index, 0),
         Ok(9)
     );
+}
+
+#[test]
+fn recursive_aliases_inside_tuples_and_transformed_arguments_are_diagnosed() {
+    for source in [
+        "module m; type Tree<T> = (T, Tree<(T, T)>);",
+        "module m; type A<T> = (T, B<T>); type B<U> = (U, A<U>);",
+    ] {
+        let mut sink = DiagnosticSink::default();
+        let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let modules = [module];
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        assert!(
+            sink.diagnostics()
+                .iter()
+                .any(|d| d.code == Some(crate::diag::codes::DUPLICATE_ITEM)
+                    && d.message.contains("is defined in terms of itself")),
+            "{:?}",
+            sink.diagnostics()
+        );
+        let index = DeclarationIndex::collect(&resolved, &modules);
+        assert!(modules[0].items.iter().any(|item| matches!(item, Item::Using(Using { kind: UsingKind::Alias { ty, .. }, .. }) if index.alias_cycle(ty).is_some())));
+    }
+}
+
+#[test]
+fn resolved_alias_materialization_visits_trait_contract_arguments() {
+    let (mut modules, resolved) = parse(&["module m;
+        trait Apply<Input, Output> { fn apply(self, value: Input) -> Output; }
+        struct Counter(integer);
+        type Scalar<T: Apply<integer, integer>> = T;
+        impl Apply<Scalar<integer>, Scalar<integer>> for Counter {
+            fn apply(self, value: Scalar<integer>) -> Scalar<integer> { return value; }
+        }"]);
+    let mut sink = DiagnosticSink::default();
+    crate::resolve::normalize_aliases(&mut modules, &resolved, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let implementation = modules[0]
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Impl(implementation) => Some(implementation),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(implementation.trait_args.len(), 2);
+    for argument in &implementation.trait_args {
+        let ty = argument.as_type().unwrap();
+        assert!(
+            matches!(ty, Type::Path(path) if path.segments[0].text == "integer"),
+            "{argument:?}"
+        );
+    }
 }

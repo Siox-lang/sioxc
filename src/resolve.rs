@@ -35,6 +35,13 @@ use crate::syntax::Module;
 pub mod attributes;
 pub(crate) mod declarations;
 
+/// Materialize alias applications/constructors after resolution and before metadata
+/// attachment/type checking. Copied paths retain their definition-site IDs;
+/// this pass never resolves generated names in the caller's scope.
+pub fn normalize_aliases(modules: &mut [Module], resolved: &Resolved, sink: &mut DiagnosticSink) {
+    declarations::expand::normalize_aliases(modules, resolved, sink);
+}
+
 /// Trait names the compiler itself provides: the hooks expression syntax
 /// dispatches to, including the named operator traits (`Add`, … `Not`, spec
 /// 3.25) and `CustomOperator` for user symbols. They stay reachable as
@@ -592,7 +599,7 @@ impl<'a> Resolver<'a> {
     fn seed_builtins(&mut self) {
         // The numeric and character kernels are intrinsic. Digital scalar
         // enums and indexed families come from std declarations.
-        for name in ["integer", "real", "Char", "string", "range"] {
+        for name in ["integer", "real", "Char", "string", "range", TUPLE_POSITION] {
             let id = self.add_def(name.to_string(), DefKind::Builtin, true, None, None);
             self.globals.insert(name.to_string(), id);
             self.builtins.insert(name.to_string(), id);
@@ -1495,6 +1502,37 @@ impl<'a> Resolver<'a> {
                 cur = next;
             }
         }
+        // A tuple/view or a transformed generic argument can hide a recursive
+        // alias from the simple derivation-head graph above.
+        let index = declarations::DeclarationIndex::collect(&self.out, modules);
+        for item in modules.iter().flat_map(|module| &module.items) {
+            let Item::Using(Using {
+                kind: UsingKind::Alias { ty, .. },
+                ..
+            }) = item
+            else {
+                continue;
+            };
+            let Some(id) = index.alias_cycle(ty) else {
+                continue;
+            };
+            if !reported.insert(id) {
+                continue;
+            }
+            let Some(definition) = self.out.def(id) else {
+                continue;
+            };
+            let mut diagnostic = Diagnostic::error(format!(
+                "alias `{}` is defined in terms of itself",
+                definition.name
+            ))
+            .with_code(codes::DUPLICATE_ITEM)
+            .help("break the cycle: an alias must expand to a finite type");
+            if let Some(span) = definition.span {
+                diagnostic = diagnostic.at(span);
+            }
+            self.sink.emit(diagnostic);
+        }
     }
 
     /// Report a repeated member name within one declaration (a struct's fields
@@ -1637,8 +1675,15 @@ impl<'a> Resolver<'a> {
             // `type Word = NoSuchType;` used to pass silently, leaving every
             // signal typed through it at unknown width.
             Item::Using(u) => {
-                if let UsingKind::Alias { ty, .. } = &u.kind {
+                if let UsingKind::Alias { name, params, ty } = &u.kind {
+                    let owner = self.out.declared(name.span);
+                    if let Some(owner) = owner {
+                        self.decl_param_order.entry(owner).or_default();
+                    }
+                    self.enter();
+                    self.bind_params(params, true, owner);
                     self.resolve_type(ty);
+                    self.exit();
                 }
             }
             // A free function uses the same resolver as a method. The old
@@ -2236,7 +2281,16 @@ impl<'a> Resolver<'a> {
     /// Resolve a type expression and everything nested inside it.
     fn resolve_type(&mut self, ty: &Type) {
         match ty {
-            Type::Path(p) => self.resolve_type_path(p),
+            Type::Path(p) => {
+                self.resolve_type_path(p);
+                if self
+                    .out
+                    .resolved(p.span)
+                    .is_some_and(|id| self.out.kind_of(id) == Some(DefKind::TypeAlias))
+                {
+                    self.generic_uses.push((p.span, 0, p.span, Vec::new()));
+                }
+            }
             Type::Indexed { base, index, .. } => {
                 self.resolve_type(base);
                 if let Some(index) = index {
@@ -2244,7 +2298,11 @@ impl<'a> Resolver<'a> {
                 }
             }
             Type::Generic { base, args, span } => {
-                self.resolve_type(base);
+                if let Type::Path(path) = base.as_ref() {
+                    self.resolve_type_path(path);
+                } else {
+                    self.resolve_type(base);
+                }
                 if let Some(head) = type_head_path(base) {
                     let literal = |arg: &GenericArg| {
                         let GenericArg::Positional(value) = arg else {

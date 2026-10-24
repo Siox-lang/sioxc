@@ -48,46 +48,17 @@ hierarchy. Code: `src/syntax/`, `src/resolve.rs`, `src/types/`, and
   token spans so diagnostics in a macro body identify the invocation that
   produced them, including nested expansions. Macro syntax, hygiene,
   repetition, built-ins and runtime call-site reporting are already implemented.
-- 🟡 **Compiler foundations followups.** Finish shared constant evaluation and
-  declaration-ID registries. Checked integer analysis for conversions, widths,
-  indices and pattern bounds now shares `types::consteval`, including named
-  constants selected by `DefId`. Elaboration and IR now share its expression
-  traversal, arithmetic and const-function control flow, with borrowed call
-  frames instead of cloned constant maps. Replace the explicitly transitional
-  scalar logical/bitwise adapters with typed source-owned operators; unify
-  typed value/attribute bindings across stages and migrate the earlier generic-width
-  folder out of resolve without breaking layering. Enum/packed values, ranges
-  and full pure-function statement support remain. Hook
-  lang-item registration and core loading are implemented; diagnostic UI
-  snapshots cover all active codes, and `--explain CODE` has embedded pages for
-  the complete catalogue. JSON diagnostics and atomic structured migration edits
-  are implemented; residual leaf-name lookups still need removal. See
-  [the remaining proposal](docs/proposals/compiler-foundations.md).
-  The shared `DefId` declaration index now supplies free/foreign function
-  contracts, constant declarations and transparent integer aliases; the checker
-  no longer clones six declaration/signature maps. Elaboration evaluates
-  resolved integer constants and integer-signature free functions before IR,
-  including recursive widths. Metadata schemas, bindings, defaults, named
-  targets and entity fallbacks now retain resolved declaration identities;
-  equal names in different modules and renamed imports cannot share a schema
-  or binding. Standard metadata hooks use source-registered lang roles, and
-  exported user metadata names are canonical module-qualified paths.
-  Entity declarations now use the same borrowed index in type checking,
-  elaboration and IR; checked port facts, test membership and private-member
-  owners are keyed by `DefId`. Associated methods and trait/type registries
-  still need migration. Transparent entity aliases now normalize through the
-  shared resolve-layer declaration index, retaining applied parameters, array
-  shape and definition-site expression identities. Dynamic runtime constructor
-  destinations still need ordered connection routing; unresolved destinations
-  must report an error rather than discard calls. Generic alias applications
-  still need shared parameter substitution.
-  Non-integer calls remain unknown to integer
-  analysis rather than discarding return/argument conversions.
-  Integer metadata now shares checked constant evaluation and is materialized
-  before elaboration, including defaults, negative values and integer-function
-  bindings. Resolve bindings before substituting reads so imported metadata
-  keeps its declaration-site identities. Precedence remains bootstrap-literal
-  only; typed Bool/string/enum metadata and remaining pure statements stay open.
+- 🟡 **Compiler foundations followups.** Finish shared typed constant evaluation:
+  enum/packed/real values, ranges, full pure-function statement support and
+  uniform value/attribute contexts. Replace transitional scalar logical/bitwise
+  adapters with source-owned operators, extend metadata beyond integer values,
+  and move the early generic-width folder out of resolve without upward imports.
+  Migrate associated method and trait/type registries to `DefId`; remove residual
+  leaf-name lookups and frontend-fixture fallbacks using registered identities.
+  Route dynamic runtime constructor destinations in source order (currently
+  rejected explicitly rather than dropping calls). Precedence remains
+  bootstrap-literal only. Completed diagnostics, declaration and alias migrations
+  are recorded in [the proposal](docs/proposals/compiler-foundations.md).
 - 🔴 **Incremental/query interface.** Add demand-driven caching only when the
   LSP or future project tool needs incremental multi-file recomputation; keep
   the current explicit phase products as the public boundary.

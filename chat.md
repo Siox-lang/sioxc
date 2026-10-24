@@ -19704,3 +19704,256 @@ warnings remain; no paid semantic extraction. Keep all peer root/paper-main
 hunks and20 corpus probes/artifacts. Commit ONLY announced owned files locally
 with compiler-foundations estimate~70% and evidence/remaining work. No push and
 no whole-goal completion claim.
+
+
+### 2026-10-24 — Codex — generic alias binding and normalization ownership
+
+Continue compiler-foundations from clean local fcef930 in owned worktree.
+Previous turn is progress: accepted compiler/corpus/paper commits and full gate.
+Graph query alias/generic/substitute/type/params/declaration finds the shared
+index and AST argument forms; source confirms aliases never bind Params in
+resolve_item and IR substitution is spelling-based/later-layer. Own alias
+parameter resolution/arity, shared index identity-based type/value substitution,
+checker alias consumers, derived metadata/entity facts and affected source/IR
+classification. Tests first: generic type+value alias chains/arrays, named args,
+forwarded type aliases, lexical capture, bad args and cycles, then native/VCD.
+Use no new interpreter, truth table, dependency or syntax. Reuse source spans
+and borrowed contracts; instantiated alias shapes may own substituted copies.
+Only announced compiler/corpus fixtures and owned paper docs will change; peer
+root/paper-main hunks and20 corpus probes stay untouched. Guard all heavy work,
+full both-mode gate before local commits; no push. Generic alias work is not
+complete until the actual applied parameters survive all downstream consumers.
+
+
+### 2026-10-24 — Codex — generic alias pre-resolution discovery and phase migration
+
+Correction to initial read: syntax/imports already substitutes and REMOVES generic
+aliases before resolve; the resolver omission was deliberate. API3009720 exposes
+private definition-site BASE being re-resolved cross-module, plus unknown named
+arguments silently accepted. Shared-index3052780 passes13 raw-index tests; the
+nested Select<Select<integer>> test catches a false cycle. Normalize actual type
+arguments before entering the alias-definition recursion set to fix that case.
+
+Expand ownership to syntax/imports, a shared read/write AST type/expression walk,
+compiler phase entry, and resolve/declarations normalization boundary. Retain
+ordinary aliases/imports through raw resolution; leave format-struct bootstrap
+rewriting separate. Instantiate by DefId after resolution, collect only changed
+owned shapes while source contracts are borrowed, then apply them postorder
+before metadata/type checking. Preserve original IDs/spans and validate argument
+names/kinds; do not re-resolve generated copies or clone whole modules. This is
+ordinary alias migration, not a second spelling-based expansion path. Local work
+is uncommitted until raw/frontend/API/native and full actual-corpus gates pass.
+
+
+### 2026-10-24 — Codex — generic alias focused acceptance and corpus ownership
+
+Guard3078682 completed exited/success/0, peak1223725056:567 frontend tests and
+both new generic entity API/native regressions passed, including type/value and
+named arguments, array shape, forwarded Select<T>, metadata and private
+BASE declaration identity. The false nested-application cycle is fixed. Expose
+resolve::normalize_aliases as the public low-level phase step and use it in the
+compiler. Old ordinary-alias syntax expansion is removed; only format-struct
+sugar keeps that path, with its obsolete ordinary-alias flag/branches stripped.
+
+Guard3096768 exited75 (peer3078761 full CI), not a test result for later edits.
+Add data/tuple/constructor compatibility tests, wrong-kind/duplicate-name
+checks, then revalidate. Own new actual-corpus generic_entity_aliases_test and
+generic_data_aliases_test, generic_aliases/provider.siox and README additions;
+matching check-vcd.py profiles and check_vcd_test.py tests. Own isolated paper
+language/architecture and compiler proposal/TODO updates after behavior checks.
+All changes stay local/uncommitted until full both-mode gate; preserve20 peer
+corpus probes and all dirty root/paper-main hunks.
+
+
+### 2026-10-24 — Codex — ordinary constructor hygiene and final-path cleanup
+
+Focused3212537 is green:569 frontend,3 generic native/API tests, strict Clippy.
+Add a private non-generic Word constructor whose width uses a private helper and
+constant, with equal caller names, to guard the remaining early constructor
+path. Guard3268011 is busy75, not a reproduction result. Source review shows
+syntax/imports still clones ordinary alias targets/module Env scopes and
+re-resolves constructor copies before raw binding. Route these constructors
+through the already-shared resolved pass too, and move all tuple-position
+resolution there. Delete syntax's plain-alias target map, scope clones and
+qualification walker; retain only format-struct sugar. Same announced ownership,
+no new syntax/dependency/LLVM work. Revalidate all focused/native paths and the
+full frozen gate before any local commit. Docs remain draft until accepted.
+
+
+### 2026-10-24 — Codex — status request and current generic-alias verification
+
+User asks proposal progress. Last fully accepted compiler-foundations baseline
+fcef930 is~70% (both262 corpora and full gate). Generic alias/constructor work
+is local and UNCOMMITTED, not yet full-gate accepted. Focus3212537 passed569
+frontend,3 native/API cases and strict Clippy before the final ordinary
+constructor cleanup. Later guard3268011 was busy75, NOT a reproduction result.
+Latest guarded siox-job-3000-1792851167508849414-3303325.service is the current
+focused check after removing old plain-constructor/scope-cloning machinery and
+adding private-helper caller-shadow coverage. Poll THAT service/log; do not
+restart on an observation interruption. /home/max/.cache/siox-jobs/tmp/
+generic-aliases-final-20261024.sh is prepared but NOT launched. It includes
+569 frontend,48 direct ordinary/debug native/VCD runs and full actual264-program
+both-mode gate plus source/corpus/owned-paper fingerprints. Draft docs/TODO and
+new corpus2+provider/profiles are uncommitted. Preserve root/paper-main peer
+hunks and20 corpus probes. No push; overall proposals are not complete.
+
+
+### 2026-10-24 — Codex — correction to focused-check handoff
+
+Authoritative re-poll shows3303325 already FAILED with exit75 (busy), not a
+live compiler run and not an acceptance result. Do not poll it as running.
+Revalidate the actual global lock holder before retrying the latest cleanup.
+Previously completed3212537 remains the last focused green revision; latest
+constructor-cleanup code still needs verification. Full final script unstarted.
+
+
+### 2026-10-24 — Codex — final constructor cleanup focused gate green
+
+Previous goal turn made progress (shared alias instantiation/constructor cleanup
+and regressions), not just a status restatement. After live peer3288190 exited,
+waiter launched guard3322789, now completed exited/success/0 with peak1189625856.
+Latest569 frontend, all3 generic/data/private-constructor API/native tests and
+strict all-target/all-feature Clippy pass. Private width helper/constant retain
+provider IDs despite equal caller names. Source constructor maps and cloned
+module scopes are removed from syntax; format-struct sugar remains separate.
+
+Freeze all owned compiler/corpus/paper paths for the prepared full gate:
+569 frontend,48 native ordinary/debug/VCD checks, default+bitpack full Rust,
+actual264-program corpus both modes, UI/JSON and34 runner tests, plus matching
+before/after source fingerprints and AST graph update. Graph exceeds5000 nodes
+and uses aggregated HTML; existing vendor/label caveats may remain. Preserve
+peer files and source hashes during the run. No commit/push until terminal full
+acceptance. Goal remains active beyond this registry/alias feature.
+
+
+### 2026-10-24 — Codex — full gate catches nested alias-cycle regression
+
+Frozen3369501 is terminal failed/exit-code/1, peak1881243648.569 frontend,
+48 direct native/VCD checks, both actual264 corpora, Clippy,34 runner tests,
+UI/JSON all pass. Both Rust suites stop at checker_issues_2::
+late_failures_are_diagnosed #178: Tree<T>=(T,Tree<(T,T)>) is silently accepted.
+Do NOT weaken/migrate that fixture: this is a real loss of cycle diagnostics
+when removing early syntax expansion. Later Rust/GDB targets were not completed.
+Script stops at ci-local failure, before final fingerprint comparison; no full
+acceptance/commit/push. Unfreeze owned paths to fix nested alias cycle reporting
+through shared normalization, add direct regressions, and verify an additional
+opaque unsized-array-alias indexing case before a new frozen full gate.
+
+### 2026-10-24 — Codex — cycle-fix focused check pending verification slot
+
+Focused3693077 exited75 (busy), not a compiler result. Live peer flock3669284
+owns the global verification lock and is executing bitpack DWARF tests. Wait
+for that exact process before retrying guarded frontend/4 generic-alias native
+cases/checker_issues_2/Clippy. Cycle checking reuses shared alias normalization;
+existing checker regression #178 stays unchanged. Char[] alias sizing passed
+independently in3668571, so no sizing implementation change is needed. Keep
+all current compiler/corpus/paper work local until a fresh full frozen gate.
+
+### 2026-10-24 — Codex — freeze for chained cycle-fix verification
+
+After live peer3669284 exits, a single guarded job will run cargo fmt, frontend
+tests, four generic-alias native cases, checker_issues_2 and strict Clippy. Only
+on success, run the prepared full gate into generic-aliases-cyclefix-20261024:
+48 direct ordinary/debug native/VCD checks, both complete Rust suites, actual264
+corpora in default/bitpack, UI/JSON/runner checks and source fingerprints. Freeze
+all owned compiler/corpus/paper paths except the initial cargo fmt. Keep failed
+3369501 evidence. No automatic commit or push; acceptance requires terminal
+success and matching source hashes. Peer work remains outside this change.
+
+### 2026-10-24 — Codex — trait-argument traversal gap found during frozen review
+
+Stop owned3749521 deliberately before acceptance: the matching AST walker skips
+ImplDecl.trait_args, a path the old syntax rewriter did visit. Add the one missing
+shared traversal and a native operator contract using generic aliases for both
+input/output, then rerun focus/full.5749521 is not acceptance (570 frontend,
+4 API/native,4 checker issues, strict Clippy and48 direct native/VCD green;
+full Rust/corpus incomplete). Unfreeze owned source/corpus/paper; no peer job
+interrupted and no fixture weakened. No commit/push.
+
+### 2026-10-24 — Codex — trait-argument gap reproduced and corrected
+
+Correction: stopped service is3749521 (the previous entry's5749521 was a typo).
+Explicit stop reports dead/success/0, but it was CANCELLED and is NOT a passing
+full gate. Peer3799585 release build was left alone and has since exited.
+Red3809170 completed failed/1, peak773320704: both new raw traversal and native
+operator contract checks fail (101 each), native diagnostic says no + operator
+for Counter with integer rhs. Add one trait_args traversal to the shared
+read/write walker, retain both regressions and corpus equivalent. No extra
+substitution implementation or dependency. New full evidence directory is
+generic-aliases-traitargs-20261024; rerun focused then full only on success.
+
+### 2026-10-24 — Codex — freeze complete trait-argument fix for acceptance
+
+One shared loop visits ImplDecl.trait_args in both read/write passes. Raw
+normalization regression and native/corpus Add<Scalar<integer>,Scalar<integer>>
+case cover it. Owned docs/TODO describe that boundary; no new surface syntax,
+value semantics, dependency or codegen path. Freeze owned compiler/corpus/paper
+now except initial cargo fmt. Run571 frontend,4 generic API/native,4 checker
+issues, strict Clippy then the full gate only on focused success. Preserve old
+failed/cancelled logs; new directory generic-aliases-traitargs-20261024. Local
+commits require terminal full success and matching source fingerprints.
+
+### 2026-10-24 — Codex — applied-trait alias parameter bounds
+
+3813533 passed571 frontend,4 native/API,4 checker issues and strict Clippy,
+including the new alias operator regression. Intentionally cancel that full
+run before acceptance: the bind helper also needs to classify applied-trait
+bounds (T: Trait<Args>) as type parameters, not values. Reuse existing resolved
+type-head lookup rather than another parser/identity rule. Add raw/native/corpus
+bound coverage, retain all prior tests, and rerun the final frozen gate. Treat
+explicitly cancelled service as incomplete regardless of its systemctl status.
+
+### 2026-10-24 — Codex — complete alias contract edge cases frozen
+
+Applied-trait type-parameter detection reuses resolve::type_head_path; raw and
+native/corpus operator tests exercise T: Trait<integer> as well as trait argument
+normalization. Freeze all owned compiler/corpus/paper paths except initial
+cargo fmt. Queue focused571 frontend/4 API/native/4 checker issues/Clippy then
+full48 direct native/VCD/default+bitpack Rust/264 corpora/UI/JSON/source hashes
+after confirmed live peer3818557 exits. New logs:
+generic-aliases-traitbounds-20261024. No commit/push until full acceptance.
+
+### 2026-10-24 — Codex — recursive declaration fixture migration
+
+3828898 focused571/4 API/4 checker/Clippy and48 native/VCD checks passed; full
+default Rust passed627 library tests and23 DWARF checks then failed4 import_forms
+tests. Each is contaminated by invalid Recursive<T> declared in shared positive
+geometry fixture. Isolate that declaration in shapes::recursive loaded only by
+negative tests, retain all rejection cases and add an unused-cycle case to pin
+declaration-time validation. Existing raw derivation cycle checks already reject
+invalid unused aliases; no lazy exception or diagnostic weakening. Deliberately
+cancel owned full service (incomplete regardless of stop status), unfreeze paths
+including tests/import_forms.rs and owned paper language docs. No commit/push.
+
+### 2026-10-24 — Codex — recursive fixture isolation complete and frozen
+
+Move invalid Recursive<T> to negative-only shapes::recursive, retain all five
+existing recursive generic cases and add an unused-cycle case. Strengthen
+non-generic cycle assertion to E-P002 + message rather than the temporary path's
+"cyclic" substring. Production code is unchanged since focused3828898 green.
+Owned language docs state the existing declaration-time recursion invariant.
+Freeze compiler/corpus/owned-paper except initial cargo fmt. After live peer
+3833052 exits, run571 frontend/4 API/native/4 checker/11 import tests/Clippy,
+then full48 native/VCD/both Rust+264 corpus modes/UI/JSON/source fingerprints
+only on focused success. New evidence generic-aliases-imports-20261024. No push.
+
+### 2026-10-24 — Codex — resolved generic aliases fully accepted
+
+Guard siox-job-3000-1792860873210701199-3882905.service is terminal
+exited/success/0, peak1223077888. Full default+bitpack Rust suites pass (627/606
+library cases and23 actual GDB18.1 DWARF checks each),571 frontend,4 generic
+API/native tests,4 checker issues,11 import forms, strict Clippy,34 runner checks,
+12 Phase1 examples,48 ordinary/debug native/VCD runs and both actual264 corpora.
+Both61 UI and61 JSON cases cover54/54 codes and2 apply/recompile migrations.
+Frozen compiler hash a5fb8cea15185b0b3f8b419436dbed5a9f26eb4a8851dc21351914b745ae97cf,
+corpus6853a483b69bf1df5d49b0f21456f769d7dce3d37b89e379383ef11051723ea1 and
+paperdaacc07b6e0084f01a34e6af045edd6ef2f2993bb14e6c8dc2553d7d7a410db6 all
+MATCH before/after. Retained logs generic-aliases-imports-20261024. AST graph
+updated6859nodes/18600edges/335communities; aggregatedHTML above5000, existing
+vendor/no-symbol and community-label caveats remain. No paid semantic rebuild.
+Only acceptance docs/log/TODO cleanup follow the gate; production/test source
+stays unchanged. Estimate compiler-foundations~75%: generic contracts now share
+resolved normalization; fully typed evaluation, associated registries, residual
+hook lookup cleanup and dynamic constructor routing remain. Explicit-file local
+compiler/corpus/paper commits only, preserving root/paper-main peers and20 corpus
+probes/artifacts. No push. The broader proposal-implementation goal stays active.

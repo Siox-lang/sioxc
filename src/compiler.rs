@@ -554,6 +554,7 @@ impl Compiler {
         crate::syntax::imports::desugar(&mut result.modules, &mut result.diagnostics);
         let resolved = crate::resolve::resolve(&result.modules, &mut result.diagnostics);
         result.stats.definitions = Some(resolved.defs().len());
+        crate::resolve::normalize_aliases(&mut result.modules, &resolved, &mut result.diagnostics);
         crate::resolve::attributes::attach(&mut result.modules, &resolved, &mut result.diagnostics);
         crate::resolve::attributes::fold_reads(
             &mut result.modules,

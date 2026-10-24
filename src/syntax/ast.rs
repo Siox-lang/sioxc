@@ -1227,13 +1227,13 @@ pub enum Type {
         /// Opening through closing parenthesis.
         span: Span,
     },
-    /// A named view applied to a backing struct: `Source Stream<T>`.
+    /// A named view applied to a backing struct: `Stream<T> Source`.
     View {
         /// The view supplying each field's direction.
         view: Path,
         /// The backing struct the view projects.
         target: Box<Type>,
-        /// View name through target type.
+        /// Backing type through view name.
         span: Span,
     },
 }
@@ -1283,6 +1283,10 @@ impl GenericArg {
                 Expr::Index { base, index, span } => Some(Type::Indexed {
                     base: Box::new(expr_type(base)?),
                     index: Some(index.clone()),
+                    span: *span,
+                }),
+                Expr::Tuple { elems, span } => Some(Type::Tuple {
+                    elems: elems.iter().map(expr_type).collect::<Option<_>>()?,
                     span: *span,
                 }),
                 _ => None,
