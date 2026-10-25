@@ -151,6 +151,110 @@ fn boolean_literal_marker_survives_macros_without_capturing_explicit_paths() {
 }
 
 #[test]
+fn explicit_derived_enum_paths_keep_owner_with_coincident_generated_spans() {
+    for coincident in [false, true] {
+        let mut sink = DiagnosticSink::default();
+        let source = "module user;
+            enum Base { A, B }
+            enum Derived(Base);
+            macro derived() { Derived::A }
+            fn ordinary() -> Derived { return Derived::A; }
+            fn generated() -> Derived { return derived!(); }";
+        let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+        let mut modules = with_core(vec![module], &mut sink);
+        crate::syntax::macros::expand(&mut modules, &HashMap::new(), &mut sink);
+        if coincident {
+            for item in &mut modules[0].items {
+                let Item::Fn(function) = item else { continue };
+                if function.name.text != "generated" {
+                    continue;
+                }
+                let Stmt::Return {
+                    value: Some(Expr::Path(path)),
+                    ..
+                } = &mut function.body.as_mut().unwrap().stmts[0]
+                else {
+                    panic!("expanded enum path")
+                };
+                for segment in &mut path.segments {
+                    segment.span = path.span;
+                }
+            }
+        }
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let Item::Enum(derived) = &modules[0].items[1] else {
+            panic!("derived enum")
+        };
+        let expected = resolved.declared(derived.name.span).unwrap();
+        for item in &modules[0].items {
+            let Item::Fn(function) = item else { continue };
+            let Stmt::Return {
+                value: Some(Expr::Path(path)),
+                ..
+            } = &function.body.as_ref().unwrap().stmts[0]
+            else {
+                panic!("enum value")
+            };
+            assert_eq!(
+                resolved.enum_owner(path),
+                Some(expected),
+                "{} with coincident={coincident}",
+                function.name.text
+            );
+        }
+        let typed = check(&modules, &resolved, &mut sink);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        for item in &modules[0].items {
+            let Item::Fn(function) = item else { continue };
+            let Stmt::Return {
+                value: Some(value), ..
+            } = &function.body.as_ref().unwrap().stmts[0]
+            else {
+                panic!("enum value")
+            };
+            assert_eq!(
+                typed.expr_type(expr_span(value)),
+                Some(&Ty::Named(expected))
+            );
+        }
+    }
+}
+
+#[test]
+fn derived_enum_patterns_keep_owner_when_generated_spans_coincide() {
+    let mut sink = DiagnosticSink::default();
+    let source = "module user;
+        enum Base { A, B }
+        enum Derived(Base);
+        fn choose(value: Derived) -> integer {
+            return match value { Derived::A => 11, Derived::B => 22 };
+        }";
+    let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+    let mut modules = with_core(vec![module], &mut sink);
+    let Item::Fn(function) = &mut modules[0].items[2] else {
+        panic!("function")
+    };
+    let Stmt::Return {
+        value: Some(Expr::Match { arms, .. }),
+        ..
+    } = &mut function.body.as_mut().unwrap().stmts[0]
+    else {
+        panic!("match")
+    };
+    for arm in arms {
+        let Pattern::Path(path) = &mut arm.pattern else {
+            panic!("variant")
+        };
+        for segment in &mut path.segments {
+            segment.span = path.span;
+        }
+    }
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    check(&modules, &resolved, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+}
+
+#[test]
 fn boolean_literals_do_not_fall_back_to_user_types_or_missing_variants() {
     for core in [
         "module core::primitive;",

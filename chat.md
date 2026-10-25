@@ -20220,3 +20220,53 @@ exactly tested. Prepare explicit-path local compiler/corpus/paper commits with
 foundations~75% estimate. No push,board writes or TODO history. Preserve shared
 root/paper-main dirty hunks and20 corpus probes. Remaining typed constants,
 registries,other hooks/dynamic routing and proposals keep the goal active.
+
+### 2026-10-25 — Codex — probe explicit derived enum owners in generated paths
+
+Accepted range c12e349 is clean. Add a focused type/resolution regression before
+production edits: ordinary and macro Derived::A paths must retain Derived even
+if generated qualifier spans coincide with the path. Base still owns inherited
+variant identity. Test both ordinary expansion and coincident spans; only after
+a confirmed failure consider a resolve-owned owner fact instead of span-based
+reconstruction. No new std values,grammar/runtime/LLVM/dependencies. Full gate
+before commits,preserve peers,no push. Other foundations/proposals stay open.
+
+### 2026-10-25 — Codex — explicit inherited enum owner red probe
+
+875379 failed101: one test ran,normal paths/macros pass,coincident generated
+spans return Base39 instead of Derived42. Add resolve-owned sparse owner facts
+only for inherited/selected-owner differences from variant.parent. Ordinary
+variants reuse parent metadata; no per-literal AST/body copies. Record explicit
+and Boolean uses through one helper; shared enum_owner reads owner fact/parent,
+not qualifier-span guesses. Add patterns,sparsity and IR query coverage before
+focused/full gates. No native values,grammar/runtime/LLVM/dependency changes.
+
+### 2026-10-25 — Codex — enum-owner focused gates green, full gate frozen
+
+884620 exited/success/0,peak1151791104:588 no-LLVM library cases,111 IR cases,
+strict Clippy pass. 896516 exited/success/0,peak1612357632:24 direct native/VCD
+runs (six enum/Boolean/range cases × storage/debug modes) pass. Red875379 remains
+failed proof,not pending. Sparse overrides preserve selected derived identity
+without extra entries for ordinary variants; original variant IDs/values remain.
+Freeze owned compiler/paper and actual267 corpus. Launch enum-owner-final-
+20261025.sh for84 direct native/VCD checks,both full Rust/corpus/UI/JSON gates,
+runners,AST update and exact before/after fingerprints. No owned source/test/doc
+edits during gate; root coordination only. No commit/push until full terminal
+green. Remaining foundations/proposals keep the broader goal active.
+
+### 2026-10-25 — Codex — selected enum-owner full acceptance
+
+902652 is terminal exited/success/0,peak1881526272. Both complete Rust suites
+pass (645 default/624 bitpack library,23 DWARF each),588 no-LLVM library cases,
+84 direct ordinary/debug native/VCD runs,both actual267-program corpora,
+strict Clippy,34 runners,12 Phase1 artifacts,and both61 human UI/61 JSON cases
+with54 codes/2 apply-recompile migrations. Frozen fingerprints match exactly:
+compiler4662f99da5df4eec4aab397a6c5a0690134809753fd69896dc54066d680a1ba8,
+corpus989774569353d28d1d0d181facf832d0483569e58bdc60bc8d95ff5fe49d82e5,
+papere95926585edc76be8a075f91a9cd832fbe47cdab12ca9792e14c46a47a514a55.
+Evidence enum-owner-identity-20261025;AST6997 nodes/18893 edges/333 communities,
+existing vendor/no-symbol/stale-label limitations remain. Only acceptance
+proposal/log updates after gate;production/tests/owned paper unchanged.
+Commit five compiler files and two owned paper docs explicitly,no corpus
+changes,no push. Foundations remain~75%:typed values,remaining registries,
+hooks/dynamic routing and cross-module equal-leaf owner coverage stay open.

@@ -9,10 +9,10 @@ declaration registry are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-25, range contracts, Boolean identities and resolved aliases):
-both complete Rust suites pass, including 641 default/620 bitpack library tests
-and all 23 DWARF tests per mode. The gate also passes 584 no-LLVM library tests,
-strict Clippy, 34 runner tests, 68 ordinary/debug native and VCD checks, and both
+Local acceptance (2026-10-25, selected enum owners, range contracts, Boolean identities and resolved aliases):
+both complete Rust suites pass, including 645 default/624 bitpack library tests
+and all 23 DWARF tests per mode. The gate also passes 588 no-LLVM library tests,
+strict Clippy, 34 runner tests, 84 ordinary/debug native and VCD checks, and both
 actual 267-program corpora. Both modes pass 61 human UI and 61 JSON/schema cases,
 cover all 54 active codes and apply/recompile both migration fixtures.
 Compiler, corpus and documentation fingerprints match before/after the frozen
@@ -442,6 +442,19 @@ signatures, so an operator's aliased input/output contract is materialized at
 the same boundary. Raw traversal and native addition regressions cover both.
 Parameter-kind classification follows resolved trait heads through applications,
 so `T: Trait<Args>` remains a type parameter rather than a value parameter.
+
+**Implemented selected enum owners (2026-10-25).** A derived enum shares its
+base's variant declarations, not its nominal identity. Resolution now records
+the selected owner when it differs from the inherited variant's parent; ordinary
+variants reuse that parent without an extra entry. The shared owner query feeds
+typing, pattern checking and IR, including when generated qualifier/path spans
+coincide. A red-before/green-after regression covers explicit macro paths;
+patterns, IR keys and sparse storage have additional checks. Boolean literals
+use the same recording path. No enum bodies or value tables are copied, and no
+new surface syntax is introduced. Both complete Rust suites, both actual
+267-program corpora, 84 native/VCD checks and UI/JSON gates pass with exact
+compiler/corpus/paper fingerprints. Cross-module equal-leaf generated-owner
+coverage remains a follow-up; this does not complete the other registries.
 
 **Acceptance.** No stage after `resolve` looks a declaration up by its leaf
 name; equal leaf names in different modules are covered by a test per

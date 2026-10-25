@@ -225,6 +225,9 @@ pub struct Resolved {
     qualified: Vec<String>,
     /// Name-use site, keyed by span, to the definition it resolves to.
     uses: HashMap<Span, DefId>,
+    /// Selected enum owners that differ from the inherited variant's parent.
+    /// Ordinary variants need no entry: their declaration already owns the fact.
+    variant_owner_overrides: HashMap<Span, DefId>,
     /// Declaration site, keyed by span, to the definition it introduces.
     declarations: HashMap<Span, DefId>,
     /// Lang items: the role name `core`/`std` gave a declaration with
@@ -308,13 +311,9 @@ impl Resolved {
         if variant.kind != DefKind::EnumVariant {
             return None;
         }
-        if path.is_boolean_literal() {
-            return self.lang("bool");
-        }
-        path.segments
-            .get(path.segments.len().checked_sub(2)?)
-            .and_then(|owner| self.resolved(owner.span))
-            .filter(|id| self.kind_of(*id) == Some(DefKind::Enum))
+        self.variant_owner_overrides
+            .get(&path.span)
+            .copied()
             .or(variant.parent)
     }
 }
@@ -2627,7 +2626,7 @@ impl<'a> Resolver<'a> {
                     "Boolean literals require the `bool` lang role to name an enum".to_string(),
                 );
             } else if let Some(id) = self.variant(owner, variant) {
-                self.out.uses.insert(p.span, id);
+                self.record_variant_use(p.span, owner, id);
             } else {
                 self.error(
                     codes::LANG_ITEM,
@@ -2666,12 +2665,12 @@ impl<'a> Resolver<'a> {
                     }
                     match self.variant(id, &var) {
                         Some(vid) => {
-                            self.out.uses.insert(p.span, vid);
+                            self.record_variant_use(p.span, id, vid);
                             // Record the qualifier too. A derived enum shares
                             // its base's variant ids, so `Mid::B` and `Base::B`
-                            // resolve to the same def — only the name written
-                            // here says which type the value has. It also marks
-                            // the enum itself used, for the import lint.
+                            // resolve to the same variant def. Its selected
+                            // owner is retained separately; this qualifier use
+                            // also marks the enum used for the import lint.
                             //
                             // Macro expansion can give all segments one span;
                             // keep the path's variant identity in that case.
@@ -3333,6 +3332,21 @@ impl<'a> Resolver<'a> {
         best.map(|(_, s)| s.clone())
     }
 
+    /// Retain the selected enum only when the variant's parent is insufficient.
+    fn record_variant_use(&mut self, span: Span, owner: DefId, variant: DefId) {
+        self.out.uses.insert(span, variant);
+        if self
+            .out
+            .def(variant)
+            .and_then(|definition| definition.parent)
+            == Some(owner)
+        {
+            self.out.variant_owner_overrides.remove(&span);
+        } else {
+            self.out.variant_owner_overrides.insert(span, owner);
+        }
+    }
+
     /// The variant `name` of `enum_id`, or `None` when the enum has none.
     fn variant(&self, enum_id: DefId, name: &str) -> Option<DefId> {
         self.enum_variants
@@ -3368,6 +3382,31 @@ fn levenshtein(a: &str, b: &str) -> usize {
 mod tests {
     use super::*;
     use crate::diag::FileId;
+
+    #[test]
+    fn variant_owner_facts_only_store_inherited_owner_differences() {
+        let (ordinary, errors) = resolve_src(
+            "module user; enum Base { A, B }
+            fn base() -> Base { return Base::A; }
+            fn flag() -> Bool { return true; }",
+        );
+        assert_eq!(errors, 0);
+        assert!(ordinary.variant_owner_overrides.is_empty());
+        let (inherited, errors) = resolve_src(
+            "module user; enum Base { A, B }
+            enum Derived(Base);
+            fn base() -> Base { return Base::A; }
+            fn derived() -> Derived { return Derived::A; }
+            fn flag() -> Bool { return true; }",
+        );
+        assert_eq!(errors, 0);
+        assert_eq!(inherited.variant_owner_overrides.len(), 1);
+        let (&span, &owner) = inherited.variant_owner_overrides.iter().next().unwrap();
+        assert_eq!(inherited.def(owner).unwrap().name, "Derived");
+        let variant = inherited.def(inherited.resolved(span).unwrap()).unwrap();
+        assert_ne!(variant.parent, Some(owner));
+        assert_eq!(inherited.def(variant.parent.unwrap()).unwrap().name, "Base");
+    }
 
     const DIGITAL_PRELUDE: &str = "\n\
         enum Bit { '0', '1' }\n\

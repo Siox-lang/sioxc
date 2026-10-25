@@ -3,6 +3,46 @@
 use super::*;
 
 #[test]
+fn inherited_variant_keys_use_the_recorded_owner_not_generated_qualifier_spans() {
+    let source = "module user;
+        enum Base { A, B }
+        enum Derived(Base);
+        fn value() -> Derived { return Derived::A; }";
+    let mut sink = DiagnosticSink::new();
+    let mut module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+    let ast::Item::Fn(function) = &mut module.items[2] else {
+        panic!("function")
+    };
+    let ast::Stmt::Return {
+        value: Some(ast::Expr::Path(path)),
+        ..
+    } = &mut function.body.as_mut().unwrap().stmts[0]
+    else {
+        panic!("variant")
+    };
+    for segment in &mut path.segments {
+        segment.span = path.span;
+    }
+    let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let functions = FunctionIndex::new(&resolved);
+    let ast::Item::Fn(function) = &module.items[2] else {
+        panic!("function")
+    };
+    let ast::Stmt::Return {
+        value: Some(ast::Expr::Path(path)),
+        ..
+    } = &function.body.as_ref().unwrap().stmts[0]
+    else {
+        panic!("variant")
+    };
+    assert_eq!(
+        functions.enum_variant_key(path),
+        Some(("Derived".into(), "A".into()))
+    );
+}
+
+#[test]
 fn renamed_range_provider_keeps_its_identity_in_generated_index_arguments() {
     let source = "module user;
         struct Range { pub left: integer, pub right: integer }
