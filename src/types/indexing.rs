@@ -247,11 +247,7 @@ impl<'a> Checker<'a> {
             );
             return;
         }
-        let input = if matches!(index, Expr::Range { .. } | Expr::PartialRange { .. }) {
-            self.type_kind_name(&self.ty_from_head("Range"))
-        } else {
-            self.type_kind_name(&self.type_of(index, sym))
-        };
+        let input = self.type_kind_name(&self.type_of(index, sym));
         let found = self
             .index_sigs
             .get(&("Index".to_string(), owner.clone()))

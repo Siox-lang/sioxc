@@ -284,7 +284,15 @@ impl<'a> Lowering<'a> {
                 let input = args
                     .first()
                     .and_then(|argument| self.operand_type_name(argument));
-                self.find_method(&family, method, input.as_deref())
+                if method == "index_assign" && self.op_impls.contains("IndexAssign", &family) {
+                    let value = args
+                        .get(1)
+                        .and_then(|argument| self.operand_type_name(argument));
+                    self.free_fns
+                        .get_index_assignment(&family, input.as_deref(), value.as_deref())
+                } else {
+                    self.find_method(&family, method, input.as_deref())
+                }
             }
             None => self.free_fns.get(callee),
         };

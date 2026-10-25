@@ -3348,10 +3348,24 @@ fn inline_process_procedure_call(
                 .get(receiver.0 as usize)
                 .and_then(|value| value.ty.as_ref())
                 .and_then(|ty| process_type_key(ty, context))?;
-            (
-                context.functions.get_associated(&owner, &field.text)?,
-                Some(receiver),
-            )
+            let function = if field.text == "index_assign" {
+                let input = arguments
+                    .first()
+                    .and_then(|argument| context.typed.expr_type(ast::expr_span(argument)))
+                    .and_then(|ty| process_type_key(ty, context));
+                let value = arguments
+                    .get(1)
+                    .and_then(|argument| context.typed.expr_type(ast::expr_span(argument)))
+                    .and_then(|ty| process_type_key(ty, context));
+                context.functions.get_index_assignment(
+                    &owner,
+                    input.as_deref(),
+                    value.as_deref(),
+                )?
+            } else {
+                context.functions.get_associated(&owner, &field.text)?
+            };
+            (function, Some(receiver))
         }
         _ => (context.functions.get(callee)?, None),
     };
@@ -7175,60 +7189,24 @@ fn custom_index_value(
         return None;
     }
     let owner = process_type_key(&ty, context)?;
-    let input = if matches!(index, ast::Expr::Range { .. }) {
-        "Range".to_string()
-    } else {
-        context
-            .typed
-            .expr_type(ast::expr_span(index))
-            .and_then(|ty| process_type_key(ty, context))
-            .unwrap_or_else(|| "integer".to_string())
-    };
+    let input = context
+        .typed
+        .expr_type(ast::expr_span(index))
+        .and_then(|ty| process_type_key(ty, context))
+        .or_else(|| (!matches!(index, ast::Expr::Range { .. })).then(|| "integer".to_string()))?;
     let function = context
         .functions
         .get_binary_operator("[]", &owner, Some(&input))?;
     let span = ast::expr_span(expression);
     let receiver = value_ref(base, process, context);
-    let argument = match index {
-        // The contract's `Range { left, right }` value, which the impl reads
-        // as a struct (`r.left`).
-        ast::Expr::Range { lo, hi, span } => {
-            let range_type = context
-                .typed
-                .expr_type(*span)
-                .filter(|ty| matches!(ty, crate::types::Ty::Named(_)))
-                .cloned()?;
-            let integer = Some(crate::types::Ty::Integer);
-            let left = value_ref_with_type(lo, process, context, integer.as_ref());
-            let right = value_ref_with_type(hi, process, context, integer.as_ref());
-            let field = |name: &str, value| ProcessAggregateField {
-                name: Some(name.to_string()),
-                value: Some(value),
-                span: *span,
-            };
-            let layout = process_aggregate_layout_for_type(&range_type, *span, context);
-            let width = layout.as_ref().and_then(|layout| layout.packed_width());
-            let value = push_value(
-                *span,
-                Some(range_type.clone()),
-                width,
-                ProcessValueKind::Construct {
-                    ty: Some(range_type),
-                    fields: vec![field("left", left), field("right", right)],
-                    spread: None,
-                },
-                context,
-            );
-            context.process_ir.value_layouts[value.0 as usize] = layout;
-            value
-        }
-        // An integer index binds the contract's `integer` parameter, a
-        // literal included (`2` alone is two bits wide).
-        _ if input == "integer" => {
-            value_ref_with_type(index, process, context, Some(&crate::types::Ty::Integer))
-        }
-        _ => value_ref(index, process, context),
+    // Integer literals fill the parameter's ABI width; ranges fill the
+    // registered record through the common contextual value lowerer.
+    let argument_type = if input == "integer" {
+        Some(crate::types::Ty::Integer)
+    } else {
+        context.typed.expr_type(ast::expr_span(index)).cloned()
     };
+    let argument = value_ref_with_type(index, process, context, argument_type.as_ref());
     let result = context.typed.expr_type(span).cloned();
     inline_process_function(
         function,
@@ -10533,6 +10511,14 @@ fn value_ref_with_type(
     context: &mut LoweringContext<'_>,
     contextual_type: Option<&crate::types::Ty>,
 ) -> crate::ir::ProcessValueId {
+    if matches!(expression, ast::Expr::Range { .. })
+        && matches!(contextual_type, Some(crate::types::Ty::Named(owner))
+            if context.resolved.lang("range") == Some(*owner))
+    {
+        if let Some(argument) = crate::ir::source_index_argument(expression, context.resolved) {
+            return value_ref_with_type(&argument, process, context, contextual_type);
+        }
+    }
     if let Some(value) = struct_suffix_literal(expression, process, context) {
         return value;
     }

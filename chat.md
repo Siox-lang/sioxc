@@ -20154,3 +20154,69 @@ page unchanged. Prepare explicit-path local compiler/corpus/paper commits. No
 push,board writes or new TODO history. Shared root/paper-main dirty hunks and20
 corpus probes unchanged. Foundations~75%; Range and other hooks,typed values,
 remaining registries and other proposals remain unfinished. Goal stays active.
+
+### 2026-10-25 — Codex — Range role identity across checking and lowering
+
+Start next foundations slice from accepted8dbe63c. Core already registers Range
+as role range. Migrate frontend range expression inference and Index/IndexAssign
+selection to checked identity,not ty_from_head("Range"). Lowering must also stop
+classifying generated/user constructors by leaf: use resolved declaration spans
+for generated Range type and ordinary operand type dispatch; Process custom
+index uses checked input type. Keep intrinsic/partial-range behavior unchanged.
+Add positive/negative raw role tests and native hardware/process read/write
+overloads that distinguish unrelated user Range,plus docs/VCD profile. No new
+std values,syntax,dependencies,runtime or LLVM changes. Full gate before commits;
+preserve peers,no push. Explicit-derived coincident-span enum probe remains a
+separate unverified coverage followup,not mixed into this migration.
+
+### 2026-10-25 — Codex — fix native Range argument representation and dispatch
+
+Focused575741 green (582 frontend/108 IR/Clippy). IR test Signal.id typo fixed;
+584378 passed582/109/Clippy but new corpus import alias syntax needed correction.
+590300 busy75;590830 fails native widthNone/128 for raw Range procedure argument.
+Procedure index_assign selection still uses name-only associated map. Share the
+existing declaration-bound AST range constructor via lower_helpers/source.rs,
+materialize contextual range arguments through ordinary Construct lowering and
+select procedure IndexAssign from operator registry by checked input. Scope adds
+functions.rs/shared source helper,not LLVM/runtime. Preserve all read/write
+assertions and layout validation; intrinsic/control ranges stay logical nodes.
+
+### 2026-10-25 — Codex — hardware IndexAssign registry population
+
+641359 failed1 after584 frontend,110 IR andClippy passed. Native E-P017 remains
+on hardware writes: hardware collect.rs never inserts operator implementations
+in FunctionIndex,unlike Process collection. Add IndexAssign insertion there;
+hardware source_calls uses shared selector only for IndexAssign implementations,
+preserving inherent-method fallback. No full gate,feature commit or push yet.
+
+### 2026-10-25 — Codex — Range focused matrix green, full-gate freeze
+
+687428 terminal exited/success/0,peak1879310336:584 frontend-library cases,
+110 IR cases,strict Clippy and all12 direct native/VCD runs (range_hook_identity,
+index_overload,partial_range × default/bitpack × ordinary/debug) pass. New native
+assertions retain both range identities,integer/real write overloads,negative/
+descending bounds,range locals,function arguments and intrinsic slices. Actual
+earlier641359 failed E-P017 and590830 failed width validation,not acceptance.
+Freeze owned compiler,actual267 corpus and owned paper now. Launch prepared
+range-role-final-20261025.sh for68 direct native/VCD checks,both full Rust suites,
+actual267 corpora,UI/JSON,runners,AST update and before/after source hashes.
+No production/test/doc edits during gate; only root log may change. No feature
+commit/push until terminal full green. Remaining foundations/proposals stay open.
+
+### 2026-10-25 — Codex — Range identity and IndexAssign full gate accepted
+
+712340 terminal exited/success/0,peak1881407488. Both complete Rust suites pass
+(641/620 library,23 GDB each),584 no-LLVM library cases,68 ordinary/debug native/
+VCD runs,both actual267 corpora,strict Clippy,34 runners,12 Phase1 artifacts,
+both61 UI and61 JSON cases,54 codes,2 apply/recompile migrations. Exact frozen
+fingerprints before/after all MATCH:
+compiler134202f273b4bb55b27bbfaf8a3fc3d2079fabdae47ddf105ebe03a6a0c3291e,
+corpus989774569353d28d1d0d181facf832d0483569e58bdc60bc8d95ff5fe49d82e5,
+paperc6e3275c42ae900c67578ad69bced63af9fd0e2c8259abbcec95221b73bccc6b.
+Evidence range-role-identity-20261025; AST6988 nodes/18874 edges/357 communities,
+existing vendor/no-symbol/stale-label caveats remain,no paid semantic rebuild.
+Only acceptance proposal/log edits follow; production/tests/owned paper remain
+exactly tested. Prepare explicit-path local compiler/corpus/paper commits with
+foundations~75% estimate. No push,board writes or TODO history. Preserve shared
+root/paper-main dirty hunks and20 corpus probes. Remaining typed constants,
+registries,other hooks/dynamic routing and proposals keep the goal active.

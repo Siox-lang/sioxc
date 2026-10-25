@@ -215,6 +215,8 @@ impl<'a> FunctionIndex<'a> {
             // type as an operator by its right operand: `Index<integer, _>`
             // and `Index<Range, _>` may both exist.
             ("[]".to_string(), "index")
+        } else if trait_key == "IndexAssign" {
+            ("[]=".to_string(), "index_assign")
         } else {
             match (
                 ast::operator_trait_symbol(&trait_key),
@@ -403,6 +405,50 @@ impl<'a> FunctionIndex<'a> {
     /// method syntax, whose callee is a field expression rather than a path.
     pub fn get_associated(&self, owner: &str, name: &str) -> Option<&'a ast::FnDecl> {
         self.associated.get(owner)?.get(name).copied()
+    }
+
+    /// Index assignment selects its index/value contract, not the last method stored
+    /// under that name. Ordinary inherent methods retain their existing lookup.
+    pub(crate) fn get_index_assignment(
+        &self,
+        owner: &str,
+        input: Option<&str>,
+        value: Option<&str>,
+    ) -> Option<&'a ast::FnDecl> {
+        let Some(candidates) = self.operators.get("[]=", owner) else {
+            return self.get_associated(owner, "index_assign");
+        };
+        if let [(function, _)] = candidates.as_slice() {
+            return Some(function);
+        }
+        let matches = |wanted: Option<&str>, declared: Option<&str>| {
+            wanted.is_none_or(|wanted| {
+                declared.is_some_and(|declared| {
+                    declared == wanted || (declared == "Self" && wanted == owner)
+                })
+            })
+        };
+        let mut matching = candidates.iter().filter(|(function, declared)| {
+            let mut parameters = function
+                .params
+                .iter()
+                .filter(|parameter| !parameter.is_self);
+            let parameter_type = |parameter: Option<&ast::FnParam>| {
+                parameter
+                    .and_then(|parameter| parameter.ty.as_ref())
+                    .and_then(|ty| self.type_head_key(ty))
+            };
+            let index_parameter = parameters.next();
+            let inferred_index = declared
+                .is_none()
+                .then(|| parameter_type(index_parameter))
+                .flatten();
+            let index_type = declared.as_deref().or(inferred_index.as_deref());
+            let value_type = parameter_type(parameters.next());
+            matches(input, index_type) && matches(value, value_type.as_deref())
+        });
+        let function = matching.next()?.0;
+        matching.next().is_none().then_some(function)
     }
 
     /// Retrieve a free function using a canonical callee's resolved identity.

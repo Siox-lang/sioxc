@@ -133,14 +133,7 @@ impl<'a> Checker<'a> {
             );
             return true;
         }
-        let input = if matches!(
-            index.as_ref(),
-            Expr::Range { .. } | Expr::PartialRange { .. }
-        ) {
-            self.type_kind_name(&self.ty_from_head("Range"))
-        } else {
-            self.type_kind_name(&self.type_of(index, sym))
-        };
+        let input = self.type_kind_name(&self.type_of(index, sym));
         let value_ty = self.type_kind_name(&self.type_of(value, sym));
         let found = self
             .index_sigs

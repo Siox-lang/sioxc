@@ -356,7 +356,9 @@ impl<'a> Checker<'a> {
                     low: 0,
                 }
             }
-            Expr::Range { .. } | Expr::PartialRange { .. } => self.ty_from_head("Range"),
+            Expr::Range { .. } | Expr::PartialRange { .. } => {
+                self.resolved.lang("range").map_or(Ty::Error, Ty::Named)
+            }
             Expr::Index { base, index, .. } => {
                 let base_ty = self.type_of(base, sym);
                 let is_range = matches!(
@@ -441,11 +443,7 @@ impl<'a> Checker<'a> {
                         let Some(owner) = self.type_kind_name(&base_ty) else {
                             return Ty::Error;
                         };
-                        let input = if is_range {
-                            self.type_kind_name(&self.ty_from_head("Range"))
-                        } else {
-                            self.type_kind_name(&self.type_of(index, sym))
-                        };
+                        let input = self.type_kind_name(&self.type_of(index, sym));
                         let output = self
                             .index_sigs
                             .get(&("Index".to_string(), owner.clone()))

@@ -2,6 +2,47 @@
 
 use super::*;
 
+/// The source record supplied to an indexing contract for a complete range.
+pub(in crate::ir) fn source_index_argument(
+    index: &ast::Expr,
+    resolved: &crate::resolve::Resolved,
+) -> Option<ast::Expr> {
+    let ast::Expr::Range { lo, hi, span } = index else {
+        return (!matches!(index, ast::Expr::PartialRange { .. })).then(|| index.clone());
+    };
+    let owner = resolved.lang("range")?;
+    let definition = resolved.def(owner)?;
+    if definition.kind != crate::resolve::DefKind::Struct {
+        return None;
+    }
+    // Internal type paths retain the declaration identity, not caller scope.
+    let declaration = definition.span?;
+    let path = ast::Path {
+        segments: vec![ast::Ident {
+            text: definition.name.clone(),
+            span: declaration,
+        }],
+        span: declaration,
+    };
+    let field = |name: &str, value: ast::Expr| ast::ConnectArg {
+        field: Some(ast::Ident {
+            text: name.to_string(),
+            span: *span,
+        }),
+        value: Some(value),
+        span: *span,
+    };
+    Some(ast::Expr::Construct {
+        ty: Some(ast::Type::Path(path)),
+        args: vec![
+            field("left", lo.as_ref().clone()),
+            field("right", hi.as_ref().clone()),
+        ],
+        spread: None,
+        span: *span,
+    })
+}
+
 /// `p'old.valid` -> `p.valid'old`, `xs'old[0]` -> `xs[0]'old`. Only the two
 /// value primitives move: `'length` and the range bounds describe the whole
 /// aggregate, so pushing them at a leaf would change what is asked.

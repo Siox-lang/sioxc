@@ -179,6 +179,9 @@ impl<'a> Lowering<'a> {
                         let trait_path = im.trait_.as_ref();
                         let trait_key =
                             trait_path.and_then(|path| self.free_fns.trait_path_key(path));
+                        if trait_key.as_deref() == Some("IndexAssign") {
+                            self.free_fns.insert_operator_impl(im);
+                        }
                         let target = self.free_fns.type_head_key(&im.target);
                         if let (Some(tr), Some(ty)) = (trait_key.as_ref(), target.as_ref()) {
                             self.implemented_traits

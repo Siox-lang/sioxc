@@ -9,11 +9,11 @@ declaration registry are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-25, Boolean literal/result identities and resolved aliases):
-both complete Rust suites pass, including 636 default/615 bitpack library tests
-and all 23 DWARF tests per mode. The gate also passes 579 frontend-only tests,
-strict Clippy, 34 runner tests, 56 ordinary/debug native and VCD checks, and both
-actual 266-program corpora. Both modes pass 61 human UI and 61 JSON/schema cases,
+Local acceptance (2026-10-25, range contracts, Boolean identities and resolved aliases):
+both complete Rust suites pass, including 641 default/620 bitpack library tests
+and all 23 DWARF tests per mode. The gate also passes 584 no-LLVM library tests,
+strict Clippy, 34 runner tests, 68 ordinary/debug native and VCD checks, and both
+actual 267-program corpora. Both modes pass 61 human UI and 61 JSON/schema cases,
 cover all 54 active codes and apply/recompile both migration fixtures.
 Compiler, corpus and documentation fingerprints match before/after the frozen
 gate. Retained evidence and fixture migrations are recorded in
@@ -498,6 +498,28 @@ spelling. The old directive-to-`true` metadata synthesis is removed: compiler
 directives are not attribute values. Waveform checks retain the runtime's
 symbolic enum representation, including `true`/`false` transitions, rather than
 assuming Boolean ports are encoded as VCD wire bits.
+
+**Implemented range identity (2026-10-25).** Range expressions select the
+existing `range` lang role rather than `ty_from_head("Range")`. Index and
+IndexAssign checking consumes the same inferred input type as other indices.
+Both method-lowering paths and Process custom indexing use checked/resolved
+identities; generated range argument types retain the provider's declaration
+span instead of being rebound by leaf spelling. Explicit user records named
+`Range` remain distinct overload inputs. Renamed providers, both module orders,
+missing roles, read/write contract rejection and generated IR have regressions;
+native coverage separates those contracts in hardware and named processes.
+Intrinsic indexing, partial-range bounds and source-owned range fields are
+unchanged. The full matrix above passes with unchanged compiler, corpus and
+paper fingerprints; other hook consumers and remaining proposal sections stay open.
+Native write coverage exposed two older gaps: range procedure arguments were
+left as unpacked control ranges, and `index_assign` methods were selected by
+name rather than their complete contract. Contextual range arguments now reuse
+the same declaration-bound constructor and ordinary aggregate value lowering.
+IndexAssign implementations enter the operator registry; both index and value
+types select the body in hardware and procedures. Ambiguous multi-candidate
+queries stay unresolved rather than depending on source order. Tests retain
+integer/real value overloads, descending/negative bounds, ordinary range values
+and mixed intrinsic slices instead of reducing coverage to read-only indexing.
 
 `#[test]` and lint directives are compiler built-ins, not importable declarations;
 do not recreate `std::attrs::test` or make test discovery depend on metadata.

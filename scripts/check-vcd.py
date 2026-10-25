@@ -60,7 +60,13 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
 
 
 def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile == "bool_literal_identity_test":
+    if profile == "range_hook_identity_test":
+        root = "RangeRoles.dut."
+        for signal, initial, updated in [("canonical", 15, 19), ("explicit", 107, 113)]:
+            assert changes[root + signal] == [
+                (0, f"{initial:064b}"), (1_000_000, f"{updated:064b}")
+            ]
+    elif profile == "bool_literal_identity_test":
         root = "BoolLiterals.dut."
         assert values(changes, root + "yes") == ["true"]
         assert values(changes, root + "no") == ["false"]

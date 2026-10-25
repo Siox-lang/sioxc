@@ -257,6 +257,129 @@ fn boolean_metadata_values_follow_the_registered_owner() {
     }
 }
 
+#[test]
+fn range_values_and_index_contracts_follow_a_renamed_role_in_either_order() {
+    let source = "module user;
+        struct Range { pub left: integer, pub right: integer }
+        struct Buffer { pub value: integer }
+        impl Index<core::ops::Bounds, integer> for Buffer {
+            fn index(self, r: core::ops::Bounds) -> integer { return self.value + r.left; }
+        }
+        impl Index<Range, real> for Buffer {
+            fn index(self, r: Range) -> real { return real(r.right); }
+        }
+        impl IndexAssign<core::ops::Bounds, integer> for Buffer {
+            fn index_assign(self, r: core::ops::Bounds, value: integer) {
+                self.value = value + r.left;
+            }
+        }
+        impl IndexAssign<Range, real> for Buffer {
+            fn index_assign(self, r: Range, value: real) { self.value = integer(value) + r.left; }
+        }
+        fn make() -> core::ops::Bounds { return 1..2; }
+        fn read(buffer: Buffer) -> integer { return buffer[1..2]; }
+        fn read_user(buffer: Buffer, r: Range) -> real { return buffer[r]; }
+        entity E {}
+        impl E { let buffer: Buffer; process { buffer[1..2] = 4; } }";
+    for core_first in [false, true] {
+        let mut sink = DiagnosticSink::default();
+        let core = "module core::ops;
+            pub struct Bounds { pub left: integer, pub right: integer }
+            attr lang for Bounds = \"range\";";
+        let mut modules = with_core(
+            vec![
+                crate::syntax::parse_module(FileId(0), source, &mut sink),
+                crate::syntax::parse_module(FileId(1), core, &mut sink),
+            ],
+            &mut sink,
+        );
+        if core_first {
+            modules.swap(0, 1);
+        }
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = check(&modules, &resolved, &mut sink);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        let owner = resolved.lang("range").unwrap();
+        let user = modules
+            .iter()
+            .find(|module| module.span.file == FileId(0))
+            .unwrap();
+        for item in &user.items {
+            let Item::Fn(function) = item else { continue };
+            let Stmt::Return {
+                value: Some(value), ..
+            } = &function.body.as_ref().unwrap().stmts[0]
+            else {
+                panic!("return fixture")
+            };
+            let expected = match function.name.text.as_str() {
+                "make" => Ty::Named(owner),
+                "read" => Ty::Integer,
+                "read_user" => Ty::Real,
+                other => panic!("unexpected function {other}"),
+            };
+            assert_eq!(typed.expr_type(expr_span(value)), Some(&expected));
+        }
+    }
+}
+
+#[test]
+fn range_writes_do_not_select_an_equal_named_user_contract() {
+    let source = "module user;
+        struct Range { pub left: integer, pub right: integer }
+        struct Buffer { pub value: integer }
+        impl IndexAssign<core::ops::Bounds, integer> for Buffer {
+            fn index_assign(self, r: core::ops::Bounds, value: integer) { self.value = value; }
+        }
+        impl IndexAssign<Range, real> for Buffer {
+            fn index_assign(self, r: Range, value: real) { self.value = integer(value); }
+        }
+        entity E {}
+        impl E { let buffer: Buffer; process { buffer[1..2] = 4.0; } }";
+    let mut sink = DiagnosticSink::default();
+    let core = "module core::ops;
+        pub struct Bounds { pub left: integer, pub right: integer }
+        attr lang for Bounds = \"range\";";
+    let modules = with_core(
+        vec![
+            crate::syntax::parse_module(FileId(0), source, &mut sink),
+            crate::syntax::parse_module(FileId(1), core, &mut sink),
+        ],
+        &mut sink,
+    );
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    check(&modules, &resolved, &mut sink);
+    assert_eq!(sink.error_count(), 1, "{:?}", sink.diagnostics());
+    assert!(sink
+        .diagnostics()
+        .iter()
+        .any(|diagnostic| diagnostic.code == Some(codes::TYPE_MISMATCH)
+            && diagnostic.message.contains("IndexAssign")));
+}
+
+#[test]
+fn a_user_range_cannot_supply_an_unregistered_range_role() {
+    let mut sink = DiagnosticSink::default();
+    let source = "module user; struct Range { pub left: integer, pub right: integer }
+        fn make() -> Range { return 1..2; }";
+    let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+    let modules = with_core(vec![module], &mut sink);
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(resolved.lang("range").is_none());
+    let typed = check(&modules, &resolved, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let Item::Fn(function) = &modules[0].items[1] else {
+        panic!("function")
+    };
+    let Stmt::Return {
+        value: Some(value), ..
+    } = &function.body.as_ref().unwrap().stmts[0]
+    else {
+        panic!("range")
+    };
+    assert_eq!(typed.expr_type(expr_span(value)), Some(&Ty::Error));
+}
+
 fn assert_results(modules: &[Module], typed: &Typed, expected: &Ty) {
     let mut checked = 0;
     for item in modules.iter().flat_map(|module| &module.items) {

@@ -1278,33 +1278,7 @@ impl<'a> Lowering<'a> {
 
     /// The argument a custom index passes to its contract.
     pub(super) fn index_argument(&self, index: &ast::Expr) -> Option<ast::Expr> {
-        let ast::Expr::Range { lo, hi, span } = index else {
-            return (!matches!(index, ast::Expr::PartialRange { .. })).then(|| index.clone());
-        };
-        let path = ast::Path {
-            segments: vec![ast::Ident {
-                text: "Range".to_string(),
-                span: *span,
-            }],
-            span: *span,
-        };
-        let field = |name: &str, value: ast::Expr| ast::ConnectArg {
-            field: Some(ast::Ident {
-                text: name.to_string(),
-                span: *span,
-            }),
-            value: Some(value),
-            span: *span,
-        };
-        Some(ast::Expr::Construct {
-            ty: Some(ast::Type::Path(path)),
-            args: vec![
-                field("left", lo.as_ref().clone()),
-                field("right", hi.as_ref().clone()),
-            ],
-            spread: None,
-            span: *span,
-        })
+        source_index_argument(index, self.resolved)
     }
 
     /// Resolve an exact `use` alias chain without looping on malformed

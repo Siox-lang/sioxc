@@ -953,9 +953,6 @@ impl<'a> Lowering<'a> {
         };
         let ty = self.operand_type_name(base)?;
         let input = args.first().and_then(|arg| match arg {
-            ast::Expr::Construct { ty: Some(ty), .. } if type_head_name(ty) == Some("Range") => {
-                Some("Range".to_string())
-            }
             // A literal takes its type from the parameter, as on assignment,
             // so it names no impl: `v.matches("01--")`, `l.matches('1')`.
             ast::Expr::StrLit { .. } | ast::Expr::BitStrLit { .. } | ast::Expr::CharLit { .. } => {
@@ -1936,11 +1933,6 @@ impl<'a> Lowering<'a> {
                         .operand_type_name(base)
                         .or_else(|| recv_layout.as_ref().and_then(Self::source_layout_family))?;
                     let input = args.first().and_then(|arg| match arg {
-                        ast::Expr::Construct { ty: Some(ty), .. }
-                            if type_head_name(ty) == Some("Range") =>
-                        {
-                            Some("Range".to_string())
-                        }
                         ast::Expr::StrLit { .. }
                         | ast::Expr::BitStrLit { .. }
                         | ast::Expr::CharLit { .. } => None,

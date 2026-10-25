@@ -3,6 +3,118 @@
 use super::*;
 
 #[test]
+fn renamed_range_provider_keeps_its_identity_in_generated_index_arguments() {
+    let source = "module user;
+        struct Range { pub left: integer, pub right: integer }
+        struct Buffer { pub value: integer }
+        impl Index<core::ops::Bounds, integer> for Buffer {
+            fn index(self, r: core::ops::Bounds) -> integer { return r.left; }
+        }
+        impl Index<Range, integer> for Buffer {
+            fn index(self, r: Range) -> integer { return 99; }
+        }
+        entity E { y: integer out }
+        impl E { let buffer: Buffer; y = buffer[1..2]; }";
+    let core = "module core::ops;
+        pub struct Bounds { pub left: integer, pub right: integer }
+        attr lang for Bounds = \"range\";";
+    for core_first in [false, true] {
+        let mut sink = DiagnosticSink::new();
+        let mut modules = vec![
+            crate::syntax::parse_module(FileId(0), source, &mut sink),
+            crate::syntax::parse_module(FileId(1), core, &mut sink),
+        ];
+        if core_first {
+            modules.reverse();
+        }
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        let typed = crate::types::check(&modules, &resolved, &mut sink);
+        let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+        let mut design = lower(&modules, &resolved, &hierarchy, &mut sink);
+        expand_fixture_expressions(&mut design);
+        assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+        assert!(design.validate().is_empty(), "{:?}", design.validate());
+        let output = design
+            .signals
+            .iter()
+            .position(|signal| signal.path == "E.y")
+            .unwrap();
+        let driver = design
+            .drivers
+            .iter()
+            .find(|driver| driver.target == SignalId(output as u32))
+            .unwrap();
+        assert!(matches!(driver.expr, Expr::Const(1)), "{:?}", driver.expr);
+    }
+}
+
+#[test]
+fn index_assignment_selects_both_argument_types_without_declaration_order() {
+    let source = "module user;
+        struct Buffer { pub value: integer }
+        struct Bounds { pub left: integer, pub right: integer }
+        struct Other { pub left: integer, pub right: integer }
+        impl IndexAssign<Bounds, real> for Buffer {
+            fn index_assign(self, r: Bounds, value: real) { self.value = 1; }
+        }
+        impl IndexAssign<Bounds, integer> for Buffer {
+            fn index_assign(self, r: Bounds, value: integer) { self.value = 2; }
+        }
+        impl IndexAssign<Other, integer> for Buffer {
+            fn index_assign(self, r: Other, value: integer) { self.value = 3; }
+        }";
+    let mut sink = DiagnosticSink::new();
+    let module = crate::syntax::parse_module(FileId(0), source, &mut sink);
+    let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let implementations: Vec<_> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Impl(implementation) => Some(implementation),
+            _ => None,
+        })
+        .collect();
+    for reverse in [false, true] {
+        let mut functions = FunctionIndex::new(&resolved);
+        for position in 0..implementations.len() {
+            let position = if reverse {
+                implementations.len() - 1 - position
+            } else {
+                position
+            };
+            functions.insert_operator_impl(implementations[position]);
+        }
+        for (input, value, expected) in [
+            ("Bounds", "real", "1"),
+            ("Bounds", "integer", "2"),
+            ("Other", "integer", "3"),
+        ] {
+            let function = functions
+                .get_index_assignment("Buffer", Some(input), Some(value))
+                .unwrap();
+            let ast::Stmt::Assign {
+                value: ast::Expr::Int { text, .. },
+                ..
+            } = &function.body.as_ref().unwrap().stmts[0]
+            else {
+                panic!("assignment fixture")
+            };
+            assert_eq!(text, expected);
+        }
+        assert!(functions
+            .get_index_assignment("Buffer", None, None)
+            .is_none());
+        assert!(functions
+            .get_index_assignment("Buffer", Some("Bounds"), None)
+            .is_none());
+        assert!(functions
+            .get_index_assignment("Buffer", Some("Other"), Some("real"))
+            .is_none());
+    }
+}
+
+#[test]
 fn source_process_keeps_multiple_targets_in_one_canonical_cfg() {
     let design = lower_src(
         "module source; entity E { input: integer in, a: integer out, b: integer out, c: integer out }\n\
