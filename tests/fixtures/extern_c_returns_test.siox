@@ -1,0 +1,52 @@
+// Aggregate results follow the platform's struct-return rules (registers,
+// or a hidden `sret` buffer), packed values wider than 64 bits cross as
+// little-endian words, and `c_float` fields are C floats. The C side is
+// extern_c_returns.c, linked with `--link`; div/ldiv come from libc.
+module ffi_returns;
+
+use std::ffi::{c_int, c_float, c_uchar};
+use std::bits::unsigned;
+
+struct Div { pub quot: c_int, pub rem: c_int, }
+struct LDiv { pub quot: integer, pub rem: integer, }
+struct Big { pub a: integer, pub b: integer, pub c: integer, }
+struct Pt { pub x: real, pub y: real, }
+struct Mix { pub a: c_int, pub b: real, }
+struct Two { pub f: c_float, pub g: c_float, }
+
+extern "C" {
+    fn div(numerator: c_int, denominator: c_int) -> Div;
+    fn ldiv(numerator: integer, denominator: integer) -> LDiv;
+    fn make_big(x: integer) -> Big;
+    fn make_pt(v: real) -> Pt;
+    fn make_mix(a: c_int) -> Mix;
+    fn make_two(v: c_float) -> Two;
+    fn wide_next(p: unsigned[128]) -> unsigned[128];
+    fn memcpy(dst: c_uchar[8], src: Two, count: natural) -> natural;
+}
+
+#[test]
+entity ReturnsTest {}
+impl ReturnsTest {
+    process {
+        let d: Div = div(17, 5);
+        assert!(d.quot == 3 and d.rem == 2, "8 bytes in one register");
+        let l: LDiv = ldiv(-17, 5);
+        assert!(l.quot == -3 and l.rem == -2, "16 bytes in two registers");
+        let big: Big = make_big(7);
+        assert!(big.a == 7 and big.b == 14 and big.c == 21, "24 bytes through sret");
+        let pt: Pt = make_pt(2.5);
+        assert!(pt.x == 2.5 and pt.y == 3.5, "two doubles");
+        let mix: Mix = make_mix(-6);
+        assert!(mix.a == -6 and mix.b == -3.0, "an int and a double");
+        let two: Two = make_two(0.25);
+        assert!(two.f == 0.25 and two.g == 1.0, "two floats");
+        let w: unsigned[128] = 18446744073709551615;
+        let n: unsigned[128] = wide_next(w);
+        assert!(n == 18446744073709551616, "128 bits as words and in registers");
+        let t: Two = Two { .f = 1.5, .g = -2.0 };
+        let b: c_uchar[8] = [0, 0, 0, 0, 0, 0, 0, 0];
+        memcpy(b, t, 8);
+        assert!(b[2] == 192 and b[3] == 63 and b[7] == 192, "c_float fields are floats");
+    }
+}

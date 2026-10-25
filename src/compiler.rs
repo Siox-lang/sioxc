@@ -146,6 +146,10 @@ pub struct CompileRequest {
     /// given; later entries override earlier ones, and source directives
     /// override both unless a level is `forbid`.
     pub lints: Vec<(crate::diag::lints::Level, String)>,
+    /// Object files and libraries linked into a test executable, as given:
+    /// the C side of its `extern "C"` declarations. Other artifacts are not
+    /// linked and ignore it.
+    pub link: Vec<PathBuf>,
 }
 
 impl CompileRequest {
@@ -158,7 +162,14 @@ impl CompileRequest {
             output: None,
             debug: false,
             lints: Vec::new(),
+            link: Vec::new(),
         }
+    }
+
+    /// Link these object files or libraries into a test executable.
+    pub fn with_link(mut self, link: Vec<PathBuf>) -> Self {
+        self.link = link;
+        self
     }
 
     /// Build for a debugger: siox line mapping and no optimization.
@@ -704,7 +715,7 @@ impl Compiler {
                 let output = request
                     .output
                     .unwrap_or_else(|| path.with_extension("test"));
-                self.emit_test_executable(&mut result, output, request.debug);
+                self.emit_test_executable(&mut result, output, request.debug, &request.link);
             }
             Emit::Metadata
             | Emit::Source
@@ -826,7 +837,13 @@ impl Compiler {
 
     #[cfg(feature = "llvm")]
     /// Build a standalone executable containing every `#[test]` entity.
-    fn emit_test_executable(&self, result: &mut Compilation, output: PathBuf, debug: bool) {
+    fn emit_test_executable(
+        &self,
+        result: &mut Compilation,
+        output: PathBuf,
+        debug: bool,
+        link: &[PathBuf],
+    ) {
         if !Self::validate_design(result) {
             return;
         }
@@ -836,6 +853,7 @@ impl Compiler {
             sources: &result.sources,
             debug,
             output: &output,
+            link,
         }) {
             Ok(()) => {
                 result.artifact = Some(Artifact::File {
@@ -851,7 +869,13 @@ impl Compiler {
 
     #[cfg(not(feature = "llvm"))]
     /// Stub for builds without the `llvm` feature.
-    fn emit_test_executable(&self, result: &mut Compilation, _output: PathBuf, _debug: bool) {
+    fn emit_test_executable(
+        &self,
+        result: &mut Compilation,
+        _output: PathBuf,
+        _debug: bool,
+        _link: &[PathBuf],
+    ) {
         result.failure = Some(backend_unavailable());
     }
 }

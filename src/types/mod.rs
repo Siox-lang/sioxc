@@ -89,6 +89,20 @@ pub enum Ty {
 }
 
 impl Ty {
+    /// Whether this type crosses to C by pointer: a struct, a fixed array, or
+    /// a packed value wider than the 64-bit word (little-endian words).
+    pub fn is_c_aggregate(&self) -> bool {
+        match self {
+            Ty::Named(_) | Ty::Array { family: None, .. } => true,
+            Ty::Array {
+                family: Some(_),
+                len,
+                ..
+            } => *len > 64,
+            _ => false,
+        }
+    }
+
     /// Concrete storage width known at Stage 4. Named types need declaration
     /// metadata and therefore return `None` here.
     pub fn bit_width(&self) -> Option<u32> {

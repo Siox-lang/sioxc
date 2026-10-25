@@ -249,10 +249,8 @@ impl<'a> Checker<'a> {
                             .iter()
                             .filter_map(|p| p.ty.as_ref())
                             .any(|ty| {
-                                matches!(
-                                    self.ast_ty(ty),
-                                    Ty::Named(_) | Ty::Array { family: None, .. }
-                                ) && self.c_aggregate_problem(ty, 0).is_none()
+                                self.ast_ty(ty).is_c_aggregate()
+                                    && self.c_aggregate_problem(ty, 0).is_none()
                             });
                     if let Some(id) = self
                         .resolved
@@ -275,8 +273,9 @@ impl<'a> Checker<'a> {
         }
         match self.ast_ty(ty) {
             Ty::Integer | Ty::Natural | Ty::Real | Ty::Error => None,
+            // A packed value: one word, or little-endian words by pointer.
             Ty::Array {
-                len: 1..=64,
+                len: 1..,
                 family: Some(_),
                 ..
             } => None,
@@ -295,7 +294,9 @@ impl<'a> Checker<'a> {
                 {
                     return Some(format!("`{key}` derives from another type"));
                 }
-                let fields = self.struct_field_types.get(&key)?;
+                let Some(fields) = self.struct_field_types.get(&key) else {
+                    return Some(format!("`{key}` is not a struct of C scalars"));
+                };
                 if fields.is_empty() {
                     return Some(format!("`{key}` has no fields"));
                 }
@@ -318,26 +319,14 @@ impl<'a> Checker<'a> {
         // A struct or fixed array of C scalars crosses by pointer, laid out
         // as C lays it out; the call is then testbench-only, since hardware
         // holds an aggregate as separate leaves.
-        if matches!(checked, Ty::Named(_) | Ty::Array { family: None, .. }) {
+        if checked.is_c_aggregate() {
             match self.c_aggregate_problem(ty, 0) {
-                None if position == "parameter" => {
+                // A parameter crosses by pointer; a result is returned by the
+                // platform's struct-return rules.
+                None => {
                     if let Some(id) = self.resolved.declared(function.name.span) {
                         self.aggregate_extern_fns.insert(id);
                     }
-                    return;
-                }
-                None => {
-                    self.error_with_help(
-                        codes::TYPE_MISMATCH,
-                        type_head_span(ty).unwrap_or(function.name.span),
-                        format!(
-                            "extern C function `{}` cannot return the aggregate `{}`",
-                            function.name.text,
-                            crate::syntax::pretty::type_str(ty)
-                        ),
-                        "a returned struct needs the platform's struct-return rules; take a pointer parameter instead (an aggregate argument receives what C writes)"
-                            .to_string(),
-                    );
                     return;
                 }
                 Some(problem) => {

@@ -3,6 +3,76 @@
 use super::*;
 
 /// Whether a layout is a kernel-integer scalar.
+/// A struct field or array element (`base` at the `selected` slice) read as
+/// a value of `width` bits. A ranged integer is stored in its range's width
+/// (a `c_int` field in 32 bits), so it widens as the number it holds; any
+/// other mismatch has no reading.
+#[allow(clippy::too_many_arguments)]
+fn scalar_in_layout<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    id: ProcessValueId,
+    layout: &SourceLayout,
+    width: u32,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let stored = layout_width(layout)?;
+    if stored == width {
+        return process_value_in_layout(
+            context,
+            module,
+            builder,
+            design,
+            id,
+            layout,
+            active,
+            index_sites,
+            cache,
+        );
+    }
+    if !matches!(layout.kind, LayoutKind::Scalar { .. }) {
+        return None;
+    }
+    // Read the slice from its base directly: emitting `id` in its own layout
+    // would come back here.
+    let (base, selected) = match &design.process_ir.values.get(id.0 as usize)?.kind {
+        ProcessValueKind::Field { base, field } => {
+            let base_layout = process_value_layout(design, *base)?;
+            (*base, field_slice(base_layout, field)?)
+        }
+        ProcessValueKind::Index { base, index } => {
+            let base_layout = process_value_layout(design, *base)?;
+            (
+                *base,
+                array_slice(base_layout, process_constant_i64(design, *index)?)?,
+            )
+        }
+        _ => return None,
+    };
+    let base_layout = process_value_layout(design, base)?;
+    let packed = process_value_in_layout(
+        context,
+        module,
+        builder,
+        design,
+        base,
+        base_layout,
+        active,
+        index_sites,
+        cache,
+    )?;
+    let value = extract_region(builder, packed, selected.offset, selected.width)?;
+    if process_layout_is_signed(layout) {
+        fit_signed(builder, value, width)
+    } else {
+        fit(builder, value, width)
+    }
+}
+
 fn integer_scalar(layout: &SourceLayout) -> bool {
     matches!(
         layout.kind,
@@ -1048,193 +1118,17 @@ pub(super) fn process_value<'ctx>(
                 .into_int_value();
             fit(builder, selected, width)?
         }
-        ProcessValueKind::ForeignCall {
-            name,
-            arguments,
-            float_arguments,
-            integer_arguments,
-            float_result,
-            integer_result,
-            void_result,
-            c_arguments,
-            c_result,
-            pointer_arguments,
-        } => {
-            use inkwell::types::BasicMetadataTypeEnum as MetadataType;
-            use inkwell::values::BasicMetadataValueEnum as MetadataValue;
-
-            if let Some(returned) = cache.evaluated_calls.get(&(id, active)).copied() {
-                debug::capture_value(builder, design, cache, id, returned);
-                return if *integer_result {
-                    fit_signed(builder, returned, width)
-                } else {
-                    fit(builder, returned, width)
-                };
-            }
-
-            let float = context.f64_type();
-            let mut write_backs = Vec::new();
-            let mut parameter_types = Vec::<MetadataType>::with_capacity(arguments.len());
-            let mut argument_values = Vec::<MetadataValue>::with_capacity(arguments.len());
-            for (index, argument) in arguments.iter().enumerate() {
-                // A struct or array crosses by pointer to a copy laid out as
-                // C lays it out, kept for `ForeignOut` to read back.
-                if pointer_arguments.get(index).copied().unwrap_or(false) {
-                    // A local is packed as it is stored, which can be wider
-                    // than its type's own layout (a ranged element).
-                    let local = match design.process_ir.values.get(argument.0 as usize)?.kind {
-                        ProcessValueKind::Local { process, local } => Some((process, local)),
-                        _ => None,
-                    };
-                    let layout = match local {
-                        Some((process, local)) => design
-                            .process_ir
-                            .processes
-                            .get(process.0 as usize)?
-                            .locals
-                            .get(local.0 as usize)?
-                            .layout
-                            .as_ref()?,
-                        None => process_value_layout(design, *argument)?,
-                    };
-                    let aggregate = crate::llvm::foreign::c_aggregate(context, layout)?;
-                    let packed = process_value_in_layout(
-                        context,
-                        module,
-                        builder,
-                        design,
-                        *argument,
-                        layout,
-                        active,
-                        index_sites,
-                        cache,
-                    )?;
-                    let buffer = crate::llvm::foreign::c_aggregate_store(
-                        context, builder, &aggregate, packed,
-                    )?;
-                    parameter_types.push(context.ptr_type(inkwell::AddressSpace::default()).into());
-                    argument_values.push(buffer.into());
-                    // A process-local variable receives what C writes.
-                    if let Some((process, local)) = local {
-                        let width = layout.packed_width()?;
-                        write_backs.push((
-                            buffer,
-                            aggregate,
-                            local_state_name(process, local),
-                            width,
-                        ));
-                    }
-                    continue;
-                }
-                let argument = process_value_at(
-                    context,
-                    module,
-                    builder,
-                    design,
-                    *argument,
-                    64,
-                    integer_arguments.get(index).copied().unwrap_or(false),
-                    active,
-                    index_sites,
-                    cache,
-                )?;
-                let (ty, value): (MetadataType, MetadataValue) =
-                    if float_arguments.get(index).copied().unwrap_or(false) {
-                        let value = builder
-                            .build_bit_cast(argument, float, "pv.foreign.float_argument")
-                            .ok()?
-                            .into_float_value();
-                        (float.into(), value.into())
-                    } else {
-                        (context.i64_type().into(), argument.into())
-                    };
-                match c_arguments.get(index).copied().flatten() {
-                    Some(scalar) => {
-                        parameter_types.push(crate::llvm::foreign::c_type(context, scalar).into());
-                        argument_values.push(crate::llvm::foreign::c_argument(
-                            context, builder, value, scalar,
-                        )?);
-                    }
-                    None => {
-                        parameter_types.push(ty);
-                        argument_values.push(value);
-                    }
-                }
-            }
-            let function = module.get_function(name).unwrap_or_else(|| {
-                let signature = if *void_result {
-                    context.void_type().fn_type(&parameter_types, false)
-                } else if let Some(scalar) = c_result {
-                    inkwell::types::BasicType::fn_type(
-                        &crate::llvm::foreign::c_type(context, *scalar),
-                        &parameter_types,
-                        false,
-                    )
-                } else if *float_result {
-                    float.fn_type(&parameter_types, false)
-                } else {
-                    context.i64_type().fn_type(&parameter_types, false)
-                };
-                let function = module.add_function(name, signature, Some(Linkage::External));
-                crate::llvm::foreign::mark_extensions(context, function, c_arguments, *c_result);
-                function
-            });
-            // What C wrote through a pointer reaches the variable passed.
-            let write_back = |builder: &Builder<'ctx>| -> Option<()> {
-                for (buffer, aggregate, name, width) in &write_backs {
-                    let packed = crate::llvm::foreign::c_aggregate_load(
-                        context, builder, aggregate, *buffer, *width,
-                    )?;
-                    store_state(module, builder, name, *width, packed)?;
-                }
-                Some(())
-            };
-            // `fn srand(seed: integer);`: called for its effect, read as 0.
-            if *void_result {
-                builder.build_call(function, &argument_values, "").ok()?;
-                write_back(builder)?;
-                cache.clear();
-                let zero = context.i64_type().const_zero();
-                cache.evaluated_calls.insert((id, active), zero);
-                return fit(builder, zero, width);
-            }
-            let returned = match builder
-                .build_call(function, &argument_values, "pv.foreign")
-                .ok()?
-                .try_as_basic_value()
-            {
-                inkwell::values::ValueKind::Basic(value) => value,
-                _ => return None,
-            };
-            write_back(builder)?;
-            let returned = match c_result {
-                Some(scalar) => {
-                    crate::llvm::foreign::c_result(context, builder, returned, *scalar)?
-                }
-                None => returned,
-            };
-            // Foreign code may call public signal accessors. Later arena reads
-            // must observe that mutation rather than reuse an earlier load.
-            cache.clear();
-            let returned = if *float_result {
-                builder
-                    .build_bit_cast(
-                        returned.into_float_value(),
-                        context.i64_type(),
-                        "pv.foreign.float_result",
-                    )
-                    .ok()?
-                    .into_int_value()
-            } else {
-                returned.into_int_value()
-            };
-            cache.evaluated_calls.insert((id, active), returned);
-            if *integer_result {
-                fit_signed(builder, returned, width)?
-            } else {
-                fit(builder, returned, width)?
-            }
-        }
+        ProcessValueKind::ForeignCall { .. } => foreign_call_value(
+            context,
+            module,
+            builder,
+            design,
+            id,
+            width,
+            active,
+            index_sites,
+            cache,
+        )?,
         ProcessValueKind::HostCall {
             operation,
             arguments,
@@ -2162,16 +2056,14 @@ pub(super) fn process_value<'ctx>(
         }
         ProcessValueKind::Field { .. } => {
             let layout = process_value_layout(design, id)?;
-            if layout_width(layout)? != width {
-                return None;
-            }
-            process_value_in_layout(
+            scalar_in_layout(
                 context,
                 module,
                 builder,
                 design,
                 id,
                 layout,
+                width,
                 active,
                 index_sites,
                 cache,
@@ -2182,16 +2074,14 @@ pub(super) fn process_value<'ctx>(
             match &base_layout.kind {
                 LayoutKind::Array { .. } => {
                     let layout = process_value_layout(design, id)?;
-                    if layout_width(layout)? != width {
-                        return None;
-                    }
-                    process_value_in_layout(
+                    scalar_in_layout(
                         context,
                         module,
                         builder,
                         design,
                         id,
                         layout,
+                        width,
                         active,
                         index_sites,
                         cache,
@@ -2287,4 +2177,276 @@ pub(super) fn process_value<'ctx>(
     cache.emitted.insert(cache_key, emitted);
     debug::capture_value(builder, design, cache, id, emitted);
     Some(emitted)
+}
+
+/// A foreign C call, out of line: its locals would otherwise widen every
+/// frame of the recursive value emitter, which a debug build stacks deep.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn foreign_call_value<'ctx>(
+    context: &'ctx Context,
+    module: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    design: &Design,
+    id: ProcessValueId,
+    width: u32,
+    active: Option<IntValue<'ctx>>,
+    index_sites: &HashMap<IndexSite, u32>,
+    cache: &mut ProcessValueCache<'ctx, '_>,
+) -> Option<IntValue<'ctx>> {
+    let ProcessValueKind::ForeignCall {
+        name,
+        arguments,
+        float_arguments,
+        integer_arguments,
+        float_result,
+        integer_result,
+        void_result,
+        c_arguments,
+        c_result,
+        pointer_arguments,
+        aggregate_result,
+    } = &design.process_ir.values.get(id.0 as usize)?.kind
+    else {
+        return None;
+    };
+    Some({
+        use inkwell::types::BasicMetadataTypeEnum as MetadataType;
+        use inkwell::values::BasicMetadataValueEnum as MetadataValue;
+
+        if let Some(returned) = cache.evaluated_calls.get(&(id, active)).copied() {
+            debug::capture_value(builder, design, cache, id, returned);
+            return if *integer_result {
+                fit_signed(builder, returned, width)
+            } else {
+                fit(builder, returned, width)
+            };
+        }
+
+        let float = context.f64_type();
+        let mut write_backs = Vec::new();
+        let mut parameter_types = Vec::<MetadataType>::with_capacity(arguments.len());
+        let mut argument_values = Vec::<MetadataValue>::with_capacity(arguments.len());
+        for (index, argument) in arguments.iter().enumerate() {
+            // A struct or array crosses by pointer to a copy laid out as
+            // C lays it out, kept for `ForeignOut` to read back.
+            if pointer_arguments.get(index).copied().unwrap_or(false) {
+                // A local is packed as it is stored, which can be wider
+                // than its type's own layout (a ranged element).
+                let local = match design.process_ir.values.get(argument.0 as usize)?.kind {
+                    ProcessValueKind::Local { process, local } => Some((process, local)),
+                    _ => None,
+                };
+                let stored = local.and_then(|(process, local)| {
+                    design
+                        .process_ir
+                        .processes
+                        .get(process.0 as usize)?
+                        .locals
+                        .get(local.0 as usize)?
+                        .layout
+                        .as_ref()
+                });
+                let layout = match stored {
+                    Some(layout) => layout,
+                    None => process_value_layout(design, *argument)?,
+                };
+                let aggregate = crate::llvm::foreign::c_aggregate(context, layout)?;
+                let packed = process_value_in_layout(
+                    context,
+                    module,
+                    builder,
+                    design,
+                    *argument,
+                    layout,
+                    active,
+                    index_sites,
+                    cache,
+                )?;
+                let buffer =
+                    crate::llvm::foreign::c_aggregate_store(context, builder, &aggregate, packed)?;
+                parameter_types.push(context.ptr_type(inkwell::AddressSpace::default()).into());
+                argument_values.push(buffer.into());
+                // A process-local variable receives what C writes.
+                if let Some((process, local)) = local {
+                    let width = layout.packed_width()?;
+                    write_backs.push((buffer, aggregate, local_state_name(process, local), width));
+                }
+                continue;
+            }
+            let argument = process_value_at(
+                context,
+                module,
+                builder,
+                design,
+                *argument,
+                64,
+                integer_arguments.get(index).copied().unwrap_or(false),
+                active,
+                index_sites,
+                cache,
+            )?;
+            let (ty, value): (MetadataType, MetadataValue) =
+                if float_arguments.get(index).copied().unwrap_or(false) {
+                    let value = builder
+                        .build_bit_cast(argument, float, "pv.foreign.float_argument")
+                        .ok()?
+                        .into_float_value();
+                    (float.into(), value.into())
+                } else {
+                    (context.i64_type().into(), argument.into())
+                };
+            match c_arguments.get(index).copied().flatten() {
+                Some(scalar) => {
+                    parameter_types.push(crate::llvm::foreign::c_type(context, scalar).into());
+                    argument_values.push(crate::llvm::foreign::c_argument(
+                        context, builder, value, scalar,
+                    )?);
+                }
+                None => {
+                    parameter_types.push(ty);
+                    argument_values.push(value);
+                }
+            }
+        }
+        // A struct result follows the platform's struct-return rules: in
+        // registers, or through a buffer passed as a hidden first `sret`
+        // pointer.
+        let aggregate_return = match aggregate_result {
+            true => {
+                let layout = process_value_layout(design, id)?;
+                let aggregate = crate::llvm::foreign::c_aggregate(context, layout)?;
+                let convention = crate::llvm::foreign::c_return(context, &aggregate)?;
+                Some((aggregate, convention))
+            }
+            false => None,
+        };
+        let sret = match &aggregate_return {
+            Some((aggregate, crate::llvm::foreign::CReturn::Indirect)) => {
+                let buffer = crate::llvm::foreign::entry_alloca(context, builder, aggregate.ty)?;
+                parameter_types
+                    .insert(0, context.ptr_type(inkwell::AddressSpace::default()).into());
+                argument_values.insert(0, buffer.into());
+                Some((buffer, aggregate.ty))
+            }
+            _ => None,
+        };
+        let function = module.get_function(name).unwrap_or_else(|| {
+            let signature = if *void_result || sret.is_some() {
+                context.void_type().fn_type(&parameter_types, false)
+            } else if let Some((_, crate::llvm::foreign::CReturn::Direct(ty))) = &aggregate_return {
+                inkwell::types::BasicType::fn_type(ty, &parameter_types, false)
+            } else if let Some(scalar) = c_result {
+                inkwell::types::BasicType::fn_type(
+                    &crate::llvm::foreign::c_type(context, *scalar),
+                    &parameter_types,
+                    false,
+                )
+            } else if *float_result {
+                float.fn_type(&parameter_types, false)
+            } else {
+                context.i64_type().fn_type(&parameter_types, false)
+            };
+            let function = module.add_function(name, signature, Some(Linkage::External));
+            match sret {
+                Some((_, ty)) => {
+                    let kind = inkwell::attributes::Attribute::get_named_enum_kind_id("sret");
+                    function.add_attribute(
+                        inkwell::attributes::AttributeLoc::Param(0),
+                        context.create_type_attribute(
+                            kind,
+                            inkwell::types::AnyType::as_any_type_enum(&ty),
+                        ),
+                    );
+                    let shifted: Vec<_> = std::iter::once(None)
+                        .chain(c_arguments.iter().copied())
+                        .collect();
+                    crate::llvm::foreign::mark_extensions(context, function, &shifted, None);
+                }
+                None => {
+                    crate::llvm::foreign::mark_extensions(context, function, c_arguments, *c_result)
+                }
+            }
+            function
+        });
+        // What C wrote through a pointer reaches the variable passed.
+        let write_back = |builder: &Builder<'ctx>| -> Option<()> {
+            for (buffer, aggregate, name, width) in &write_backs {
+                let packed = crate::llvm::foreign::c_aggregate_load(
+                    context, builder, aggregate, *buffer, *width,
+                )?;
+                store_state(module, builder, name, *width, packed)?;
+            }
+            Some(())
+        };
+        if let Some((aggregate, convention)) = &aggregate_return {
+            let call = builder
+                .build_call(function, &argument_values, "pv.foreign.aggregate")
+                .ok()?;
+            let buffer = match (convention, sret) {
+                (_, Some((buffer, _))) => buffer,
+                (crate::llvm::foreign::CReturn::Direct(ty), None) => {
+                    let inkwell::values::ValueKind::Basic(returned) = call.try_as_basic_value()
+                    else {
+                        return None;
+                    };
+                    // The register type covers the struct; read its fields
+                    // back through memory, as C does.
+                    let buffer = crate::llvm::foreign::entry_alloca(context, builder, *ty)?;
+                    builder.build_store(buffer, returned).ok()?;
+                    buffer
+                }
+                (crate::llvm::foreign::CReturn::Indirect, None) => return None,
+            };
+            write_back(builder)?;
+            cache.clear();
+            let packed =
+                crate::llvm::foreign::c_aggregate_load(context, builder, aggregate, buffer, width)?;
+            cache.evaluated_calls.insert((id, active), packed);
+            return Some(packed);
+        }
+        // `fn srand(seed: integer);`: called for its effect, read as 0.
+        if *void_result {
+            builder.build_call(function, &argument_values, "").ok()?;
+            write_back(builder)?;
+            cache.clear();
+            let zero = context.i64_type().const_zero();
+            cache.evaluated_calls.insert((id, active), zero);
+            return fit(builder, zero, width);
+        }
+        let returned = match builder
+            .build_call(function, &argument_values, "pv.foreign")
+            .ok()?
+            .try_as_basic_value()
+        {
+            inkwell::values::ValueKind::Basic(value) => value,
+            _ => return None,
+        };
+        write_back(builder)?;
+        let returned = match c_result {
+            Some(scalar) => crate::llvm::foreign::c_result(context, builder, returned, *scalar)?,
+            None => returned,
+        };
+        // Foreign code may call public signal accessors. Later arena reads
+        // must observe that mutation rather than reuse an earlier load.
+        cache.clear();
+        let returned = if *float_result {
+            builder
+                .build_bit_cast(
+                    returned.into_float_value(),
+                    context.i64_type(),
+                    "pv.foreign.float_result",
+                )
+                .ok()?
+                .into_int_value()
+        } else {
+            returned.into_int_value()
+        };
+        cache.evaluated_calls.insert((id, active), returned);
+        if *integer_result {
+            fit_signed(builder, returned, width)?
+        } else {
+            fit(builder, returned, width)?
+        }
+    })
 }

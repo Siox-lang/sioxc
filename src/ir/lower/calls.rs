@@ -773,6 +773,7 @@ impl<'a> Lowering<'a> {
                         c_arguments,
                         c_result,
                         pointer_arguments: Vec::new(),
+                        aggregate_result: false,
                     },
                 },
                 None,

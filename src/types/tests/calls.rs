@@ -327,8 +327,8 @@ fn extern_c_signatures_are_limited_to_the_implemented_scalar_abi() {
     );
     assert_eq!(
         check_src("module m;\nextern \"C\" { fn wide(x: unsigned[65]) -> integer; }\n"),
-        1,
-        "a packed argument wider than the C ABI word must be rejected"
+        0,
+        "a packed argument wider than the C ABI word crosses as words by pointer"
     );
     assert_eq!(
         check_src("module m;\nextern \"C\" { fn aggregate(x: unsigned[8][2]) -> integer; }\n"),
@@ -340,8 +340,8 @@ fn extern_c_signatures_are_limited_to_the_implemented_scalar_abi() {
             "module m;\nstruct Pair { a: integer, b: integer }\n\
                  extern \"C\" { fn record() -> Pair; }\n"
         ),
-        1,
-        "a struct return has no C layout mapping"
+        0,
+        "a struct return follows the platform's struct-return rules"
     );
     assert_eq!(
         check_src("module m;\nextern \"C\" { fn side_effect(x: integer); }\n"),

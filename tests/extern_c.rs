@@ -93,6 +93,55 @@ fn structs_and_arrays_cross_by_pointer() {
 }
 
 #[test]
+fn aggregate_results_wide_values_and_floats_follow_the_platform() {
+    if Command::new("clang").arg("--version").output().is_err() {
+        eprintln!("skipping: clang not found");
+        return;
+    }
+    let root = env!("CARGO_MANIFEST_DIR");
+    let scratch = std::env::temp_dir().join(format!("siox_c_returns_{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let helper = scratch.join("extern_c_returns.o");
+    let compiled = Command::new("clang")
+        .current_dir(root)
+        .args(["-c", "-O2", "tests/fixtures/extern_c_returns.c", "-o"])
+        .arg(&helper)
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let output = scratch.join("returns");
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .args([
+            "--test",
+            "tests/fixtures/extern_c_returns_test.siox",
+            "--link",
+        ])
+        .arg(&helper)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "C return fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&output).output().unwrap();
+    let report =
+        String::from_utf8_lossy(&run.stdout).to_string() + &String::from_utf8_lossy(&run.stderr);
+    assert!(
+        run.status.success() && report.contains("ReturnsTest ... ok"),
+        "C return fixture failed:\n{report}"
+    );
+}
+
+#[test]
 fn aggregates_are_testbench_parameters_only() {
     let root = env!("CARGO_MANIFEST_DIR");
     let source = std::env::temp_dir().join(format!(
@@ -114,7 +163,6 @@ fn aggregates_are_testbench_parameters_only() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&compile.stderr);
     for message in [
-        "extern C function `give` cannot return the aggregate `P`",
         "Char has no declared C character ABI",
         "`take` takes an aggregate by pointer, so it can only be called in a testbench",
     ] {
@@ -131,10 +179,10 @@ fn unsupported_extern_c_shapes_stop_before_lowering() {
     std::fs::write(
         &source,
         r#"module bad_extern_c;
-           struct Pair { left: integer, right: integer }
+           struct Flagged { count: integer, flag: Bit }
            extern "C" {
-               fn too_wide(value: unsigned[65]) -> integer;
-               fn aggregate() -> Pair;
+               fn character(value: Char) -> integer;
+               fn flagged(value: Flagged) -> integer;
            }"#,
     )
     .unwrap();
@@ -147,11 +195,11 @@ fn unsupported_extern_c_shapes_stop_before_lowering() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&compile.stderr);
     assert!(!compile.status.success(), "unsafe ABI shapes were accepted");
-    assert!(stderr.contains("packed value is 65 bits"), "{stderr}");
     assert!(
-        stderr.contains("extern C function `aggregate` cannot return the aggregate `Pair`"),
+        stderr.contains("Char has no declared C character ABI"),
         "{stderr}"
     );
+    assert!(stderr.contains("field `flag`"), "{stderr}");
     assert!(
         !stderr.contains("stage 5"),
         "unsafe signature reached elaboration:\n{stderr}"
