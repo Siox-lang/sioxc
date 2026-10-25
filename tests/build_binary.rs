@@ -1491,14 +1491,14 @@ fn native_equal_enum_leaves_keep_values_and_symbols_module_specific() {
     std::fs::write(
         directory.join("a/state.siox"),
         "module a::state; pub const load_a: integer = 1; \
-         pub enum Base { Idle = 3, Run = 7 } pub enum State(Base); \
+         pub enum Base { Idle = 3, Run = 7, Common = 11 } pub enum State(Base); \
          pub const CURRENT: State = State::Run;",
     )
     .unwrap();
     std::fs::write(
         directory.join("b/state.siox"),
         "module b::state; pub const load_b: integer = 2; \
-         pub enum Base { Low = 1, High = 9 } pub enum State(Base); \
+         pub enum Base { Low = 1, High = 9, Common = 13 } pub enum State(Base); \
          pub const CURRENT: State = State::High;",
     )
     .unwrap();
@@ -1509,6 +1509,10 @@ fn native_equal_enum_leaves_keep_values_and_symbols_module_specific() {
         r#"module identity;
            use a::state::load_a;
            use b::state::load_b;
+           use Left = a::state::State;
+           use Right = b::state::State;
+           macro common_left() { Left::Common }
+           macro common_right() { Right::Common }
            enum Bool { Off = 4, On = 5 }
            struct LeftBox { pub state: a::state::State }
            struct RightBox { pub state: b::state::State }
@@ -1521,6 +1525,16 @@ fn native_equal_enum_leaves_keep_values_and_symbols_module_specific() {
                let left_box: LeftBox;
                let right_box: RightBox;
                let local_bool: Bool;
+               let common_left: Left = common_left!();
+               let common_right: Right = common_right!();
+               assert!(integer(common_left) == 11 and integer(common_right) == 13,
+                       "renamed inherited variants keep their source discriminants");
+               process {
+                   let left: Left = common_left!();
+                   let right: Right = common_right!();
+                   assert!(integer(left) == 11 and integer(right) == 13,
+                           "process enum values keep the selected module owner");
+               }
                assert!(left == a::state::State::Run and
                        right == b::state::State::High and
                        default_left == a::state::State::Idle and

@@ -10,8 +10,8 @@ the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
 Local acceptance (2026-10-25, selected enum owners, range contracts, Boolean identities and resolved aliases):
-both complete Rust suites pass, including 645 default/624 bitpack library tests
-and all 23 DWARF tests per mode. The gate also passes 588 no-LLVM library tests,
+both complete Rust suites pass, including 647 default/626 bitpack library tests
+and all 23 DWARF tests per mode. The gate also passes 590 no-LLVM library tests,
 strict Clippy, 34 runner tests, 84 ordinary/debug native and VCD checks, and both
 actual 267-program corpora. Both modes pass 61 human UI and 61 JSON/schema cases,
 cover all 54 active codes and apply/recompile both migration fixtures.
@@ -453,8 +453,17 @@ patterns, IR keys and sparse storage have additional checks. Boolean literals
 use the same recording path. No enum bodies or value tables are copied, and no
 new surface syntax is introduced. Both complete Rust suites, both actual
 267-program corpora, 84 native/VCD checks and UI/JSON gates pass with exact
-compiler/corpus/paper fingerprints. Cross-module equal-leaf generated-owner
-coverage remains a follow-up; this does not complete the other registries.
+compiler/corpus/paper fingerprints. This does not complete the other registries.
+
+**Implemented cross-module owner coverage (2026-10-25).** Additional tests
+combine equal enum/base/variant leaves, renamed imports, reversed module order
+and generated coincident qualifier spans. They check distinct resolved and typed
+owners, rejected wrong-owner returns/patterns and qualified IR keys. The existing
+native identity fixture also checks differing source discriminants for the same
+inherited variant name through macros in hardware and processes, retaining its
+earlier defaults/constants/field/symbol checks. Focused checks and the complete
+Rust/native/corpus/UI/JSON matrix pass without any production change, with all
+three frozen fingerprints matching before and after validation.
 
 **Acceptance.** No stage after `resolve` looks a declaration up by its leaf
 name; equal leaf names in different modules are covered by a test per

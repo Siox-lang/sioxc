@@ -221,6 +221,127 @@ fn explicit_derived_enum_paths_keep_owner_with_coincident_generated_spans() {
 }
 
 #[test]
+fn inherited_enum_owners_survive_imports_module_order_and_generated_spans() {
+    for coincident in [false, true] {
+        for reverse in [false, true] {
+            for wrong_owner in [false, true] {
+                let mut sink = DiagnosticSink::default();
+                let negative = if wrong_owner {
+                    "fn wrong() -> Left { return Right::A; }
+                     fn wrong_pattern(value: Left) -> integer {
+                         return match value { Right::A => 3, _ => 0 };
+                     }"
+                } else {
+                    ""
+                };
+                let source = format!(
+                    "module user;
+                     use Left = a::state::State;
+                     use Right = b::state::State;
+                     macro left_value() {{ Left::A }}
+                     macro right_value() {{ Right::A }}
+                     fn left() -> Left {{ return left_value!(); }}
+                     fn right() -> Right {{ return right_value!(); }}
+                     fn select(value: Left) -> integer {{
+                         return match value {{ Left::A => 3, Left::B => 7 }};
+                     }} {negative}"
+                );
+                let sources = [
+                    source.as_str(),
+                    "module a::state; pub enum Base { A = 3, B = 7 }
+                     pub enum State(Base);",
+                    "module b::state; pub enum Base { A = 1, B = 9 }
+                     pub enum State(Base);",
+                ];
+                let modules = sources
+                    .iter()
+                    .enumerate()
+                    .map(|(file, source)| {
+                        crate::syntax::parse_module(FileId(file as u32), source, &mut sink)
+                    })
+                    .collect();
+                let mut modules = with_core(modules, &mut sink);
+                crate::syntax::macros::expand(&mut modules, &HashMap::new(), &mut sink);
+                let user = modules
+                    .iter_mut()
+                    .find(|m| m.span.file == FileId(0))
+                    .unwrap();
+                if coincident {
+                    for item in &mut user.items {
+                        let Item::Fn(function) = item else { continue };
+                        let Stmt::Return {
+                            value: Some(value), ..
+                        } = &mut function.body.as_mut().unwrap().stmts[0]
+                        else {
+                            panic!("return")
+                        };
+                        match value {
+                            Expr::Path(path) => {
+                                for segment in &mut path.segments {
+                                    segment.span = path.span;
+                                }
+                            }
+                            Expr::Match { arms, .. } => {
+                                for arm in arms {
+                                    if let Pattern::Path(path) = &mut arm.pattern {
+                                        for segment in &mut path.segments {
+                                            segment.span = path.span;
+                                        }
+                                    }
+                                }
+                            }
+                            _ => panic!("variant or match"),
+                        }
+                    }
+                }
+                if reverse {
+                    modules.reverse();
+                }
+                let resolved = crate::resolve::resolve(&modules, &mut sink);
+                assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+                let typed = check(&modules, &resolved, &mut sink);
+                let errors: Vec<_> = sink
+                    .diagnostics()
+                    .iter()
+                    .filter(|d| d.severity == crate::diag::Severity::Error)
+                    .collect();
+                assert_eq!(
+                    errors.len(),
+                    if wrong_owner { 2 } else { 0 },
+                    "coincident={coincident}, reverse={reverse}: {errors:?}"
+                );
+                assert!(errors.iter().all(|d| d.code == Some(codes::TYPE_MISMATCH)));
+                let user = modules.iter().find(|m| m.span.file == FileId(0)).unwrap();
+                let mut owners = Vec::new();
+                for item in &user.items {
+                    let Item::Fn(function) = item else { continue };
+                    let expected = match function.name.text.as_str() {
+                        "left" => "a::state::State",
+                        "right" => "b::state::State",
+                        _ => continue,
+                    };
+                    let Stmt::Return {
+                        value: Some(Expr::Path(path)),
+                        ..
+                    } = &function.body.as_ref().unwrap().stmts[0]
+                    else {
+                        panic!("variant")
+                    };
+                    let owner = resolved.enum_owner(path).unwrap();
+                    assert_eq!(resolved.qualified_name(owner).as_deref(), Some(expected));
+                    assert_eq!(typed.expr_type(path.span), Some(&Ty::Named(owner)));
+                    let variant = resolved.def(resolved.resolved(path.span).unwrap()).unwrap();
+                    assert_ne!(variant.parent, Some(owner));
+                    owners.push(owner);
+                }
+                assert_eq!(owners.len(), 2);
+                assert_ne!(owners[0], owners[1]);
+            }
+        }
+    }
+}
+
+#[test]
 fn derived_enum_patterns_keep_owner_when_generated_spans_coincide() {
     let mut sink = DiagnosticSink::default();
     let source = "module user;

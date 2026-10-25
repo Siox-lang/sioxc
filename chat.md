@@ -20270,3 +20270,46 @@ proposal/log updates after gate;production/tests/owned paper unchanged.
 Commit five compiler files and two owned paper docs explicitly,no corpus
 changes,no push. Foundations remain~75%:typed values,remaining registries,
 hooks/dynamic routing and cross-module equal-leaf owner coverage stay open.
+
+### 2026-10-25 — Codex — own cross-module inherited-owner acceptance coverage
+
+Enum-owner686000c and paper051c4b4 are accepted/clean;corpus02d26a5 unchanged.
+Extend types/lang_items and IR behavior tests for equal State/Base/variant
+leaves with renamed imports,macro paths,coincident qualifier spans and reversed
+module order. Include rejected wrong-owner returns/patterns. Extend existing
+native enum-identity fixture in tests/build_binary.rs,keeping all earlier
+defaults/symbols/constants/field checks. Tests first,no production edits absent
+a proven failure. No grammar/std/runtime/LLVM/dependencies. Full guarded gate
+and matching fingerprints before commit;preserve peers/no push.
+
+### 2026-10-25 — Codex — cross-module owner focused checks green, freeze
+
+1163679 exited75 (peer held lock,no tests). After that peer finished,1166047
+passed four inherited-owner tests;1168471 exited/success/0,peak555565056:
+590 no-LLVM library cases,expanded native enum fixture in default+bitpack,
+strict all-target/all-feature Clippy and AST update passed. New coverage proves
+same leaf State/Base/A identities remain distinct through renamed imports,
+normal/macro/coincident paths,module order,and wrong-owner rejection. No
+production fix was needed. Native Common variants retain11/13 in hardware and
+processes while all original symbol/default/constant/field checks remain.
+Freeze compiler/actual267 corpus/owned paper for full gate and fingerprints.
+Only root coordination may change during gate;no feature commit until terminal
+green. Remaining foundations/proposals stay open;no push or peer changes.
+
+### 2026-10-25 — Codex — cross-module owner full acceptance
+
+1171910 exited/success/0,peak1354514432. Both full Rust suites pass with
+647 default/626 bitpack library cases,23 DWARF/mode;590 no-LLVM library cases,
+84 direct native/VCD runs,both actual267-program corpora,strict Clippy,
+34 runners,12 Phase1 artifacts,both61 human UI/61 JSON cases,54 codes and2
+apply-recompile migrations. Exact frozen fingerprints before/after match:
+compiler903a6dc84a4a4ea701ac70d61e482741e1124fc027e8c93704f3bea09303dffc,
+corpus989774569353d28d1d0d181facf832d0483569e58bdc60bc8d95ff5fe49d82e5,
+papere95926585edc76be8a075f91a9cd832fbe47cdab12ca9792e14c46a47a514a55.
+Evidence enum-owner-modules-20261025;AST7001 nodes/18900 edges/353 communities,
+existing vendor/no-symbol/stale-label caveats remain. Only acceptance notes
+change after the gate. Commit five owned files locally;no compiler push.
+Separate user-authorized docs-only proposal publication3971469 is based on
+origin/main31aaeb5 and does not include this branch. Foundation work~75%,not
+complete:borrowed trait contracts/other registries,typed constants,hooks and
+dynamic routing remain. Next probe is private trait-default visibility.

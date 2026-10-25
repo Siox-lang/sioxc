@@ -43,6 +43,74 @@ fn inherited_variant_keys_use_the_recorded_owner_not_generated_qualifier_spans()
 }
 
 #[test]
+fn inherited_variant_keys_keep_equal_module_leaves_distinct_after_renaming() {
+    for coincident in [false, true] {
+        for reverse in [false, true] {
+            let mut sink = DiagnosticSink::new();
+            let sources = [
+                "module user; use Left = a::state::State; use Right = b::state::State;
+                 fn left() -> Left { return Left::A; }
+                 fn right() -> Right { return Right::A; }",
+                "module a::state; pub enum Base { A = 3, B = 7 } pub enum State(Base);",
+                "module b::state; pub enum Base { A = 1, B = 9 } pub enum State(Base);",
+            ];
+            let mut modules: Vec<_> = sources
+                .iter()
+                .enumerate()
+                .map(|(file, source)| {
+                    crate::syntax::parse_module(FileId(file as u32), source, &mut sink)
+                })
+                .collect();
+            if coincident {
+                for item in &mut modules[0].items {
+                    let ast::Item::Fn(function) = item else {
+                        continue;
+                    };
+                    let ast::Stmt::Return {
+                        value: Some(ast::Expr::Path(path)),
+                        ..
+                    } = &mut function.body.as_mut().unwrap().stmts[0]
+                    else {
+                        panic!("variant")
+                    };
+                    for segment in &mut path.segments {
+                        segment.span = path.span;
+                    }
+                }
+            }
+            if reverse {
+                modules.reverse();
+            }
+            let resolved = crate::resolve::resolve(&modules, &mut sink);
+            assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+            let functions = FunctionIndex::new(&resolved);
+            let user = modules.iter().find(|m| m.span.file == FileId(0)).unwrap();
+            for item in &user.items {
+                let ast::Item::Fn(function) = item else {
+                    continue;
+                };
+                let ast::Stmt::Return {
+                    value: Some(ast::Expr::Path(path)),
+                    ..
+                } = &function.body.as_ref().unwrap().stmts[0]
+                else {
+                    panic!("variant")
+                };
+                let expected = if function.name.text == "left" {
+                    "a::state::State"
+                } else {
+                    "b::state::State"
+                };
+                assert_eq!(
+                    functions.enum_variant_key(path),
+                    Some((expected.into(), "A".into()))
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn renamed_range_provider_keeps_its_identity_in_generated_index_arguments() {
     let source = "module user;
         struct Range { pub left: integer, pub right: integer }
