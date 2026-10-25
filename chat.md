@@ -20369,3 +20369,75 @@ hooks,fully substituted trait signature types and dynamic routing stay open.
 Board remains read-only pending user answer;published3971469 docs-only branch
 is separate. Next test should probe trait parameter/result conformance before
 any typed-signature implementation. Broader goal remains active.
+
+### 2026-10-25 — Codex — own semantic trait-signature conformance
+
+After accepted44aba7e,add a concrete red probe for parameter/result mismatch
+in a dedicated trait_contracts test module. If confirmed,read expected types
+from borrowed source contracts,substitute only resolved parameter identities,
+and check semantic types separately from resolve's existing presence/arity
+validation. Preserve aliases,Self,generic/value widths and source diagnostics;
+unknown generics must not produce guessed errors. No grammar/runtime/LLVM/
+dependencies or board changes. Full native/corpus gates before local commits.
+
+### 2026-10-25 — Codex — trait signature red and source-contract corrections
+
+1373044 failed101:integer trait input accepted a real impl input. Add semantic
+signature checks against borrowed contracts via shared parameter-ID substitution
+and alias normalization. Keep unresolved generic facts unknown rather than
+using spelling equality. Correct core From<Source>/from(Source)->Self and
+Prefix/Suffix input->Self contracts,retaining intrinsic empty defaults;update
+the copied canonical contracts in IR fixtures,not same-named user traits.
+No new grammar,truth tables,runtime/LLVM/dependencies. Full gate required.
+
+### 2026-10-25 — Codex — signature focused checks green, finish acceptance docs
+
+1417897 passed604 no-LLVM cases;1421983 exited/success/0,peak1422778368 with
+32 direct native/debug/VCD checks,both enhanced identity fixtures,Clippy and
+AST update. Shared Self type-argument classification fixed without accepting
+ordinary value locals. New signature tests cover concrete types,void/results,
+aliases,named type/value arguments,known widths,Self/arrays/tuples and module
+identity. Core From<Source> and affix return contracts now state existing
+behavior. Add one new UI case/golden and E-P003 help;update three owned paper
+docs and proposal before full frozen gate. Unknown method generics,symbolic
+width relations and full applied nominal arguments remain explicit follow-ups.
+Board text/milestones completed separately;no Status changes or compiler push.
+
+### 2026-10-25 — Codex — known trait signatures full-gate freeze
+
+1506038 exited/success/0,peak712577024:reviewed two source-labelled E-P003
+diagnostics against annotations and expected exit1;added only the new golden.
+1513089 exited/success/0,peak790958080:605 no-LLVM cases,including skipping
+dependent type diagnostics when resolve already rejects receiver/arity.
+Earlier1421983 accepted32 native/debug/VCD runs and strict Clippy;latest full
+gate revalidates all code after that guard. E-P003 explanation,proposal and
+three owned paper docs now describe known conformance and corrected core
+From/affix contracts. Method generics,symbolic width relations,complete applied
+nominal arguments and other foundations remain open,not fabricated matches.
+Freeze15 compiler paths,three paper docs,and actual corpus (267 runnable,
+62 UI cases including new trait_signature source/golden). Run trait-signatures-
+final-20261025.sh with112 direct native/VCD checks,complete default/bitpack
+Rust/corpus/UI/JSON gates and exact three-tree before/after fingerprints.
+Only root coordination may change until terminal acceptance. Preserve20 peer
+probes;no feature commit/push or further project mutations during this gate.
+
+### 2026-10-25 — Codex — known trait signatures accepted locally
+
+1521086 is exited/success/0,peak1881128960. Complete default/bitpack Rust
+suites pass662/641 library cases and23 DWARF cases each;605 no-LLVM cases,
+112 direct ordinary/debug native/VCD checks,both actual267-program corpora,
+strict Clippy,34 runners,12 Phase1 artifacts,and both62 UI/62 JSON cases
+covering54 codes/two apply-recompile migrations are green. Frozen compiler,
+corpus and owned-paper fingerprints all match before/after:
+76a469254ffc27e5c273ee578c91e755081b911a92858dd694d6097224fb3de8,
+5dbf822775b9f1cd592a76e7f5842ec18037bf3227d07253ff3467b18c402658,
+8615a46d4af9937678c37babfb8883ee96ee469a5547dce3e0ad6dab16f7b05e.
+Evidence trait-signatures-20261025;AST7034 nodes/18978 edges/360 communities,
+existing extraction/stale-label limitations remain,no paid semantic rebuild.
+Only acceptance proposal/log notes changed afterward. Commit15 owned compiler
+paths,two new corpus UI files and three owned paper docs explicitly;preserve
+20 peer corpus probes and shared root/paper changes. No compiler/paper push.
+Foundation estimate~75%:known signature conformance accepted,not complete
+method generics,symbolic widths,applied nominal arguments,typed constants or
+remaining registries/hooks. Next red probe:invalid trait argument bindings can
+currently skip signature comparison;reuse shared binding facts,not spellings.

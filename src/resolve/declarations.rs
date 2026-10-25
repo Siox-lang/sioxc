@@ -172,6 +172,25 @@ impl<'a> DeclarationIndex<'a> {
         expansion.cycle
     }
 
+    /// Instantiate a source trait signature without rebinding its lexical names.
+    pub(crate) fn instantiate_trait_type<'t>(
+        &self,
+        contract: &TraitDecl,
+        arguments: &[crate::syntax::ast::GenericArg],
+        ty: &'t Type,
+    ) -> Option<Cow<'t, Type>>
+    where
+        'a: 't,
+    {
+        let bindings = substitute::bind(&contract.params, arguments, self.resolved)?;
+        if bindings.is_empty() {
+            return self.normalize_type(ty);
+        }
+        let mut instantiated = ty.clone();
+        substitute::ty(&mut instantiated, &bindings, self.resolved)?;
+        Some(Cow::Owned(self.normalize_type(&instantiated)?.into_owned()))
+    }
+
     fn normalize_type_inner<'t>(&self, ty: &'t Type, seen: &mut Expansion) -> Option<Cow<'t, Type>>
     where
         'a: 't,

@@ -42,11 +42,11 @@ pub trait CustomOperator<op: string, Rhs, Out> {
 // compiler intrinsic (radix expansion) until const string operations land, so
 // prefix impls inherit the empty default body.
 pub trait Prefix<char: string, T> {
-    fn prefix(data: T) {}
+    fn prefix(data: T) -> Self {}
 }
 
 pub trait Suffix<char: string, T> {
-    fn suffix(data: T) {}
+    fn suffix(data: T) -> Self {}
 }
 
 // Inclusive index ranges are ordinary values when indexing is overloaded.

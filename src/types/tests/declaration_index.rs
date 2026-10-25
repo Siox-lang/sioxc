@@ -74,6 +74,40 @@ fn nested_applications_are_not_alias_definition_cycles() {
 }
 
 #[test]
+fn generic_aliases_accept_impl_self_but_not_value_locals() {
+    let (modules, resolved) = parse(&["module model;
+        type Identity<T> = T; struct Value {}
+        impl Value {
+            fn inspect(self, value: integer) -> Value {
+                let owner: Identity<Self> = self;
+                let invalid: Identity<value> = self;
+                return self;
+            }
+        }"]);
+    let index = DeclarationIndex::collect(&resolved, &modules);
+    let Item::Impl(implementation) = &modules[0].items[2] else {
+        panic!("impl")
+    };
+    let ImplItem::Fn(function) = &implementation.items[0] else {
+        panic!("function")
+    };
+    for (position, statement) in function.body.as_ref().unwrap().stmts[..2]
+        .iter()
+        .enumerate()
+    {
+        let Stmt::Let(declaration) = statement else {
+            panic!("let")
+        };
+        assert_eq!(
+            index
+                .normalize_type(declaration.ty.as_ref().unwrap())
+                .is_some(),
+            position == 0
+        );
+    }
+}
+
+#[test]
 fn generic_aliases_share_integer_contract_classification() {
     let (modules, resolved) = parse(&["module m; type Select<T> = T;
         fn plus(n: Select<integer>) -> Select<integer> { return n + 1; }

@@ -42,10 +42,16 @@ pub(super) fn bind<'a>(
             }
             if let Type::Path(path) = head {
                 if resolved.resolved(path.span).is_some_and(|id| {
-                    matches!(
-                        resolved.kind_of(id),
-                        Some(DefKind::Const | DefKind::Local | DefKind::Fn | DefKind::EnumVariant)
-                    )
+                    resolved
+                        .def(id)
+                        .is_some_and(|definition| match definition.kind {
+                            // `Self` is a compiler-introduced type binding, not a value local.
+                            DefKind::Local => {
+                                definition.name != "Self" || definition.span.is_some()
+                            }
+                            DefKind::Const | DefKind::Fn | DefKind::EnumVariant => true,
+                            _ => false,
+                        })
                 }) {
                     return None;
                 }

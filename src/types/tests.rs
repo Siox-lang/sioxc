@@ -11,6 +11,7 @@ mod lang_items;
 mod matches;
 mod operators;
 mod statements;
+mod trait_contracts;
 mod tuples;
 mod visibility;
 mod writes;

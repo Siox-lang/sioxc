@@ -17,6 +17,7 @@ impl<'a> Checker<'a> {
         let concrete_self = self.ast_ty(self_ty(im));
         let saved_self = self.current_self_ty.replace(Some(concrete_self));
         let saved_impl_owner = self.current_impl_owner.replace(self.type_key(&im.target));
+        self.check_trait_signatures(im);
         let backing = self
             .type_key(self_ty(im))
             .unwrap_or_else(|| "<error>".to_string());

@@ -12894,7 +12894,7 @@ mod tests {
              impl<T: Not<T>> Not<T> for T[] { \
                fn not(self) -> T[] { let result: T[] = self; \
                  for i in self'range { result[i] = not self[i]; } return result; } } \
-             pub trait Suffix<symbol: string, input> { fn suffix(data: input) {} } \
+             pub trait Suffix<symbol: string, input> { fn suffix(data: input) -> Self {} } \
              attr lang for Suffix = \"suffix\";",
             "module std::prelude; pub use std::logic::Bool; pub use std::attrs::test; \
              pub use std::ops::{Boolean, Not};",

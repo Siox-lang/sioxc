@@ -569,7 +569,7 @@ fn equal_view_and_trait_leaves_keep_module_specific_semantics() {
 fn custom_traits_named_like_hooks_keep_their_module_identity() {
     let sources = [
         (
-            "module std::ops; pub trait From { fn from(value: Self) -> Self; }",
+            "module std::ops; pub trait From<Source> { fn from(value: Source) -> Self; }",
             FileId(0),
         ),
         (

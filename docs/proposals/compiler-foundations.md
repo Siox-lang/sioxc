@@ -9,12 +9,12 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-25, borrowed trait contracts/default visibility,
+Local acceptance (2026-10-25, known trait signatures, borrowed contracts/default visibility,
 selected enum owners, range contracts, Boolean identities and resolved aliases):
-both complete Rust suites pass, including 651 default/630 bitpack library tests
-and all 23 DWARF tests per mode. The gate also passes 594 no-LLVM library tests,
-strict Clippy, 34 runner tests, 108 ordinary/debug native and VCD checks, and both
-actual 267-program corpora. Both modes pass 61 human UI and 61 JSON/schema cases,
+both complete Rust suites pass, including 662 default/641 bitpack library tests
+and all 23 DWARF tests per mode. The gate also passes 605 no-LLVM library tests,
+strict Clippy, 34 runner tests, 112 ordinary/debug native and VCD checks, and both
+actual 267-program corpora. Both modes pass 62 human UI and 62 JSON/schema cases,
 cover all 54 active codes and apply/recompile both migration fixtures.
 Compiler, corpus and documentation fingerprints match before/after the frozen
 gate. Retained evidence and fixture migrations are recorded in
@@ -396,10 +396,29 @@ A red-before/green-after test exposed private defaults callable outside their
 module. Public and module-local access remain valid; existing inherent or
 explicit implementations keep their visibility and signatures. Tests also cover
 pointer identity, rebuilding after source rewrites, distinct contracts/default
-result types and one diagnostic per missing method. Fully substituted trait
-parameter/result validation and other registries remain open. The complete
+result types and one diagnostic per missing method. Complete generic trait
+signature validation and other registries remain open. The complete
 Rust/native/corpus/UI/JSON matrix passes with all three frozen fingerprints
 matching before and after validation; this does not complete the proposal.
+
+**Implemented known trait signature conformance (2026-10-25).** Type checking
+compares declared parameters/results with the selected source trait signature,
+using the shared parameter-ID substitution and alias normalizer on both sides.
+Checks include scalar/nominal/array/tuple types, known widths, named trait
+type/value arguments, `Self` and value-versus-void results. Assignment's
+integer/vector and nominal-family coercions cannot satisfy a signature. Array
+labels retain the existing compatibility rules; unknown widths remain unknown.
+Synthetic `Self` is accepted as a type argument without admitting value locals.
+
+Core declarations now describe existing behavior: `From<Source>` takes `Source`
+and returns `Self`; affix hooks return `Self`, retaining their intrinsic empty
+defaults. Unrelated user traits named `From` are unchanged. Method-generic
+specialization, symbolic width relationships and complete applied nominal
+argument identity remain follow-ups rather than spelling-based guesses.
+The new source-labelled UI/JSON case and the complete Rust/native/corpus gates
+pass in both storage modes with matching compiler/corpus/paper fingerprints.
+Invalid receiver/arity shapes do not cascade into dependent signature errors.
+No new grammar, runtime, LLVM or source value semantics are added.
 
 **Transparent alias normalization.** The raw declaration index now belongs
 to `resolve`, so metadata does not need an upward dependency on `types`. One

@@ -7,8 +7,8 @@ module core::convert;
 // source, like `Add<Rhs, Out>`). Conversions NEVER fire implicitly — only at a
 // conversion expression. Kernel numeric conversions (`unsigned[16](x)`,
 // `integer(x)`, `resize`) stay width-driven builtins.
-pub trait From {
-    fn from(v: Self) -> Self;
+pub trait From<Source> {
+    fn from(v: Source) -> Self;
 }
 
 attr lang for From = "from";

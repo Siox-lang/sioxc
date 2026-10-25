@@ -40,6 +40,7 @@ mod members;
 mod operators;
 mod patterns;
 mod statements;
+mod trait_contracts;
 mod tuples;
 
 use helpers::*;
