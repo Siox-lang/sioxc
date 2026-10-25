@@ -60,36 +60,6 @@ impl<'a> Checker<'a> {
                 (module.span.file, name)
             })
             .collect();
-        let trait_visibility = modules
-            .iter()
-            .flat_map(|module| module.items.iter())
-            .filter_map(|item| match item {
-                Item::Trait(trait_) => resolved
-                    .declared(trait_.name.span)
-                    .and_then(|id| {
-                        let definition = resolved.def(id)?;
-                        if is_compiler_trait(resolved, id) {
-                            Some(definition.name.clone())
-                        } else {
-                            resolved.qualified_name(id)
-                        }
-                    })
-                    .map(|key| {
-                        (
-                            key,
-                            (
-                                trait_.is_pub,
-                                file_modules
-                                    .get(&trait_.span.file)
-                                    .cloned()
-                                    .unwrap_or_else(|| format!("<file:{}>", trait_.span.file.0)),
-                                trait_.name.span,
-                            ),
-                        )
-                    }),
-                _ => None,
-            })
-            .collect();
         Checker {
             declarations: DeclarationIndex::collect(resolved, modules),
             type_bindings: std::cell::RefCell::new(HashMap::new()),
@@ -108,10 +78,7 @@ impl<'a> Checker<'a> {
             attr_targets,
             attr_value_kinds,
             trait_impls: HashMap::new(),
-            trait_defaults: HashMap::new(),
             trait_impls_by_type: HashMap::new(),
-            trait_required: HashMap::new(),
-            trait_visibility,
             operator_sigs: HashMap::new(),
             index_sigs: HashMap::new(),
             operator_precedence: HashMap::new(),
@@ -191,28 +158,43 @@ impl<'a> Checker<'a> {
         // A trait's defaulted methods belong to every type that implements it
         // and did not provide its own. Collection order is not guaranteed — a
         // trait may be declared after the impl — so this is a second pass.
-        let mut inherited: Vec<InheritedMethodSignature> = Vec::new();
+        let mut inherited = Vec::new();
         for (ty, traits) in &self.trait_impls_by_type {
             for tr in traits {
-                let Some(methods) = self.trait_defaults.get(tr) else {
+                let Some(contract) = self.declarations.trait_decl(*tr) else {
                     continue;
                 };
-                for (name, ret, params, has_self) in methods {
-                    inherited.push((
-                        ty.clone(),
-                        name.clone(),
-                        ret.clone(),
-                        params.clone(),
-                        *has_self,
-                    ));
+                for method in contract.items.iter().filter(|method| method.body.is_some()) {
+                    inherited.push((ty.clone(), contract, method));
                 }
             }
         }
-        for (ty, name, ret, params, has_self) in inherited {
-            let key = (ty, name);
-            self.methods.entry(key.clone()).or_insert(ret);
-            self.method_param_types.entry(key.clone()).or_insert(params);
-            self.method_has_self.entry(key).or_insert(has_self);
+        for (ty, contract, method) in inherited {
+            let key = (ty.clone(), method.name.text.clone());
+            self.methods
+                .entry(key.clone())
+                .or_insert_with(|| method.ret.clone());
+            self.method_param_types
+                .entry(key.clone())
+                .or_insert_with(|| {
+                    method
+                        .params
+                        .iter()
+                        .filter(|p| !p.is_self)
+                        .map(|p| p.ty.clone())
+                        .collect()
+                });
+            self.method_has_self
+                .entry(key.clone())
+                .or_insert_with(|| method.params.iter().any(|p| p.is_self));
+            let visibility = MemberVisibility {
+                is_pub: contract.is_pub,
+                type_private: false,
+                owner: ty,
+                module: self.module_of(contract.span),
+                span: contract.name.span,
+            };
+            self.method_visibility.entry(key).or_insert(visibility);
         }
         self.resolve_array_families();
         self.resolve_array_elements();
@@ -322,23 +304,23 @@ impl<'a> Checker<'a> {
                                 let trait_contract = im
                                     .trait_
                                     .as_ref()
-                                    .and_then(|path| self.trait_key(path))
-                                    .and_then(|key| self.trait_visibility.get(&key).cloned());
+                                    .and_then(|path| self.resolved.resolved(path.span))
+                                    .and_then(|id| self.declarations.trait_decl(id));
                                 self.method_visibility.insert(
                                     (ty.clone(), f.name.text.clone()),
                                     MemberVisibility {
                                         is_pub: trait_contract
                                             .as_ref()
-                                            .map(|(is_pub, _, _)| *is_pub)
+                                            .map(|contract| contract.is_pub)
                                             .unwrap_or(f.is_pub || im.trait_.is_some()),
                                         type_private: im.trait_.is_none(),
                                         owner: ty.clone(),
                                         module: trait_contract
                                             .as_ref()
-                                            .map(|(_, module, _)| module.clone())
+                                            .map(|contract| self.module_of(contract.span))
                                             .unwrap_or_else(|| self.module_of(im.span)),
                                         span: trait_contract
-                                            .map(|(_, _, span)| span)
+                                            .map(|contract| contract.name.span)
                                             .unwrap_or(f.name.span),
                                     },
                                 );
@@ -356,8 +338,8 @@ impl<'a> Checker<'a> {
                 // Record `impl Trait for Type` so trait-driven checks (e.g.
                 // conditions) can ask "does T implement Trait?".
                 if let (Some(tr), Some(ty)) = (&im.trait_, self.type_key(&im.target)) {
-                    if let Some(key) = self.trait_key(tr) {
-                        self.trait_impls_by_type.entry(ty).or_default().push(key);
+                    if let Some(id) = self.resolved.resolved(tr.span) {
+                        self.trait_impls_by_type.entry(ty).or_default().push(id);
                     }
                 }
                 if let Some(tr) = &im.trait_ {
@@ -611,41 +593,6 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-            }
-            Item::Trait(t) => {
-                let Some(trait_key) = self
-                    .resolved
-                    .declared(t.name.span)
-                    .and_then(|id| self.trait_definition_key(id))
-                else {
-                    return;
-                };
-                let required = t
-                    .items
-                    .iter()
-                    .filter(|f| f.body.is_none())
-                    .map(|f| f.name.text.clone())
-                    .collect();
-                self.trait_required.insert(trait_key.clone(), required);
-                self.trait_defaults.insert(
-                    trait_key,
-                    t.items
-                        .iter()
-                        .filter(|f| f.body.is_some())
-                        .map(|f| {
-                            (
-                                f.name.text.clone(),
-                                f.ret.clone(),
-                                f.params
-                                    .iter()
-                                    .filter(|parameter| !parameter.is_self)
-                                    .map(|parameter| parameter.ty.clone())
-                                    .collect(),
-                                f.params.iter().any(|parameter| parameter.is_self),
-                            )
-                        })
-                        .collect(),
-                );
             }
             Item::Enum(e) => {
                 let Some(enum_key) = self.declaration_key(e.name.span) else {

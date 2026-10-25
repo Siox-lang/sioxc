@@ -320,6 +320,78 @@ fn entity_classification_uses_resolved_wrappers_not_shadowed_or_missing_names() 
 }
 
 #[test]
+fn trait_contracts_borrow_source_identity_and_rebuild_after_rewrites() {
+    let left = "module left; pub trait Contract {
+        fn required(self) -> integer;
+        fn fallback(self) -> integer { return 3; }
+    }";
+    let right = "module right; pub trait Contract {
+        fn other(self) -> real;
+        fn fallback(self) -> real { return 2.5; }
+    }";
+    let caller = "module caller; use L = left::Contract; use R = right::Contract;
+        struct Value(integer);
+        impl L for Value { fn required(self) -> integer { return 1; } }
+        impl R for Value { fn other(self) -> real { return 2.5; } }";
+    for sources in [[left, right, caller], [caller, right, left]] {
+        let (mut modules, resolved) = parse(&sources);
+        {
+            let index = DeclarationIndex::collect(&resolved, &modules);
+            let mut ids = Vec::new();
+            for module in &modules {
+                for item in &module.items {
+                    match item {
+                        Item::Trait(contract) => {
+                            let id = resolved.declared(contract.name.span).unwrap();
+                            let borrowed = index.trait_decl(id).unwrap();
+                            assert!(std::ptr::eq(borrowed, contract));
+                            assert!(std::ptr::eq(&borrowed.items, &contract.items));
+                            assert!(index.function(id).is_none());
+                            ids.push(id);
+                        }
+                        Item::Impl(implementation) => {
+                            let path = implementation.trait_.as_ref().unwrap();
+                            let id = resolved.resolved(path.span).unwrap();
+                            let contract = index.trait_decl(id).unwrap();
+                            assert_eq!(
+                                contract.items[0].name.text,
+                                if path.segments[0].text == "L" {
+                                    "required"
+                                } else {
+                                    "other"
+                                }
+                            );
+                        }
+                        Item::Struct(declaration) => assert!(index
+                            .trait_decl(resolved.declared(declaration.name.span).unwrap())
+                            .is_none()),
+                        _ => {}
+                    }
+                }
+            }
+            assert_eq!(ids.len(), 2);
+            assert_ne!(ids[0], ids[1]);
+        }
+        let mut changed = Vec::new();
+        for module in &mut modules {
+            for item in &mut module.items {
+                if let Item::Trait(contract) = item {
+                    changed.push(resolved.declared(contract.name.span).unwrap());
+                    contract.items[0].name.text = "rewritten".into();
+                }
+            }
+        }
+        let index = DeclarationIndex::collect(&resolved, &modules);
+        for id in changed {
+            assert_eq!(
+                index.trait_decl(id).unwrap().items[0].name.text,
+                "rewritten"
+            );
+        }
+    }
+}
+
+#[test]
 fn declarations_and_contracts_borrow_the_original_ast() {
     let (modules, resolved) = parse(&["module a;
         const VALUE: integer = 40 + 2;

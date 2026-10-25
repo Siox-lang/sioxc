@@ -1266,16 +1266,7 @@ impl<'a> Resolver<'a> {
     // ponytail: parameter and return *types* are not compared; that needs the
     // trait's parameters substituted by the impl's arguments.
     fn check_trait_impls(&mut self, modules: &[Module]) {
-        let mut traits: HashMap<DefId, &TraitDecl> = HashMap::new();
-        for m in modules {
-            for item in &m.items {
-                if let Item::Trait(trait_) = item {
-                    if let Some(id) = self.out.declared(trait_.name.span) {
-                        traits.insert(id, trait_);
-                    }
-                }
-            }
-        }
+        let declarations = declarations::DeclarationIndex::collect(&self.out, modules);
         let receiver = |f: &FnDecl| f.params.iter().any(|p| p.is_self);
         let arity = |f: &FnDecl| f.params.iter().filter(|p| !p.is_self).count();
         for m in modules {
@@ -1285,7 +1276,7 @@ impl<'a> Resolver<'a> {
                     .trait_
                     .as_ref()
                     .and_then(|path| self.out.resolved(path.span))
-                    .and_then(|id| traits.get(&id).copied())
+                    .and_then(|id| declarations.trait_decl(id))
                 else {
                     continue;
                 };

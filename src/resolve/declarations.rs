@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{DefId, DefKind, Resolved};
 use crate::syntax::ast::{
-    ConstDecl, EntityDecl, FnDecl, Item, Module, Params, Path, Type, Using, UsingKind,
+    ConstDecl, EntityDecl, FnDecl, Item, Module, Params, Path, TraitDecl, Type, Using, UsingKind,
 };
 
 pub(crate) mod expand;
@@ -16,6 +16,7 @@ mod substitute;
 
 enum Declaration<'a> {
     Entity(&'a EntityDecl),
+    Trait(&'a TraitDecl),
     Function(&'a FnDecl),
     Constant(&'a ConstDecl),
     Alias(&'a Params, &'a Type),
@@ -68,6 +69,12 @@ impl<'a> DeclarationIndex<'a> {
                 }
             }
             Item::Const(declaration) => self.insert_constant(declaration),
+            Item::Trait(declaration) => {
+                if let Some(id) = self.resolved.declared(declaration.name.span) {
+                    self.declarations
+                        .insert(id, Declaration::Trait(declaration));
+                }
+            }
             Item::Fn(declaration) => self.insert_function(declaration),
             Item::ExternBlock { fns, .. } => {
                 for declaration in fns {
@@ -117,6 +124,13 @@ impl<'a> DeclarationIndex<'a> {
 
     pub(crate) fn generic_alias(&self, id: DefId) -> bool {
         matches!(self.declarations.get(&id), Some(Declaration::Alias(params, _)) if !params.params.is_empty())
+    }
+
+    pub(crate) fn trait_decl(&self, id: DefId) -> Option<&'a TraitDecl> {
+        match self.declarations.get(&id)? {
+            Declaration::Trait(declaration) => Some(declaration),
+            _ => None,
+        }
     }
 
     pub(crate) fn alias_arity(&self, id: DefId) -> Option<usize> {

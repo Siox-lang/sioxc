@@ -20313,3 +20313,59 @@ Separate user-authorized docs-only proposal publication3971469 is based on
 origin/main31aaeb5 and does not include this branch. Foundation work~75%,not
 complete:borrowed trait contracts/other registries,typed constants,hooks and
 dynamic routing remain. Next probe is private trait-default visibility.
+
+### 2026-10-25 — Codex — own shared trait-contract migration
+
+After accepted0dc4e8b,probe inherited default privacy in types/tests/visibility
+before production changes. Then use borrowed TraitDecls in DeclarationIndex
+for requirements/defaults/visibility,remove three checker-owned contract maps
+and select contracts by DefId. Explicit/inherent overrides and public/module
+access must remain correct. Add identity/borrowing and native coverage,update
+owned docs,and run full guarded frozen gates before a local commit. No new
+syntax,std/runtime/LLVM/dependencies;no board writes or compiler push.
+
+### 2026-10-25 — Codex — trait default red probe confirmed
+
+1250885 failed101,peak858013696:private inherited reveal() was accepted from
+the consumer module (zero errors rather than one PRIVATE_MEMBER). Implement
+borrowed TraitDecl selection and default visibility now;retain local/public
+access and explicit/inherent overrides. No source-value or runtime changes.
+
+### 2026-10-25 — Codex — borrowed trait focused acceptance and full freeze
+
+1268421 exited/success/0,peak1735278592:594 no-LLVM cases,expanded cross-module
+native struct/trait fixture in default+bitpack,24 direct native/debug/VCD runs,
+strict Clippy and AST update pass. Private inherited instance/associated
+defaults now have source trait visibility and accurate help;public/module-local
+calls and inherent overrides remain valid. Pointer/rebuild/equal-leaf/rename/
+missing-method tests pass. Resolve reads borrowed contracts through the same
+index;types no longer emits a second missing-method error. The previous index
+fixture failure was invalid empty required implementations,now corrected;
+no acceptance checks weakened. Three cloned checker registries and duplicate
+checking pass removed;no grammar,std/runtime/LLVM/dependencies changed.
+Freeze all12 owned compiler files,two paper docs and actual267 corpus for
+trait-contracts-final-20261025.sh:108 direct native/VCD runs,complete default/
+bitpack Rust/corpus/UI/JSON gates and exact before/after fingerprints. Only
+root coordination may change until terminal acceptance. No commit/push yet.
+Other trait/type registries,fully substituted trait types,typed constants and
+hooks remain open;no broader proposal/goal completion claim.
+
+### 2026-10-25 — Codex — borrowed trait contracts full acceptance
+
+1276292 exited/success/0,peak1880866816. Both complete Rust suites pass with
+651 default/630 bitpack library cases and23 DWARF/mode;594 no-LLVM library
+cases,108 direct ordinary/debug native/VCD runs,both actual267-program corpora,
+strict Clippy,34 runners,12 Phase1 artifacts,and both61 human UI/61 JSON cases
+cover54 codes/2 apply-recompile migrations. Exact frozen fingerprints match:
+compiler6797663901fe609c931521363f0fcf49a5fca53006fe8680791b41412780b067,
+corpus989774569353d28d1d0d181facf832d0483569e58bdc60bc8d95ff5fe49d82e5,
+paper2b024d668b536c6900a2ae83fb6e4fb5d6bc67b819d966e282557603f7f7e5ac.
+Evidence trait-contracts-20261025;AST7010 nodes/18915 edges/351 communities,
+existing vendor/no-symbol/stale-label caveats remain,no paid semantic rebuild.
+Only acceptance proposal/log edits after gate;code/tests/owned paper unchanged.
+Commit12 owned compiler files and two paper docs explicitly;no corpus changes
+or compiler push. Foundation estimate~75%:typed constants,remaining registries/
+hooks,fully substituted trait signature types and dynamic routing stay open.
+Board remains read-only pending user answer;published3971469 docs-only branch
+is separate. Next test should probe trait parameter/result conformance before
+any typed-signature implementation. Broader goal remains active.

@@ -573,27 +573,28 @@ fn unknown_field_and_method_are_reported() {
 /// `Suffix`) allow an empty impl.
 #[test]
 fn trait_impl_must_provide_the_required_methods() {
+    let errors = |source: &str| check_modules(&[(source, FileId(0))]).error_count();
     let base =
-        "module m;\ntrait Tr { fn f(self) -> Bit; fn g(self) -> Bit; }\nstruct S { x: Bit }\n";
+        "module m;\ntrait Tr { fn f(self) -> integer; fn g(self) -> integer; }\nstruct S { x: integer }\n";
     assert_eq!(
-        check_src(&format!(
-            "{base}impl Tr for S {{ fn f(self) -> Bit {{ return self.x; }} }}\n"
+        errors(&format!(
+            "{base}impl Tr for S {{ fn f(self) -> integer {{ return self.x; }} }}\n"
         )),
         1,
         "`g` is missing"
     );
     assert_eq!(
-        check_src(&format!(
-            "{base}impl Tr for S {{ fn f(self) -> Bit {{ return self.x; }} \
-                 fn g(self) -> Bit {{ return self.x; }} }}\n"
+        errors(&format!(
+            "{base}impl Tr for S {{ fn f(self) -> integer {{ return self.x; }} \
+                 fn g(self) -> integer {{ return self.x; }} }}\n"
         )),
         0,
         "complete"
     );
     // A defaulted method is optional.
-    let defaulted = "module m;\ntrait D { fn f(self) -> Bit { return '0'; } }\n\
-                         struct S { x: Bit }\nimpl D for S {}\n";
-    assert_eq!(check_src(defaulted), 0);
+    let defaulted = "module m;\ntrait D { fn f(self) -> integer { return 0; } }\n\
+                         struct S { x: integer }\nimpl D for S {}\n";
+    assert_eq!(errors(defaulted), 0);
 }
 
 /// A derived enum shares its base's variant *definitions*, so `Mid::B` and

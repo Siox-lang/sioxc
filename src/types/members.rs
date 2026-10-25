@@ -440,7 +440,11 @@ impl<'a> Checker<'a> {
             .with_code(codes::PRIVATE_MEMBER)
             .at(use_span)
             .label(visibility.span, "declared private here")
-            .help("mark the inherent method `pub` to include it in the type's API"),
+            .help(if visibility.type_private {
+                "mark the inherent method `pub` to include it in the type's API"
+            } else {
+                "mark the trait `pub` to expose its methods outside its module"
+            }),
         );
         false
     }

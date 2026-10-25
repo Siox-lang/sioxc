@@ -4,52 +4,6 @@
 use super::*;
 
 impl<'a> Checker<'a> {
-    /// Spec 3.20: a trait is a compile-time contract, so an implementation
-    /// must provide every method the trait declares without a default body.
-    /// A partial impl used to pass, leaving the missing method to fail much
-    /// later (or silently do nothing).
-    pub(super) fn check_trait_contract(&mut self, im: &ImplDecl) {
-        let Some(trait_path) = im.trait_.as_ref() else {
-            return;
-        };
-        let Some(trait_key) = self.trait_key(trait_path) else {
-            return;
-        };
-        let Some(required) = self.trait_required.get(&trait_key) else {
-            return;
-        };
-        let trait_name = trait_path
-            .segments
-            .last()
-            .map(|segment| segment.text.as_str())
-            .unwrap_or("<trait>");
-        let provided: HashSet<&str> = im
-            .items
-            .iter()
-            .filter_map(|it| match it {
-                ImplItem::Fn(f) => Some(f.name.text.as_str()),
-                _ => None,
-            })
-            .collect();
-        let missing: Vec<String> = required
-            .iter()
-            .filter(|m| !provided.contains(m.as_str()))
-            .map(|m| format!("`{m}`"))
-            .collect();
-        if !missing.is_empty() {
-            let target = type_head_name(&im.target).unwrap_or("this type");
-            self.error(
-                codes::TYPE_MISMATCH,
-                im.span,
-                format!(
-                    "`impl {} for {target}` is missing {}",
-                    trait_name,
-                    missing.join(", ")
-                ),
-            );
-        }
-    }
-
     /// Type-check an `impl` block.
     pub(super) fn check_impl(&mut self, im: &ImplDecl) {
         // Stimulus primitives are meaningful in a testbench; in an entity body
@@ -121,7 +75,6 @@ impl<'a> Checker<'a> {
     /// The body of [`Self::check_impl`], separated so the stimulus-context guard can
     /// wrap it.
     pub(super) fn check_impl_inner(&mut self, im: &ImplDecl) {
-        self.check_trait_contract(im);
         // The supported constrained array implementations are lowered by the
         // element-wise vector machinery. Still validate their metadata here;
         // abstract `T[]` has no standalone runtime representation for the

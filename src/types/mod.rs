@@ -243,12 +243,6 @@ type GenericFnSignature = (Vec<Param>, Vec<Option<Type>>);
 /// A method's declared non-`self` parameter types, `None` where the
 /// type was left to inference.
 type MethodParams = Vec<Option<Type>>;
-/// A trait's defaulted method: name, return type, parameters, and
-/// whether it takes `self`.
-type TraitDefaultSignature = (String, Option<Type>, MethodParams, bool);
-/// A method a type inherits from a trait: owner, name, return type,
-/// parameters, and whether it takes `self`.
-type InheritedMethodSignature = (String, String, Option<Type>, MethodParams, bool);
 /// The environment one impl body is checked in: port directions,
 /// named types in scope, and declared numeric ranges.
 type ImplEnvironment = (PortDirs, HashMap<String, Ty>, HashMap<String, (i64, i64)>);
@@ -278,7 +272,7 @@ struct MemberVisibility {
 /// rather than registries: they track where in the tree the checker
 /// currently is, and are borrowed from `&self` methods.
 struct Checker<'a> {
-    /// Original free-function/constant declarations, borrowed by identity.
+    /// Source declarations and contracts, borrowed by resolved identity.
     declarations: DeclarationIndex<'a>,
     /// Type parameters bound while a generic body is checked for one call.
     type_bindings: std::cell::RefCell<HashMap<String, Ty>>,
@@ -321,20 +315,8 @@ struct Checker<'a> {
     attr_value_kinds: HashMap<DefId, AttrValueTy>,
     /// Trait name -> set of type (head) names that implement it.
     trait_impls: HashMap<String, HashSet<String>>,
-    /// Trait name -> its defaulted methods (name -> declared return type). A
-    /// trait method *with* a body is a default the impl may omit — which
-    /// `trait_required` already allows — so the implementing type has to be
-    /// able to call it.
-    trait_defaults: HashMap<String, Vec<TraitDefaultSignature>>,
-    /// Type identity -> the traits it implements, for that inheritance.
-    trait_impls_by_type: HashMap<String, Vec<String>>,
-    /// Trait name -> the methods an implementation must provide (those the
-    /// trait declares without a default body). Spec 3.20: a trait is a
-    /// compile-time contract, so a partial impl is an error.
-    trait_required: HashMap<String, Vec<String>>,
-    /// Trait name -> exported flag, owning module, and declaration span.
-    /// Methods in a trait impl inherit this visibility.
-    trait_visibility: HashMap<String, (bool, String, Span)>,
+    /// Type identity -> resolved traits supplying borrowed default contracts.
+    trait_impls_by_type: HashMap<String, Vec<DefId>>,
     /// (operator trait, implementing type) -> (input type, output type).
     /// Multiple entries are overloads selected by the right operand.
     operator_sigs: OperatorSignatures,

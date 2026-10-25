@@ -374,6 +374,126 @@ fn a_private_trait_keeps_its_implementation_methods_private() {
 }
 
 #[test]
+fn inherited_trait_defaults_keep_the_traits_visibility() {
+    for public in [false, true] {
+        for reverse in [false, true] {
+            let visibility = if public { "pub " } else { "" };
+            let provider = format!(
+                "module model; pub struct Value(integer);
+                 {visibility}trait Hidden {{
+                     fn reveal(self) -> integer {{ return 7; }}
+                     fn tag() -> integer {{ return 8; }}
+                 }}
+                 impl Hidden for Value {{}}
+                 fn local(value: Value) -> integer {{ return value.reveal() + Value::tag(); }}"
+            );
+            let consumer = "module user; use model::Value;
+                fn inspect(value: Value) -> integer { return value.reveal(); }
+                fn tag() -> integer { return Value::tag(); }";
+            let mut sources = vec![(provider.as_str(), FileId(0)), (consumer, FileId(1))];
+            if reverse {
+                sources.reverse();
+            }
+            let sink = check_modules(&sources);
+            let errors: Vec<_> = sink
+                .diagnostics()
+                .iter()
+                .filter(|d| d.severity == crate::diag::Severity::Error)
+                .collect();
+            assert_eq!(errors.len(), 2 * usize::from(!public), "{errors:?}");
+            if !public {
+                assert!(errors.iter().any(|d| d.message.contains("reveal")));
+                assert!(errors.iter().any(|d| d.message.contains("tag")));
+                for error in errors {
+                    assert_eq!(error.code, Some(codes::PRIVATE_MEMBER));
+                    assert_eq!(error.primary.unwrap().file, FileId(1));
+                    assert_eq!(error.labels[0].span.file, FileId(0));
+                    assert!(error.help.as_deref().unwrap().contains("trait `pub`"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn inherited_trait_defaults_preserve_inherent_visibility_overrides() {
+    for public_default in [false, true] {
+        let trait_visibility = if public_default { "pub " } else { "" };
+        let method_visibility = if public_default { "" } else { "pub " };
+        let provider = format!(
+            "module model; pub struct Value(integer);
+             {trait_visibility}trait Defaulted {{ fn reveal(self) -> integer {{ return 7; }} }}
+             impl Defaulted for Value {{}}
+             impl Value {{ {method_visibility}fn reveal(self) -> integer {{ return 9; }} }}"
+        );
+        let consumer = "module user; use model::Value;
+            fn inspect(value: Value) -> integer { return value.reveal(); }";
+        for sources in [
+            [(provider.as_str(), FileId(0)), (consumer, FileId(1))],
+            [(consumer, FileId(1)), (provider.as_str(), FileId(0))],
+        ] {
+            let sink = check_modules(&sources);
+            let errors: Vec<_> = sink
+                .diagnostics()
+                .iter()
+                .filter(|d| d.severity == crate::diag::Severity::Error)
+                .collect();
+            assert_eq!(errors.len(), usize::from(public_default), "{errors:?}");
+            assert!(errors.iter().all(|d| d.code == Some(codes::PRIVATE_MEMBER)));
+        }
+    }
+}
+
+#[test]
+fn renamed_equal_trait_contracts_keep_requirements_and_defaults_separate() {
+    for missing in [false, true] {
+        let implementation = if missing {
+            ""
+        } else {
+            "fn required_left(self) -> integer { return 1; }"
+        };
+        let user = format!(
+            "module user; use Left = a::Contract; use Right = b::Contract;
+             struct One(integer); struct Two(real);
+             impl Left for One {{ {implementation} }}
+             impl Right for Two {{ fn required_right(self) -> real {{ return 2.5; }} }}
+             fn left(value: One) -> integer {{ return value.fallback(); }}
+             fn right(value: Two) -> real {{ return value.fallback(); }}"
+        );
+        let left = "module a; pub trait Contract {
+            fn required_left(self) -> integer;
+            fn fallback(self) -> integer { return 3; }
+        }";
+        let right = "module b; pub trait Contract {
+            fn required_right(self) -> real;
+            fn fallback(self) -> real { return 2.5; }
+        }";
+        let mut sources = [
+            (user.as_str(), FileId(0)),
+            (left, FileId(1)),
+            (right, FileId(2)),
+        ];
+        for reverse in [false, true] {
+            if reverse {
+                sources.reverse();
+            }
+            let sink = check_modules(&sources);
+            let errors: Vec<_> = sink
+                .diagnostics()
+                .iter()
+                .filter(|d| d.severity == crate::diag::Severity::Error)
+                .collect();
+            assert_eq!(errors.len(), usize::from(missing), "{errors:?}");
+            if missing {
+                assert_eq!(errors[0].code, Some(codes::TYPE_MISMATCH));
+                assert!(errors[0].message.contains("required_left"));
+                assert!(!errors[0].message.contains("required_right"));
+            }
+        }
+    }
+}
+
+#[test]
 /// A view does not publish the backing struct's methods.
 fn a_view_does_not_publish_backing_struct_methods() {
     let provider = "module bus;\n\

@@ -1594,6 +1594,8 @@ fn native_equal_struct_leaves_keep_fields_methods_and_defaults_module_specific()
         directory.join("a/record.siox"),
         "module a::record; pub const load_a: integer = 1; \
          pub struct Pair { pub left: unsigned[8] } \
+         pub trait Meter { fn measure(self) -> integer { return 31; } } \
+         impl Meter for Pair {} \
          impl Pair { \
              pub fn score(self) -> integer { return integer(self.left) + 10; } \
              pub fn tag() -> integer { return 11; } \
@@ -1605,6 +1607,8 @@ fn native_equal_struct_leaves_keep_fields_methods_and_defaults_module_specific()
         directory.join("b/record.siox"),
         "module b::record; pub const load_b: integer = 2; \
          pub struct Pair { pub right: unsigned[16] } \
+         pub trait Meter { fn measure(self) -> real { return 2.5; } } \
+         impl Meter for Pair {} \
          impl Pair { \
              pub fn score(self) -> integer { return integer(self.right) + 20; } \
              pub fn tag() -> integer { return 22; } \
@@ -1620,6 +1624,14 @@ fn native_equal_struct_leaves_keep_fields_methods_and_defaults_module_specific()
            use a::record::load_a;
            use b::record::load_b;
            struct unsigned { pub marker: integer }
+           entity Measures {
+               left: a::record::Pair in, right: b::record::Pair in,
+               left_score: integer out, right_score: real out
+           }
+           impl Measures {
+               left_score = left.measure();
+               right_score = right.measure();
+           }
            #[test] entity StructIdentity {}
            impl StructIdentity {
                let left: a::record::Pair = { .left = 3 };
@@ -1629,6 +1641,14 @@ fn native_equal_struct_leaves_keep_fields_methods_and_defaults_module_specific()
                let constructed_left: a::record::Pair = a::record::Pair::new();
                let constructed_right: b::record::Pair = b::record::Pair::new();
                let named_like_std: unsigned = { .marker = 9 };
+               let measures: Measures = { .left = left, .right = right };
+               process {
+                   assert!(left.measure() == 31 and right.measure() == 2.5,
+                           "public trait defaults keep module-specific signatures");
+                   await 1ns;
+                   assert!(measures.left_score == 31 and measures.right_score == 2.5,
+                           "hardware trait defaults keep module-specific signatures");
+               }
                assert!(left.left == 3 and right.right == 7 and
                        left.score() == 13 and right.score() == 27 and
                        a::record::Pair::tag() == 11 and

@@ -4,15 +4,16 @@ Status: **partially implemented**. Core loading, lang-item registration and
 library-declared built-in macros have landed. Diagnostic UI snapshots now have
 a runner and corpus fixtures; `--explain CODE` has embedded reference pages.
 See sections 1–2 for verification and usage. JSON diagnostics and atomic
-migration suggestions are implemented. Scalar traversal and the first resolved
-declaration registry are shared across stages; fully typed constant evaluation,
+migration suggestions are implemented. Scalar traversal and resolved
+declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-25, selected enum owners, range contracts, Boolean identities and resolved aliases):
-both complete Rust suites pass, including 647 default/626 bitpack library tests
-and all 23 DWARF tests per mode. The gate also passes 590 no-LLVM library tests,
-strict Clippy, 34 runner tests, 84 ordinary/debug native and VCD checks, and both
+Local acceptance (2026-10-25, borrowed trait contracts/default visibility,
+selected enum owners, range contracts, Boolean identities and resolved aliases):
+both complete Rust suites pass, including 651 default/630 bitpack library tests
+and all 23 DWARF tests per mode. The gate also passes 594 no-LLVM library tests,
+strict Clippy, 34 runner tests, 108 ordinary/debug native and VCD checks, and both
 actual 267-program corpora. Both modes pass 61 human UI and 61 JSON/schema cases,
 cover all 54 active codes and apply/recompile both migration fixtures.
 Compiler, corpus and documentation fingerprints match before/after the frozen
@@ -381,6 +382,24 @@ different port types, import renames, private members, generic wrappers and
 native parameter binding. One stale elaboration fixture used an unbound
 `impl Buf<T>` and now uses the already-required `impl<T> Buf<T>` syntax.
 No new implicit binder or grammar rule is introduced.
+
+**Implemented borrowed trait contracts (2026-10-25).** The shared declaration
+index also borrows trait declarations by `DefId`. Resolution reads requirements,
+receiver presence and parameter counts from it once; type checking no longer
+repeats missing-method diagnostics or maintains separate required/default/
+visibility contract maps. Defaults retain source identity through import renames
+and equal trait leaves. Computed method facts are still owned by the checker;
+there is no cloned trait tree or extra copied default-signature registry.
+
+Inherited instance and associated defaults now retain their trait's visibility.
+A red-before/green-after test exposed private defaults callable outside their
+module. Public and module-local access remain valid; existing inherent or
+explicit implementations keep their visibility and signatures. Tests also cover
+pointer identity, rebuilding after source rewrites, distinct contracts/default
+result types and one diagnostic per missing method. Fully substituted trait
+parameter/result validation and other registries remain open. The complete
+Rust/native/corpus/UI/JSON matrix passes with all three frozen fingerprints
+matching before and after validation; this does not complete the proposal.
 
 **Transparent alias normalization.** The raw declaration index now belongs
 to `resolve`, so metadata does not need an upward dependency on `types`. One
