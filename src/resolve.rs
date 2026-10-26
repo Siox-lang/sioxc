@@ -180,6 +180,13 @@ pub enum DefKind {
     Local,
 }
 
+/// Whether an explicit generic binder denotes a type or an elaboration value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ParameterKind {
+    Type,
+    Value,
+}
+
 /// Metadata for one declaration.
 #[derive(Clone, Debug)]
 pub struct DefInfo {
@@ -230,6 +237,8 @@ pub struct Resolved {
     variant_owner_overrides: HashMap<Span, DefId>,
     /// Declaration site, keyed by span, to the definition it introduces.
     declarations: HashMap<Span, DefId>,
+    /// Known kinds of explicit generic binders; absent recovery bindings stay unknown.
+    parameter_kinds: HashMap<DefId, ParameterKind>,
     /// Lang items: the role name `core`/`std` gave a declaration with
     /// `attr lang for X = "role";`, to that declaration.
     lang: HashMap<String, DefId>,
@@ -1263,8 +1272,7 @@ impl<'a> Resolver<'a> {
     /// method the trait lacks, a receiver or parameter count that differs, or
     /// a required method left out was accepted, and a generic call through
     /// the trait then failed to lower (#152).
-    // ponytail: parameter and return *types* are not compared; that needs the
-    // trait's parameters substituted by the impl's arguments.
+    // Semantic parameter/result types are checked later, after substitution.
     fn check_trait_impls(&mut self, modules: &[Module]) {
         let declarations = declarations::DeclarationIndex::collect(&self.out, modules);
         let receiver = |f: &FnDecl| f.params.iter().any(|p| p.is_self);
@@ -1281,6 +1289,47 @@ impl<'a> Resolver<'a> {
                     continue;
                 };
                 let name = &trait_.name.text;
+                if let Err(error) = declarations.check_trait_arguments(trait_, &im.trait_args) {
+                    use declarations::ArgumentError;
+                    let (message, span, parameter) = match error {
+                        ArgumentError::Count { expected, actual } => (
+                            format!("trait `{name}` takes {expected} template argument(s), but {actual} were given"),
+                            im.trait_.as_ref().unwrap().span,
+                            None,
+                        ),
+                        ArgumentError::UnknownName { name: argument, span } => (
+                            format!("trait `{name}` has no template parameter named `{argument}`"),
+                            span,
+                            None,
+                        ),
+                        ArgumentError::Duplicate { parameter, span } => (
+                            format!("template parameter `{}` of trait `{name}` is supplied more than once", trait_.params.params[parameter].name.text),
+                            span,
+                            Some(parameter),
+                        ),
+                        ArgumentError::ExpectedType { parameter, span } => (
+                            format!("template parameter `{}` of trait `{name}` requires a type argument", trait_.params.params[parameter].name.text),
+                            span,
+                            Some(parameter),
+                        ),
+                        ArgumentError::ExpectedValue { parameter, span } => (
+                            format!("template parameter `{}` of trait `{name}` requires a value argument", trait_.params.params[parameter].name.text),
+                            span,
+                            Some(parameter),
+                        ),
+                        ArgumentError::Unresolved => continue,
+                    };
+                    let declaration = parameter
+                        .map(|p| trait_.params.params[p].name.span)
+                        .unwrap_or(trait_.name.span);
+                    self.sink.emit(
+                        Diagnostic::error(message)
+                            .with_code(codes::TYPE_MISMATCH)
+                            .at(span)
+                            .label(declaration, "declared here"),
+                    );
+                    continue;
+                }
                 let provided: Vec<&FnDecl> = im
                     .items
                     .iter()
@@ -3188,6 +3237,9 @@ impl<'a> Resolver<'a> {
             }
             if let Some(bound) = &p.bound {
                 self.resolve_type(bound);
+            }
+            if let Some(kind) = declarations::parameter_kind(p, &self.out) {
+                self.out.parameter_kinds.insert(id, kind);
             }
         }
     }

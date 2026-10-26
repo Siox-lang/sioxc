@@ -20441,3 +20441,57 @@ Foundation estimate~75%:known signature conformance accepted,not complete
 method generics,symbolic widths,applied nominal arguments,typed constants or
 remaining registries/hooks. Next red probe:invalid trait argument bindings can
 currently skip signature comparison;reuse shared binding facts,not spellings.
+
+### 2026-10-25 — Codex — malformed trait arguments red probe
+
+Own shared argument binder/declaration index,resolver trait checks and focused
+tests after accepted8d771b4. Confirm count/name/kind failures before extending
+the existing parameter-ID binder with structured errors;diagnose at resolution
+instead of silently skipping semantic signature comparisons. Preserve alias
+consumers,Self,valid named arguments and generic forwarding;unknown facts must
+not cascade. No grammar/runtime/LLVM/dependency changes;full gate before commit.
+
+### 2026-10-26 — Codex — trait argument red confirmed and paper ownership
+
+1622540 failed101:extra trait argument accepted with zero errors. Implement
+structured shared-binder errors,count/name/duplicate/kind diagnostics and
+sparse explicit parameter-kind facts keyed by DefId,not name inference.
+Suppress dependent signature diagnostics on invalid applications. User also
+requests paper updates;own language/architecture/std in the isolated paper
+worktree,not shared paper-main. Full validation before local commits;no push.
+
+### 2026-10-26 — Codex — trait arguments ready for frozen acceptance
+
+1853507 exited/success/0,peak1505153024:613 frontend cases pass and updated
+native compiler renders exactly seven annotated E-P003 argument failures with
+source labels/exit1. Added only the new trait_arguments source/golden;no old
+snapshots rewritten. Kind facts preserve explicit and renamed forwarding,
+Self,tuple/value bounds,aliases/constants/enum values and unknown-bound
+recovery. Shared substitution avoids a redundant clone of unchanged normalized
+trait types. Paper language/architecture/std and E-P003 explanation updated;
+semantic value-argument typing,method generics,symbolic widths and complete
+nominal applications remain open. Freeze eight owned compiler paths,three
+paper docs and actual corpus (267 runnable,63 UI) for full trait-arguments-
+final-20261026.sh:112 direct native/VCD,all Rust/corpus/UI/JSON/Clippy,exact
+three-tree fingerprints. Only root coordination edits until terminal result.
+No commits/pushes while gate runs;preserve20 peer corpus probes/shared hunks.
+
+### 2026-10-26 — Codex — structural trait arguments accepted locally
+
+1858745 exited/success/0,peak1613029376. Both complete Rust suites pass670/
+649 library cases and23 DWARF each;613 frontend,112 direct ordinary/debug
+native/VCD,both actual267 corpora,Clippy,34 runner tests,12 Phase1 artifacts,
+and both63 UI/63 JSON cases (54 codes,two apply/recompile migrations) pass.
+Compiler/corpus/owned-paper hashes match before/after frozen gate:
+69b586fbc309654b899fbfaab74f162b2456fdd97578d187578b7537a3763b0d,
+50e4ec325b2866c05a59cf0e7c84d38d927c5c993d0e82384920e333d77579f4,
+ced62721c39510411c985a445d80c426587d68ac70f4df928cc2b83af11205b5.
+Evidence trait-arguments-20261026;AST7062 nodes/19046 edges/361 communities,
+existing extraction/stale-label limitations remain,no paid semantic rebuild.
+Only acceptance proposal/log notes changed afterward. Commit eight owned
+compiler paths,two new UI files and three owned paper docs explicitly;no
+pushes and preserve20 peer corpus probes/shared root/paper changes.
+Foundation estimate~75%:structural arguments now checked,not full semantic
+value-argument typing/constantness,method generics,symbolic widths,applied
+nominal arguments,typed constants or remaining registries/hooks. Next probe
+should test the value argument's declared type rather than only its category.

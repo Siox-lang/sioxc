@@ -9,12 +9,12 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-25, known trait signatures, borrowed contracts/default visibility,
+Local acceptance (2026-10-26, trait arguments/signatures, borrowed contracts/default visibility,
 selected enum owners, range contracts, Boolean identities and resolved aliases):
-both complete Rust suites pass, including 662 default/641 bitpack library tests
-and all 23 DWARF tests per mode. The gate also passes 605 no-LLVM library tests,
+both complete Rust suites pass, including 670 default/649 bitpack library tests
+and all 23 DWARF tests per mode. The gate also passes 613 no-LLVM library tests,
 strict Clippy, 34 runner tests, 112 ordinary/debug native and VCD checks, and both
-actual 267-program corpora. Both modes pass 62 human UI and 62 JSON/schema cases,
+actual 267-program corpora. Both modes pass 63 human UI and 63 JSON/schema cases,
 cover all 54 active codes and apply/recompile both migration fixtures.
 Compiler, corpus and documentation fingerprints match before/after the frozen
 gate. Retained evidence and fixture migrations are recorded in
@@ -419,6 +419,19 @@ The new source-labelled UI/JSON case and the complete Rust/native/corpus gates
 pass in both storage modes with matching compiler/corpus/paper fingerprints.
 Invalid receiver/arity shapes do not cascade into dependent signature errors.
 No new grammar, runtime, LLVM or source value semantics are added.
+
+**Implemented structural trait argument validation (2026-10-26).** The shared
+parameter-ID binder now distinguishes structural count, unknown-name,
+duplicate and type/value-kind failures. Resolution reports these at the
+application and labels the selected source declaration. Sparse explicit
+parameter-kind facts preserve type/value roles through renamed generic
+forwarding, while recovery bindings remain unknown. Alias normalization uses
+the same binder without a second argument interpreter. Invalid applications
+do not cascade into dependent receiver/arity or semantic signature errors.
+The complete Rust/native/corpus/UI/JSON gates pass in both storage modes with
+matching compiler/corpus/paper fingerprints. This does not finish semantic
+value-argument typing, method generics, symbolic width
+relationships or full applied nominal argument identity.
 
 **Transparent alias normalization.** The raw declaration index now belongs
 to `resolve`, so metadata does not need an upward dependency on `types`. One

@@ -57,6 +57,142 @@ fn trait_methods_must_match_concrete_parameter_and_return_types() {
 }
 
 #[test]
+fn malformed_trait_arguments_do_not_silently_disable_contract_checks() {
+    for application in [
+        "Contract<integer, real>",
+        "Contract",
+        "Contract<Missing = integer>",
+        "Contract<1>",
+    ] {
+        let source = format!(
+            "module model; trait Contract<T> {{ fn inspect(self); }}
+             struct Value {{}} impl {application} for Value {{ fn inspect(self) {{}} }}"
+        );
+        let sink = check_modules(&[(&source, FileId(0))]);
+        assert_eq!(
+            sink.error_count(),
+            1,
+            "{application}: {:?}",
+            sink.diagnostics()
+        );
+        assert_errors(&sink, 1);
+    }
+}
+
+#[test]
+fn trait_arguments_validate_duplicate_names_and_type_value_kinds() {
+    for application in [
+        "Contract<A = integer, A = real, N = 3>",
+        "Contract<integer, real, integer>",
+        "Contract<1, real, 3>",
+        "Contract<integer, real, Self>",
+    ] {
+        let source = format!(
+            "module model; trait Contract<A, B, N: integer> {{ fn inspect(self); }}
+             struct Value {{}} impl {application} for Value {{ fn inspect(self) {{}} }}"
+        );
+        assert_errors(&check_modules(&[(&source, FileId(0))]), 1);
+    }
+}
+
+#[test]
+fn trait_argument_kinds_follow_explicit_parameter_ids() {
+    for (binder, application, expected) in [
+        ("<T, N: integer>", "Contract<T, N>", 0),
+        (
+            "<Element, Width: integer>",
+            "Contract<N = Width, T = Element>",
+            0,
+        ),
+        ("<N: integer>", "Contract<N, 3>", 1),
+        ("<N: integer>", "Contract<(N, integer), 3>", 1),
+        ("<N: integer>", "Contract<N[2], 3>", 1),
+        ("<T>", "Contract<integer, T>", 1),
+        ("", "Contract<Self, 3>", 0),
+    ] {
+        let source = format!(
+            "module model; trait Contract<T, N: integer> {{ fn inspect(self); }}
+             struct Value {{}} impl{binder} {application} for Value {{ fn inspect(self) {{}} }}"
+        );
+        assert_errors(&check_modules(&[(&source, FileId(0))]), expected);
+    }
+}
+
+#[test]
+fn trait_arguments_accept_aliases_constants_and_enum_values() {
+    let source = "module model;
+        enum Mode { fast, slow }
+        const WIDTH: integer = 3;
+        type Row<T, N: integer> = T[N];
+        trait Contract<T, N: integer, M: Mode> { fn inspect(self); }
+        struct Value {}
+        impl Contract<M = Mode::fast, T = Row<integer, 3>, N = WIDTH> for Value {
+            fn inspect(self) {}
+        }";
+    assert_errors(&check_modules(&[(source, FileId(0))]), 0);
+}
+
+#[test]
+fn tuple_value_parameter_bounds_keep_their_existing_argument_kind() {
+    let source = "module model;
+        trait Contract<Pair: (integer, integer)> { fn inspect(self); }
+        struct Value {}
+        impl Contract<(1, 2)> for Value { fn inspect(self) {} }";
+    assert_errors(&check_modules(&[(source, FileId(0))]), 0);
+}
+
+#[test]
+fn invalid_trait_arguments_do_not_cascade_into_method_contract_errors() {
+    let source = "module model;
+        trait Contract<T> { fn inspect(self, value: T) -> integer; }
+        struct Value {}
+        impl Contract<integer, real> for Value { fn inspect() {} }";
+    assert_errors(&check_modules(&[(source, FileId(0))]), 1);
+}
+
+#[test]
+fn unresolved_trait_parameter_bounds_do_not_invent_value_kind_errors() {
+    let source = "module model;
+        trait Contract<T: Missing> { fn inspect(self); }
+        struct Value {}
+        impl Contract<integer> for Value { fn inspect(self) {} }";
+    let sink = check_modules(&[(source, FileId(0))]);
+    assert!(sink
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == Some(codes::UNKNOWN_NAME)));
+    assert!(!sink
+        .diagnostics()
+        .iter()
+        .any(|d| d.message.contains("requires a value argument")));
+}
+
+#[test]
+fn trait_argument_diagnostics_keep_definition_and_use_site_identity() {
+    let left = "module left; pub trait Contract<T> { fn inspect(self); }";
+    let right = "module right; pub trait Contract<T: integer> { fn inspect(self); }";
+    let user = "module user; use Types = left::Contract; use Values = right::Contract;
+        struct A {} struct B {}
+        impl Types<integer> for A { fn inspect(self) {} }
+        impl Values<real> for B { fn inspect(self) {} }";
+    for sources in [
+        [(left, FileId(0)), (right, FileId(1)), (user, FileId(2))],
+        [(user, FileId(2)), (right, FileId(1)), (left, FileId(0))],
+    ] {
+        let sink = check_modules(&sources);
+        assert_errors(&sink, 1);
+        let error = sink
+            .diagnostics()
+            .iter()
+            .find(|d| d.severity == crate::diag::Severity::Error)
+            .unwrap();
+        assert_eq!(error.primary.unwrap().file, FileId(2));
+        assert_eq!(error.labels[0].span.file, FileId(1));
+        assert!(error.message.contains("requires a value argument"));
+    }
+}
+
+#[test]
 fn invalid_method_shapes_do_not_cascade_into_signature_type_errors() {
     for method in [
         "fn apply(value: real) -> real { return value; }",

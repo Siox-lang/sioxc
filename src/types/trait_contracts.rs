@@ -12,6 +12,13 @@ impl<'a> Checker<'a> {
         else {
             return;
         };
+        if self
+            .declarations
+            .check_trait_arguments(contract, &implementation.trait_args)
+            .is_err()
+        {
+            return;
+        }
         for item in &implementation.items {
             let ImplItem::Fn(function) = item else {
                 continue;

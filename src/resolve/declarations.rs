@@ -14,6 +14,9 @@ use crate::syntax::ast::{
 pub(crate) mod expand;
 mod substitute;
 
+pub(super) use substitute::parameter_kind;
+pub(crate) use substitute::ArgumentError;
+
 enum Declaration<'a> {
     Entity(&'a EntityDecl),
     Trait(&'a TraitDecl),
@@ -154,7 +157,15 @@ impl<'a> DeclarationIndex<'a> {
         else {
             return false;
         };
-        substitute::bind(params, args, self.resolved).is_some()
+        substitute::bind(params, args, self.resolved).is_ok()
+    }
+
+    pub(crate) fn check_trait_arguments(
+        &self,
+        contract: &TraitDecl,
+        arguments: &[crate::syntax::ast::GenericArg],
+    ) -> Result<(), ArgumentError> {
+        substitute::bind(&contract.params, arguments, self.resolved).map(|_| ())
     }
 
     /// Normalize type-head aliases without losing applied parameters or array shape.
@@ -182,13 +193,17 @@ impl<'a> DeclarationIndex<'a> {
     where
         'a: 't,
     {
-        let bindings = substitute::bind(&contract.params, arguments, self.resolved)?;
+        let bindings = substitute::bind(&contract.params, arguments, self.resolved).ok()?;
         if bindings.is_empty() {
             return self.normalize_type(ty);
         }
         let mut instantiated = ty.clone();
         substitute::ty(&mut instantiated, &bindings, self.resolved)?;
-        Some(Cow::Owned(self.normalize_type(&instantiated)?.into_owned()))
+        let normalized = match self.normalize_type(&instantiated)? {
+            Cow::Borrowed(_) => instantiated,
+            Cow::Owned(normalized) => normalized,
+        };
+        Some(Cow::Owned(normalized))
     }
 
     fn normalize_type_inner<'t>(&self, ty: &'t Type, seen: &mut Expansion) -> Option<Cow<'t, Type>>
@@ -254,7 +269,7 @@ impl<'a> DeclarationIndex<'a> {
                         if !seen.enter(id) {
                             return None;
                         }
-                        let bindings = substitute::bind(params, args, self.resolved)?;
+                        let bindings = substitute::bind(params, args, self.resolved).ok()?;
                         let mut instantiated = (*target).clone();
                         substitute::ty(&mut instantiated, &bindings, self.resolved)?;
                         let normalized =

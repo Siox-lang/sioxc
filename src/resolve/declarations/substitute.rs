@@ -1,7 +1,71 @@
-//! Substitute only the parameter identities belonging to one alias application.
+//! Bind and substitute only the parameter identities of one template application.
 
+use super::super::ParameterKind;
 use super::*;
+use crate::diag::Span;
 use crate::syntax::ast::*;
+
+#[derive(Debug)]
+pub(crate) enum ArgumentError {
+    Count { expected: usize, actual: usize },
+    UnknownName { name: String, span: Span },
+    Duplicate { parameter: usize, span: Span },
+    ExpectedType { parameter: usize, span: Span },
+    ExpectedValue { parameter: usize, span: Span },
+    Unresolved,
+}
+
+pub(in crate::resolve) fn parameter_kind(
+    param: &Param,
+    resolved: &Resolved,
+) -> Option<ParameterKind> {
+    let Some(bound) = &param.bound else {
+        return Some(ParameterKind::Type);
+    };
+    let Some(path) = super::super::type_head_path(bound) else {
+        return Some(ParameterKind::Value);
+    };
+    let id = resolved.resolved(path.span)?;
+    if resolved.kind_of(id) == Some(DefKind::Trait) || super::super::is_compiler_trait(resolved, id)
+    {
+        Some(ParameterKind::Type)
+    } else {
+        match resolved.kind_of(id)? {
+            DefKind::Builtin
+            | DefKind::Struct
+            | DefKind::Enum
+            | DefKind::Entity
+            | DefKind::TypeAlias => Some(ParameterKind::Value),
+            DefKind::Param if resolved.parameter_kinds.get(&id) == Some(&ParameterKind::Type) => {
+                Some(ParameterKind::Value)
+            }
+            _ => None,
+        }
+    }
+}
+
+fn type_has_value_head(ty: &Type, resolved: &Resolved) -> bool {
+    match ty {
+        Type::Path(path) => resolved.resolved(path.span).is_some_and(|id| {
+            resolved
+                .def(id)
+                .is_some_and(|definition| match definition.kind {
+                    // `Self` is a compiler-introduced type binding, not a value local.
+                    DefKind::Local => definition.name != "Self" || definition.span.is_some(),
+                    DefKind::Const | DefKind::Fn | DefKind::EnumVariant => true,
+                    DefKind::Param => {
+                        resolved.parameter_kinds.get(&id) == Some(&ParameterKind::Value)
+                    }
+                    _ => false,
+                })
+        }),
+        Type::Indexed { base, .. } | Type::Generic { base, .. } => {
+            type_has_value_head(base, resolved)
+        }
+        Type::View { target, .. } => type_has_value_head(target, resolved),
+        Type::Tuple { elems, .. } => elems.iter().any(|elem| type_has_value_head(elem, resolved)),
+    }
+}
 
 pub(super) enum Argument<'a> {
     Type(Type),
@@ -12,55 +76,52 @@ pub(super) fn bind<'a>(
     params: &Params,
     args: &'a [GenericArg],
     resolved: &Resolved,
-) -> Option<HashMap<DefId, Argument<'a>>> {
+) -> Result<HashMap<DefId, Argument<'a>>, ArgumentError> {
     if params.params.len() != args.len() {
-        return None;
+        return Err(ArgumentError::Count {
+            expected: params.params.len(),
+            actual: args.len(),
+        });
     }
     let mut bindings = HashMap::new();
     for (position, arg) in args.iter().enumerate() {
-        let param = match arg {
+        let parameter = match arg {
             GenericArg::Named { name, .. } | GenericArg::NamedType { name, .. } => params
                 .params
                 .iter()
-                .find(|param| param.name.text == name.text)?,
-            _ => params.params.get(position)?,
+                .position(|param| param.name.text == name.text)
+                .ok_or_else(|| ArgumentError::UnknownName {
+                    name: name.text.clone(),
+                    span: name.span,
+                })?,
+            _ => position,
         };
-        let type_parameter = param.bound.as_ref().is_none_or(|bound| {
-            let Some(path) = super::super::type_head_path(bound) else {
-                return false;
-            };
-            resolved.resolved(path.span).is_some_and(|id| {
-                resolved.kind_of(id) == Some(DefKind::Trait)
-                    || super::super::is_compiler_trait(resolved, id)
-            })
-        });
-        let argument = if type_parameter {
-            let ty = arg.as_type()?;
-            let mut head = &ty;
-            while let Type::Indexed { base, .. } | Type::Generic { base, .. } = head {
-                head = base;
-            }
-            if let Type::Path(path) = head {
-                if resolved.resolved(path.span).is_some_and(|id| {
-                    resolved
-                        .def(id)
-                        .is_some_and(|definition| match definition.kind {
-                            // `Self` is a compiler-introduced type binding, not a value local.
-                            DefKind::Local => {
-                                definition.name != "Self" || definition.span.is_some()
-                            }
-                            DefKind::Const | DefKind::Fn | DefKind::EnumVariant => true,
-                            _ => false,
-                        })
-                }) {
-                    return None;
-                }
+        let param = &params.params[parameter];
+        let span = match arg {
+            GenericArg::Positional(value) => expr_span(value),
+            GenericArg::PositionalType(ty) => type_span(ty),
+            GenericArg::Named { name, .. } | GenericArg::NamedType { name, .. } => name.span,
+        };
+        let id = resolved
+            .declared(param.name.span)
+            .ok_or(ArgumentError::Unresolved)?;
+        if bindings.contains_key(&id) {
+            return Err(ArgumentError::Duplicate { parameter, span });
+        }
+        let argument = if parameter_kind(param, resolved).ok_or(ArgumentError::Unresolved)?
+            == ParameterKind::Type
+        {
+            let ty = arg
+                .as_type()
+                .ok_or(ArgumentError::ExpectedType { parameter, span })?;
+            if type_has_value_head(&ty, resolved) {
+                return Err(ArgumentError::ExpectedType { parameter, span });
             }
             Argument::Type(ty)
         } else {
             let value = match arg {
                 GenericArg::Positional(value) | GenericArg::Named { value, .. } => value,
-                _ => return None,
+                _ => return Err(ArgumentError::ExpectedValue { parameter, span }),
             };
             if let Expr::Path(path) = value {
                 if resolved.resolved(path.span).is_some_and(|id| {
@@ -74,21 +135,21 @@ pub(super) fn bind<'a>(
                                 | DefKind::Trait
                                 | DefKind::TypeAlias
                         )
-                    )
+                    ) || resolved.parameter_kinds.get(&id) == Some(&ParameterKind::Type)
+                        || resolved.def(id).is_some_and(|definition| {
+                            definition.kind == DefKind::Local
+                                && definition.name == "Self"
+                                && definition.span.is_none()
+                        })
                 }) {
-                    return None;
+                    return Err(ArgumentError::ExpectedValue { parameter, span });
                 }
             }
             Argument::Value(value)
         };
-        if bindings
-            .insert(resolved.declared(param.name.span)?, argument)
-            .is_some()
-        {
-            return None;
-        }
+        bindings.insert(id, argument);
     }
-    Some(bindings)
+    Ok(bindings)
 }
 
 pub(super) fn ty(
