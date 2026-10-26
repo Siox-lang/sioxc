@@ -80,6 +80,181 @@ fn malformed_trait_arguments_do_not_silently_disable_contract_checks() {
 }
 
 #[test]
+fn trait_value_arguments_must_match_their_declared_types() {
+    for (argument, expected) in [("3", 0), ("1.5", 1), ("\"three\"", 1), ("(1.5 + 2.0)", 1)] {
+        let source = format!(
+            "module model; trait Contract<N: integer> {{ fn inspect(self); }}
+             struct Value {{}} impl Contract<{argument}> for Value {{ fn inspect(self) {{}} }}"
+        );
+        let sink = check_modules(&[(&source, FileId(0))]);
+        assert_eq!(
+            sink.error_count(),
+            expected,
+            "{argument}: {:?}",
+            sink.diagnostics()
+        );
+        assert_errors(&sink, expected);
+    }
+}
+
+#[test]
+fn dependent_trait_value_bounds_use_the_prepared_type_arguments() {
+    for (ty, value, expected) in [
+        ("Number", "3", 0),
+        ("Number", "1.5", 1),
+        ("real", "3", 0),
+        ("Number", "(integer(1.5))", 0),
+    ] {
+        let source = format!(
+            "module model; type Number = integer;
+             trait Contract<T, V: T> {{ fn inspect(self); }}
+             struct Value {{}}
+             impl Contract<V = {value}, T = {ty}> for Value {{ fn inspect(self) {{}} }}"
+        );
+        assert_errors(&check_modules(&[(&source, FileId(0))]), expected);
+    }
+}
+
+#[test]
+fn trait_value_types_follow_forwarded_binder_annotations() {
+    for (bound, expected) in [("integer", 0), ("real", 1)] {
+        let source = format!(
+            "module model; trait Contract<N: integer> {{ fn inspect(self); }}
+             struct Value {{}}
+             impl<Renamed: {bound}> Contract<Renamed> for Value {{ fn inspect(self) {{}} }}"
+        );
+        assert_errors(&check_modules(&[(&source, FileId(0))]), expected);
+    }
+    let source = "module model; trait Contract<T, N: T> { fn inspect(self); }
+        struct Value {} impl<T, N: T> Contract<T, N> for Value { fn inspect(self) {} }";
+    assert_errors(&check_modules(&[(source, FileId(0))]), 0);
+}
+
+#[test]
+fn trait_value_types_use_const_and_function_source_contracts() {
+    for (bound, expected) in [("integer", 1), ("real", 0)] {
+        for value in ["NUMBER", "(number())"] {
+            let source = format!(
+                "module model; const NUMBER: real = 1.5;
+                 fn number() -> real {{ return NUMBER; }}
+                 trait Contract<N: {bound}> {{ fn inspect(self); }}
+                 struct Value {{}} impl Contract<{value}> for Value {{ fn inspect(self) {{}} }}"
+            );
+            assert_errors(&check_modules(&[(&source, FileId(0))]), expected);
+        }
+    }
+}
+
+#[test]
+fn trait_value_literals_keep_existing_assignment_context() {
+    for (bound, value, expected) in [
+        ("(integer, real)", "(1, 2)", 0),
+        ("(integer, real)", "(1.5, 2)", 1),
+        ("integer[2]", "[1, 2]", 0),
+        ("integer[2]", "[1, 2.5]", 1),
+        ("Char[3]", "\"yes\"", 0),
+        ("Char[3]", "\"no\"", 1),
+        ("Bit", "'1'", 0),
+        ("Bit", "'z'", 1),
+    ] {
+        let source = format!(
+            "module model; enum Bit {{ '0', '1' }}
+             trait Contract<N: {bound}> {{ fn inspect(self); }}
+             struct Value {{}} impl Contract<{value}> for Value {{ fn inspect(self) {{}} }}"
+        );
+        let sink = check_modules(&[(&source, FileId(0))]);
+        assert_eq!(
+            sink.error_count(),
+            expected,
+            "{bound}, {value}: {:?}",
+            sink.diagnostics()
+        );
+        assert_errors(&sink, expected);
+    }
+}
+
+#[test]
+fn trait_value_arguments_keep_known_integer_ranges() {
+    for (value, expected) in [(3, 0), (4, 1)] {
+        let source = format!(
+            "module model; trait Contract<N: integer<0..3>> {{ fn inspect(self); }}
+             struct Value {{}} impl Contract<{value}> for Value {{ fn inspect(self) {{}} }}"
+        );
+        assert_errors(&check_modules(&[(&source, FileId(0))]), expected);
+    }
+}
+
+#[test]
+fn bad_trait_value_types_do_not_cascade_into_method_results() {
+    let source = "module model;
+        trait Contract<N: integer> { fn inspect(self) -> integer; }
+        struct Value {} impl Contract<1.5> for Value {
+            fn inspect(self) -> real { return 1.0; }
+        }";
+    let sink = check_modules(&[(source, FileId(0))]);
+    assert_errors(&sink, 1);
+    assert!(sink
+        .diagnostics()
+        .iter()
+        .any(|d| d.message.contains("value argument for `N`")));
+}
+
+#[test]
+fn nested_opaque_builtin_bounds_remain_unknown_without_core_contracts() {
+    for (bound, value) in [
+        ("string[3]", "\"yes\""),
+        ("(string, integer)", "(\"yes\", 3)"),
+    ] {
+        let source = format!(
+            "module model; trait Contract<V: {bound}> {{ fn inspect(self); }}
+             struct Value {{}} impl Contract<{value}> for Value {{ fn inspect(self) {{}} }}"
+        );
+        let mut sink = DiagnosticSink::new();
+        let modules = vec![crate::syntax::parse_module(FileId(0), &source, &mut sink)];
+        let resolved = crate::resolve::resolve(&modules, &mut sink);
+        check(&modules, &resolved, &mut sink);
+        assert_errors(&sink, 0);
+    }
+}
+
+#[test]
+fn trait_value_types_and_labels_preserve_module_identity() {
+    let left = "module left; pub enum Mode { On } pub type Bound = Mode;
+        pub trait Contract<M: Bound> { fn inspect(self); }";
+    let right = "module right; pub enum Mode { On } pub const CHOICE: Mode = Mode::On;";
+    for (value, expected) in [("left::Mode::On", 0), ("right::CHOICE", 1)] {
+        let user = format!(
+            "module user; use C = left::Contract; type Bound = integer;
+             struct Value {{}} impl C<{value}> for Value {{ fn inspect(self) {{}} }}"
+        );
+        for sources in [
+            [
+                (left, FileId(0)),
+                (right, FileId(1)),
+                (user.as_str(), FileId(2)),
+            ],
+            [
+                (user.as_str(), FileId(2)),
+                (right, FileId(1)),
+                (left, FileId(0)),
+            ],
+        ] {
+            let sink = check_modules(&sources);
+            assert_errors(&sink, expected);
+            if expected != 0 {
+                let error = sink
+                    .diagnostics()
+                    .iter()
+                    .find(|d| d.severity == crate::diag::Severity::Error)
+                    .unwrap();
+                assert_eq!(error.primary.unwrap().file, FileId(2));
+                assert_eq!(error.labels[0].span.file, FileId(0));
+            }
+        }
+    }
+}
+
+#[test]
 fn trait_arguments_validate_duplicate_names_and_type_value_kinds() {
     for application in [
         "Contract<A = integer, A = real, N = 3>",

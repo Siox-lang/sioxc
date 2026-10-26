@@ -73,5 +73,19 @@ class GenericAliasWaveforms(unittest.TestCase):
             check_profile("generic_data_aliases_test", {"AliasData.wire.value": [(0, f"{6:08b}")]})
 
 
+class TraitValueWaveforms(unittest.TestCase):
+    def test_typed_value_contract_remains_reactive(self):
+        check_profile("trait_value_arguments_test", {
+            "TraitValueArgumentsTest.dut.result": [(0, f"{42:064b}"), (1_000_000, f"{47:064b}")],
+        })
+
+    def test_wrong_value_or_time_is_rejected(self):
+        for when, value in [(1_000_000, 42), (2_000_000, 47)]:
+            with self.assertRaises(AssertionError):
+                check_profile("trait_value_arguments_test", {
+                    "TraitValueArgumentsTest.dut.result": [(0, f"{42:064b}"), (when, f"{value:064b}")],
+                })
+
+
 if __name__ == "__main__":
     unittest.main()

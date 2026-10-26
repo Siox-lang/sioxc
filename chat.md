@@ -20528,3 +20528,87 @@ AST7341 nodes/19392 edges/390 communities;usual vendor/no-symbol/stale-label
 limitations remain. Commit owned paths locally;publish wiki only with normal
 fast-forward push and verify remote HEAD/parity. Source branches stay local.
 Original compiler-proposal goal remains paused;no new feature work performed.
+
+### 2026-10-26 — Codex — resume semantic trait value arguments
+
+User reactivated proposal implementation after docs relocation96236f2. Own
+types/trait_contracts,its tests and shared parameter-ID binding APIs as needed.
+Confirm wrong semantic value types red,then reuse type inference/assignment
+rules with one prepared binding context instead of another evaluator. Retain
+aliases,generic forwarding,Self and unknown recovery;avoid dependent method
+diagnostics after a bad argument. Update canonical docs/explanations here,
+not paper. No runtime/LLVM/dependencies/pushes;full gate before local commits.
+
+### 2026-10-26 — Codex — semantic value arguments focused green
+
+2015639 confirmed1.5 accepted for N:integer. 2021030 initially passed613/614
+with one core-less fixture's opaque builtin string lacking a source contract;
+reuse digital-type identity to keep such facts unknown,not a string spelling
+special case. 2026888 terminal green621 frontend tests after dependent bounds,
+named/renamed forwarding,const/functions,tuple/array/character contexts,integer
+ranges,source labels and non-cascading result checks. Add shared-context borrow
+test and a new actual-corpus native/VCD program plus negative UI fixture.
+Own VCD checker/profile tests for new signal semantics;no runtime/LLVM edits.
+
+### 2026-10-26 — Codex — semantic value types full-gate freeze
+
+2035544 exited/success/0,peak1610874880:622 frontend cases,46 runner tests,
+four default/bitpack ordinary/debug native+VCD checks of the new268th corpus
+program,strict all-target/all-feature Clippy and AST update passed. VCD
+observes42->47 at1ns and process/hardware assertions agree. Prepared-binding
+test proves value arguments remain borrowed and share substituted signatures.
+2042539 exited/success/0,peak702603264:reviewed exactly five annotated
+source-labelled E-P003 value-type errors/exit1;new golden only,no old bless.
+Canonical language/architecture/std,explanation and proposal now describe
+known semantic checks and remaining constantness/generic limits. Prepare the
+three generated wiki copies locally only;no publication authorized this turn.
+Freeze13 compiler paths,three new corpus files (268 runnable,64 UI),three
+wiki copies for full trait-value-types-final-20261026.sh with116 direct
+native/VCD runs,full Rust/corpus/UI/JSON/Clippy and exact fingerprints.
+Only shared-root coordination changes until terminal acceptance;no commits/
+pushes or peer edits. Complete typed constants/method generics/symbolic and
+applied nominal types/remaining registries/hooks are still open.
+
+### 2026-10-26 — Codex — nested opaque recovery red before acceptance
+
+Intentionally stopped own2046688 after review found opaque guard covers only
+top-level Named types,not a builtin recovery name nested in a data bound.
+Partial native116/default679 are not full acceptance. Add a core-less checker
+regression for array/tuple bounds;keep unknown data facts unknown using the
+existing recursive digital-type classification,then rerun a full frozen gate.
+No timeout/OOM/kernel event or peer job termination;no commits/pushes.
+
+### 2026-10-26 — Codex — nested recovery green; refreeze value gate r2
+
+2075641 failed101:core-less string[3] bound incorrectly rejected a string
+literal. Reuse recursive is_digital_ty for the whole bound rather than only
+its top-level Named node;no new walker/name special case. 2077424 exited/
+success/0,peak623951872:all623 frontend cases pass including array/tuple
+opaque recovery. Prior2035544 native4/Clippy/runner46 remains focused evidence;
+the fresh full gate revalidates the latest guard. No snapshot changes needed:
+known UI cases keep their required types. Freeze13 compiler paths,three new
+corpus files and three local wiki pages for a fresh full run with logs in
+trait-value-types-20261026-r2. Expect680/659 library cases only after observing
+them;116 native,268 corpus,64 UI/JSON,46 runners. Root coordination only until
+terminal and three matching fingerprints. Stopped2046688 is not acceptance.
+
+### 2026-10-26 — Codex — semantic trait value types accepted locally
+
+2080126 exited/success/0,peak1613090816. Complete default/bitpack Rust suites
+pass680/659 library cases and23 DWARF each;623 frontend,116 direct native/VCD,
+both actual268 corpora,strict Clippy,46 runners,12 Phase1 artifacts,and both
+64 UI/64 JSON cases (54 codes,two apply/recompile migrations) pass. Before/
+after fingerprints match for compiler/corpus/local wiki:
+a982e4b431876f6dd4e987e298bc717a315aefc44635a77daff4f027b1f70536,
+48abf136bee252c25c2b0107fb792f0863b9685bfab1d93d0d2f67a1a315ee19,
+0abf91b41063c4f041dc53455cb1ce7436f028e75be3eb0dab9b15cf6f4bff39.
+Evidence trait-value-types-20261026-r2;AST7366 nodes/19452 edges/381 communities,
+usual vendor/no-symbol/stale-label limitations remain,no paid semantic rebuild.
+Only acceptance proposal/log notes changed afterward. Commit13 owned compiler
+paths,three new corpus files and three local generated wiki pages explicitly.
+No pushes or paper edits;preserve peer work. Known value types and shared
+binding reuse are accepted,not complete constantness/generic conformance.
+User chose finishing compiler-foundations before another proposal;goal stays
+active,estimate~75%. Next red probe:move remaining resolver width arithmetic
+to shared later-stage evaluation without resolve->types imports. Typed constants,
+other registries/hooks,symbolic/applied nominal facts and dynamic routing remain.

@@ -74,6 +74,56 @@ fn nested_applications_are_not_alias_definition_cycles() {
 }
 
 #[test]
+fn prepared_trait_arguments_borrow_values_and_reuse_resolved_bindings() {
+    let (modules, resolved) = parse(&["module model;
+        trait Contract<T, N: integer> { fn inspect(self, value: T[N]) -> T[N]; }
+        struct Value {} impl Contract<N = 3, T = real> for Value {
+            fn inspect(self, value: real[3]) -> real[3] { return value; }
+        }"]);
+    let index = DeclarationIndex::collect(&resolved, &modules);
+    let Item::Trait(contract) = &modules[0].items[0] else {
+        panic!("trait")
+    };
+    let Item::Impl(implementation) = &modules[0].items[2] else {
+        panic!("impl")
+    };
+    let arguments = index
+        .trait_arguments(contract, &implementation.trait_args)
+        .unwrap();
+    let parameter = resolved
+        .declared(contract.params.params[1].name.span)
+        .unwrap();
+    let GenericArg::Named { value, .. } = &implementation.trait_args[0] else {
+        panic!("value")
+    };
+    assert!(std::ptr::eq(arguments.value(parameter).unwrap(), value));
+    assert!(arguments
+        .value(
+            resolved
+                .declared(contract.params.params[0].name.span)
+                .unwrap()
+        )
+        .is_none());
+    let method = &contract.items[0];
+    for ty in [
+        method.params[1].ty.as_ref().unwrap(),
+        method.ret.as_ref().unwrap(),
+    ] {
+        let instantiated = index.instantiate_trait_type(&arguments, ty).unwrap();
+        let Type::Indexed {
+            base,
+            index: Some(width),
+            ..
+        } = instantiated.as_ref()
+        else {
+            panic!("array")
+        };
+        assert!(matches!(base.as_ref(), Type::Path(path) if path.segments[0].text == "real"));
+        assert_eq!(evaluate(width, &index, 0), Ok(3));
+    }
+}
+
+#[test]
 fn generic_aliases_accept_impl_self_but_not_value_locals() {
     let (modules, resolved) = parse(&["module model;
         type Identity<T> = T; struct Value {}

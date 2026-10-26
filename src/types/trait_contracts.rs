@@ -12,11 +12,13 @@ impl<'a> Checker<'a> {
         else {
             return;
         };
-        if self
+        let Ok(arguments) = self
             .declarations
-            .check_trait_arguments(contract, &implementation.trait_args)
-            .is_err()
-        {
+            .trait_arguments(contract, &implementation.trait_args)
+        else {
+            return;
+        };
+        if !self.check_trait_value_arguments(contract, implementation, &arguments) {
             return;
         }
         for item in &implementation.items {
@@ -49,11 +51,10 @@ impl<'a> Checker<'a> {
                 let (Some(expected_type), Some(actual_type)) = (&expected.ty, &actual.ty) else {
                     continue;
                 };
-                let Some(expected_type) = self.declarations.instantiate_trait_type(
-                    contract,
-                    &implementation.trait_args,
-                    expected_type,
-                ) else {
+                let Some(expected_type) = self
+                    .declarations
+                    .instantiate_trait_type(&arguments, expected_type)
+                else {
                     continue;
                 };
                 let expected_type = self.ast_ty(&expected_type);
@@ -79,11 +80,10 @@ impl<'a> Checker<'a> {
             }
             match (&required.ret, &function.ret) {
                 (Some(expected), Some(actual)) => {
-                    let Some(expected_type) = self.declarations.instantiate_trait_type(
-                        contract,
-                        &implementation.trait_args,
-                        expected,
-                    ) else {
+                    let Some(expected_type) = self
+                        .declarations
+                        .instantiate_trait_type(&arguments, expected)
+                    else {
                         continue;
                     };
                     let expected_type = self.ast_ty(&expected_type);
@@ -128,6 +128,73 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    fn check_trait_value_arguments(
+        &mut self,
+        contract: &TraitDecl,
+        implementation: &ImplDecl,
+        arguments: &crate::resolve::declarations::TraitArguments<'_>,
+    ) -> bool {
+        // Header values see the impl's explicit parameters, not trait-local names.
+        let sym = implementation
+            .params
+            .params
+            .iter()
+            .filter_map(|parameter| {
+                parameter
+                    .bound
+                    .as_ref()
+                    .map(|bound| (parameter.name.text.clone(), self.ast_ty(bound)))
+            })
+            .collect();
+        let before = self.sink.error_count();
+        for parameter in &contract.params.params {
+            let Some(value) = self
+                .resolved
+                .declared(parameter.name.span)
+                .and_then(|id| arguments.value(id))
+            else {
+                continue;
+            };
+            let Some(bound) = parameter
+                .bound
+                .as_ref()
+                .and_then(|bound| self.declarations.instantiate_trait_type(arguments, bound))
+            else {
+                continue;
+            };
+            let expected = self.ast_ty(&bound);
+            let errors = self.sink.error_count();
+            self.check_expr(value, &sym);
+            // Recovery-only data nested in a bound is still unknown, not a mismatch.
+            if self.sink.error_count() != errors || !self.is_digital_ty(&expected) {
+                continue;
+            }
+            if self.check_struct_literal_for_ty(&expected, value, &sym)
+                || self.assignable(&expected, value, &sym)
+            {
+                self.check_value_range(&bound, value);
+                continue;
+            }
+            let actual = self.type_of(value, &sym);
+            if actual == Ty::Error {
+                continue;
+            }
+            self.sink.emit(
+                Diagnostic::error(format!(
+                    "value argument for `{}` of trait `{}` has type {}, but {} is required",
+                    parameter.name.text,
+                    contract.name.text,
+                    self.ty_display(&actual),
+                    self.ty_display(&expected),
+                ))
+                .with_code(codes::TYPE_MISMATCH)
+                .at(expr_span(value))
+                .label(parameter.name.span, "trait value parameter declared here"),
+            );
+        }
+        self.sink.error_count() == before
     }
 }
 

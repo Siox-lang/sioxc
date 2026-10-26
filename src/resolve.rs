@@ -1289,7 +1289,7 @@ impl<'a> Resolver<'a> {
                     continue;
                 };
                 let name = &trait_.name.text;
-                if let Err(error) = declarations.check_trait_arguments(trait_, &im.trait_args) {
+                if let Err(error) = declarations.trait_arguments(trait_, &im.trait_args) {
                     use declarations::ArgumentError;
                     let (message, span, parameter) = match error {
                         ArgumentError::Count { expected, actual } => (

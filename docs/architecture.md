@@ -1138,7 +1138,14 @@ parameter or trait declaration. Explicit generic parameter kinds are sparse
 `DefId`-keyed facts, so forwarding a value parameter cannot disguise it as a
 type. Alias normalization reuses the same binder and keeps its best-effort
 recovery; dependent signature checks stop for invalid applications.
-Semantic value-argument typing and constantness remain separate follow-ups.
+Type checking prepares those bindings once per implementation and reuses them
+for dependent value bounds and method signatures. Value expressions remain
+borrowed from source, not cloned into another contract registry. Known value
+types use the existing expression/assignment-context checks, including source
+constant/function contracts, contextual literals and literal integer ranges.
+Invalid value types suppress dependent method comparisons. Opaque builtin or
+generic facts stay unknown; complete constantness and generic conformance
+remain follow-ups.
 
 Entity declarations are borrowed through `resolve::declarations::DeclarationIndex`
 by resolver ID in type checking, elaboration and IR. The checker keeps its

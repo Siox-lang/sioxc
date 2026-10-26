@@ -9,14 +9,15 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-26, trait arguments/signatures, borrowed contracts/default visibility,
+Local acceptance (2026-10-26, known trait value types and arguments/signatures,
+borrowed contracts/default visibility,
 selected enum owners, range contracts, Boolean identities and resolved aliases):
-both complete Rust suites pass, including 670 default/649 bitpack library tests
-and all 23 DWARF tests per mode. The gate also passes 613 no-LLVM library tests,
-strict Clippy, 34 runner tests, 112 ordinary/debug native and VCD checks, and both
-actual 267-program corpora. Both modes pass 63 human UI and 63 JSON/schema cases,
+both complete Rust suites pass, including 680 default/659 bitpack library tests
+and all 23 DWARF tests per mode. The gate also passes 623 no-LLVM library tests,
+strict Clippy, 46 runner tests, 116 ordinary/debug native and VCD checks, and both
+actual 268-program corpora. Both modes pass 64 human UI and 64 JSON/schema cases,
 cover all 54 active codes and apply/recompile both migration fixtures.
-Compiler, corpus and documentation fingerprints match before/after the frozen
+Compiler, corpus and local wiki fingerprints match before/after the frozen
 gate. Retained evidence and fixture migrations are recorded in
 [chat.md](../../chat.md). This is local acceptance, not a claim that the remaining
 proposal sections are complete.
@@ -432,6 +433,25 @@ The complete Rust/native/corpus/UI/JSON gates pass in both storage modes with
 matching compiler/corpus/paper fingerprints. This does not finish semantic
 value-argument typing, method generics, symbolic width
 relationships or full applied nominal argument identity.
+
+**Implemented known trait value-argument types (2026-10-26).** Type checking
+prepares one parameter-ID binding context per implementation and shares it
+between dependent value bounds and method signatures. Value expressions stay
+borrowed; source-pointer tests cover that contract. This removes repeated
+binding of the same arguments for every parameter/result comparison.
+
+Known value arguments use ordinary expression/assignment-context checks,
+including aliases, constant/function contracts, renamed value forwarding,
+nominal identity, contextual tuple/array/character literals and existing literal
+integer ranges. Bad value types suppress dependent method comparisons. Opaque
+builtin recovery names and unresolved generic bounds remain unknown rather
+than acquiring guessed semantics. No second constant evaluator or runtime/LLVM
+path is added. The source-labelled UI case and complete Rust/native/corpus/
+diagnostic gates pass in both storage modes with matching source/corpus/wiki
+fingerprints. A core-less array/tuple regression keeps nested opaque facts
+unknown, not just top-level builtin recovery names.
+Complete constantness, method generics, symbolic widths and applied nominal
+argument identity still need work.
 
 **Transparent alias normalization.** The raw declaration index now belongs
 to `resolve`, so metadata does not need an upward dependency on `types`. One

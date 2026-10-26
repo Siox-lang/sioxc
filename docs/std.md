@@ -181,8 +181,11 @@ Trait arguments follow their declarations: `Source` and `T` above are types,
 whereas the affix `char: string` argument is a compile-time value. Named
 arguments must name each declared parameter exactly once; wrong counts,
 duplicate/unknown names and known type/value swaps are diagnosed rather than
-silently skipping signature checks. Full generic conformance remains a
-separate compiler-foundations task.
+silently skipping signature checks. Known values must also fit the instantiated
+bound's ordinary assignment context: an integer literal may initialize a real,
+while a real-to-integer conversion must be explicit. These checks reuse source
+contracts rather than interpreting a second copy of std. Full constantness and
+generic conformance remain separate compiler-foundations tasks.
 
 **Comparisons** are `core::cmp`'s `Eq<Rhs>` (`eq`, and `ne` by default) and
 `Ord<Rhs>` (`lt`, `le`, and `gt`/`ge` by default), each returning `Bool`

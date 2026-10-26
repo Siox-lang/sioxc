@@ -526,8 +526,16 @@ example, forwarding `impl<T, N: integer> ...` preserves `T` as a type and `N`
 as a value even after renaming either binder. `Self` is a type argument.
 An invalid trait application is diagnosed before comparing its methods with
 the instantiated signature; it must not silently disable contract checking or
-produce dependent signature errors. This structural validation does not imply
-complete value-argument typing/constant evaluation, method-generic,
+produce dependent signature errors.
+
+Known value arguments are checked against their instantiated bounds using
+ordinary assignment-context rules. An integer literal may take a `real`
+context, but a real expression does not become an integer without an explicit
+conversion. Aliases are transparent, nominal enum/struct identities remain
+distinct, and tuple/array/character literals use their declared context.
+Known ranged integer literals also use the existing range checks. Generic or
+opaque bounds remain unknown rather than producing guessed errors. This does
+not provide a complete constant evaluator or full method-generic,
 symbolic-width or applied nominal-type conformance.
 
 ---

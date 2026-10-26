@@ -30,6 +30,20 @@ pub(crate) struct DeclarationIndex<'a> {
     declarations: HashMap<DefId, Declaration<'a>>,
 }
 
+/// One checked application; reuse its parameter identities for bounds and methods.
+pub(crate) struct TraitArguments<'a> {
+    bindings: HashMap<DefId, substitute::Argument<'a>>,
+}
+
+impl<'a> TraitArguments<'a> {
+    pub(crate) fn value(&self, parameter: DefId) -> Option<&'a crate::syntax::ast::Expr> {
+        match self.bindings.get(&parameter)? {
+            substitute::Argument::Value(value) => Some(*value),
+            substitute::Argument::Type(_) => None,
+        }
+    }
+}
+
 #[derive(Default)]
 struct Expansion {
     active: HashSet<DefId>,
@@ -160,12 +174,13 @@ impl<'a> DeclarationIndex<'a> {
         substitute::bind(params, args, self.resolved).is_ok()
     }
 
-    pub(crate) fn check_trait_arguments(
+    pub(crate) fn trait_arguments<'args>(
         &self,
         contract: &TraitDecl,
-        arguments: &[crate::syntax::ast::GenericArg],
-    ) -> Result<(), ArgumentError> {
-        substitute::bind(&contract.params, arguments, self.resolved).map(|_| ())
+        arguments: &'args [crate::syntax::ast::GenericArg],
+    ) -> Result<TraitArguments<'args>, ArgumentError> {
+        substitute::bind(&contract.params, arguments, self.resolved)
+            .map(|bindings| TraitArguments { bindings })
     }
 
     /// Normalize type-head aliases without losing applied parameters or array shape.
@@ -186,19 +201,17 @@ impl<'a> DeclarationIndex<'a> {
     /// Instantiate a source trait signature without rebinding its lexical names.
     pub(crate) fn instantiate_trait_type<'t>(
         &self,
-        contract: &TraitDecl,
-        arguments: &[crate::syntax::ast::GenericArg],
+        arguments: &TraitArguments<'_>,
         ty: &'t Type,
     ) -> Option<Cow<'t, Type>>
     where
         'a: 't,
     {
-        let bindings = substitute::bind(&contract.params, arguments, self.resolved).ok()?;
-        if bindings.is_empty() {
+        if arguments.bindings.is_empty() {
             return self.normalize_type(ty);
         }
         let mut instantiated = ty.clone();
-        substitute::ty(&mut instantiated, &bindings, self.resolved)?;
+        substitute::ty(&mut instantiated, &arguments.bindings, self.resolved)?;
         let normalized = match self.normalize_type(&instantiated)? {
             Cow::Borrowed(_) => instantiated,
             Cow::Owned(normalized) => normalized,

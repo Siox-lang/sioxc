@@ -60,7 +60,11 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
 
 
 def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile == "range_hook_identity_test":
+    if profile == "trait_value_arguments_test":
+        assert changes["TraitValueArgumentsTest.dut.result"] == [
+            (0, f"{42:064b}"), (1_000_000, f"{47:064b}")
+        ]
+    elif profile == "range_hook_identity_test":
         root = "RangeRoles.dut."
         for signal, initial, updated in [("canonical", 15, 19), ("explicit", 107, 113)]:
             assert changes[root + signal] == [
