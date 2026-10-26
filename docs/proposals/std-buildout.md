@@ -1,6 +1,6 @@
 # Remaining standard-library build-out
 
-Status: active proposal; implemented exports live in [std.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/std.md).
+Status: active proposal; implemented exports live in [std.md](../std.md).
 Outstanding items are tracked on [the project board](https://github.com/orgs/Siox-lang/projects/1) (Area: std).
 
 ## Boundary
@@ -8,7 +8,7 @@ Outstanding items are tracked on [the project board](https://github.com/orgs/Sio
 Std is the mandatory, vendor-independent library of source-defined types,
 operators, conversions, math, text, time and small technology-independent
 helpers. Compiler mechanisms and primitive hooks live in the compiler/core;
-the current split is documented in [std.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/std.md), not proposed here.
+the current split is documented in [std.md](../std.md), not proposed here.
 
 Synchronizers, base metadata, fixed-point formats and initial floating-point
 operators are implemented. Floating-point operators execute through the same

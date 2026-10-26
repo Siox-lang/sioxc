@@ -40,7 +40,7 @@ One runtime refactor serves both, then the client direction first:
    VPI, then VHPI, over the same runtime hooks; cocotb is the first client.
 
 The interoperability boundary rules
-([interoperability.md](https://github.com/Siox-lang/siox-paper/blob/main/docs/interoperability.md#foreign-hdls))
+([interoperability.md](../interoperability.md#foreign-hdls))
 govern every value crossing: rule 1 for logic values (exact through VHPI,
 `To_X01Z` into 4-state VPI), rule 11 for names.
 

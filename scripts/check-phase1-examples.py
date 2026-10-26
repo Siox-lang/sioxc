@@ -2,7 +2,7 @@
 """Require the named Phase 1 artifacts in the corpus, not just a glob.
 
 The list is section 5, "Phase 1 example suite", of the language spec
-(siox-paper's docs/language.md); keep the two in step.
+(docs/language.md); keep the two in step.
 """
 
 import argparse

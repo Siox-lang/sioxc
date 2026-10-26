@@ -58,7 +58,7 @@ Reset-time initialization uses source-ordered CFGs and the same scheduler for
 resumes before hardware bootstrap and foreground stimulus. The ABI 15 startup
 boundary and the subsequent API/effect fixes are verified by full
 default/bitpack corpus and native waveform gates. The completed Phase 1
-requirement audit is [recorded separately](https://github.com/Siox-lang/siox-paper/blob/main/docs/phase1-audit.md); this proposal
+requirement audit is [recorded separately](../phase1-audit.md); this proposal
 does not claim worker threads are implemented.
 Preserve this ordered startup boundary when introducing workers.
 
@@ -250,7 +250,7 @@ One owner orders printing, diagnostics, formatting and waveform sampling.
 VCD/FST observe settled values, not worker completions or initialization defaults.
 Worker IDs and performance telemetry belong in a separate optional trace, not
 normal deterministic output. Source-level DWARF is emitted by the existing
-LLVM Process backend; see [debugger conventions and remaining inspection work](https://github.com/Siox-lang/siox-paper/blob/main/docs/testing.md#native-debugger-smoke-test).
+LLVM Process backend; see [debugger conventions and remaining inspection work](../testing.md#native-debugger-smoke-test).
 Worker-thread execution must preserve these source identities and coordinate
 debug inspection snapshots with each committed epoch.
 

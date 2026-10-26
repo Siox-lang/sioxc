@@ -20495,3 +20495,36 @@ Foundation estimate~75%:structural arguments now checked,not full semantic
 value-argument typing/constantness,method generics,symbolic widths,applied
 nominal arguments,typed constants or remaining registries/hooks. Next probe
 should test the value argument's declared type rather than only its category.
+
+### 2026-10-26 — Codex — reference docs return and wiki mirror
+
+User directs moving Markdown from siox-paper back to sioxc;latest choice is
+versioned docs plus wiki copies. Original compiler-proposal goal is paused.
+Own reference docs/*.md,README,HOUSERULES path updates and wiki mirror/checks.
+Source is committed paper main fea5062 plus accepted local paper de2fbab;
+preserve/exclude shared paper-main peer WIP in architecture/language/interop.
+Reconcile in owned paper worktree only;move docs and update paper pointers
+without modifying its shared main worktree. Wiki Git repository returns404
+despite enabled setting;user asked to initialize Home. No new compiler feature
+or source push;verify migrated links and mirror contents before local commits.
+
+### 2026-10-26 — Codex — reference relocation checks accepted
+
+User initialized wiki Home after Git404;clone /home/max/sioxc-wiki is now
+available. Reconciled committed paper main fea5062 into owned paper de2fbab
+with --no-commit;all ten non-index reference files copied byte-identically
+into sioxc/docs before removing owned-paper originals. Index has canonical/
+wiki guidance and provenance;README,house rules,proposal links and artifact
+checker comment point to local docs. New dependency-free wiki sync/checker
+mirrors eleven reference pages plus sidebar,preserves examples/Mermaid and
+manual wiki pages,and checks relative links. Source paper keeps relocation
+README,Typst book/assets and rebuilt PDF;shared peer WIP never staged/copied.
+2004953 exited/success/0,peak541749248:all44 Python tests,12 Phase1 artifacts,
+wiki parity,Rust formatting,diff checks,AST update and Typst PDF build pass.
+Rust/core/std/runtime/Cargo/build code is unchanged from f7561d0;its1858745
+full670/649/default-bitpack/267 corpus/native112 gate remains the compiler
+regression evidence,not a fresh full run for this documentation-only move.
+AST7341 nodes/19392 edges/390 communities;usual vendor/no-symbol/stale-label
+limitations remain. Commit owned paths locally;publish wiki only with normal
+fast-forward push and verify remote HEAD/parity. Source branches stay local.
+Original compiler-proposal goal remains paused;no new feature work performed.
