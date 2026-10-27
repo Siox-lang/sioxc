@@ -1246,6 +1246,16 @@ interns expanded operator tables in `Design::lookup_tables`; expressions refer
 to them by stable id, and LLVM emits one compact constant array rather than
 reconstructing a wide packed-integer shift for every lookup.
 
+These enum tables use the shared `types::consteval` interpreter, with a borrowed
+IR semantic environment rather than a separate enum expression walker. Scalar
+values preserve character versus enum identity and source discriminants;
+declaration/return types supply literal context, and call frames bind resolved
+parameter and receiver IDs. Module constants, aliases and helper calls therefore
+keep their own context. Logical operators and Boolean conversions execute source
+bodies, not host integer truth rules. IR scalar enum/character constants use the
+same adapter. This does not yet unify every checker/elaboration context or
+generalize the existing packed default-logic/four-bit companion representation.
+
 When a per-element metavalue operation would copy a non-leaf operand once per
 element, normalization materializes that operand as an internal combinational
 signal and reuses the leaf read. This bounds nested dirty-vector IR growth and

@@ -20708,3 +20708,62 @@ typed constants/constantness,remaining registries/hooks,method generics,
 symbolic/applied nominal conformance and dynamic constructor routing remain.
 Next priority stays inside foundations,especially typed source-owned enum/
 condition evaluation rather than starting another proposal. Goal stays active.
+
+### 2026-10-27 — Codex — typed enum constants and shared interpreter ownership
+
+Start from accepted81e2d46;prior2380650 and2270277 are terminal green,not live.
+Own types/consteval typed scalar values/contexts and source function frames,
+IR lower_helpers/builders legacy enum walker and lower/metavalue adapters,
+focused tests/corpus/canonical docs. First reproduce module enum constants,
+helper calls and non-Boolean enum members named true/false in LogicEncoding.
+Extend the existing interpreter,not a new enum walker;carry resolved owners,
+read discriminants/operator/Boolean bodies from source and preserve checked
+integer domain adapters. Reuse shared declaration contracts/phase facts with
+no upward imports or copied source registries. Keep old/new successful-answer
+comparison until full actual corpus/Rust validation,then remove old walker.
+Revalidate native ordinary/debug/default/bitpack VCD and diagnostic matrices;
+no runtime/LLVM/dependencies/grammar/pushes/peer edits. Foundations stays open
+for fully typed values,other registries/hooks and generic conformance.
+
+### 2026-10-27 — Codex — typed enum comparison green; delete old walker
+
+2522208 exited/success/0,peak1612972032. Both complete Rust suites702/681
+libraries,23 DWARF per mode,645 frontend,124 native/VCD,actual270 corpora per
+mode,strictClippy,50 runners,12 artifacts and both65UI/65JSON gates pass.
+54 active codes and both apply/recompile migrations remain covered. Source,
+corpus and local wiki before/after fingerprints match exactly:
+e5fd02afa685f32c6840c330b88e1ea96580e005cf364a677225e3dd653c8404,
+0c44ffd020b0a8db7647f4556fe0fb5acca706cd1aa3c06800b2660275083507,
+a983ccaa7e4e4fea182fedd6a70ce2ff5893aa390c84acfb59d64effaad294c2.
+Retain enum-values-oracle-20261027. Successful old table answers agree except
+explicitly proved source-identity/Boolean behavior corrections covered by
+regressions;unsupported/new helper results are not fabricated old answers.
+Now delete lower/constant_values/legacy.rs and mod/comparison calls,then freeze
+again for the full oracle-free gate. No acceptance commit or push yet.
+Native scalar fixture also exposed and fixed alias/helper-backed character
+constant folding through the shared adapter. Keep pre-existing custom packed
+default-logic/four-bit companion limits documented as open,not silently fixed.
+
+### 2026-10-27 — Codex — typed enum/character migration accepted locally
+
+2622818 exited/success/0,peak1612869632. Final code has no legacy enum walker
+or comparison module/calls. Complete Rust702/681 libraries and23 DWARF per
+mode,645 frontend,124 ordinary/debug native/VCD,both actual270 corpora,
+strictClippy,50 runners,12 artifacts and both65UI/65JSON matrices pass.
+All54 active codes and two apply/recompile migrations remain covered.
+Source/corpus/local wiki fingerprints match before/after the frozen gate:
+b0196a90e618a933d0b99c017730e7e87e60478d735e9cec43d006c7de841b97,
+0c44ffd020b0a8db7647f4556fe0fb5acca706cd1aa3c06800b2660275083507,
+a983ccaa7e4e4fea182fedd6a70ce2ff5893aa390c84acfb59d64effaad294c2.
+Retain enum-values-final-20261027 and comparison2522208. AST graph refreshed
+7491nodes/19808edges/378communities;documentation semantics were not rebuilt.
+Only proposal acceptance wording and coordination logs change after this gate;
+canonical architecture/wiki/code/corpus stay frozen. Commit20 owned compiler
+paths,the one new corpus fixture and one generated local wiki page explicitly.
+Preserve all20 original peer corpus probes and shared main/paper edits.
+No pushes. Foundations engineering estimate~79%,not complete:uniform typed
+checker/elaboration contexts,packed/real/range/attribute values,other source
+registries and hook consumers,method generics,symbolic/applied nominal contracts
+and dynamic constructor routing remain. Next work stays in this proposal,
+not another approved feature. Scalar custom encoding does not claim arbitrary
+packed encoding support;its default-logic/four-bit representation is still open.

@@ -732,7 +732,7 @@ impl<'a> FunctionIndex<'a> {
     /// key so compiler-known `Bool`, `Logic`, and `Ordering` tables do not move
     /// merely because user code declares a namesake; that user declaration is
     /// the one that receives a qualified key.
-    fn enum_id_key(&self, id: DefId) -> Option<String> {
+    pub(crate) fn enum_id_key(&self, id: DefId) -> Option<String> {
         let definition = self.resolved.def(id)?;
         let colliders: Vec<_> = self
             .resolved

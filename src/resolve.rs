@@ -2092,7 +2092,10 @@ impl<'a> Resolver<'a> {
             }
         }
         if has_self {
-            self.bind_synthetic_local("self");
+            let receiver = self.bind_synthetic_local("self");
+            for parameter in f.params.iter().filter(|parameter| parameter.is_self) {
+                self.out.declarations.insert(parameter.span, receiver);
+            }
         }
         if let Some(r) = &f.ret {
             self.resolve_type(r);
@@ -3132,9 +3135,10 @@ impl<'a> Resolver<'a> {
     }
 
     /// Bind a local the compiler introduced, which has no source span.
-    fn bind_synthetic_local(&mut self, name: &str) {
+    fn bind_synthetic_local(&mut self, name: &str) -> DefId {
         let id = self.add_def(name.to_string(), DefKind::Local, false, None, None);
         self.bind(name, id);
+        id
     }
 
     /// Insert `name` into the innermost scope.

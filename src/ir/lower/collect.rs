@@ -805,18 +805,21 @@ impl<'a> Lowering<'a> {
         {
             return false;
         }
-        // `const OK: Bit = '1';` — a character literal is a variant of its
-        // declared character-valued enum, resolved like any other variant.
-        if let ast::Expr::CharLit { ch, .. } = &constant.value {
-            let ty = self.free_fns.type_head_key(&constant.ty);
-            if let Expr::Const(disc) = self.resolve_char_literal(ty.as_deref(), Expr::Logic(*ch)) {
-                if let Ok(narrow) = i64::try_from(disc) {
-                    self.consts.insert(name.to_string(), narrow);
-                }
-                self.const_values
-                    .insert(name.to_string(), Expr::Const(disc));
-                return true;
+        // Keep aliases, helper return types and enum literals in their own
+        // declaration context, as the metadata evaluator does.
+        let scalar = super::constant_values::EnumConstants::new(self).constant(constant);
+        let scalar = match scalar {
+            Some(crate::types::consteval::Value::Enum { discriminant, .. }) => Some(discriminant),
+            Some(crate::types::consteval::Value::Character(ch)) => Some(ch as u64),
+            _ => None,
+        };
+        if let Some(value) = scalar {
+            if let Ok(narrow) = i64::try_from(value) {
+                self.consts.insert(name.to_string(), narrow);
             }
+            self.const_values
+                .insert(name.to_string(), Expr::Const(value));
+            return true;
         }
         if let ast::Expr::Range { lo, hi, .. } = &constant.value {
             if let (Some(left), Some(right)) =

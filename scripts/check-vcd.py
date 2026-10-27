@@ -60,7 +60,18 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
 
 
 def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile == "generic_layout_values_test":
+    if profile == "enum_constant_values_test":
+        root = "EnumConstantValues.dut."
+        for signal, expected in {
+            "a": [(0, "1"), (1_000_000, "x"), (2_000_000, "z")],
+            "b": [(0, "0"), (1_000_000, "1")],
+            "both": [(0, "0"), (1_000_000, "x")],
+            "either": [(0, "1"), (1_000_000, "x"), (1_000_000, "1")],
+            "inverted": [(0, "0"), (1_000_000, "x")],
+            "shared": [(0, "x"), (2_000_000, "1")],
+        }.items():
+            assert changes[root + signal] == expected, signal
+    elif profile == "generic_layout_values_test":
         assert changes["GenericLayoutValues.dut.value"] == [
             (0, "101"), (1_000_000, "011")
         ]

@@ -9,13 +9,14 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-27, applied layouts and known trait value types/arguments/signatures,
+Local acceptance (2026-10-27, typed enum/character constants and source-owned
+operator/condition tables, applied layouts and known trait value types/arguments/signatures,
 borrowed contracts/default visibility,
 selected enum owners, range contracts, Boolean identities and resolved aliases):
-both complete Rust suites pass, including 692 default/671 bitpack library tests
-and all 23 DWARF tests per mode. The gate also passes 635 no-LLVM library tests,
-strict Clippy, 48 runner tests, 120 ordinary/debug native and VCD checks, and both
-actual 269-program corpora. Both modes pass 65 human UI and 65 JSON/schema cases,
+both complete Rust suites pass, including 702 default/681 bitpack library tests
+and all 23 DWARF tests per mode. The gate also passes 645 no-LLVM library tests,
+strict Clippy, 50 runner tests, 124 ordinary/debug native and VCD checks, and both
+actual 270-program corpora. Both modes pass 65 human UI and 65 JSON/schema cases,
 cover all 54 active codes and apply/recompile both migration fixtures.
 Compiler, corpus and local wiki fingerprints match before/after the frozen
 gate. Retained evidence and fixture migrations are recorded in
@@ -186,8 +187,10 @@ The traversal and a borrowed declaration index are now shared. Free/foreign
 function contracts, constants and transparent aliases are selected by `DefId`.
 Checker analysis and elaboration can evaluate integer-signature free functions;
 elaboration also supplies parameter/loop values, and IR supplies bound
-attributes and legacy scalar values. Typed enum/packed/real values and uniform
-attribute context remain necessary so constant status does not depend on stage.
+attributes and legacy scalar values. Enum/character metadata and IR constants
+now also share typed evaluation; uniform checker/elaboration contexts, packed/
+real values and attributes remain necessary so constant status does not depend
+on stage.
 
 **rustc.** One evaluator, the MIR interpreter (the core of Miri), answers every
 constant question: array lengths, const generics, `const` items, and
@@ -229,7 +232,7 @@ keeps its wider integer intermediates; the existing native-word interfaces
 retain checked arithmetic and kernel shift truncation, including the checked
 signed-minimum remainder boundary. These domains do not limit packed values.
 
-Calls borrow the root environment and parameter names, allocating only their
+Calls borrow the root environment and resolved parameter IDs, allocating only their
 local binding/value frames rather than cloning every module constant. Failed
 selected branches propagate a reason instead of being mistaken for empty
 branches and falling through to a later return. `else if` chains are walked
@@ -242,12 +245,38 @@ corpus with agreement for every old successful result. The added
 `consteval_calls_test.siox` exercises module constants versus same-named
 parameters, restored nested frames and recursive widths in hardware/processes.
 
+**Implemented typed enum/character migration (2026-10-27).** The
+same interpreter now carries character values and enum discriminants with
+their owning `DefId`, rather than treating every scalar as integer bits.
+Function frames bind resolved parameter/receiver IDs. Declaration types and
+helper return types supply character-literal context, including aliases and
+`Self`; a qualified variant cannot be captured by a same-named parameter.
+IR enum/character constants and `LogicEncoding`/operator tables use this path.
+Enum comparisons yield the registered Bool's source values, and logical
+operators and non-Bool conditions execute their source operator/`Boolean` impls.
+An unrelated enum's `true`/`false` member names are not Boolean flags. The
+full comparison gate passes both complete Rust suites and actual 270-program
+corpora, plus native/VCD and diagnostic checks, with all three frozen snapshots
+unchanged. Where source identity or source Boolean behavior fixes an old answer,
+the temporary oracle requires an observed semantic difference rather than
+silently exempting unknown results. After this comparison, the old table walker
+and its oracle are deleted. Final oracle-free validation passes the same full
+matrix, again with identical compiler/corpus/local wiki fingerprints. Retained
+comparison and final evidence is recorded in `chat.md`.
+
+The new native scalar-wire fixture covers helper/constant-backed logic,
+nonstandard discriminants, parallel resolution and reactive X/Z waveforms.
+Initial packed-wire exploration also exposed pre-existing default-logic and
+four-bit companion assumptions (including a five-bit custom enum indexing
+width mismatch). Generalizing that representation is still open; scalar
+constant support does not claim arbitrary custom packed encodings work.
+
 **Remaining.** Raw scalar logical/bitwise hooks are explicitly transitional
 (`shortcut:` comments), not a second definition of operators. Their disagreement
 cannot be resolved from untyped integer bits: replace them with typed,
-source-owned operator and condition evaluation. Unify function/attribute
-availability through the shared resolved registry; then include enum and
-packed values, directional ranges, all statically sized attributes, additional
+source-owned operator and condition evaluation in all stage contexts. Unify
+function/attribute availability through the shared resolved registry; then
+include packed/real values, directional ranges, all statically sized attributes, additional
 pure-function statements. Metadata validation now shares scalar evaluation as
 described below; arbitrary typed attribute values remain open.
 
@@ -308,9 +337,10 @@ intentional incomplete-literal warning. After deleting the temporary oracle,
 the complete Rust/native/corpus/diagnostic matrix passed again with matching
 compiler, corpus and local wiki fingerprints. Retained evidence is in `chat.md`.
 
-The source-owned enum operator-table evaluator remains separate until values
-carry their enum identity. Do not mark the proposal complete merely because
-the scalar traversal is shared.
+Enum operator tables now use that same interpreter with typed enum owners;
+there is no separate enum expression walker. Do not mark the proposal complete
+merely because traversal is shared: uniform stage contexts, fully typed values,
+the remaining registries and residual hook consumers are still open.
 
 **Acceptance.** Duplicate expression interpreters are gone (thin adapters may
 remain); `E-P021` ("not a constant") and range errors agree across stages.

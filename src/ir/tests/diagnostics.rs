@@ -299,11 +299,16 @@ fn conflicting_drivers_name_the_conflict_and_its_sites() {
     let mut sink = DiagnosticSink::new();
     let full = format!("{src}\nstruct unsigned(Logic[]);\nstruct signed(Logic[]);\n{CLK_PRELUDE}");
     let module = crate::syntax::parse_module(FileId(0), &full, &mut sink);
-    let modules = std::slice::from_ref(&module);
-    let resolved = crate::resolve::resolve(modules, &mut sink);
-    let typed = crate::types::check(modules, &resolved, &mut sink);
-    let hier = crate::elab::elaborate(modules, &resolved, &typed, &mut sink);
-    let _ = lower(modules, &resolved, &hier, &mut sink);
+    let core = crate::syntax::parse_module(
+        FileId(1),
+        include_str!("../../../core/primitive.siox"),
+        &mut sink,
+    );
+    let modules = [module, core];
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    let typed = crate::types::check(&modules, &resolved, &mut sink);
+    let hier = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+    let _ = lower(&modules, &resolved, &hier, &mut sink);
 
     let conflicts: Vec<_> = sink
         .diagnostics()
@@ -852,7 +857,6 @@ fn enum_signals_carry_symbols() {
     // consumers can print `'X'` instead of `3`.
     let d = lower_src(
         "module m;\n\
-             enum Logic { '0', '1', 'Z', 'X' }\n\
              enum State { Idle, Run }\n\
              entity E { a: Logic in, s: State out }\n\
              impl E { s = State::Idle; }\n\

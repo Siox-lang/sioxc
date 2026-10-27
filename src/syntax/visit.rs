@@ -80,7 +80,7 @@ macro_rules! walk {
                 if let Some(value) = & $($mutable)? attr.default { expr(value, types, expressions); }
             }
 
-            fn function(function: & $($mutable)? FnDecl, types: &mut impl FnMut(& $($mutable)? Type), expressions: &mut impl FnMut(& $($mutable)? Expr)) {
+            pub(crate) fn function(function: & $($mutable)? FnDecl, types: &mut impl FnMut(& $($mutable)? Type), expressions: &mut impl FnMut(& $($mutable)? Expr)) {
                 params(& $($mutable)? function.generics, types, expressions);
                 for param in & $($mutable)? function.params { if let Some(t) = & $($mutable)? param.ty { ty(t, types, expressions); } }
                 if let Some(ret) = & $($mutable)? function.ret { ty(ret, types, expressions); }

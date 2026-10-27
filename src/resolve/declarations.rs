@@ -499,4 +499,22 @@ impl<'a> DeclarationIndex<'a> {
             _ => None,
         }
     }
+
+    pub(crate) fn local_id(&self, path: &Path) -> Option<DefId> {
+        self.resolved.resolved(path.span).filter(|id| {
+            matches!(
+                self.resolved.kind_of(*id),
+                Some(DefKind::Local | DefKind::Param)
+            )
+        })
+    }
+
+    pub(crate) fn parameter_id(&self, parameter: &crate::syntax::ast::FnParam) -> Option<DefId> {
+        self.resolved.declared(
+            parameter
+                .name
+                .as_ref()
+                .map_or(parameter.span, |name| name.span),
+        )
+    }
 }

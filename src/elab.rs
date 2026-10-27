@@ -1614,7 +1614,7 @@ impl Environment for Parameters<'_, '_> {
         self.values
             .get(name)
             .copied()
-            .map(|value| Binding::Value(i128::from(value)))
+            .map(|value| Binding::Value(crate::types::consteval::Value::Integer(i128::from(value))))
     }
 
     fn local_name<'p>(&self, path: &'p Path) -> Option<&'p str> {
@@ -1626,6 +1626,21 @@ impl Environment for Parameters<'_, '_> {
             return None;
         };
         self.declarations.integer_function_path(path)
+    }
+
+    fn local_key<'p>(&self, path: &'p Path) -> Option<consteval::LocalKey<'p>> {
+        self.declarations
+            .local_id(path)
+            .map(consteval::LocalKey::Definition)
+    }
+
+    fn parameter_key<'p>(
+        &self,
+        parameter: &'p crate::syntax::ast::FnParam,
+    ) -> Option<consteval::LocalKey<'p>> {
+        self.declarations
+            .parameter_id(parameter)
+            .map(consteval::LocalKey::Definition)
     }
 
     // shortcut: retain legacy parameter bit operations until typed source-owned

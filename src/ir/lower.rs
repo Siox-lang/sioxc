@@ -9,6 +9,7 @@ mod block_locals;
 mod body;
 mod calls;
 mod collect;
+mod constant_values;
 mod control;
 mod diagnostics;
 mod expressions;

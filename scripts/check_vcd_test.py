@@ -73,6 +73,31 @@ class GenericAliasWaveforms(unittest.TestCase):
             check_profile("generic_data_aliases_test", {"AliasData.wire.value": [(0, f"{6:08b}")]})
 
 
+class EnumConstantWaveforms(unittest.TestCase):
+    def wave(self):
+        return {f"EnumConstantValues.dut.{name}": events for name, events in {
+            "a": [(0, "1"), (1_000_000, "x"), (2_000_000, "z")],
+            "b": [(0, "0"), (1_000_000, "1")],
+            "both": [(0, "0"), (1_000_000, "x")],
+            "either": [(0, "1"), (1_000_000, "x"), (1_000_000, "1")],
+            "inverted": [(0, "0"), (1_000_000, "x")],
+            "shared": [(0, "x"), (2_000_000, "1")],
+        }.items()}
+
+    def test_source_encoding_is_reactive(self):
+        check_profile("enum_constant_values_test", self.wave())
+
+    def test_wrong_symbol_time_or_driver_resolution_is_rejected(self):
+        for signal, events in [("a", [(0, "1"), (1_000_000, "x"), (2_000_000, "x")]),
+                               ("both", [(0, "0"), (2_000_000, "x")]),
+                               ("shared", [(0, "0"), (2_000_000, "1")]),
+                               ("either", [(0, "1"), (1_000_000, "1")])]:
+            data = self.wave()
+            data[f"EnumConstantValues.dut.{signal}"] = events
+            with self.assertRaises(AssertionError):
+                check_profile("enum_constant_values_test", data)
+
+
 class GenericLayoutWaveforms(unittest.TestCase):
     def test_named_function_width_sizes_the_reactive_port(self):
         check_profile("generic_layout_values_test", {

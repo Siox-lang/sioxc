@@ -353,7 +353,9 @@ impl Environment for WordConstants<'_, '_> {
         self.fns
             .constant_path_key(path)
             .and_then(|key| self.env.get(&key))
-            .map(|value| Binding::Value(i128::from(*value)))
+            .map(|value| {
+                Binding::Value(crate::types::consteval::Value::Integer(i128::from(*value)))
+            })
             .or_else(|| {
                 self.fns
                     .declarations()
@@ -387,6 +389,23 @@ impl Environment for WordConstants<'_, '_> {
         matches!(call_fn_key(callee).as_deref(), Some("integer" | "Char"))
     }
 
+    fn local_key<'p>(&self, path: &'p ast::Path) -> Option<consteval::LocalKey<'p>> {
+        self.fns
+            .declarations()
+            .local_id(path)
+            .map(consteval::LocalKey::Definition)
+    }
+
+    fn parameter_key<'p>(
+        &self,
+        parameter: &'p crate::syntax::ast::FnParam,
+    ) -> Option<consteval::LocalKey<'p>> {
+        self.fns
+            .declarations()
+            .parameter_id(parameter)
+            .map(consteval::LocalKey::Definition)
+    }
+
     // shortcut: retain legacy scalar predicates until typed source-owned
     // operator/condition evaluation replaces raw integer binding environments.
     fn unary(&self, expression: &ast::Expr, value: i128) -> Option<i128> {
@@ -417,117 +436,5 @@ impl Environment for WordConstants<'_, '_> {
 
     fn condition(&self, value: i128) -> Option<bool> {
         Some(value != 0)
-    }
-}
-
-/// Evaluate the deliberately small pure subset used by `LogicEncoding` and
-/// scalar logic operator tables. Unlike integer const evaluation, character
-/// literals here are resolved against the implementing enum's source-owned
-/// variant map.
-pub(in crate::ir) fn eval_logic_function(
-    function: &ast::FnDecl,
-    env: &HashMap<String, u64>,
-    variants: &HashMap<String, u64>,
-) -> Option<u64> {
-    eval_logic_stmts(&function.body.as_ref()?.stmts, env, variants)
-}
-
-/// Evaluate a std function body over logic values, so the value tables come
-/// from std source rather than being duplicated in the backend.
-pub(in crate::ir) fn eval_logic_stmts(
-    statements: &[ast::Stmt],
-    env: &HashMap<String, u64>,
-    variants: &HashMap<String, u64>,
-) -> Option<u64> {
-    for statement in statements {
-        match statement {
-            ast::Stmt::Return {
-                value: Some(value), ..
-            } => {
-                return eval_logic_expr(value, env, variants);
-            }
-            ast::Stmt::If(branch) => {
-                if eval_logic_expr(&branch.cond, env, variants)? != 0 {
-                    if let Some(value) = eval_logic_stmts(&branch.then.stmts, env, variants) {
-                        return Some(value);
-                    }
-                } else if let Some(otherwise) = branch.else_.as_deref() {
-                    let value = match otherwise {
-                        ast::ElseBranch::Block(block) => {
-                            eval_logic_stmts(&block.stmts, env, variants)
-                        }
-                        ast::ElseBranch::If(nested) => eval_logic_stmts(
-                            std::slice::from_ref(&ast::Stmt::If(nested.clone())),
-                            env,
-                            variants,
-                        ),
-                    };
-                    if value.is_some() {
-                        return value;
-                    }
-                }
-            }
-            _ => return None,
-        }
-    }
-    None
-}
-
-/// Evaluate one std expression over logic values.
-pub(in crate::ir) fn eval_logic_expr(
-    expression: &ast::Expr,
-    env: &HashMap<String, u64>,
-    variants: &HashMap<String, u64>,
-) -> Option<u64> {
-    match expression {
-        ast::Expr::Path(path) => {
-            let name = &path.segments.last()?.text;
-            env.get(name).copied().or_else(|| match name.as_str() {
-                "false" => Some(0),
-                "true" => Some(1),
-                _ => variants.get(name).copied(),
-            })
-        }
-        ast::Expr::CharLit { ch, .. } => variants.get(&format!("'{ch}'")).copied(),
-        ast::Expr::Int { text, .. } => parse_int(text),
-        ast::Expr::Unary { op, rhs, .. } => {
-            let value = eval_logic_expr(rhs, env, variants)?;
-            match op {
-                ast::UnOp::Not => Some(u64::from(value == 0)),
-                ast::UnOp::Neg => value.checked_neg(),
-            }
-        }
-        ast::Expr::Binary { op, lhs, rhs, .. } => {
-            let left = eval_logic_expr(lhs, env, variants)?;
-            let right = eval_logic_expr(rhs, env, variants)?;
-            Some(match op {
-                ast::BinOp::Eq => u64::from(left == right),
-                ast::BinOp::Ne => u64::from(left != right),
-                ast::BinOp::Lt => u64::from(left < right),
-                ast::BinOp::Le => u64::from(left <= right),
-                ast::BinOp::Gt => u64::from(left > right),
-                ast::BinOp::Ge => u64::from(left >= right),
-                ast::BinOp::And => u64::from(left != 0 && right != 0),
-                ast::BinOp::Or => u64::from(left != 0 || right != 0),
-                ast::BinOp::Add => left.checked_add(right)?,
-                ast::BinOp::Sub => left.checked_sub(right)?,
-                ast::BinOp::Mul => left.checked_mul(right)?,
-                ast::BinOp::Div => left.checked_div(right)?,
-                ast::BinOp::Rem => left.checked_rem(right)?,
-                ast::BinOp::Shl => left.checked_shl(u32::try_from(right).ok()?)?,
-                ast::BinOp::Shr => left.checked_shr(u32::try_from(right).ok()?)?,
-                ast::BinOp::Custom { .. } => return None,
-            })
-        }
-        ast::Expr::IfExpr {
-            cond, then, els, ..
-        } => {
-            if eval_logic_expr(cond, env, variants)? != 0 {
-                eval_logic_expr(then, env, variants)
-            } else {
-                eval_logic_expr(els, env, variants)
-            }
-        }
-        _ => None,
     }
 }

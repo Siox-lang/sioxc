@@ -18,6 +18,60 @@ fn literal(text: &str) -> Result<i128, NotConstant> {
 }
 
 #[test]
+fn typed_character_values_do_not_masquerade_as_integers() {
+    let source = expression("'A'");
+    let environment = ConstantExpressions(|_: &Path| None, std::marker::PhantomData);
+    assert_eq!(
+        evaluate_value(&source, &environment, None, 0),
+        Ok(Value::Character('A'))
+    );
+    assert_eq!(
+        evaluate(&source, &environment, 0).unwrap_err(),
+        NotConstant {
+            span: expr_span(&source),
+            reason: Reason::Unsupported
+        }
+    );
+}
+
+#[test]
+fn source_receiver_and_named_parameters_use_their_resolved_declaration_ids() {
+    let source = "module model; struct Counter { value: integer }
+        impl Counter { fn add(self, amount: integer) -> integer { return self.value + amount; } }";
+    let mut sink = DiagnosticSink::new();
+    let module = parse_module(FileId(0), source, &mut sink);
+    let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let Item::Impl(implementation) = &module.items[1] else {
+        panic!("impl");
+    };
+    let crate::syntax::ast::ImplItem::Fn(function) = &implementation.items[0] else {
+        panic!("function");
+    };
+    let declarations = DeclarationIndex::collect(&resolved, std::slice::from_ref(&module));
+    let receiver = declarations.parameter_id(&function.params[0]).unwrap();
+    let amount = declarations.parameter_id(&function.params[1]).unwrap();
+    assert_ne!(receiver, amount);
+    let mut seen = 0;
+    crate::syntax::visit::read::function(function, &mut |_| {}, &mut |expression| {
+        if let Expr::Path(path) = expression {
+            match path.segments.last().unwrap().text.as_str() {
+                "self" => {
+                    assert_eq!(declarations.local_id(path), Some(receiver));
+                    seen += 1;
+                }
+                "amount" => {
+                    assert_eq!(declarations.local_id(path), Some(amount));
+                    seen += 1;
+                }
+                _ => {}
+            }
+        }
+    });
+    assert_eq!(seen, 2);
+}
+
+#[test]
 fn arithmetic_keeps_the_analysis_domain() {
     for (text, expected) in [
         ("0xF_f + 0b1_0", 257),
@@ -195,7 +249,10 @@ impl Environment for Functions {
             .map(|s| s.text.as_str())
             .collect::<Vec<_>>()
             .join("::");
-        self.globals.get(&key).copied().map(Binding::Value)
+        self.globals
+            .get(&key)
+            .copied()
+            .map(|value| Binding::Value(Value::Integer(value)))
     }
 
     fn domain(&self) -> IntegerDomain {
@@ -419,13 +476,16 @@ fn function_frames_are_restored_after_errors() {
     };
     assert_eq!(
         interpreter
-            .expression(&expression("fail(3)"), 0)
+            .expression(&expression("fail(3)"), None, 0)
             .unwrap_err()
             .reason,
         Reason::DivisionByZero
     );
     assert!(interpreter.locals.is_empty());
-    assert_eq!(interpreter.expression(&expression("identity(8)"), 0), Ok(8));
+    assert_eq!(
+        interpreter.expression(&expression("identity(8)"), None, 0),
+        Ok(Value::Integer(8))
+    );
     assert!(interpreter.locals.is_empty());
 }
 

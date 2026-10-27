@@ -15,13 +15,14 @@ impl<'a> Lowering<'a> {
     /// value normalization and truth tables in the package; SIOX follows that
     /// dependency direction instead of teaching IR passes the enum order.
     pub(super) fn compute_logic_encodings(&self) -> HashMap<String, LogicEncoding> {
-        // A compiler hook trait keeps its short key (`is_compiler_trait`).
+        let constants = super::constant_values::EnumConstants::new(self);
         let mut out = HashMap::new();
         for (trait_name, ty, methods) in self.op_impls.iter() {
             if trait_name != "LogicEncoding" {
                 continue;
             }
-            let Some(variants) = self.enum_variants.get(ty) else {
+            let (Some(variants), Some(owner)) = (self.enum_variants.get(ty), constants.owner(ty))
+            else {
                 continue;
             };
             let method = |name: &str| {
@@ -39,33 +40,24 @@ impl<'a> Lowering<'a> {
             };
             let mut encoding = LogicEncoding::default();
             for &disc in variants.values() {
-                let env = HashMap::from([("self".to_string(), disc)]);
-                let Some(bit) = eval_logic_function(to_bool, &env, variants) else {
+                let (Some(bit), Some(binary), Some(high_impedance), Some(x01)) = (
+                    constants.predicate(to_bool, owner, disc),
+                    constants.predicate(is_binary, owner, disc),
+                    constants.predicate(is_high_impedance, owner, disc),
+                    constants.enumeration(to_x01, owner, disc, None),
+                ) else {
                     continue;
                 };
-                let Some(binary) = eval_logic_function(is_binary, &env, variants) else {
-                    continue;
-                };
-                let Some(high_impedance) = eval_logic_function(is_high_impedance, &env, variants)
-                else {
-                    continue;
-                };
-                let Some(x01) = eval_logic_function(to_x01, &env, variants) else {
-                    continue;
-                };
-                encoding.value_bits.insert(disc, bit != 0);
-                if binary != 0 {
+                encoding.value_bits.insert(disc, bit);
+                if binary {
                     encoding.binary.insert(disc);
                 }
-                if high_impedance != 0 {
+                if high_impedance {
                     encoding.high_impedance.insert(disc);
                 }
                 encoding.x01.insert(disc, x01);
             }
-            // A partial table is unsafe: packed lowering must be able to
-            // classify every member of the enum. Do not publish malformed
-            // metadata and let the ordinary unsupported-expression paths
-            // reject uses that require it.
+            // A partial table cannot safely classify packed enum values.
             if variants
                 .values()
                 .any(|disc| !encoding.value_bits.contains_key(disc))
@@ -90,69 +82,20 @@ impl<'a> Lowering<'a> {
                     (!encoding.binary.contains(normalized)).then_some(disc)
                 }));
 
-            // Logical behaviour remains ordinary operator-impl source. Fold it
-            // for every pair now, once, rather than rediscovering a second
-            // truth table in each backend.
-            for op in ["and", "or", "xor", "nand", "nor", "xnor"] {
-                let Some((function, _)) = self
-                    .op_impls
-                    .get(op, ty)
-                    .and_then(|functions| functions.first())
-                else {
-                    continue;
-                };
-                let Some(rhs_name) = function
-                    .params
-                    .iter()
-                    .find(|parameter| !parameter.is_self)
-                    .and_then(|parameter| parameter.name.as_ref())
-                    .map(|name| name.text.clone())
-                else {
+            for op in ["and", "or", "xor", "nand", "nor", "xnor", "resolve"] {
+                let hook = if op == "resolve" { "Resolve" } else { op };
+                let Some(functions) = self.op_impls.get(hook, ty) else {
                     continue;
                 };
                 let mut table = HashMap::new();
                 for &left in variants.values() {
                     for &right in variants.values() {
-                        let env =
-                            HashMap::from([("self".to_string(), left), (rhs_name.clone(), right)]);
-                        if let Some(result) = eval_logic_function(function, &env, variants) {
+                        if let Some(result) = constants.binary(functions, owner, left, right) {
                             table.insert((left, right), result);
                         }
                     }
                 }
                 encoding.binary_ops.insert(op.to_string(), table);
-            }
-            // Parallel-driver resolution is source-defined by the ordinary
-            // `Resolve` trait too. Keep its complete enum table beside the
-            // logical operator tables so repeated drivers lower to a compact
-            // lookup instead of repeatedly cloning the implementation's
-            // branch tree.
-            if let Some((function, _)) = self
-                .op_impls
-                .get("Resolve", ty)
-                .and_then(|functions| functions.first())
-            {
-                if let Some(rhs_name) = function
-                    .params
-                    .iter()
-                    .find(|parameter| !parameter.is_self)
-                    .and_then(|parameter| parameter.name.as_ref())
-                    .map(|name| name.text.clone())
-                {
-                    let mut table = HashMap::new();
-                    for &left in variants.values() {
-                        for &right in variants.values() {
-                            let env = HashMap::from([
-                                ("self".to_string(), left),
-                                (rhs_name.clone(), right),
-                            ]);
-                            if let Some(result) = eval_logic_function(function, &env, variants) {
-                                table.insert((left, right), result);
-                            }
-                        }
-                    }
-                    encoding.binary_ops.insert("resolve".to_string(), table);
-                }
             }
             if let Some((function, _)) = self
                 .op_impls
@@ -161,17 +104,14 @@ impl<'a> Lowering<'a> {
             {
                 let mut table = HashMap::new();
                 for &disc in variants.values() {
-                    let env = HashMap::from([("self".to_string(), disc)]);
-                    if let Some(result) = eval_logic_function(function, &env, variants) {
+                    if let Some(result) = constants.enumeration(function, owner, disc, None) {
                         table.insert(disc, result);
                     }
                 }
                 encoding.unary_ops.insert("not".to_string(), table);
             }
 
-            // A derived enum has the same representation and variants. Make
-            // the contract available under both `Logic` and its ULogic base so
-            // literals, scalar signals, and packed family elements agree.
+            // Derived enums share representation, not source expression identities.
             out.insert(ty.to_owned(), encoding.clone());
             let mut current = ty;
             let mut seen = std::collections::HashSet::new();
