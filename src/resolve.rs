@@ -434,7 +434,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     }
     r.check_declaration_cycles(modules);
     r.check_constant_cycles();
-    r.check_generic_arity(modules);
+    r.check_generic_arity();
     r.check_trait_impls(modules);
     r.check_public_interfaces(modules);
     // The std library is not linted (its imports serve the whole library, not
@@ -582,10 +582,9 @@ struct Resolver<'a> {
     /// *renames* (`impl<M> Counter<M>` for `entity Counter<W>`) can be matched
     /// to the declaration by position, the way Rust matches it.
     decl_param_order: HashMap<DefId, Vec<DefId>>,
-    /// Each `G<..>` written, as (its head's span, arguments, whole span, each
-    /// argument's literal integer value), checked against the declaration
-    /// once every parameter is known.
-    generic_uses: Vec<(Span, usize, Span, Vec<Option<i64>>)>,
+    /// Each `G<..>` as (head span, argument count, application span), checked
+    /// once every declaration is known. Evaluated widths belong to `types`.
+    generic_uses: Vec<(Span, usize, Span)>,
     /// The constant whose value is being resolved, and the constants each
     /// such value reads, for the cycle check.
     resolving_const: Option<DefId>,
@@ -1289,7 +1288,7 @@ impl<'a> Resolver<'a> {
                     continue;
                 };
                 let name = &trait_.name.text;
-                if let Err(error) = declarations.trait_arguments(trait_, &im.trait_args) {
+                if let Err(error) = declarations.arguments(&trait_.params, &im.trait_args) {
                     use declarations::ArgumentError;
                     let (message, span, parameter) = match error {
                         ArgumentError::Count { expected, actual } => (
@@ -1396,123 +1395,23 @@ impl<'a> Resolver<'a> {
     /// `G<integer>` for `struct G<A, B>`, or `G<integer, integer>` for
     /// `struct G<A>`: an argument count that does not match the declaration
     /// passed silently, then failed in code generation (#151).
-    fn check_generic_arity(&mut self, modules: &[Module]) {
-        // Per generic declaration: each parameter's name, and the types its
-        // fields or ports are written with, for the width check below.
-        let mut shapes: HashMap<DefId, (Vec<String>, Vec<&Type>)> = HashMap::new();
-        for m in modules {
-            for item in &m.items {
-                let (name, params, types): (&Ident, &Params, Vec<&Type>) = match item {
-                    Item::Struct(s) => {
-                        (&s.name, &s.params, s.fields.iter().map(|f| &f.ty).collect())
-                    }
-                    Item::Entity(e) => {
-                        (&e.name, &e.params, e.ports.iter().map(|p| &p.ty).collect())
-                    }
-                    _ => continue,
-                };
-                if let Some(id) = self.out.declared(name.span) {
-                    let names = params.params.iter().map(|p| p.name.text.clone()).collect();
-                    shapes.insert(id, (names, types));
-                }
-            }
-        }
-        // Each width written in `ty` (`unsigned[W * 2]`), with the
-        // parameters bound: a width that folds below 1.
-        fn widths(ty: &Type, bound: &HashMap<&str, i64>, out: &mut Vec<i64>) {
-            fn eval(e: &Expr, bound: &HashMap<&str, i64>) -> Option<i64> {
-                match e {
-                    Expr::Int { text, .. } => text.replace('_', "").parse().ok(),
-                    Expr::Path(path) if path.segments.len() == 1 => {
-                        bound.get(path.segments[0].text.as_str()).copied()
-                    }
-                    Expr::Unary {
-                        op: UnOp::Neg, rhs, ..
-                    } => eval(rhs, bound)?.checked_neg(),
-                    Expr::Binary { op, lhs, rhs, .. } => {
-                        let (a, b) = (eval(lhs, bound)?, eval(rhs, bound)?);
-                        match op {
-                            BinOp::Add => a.checked_add(b),
-                            BinOp::Sub => a.checked_sub(b),
-                            BinOp::Mul => a.checked_mul(b),
-                            BinOp::Div if b != 0 => Some(a / b),
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                }
-            }
-            fn mentions(e: &Expr, bound: &HashMap<&str, i64>) -> bool {
-                match e {
-                    Expr::Path(path) => {
-                        path.segments.len() == 1
-                            && bound.contains_key(path.segments[0].text.as_str())
-                    }
-                    Expr::Unary { rhs, .. } => mentions(rhs, bound),
-                    Expr::Binary { lhs, rhs, .. } => mentions(lhs, bound) || mentions(rhs, bound),
-                    _ => false,
-                }
-            }
-            match ty {
-                Type::Indexed { base, index, .. } => {
-                    if let Some(index) = index.as_deref() {
-                        if !matches!(index, Expr::Range { .. }) && mentions(index, bound) {
-                            out.extend(eval(index, bound));
-                        }
-                    }
-                    widths(base, bound, out);
-                }
-                Type::Generic { base, .. } | Type::View { target: base, .. } => {
-                    widths(base, bound, out)
-                }
-                Type::Tuple { elems, .. } => elems.iter().for_each(|elem| widths(elem, bound, out)),
-                Type::Path(_) => {}
-            }
-        }
-        for (head, args, span, values) in std::mem::take(&mut self.generic_uses) {
+    fn check_generic_arity(&mut self) {
+        for (head, args, span) in std::mem::take(&mut self.generic_uses) {
             let Some(owner) = self.out.resolved(head) else {
                 continue;
             };
             let Some(declared) = self.decl_param_order.get(&owner).map(Vec::len) else {
                 continue;
             };
-            let name = self
-                .out
-                .def(owner)
-                .map(|d| d.name.clone())
-                .unwrap_or_else(|| "<type>".to_string());
             if args != declared {
+                let name = self
+                    .out
+                    .def(owner)
+                    .map(|d| d.name.as_str())
+                    .unwrap_or("<type>");
                 self.sink.emit(
                     Diagnostic::error(format!(
                         "`{name}` takes {declared} generic argument(s), but {args} were given"
-                    ))
-                    .with_code(codes::TYPE_MISMATCH)
-                    .at(span),
-                );
-                continue;
-            }
-            // `Packet<-4>` where `W` sizes `data: unsigned[W]`: a width that
-            // is not at least 1 passed, and failed in code generation (#177).
-            let Some((params, types)) = shapes.get(&owner) else {
-                continue;
-            };
-            // `Packet<0>` where `W * 2` sizes a field, or `S<-1>` with
-            // `N + 1`: as with a bare `W`, a width below 1 failed in code
-            // generation (#177, #211).
-            let bound: HashMap<&str, i64> = params
-                .iter()
-                .zip(&values)
-                .filter_map(|(param, value)| Some((param.as_str(), (*value)?)))
-                .collect();
-            let mut found = Vec::new();
-            for ty in types {
-                widths(ty, &bound, &mut found);
-            }
-            if let Some(width) = found.into_iter().find(|width| *width < 1) {
-                self.sink.emit(
-                    Diagnostic::error(format!(
-                        "these arguments give `{name}` a width of {width}; a width must be at \
-                         least 1"
                     ))
                     .with_code(codes::TYPE_MISMATCH)
                     .at(span),
@@ -2381,7 +2280,7 @@ impl<'a> Resolver<'a> {
                     .resolved(p.span)
                     .is_some_and(|id| self.out.kind_of(id) == Some(DefKind::TypeAlias))
                 {
-                    self.generic_uses.push((p.span, 0, p.span, Vec::new()));
+                    self.generic_uses.push((p.span, 0, p.span));
                 }
             }
             Type::Indexed { base, index, .. } => {
@@ -2397,25 +2296,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(base);
                 }
                 if let Some(head) = type_head_path(base) {
-                    let literal = |arg: &GenericArg| {
-                        let GenericArg::Positional(value) = arg else {
-                            return None;
-                        };
-                        let digits = |text: &str| text.replace('_', "").parse::<i64>().ok();
-                        match value {
-                            Expr::Int { text, .. } => digits(text),
-                            Expr::Unary {
-                                op: UnOp::Neg, rhs, ..
-                            } => match rhs.as_ref() {
-                                Expr::Int { text, .. } => digits(text).map(|n| -n),
-                                _ => None,
-                            },
-                            _ => None,
-                        }
-                    };
-                    let values = args.iter().map(literal).collect();
-                    self.generic_uses
-                        .push((head.span, args.len(), *span, values));
+                    self.generic_uses.push((head.span, args.len(), *span));
                 }
                 for a in args {
                     match a {

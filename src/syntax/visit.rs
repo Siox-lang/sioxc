@@ -6,7 +6,7 @@
 use super::ast::*;
 
 macro_rules! walk {
-    ($module:ident $(, $mutable:tt)?) => {
+    ($module:ident, $roots:expr $(, $mutable:tt)?) => {
         pub(crate) mod $module {
             use super::*;
 
@@ -127,18 +127,26 @@ macro_rules! walk {
             }
 
             fn arg(arg: & $($mutable)? GenericArg, types: &mut impl FnMut(& $($mutable)? Type), expressions: &mut impl FnMut(& $($mutable)? Expr)) {
-                match arg { GenericArg::Positional(e) | GenericArg::Named { value: e, .. } => expr(e, types, expressions), GenericArg::PositionalType(t) | GenericArg::NamedType { ty: t, .. } => ty(t, types, expressions) }
+                nested_arg(arg, true, types, expressions);
+            }
+
+            fn nested_arg(arg: & $($mutable)? GenericArg, root: bool, types: &mut impl FnMut(& $($mutable)? Type), expressions: &mut impl FnMut(& $($mutable)? Expr)) {
+                match arg { GenericArg::Positional(e) | GenericArg::Named { value: e, .. } => expr(e, types, expressions), GenericArg::PositionalType(t) | GenericArg::NamedType { ty: t, .. } => nested_ty(t, root, types, expressions) }
             }
 
             fn ty(ty: & $($mutable)? Type, types: &mut impl FnMut(& $($mutable)? Type), expressions: &mut impl FnMut(& $($mutable)? Expr)) {
+                nested_ty(ty, true, types, expressions);
+            }
+
+            fn nested_ty(ty: & $($mutable)? Type, root: bool, types: &mut impl FnMut(& $($mutable)? Type), expressions: &mut impl FnMut(& $($mutable)? Expr)) {
                 match ty {
                     Type::Path(_) => {}
-                    Type::Indexed { base, index, .. } => { self::ty(base, types, expressions); if let Some(index) = index { expr(index, types, expressions); } }
-                    Type::Generic { base, args, .. } => { self::ty(base, types, expressions); for a in args { arg(a, types, expressions); } }
-                    Type::Tuple { elems, .. } => for elem in elems { self::ty(elem, types, expressions); },
-                    Type::View { target, .. } => self::ty(target, types, expressions),
+                    Type::Indexed { base, index, .. } => { nested_ty(base, false, types, expressions); if let Some(index) = index { expr(index, types, expressions); } }
+                    Type::Generic { base, args, .. } => { nested_ty(base, false, types, expressions); for a in args { nested_arg(a, false, types, expressions); } }
+                    Type::Tuple { elems, .. } => for elem in elems { nested_ty(elem, false, types, expressions); },
+                    Type::View { target, .. } => nested_ty(target, false, types, expressions),
                 }
-                types(ty);
+                if !$roots || root { types(ty); }
             }
 
             fn expr(expression: & $($mutable)? Expr, types: &mut impl FnMut(& $($mutable)? Type), expressions: &mut impl FnMut(& $($mutable)? Expr)) {
@@ -160,5 +168,47 @@ macro_rules! walk {
     };
 }
 
-walk!(read);
-walk!(write, mut);
+walk!(read, false);
+walk!(write, false, mut);
+// Layout checking owns the nested shape, but still needs every source type use.
+walk!(read_roots, true);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_walk_covers_expression_types_without_repeating_nested_shapes() {
+        let mut sink = crate::diag::DiagnosticSink::new();
+        let module = crate::syntax::parse_module(
+            crate::diag::FileId(0),
+            "module sample;
+             struct Packet<T> { data: T }
+             fn inspect<U>() {
+                 let value: Packet<(integer[2], integer[3])>;
+                 let other: integer[4] = Packet<integer[5]>::size();
+                 Packet<integer[6]> {};
+             }",
+            &mut sink,
+        );
+        assert_eq!(sink.error_count(), 0, "{:?}", sink.diagnostics());
+        let mut roots = Vec::new();
+        read_roots::modules(
+            std::slice::from_ref(&module),
+            &mut |ty| {
+                roots.push(crate::syntax::pretty::type_str(ty));
+            },
+            &mut |_| {},
+        );
+        assert_eq!(roots.len(), 5, "{roots:?}");
+        assert_eq!(
+            roots.iter().filter(|ty| ty.starts_with("Packet<")).count(),
+            3
+        );
+        assert!(roots.iter().any(|ty| ty == "integer[4]"));
+        assert!(roots.iter().any(|ty| ty == "T"));
+        let mut all = 0;
+        read::modules(&[module], &mut |_| all += 1, &mut |_| {});
+        assert!(all > roots.len());
+    }
+}

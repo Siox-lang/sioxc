@@ -20612,3 +20612,99 @@ User chose finishing compiler-foundations before another proposal;goal stays
 active,estimate~75%. Next red probe:move remaining resolver width arithmetic
 to shared later-stage evaluation without resolve->types imports. Typed constants,
 other registries/hooks,symbolic/applied nominal facts and dynamic routing remain.
+
+### 2026-10-26 — Codex — own resolver width-folder migration
+
+Start on acceptedf3d14c2. Own resolve generic-use/width bookkeeping,shared
+declaration bindings/source shapes and types layout checks (a focused layouts
+module if needed). Add red probes for constants/functions/named arguments and
+overflow before changing behavior. Reuse shared evaluator and source DefIds;
+no resolve->types dependency,new scalar interpreter or copied declaration map.
+Keep a temporary old/new oracle until full Rust/actual-corpus successful-answer
+parity is demonstrated,then remove old folder and revalidate. Update canonical
+docs/native/UI as appropriate;no runtime/LLVM/dependencies/pushes/peer edits.
+
+### 2026-10-26 — Codex — width migration focused evidence; freeze oracle gate
+
+2201298 red101 confirmed missing constant width and unchecked division panic.
+Resolver now records only application arity;borrowed struct/entity/alias shapes
+and prepared parameter-ID bindings feed types/layouts/shared consteval. Static
+definition errors do not repeat at applications;unknown symbolic values and
+valid directional ranges stay unknown/valid. New kinds/names checks reuse the
+existing binder,not leaf heuristics. 2216915 passed631 frontend after test-only
+field/import spelling corrections;2219558 native+exact3bit VCD5->3at1ns,
+seven reviewed E-P003 and48 runners passed. 2221917 blesses only the newcase.
+Freeze compiler/corpus/local wiki for complete default/bitpack Rust/corpus/UI/
+JSON/native gates with temporary successful-answer oracle still present.
+Old panic has no successful result;checked-div oracle intentionally returns
+unknown for it. No old arithmetic removal until broad parity is observed.
+
+### 2026-10-26 — Codex — nested layout argument guard correction
+
+Stopped own2222836 intentionally after review found active-owner guard skipped
+syntactically nested same-type arguments. Partial default60native is not full
+acceptance. 2226724 red101 proves Packet<Packet<integer[0]>> was missed. Move
+ guard to declaration expansion after checking argument shapes;valid repeated
+nesting remains legal,recursive source expansion still bounded by identity.
+No kernel/OOM event,peer job stopped or commits/pushes. Refreeze after green.
+
+### 2026-10-27 — Codex — complete source layout traversal ownership
+
+2229678 stopped after full default Rust exposed duplicate alias-argument
+errors in generic_entity_aliases;partial120native/632frontend is not acceptance.
+2264493 red101 confirms constructor type uses miss width validation. Extend
+existing shared syntax/visit macro with a root-type read mode,so one types-stage
+layout pass covers declarations,qualifiers,constructors,trait args and unused
+generic bodies without duplicated nested checks. Remove scattered width calls,
+retain representation/storable checks. Skip invalid aliases already diagnosed
+by normalization. Upgrade temporary oracle to inspect every source generic
+application before deleting it. Own syntax/visit,types layouts/items/statements,
+focused tests and canonical docs;no grammar/runtime/LLVM/pushes/peer edits.
+
+### 2026-10-27 — Codex — root layout pass focused green; freeze oracle r3
+
+2268440 exited/success/0:635 frontend,all4 generic_entity_aliases cases,
+new native+exact3bit VCD and48 runners pass. Shared visitor now has root-type
+mode;one source pass validates constructor/qualifier/trait-arg/unused generic
+body types and replaces scattered item/local width checks. Added pointer tests
+for borrowed bases/fields/ports/aliases and root traversal/nesting regressions.
+2270193 validates/blesses only new UI case:11 E-P003 plus intended incomplete
+literal warning. Earlier snapshot attempt rejected unrelated private-field/
+unused-param fixture setup;corrected source visibility/directives,not snapshots
+of existing cases. Upgrade oracle audit to every source generic application.
+Freeze all owned source/corpus/local wiki for full matrix;no commits/pushes.
+
+### 2026-10-27 — Codex — broad width parity green; remove temporary folder
+
+2270277 exited/success/0,peak1612972032. Full Rust692/671 libraries,23 DWARF
+per mode,635 frontend,120 native/VCD,actual269 corpora both modes,strictClippy,
+48 runners,12 artifacts,65 UI/65JSON per mode,54 codes/two migrations pass.
+Temporary audit visited all source generic applications;old successful answers
+on valid applications agree. Exact source/corpus/wiki before/after hashes:
+240579857b0bb4aa093e37417070c2eb85174cde67a19bb4e3b12f3909ddb69f,
+adf24c1935fbfcc54fe6a62e279c8738874eeaba889a5abea7d176dbebe8de8d,
+90c49626e7f595789c84e99bb221188c4f54f873cb1564720420fdfeda04f566.
+Evidence generic-layout-oracle-20261027-r3;AST7409/19543/384,AST-only doc labels
+remain stale. Now delete temporary old folder/assertions and run a new frozen
+full oracle-free gate. No acceptance commit/push until it completes;proposal
+still partial,typed values/remaining registries/hooks/dynamic routing open.
+
+### 2026-10-27 — Codex — oracle-free applied layout migration accepted locally
+
+2380650 exited/success/0,peak1613185024. Final code has no layouts_oracle or
+resolver width interpreter. Full default/bitpack Rust692/671 libraries and23
+DWARF each,635 frontend,120 direct native/VCD,both actual269 corpora,strict
+Clippy,48 runners,12 artifacts,both65UI/65JSON gates,54codes/two migrations pass.
+Before/after source/corpus/local wiki fingerprints match exactly:
+0502e857c6afa3f89c993c1bdd93688bdb0df572fd769180dde8025496fa7663,
+adf24c1935fbfcc54fe6a62e279c8738874eeaba889a5abea7d176dbebe8de8d,
+90c49626e7f595789c84e99bb221188c4f54f873cb1564720420fdfeda04f566.
+Retain generic-layout-final-20261027 and earlier successful comparison2270277.
+Only proposal acceptance wording/logs change after the frozen final gate;
+canonical pages/wiki/code/tests stay unchanged. Commit18 owned compiler paths,
+three new corpus files and two generated local wiki pages explicitly;preserve
+all peer probes/shared main/paper. No pushes. Foundations estimate~77%,not done:
+typed constants/constantness,remaining registries/hooks,method generics,
+symbolic/applied nominal conformance and dynamic constructor routing remain.
+Next priority stays inside foundations,especially typed source-owned enum/
+condition evaluation rather than starting another proposal. Goal stays active.

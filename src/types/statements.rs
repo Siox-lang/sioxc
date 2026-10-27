@@ -379,7 +379,6 @@ impl<'a> Checker<'a> {
                 // A local's type has the same layout rules as a port's: a
                 // negative or zero width reached code generation (#157).
                 if let Some(ty) = &l.ty {
-                    self.check_type_layout(ty);
                     if !self.in_fn_body.get() {
                         self.check_storable(ty);
                     }

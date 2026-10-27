@@ -45,6 +45,12 @@ The type checker is directory-backed the same way:
 - `collect.rs` builds the declaration registries before checking begins;
 - `items.rs`, `impls.rs`, and `members.rs` check items, trait contracts and
   impl bodies, and field/method access;
+- `layouts.rs` validates direct and applied type widths with the shared
+  evaluator and declaration-ID template bindings. The resolver retains name
+  and argument-count checks, not a second width interpreter. A root-type mode
+  of the existing shared AST walk covers declarations, constructors, call
+  qualifiers, trait arguments and unused generic bodies once; nested shapes
+  are validated by the layout checker rather than repeated source callbacks;
 - `statements.rs`, `assignments.rs`, `patterns.rs`, `calls.rs`, `indexing.rs`,
   `operators.rs`, `literals.rs`, and `expressions.rs` check each construct,
   with `inference.rs` computing expression types;

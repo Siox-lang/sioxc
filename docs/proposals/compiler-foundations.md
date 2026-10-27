@@ -9,13 +9,13 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-26, known trait value types and arguments/signatures,
+Local acceptance (2026-10-27, applied layouts and known trait value types/arguments/signatures,
 borrowed contracts/default visibility,
 selected enum owners, range contracts, Boolean identities and resolved aliases):
-both complete Rust suites pass, including 680 default/659 bitpack library tests
-and all 23 DWARF tests per mode. The gate also passes 623 no-LLVM library tests,
-strict Clippy, 46 runner tests, 116 ordinary/debug native and VCD checks, and both
-actual 268-program corpora. Both modes pass 64 human UI and 64 JSON/schema cases,
+both complete Rust suites pass, including 692 default/671 bitpack library tests
+and all 23 DWARF tests per mode. The gate also passes 635 no-LLVM library tests,
+strict Clippy, 48 runner tests, 120 ordinary/debug native and VCD checks, and both
+actual 269-program corpora. Both modes pass 65 human UI and 65 JSON/schema cases,
 cover all 54 active codes and apply/recompile both migration fixtures.
 Compiler, corpus and local wiki fingerprints match before/after the frozen
 gate. Retained evidence and fixture migrations are recorded in
@@ -176,6 +176,7 @@ fixes.
 | `types/calls.rs` | `const_fold` | removed; uses shared integer analysis |
 | `types/indexing.rs` | `const_literal` | shared-evaluator adapter |
 | `types/patterns.rs` | `const_int_at` | removed; `const_int` supplies resolver-selected constants |
+| `resolve.rs` | `check_generic_arity` width folder | removed; `types/layouts.rs` uses shared analysis |
 | `elab.rs` | `eval` | shared-interpreter parameter adapter |
 | `ir/lower_helpers/builders.rs` | `eval_const`, `eval_const_fns`, `eval_const_stmts` | shared-interpreter binding/function adapters |
 | `ir/lower_helpers/substitute.rs` | `fold_const` | already an IR evaluator adapter |
@@ -277,10 +278,37 @@ coverage still need the typed-value work; no new mini evaluator or truth table
 was added. Tests cover invalid/nonconstant arithmetic, domain boundaries,
 normalization, both module orders and hardware/native imported metadata reads.
 
-An additional integer folder was found in `resolve::check_generic_arity`.
-Move that width analysis to the owning later stage (or share the appropriately
-earlier primitive layer), never introduce a `resolve -> types` import. The
-source-owned enum operator-table evaluator also remains separate until values
+**Implemented resolved layout widths (2026-10-27).** Width arithmetic no longer
+belongs to `resolve::check_generic_arity`; that pass keeps names and argument
+counts without collecting literal values or a second declaration-shape map.
+`types/layouts.rs` uses the shared evaluator and prepared parameter-ID bindings
+for struct fields/bases, entity ports and applied aliases. Struct source
+contracts join the borrowed declaration index, not another copied registry.
+Type arguments are checked in declaration order rather than HashMap order.
+
+A root-type mode of the existing shared AST walk validates every source type
+use once, including constructors, associated-call qualifiers, trait arguments
+and otherwise unused generic bodies. Nested types use the layout checker;
+repeated valid applications of the same type are not mistaken for recursion.
+Definition errors are not repeated at every application, invalid aliases keep
+the normalizer's diagnostic, and argument-induced failures label the source
+layout while pointing to the application. Constants, integer-signature calls,
+named forwarding, transparent aliases, derived types, range counts and checked
+signed-division boundaries have regressions. Unknown symbolic widths remain
+unknown; negative labels in an inclusive directional range remain valid.
+
+Before removing the old folder, a temporary successful-answer oracle inspected
+every source generic application through the complete Rust suites and actual
+269-program corpora in both storage modes. All old successful answers on valid
+applications agreed. The old signed-minimum division panic has no successful
+answer; the new wider analysis reports its out-of-layout result instead.
+The new native fixture checks a named function width, applied record alias and
+reactive three-bit waveform. UI/JSON coverage pins eleven width errors and an
+intentional incomplete-literal warning. After deleting the temporary oracle,
+the complete Rust/native/corpus/diagnostic matrix passed again with matching
+compiler, corpus and local wiki fingerprints. Retained evidence is in `chat.md`.
+
+The source-owned enum operator-table evaluator remains separate until values
 carry their enum identity. Do not mark the proposal complete merely because
 the scalar traversal is shared.
 
@@ -326,6 +354,11 @@ gone; its existing API delegates to this index. The same item collector builds
 the index in each immutable phase, after source rewrites rather than retaining
 references across a mutable AST pass. `Typed` therefore keeps its owned side
 tables without acquiring a source lifetime.
+
+Struct declarations now join that index for applied-layout queries. Bases,
+fields, ports, alias targets and parameter lists remain borrowed source nodes;
+pointer regressions pin the contract. Existing computed struct/member facts
+and other remaining registries still need their own identity migration.
 
 Elaboration now resolves module constants and free integer functions in
 parameters, widths, generate conditions and rendered indices. Source constants

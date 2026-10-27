@@ -8,7 +8,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::{DefId, DefKind, Resolved};
 use crate::syntax::ast::{
-    ConstDecl, EntityDecl, FnDecl, Item, Module, Params, Path, TraitDecl, Type, Using, UsingKind,
+    ConstDecl, EntityDecl, FnDecl, Item, Module, Params, Path, StructDecl, TraitDecl, Type, Using,
+    UsingKind,
 };
 
 pub(crate) mod expand;
@@ -18,6 +19,7 @@ pub(super) use substitute::parameter_kind;
 pub(crate) use substitute::ArgumentError;
 
 enum Declaration<'a> {
+    Struct(&'a StructDecl),
     Entity(&'a EntityDecl),
     Trait(&'a TraitDecl),
     Function(&'a FnDecl),
@@ -31,11 +33,18 @@ pub(crate) struct DeclarationIndex<'a> {
 }
 
 /// One checked application; reuse its parameter identities for bounds and methods.
-pub(crate) struct TraitArguments<'a> {
+pub(crate) struct AppliedArguments<'a> {
     bindings: HashMap<DefId, substitute::Argument<'a>>,
 }
 
-impl<'a> TraitArguments<'a> {
+impl<'a> AppliedArguments<'a> {
+    pub(crate) fn type_argument(&self, parameter: DefId) -> Option<&Type> {
+        match self.bindings.get(&parameter)? {
+            substitute::Argument::Type(ty) => Some(ty),
+            substitute::Argument::Value(_) => None,
+        }
+    }
+
     pub(crate) fn value(&self, parameter: DefId) -> Option<&'a crate::syntax::ast::Expr> {
         match self.bindings.get(&parameter)? {
             substitute::Argument::Value(value) => Some(*value),
@@ -79,6 +88,12 @@ impl<'a> DeclarationIndex<'a> {
 
     pub(crate) fn insert_item(&mut self, item: &'a Item) {
         match item {
+            Item::Struct(declaration) => {
+                if let Some(id) = self.resolved.declared(declaration.name.span) {
+                    self.declarations
+                        .insert(id, Declaration::Struct(declaration));
+                }
+            }
             Item::Entity(declaration) => {
                 if let Some(id) = self.resolved.declared(declaration.name.span) {
                     self.declarations
@@ -139,6 +154,43 @@ impl<'a> DeclarationIndex<'a> {
         }
     }
 
+    pub(crate) fn layout_params(&self, id: DefId) -> Option<&'a Params> {
+        match self.declarations.get(&id)? {
+            Declaration::Struct(declaration) => Some(&declaration.params),
+            Declaration::Entity(declaration) => Some(&declaration.params),
+            Declaration::Alias(params, _) => Some(params),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn layout_types(&self, id: DefId) -> impl Iterator<Item = &'a Type> + '_ {
+        self.declarations
+            .get(&id)
+            .into_iter()
+            .flat_map(|declaration| {
+                let (structure, entity, alias) = match declaration {
+                    Declaration::Struct(structure) => (Some(*structure), None, None),
+                    Declaration::Entity(entity) => (None, Some(*entity), None),
+                    Declaration::Alias(_, target) => (None, None, Some(*target)),
+                    _ => (None, None, None),
+                };
+                structure
+                    .into_iter()
+                    .flat_map(|structure| {
+                        structure
+                            .base
+                            .iter()
+                            .chain(structure.fields.iter().map(|field| &field.ty))
+                    })
+                    .chain(
+                        entity
+                            .into_iter()
+                            .flat_map(|entity| entity.ports.iter().map(|port| &port.ty)),
+                    )
+                    .chain(alias)
+            })
+    }
+
     pub(crate) fn generic_alias(&self, id: DefId) -> bool {
         matches!(self.declarations.get(&id), Some(Declaration::Alias(params, _)) if !params.params.is_empty())
     }
@@ -174,13 +226,13 @@ impl<'a> DeclarationIndex<'a> {
         substitute::bind(params, args, self.resolved).is_ok()
     }
 
-    pub(crate) fn trait_arguments<'args>(
+    pub(crate) fn arguments<'args>(
         &self,
-        contract: &TraitDecl,
+        parameters: &Params,
         arguments: &'args [crate::syntax::ast::GenericArg],
-    ) -> Result<TraitArguments<'args>, ArgumentError> {
-        substitute::bind(&contract.params, arguments, self.resolved)
-            .map(|bindings| TraitArguments { bindings })
+    ) -> Result<AppliedArguments<'args>, ArgumentError> {
+        substitute::bind(parameters, arguments, self.resolved)
+            .map(|bindings| AppliedArguments { bindings })
     }
 
     /// Normalize type-head aliases without losing applied parameters or array shape.
@@ -198,10 +250,10 @@ impl<'a> DeclarationIndex<'a> {
         expansion.cycle
     }
 
-    /// Instantiate a source trait signature without rebinding its lexical names.
-    pub(crate) fn instantiate_trait_type<'t>(
+    /// Instantiate a source type without rebinding its lexical names.
+    pub(crate) fn instantiate_type<'t>(
         &self,
-        arguments: &TraitArguments<'_>,
+        arguments: &AppliedArguments<'_>,
         ty: &'t Type,
     ) -> Option<Cow<'t, Type>>
     where

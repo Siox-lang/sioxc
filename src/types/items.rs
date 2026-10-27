@@ -6,7 +6,7 @@ use super::*;
 impl<'a> Checker<'a> {
     /// Type-check one top-level item.
     pub(super) fn check_item(&mut self, item: &Item) {
-        self.check_item_type_layouts(item);
+        self.check_item_shapes(item);
         let sym = HashMap::new();
         let sym = &sym;
         match item {
@@ -458,140 +458,11 @@ impl<'a> Checker<'a> {
                 if path.segments.last().is_some_and(|s| s.text == "Char")))
     }
 
-    pub(super) fn check_type_layout(&mut self, ty: &Type) {
-        match ty {
-            Type::Path(_) => {}
-            Type::Indexed { base, index, .. } => {
-                self.check_type_layout(base);
-                let Some(index) = index.as_deref() else {
-                    return;
-                };
-                match index {
-                    Expr::Range { lo, hi, .. } => {
-                        let (Some(left), Some(right)) = (signed_lit(lo), signed_lit(hi)) else {
-                            return;
-                        };
-                        let length = (i128::from(left) - i128::from(right)).unsigned_abs() + 1;
-                        if length > u128::from(u32::MAX) {
-                            self.error(
-                                codes::TYPE_MISMATCH,
-                                expr_span(index),
-                                format!(
-                                    "range contains {length} elements, exceeding the compiler \
-                                     layout maximum of {}",
-                                    u32::MAX
-                                ),
-                            );
-                        }
-                    }
-                    _ => {
-                        let Some(width) = signed_lit(index) else {
-                            // A literal past every machine word is past the
-                            // layout maximum too; it used to pass silently
-                            // (#149).
-                            if let Expr::Int { text, .. } = index {
-                                if !text.contains('.') {
-                                    self.error(
-                                        codes::TYPE_MISMATCH,
-                                        expr_span(index),
-                                        format!(
-                                            "type width {text} exceeds the compiler layout \
-                                             maximum of {}",
-                                            u32::MAX
-                                        ),
-                                    );
-                                }
-                            }
-                            return;
-                        };
-                        if width < 0 {
-                            self.error(
-                                codes::TYPE_MISMATCH,
-                                expr_span(index),
-                                "a type width cannot be negative".to_string(),
-                            );
-                        } else if width == 0 {
-                            // An empty vector has no storage to simulate, and
-                            // a zero length elsewhere means "unsized" (#146).
-                            self.error(
-                                codes::TYPE_MISMATCH,
-                                expr_span(index),
-                                "a type width must be at least 1".to_string(),
-                            );
-                        } else if u32::try_from(width).is_err() {
-                            self.error(
-                                codes::TYPE_MISMATCH,
-                                expr_span(index),
-                                format!(
-                                    "type width {width} exceeds the compiler layout maximum of {}",
-                                    u32::MAX
-                                ),
-                            );
-                        }
-                    }
-                }
-            }
-            Type::Generic { base, args, .. } => {
-                self.check_type_layout(base);
-                for argument in args {
-                    match argument {
-                        GenericArg::PositionalType(ty) | GenericArg::NamedType { ty, .. } => {
-                            self.check_type_layout(ty);
-                        }
-                        GenericArg::Positional(_) | GenericArg::Named { .. } => {}
-                    }
-                }
-            }
-            Type::View { target, .. } => self.check_type_layout(target),
-            Type::Tuple { elems, .. } => {
-                for elem in elems {
-                    self.check_type_layout(elem);
-                }
-            }
-        }
-    }
-
-    /// Check the type layouts in a function signature.
-    pub(super) fn check_fn_type_layouts(&mut self, function: &FnDecl) {
-        self.check_param_type_layouts(&function.generics);
-        for parameter in &function.params {
-            if let Some(ty) = &parameter.ty {
-                self.check_type_layout(ty);
-            }
-        }
-        if let Some(ret) = &function.ret {
-            self.check_type_layout(ret);
-        }
-    }
-
-    /// Check the type layouts in a generic parameter list's bounds.
-    pub(super) fn check_param_type_layouts(&mut self, parameters: &Params) {
-        for parameter in &parameters.params {
-            if let Some(bound) = &parameter.bound {
-                self.check_type_layout(bound);
-            }
-        }
-    }
-
-    /// Check the type layouts an item declares.
-    pub(super) fn check_item_type_layouts(&mut self, item: &Item) {
+    /// Representation checks beyond the shared source-layout pass.
+    pub(super) fn check_item_shapes(&mut self, item: &Item) {
         match item {
-            Item::Using(using) => {
-                if let UsingKind::Alias { ty, .. } = &using.kind {
-                    self.check_type_layout(ty);
-                }
-            }
-            Item::Const(constant) => self.check_type_layout(&constant.ty),
-            Item::Fn(function) => self.check_fn_type_layouts(function),
-            Item::ExternBlock { fns, .. } => {
-                for function in fns {
-                    self.check_fn_type_layouts(function);
-                }
-            }
             Item::Struct(structure) => {
-                self.check_param_type_layouts(&structure.params);
                 if let Some(base) = &structure.base {
-                    self.check_type_layout(base);
                     // `struct Box<T>(T)` derives from a type it does not know:
                     // no representation to share, `?` widths and a test that
                     // did not lower (#220). A value parameter sizing a known
@@ -670,7 +541,6 @@ impl<'a> Checker<'a> {
                     }
                 }
                 for field in &structure.fields {
-                    self.check_type_layout(&field.ty);
                     // `data: unsigned[8][]` sizes no field: the struct had
                     // no layout, and its signals were dropped (#212).
                     if Self::unsized_field(&field.ty) {
@@ -689,55 +559,25 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Item::View(view) => {
-                self.check_param_type_layouts(&view.params);
-                self.check_type_layout(&view.target);
-            }
-            Item::Enum(en) => {
-                if let Some(repr) = &en.repr {
-                    self.check_type_layout(repr);
-                }
-            }
             Item::Entity(entity) => {
-                self.check_param_type_layouts(&entity.params);
                 for port in &entity.ports {
-                    self.check_type_layout(&port.ty);
                     self.check_storable(&port.ty);
                 }
             }
             Item::Impl(implementation) => {
-                self.check_param_type_layouts(&implementation.params);
-                self.check_type_layout(&implementation.target);
                 if implementation.trait_.is_some() {
                     self.check_trait_impl_target(implementation);
                     self.check_struct_resolve(implementation);
                 }
                 for item in &implementation.items {
-                    match item {
-                        ImplItem::Const(constant) => self.check_type_layout(&constant.ty),
-                        ImplItem::Let(declaration) => {
-                            if let Some(ty) = &declaration.ty {
-                                self.check_type_layout(ty);
-                                self.check_storable(ty);
-                            }
+                    if let ImplItem::Let(declaration) = item {
+                        if let Some(ty) = &declaration.ty {
+                            self.check_storable(ty);
                         }
-                        ImplItem::Fn(function) => self.check_fn_type_layouts(function),
-                        ImplItem::ModeField { .. }
-                        | ImplItem::Process(_)
-                        | ImplItem::Stmt(_)
-                        | ImplItem::AttrBinding(_)
-                        | ImplItem::Attr(_) => {}
                     }
                 }
             }
-            Item::Trait(trait_) => {
-                self.check_param_type_layouts(&trait_.params);
-                for function in &trait_.items {
-                    self.check_fn_type_layouts(function);
-                }
-            }
-            Item::AttrDecl(attribute) => self.check_type_layout(&attribute.ty),
-            Item::AttrBinding(_) | Item::Macro(_) | Item::MacroCall { .. } => {}
+            _ => {}
         }
     }
 

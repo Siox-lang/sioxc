@@ -521,6 +521,19 @@ type; a parameter bounded by a value type, such as `N: integer`, denotes a
 compile-time value. Type aliases are valid type arguments; a constant or a
 value parameter is not a type, and a type parameter is not a value.
 
+Struct, entity and applied-alias layouts use the same parameter-kind and named
+argument bindings. Their integer widths are checked after substitution with
+the shared constant evaluator, including source constants and integer-signature
+function calls. A scalar width must be positive and fit the compiler's `u32`
+layout representation; that representation bound is not an ABI word-count
+limit. A directional inclusive range such as `-4..0` is valid, and its element
+count, not either label's sign, determines whether it fits. An invalid applied
+layout points to the arguments and labels its source declaration. A statically
+invalid declaration is not diagnosed again for every application. Unresolved
+symbolic widths remain unknown until their bindings are available.
+The same source validation covers constructor types, associated-call qualifiers,
+trait type arguments and type uses in otherwise unused generic function bodies.
+
 These distinctions follow the declaration, not the argument's spelling. For
 example, forwarding `impl<T, N: integer> ...` preserves `T` as a type and `N`
 as a value even after renaming either binder. `Self` is a type argument.

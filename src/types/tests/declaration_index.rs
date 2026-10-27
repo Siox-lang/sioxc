@@ -88,7 +88,7 @@ fn prepared_trait_arguments_borrow_values_and_reuse_resolved_bindings() {
         panic!("impl")
     };
     let arguments = index
-        .trait_arguments(contract, &implementation.trait_args)
+        .arguments(&contract.params, &implementation.trait_args)
         .unwrap();
     let parameter = resolved
         .declared(contract.params.params[1].name.span)
@@ -109,7 +109,7 @@ fn prepared_trait_arguments_borrow_values_and_reuse_resolved_bindings() {
         method.params[1].ty.as_ref().unwrap(),
         method.ret.as_ref().unwrap(),
     ] {
-        let instantiated = index.instantiate_trait_type(&arguments, ty).unwrap();
+        let instantiated = index.instantiate_type(&arguments, ty).unwrap();
         let Type::Indexed {
             base,
             index: Some(width),
@@ -120,6 +120,47 @@ fn prepared_trait_arguments_borrow_values_and_reuse_resolved_bindings() {
         };
         assert!(matches!(base.as_ref(), Type::Path(path) if path.segments[0].text == "real"));
         assert_eq!(evaluate(width, &index, 0), Ok(3));
+    }
+}
+
+#[test]
+fn layout_contracts_borrow_struct_bases_fields_ports_and_alias_targets() {
+    let (modules, resolved) = parse(&["module model;
+        enum Wire { Low, High }
+        struct Packet<N: integer> { data: integer[N] }
+        struct Derived<N: integer>(Wire[N]);
+        entity Bus<N: integer> { data: integer[N] in }
+        type Alias<N: integer> = Packet<N>;"]);
+    let index = DeclarationIndex::collect(&resolved, &modules);
+    for item in &modules[0].items {
+        let (name, parameters, expected): (_, _, Vec<&Type>) = match item {
+            Item::Struct(declaration) => (
+                &declaration.name,
+                &declaration.params,
+                declaration
+                    .base
+                    .iter()
+                    .chain(declaration.fields.iter().map(|field| &field.ty))
+                    .collect(),
+            ),
+            Item::Entity(declaration) => (
+                &declaration.name,
+                &declaration.params,
+                declaration.ports.iter().map(|port| &port.ty).collect(),
+            ),
+            Item::Using(Using {
+                kind: UsingKind::Alias { name, params, ty },
+                ..
+            }) => (name, params, vec![ty]),
+            _ => continue,
+        };
+        let id = resolved.declared(name.span).unwrap();
+        assert!(std::ptr::eq(index.layout_params(id).unwrap(), parameters));
+        let actual: Vec<_> = index.layout_types(id).collect();
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!(std::ptr::eq(actual, expected));
+        }
     }
 }
 

@@ -35,6 +35,7 @@ mod indexing;
 mod inference;
 mod items;
 mod keys;
+mod layouts;
 mod literals;
 mod members;
 mod operators;
@@ -192,6 +193,7 @@ pub fn check<'a>(
     let mut checker = Checker::new(sink, resolved, modules);
     checker.collect(modules);
     checker.check_struct_field_cycles();
+    checker.check_source_layouts(modules);
     for m in modules {
         for item in &m.items {
             checker.check_item(item);

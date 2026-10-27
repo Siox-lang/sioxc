@@ -73,6 +73,22 @@ class GenericAliasWaveforms(unittest.TestCase):
             check_profile("generic_data_aliases_test", {"AliasData.wire.value": [(0, f"{6:08b}")]})
 
 
+class GenericLayoutWaveforms(unittest.TestCase):
+    def test_named_function_width_sizes_the_reactive_port(self):
+        check_profile("generic_layout_values_test", {
+            "GenericLayoutValues.dut.value": [(0, "101"), (1_000_000, "011")],
+        })
+
+    def test_wrong_width_value_or_time_is_rejected(self):
+        for initial, when, updated in [("0101", 1_000_000, "0011"),
+                                       ("101", 1_000_000, "101"),
+                                       ("101", 2_000_000, "011")]:
+            with self.assertRaises(AssertionError):
+                check_profile("generic_layout_values_test", {
+                    "GenericLayoutValues.dut.value": [(0, initial), (when, updated)],
+                })
+
+
 class TraitValueWaveforms(unittest.TestCase):
     def test_typed_value_contract_remains_reactive(self):
         check_profile("trait_value_arguments_test", {

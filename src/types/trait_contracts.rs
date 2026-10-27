@@ -14,7 +14,7 @@ impl<'a> Checker<'a> {
         };
         let Ok(arguments) = self
             .declarations
-            .trait_arguments(contract, &implementation.trait_args)
+            .arguments(&contract.params, &implementation.trait_args)
         else {
             return;
         };
@@ -53,7 +53,7 @@ impl<'a> Checker<'a> {
                 };
                 let Some(expected_type) = self
                     .declarations
-                    .instantiate_trait_type(&arguments, expected_type)
+                    .instantiate_type(&arguments, expected_type)
                 else {
                     continue;
                 };
@@ -80,9 +80,8 @@ impl<'a> Checker<'a> {
             }
             match (&required.ret, &function.ret) {
                 (Some(expected), Some(actual)) => {
-                    let Some(expected_type) = self
-                        .declarations
-                        .instantiate_trait_type(&arguments, expected)
+                    let Some(expected_type) =
+                        self.declarations.instantiate_type(&arguments, expected)
                     else {
                         continue;
                     };
@@ -134,7 +133,7 @@ impl<'a> Checker<'a> {
         &mut self,
         contract: &TraitDecl,
         implementation: &ImplDecl,
-        arguments: &crate::resolve::declarations::TraitArguments<'_>,
+        arguments: &crate::resolve::declarations::AppliedArguments<'_>,
     ) -> bool {
         // Header values see the impl's explicit parameters, not trait-local names.
         let sym = implementation
@@ -160,7 +159,7 @@ impl<'a> Checker<'a> {
             let Some(bound) = parameter
                 .bound
                 .as_ref()
-                .and_then(|bound| self.declarations.instantiate_trait_type(arguments, bound))
+                .and_then(|bound| self.declarations.instantiate_type(arguments, bound))
             else {
                 continue;
             };

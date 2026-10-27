@@ -7,6 +7,7 @@ mod attributes;
 mod calls;
 mod declaration_index;
 mod declarations;
+mod generic_layouts;
 mod lang_items;
 mod matches;
 mod operators;

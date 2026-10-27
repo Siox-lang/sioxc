@@ -60,7 +60,11 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
 
 
 def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile == "trait_value_arguments_test":
+    if profile == "generic_layout_values_test":
+        assert changes["GenericLayoutValues.dut.value"] == [
+            (0, "101"), (1_000_000, "011")
+        ]
+    elif profile == "trait_value_arguments_test":
         assert changes["TraitValueArgumentsTest.dut.result"] == [
             (0, f"{42:064b}"), (1_000_000, f"{47:064b}")
         ]
