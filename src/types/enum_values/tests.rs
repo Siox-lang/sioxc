@@ -3,11 +3,12 @@ use crate::diag::FileId;
 
 fn parse(sources: &[&str]) -> (Vec<Module>, Resolved) {
     let mut sink = DiagnosticSink::default();
-    let modules: Vec<_> = sources
+    let mut modules: Vec<_> = sources
         .iter()
         .enumerate()
         .map(|(index, source)| crate::syntax::parse_module(FileId(index as u32), source, &mut sink))
         .collect();
+    crate::syntax::macros::expand(&mut modules, &HashMap::new(), &mut sink);
     let resolved = crate::resolve::resolve(&modules, &mut sink);
     assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
     (modules, resolved)
@@ -82,6 +83,60 @@ fn unknown_explicit_discriminants_do_not_restart_implicit_numbering() {
         numbers(&values, owner(&modules, &resolved, "Palette")),
         [None, None, Some(9), Some(10)]
     );
+}
+
+#[test]
+fn generated_enum_ordering_uses_each_owners_member_ids() {
+    let (modules, resolved) = parse(&[
+        "module model;
+        macro modes($Name: ident, $start: expr) { enum $Name { Low = $start, High } }
+        modes!(Left, 9);
+        modes!(Right, 3);
+        use core::primitive::Bool;
+        use core::cmp::Ord;
+        impl Ord<Left> for Left {
+            fn lt(self, rhs: Left) -> Bool { return integer(self) < integer(rhs); }
+            fn le(self, rhs: Left) -> Bool { return integer(self) <= integer(rhs); }
+        }
+        fn choose() -> integer { if Left::Low < Left::High { return 21; } return 13; }
+        enum Computed { First = choose(), Next }",
+        include_str!("../../../core/primitive.siox"),
+        "module core::cmp; use core::primitive::Bool;
+        pub trait Ord<Rhs> {
+            fn lt(self, rhs: Rhs) -> Bool;
+            fn le(self, rhs: Rhs) -> Bool;
+        }
+        attr lang for Ord = \"ord\";",
+    ]);
+    let declarations = DeclarationIndex::collect(&resolved, &modules);
+    let values = EnumValues::collect(&declarations, &resolved);
+    for (name, expected) in [("Left", [9, 10]), ("Right", [3, 4]), ("Computed", [21, 22])] {
+        assert_eq!(
+            numbers(&values, owner(&modules, &resolved, name)),
+            expected.map(Some)
+        );
+    }
+}
+
+#[test]
+fn generated_enum_diagnostics_do_not_read_a_later_owners_member_ids() {
+    let (modules, resolved) = parse(&[
+        "module model;
+        macro modes($Name: ident, $start: expr) { enum $Name { Low = $start, High } }
+        modes!(Negative, -1);
+        modes!(Positive, 3);",
+        include_str!("../../../core/primitive.siox"),
+    ]);
+    let mut sink = DiagnosticSink::default();
+    let _ = check(&modules, &resolved, &mut sink);
+    let errors: Vec<_> = sink
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.code == Some(codes::TYPE_MISMATCH))
+        .collect();
+    assert_eq!(errors.len(), 1, "{:?}", sink.diagnostics());
+    assert!(errors[0].message.contains("Negative::Low"));
+    assert!(errors[0].message.contains("negative discriminant -1"));
 }
 
 #[test]

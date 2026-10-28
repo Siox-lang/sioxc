@@ -67,6 +67,8 @@ def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> No
         assert changes[root + "inherited"] == [(0, "high")]
         assert changes[root + "normalized"] == [(0, "next")]
         assert changes[root + "code"] == [(0, f"{9:064b}"), (1_000_000, f"{10:064b}")]
+        assert changes[root + "macro_value"] == [(0, "next")]
+        assert changes[root + "macro_code"] == [(0, f"{22:064b}")]
     elif profile == "enum_constant_values_test":
         root = "EnumConstantValues.dut."
         for signal, expected in {

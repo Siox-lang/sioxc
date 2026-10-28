@@ -20935,3 +20935,76 @@ and numeric ordering using actual expansion, then unify remaining typed stage
 contexts. Packed/real/range/attribute values, further statements, remaining
 registries/hooks, generic signatures/nominal arguments and dynamic constructor
 routing stay open. Do not claim general macro expansion identity is solved.
+
+### 2026-10-28 — Codex — accepted commits and generated enum member audit
+
+Verified local commits: compiler a4d4ef7 (22 owned paths), corpus73047d2 (three
+owned fixture/snapshot paths), wiki d1669fb (generated architecture copy only).
+Compiler/wiki clean; all20 peer corpus probes remain untracked and untouched.
+Project foundation card has an added current what/why/how checkpoint, exact gate
+evidence and81% engineering estimate; all prior body text and project fields
+are preserved. Fields remain In Progress / AST / Compiler foundations. No push.
+
+Continue the foundation in the owned tree. Before changing production, add real
+repeated-macro enum regressions for member parent IDs, helper-backed ordering
+and earlier-owner diagnostics. Announce ownership of resolve/declarations.rs,
+types/enum_values.rs and their tests, plus the existing owned corpus enum-phase
+fixture and VCD profile if a failure is confirmed. Prefer the resolver's retained
+owner/member map to overwritten declaration-span entries; do not add a second
+AST registry, global leaf fallback, new grammar or runtime/LLVM/dependencies.
+General macro expansion identity is still separate. Full gates before commits;
+do not restart terminal3109217 or comparison3007314. All five foundation sections
+remain required before moving to another proposal.
+
+### 2026-10-28 — Codex — generated enum focused proof and full-gate freeze
+
+Current changes remain local/uncommitted on accepted a4d4ef7; corpus73047d2 and
+wiki d1669fb are the last accepted commits. 3217080 red101 reproduces wrong
+member parent IDs and unknown21/22 helper values from repeated macro expansion.
+The two owner/member query fixes pass662 frontend tests in3218875. Focused
+3223603 stops at native compile: my ordering fixture lacked its required Ord
+implementation. Keep the real enum-ordering case and add an explicit numeric
+Ord body; do not weaken it to unrelated arithmetic or add a production fallback.
+With the valid contract,3235314 again reproduces both failures under old lookup.
+Restore both owner/member queries before3236174, which is terminal
+exited/success/0, peak1213546496bytes:662 frontend, strict frontendClippy,
+52 runner tests, four default/bitpack ordinary/debug native and exact VCD checks,
+plus the updated three-error UI snapshot matching both modes. Inherited member
+parents and earlier-owner diagnostics have direct regressions. Snapshot blessing
+is limited to the one owned case, with all annotations checked.
+
+Only production changes are the two resolved owner/member lookups and one why
+comment; no interpreter, conversion or general operator-dispatch behavior is
+claimed changed. Source-owned operators outside the already supported contexts
+remain part of the typed-context work. AST graph refreshed7571nodes/20005edges/
+387communities, with existing vendor-C extraction limits and stale doc semantics.
+One earlier multi-file patch failed atomically on formatted test context and
+was reapplied after inspection; no job or partial source change came from it.
+
+Canonical docs and local generated wiki describe this follow-up as in-progress.
+Freeze source/corpus/wiki for generated-enum-members-final-20261028.sh, with
+the full existing matrix. No temporary legacy evaluator/audit is reintroduced.
+No commits until full green; no pushes, peer edits, new grammar/runtime/LLVM or
+dependencies. Last accepted foundation estimate81%; all five sections remain.
+
+### 2026-10-28 — Codex — generated enum member repair accepted locally
+
+3243634 (siox-job-3000-1793195588605075556-3243634.service) is terminal
+exited/success/0, peak1612709888bytes. Full matrix passes662 frontend,
+719/698 default/bitpack library cases, all integration and23 DWARF cases per
+mode,128 ordinary/debug native/VCD checks, both actual271-program corpora,
+strict Clippy,52 runners,12 artifacts and both66-case human UI/JSON matrices
+covering54 active codes and2 apply/recompile migrations. Frozen hashes match:
+source 1399891789b0b04939eed9a4b300bff48d078e505518cd24c196fb4a2b9e6b71;
+corpus cc1966f4b85f1e0375ba32fc43f0fbfdd3bbd6b00424438e83981a6279bdc755;
+wiki 07ff8e70d378501e2d3163bd09025dfb42a1f7ebfb483d0916aae39f32ab23ee.
+
+Only proposal acceptance wording and this coordination entry change after proof.
+Commit only the announced owned compiler paths, three existing owned corpus
+paths and generated wiki architecture copy. Preserve all20 peer probes and
+shared main/paper dirt. No push. Estimate about82% of compiler-foundations,
+not the whole codebase; all five proposal sections remain required.
+Next reproduce valid source-Ord versus constant-ordering behavior and typed
+integer conversion/condition context differences, then reuse a common source
+semantic context. Do not narrow the remaining typed-value or registry/hook
+scope or claim general macro expansion identity/source-operator dispatch done.

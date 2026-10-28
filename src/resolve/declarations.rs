@@ -245,8 +245,9 @@ impl<'a> DeclarationIndex<'a> {
         }
         let mut variants = Vec::new();
         for owner in chain.into_iter().rev() {
+            // Expanded members can share spans; their resolved owner disambiguates them.
             for variant in &self.enumeration(owner)?.variants {
-                let id = self.resolved.declared(variant.name.span)?;
+                let id = self.resolved.enum_variant(owner, &variant.name.text)?;
                 if self.resolved.kind_of(id) != Some(DefKind::EnumVariant) {
                     return None;
                 }

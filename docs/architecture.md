@@ -1265,6 +1265,11 @@ same facts for symbols, defaults and widths instead of evaluating declarations
 before helper functions have been registered. Unknown explicit values keep
 following implicit values unknown until a known explicit reset.
 
+Member queries use the resolver's `(owner DefId, member)` table rather than a
+declaration span: repeated macro expansions can share those spans. This keeps
+generated enum contracts and diagnostics tied to their own owner; it does not
+provide general macro expansion/call-site identity.
+
 The constant interpreter can also retain a resolved enum member without its
 physical discriminant. Primitive comparison results therefore refer to the
 registered Bool's members even before their encodings are available. This

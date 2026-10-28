@@ -105,7 +105,7 @@ impl EnumValues {
         };
         let mut seen: HashMap<i128, (&str, DefId)> = HashMap::new();
         for variant in &declaration.variants {
-            let Some(id) = resolved.declared(variant.name.span) else {
+            let Some(id) = resolved.enum_variant(owner, &variant.name.text) else {
                 continue;
             };
             let Some(value) = self.number(owner, id) else {

@@ -9,12 +9,13 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-28, shared enum phase facts, typed enum/character constants and source-owned
+Local acceptance (2026-10-28, generated enum member identity, shared enum phase facts,
+typed enum/character constants and source-owned
 operator/condition tables, applied layouts and known trait value types/arguments/signatures,
 borrowed contracts/default visibility,
 selected enum owners, range contracts, Boolean identities and resolved aliases):
-both complete Rust suites pass, including 716 default/695 bitpack library tests
-and all 23 DWARF tests per mode. The gate also passes 659 no-LLVM library tests,
+both complete Rust suites pass, including 719 default/698 bitpack library tests
+and all 23 DWARF tests per mode. The gate also passes 662 no-LLVM library tests,
 strict Clippy, 52 runner tests, 128 ordinary/debug native and VCD checks, and both
 actual 271-program corpora. Both modes pass 66 human UI and 66 JSON/schema cases,
 cover all 54 active codes and apply/recompile both migration fixtures.
@@ -294,6 +295,19 @@ numbering/default/width calculations are deleted. Final oracle-free gate 3109217
 passes that same full matrix with matching fingerprints. Only proposal
 acceptance wording and coordination logs change afterward. This accepts the
 shared phase-fact migration, not the remaining typed contexts or registries.
+
+**Implemented generated enum member identity (2026-10-28).** Real repeated
+macro expansions reuse member declaration spans. Contract and diagnostic queries
+now select the resolver's retained `(owner DefId, member)` entry rather than
+the last declaration recorded at that span. Regressions check source pointers,
+member parent IDs, inheritance, helper-backed numeric ordering and an earlier
+owner's negative-value diagnostic. The native fixture explicitly declares its
+numeric `Ord` implementation; this does not claim general source-operator
+dispatch is complete in every constant context. Focused frontend/native/debug/
+waveform checks pass in both storage modes. Full frozen gate 3243634 passes
+the complete matrix above, with identical source/corpus/local-wiki fingerprints
+before and after validation. Only acceptance wording and coordination logs
+change afterward. General macro expansion identity remains separate work.
 
 **Remaining.** Raw scalar logical/bitwise hooks are explicitly transitional
 (`shortcut:` comments), not a second definition of operators. Their disagreement

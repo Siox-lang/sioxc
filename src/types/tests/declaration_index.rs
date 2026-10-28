@@ -80,6 +80,54 @@ fn enum_contract_queries_do_not_invent_members_of_a_derivation_cycle() {
 }
 
 #[test]
+fn generated_enum_members_keep_their_resolved_declaration_owner() {
+    let mut sink = DiagnosticSink::default();
+    let mut modules = vec![crate::syntax::parse_module(
+        FileId(0),
+        "module model;
+        macro modes($Name: ident, $start: expr) { enum $Name { Low = $start, High } }
+        modes!(Left, 9);
+        modes!(Right, 3);
+        enum Derived(Left);",
+        &mut sink,
+    )];
+    crate::syntax::macros::expand(&mut modules, &HashMap::new(), &mut sink);
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let declarations = DeclarationIndex::collect(&resolved, &modules);
+    let enums: Vec<_> = modules[0]
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Enum(enumeration) => Some(enumeration),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(enums.len(), 3);
+    assert_eq!(
+        enums[0].variants[0].name.span,
+        enums[1].variants[0].name.span
+    );
+    for enumeration in &enums[..2] {
+        let owner = resolved.declared(enumeration.name.span).unwrap();
+        for ((id, source), expected) in declarations
+            .enum_variants(owner)
+            .unwrap()
+            .iter()
+            .zip(&enumeration.variants)
+        {
+            assert_eq!(resolved.def(*id).unwrap().parent, Some(owner));
+            assert!(std::ptr::eq(*source, expected));
+        }
+    }
+    let left = resolved.declared(enums[0].name.span).unwrap();
+    let derived = resolved.declared(enums[2].name.span).unwrap();
+    for (id, _) in declarations.enum_variants(derived).unwrap() {
+        assert_eq!(resolved.def(id).unwrap().parent, Some(left));
+    }
+}
+
+#[test]
 fn generic_aliases_substitute_resolved_type_and_value_parameters() {
     let (modules, resolved) = parse(&[
         "module provider; const BASE: integer = 6; const N: integer = 40;

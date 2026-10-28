@@ -106,6 +106,8 @@ class EnumPhaseWaveforms(unittest.TestCase):
             "inherited": [(0, "high")],
             "normalized": [(0, "next")],
             "code": [(0, f"{9:064b}"), (1_000_000, f"{10:064b}")],
+            "macro_value": [(0, "next")],
+            "macro_code": [(0, f"{22:064b}")],
         }.items()}
 
     def test_shared_numbers_defaults_and_symbols(self):
@@ -115,7 +117,9 @@ class EnumPhaseWaveforms(unittest.TestCase):
         for name, events in [("code", [(0, f"{0:064b}"), (1_000_000, f"{1:064b}")]),
                              ("inherited", [(0, "low")]),
                              ("normalized", [(0, "first")]),
-                             ("seen", [(0, "low"), (2_000_000, "high")])]:
+                             ("seen", [(0, "low"), (2_000_000, "high")]),
+                             ("macro_value", [(0, "first")]),
+                             ("macro_code", [(0, f"{0:064b}")])]:
             data = self.wave()
             data[f"EnumPhaseValues.dut.{name}"] = events
             with self.assertRaises(AssertionError):
