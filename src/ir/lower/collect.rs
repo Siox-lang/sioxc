@@ -841,12 +841,20 @@ impl<'a> Lowering<'a> {
             || (!self.has_const_leaves(name) && self.fold_aggregate_const(name, constant, scope))
     }
 
-    /// Whether an aggregate constant already has leaves (`K.a`, `M[0][1]`).
+    /// Whether a constant is already folded, whole or as leaves (`K.a`,
+    /// `M[0][1]`).
     fn has_const_leaves(&self, name: &str) -> bool {
         let member = |key: &String| {
-            key.strip_prefix(name)
-                .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+            key.strip_prefix(name).is_some_and(|rest| {
+                rest.is_empty() || rest.starts_with('.') || rest.starts_with('[')
+            })
         };
+        if self.consts.contains_key(name)
+            || self.consts_real.contains_key(name)
+            || self.const_ranges.contains_key(name)
+        {
+            return true;
+        }
         self.const_values.keys().any(member) || self.const_arrays.keys().any(member)
     }
 
