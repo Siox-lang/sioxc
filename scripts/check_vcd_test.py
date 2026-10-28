@@ -98,6 +98,30 @@ class EnumConstantWaveforms(unittest.TestCase):
                 check_profile("enum_constant_values_test", data)
 
 
+class EnumPhaseWaveforms(unittest.TestCase):
+    def wave(self):
+        return {f"EnumPhaseValues.dut.{name}": events for name, events in {
+            "value": [(0, "low"), (1_000_000, "high")],
+            "seen": [(0, "low"), (1_000_000, "high")],
+            "inherited": [(0, "high")],
+            "normalized": [(0, "next")],
+            "code": [(0, f"{9:064b}"), (1_000_000, f"{10:064b}")],
+        }.items()}
+
+    def test_shared_numbers_defaults_and_symbols(self):
+        check_profile("enum_phase_values_test", self.wave())
+
+    def test_wrong_number_symbol_or_time_is_rejected(self):
+        for name, events in [("code", [(0, f"{0:064b}"), (1_000_000, f"{1:064b}")]),
+                             ("inherited", [(0, "low")]),
+                             ("normalized", [(0, "first")]),
+                             ("seen", [(0, "low"), (2_000_000, "high")])]:
+            data = self.wave()
+            data[f"EnumPhaseValues.dut.{name}"] = events
+            with self.assertRaises(AssertionError):
+                check_profile("enum_phase_values_test", data)
+
+
 class GenericLayoutWaveforms(unittest.TestCase):
     def test_named_function_width_sizes_the_reactive_port(self):
         check_profile("generic_layout_values_test", {

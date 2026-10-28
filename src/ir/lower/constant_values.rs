@@ -129,7 +129,9 @@ impl<'l, 'a> EnumConstants<'l, 'a> {
         match value {
             Value::Integer(_) => Some("integer"),
             Value::Character(_) => Some("Char"),
-            Value::Enum { owner, .. } => self.tables.get(&owner).map(|table| table.key.as_str()),
+            Value::Enum { owner, .. } | Value::Variant { owner, .. } => {
+                self.tables.get(&owner).map(|table| table.key.as_str())
+            }
         }
     }
 
@@ -186,7 +188,9 @@ impl<'l, 'a> EnumConstants<'l, 'a> {
                         return false;
                     };
                     match value {
-                        Value::Enum { owner, .. } => self.enum_type(ty, receiver) == Some(*owner),
+                        Value::Enum { owner, .. } | Value::Variant { owner, .. } => {
+                            self.enum_type(ty, receiver) == Some(*owner)
+                        }
                         Value::Integer(_) => self.primitive_type(ty, "integer"),
                         Value::Character(_) => self.primitive_type(ty, "Char"),
                     }

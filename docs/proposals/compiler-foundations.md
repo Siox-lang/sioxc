@@ -9,14 +9,14 @@ declaration contracts are shared across stages; fully typed constant evaluation,
 the remaining declaration-ID registries and residual name-based hook cleanup
 remain. Each part lands independently.
 
-Local acceptance (2026-10-27, typed enum/character constants and source-owned
+Local acceptance (2026-10-28, shared enum phase facts, typed enum/character constants and source-owned
 operator/condition tables, applied layouts and known trait value types/arguments/signatures,
 borrowed contracts/default visibility,
 selected enum owners, range contracts, Boolean identities and resolved aliases):
-both complete Rust suites pass, including 702 default/681 bitpack library tests
-and all 23 DWARF tests per mode. The gate also passes 645 no-LLVM library tests,
-strict Clippy, 50 runner tests, 124 ordinary/debug native and VCD checks, and both
-actual 270-program corpora. Both modes pass 65 human UI and 65 JSON/schema cases,
+both complete Rust suites pass, including 716 default/695 bitpack library tests
+and all 23 DWARF tests per mode. The gate also passes 659 no-LLVM library tests,
+strict Clippy, 52 runner tests, 128 ordinary/debug native and VCD checks, and both
+actual 271-program corpora. Both modes pass 66 human UI and 66 JSON/schema cases,
 cover all 54 active codes and apply/recompile both migration fixtures.
 Compiler, corpus and local wiki fingerprints match before/after the frozen
 gate. Retained evidence and fixture migrations are recorded in
@@ -270,6 +270,30 @@ Initial packed-wire exploration also exposed pre-existing default-logic and
 four-bit companion assumptions (including a five-bit custom enum indexing
 width mismatch). Generalizing that representation is still open; scalar
 constant support does not claim arbitrary custom packed encodings work.
+
+**Implemented shared enum phase facts (2026-10-28).** The declaration index
+borrows enum and implementation contracts, including inherited source members.
+Analysis owns computed discriminants keyed by enum-owner and member `DefId`;
+`Typed` and elaborated `Hierarchy` share them through `Arc`. Checker diagnostics
+and IR symbols, defaults and widths consume these facts. After attribute/length
+normalization, only unknown values are refined and newly decidable errors are
+reported once, in source order. An unknown explicit value no longer silently
+restarts implicit numbering at zero; a known explicit value can reset it.
+
+The shared interpreter retains symbolic enum member identity independently of
+physical encoding. This lets conditional helpers work through supplied function
+contracts without loading unrelated provider ASTs, and lets Bool's own encoding
+helpers branch before those encodings are known. Source operators still execute
+their registered bodies; unknown ordering and non-Bool lookalikes stay unknown.
+Native coverage checks helper-backed values/defaults, inherited owners,
+post-normalization values and reactive symbols. Full comparison gate 3007314
+passes both complete Rust suites and actual 271-program corpora, all 128 direct
+native/VCD checks and both 66-case diagnostic matrices, with unchanged source,
+corpus and local-wiki fingerprints. The temporary audit and old enum indexing,
+numbering/default/width calculations are deleted. Final oracle-free gate 3109217
+passes that same full matrix with matching fingerprints. Only proposal
+acceptance wording and coordination logs change afterward. This accepts the
+shared phase-fact migration, not the remaining typed contexts or registries.
 
 **Remaining.** Raw scalar logical/bitwise hooks are explicitly transitional
 (`shortcut:` comments), not a second definition of operators. Their disagreement

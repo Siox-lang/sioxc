@@ -58,7 +58,15 @@ impl IntegerDomain {
 pub(crate) enum Value {
     Integer(i128),
     Character(char),
-    Enum { owner: DefId, discriminant: u64 },
+    Enum {
+        owner: DefId,
+        discriminant: u64,
+    },
+    /// Source member identity is usable before its physical encoding is known.
+    Variant {
+        owner: DefId,
+        variant: DefId,
+    },
 }
 
 impl Value {
@@ -71,7 +79,7 @@ impl Value {
 
     pub(crate) fn enum_owner(self) -> Option<DefId> {
         match self {
-            Self::Enum { owner, .. } => Some(owner),
+            Self::Enum { owner, .. } | Self::Variant { owner, .. } => Some(owner),
             _ => None,
         }
     }

@@ -27,6 +27,7 @@ mod ast_types;
 mod calls;
 mod collect;
 pub(crate) mod consteval;
+pub(crate) mod enum_values;
 mod expand;
 mod expressions;
 mod helpers;
@@ -120,6 +121,8 @@ impl Ty {
 /// elaborator and IR lowering.
 #[derive(Clone, Default)]
 pub struct Typed {
+    /// Source-owned enum values computed once by resolved declaration identity.
+    pub(crate) enum_values: std::sync::Arc<enum_values::EnumValues>,
     /// Checked type of each expression, keyed by its span.
     expr_types: HashMap<Span, Ty>,
     /// Each read of a type attribute (`x'integers`), keyed by the read's
@@ -164,6 +167,7 @@ impl Typed {
     }
 }
 
+pub use enum_values::refresh_enum_values;
 pub use expand::{
     expand_type_attrs, flatten_slice_chains, fold_metadata_constants, fold_value_lengths,
     inline_loop_ranges,
@@ -277,6 +281,7 @@ struct MemberVisibility {
 struct Checker<'a> {
     /// Source declarations and contracts, borrowed by resolved identity.
     declarations: DeclarationIndex<'a>,
+    enum_values: enum_values::EnumValues,
     /// Type parameters bound while a generic body is checked for one call.
     type_bindings: std::cell::RefCell<HashMap<String, Ty>>,
     /// Instantiations already checked, by function and type arguments.

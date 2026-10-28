@@ -570,7 +570,7 @@ impl Compiler {
             &mut result.diagnostics,
         );
         crate::types::inline_loop_ranges(&mut result.modules, &resolved);
-        let typed = crate::types::check(&result.modules, &resolved, &mut result.diagnostics);
+        let mut typed = crate::types::check(&result.modules, &resolved, &mut result.diagnostics);
         crate::types::fold_metadata_constants(&mut result.modules, &typed);
         // `x'integers` -> `x'high + 1`: later stages see system attributes only.
         crate::types::expand_type_attrs(&mut result.modules, &typed);
@@ -578,6 +578,12 @@ impl Compiler {
         crate::types::flatten_slice_chains(&mut result.modules);
         // Tuples become the generic structs they are; see `types::tuples`.
         crate::types::lower_tuples(&mut result.modules, &typed);
+        crate::types::refresh_enum_values(
+            &result.modules,
+            &resolved,
+            &mut typed,
+            &mut result.diagnostics,
+        );
         result.resolved = Some(resolved);
         result.typed = Some(typed);
         if result.diagnostics.has_errors() {

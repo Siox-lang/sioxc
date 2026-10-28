@@ -60,8 +60,11 @@ impl<'a> Checker<'a> {
                 (module.span.file, name)
             })
             .collect();
+        let declarations = DeclarationIndex::collect(resolved, modules);
+        let enum_values = enum_values::EnumValues::collect(&declarations, resolved);
         Checker {
-            declarations: DeclarationIndex::collect(resolved, modules),
+            declarations,
+            enum_values,
             type_bindings: std::cell::RefCell::new(HashMap::new()),
             instantiated: std::cell::RefCell::new(HashSet::new()),
             instantiating: std::cell::RefCell::new(Vec::new()),
@@ -131,6 +134,7 @@ impl<'a> Checker<'a> {
     /// Finish checking and hand back the recorded expression types.
     pub(super) fn finish(self) -> Typed {
         Typed {
+            enum_values: std::sync::Arc::new(self.enum_values),
             expr_types: self.expr_types.into_inner(),
             type_attr_reads: self.type_attr_reads,
             metadata_constants: self.metadata_constants,

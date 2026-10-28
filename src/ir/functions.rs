@@ -158,6 +158,10 @@ impl<'a> FunctionIndex<'a> {
         &self.declarations
     }
 
+    pub(crate) fn resolved(&self) -> &'a Resolved {
+        self.resolved
+    }
+
     /// Register a static associated function, replacing an inherited default.
     pub fn insert_associated(&mut self, key: String, function: &'a ast::FnDecl) {
         let (owner, name) = split_associated_key(&key);

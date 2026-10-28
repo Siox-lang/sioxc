@@ -235,6 +235,8 @@ pub struct Resolved {
     /// Selected enum owners that differ from the inherited variant's parent.
     /// Ordinary variants need no entry: their declaration already owns the fact.
     variant_owner_overrides: HashMap<Span, DefId>,
+    /// Resolved members, including inheritance; identity needs no numeric encoding.
+    enum_variants: HashMap<DefId, HashMap<String, DefId>>,
     /// Declaration site, keyed by span, to the definition it introduces.
     declarations: HashMap<Span, DefId>,
     /// Known kinds of explicit generic binders; absent recovery bindings stay unknown.
@@ -324,6 +326,10 @@ impl Resolved {
             .get(&path.span)
             .copied()
             .or(variant.parent)
+    }
+
+    pub(crate) fn enum_variant(&self, owner: DefId, name: &str) -> Option<DefId> {
+        self.enum_variants.get(&owner)?.get(name).copied()
     }
 }
 
@@ -454,6 +460,7 @@ pub fn resolve(modules: &[Module], sink: &mut DiagnosticSink) -> Resolved {
     r.lint_unused_params(&std_files);
     r.out.entity_aliases =
         declarations::DeclarationIndex::collect(&r.out, modules).entity_aliases();
+    r.out.enum_variants = r.enum_variants;
     r.out
 }
 

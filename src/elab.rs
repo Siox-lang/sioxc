@@ -152,6 +152,8 @@ pub struct Instance {
 /// selected instance trees.
 #[derive(Default)]
 pub struct Hierarchy {
+    /// Stage-4 enum facts; downstream lowering does not reinterpret discriminants.
+    pub(crate) enum_values: std::sync::Arc<crate::types::enum_values::EnumValues>,
     /// The tree roots: entities nothing instantiates, or the one `--top`
     /// selected.
     pub roots: Vec<InstanceId>,
@@ -451,6 +453,7 @@ fn elaborate_roots(
         out: Hierarchy::default(),
     };
     e.out.expr_types = typed.expr_types().clone();
+    e.out.enum_values = std::sync::Arc::clone(&typed.enum_values);
     e.out.promotions = typed.promotions().clone();
     e.collect(modules);
 

@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::{DefId, DefKind, Resolved};
 use crate::syntax::ast::{
-    ConstDecl, EntityDecl, FnDecl, Item, Module, Params, Path, StructDecl, TraitDecl, Type, Using,
-    UsingKind,
+    ConstDecl, EntityDecl, EnumDecl, EnumVariant, FnDecl, ImplDecl, Item, Module, Params, Path,
+    StructDecl, TraitDecl, Type, Using, UsingKind,
 };
 
 pub(crate) mod expand;
@@ -21,6 +21,7 @@ pub(crate) use substitute::ArgumentError;
 enum Declaration<'a> {
     Struct(&'a StructDecl),
     Entity(&'a EntityDecl),
+    Enum(&'a EnumDecl),
     Trait(&'a TraitDecl),
     Function(&'a FnDecl),
     Constant(&'a ConstDecl),
@@ -30,6 +31,7 @@ enum Declaration<'a> {
 pub(crate) struct DeclarationIndex<'a> {
     resolved: &'a Resolved,
     declarations: HashMap<DefId, Declaration<'a>>,
+    implementations: HashMap<DefId, Vec<&'a ImplDecl>>,
 }
 
 /// One checked application; reuse its parameter identities for bounds and methods.
@@ -75,6 +77,7 @@ impl<'a> DeclarationIndex<'a> {
         Self {
             resolved,
             declarations: HashMap::new(),
+            implementations: HashMap::new(),
         }
     }
 
@@ -98,6 +101,30 @@ impl<'a> DeclarationIndex<'a> {
                 if let Some(id) = self.resolved.declared(declaration.name.span) {
                     self.declarations
                         .insert(id, Declaration::Entity(declaration));
+                }
+            }
+            Item::Enum(declaration) => {
+                if let Some(id) = self.resolved.declared(declaration.name.span) {
+                    self.declarations.insert(id, Declaration::Enum(declaration));
+                }
+            }
+            Item::Impl(implementation) => {
+                let mut target = &implementation.target;
+                loop {
+                    match target {
+                        Type::Path(path) => {
+                            if let Some(id) = self.resolved.resolved(path.span) {
+                                self.implementations
+                                    .entry(id)
+                                    .or_default()
+                                    .push(implementation);
+                            }
+                            break;
+                        }
+                        Type::Generic { base, .. } | Type::Indexed { base, .. } => target = base,
+                        Type::View { target: base, .. } => target = base,
+                        Type::Tuple { .. } => break,
+                    }
                 }
             }
             Item::Const(declaration) => self.insert_constant(declaration),
@@ -152,6 +179,81 @@ impl<'a> DeclarationIndex<'a> {
             Declaration::Entity(declaration) => Some(declaration),
             _ => None,
         }
+    }
+
+    pub(crate) fn enumeration(&self, id: DefId) -> Option<&'a EnumDecl> {
+        match self.declarations.get(&id)? {
+            Declaration::Enum(declaration) => Some(declaration),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn enumerations(&self) -> impl Iterator<Item = (DefId, &'a EnumDecl)> + '_ {
+        self.declarations
+            .iter()
+            .filter_map(|(&id, declaration)| match declaration {
+                Declaration::Enum(declaration) => Some((id, *declaration)),
+                _ => None,
+            })
+    }
+
+    pub(crate) fn enum_base(&self, owner: DefId) -> Option<DefId> {
+        let declaration = self.enumeration(owner)?;
+        let base = self.normalize_type(declaration.repr.as_ref()?)?;
+        let Type::Path(path) = base.as_ref() else {
+            return None;
+        };
+        let id = self.resolved.resolved(path.span)?;
+        self.enumeration(id).map(|_| id)
+    }
+
+    pub(crate) fn scalar_type_id(&self, ty: &Type) -> Option<DefId> {
+        let normalized = self.normalize_type(ty)?;
+        let Type::Path(path) = normalized.as_ref() else {
+            return None;
+        };
+        self.resolved.resolved(path.span)
+    }
+
+    pub(crate) fn implementations_for(
+        &self,
+        owner: DefId,
+    ) -> impl Iterator<Item = &'a ImplDecl> + '_ {
+        self.implementations
+            .values()
+            .flatten()
+            .copied()
+            .filter(move |implementation| {
+                self.scalar_type_id(&implementation.target) == Some(owner)
+            })
+    }
+
+    /// Inherited members borrow the base declaration; the selected enum keeps its own ID.
+    pub(crate) fn enum_variants(&self, owner: DefId) -> Option<Vec<(DefId, &'a EnumVariant)>> {
+        let mut chain = Vec::new();
+        let mut current = owner;
+        loop {
+            if chain.contains(&current) {
+                return None;
+            }
+            self.enumeration(current)?;
+            chain.push(current);
+            let Some(base) = self.enum_base(current) else {
+                break;
+            };
+            current = base;
+        }
+        let mut variants = Vec::new();
+        for owner in chain.into_iter().rev() {
+            for variant in &self.enumeration(owner)?.variants {
+                let id = self.resolved.declared(variant.name.span)?;
+                if self.resolved.kind_of(id) != Some(DefKind::EnumVariant) {
+                    return None;
+                }
+                variants.push((id, variant));
+            }
+        }
+        Some(variants)
     }
 
     pub(crate) fn layout_params(&self, id: DefId) -> Option<&'a Params> {

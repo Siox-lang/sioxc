@@ -175,58 +175,26 @@ pub(in crate::ir) fn array_of<'t>(
     Some((base, indices))
 }
 
-/// Build `enum name -> bit width`: the `repr` width if given (`enum S: unsigned[2]`),
-/// else the bits needed for the variant count.
+/// Widths consume the shared enum facts rather than renumbering declarations.
 pub(in crate::ir) fn enum_reprs(
-    modules: &[Module],
+    values: &crate::types::enum_values::EnumValues,
     fns: &FunctionIndex<'_>,
 ) -> HashMap<String, u32> {
-    let empty = HashMap::new();
-    let enums = enum_index(modules, fns);
-    let constants = discriminant_constants(modules, fns);
-    let mut out = HashMap::new();
-    for (name, e) in &enums {
-        // A numeric `: repr` sets the width explicitly; otherwise the width is
-        // derived, and must hold every *value* the enum can take — not just
-        // one code per variant. An explicit discriminant can sit far above the
-        // ordinal range (`enum Code { Lo = 1, Hi = 9 }` is two variants but
-        // needs four bits), so the larger of the two bounds wins.
-        let w = if let Some(repr) = e
-            .repr
-            .as_ref()
-            .filter(|_| enum_base_name(e, &enums, fns).is_none())
-        {
-            type_width(repr, &empty, fns, &HashMap::new(), &HashMap::new())
-        } else {
-            let variants = effective_variants(name, &enums, fns, &mut Vec::new(), &constants);
-            let n = variants.len().max(1) as u32;
-            let count_bits = if n <= 1 {
-                1
+    fns.declarations()
+        .enumerations()
+        .filter_map(|(owner, enumeration)| {
+            let width = if let Some(repr) = enumeration
+                .repr
+                .as_ref()
+                .filter(|_| fns.declarations().enum_base(owner).is_none())
+            {
+                type_width(repr, &HashMap::new(), fns, &HashMap::new(), &HashMap::new())
             } else {
-                u32::BITS - (n - 1).leading_zeros()
+                values.width(owner)?
             };
-            // Implicit variants count on from the last value: `A = 15, B`
-            // makes `B` 16.
-            let mut next = 0i64;
-            let max_disc = variants
-                .iter()
-                .map(|(_, d)| {
-                    let value = d.unwrap_or(next);
-                    next = value.saturating_add(1);
-                    value
-                })
-                .max()
-                .unwrap_or(0);
-            let disc_bits = if max_disc <= 0 {
-                1
-            } else {
-                u64::BITS - (max_disc as u64).leading_zeros()
-            };
-            count_bits.max(disc_bits)
-        };
-        out.insert(name.clone(), w);
-    }
-    out
+            Some((fns.enum_id_key(owner)?, width))
+        })
+        .collect()
 }
 
 /// Whether an entity carries the built-in `#[test]` directive.

@@ -1256,6 +1256,22 @@ bodies, not host integer truth rules. IR scalar enum/character constants use the
 same adapter. This does not yet unify every checker/elaboration context or
 generalize the existing packed default-logic/four-bit companion representation.
 
+Enum declaration contracts are borrowed through the resolved declaration index.
+Analysis computes discriminants once as owner/member-ID facts; `Typed` and the
+elaborated `Hierarchy` share that immutable table through `Arc`. After attribute
+and array-length normalization, the compiler refines only unknown values and
+reports newly decidable negative/duplicate values in source order. IR reads the
+same facts for symbols, defaults and widths instead of evaluating declarations
+before helper functions have been registered. Unknown explicit values keep
+following implicit values unknown until a known explicit reset.
+
+The constant interpreter can also retain a resolved enum member without its
+physical discriminant. Primitive comparison results therefore refer to the
+registered Bool's members even before their encodings are available. This
+permits conditional helpers and bootstrapping Bool's own encodings without
+inventing numeric truth flags. Ordering still requires known source numbers;
+unrelated enums do not gain Boolean behavior from their member names.
+
 When a per-element metavalue operation would copy a non-leaf operand once per
 element, normalization materializes that operand as an internal combinational
 signal and reuses the leaf read. This bounds nested dirty-vector IR growth and

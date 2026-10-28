@@ -20767,3 +20767,171 @@ registries and hook consumers,method generics,symbolic/applied nominal contracts
 and dynamic constructor routing remain. Next work stays in this proposal,
 not another approved feature. Scalar custom encoding does not claim arbitrary
 packed encoding support;its default-logic/four-bit representation is still open.
+
+### 2026-10-27 — Codex — shared enum phase facts ownership
+
+Start accepted616bf9c/corpus2221ade/wiki869d89d,all terminal green;no live
+verification job to resume. Own resolve/declarations borrowed enum contracts,
+types constant/enum facts and checker consumers,elab phase-fact propagation,
+IR enum/constant adapters and focused tests/docs. First reproduce helper-backed
+enum discriminants:IR currently computes enum values before collecting helper
+functions,while type analysis already has borrowed declaration contracts.
+Reuse one interpreter and resolved IDs;do not add another expression walker,
+copy AST registries,guess unknown explicit discriminants or add upward imports.
+Preserve source alias/inheritance/ordinal/default/width semantics;compare old
+successful values where applicable before deleting old indexing/calculation.
+Continue toward uniform typed contexts,not a second proposal. No runtime/LLVM,
+grammar/dependency changes,pushes or peer edits. Full gates before commits.
+
+### 2026-10-28 — Codex — resume shared enum phase-fact integration
+
+Owned worktree remains616bf9c plus local enum-fact prototype,not committed.
+2733431 red101 reproduces helper discriminants silently numbered from zero;
+2739699 passes borrowed owner/inheritance/cycle queries (two tests). First
+connected Typed-to-Hierarchy-to-IR prototype2901184 passes the original helper
+regression:source9/10 and derived-owner symbols survive. Stage facts now use
+one immutable Arc rather than copying the computed numeric table into each
+phase;checker duplicate/negative discriminant checks consume those facts too.
+Continue under the existing ownership scope. Public IR helper compatibility,
+width/default calculation and old/new comparison are not migrated yet;do not
+claim the whole slice done from the focused green. Full frontend gate launched
+next;inspect its actual unit/log from the current session before editing again.
+Keep source-owned Bool values/operator bodies,unknown propagation,source IDs
+and borrowed AST contracts. No runtime/LLVM/dependencies/grammar/pushes or peer
+edits;last accepted foundation estimate remains79% until broad acceptance.
+
+### 2026-10-28 — Codex — enum normalization-boundary scope
+
+2912201 exited/success/0:648 frontend tests pass after phase-fact propagation
+and checker consumption. Extend ownership to compiler.rs only for the existing
+post-typecheck normalization boundary:attribute/length rewrites can resolve
+previously unknown enum discriminants. Refine unknown facts through the same
+interpreter there,retain known facts and report newly decidable collisions/
+negative values without duplicate diagnostics. Share immutable facts via Arc;
+no AST registry clone,second evaluator,new syntax/runtime/LLVM or push.
+Public IR helper/width migration and parity audit remain required before
+acceptance;all current changes remain local and uncommitted.
+
+### 2026-10-28 — Codex — shared enum facts frontend checkpoint
+
+Current prototype remains UNCOMMITTED on616bf9c;accepted corpus/wiki remain
+2221ade/869d89d. 2991751 exited/success/0:655 frontend tests. 2993920 exits
+successfully with strict frontendClippy,fmt/diff checks and AST graph refresh
+7559nodes/20012edges/387communities. Graph retains partial third-party C-header
+extraction warnings and stale documentation semantics;no paid rebuild.
+
+New shared DeclarationIndex queries borrow enums/inherited variant IDs and impl
+contracts. EnumValues uses the same interpreter with typed/source-owned Bool
+operators;Typed andHierarchy share immutable numbers through Arc. Checker
+duplicates/negative checks,IR symbols/defaults/widths and public enum helpers
+consume the shared model. Unknown explicit values propagate through implicit
+successors until a known explicit reset. Known facts are retained;compiler.rs
+refines unknowns after attribute/length/tuple normalization and reports newly
+decidable errors once. Pointer checks guard phase sharing.
+
+2733431 red helper numbering ->2901184 green;2739699 passes owner/cycle borrowing.
+2935926 passes four value/normalization/diagnostic tests. Earlier2929717 failed
+because the new test used Diagnostic.span instead of primary;2931600 then
+exposed a fixture missing the real core Or lang role. Fix fixture+assert the
+unregistered lookalike stays unknown,not a production name fallback.
+2961886 red kernel integer constructor ->2964006 passes654 frontend cases.
+2987243 red standalone supplied-function contract ->2991751 passes655 after
+borrowing that auxiliary declaration context,without copying its registry.
+The max-word final discriminator and unused-successor overflow are covered.
+
+Temporary audit_enum_values and legacy_enum_reprs/enum helpers STILL EXIST for
+old/new validation. They are not a second shipped execution path. Old evaluator
+unknown explicit expressions were guessed ordinals,not successful constant
+answers;valid known nonnegative old answers and complete known widths are
+asserted. No broad Rust/native/corpus/UI/JSON comparison or final gate yet.
+Do not commit,delete the oracle or claim full acceptance from frontend green.
+
+Next:strengthen public/helper context coverage (including conditional helpers
+whose Bool provider lies outside the requested module slice),add actual corpus
+native/VCD and diagnostics for helper-backed/default/normalized enum values,
+then run full default/bitpack/ordinary/debug comparison. If an early Boolean
+needs no physical discriminator yet,consider symbolic enum/Bool value identity
+rather than inventing raw flags or requiring unavailable encodings. Preserve
+all scope;do not substitute an easier arithmetic-only API guarantee. Audit
+unknown enum constantness and alias/module-order/cycle edges. After broad proof,
+delete old enum indexing/calculation/audit routines and run a frozen full final
+gate before commits/docs/wiki/board acceptance. No runtime/LLVM/grammar/deps,
+source/wiki pushes or peer edits. All current verification jobs are terminal;
+do not wait on them or restart the old accepted gates. Estimate remains79%
+for the last accepted compiler-foundations state;goal remains active.
+
+### 2026-10-28 — Codex — symbolic enum identity scope
+
+Continue the owned shared enum-fact slice. Add the conditional supplied-helper
+regression before extending the shared interpreter's value model. If confirmed,
+retain enum variant identity separately from physical encoding, using the
+resolver's existing owner/member table rather than Boolean numeric flags or
+another AST registry. Ownership includes resolve.rs, types/consteval.rs and the
+IR typed adapter's exhaustive value handling; no grammar/runtime/LLVM changes.
+Preserve source operator bodies and unknown encodings. Full comparison and final
+gates still required before committing; no pushes or unrelated peer edits.
+
+### 2026-10-28 — Codex — shared enum comparison gate freeze
+
+2995416 red101 confirms conditional supplied helpers fail without the Bool AST.
+Symbolic enum-member identity plus the moved resolver member table fixes that
+without numeric truth flags or an AST clone. 2995884 passes656 frontend tests;
+2999571 passes658 plus direct native helper/default/inheritance/length checks.
+3004032 passes659 frontend and the same native fixture after preserving source
+order for newly decidable errors. New corpus enum_phase_values_test.siox and
+ui/enum_phase_values.{siox,stderr} are mine; preserve all20 pre-existing probes.
+Exact VCD profile plus negative self-tests cover values/symbols/time. Canonical
+architecture/proposal docs and generated local wiki describe this as in-progress.
+
+Freeze current owned source/corpus/wiki for the full comparison gate using
+shared-enum-facts-oracle-20261028.sh. Retain temporary numeric audit until green;
+then delete it and old enum index/width helpers, run full frozen oracle-free
+gate before committing. No pushes or other proposal/runtime/LLVM/dependency work.
+
+### 2026-10-28 — Codex — enum comparison passed, old helpers removed
+
+3007314 (siox-job-3000-1793190596455343196-3007314.service) is terminal
+exited/success/0, peak1613017088bytes. Comparison passes659 frontend, full
+716/695 default/bitpack libraries, all integration and23 DWARF cases per mode,
+128 direct native/debug/VCD checks, both actual271-program corpora, strict
+Clippy,52 runner tests,12 artifacts and both66-case human UI/JSON matrices
+covering54 active codes and2 apply/recompile migrations. Frozen hashes match:
+source e37f7343b351145b0d7207e0754a6ebee47c7c860e0916ed8386673a25a10afd;
+corpus 3a238f02dbb77028374484687fbb5ab6ada46981acc2d8703757fc4efefe3a84;
+wiki 0f4d47177a852e2d9fb62f718214e239fd4fcbefe24d0bbc17f018f39394c68e.
+
+Remove audit_enum_values, legacy_enum_reprs, enum_index, enum_base_name,
+discriminant_constants and effective_variants only after that proof; source
+search confirms no references remain. Keep public enum helper entry points,
+but they now use shared identity facts and supplied borrowed function contracts.
+Canonical proposal records comparison success and final verification pending.
+Freeze source/corpus/wiki again for shared-enum-facts-final-20261028.sh; no
+commits until that complete oracle-free matrix passes. Preserve20 peer probes.
+Last accepted estimate remains79%; no pushes or expansion to another proposal.
+
+### 2026-10-28 — Codex — shared enum facts accepted locally
+
+Final oracle-free3109217 (siox-job-3000-1793192549183471846-3109217.service)
+is terminal exited/success/0, peak1613156352bytes. Full matrix passes659 frontend,
+716/695 default/bitpack library cases, all integration and23 DWARF cases per
+mode,128 direct ordinary/debug native/VCD checks, both actual271-program
+corpora, strict Clippy,52 runner tests,12 artifacts, both66-case UI/JSON matrices,
+54 active codes and2 apply/recompile migrations. Final frozen hashes match:
+source 0813c99f96ca189dbd16bd1e4096c82a5f70b277f0a5d1dab39edb1ff3e1359c;
+corpus 3a238f02dbb77028374484687fbb5ab6ada46981acc2d8703757fc4efefe3a84;
+wiki 0f4d47177a852e2d9fb62f718214e239fd4fcbefe24d0bbc17f018f39394c68e.
+Comparison3007314 already passed before removal. The old enum index, numeric
+walks and temporary audit are gone; no old expression/width oracle is restored.
+AST graph7566nodes/19998edges/381communities is refreshed; existing partial
+vendor-C extraction warnings remain and documentation semantics are not rebuilt.
+
+Only this acceptance log and canonical proposal acceptance wording change
+after final proof. Commit owned compiler paths, the three new corpus fixture/
+snapshot paths and the generated architecture wiki copy separately. Preserve
+all20 peer probes and the protected shared main/paper worktrees. No pushes.
+Engineering estimate about81% for compiler-foundations, not the whole codebase;
+all five sections remain required. Next verify repeated-macro enum member IDs
+and numeric ordering using actual expansion, then unify remaining typed stage
+contexts. Packed/real/range/attribute values, further statements, remaining
+registries/hooks, generic signatures/nominal arguments and dynamic constructor
+routing stay open. Do not claim general macro expansion identity is solved.

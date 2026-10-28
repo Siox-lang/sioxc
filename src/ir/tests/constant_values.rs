@@ -3,6 +3,102 @@
 use super::*;
 
 #[test]
+fn standalone_enum_helpers_borrow_supplied_function_contracts() {
+    let mut sink = DiagnosticSink::default();
+    let modules = [
+        crate::syntax::parse_module(
+            FileId(0),
+            "module provider; pub fn first(n: integer) -> integer { return n + 9; }",
+            &mut sink,
+        ),
+        crate::syntax::parse_module(
+            FileId(1),
+            "module model; use provider::first; enum Palette { Low = first(0), High }",
+            &mut sink,
+        ),
+    ];
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let ast::Item::Fn(function) = &modules[0].items[0] else {
+        panic!("function")
+    };
+    let mut functions = FunctionIndex::new(&resolved);
+    functions.insert_free(function);
+    let values = enum_discriminants(&modules[1..], &functions);
+    assert_eq!(values["Palette"].get("Low"), Some(&9));
+    assert_eq!(values["Palette"].get("High"), Some(&10));
+    assert_eq!(
+        enum_first_discriminants(&modules[1..], &functions).get("Palette"),
+        Some(&9)
+    );
+}
+
+#[test]
+fn standalone_enum_helpers_can_branch_without_the_boolean_provider_ast() {
+    let mut sink = DiagnosticSink::default();
+    let modules = [
+        crate::syntax::parse_module(
+            FileId(0),
+            "module provider; pub fn first(n: integer) -> integer {
+                if n == 0 { return 9; } return 3;
+            }",
+            &mut sink,
+        ),
+        crate::syntax::parse_module(
+            FileId(1),
+            "module model; use provider::first; enum Palette { Low = first(0), High }",
+            &mut sink,
+        ),
+        crate::syntax::parse_module(
+            FileId(2),
+            include_str!("../../../core/primitive.siox"),
+            &mut sink,
+        ),
+    ];
+    let resolved = crate::resolve::resolve(&modules, &mut sink);
+    assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
+    let ast::Item::Fn(function) = &modules[0].items[0] else {
+        panic!("function")
+    };
+    let mut functions = FunctionIndex::new(&resolved);
+    functions.insert_free(function);
+    let values = enum_discriminants(&modules[1..2], &functions);
+    assert_eq!(values["Palette"].get("Low"), Some(&9));
+    assert_eq!(values["Palette"].get("High"), Some(&10));
+}
+
+#[test]
+fn enum_discriminant_helpers_keep_their_definition_site_constants() {
+    let design = lower_src(
+        "module model;
+        const OFFSET: integer = 5;
+        fn first() -> integer { return OFFSET + 4; }
+        enum Palette { Low = first(), High }
+        enum Derived(Palette);
+        entity Top { low: Palette out, high: Derived out }
+        impl Top { low = Palette::Low; high = Derived::High; }",
+    );
+    for owner in ["Palette", "Derived"] {
+        assert_eq!(
+            design.enum_syms[owner].get(&9).map(String::as_str),
+            Some("Low")
+        );
+        assert_eq!(
+            design.enum_syms[owner].get(&10).map(String::as_str),
+            Some("High")
+        );
+    }
+    for name in ["low", "high"] {
+        let signal = design
+            .signals
+            .iter()
+            .find(|signal| signal.path == format!("Top.{name}"))
+            .unwrap();
+        assert_eq!(signal.width, 4, "{name}");
+    }
+}
+
+#[test]
 fn scalar_constants_use_declared_aliases_and_helper_return_types() {
     let design = lower_src(
         "module model;
@@ -59,6 +155,10 @@ fn encoding_with(source: &str, owner: &str, primitive: &str, prelude: &str) -> L
     let typed = crate::types::check(&modules, &resolved, &mut sink);
     assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
     let hierarchy = crate::elab::elaborate(&modules, &resolved, &typed, &mut sink);
+    assert!(std::sync::Arc::ptr_eq(
+        &typed.enum_values,
+        &hierarchy.enum_values
+    ));
     let design = lower(&modules, &resolved, &hierarchy, &mut sink);
     assert!(!sink.has_errors(), "{:?}", sink.diagnostics());
     design

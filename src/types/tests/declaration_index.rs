@@ -28,6 +28,58 @@ fn constant<'a>(module: &'a Module, name: &str) -> &'a ConstDecl {
 }
 
 #[test]
+fn enum_contracts_borrow_inherited_variants_by_resolved_owner() {
+    let sources = [
+        "module left; pub enum Base { Low = 9, High } pub enum Mode(Base);",
+        "module right; pub enum Base { Low = 3, High } pub enum Mode(Base);",
+    ];
+    for sources in [sources, [sources[1], sources[0]]] {
+        let (modules, resolved) = parse(&sources);
+        let index = DeclarationIndex::collect(&resolved, &modules);
+        assert_eq!(index.enumerations().count(), 4);
+        let mut owners = Vec::new();
+        for module in &modules {
+            let Item::Enum(base) = &module.items[0] else {
+                panic!("base")
+            };
+            let Item::Enum(derived) = &module.items[1] else {
+                panic!("derived")
+            };
+            let base_id = resolved.declared(base.name.span).unwrap();
+            let owner = resolved.declared(derived.name.span).unwrap();
+            owners.push(owner);
+            assert_ne!(owner, base_id);
+            assert!(std::ptr::eq(index.enumeration(owner).unwrap(), derived));
+            assert_eq!(index.enum_base(owner), Some(base_id));
+            let variants = index.enum_variants(owner).unwrap();
+            assert_eq!(variants.len(), 2);
+            for ((id, actual), expected) in variants.iter().zip(&base.variants) {
+                assert_eq!(Some(*id), resolved.declared(expected.name.span));
+                assert!(std::ptr::eq(*actual, expected));
+            }
+        }
+        assert_ne!(owners[0], owners[1]);
+    }
+}
+
+#[test]
+fn enum_contract_queries_do_not_invent_members_of_a_derivation_cycle() {
+    let mut sink = DiagnosticSink::default();
+    let module =
+        crate::syntax::parse_module(FileId(0), "module model; enum A(B); enum B(A);", &mut sink);
+    let resolved = crate::resolve::resolve(std::slice::from_ref(&module), &mut sink);
+    assert!(sink.has_errors(), "the source cycle remains diagnosed");
+    let index = DeclarationIndex::collect(&resolved, std::slice::from_ref(&module));
+    for item in &module.items {
+        let Item::Enum(declaration) = item else {
+            continue;
+        };
+        let id = resolved.declared(declaration.name.span).unwrap();
+        assert!(index.enum_variants(id).is_none());
+    }
+}
+
+#[test]
 fn generic_aliases_substitute_resolved_type_and_value_parameters() {
     let (modules, resolved) = parse(&[
         "module provider; const BASE: integer = 6; const N: integer = 40;

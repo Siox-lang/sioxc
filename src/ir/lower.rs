@@ -68,14 +68,19 @@ pub fn lower_in(
     // afterwards left the fold with nothing to look the variant up in, so the
     // constant never entered the tables and every read of it reported the
     // name as unknown.
-    l.enum_variants = enum_discriminants(modules, &l.free_fns);
-    l.enum_first_disc = enum_first_discriminants(modules, &l.free_fns);
+    l.enum_variants = enum_discriminants_from_values(&hier.enum_values, resolved, &l.free_fns);
+    l.enum_first_disc = enum_first_from_values(&hier.enum_values, &l.free_fns);
     l.collect(modules);
     {
-        let enums = enum_index(modules, &l.free_fns);
-        for (name, e) in &enums {
-            if let Some(b) = enum_base_name(e, &enums, &l.free_fns) {
-                l.enum_bases.insert(name.clone(), b);
+        for (owner, _) in l.free_fns.declarations().enumerations() {
+            if let Some(base) = l.free_fns.declarations().enum_base(owner) {
+                if let Some((name, base)) = l
+                    .free_fns
+                    .enum_id_key(owner)
+                    .zip(l.free_fns.enum_id_key(base))
+                {
+                    l.enum_bases.insert(name, base);
+                }
             }
         }
         l.out.enum_bases = l.enum_bases.clone();
@@ -97,7 +102,7 @@ pub fn lower_in(
             )
         })
         .collect();
-    l.enum_reprs = enum_reprs(modules, &l.free_fns);
+    l.enum_reprs = enum_reprs(&hier.enum_values, &l.free_fns);
     l.array_families = array_families(modules, &l.free_fns);
     // Record what each family's elements are, so a consumer that sees only
     // the finished `Design` (the testbench emitter) can type a bit of a

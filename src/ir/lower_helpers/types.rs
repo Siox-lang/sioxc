@@ -2,9 +2,6 @@
 
 use super::*;
 
-/// Build `enum name -> variant name -> discriminant`. Explicit `= n` values are
-/// honoured; unspecified variants continue from the previous discriminant + 1.
-/// Index every enum declaration by name (for base-chain resolution).
 /// Every derived type's inherited width: `struct Byte : Logic[8]` -> 8,
 /// `struct Word : Byte` -> 8 (following the base chain). A derived type reuses
 /// its base array's size/range (spec: nominal derivation). Testbench evaluators
@@ -88,101 +85,6 @@ pub(in crate::ir) fn is_array_family_struct(
     }
 }
 
-/// Index every enum's variants and discriminants across the modules.
-pub(in crate::ir) fn enum_index<'a>(
-    modules: &'a [Module],
-    fns: &FunctionIndex<'_>,
-) -> HashMap<String, &'a ast::EnumDecl> {
-    let mut out = HashMap::new();
-    for m in modules {
-        for item in &m.items {
-            if let ast::Item::Enum(e) = item {
-                out.insert(fns.enum_decl_key(&e.name), e);
-            }
-        }
-    }
-    out
-}
-
-/// The `: Type` head name when it names another enum — i.e. a derivation
-/// base rather than a numeric repr.
-pub(in crate::ir) fn enum_base_name(
-    e: &ast::EnumDecl,
-    enums: &HashMap<String, &ast::EnumDecl>,
-    fns: &FunctionIndex<'_>,
-) -> Option<String> {
-    let name = fns.type_head_key(e.repr.as_ref()?)?;
-    enums.contains_key(&name).then_some(name)
-}
-
-/// An enum's effective variants, base chain first then its own declared ones
-/// (spec: nominal derivation). `(name, explicit discriminant)`.
-/// Module integer constants folded to values, for discriminants written as
-/// `Base = OFFSET` or `Next = OFFSET + 1`.
-pub(in crate::ir) fn discriminant_constants(
-    modules: &[Module],
-    fns: &FunctionIndex<'_>,
-) -> HashMap<String, i64> {
-    let constants: Vec<&ast::ConstDecl> = modules
-        .iter()
-        .flat_map(|m| &m.items)
-        .filter_map(|item| match item {
-            ast::Item::Const(c) => Some(c),
-            _ => None,
-        })
-        .collect();
-    let mut env = HashMap::new();
-    // Constants may name each other in any order: fold to a fixpoint.
-    for _ in 0..=constants.len() {
-        let mut changed = false;
-        for c in &constants {
-            let key = fns.constant_decl_key(c);
-            if env.contains_key(&key) {
-                continue;
-            }
-            if let Some(value) = eval_const_fns(&c.value, &env, fns, 0) {
-                env.insert(key, value);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    env
-}
-
-pub(in crate::ir) fn effective_variants(
-    name: &str,
-    enums: &HashMap<String, &ast::EnumDecl>,
-    fns: &FunctionIndex<'_>,
-    seen: &mut Vec<String>,
-    constants: &HashMap<String, i64>,
-) -> Vec<(String, Option<i64>)> {
-    let Some(e) = enums.get(name) else {
-        return Vec::new();
-    };
-    if seen.iter().any(|n| n == name) {
-        return Vec::new(); // cycle guard
-    }
-    seen.push(name.to_string());
-    let mut out = match enum_base_name(e, enums, fns) {
-        Some(base) => effective_variants(&base, enums, fns, seen, constants),
-        None => Vec::new(),
-    };
-    for v in &e.variants {
-        // Any constant expression: only a bare literal was read, and
-        // `Base = OFFSET` numbered from zero instead (#201).
-        let disc = v
-            .value
-            .as_ref()
-            .and_then(|value| eval_const_fns(value, constants, fns, 0));
-        out.push((v.name.text.clone(), disc));
-    }
-    seen.pop();
-    out
-}
-
 /// Every enum's `variant -> discriminant` map, *including inherited variants*
 /// from a derivation base (`enum Extended : Base` gets Base's variants too).
 /// Consumers (runner, native emitter) share this so derived-enum variant
@@ -191,40 +93,66 @@ pub fn enum_discriminants(
     modules: &[Module],
     fns: &FunctionIndex<'_>,
 ) -> HashMap<String, HashMap<String, u64>> {
-    let enums = enum_index(modules, fns);
-    let constants = discriminant_constants(modules, fns);
-    let mut out = HashMap::new();
-    for name in enums.keys() {
-        let mut vars = HashMap::new();
-        let mut next = 0u64;
-        for (v, disc) in effective_variants(name, &enums, fns, &mut Vec::new(), &constants) {
-            let d = disc.map(|d| d as u64).unwrap_or(next);
-            vars.insert(v, d);
-            next = d + 1;
-        }
-        out.insert(name.clone(), vars);
-    }
-    out
+    let declarations =
+        crate::resolve::declarations::DeclarationIndex::collect(fns.resolved(), modules);
+    let values = crate::types::enum_values::EnumValues::collect_with_functions(
+        &declarations,
+        fns.resolved(),
+        Some(fns.declarations()),
+    );
+    enum_discriminants_from_values(&values, fns.resolved(), fns)
 }
 
-/// Every enum's first-variant discriminant — the derived `new()` default
-/// (`T'LEFT`). Mirrors `enum_discriminants`' running-counter numbering but keeps
-/// only the first (declaration-order, base chain first) variant's value, so an
-/// enum whose first variant carries a non-zero `= n` still defaults to a valid
-/// member rather than a bare `0`.
+/// Every enum's first-variant discriminant — the derived `new()` default.
+/// Keep declaration order (base chain first), not the smallest numeric value.
 pub fn enum_first_discriminants(
     modules: &[Module],
     fns: &FunctionIndex<'_>,
 ) -> HashMap<String, u64> {
-    let enums = enum_index(modules, fns);
-    let constants = discriminant_constants(modules, fns);
-    let mut out = HashMap::new();
-    for name in enums.keys() {
-        if let Some((_, disc)) =
-            effective_variants(name, &enums, fns, &mut Vec::new(), &constants).first()
-        {
-            out.insert(name.clone(), disc.map(|d| d as u64).unwrap_or(0));
-        }
-    }
-    out
+    let declarations =
+        crate::resolve::declarations::DeclarationIndex::collect(fns.resolved(), modules);
+    let values = crate::types::enum_values::EnumValues::collect_with_functions(
+        &declarations,
+        fns.resolved(),
+        Some(fns.declarations()),
+    );
+    enum_first_from_values(&values, fns)
+}
+
+/// Serialize resolved phase facts only at the legacy public IR boundary.
+pub(in crate::ir) fn enum_discriminants_from_values(
+    values: &crate::types::enum_values::EnumValues,
+    resolved: &Resolved,
+    fns: &FunctionIndex<'_>,
+) -> HashMap<String, HashMap<String, u64>> {
+    values
+        .owners()
+        .filter_map(|owner| {
+            let key = fns.enum_id_key(owner)?;
+            let members = values
+                .members(owner)?
+                .iter()
+                .filter_map(|(variant, _)| {
+                    Some((
+                        resolved.def(*variant)?.name.clone(),
+                        values.value(owner, *variant)?,
+                    ))
+                })
+                .collect();
+            Some((key, members))
+        })
+        .collect()
+}
+
+pub(in crate::ir) fn enum_first_from_values(
+    values: &crate::types::enum_values::EnumValues,
+    fns: &FunctionIndex<'_>,
+) -> HashMap<String, u64> {
+    values
+        .owners()
+        .filter_map(|owner| {
+            let first = values.members(owner)?.first()?.0;
+            Some((fns.enum_id_key(owner)?, values.value(owner, first)?))
+        })
+        .collect()
 }

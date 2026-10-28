@@ -21,58 +21,8 @@ impl<'a> Checker<'a> {
                         self.check_expr(val, sym);
                     }
                 }
-                // Variants are values: two sharing a discriminant compare equal
-                // and are indistinguishable at runtime (and in a waveform).
-                // Implicit numbering counts on from the previous variant, as
-                // lowering numbers them, so it can collide with an explicit
-                // value too (`Zero, One, Two = 1`, #184).
-                let mut seen: HashMap<i64, &str> = HashMap::new();
-                let mut next = Some(0i64);
-                for v in &e.variants {
-                    let n = match &v.value {
-                        Some(val) => match Self::const_literal(val)
-                            .or_else(|| self.const_int(val).and_then(|n| i64::try_from(n).ok()))
-                        {
-                            Some(n) => n,
-                            None => {
-                                // Not a literal: the count is unknown from here.
-                                next = None;
-                                continue;
-                            }
-                        },
-                        None => match next {
-                            Some(n) => n,
-                            None => continue,
-                        },
-                    };
-                    next = n.checked_add(1);
-                    let val = v.value.as_ref();
-                    // Discriminants are unsigned: the enum's width is what
-                    // its largest one needs. A negative one was dropped in
-                    // lowering and numbered from zero instead (#166).
-                    if n < 0 {
-                        self.error(
-                            codes::TYPE_MISMATCH,
-                            val.map(expr_span).unwrap_or(v.name.span),
-                            format!(
-                                "`{}::{}` has the negative discriminant {n}; an enum's \
-                                 discriminants start at 0",
-                                e.name.text, v.name.text
-                            ),
-                        );
-                        continue;
-                    }
-                    if let Some(prev) = seen.insert(n, v.name.text.as_str()) {
-                        self.error(
-                            codes::DUPLICATE_ITEM,
-                            v.name.span,
-                            format!(
-                                "`{}::{}` and `{}::{prev}` both have the value {n}",
-                                e.name.text, v.name.text, e.name.text
-                            ),
-                        );
-                    }
-                }
+                self.enum_values
+                    .check_declaration(e, self.resolved, self.sink, None);
             }
             Item::Entity(e) => {
                 // A test is a root nothing instantiates: a port has nothing

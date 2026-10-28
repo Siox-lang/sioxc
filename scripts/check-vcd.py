@@ -60,7 +60,14 @@ def values(changes: dict[str, list[tuple[int, str]]], path: str) -> list[str]:
 
 
 def check_profile(profile: str, changes: dict[str, list[tuple[int, str]]]) -> None:
-    if profile == "enum_constant_values_test":
+    if profile == "enum_phase_values_test":
+        root = "EnumPhaseValues.dut."
+        for name in ("value", "seen"):
+            assert changes[root + name] == [(0, "low"), (1_000_000, "high")], name
+        assert changes[root + "inherited"] == [(0, "high")]
+        assert changes[root + "normalized"] == [(0, "next")]
+        assert changes[root + "code"] == [(0, f"{9:064b}"), (1_000_000, f"{10:064b}")]
+    elif profile == "enum_constant_values_test":
         root = "EnumConstantValues.dut."
         for signal, expected in {
             "a": [(0, "1"), (1_000_000, "x"), (2_000_000, "z")],
