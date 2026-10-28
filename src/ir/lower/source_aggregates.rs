@@ -210,7 +210,10 @@ impl Lowering<'_> {
                     layout.kind,
                     LayoutKind::Array { .. } | LayoutKind::Struct { .. }
                 ) {
-                    let value = match self.source_operand_layout(expression, env) {
+                    let value = match self
+                        .source_operand_layout(expression, env)
+                        .filter(|source| !has_open_parameter(source))
+                    {
                         Some(source) => reindex_aggregate_value(value, &source, layout)
                             .unwrap_or(Val::Scalar(Expr::Unknown)),
                         None => value,
@@ -233,6 +236,9 @@ impl Lowering<'_> {
         target: &ast::Expr,
         value: &ast::Expr,
     ) -> Option<Vec<(SignalId, Expr)>> {
+        if let Some(full) = self.full_range_slice(value) {
+            return self.aggregate_assign_leaves(target, &full);
+        }
         let path = self
             .folded_elem_path(target)
             .or_else(|| expr_path(target))?;
@@ -293,8 +299,12 @@ impl Lowering<'_> {
         }
         let env = HashMap::new();
         let value_expression = value;
+        // A generic's layout with a parameter left open (`Box<T>` from
+        // `Box<integer>::make`) is the target's: the checker matched the
+        // types (#294).
         let source_layout = self
             .source_operand_layout(value, &env)
+            .filter(|layout| !has_open_parameter(layout))
             .unwrap_or_else(|| target_layout.clone());
         let value = self.lower_shaped_source(value, &env, &source_layout);
         let Val::Fields(fields) = value else {
@@ -333,6 +343,45 @@ impl Lowering<'_> {
 impl Lowering<'_> {
     /// One concatenation part's scalar elements in order: a slice of an
     /// element-wise array as written, a whole one from `'left`, or one bit.
+    /// `arr[2..]` on an unpacked array as the written slice `arr[2..3]`,
+    /// its open bound taken from the declaration (#296).
+    pub(super) fn full_range_slice(&self, expression: &ast::Expr) -> Option<ast::Expr> {
+        let ast::Expr::Index { base, index, span } = expression else {
+            return None;
+        };
+        let ast::Expr::PartialRange {
+            lo,
+            hi,
+            span: range_span,
+        } = index.as_ref()
+        else {
+            return None;
+        };
+        let path = self.folded_elem_path(base).or_else(|| expr_path(base))?;
+        let labels = self.local_array.get(&path)?;
+        let bound = |given: &Option<Box<ast::Expr>>, open: i64| match given {
+            Some(given) => self.eval_const(given, &self.cur_env),
+            None => Some(open),
+        };
+        let left = bound(lo, *labels.first()?)?;
+        let right = bound(hi, *labels.last()?)?;
+        let bound = |value: i64| {
+            Box::new(ast::Expr::Int {
+                text: value.to_string(),
+                span: *range_span,
+            })
+        };
+        Some(ast::Expr::Index {
+            base: base.clone(),
+            index: Box::new(ast::Expr::Range {
+                lo: bound(left),
+                hi: bound(right),
+                span: *range_span,
+            }),
+            span: *span,
+        })
+    }
+
     /// Whether `expression` is a call returning an unpacked array.
     fn call_array(&self, expression: &ast::Expr) -> bool {
         matches!(expression, ast::Expr::Call { .. })
@@ -663,6 +712,18 @@ fn aggregate_leaf_pairs(
     let mut pairs = Vec::new();
     walk(source, target, String::new(), String::new(), &mut pairs)?;
     Some(pairs)
+}
+
+/// Whether a layout still holds a generic parameter no width fixes.
+fn has_open_parameter(layout: &SourceLayout) -> bool {
+    match &layout.kind {
+        LayoutKind::Opaque { width: None, .. } => true,
+        LayoutKind::Struct { fields, .. } => {
+            fields.iter().any(|field| has_open_parameter(&field.layout))
+        }
+        LayoutKind::Array { element, .. } => has_open_parameter(element),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

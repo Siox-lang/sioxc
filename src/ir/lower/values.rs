@@ -55,6 +55,9 @@ impl<'a> Lowering<'a> {
     /// Lower an expression to a value in `env`, which may be an aggregate of
     /// leaves rather than a single expression.
     pub(super) fn lower_val_env(&self, e: &ast::Expr, env: &HashMap<String, Val>) -> Val {
+        if let Some(full) = self.full_range_slice(e) {
+            return self.lower_val_env(&full, env);
+        }
         if let Some(value) = self.promoted_operand(e, env) {
             return Val::Scalar(value);
         }

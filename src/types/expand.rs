@@ -792,3 +792,123 @@ pub fn type_instance_slots(modules: &mut [Module], resolved: &Resolved) {
         }
     }
 }
+
+/// `y: unsigned[x'length] out`: an attribute of a port or signal in a
+/// declared type is read from that declaration's own type, so `x:
+/// unsigned[W]` gives `W` per instance. Widths are evaluated before any
+/// signal exists, and the name was read as a value there, which had none
+/// (#295). `'length`, `'low` and `'high` of a width (`[8]` is `0..7` by
+/// position) or of a literal range.
+pub fn fold_type_attributes(modules: &mut [Module]) {
+    // Names in a type index are not resolved, so a declaration is found by
+    // name among its entity's ports and its impl's `let`s.
+    let mut scopes: HashMap<String, HashMap<String, Type>> = HashMap::new();
+    for module in modules.iter() {
+        for item in &module.items {
+            match item {
+                Item::Entity(entity) => {
+                    let scope = scopes.entry(entity.name.text.clone()).or_default();
+                    for port in &entity.ports {
+                        scope.insert(port.name.text.clone(), port.ty.clone());
+                    }
+                }
+                Item::Impl(implementation) => {
+                    let Some(owner) = type_owner(&implementation.target) else {
+                        continue;
+                    };
+                    let scope = scopes.entry(owner).or_default();
+                    for member in &implementation.items {
+                        if let ImplItem::Let(LetDecl {
+                            name, ty: Some(ty), ..
+                        }) = member
+                        {
+                            scope.insert(name.text.clone(), ty.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    fn type_owner(ty: &Type) -> Option<String> {
+        match ty {
+            Type::Path(path) => path.segments.last().map(|segment| segment.text.clone()),
+            Type::Generic { base, .. } => type_owner(base),
+            _ => None,
+        }
+    }
+    let fold = |e: &mut Expr, declared: &HashMap<String, Type>| {
+        let Expr::SysAttr { base, attr, span } = e else {
+            return true;
+        };
+        let Expr::Path(path) = base.as_ref() else {
+            return true;
+        };
+        let [name] = path.segments.as_slice() else {
+            return true;
+        };
+        let Some(Type::Indexed {
+            index: Some(index), ..
+        }) = declared.get(&name.text)
+        else {
+            return true;
+        };
+        let int = |value: i64| Expr::Int {
+            text: value.to_string(),
+            span: *span,
+        };
+        let literal = |e: &Expr| match e {
+            Expr::Int { text, .. } => text.replace('_', "").parse::<i64>().ok(),
+            _ => None,
+        };
+        let replacement = match (index.as_ref(), attr.text.as_str()) {
+            (Expr::Range { lo, hi, .. }, attribute) => {
+                let (Some(left), Some(right)) = (literal(lo), literal(hi)) else {
+                    return true;
+                };
+                match attribute {
+                    "length" => int((right - left).abs() + 1),
+                    "low" => int(left.min(right)),
+                    "high" => int(left.max(right)),
+                    _ => return true,
+                }
+            }
+            (Expr::PartialRange { .. }, _) => return true,
+            (width, "length") => width.clone(),
+            (_, "low") => int(0),
+            (width, "high") => Expr::Binary {
+                op: BinOp::Sub,
+                lhs: Box::new(width.clone()),
+                rhs: Box::new(int(1)),
+                span: *span,
+            },
+            _ => return true,
+        };
+        *e = replacement;
+        false
+    };
+    let empty = HashMap::new();
+    for module in modules {
+        for item in &mut module.items {
+            match item {
+                Item::Entity(entity) => {
+                    let declared = scopes.get(&entity.name.text).unwrap_or(&empty);
+                    for port in &mut entity.ports {
+                        walk_type(&mut port.ty, &mut |e| fold(e, declared));
+                    }
+                }
+                Item::Impl(implementation) => {
+                    let declared = type_owner(&implementation.target)
+                        .and_then(|owner| scopes.get(&owner))
+                        .unwrap_or(&empty);
+                    for member in &mut implementation.items {
+                        if let ImplItem::Let(LetDecl { ty: Some(ty), .. }) = member {
+                            walk_type(ty, &mut |e| fold(e, declared));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}

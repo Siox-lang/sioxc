@@ -941,6 +941,35 @@ impl<'a> Lowering<'a> {
         true
     }
 
+    /// A struct literal's fields, each a scalar constant, or nothing: a field
+    /// that is itself an aggregate (`.payload = [7, 8, 9]`) leaves the whole
+    /// constant to the aggregate fold (#293).
+    fn insert_const_fields(
+        &mut self,
+        name: &str,
+        fields: Vec<(String, ast::Expr)>,
+        scope: &HashMap<String, i64>,
+    ) -> bool {
+        let mut folded = Vec::new();
+        for (field, value) in fields {
+            let Some(lowered) = self.lower_const_value(&value, scope) else {
+                return false;
+            };
+            folded.push((
+                format!("{name}.{field}"),
+                self.eval_const(&value, scope),
+                lowered,
+            ));
+        }
+        for (key, narrow, lowered) in folded {
+            if let Some(narrow) = narrow {
+                self.consts.insert(key.clone(), narrow);
+            }
+            self.const_values.insert(key, lowered);
+        }
+        true
+    }
+
     /// The constant forms written out in source: literals, tables, struct
     /// literals, aliases and table slices.
     fn fold_const_literal(
@@ -1063,17 +1092,7 @@ impl<'a> Lowering<'a> {
             let Some(fields) = self.const_struct_fields(&constant.ty, &args) else {
                 return false;
             };
-            for (field, value) in fields {
-                let key = format!("{name}.{field}");
-                if let Some(narrow) = self.eval_const(&value, scope) {
-                    self.consts.insert(key.clone(), narrow);
-                }
-                let Some(lowered) = self.lower_const_value(&value, scope) else {
-                    return false;
-                };
-                self.const_values.insert(key, lowered);
-            }
-            return true;
+            return self.insert_const_fields(name, fields, scope);
         } else if let ast::Expr::Construct { args, .. } = &constant.value {
             // `const K: Pair = { .a = 4, .b = 5 };` — a struct constant is one
             // folded value per field, keyed by the dotted path a read spells.
@@ -1085,17 +1104,7 @@ impl<'a> Lowering<'a> {
             let Some(fields) = self.const_struct_fields(&constant.ty, args) else {
                 return false;
             };
-            for (field, value) in fields {
-                let key = format!("{name}.{field}");
-                if let Some(narrow) = self.eval_const(&value, scope) {
-                    self.consts.insert(key.clone(), narrow);
-                }
-                let Some(lowered) = self.lower_const_value(&value, scope) else {
-                    return false;
-                };
-                self.const_values.insert(key, lowered);
-            }
-            return true;
+            return self.insert_const_fields(name, fields, scope);
         } else if let ast::Expr::Int { text, .. } = &constant.value {
             if text.contains('.') {
                 if let Ok(value) = text.replace('_', "").parse::<f64>() {

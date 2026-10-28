@@ -173,8 +173,8 @@ impl Typed {
 }
 
 pub use expand::{
-    expand_type_attrs, flatten_slice_chains, fold_value_lengths, inline_loop_ranges,
-    type_instance_slots,
+    expand_type_attrs, flatten_slice_chains, fold_type_attributes, fold_value_lengths,
+    inline_loop_ranges, type_instance_slots,
 };
 pub use tuples::{lower_tuples, tuple_struct_arity, tuple_struct_name};
 
