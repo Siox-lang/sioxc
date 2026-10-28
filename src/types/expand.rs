@@ -649,7 +649,7 @@ pub fn inline_loop_ranges(modules: &mut [Module], resolved: &Resolved) {
             None => {}
         }
     }
-    for module in modules {
+    for module in modules.iter_mut() {
         for item in &mut module.items {
             match item {
                 Item::Fn(function) => {
@@ -674,6 +674,120 @@ pub fn inline_loop_ranges(modules: &mut [Module], resolved: &Resolved) {
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+    // `v[R]`: a slice by the named range is the written one (#280). The
+    // checker and lowering read a slice from its `lo..hi`, so `v[R]` typed
+    // as one element.
+    let mut slice = |e: &mut Expr| {
+        if let Expr::Index { index, .. } = e {
+            if let Expr::Path(path) = index.as_ref() {
+                if let Some(value) = resolved.resolved(path.span).and_then(|id| ranges.get(&id)) {
+                    **index = value.clone();
+                }
+            }
+        }
+        true
+    };
+    for module in modules {
+        for item in &mut module.items {
+            walk_item(item, &mut slice);
+        }
+    }
+}
+
+/// `stage[i] = { .din = x }` (or `= {}`) on an instance array: the element's
+/// entity, `stage[i] = Cell { .din = x }`, as the declaration names it. A
+/// slot already exists from its declaration; this only rebuilds it with the
+/// connections written (#290).
+pub fn type_instance_slots(modules: &mut [Module], resolved: &Resolved) {
+    fn stmt(statement: &mut Stmt, arrays: &HashMap<String, Type>) {
+        match statement {
+            Stmt::Assign { target, value, .. } => {
+                let mut root = &*target;
+                while let Expr::Index { base, .. } | Expr::Field { base, .. } = root {
+                    root = base;
+                }
+                let Expr::Path(path) = root else { return };
+                let [name] = path.segments.as_slice() else {
+                    return;
+                };
+                let (Some(entity), Expr::Index { .. }) = (arrays.get(&name.text), &*target) else {
+                    return;
+                };
+                match value {
+                    Expr::Construct { ty: ty @ None, .. } => *ty = Some(entity.clone()),
+                    Expr::Concat { parts, span } if parts.is_empty() => {
+                        *value = Expr::Construct {
+                            ty: Some(entity.clone()),
+                            args: Vec::new(),
+                            spread: None,
+                            span: *span,
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            Stmt::For { body, .. } => {
+                for inner in &mut body.stmts {
+                    stmt(inner, arrays);
+                }
+            }
+            Stmt::If(nested) => if_stmt(nested, arrays),
+            _ => {}
+        }
+    }
+    fn if_stmt(statement: &mut IfStmt, arrays: &HashMap<String, Type>) {
+        for inner in &mut statement.then.stmts {
+            stmt(inner, arrays);
+        }
+        match statement.else_.as_deref_mut() {
+            Some(ElseBranch::Block(block)) => {
+                for inner in &mut block.stmts {
+                    stmt(inner, arrays);
+                }
+            }
+            Some(ElseBranch::If(nested)) => if_stmt(nested, arrays),
+            None => {}
+        }
+    }
+    for module in modules {
+        for item in &mut module.items {
+            let Item::Impl(implementation) = item else {
+                continue;
+            };
+            let arrays: HashMap<String, Type> = implementation
+                .items
+                .iter()
+                .filter_map(|member| match member {
+                    ImplItem::Let(LetDecl {
+                        name,
+                        ty: Some(Type::Indexed { base, .. }),
+                        value: None,
+                        ..
+                    }) => {
+                        let head = match base.as_ref() {
+                            Type::Generic { base, .. } => base.as_ref(),
+                            head => head,
+                        };
+                        let Type::Path(path) = head else {
+                            return None;
+                        };
+                        let id = resolved.resolved(path.span)?;
+                        (resolved.kind_of(id) == Some(DefKind::Entity))
+                            .then(|| (name.text.clone(), (**base).clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if arrays.is_empty() {
+                continue;
+            }
+            for member in &mut implementation.items {
+                if let ImplItem::Stmt(statement) = member {
+                    stmt(statement, &arrays);
+                }
             }
         }
     }

@@ -573,6 +573,7 @@ impl Compiler {
         crate::types::flatten_slice_chains(&mut result.modules);
         // Tuples become the generic structs they are; see `types::tuples`.
         crate::types::lower_tuples(&mut result.modules, &typed);
+        crate::types::type_instance_slots(&mut result.modules, &resolved);
         result.resolved = Some(resolved);
         result.typed = Some(typed);
         if result.diagnostics.has_errors() {

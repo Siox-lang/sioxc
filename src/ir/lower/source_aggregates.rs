@@ -254,9 +254,10 @@ impl Lowering<'_> {
                 if matches!(
                     index.as_ref(),
                     ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
-                ) && expr_path(base)
+                ) && (expr_path(base)
                     .and_then(|path| self.persisted_layout(&path))
-                    .is_some_and(|layout| matches!(layout.kind, LayoutKind::Array { .. })) =>
+                    .is_some_and(|layout| matches!(layout.kind, LayoutKind::Array { .. }))
+                    || self.call_array(base)) =>
             {
                 Some(single)
             }
@@ -332,6 +333,14 @@ impl Lowering<'_> {
 impl Lowering<'_> {
     /// One concatenation part's scalar elements in order: a slice of an
     /// element-wise array as written, a whole one from `'left`, or one bit.
+    /// Whether `expression` is a call returning an unpacked array.
+    fn call_array(&self, expression: &ast::Expr) -> bool {
+        matches!(expression, ast::Expr::Call { .. })
+            && self
+                .source_call_layout(expression)
+                .is_some_and(|layout| matches!(layout.kind, LayoutKind::Array { .. }))
+    }
+
     fn concat_part_elements(&self, part: &ast::Expr) -> Option<Vec<Expr>> {
         let element = |path: &str, label: i64| {
             self.locals
@@ -347,6 +356,23 @@ impl Lowering<'_> {
                 index.as_ref(),
                 ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
             ) {
+                // A slice of an array a call returns (`get_arr()[0..1]`):
+                // the elements of its value (#289).
+                if self.call_array(base) {
+                    let ast::Expr::Range { lo, hi, .. } = index.as_ref() else {
+                        return None;
+                    };
+                    let left = self.eval_const(lo, &self.cur_env)?;
+                    let right = self.eval_const(hi, &self.cur_env)?;
+                    let Val::Fields(fields) = self.lower_val_env(base, &HashMap::new()) else {
+                        return None;
+                    };
+                    let fields = fields.into_iter().collect::<HashMap<_, _>>();
+                    return loop_range(left, right)
+                        .into_iter()
+                        .map(|label| fields.get(&format!("[{label}]")).cloned())
+                        .collect();
+                }
                 let path = array_path(base)?;
                 let (left, right) = self.slice_bounds(base, index)?;
                 return loop_range(left, right)

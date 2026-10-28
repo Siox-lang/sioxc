@@ -2724,7 +2724,12 @@ impl<'a> Parser<'a> {
         let start = self.span();
         let mut lhs = self.parse_unary(no_struct);
         loop {
+            // A declared operator spelled across several punctuation tokens
+            // (`++`, `**`, `+-`) wins over the one-token core operator it
+            // starts with: the longest operator is taken, as Rust's lexer does.
+            let custom = self.custom_operator_at().filter(|found| found.3 > 1);
             let (op, lbp, rbp, consumed) = match self.kind() {
+                _ if custom.is_some() => custom.expect("checked"),
                 TokenKind::Star => (BinOp::Mul, 90, 91, 1),
                 TokenKind::Slash => (BinOp::Div, 90, 91, 1),
                 TokenKind::Percent => (BinOp::Rem, 90, 91, 1),

@@ -389,9 +389,22 @@ impl<'a> Lowering<'a> {
     /// (`let p: Pair = K`). `false` when `value` names no struct constant, so
     /// the caller can fall through to its diagnostic.
     pub(super) fn seed_from_struct_const(&mut self, prefix: &str, value: &ast::Expr) -> bool {
-        let Some(fields) = expr_path(value).and_then(|name| self.const_struct_value(&name)) else {
+        let Some(fields) = self
+            .free_fns
+            .constant_expr_key(value)
+            .and_then(|key| self.const_struct_value(&key))
+            .or_else(|| expr_path(value).and_then(|name| self.const_struct_value(&name)))
+        else {
             return false;
         };
+        // A power-on value is words; a constant computed by a call is folded
+        // only as a value (ponytail: no Expr evaluator yet).
+        if !fields
+            .iter()
+            .all(|(_, value)| matches!(value, Expr::Const(_)))
+        {
+            return false;
+        }
         for (field, folded) in fields {
             let Expr::Const(word) = folded else { continue };
             let Some(&id) = self.locals.get(&format!("{prefix}.{field}")) else {
@@ -473,13 +486,18 @@ impl<'a> Lowering<'a> {
     /// `fold_const` left in the constant table. `None` when `name` names no
     /// struct constant.
     pub(super) fn const_struct_value(&self, name: &str) -> Option<Vec<(String, Expr)>> {
-        let prefix = format!("{name}.");
+        // `K.a` is field `a`; `T[0].x` is leaf `[0].x` of `T`.
         let mut fields: Vec<(String, Expr)> = self
             .const_values
             .iter()
             .filter_map(|(key, value)| {
-                key.strip_prefix(&prefix)
-                    .map(|field| (field.to_string(), value.clone()))
+                let rest = key.strip_prefix(name)?;
+                let leaf = match rest.strip_prefix('.') {
+                    Some(field) => field,
+                    None if rest.starts_with('[') => rest,
+                    None => return None,
+                };
+                Some((leaf.to_string(), value.clone()))
             })
             .collect();
         if fields.is_empty() {

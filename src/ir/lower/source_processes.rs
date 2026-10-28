@@ -2042,10 +2042,33 @@ fn lower_legacy_process(
         locals: Vec::new(),
         blocks: vec![ProcessBlock::empty(ProcessBlockId(0))],
     };
+    let entity = context.hierarchy.instance(owner).entity_id;
+    let all_items =
+        crate::testbench::implementation_items(context.modules, context.resolved, entity);
+    let instance_arrays: std::collections::HashSet<String> = all_items
+        .iter()
+        .filter_map(|item| match item {
+            ImplItem::Let(declaration)
+                if matches!(declaration.ty, Some(ast::Type::Indexed { .. }))
+                    && declaration_is_entity(declaration, context.resolved) =>
+            {
+                Some(declaration.name.text.clone())
+            }
+            _ => None,
+        })
+        .collect();
     let mut current = Some(ProcessBlockId(0));
     for item in items {
         let Some(block) = current else { break };
         current = match item {
+            ImplItem::Stmt(statement) if !instance_arrays.is_empty() => {
+                let mut block = Some(block);
+                for statement in instance_array_statements(statement, &instance_arrays) {
+                    let Some(at) = block else { break };
+                    block = lower_statement(&statement, context, &mut process, at);
+                }
+                block
+            }
             ImplItem::Stmt(statement) => lower_statement(statement, context, &mut process, block),
             ImplItem::Let(declaration) if declaration_is_entity(declaration, context.resolved) => {
                 lower_ordered_instance_connections(declaration, context, &mut process, block)
@@ -2058,6 +2081,85 @@ fn lower_legacy_process(
     }
     cfg_calls::lower_value_calls(&mut process, context);
     process
+}
+
+/// A testbench's instance arrays (`let stage: Cell[N];`) are hardware, so a
+/// `for` over constant bounds that touches one is a generate loop: unrolled,
+/// each slot named by its index. Building a slot (`stage[i] = Cell { .din =
+/// x }`, or `= { .. }`) writes the ports it names (#290).
+fn instance_array_statements(
+    statement: &Stmt,
+    arrays: &std::collections::HashSet<String>,
+) -> Vec<Stmt> {
+    let touches = |statement: &Stmt| {
+        let text = crate::syntax::pretty::print_stmts(std::slice::from_ref(statement));
+        arrays.iter().any(|name| text.contains(&format!("{name}[")))
+    };
+    match statement {
+        Stmt::For {
+            var,
+            range: ast::Expr::Range { lo, hi, .. },
+            body,
+            ..
+        } if touches(statement) => {
+            let (Some(left), Some(right)) = (literal_arithmetic(lo), literal_arithmetic(hi)) else {
+                return vec![statement.clone()];
+            };
+            let (Ok(left), Ok(right)) = (i64::try_from(left), i64::try_from(right)) else {
+                return vec![statement.clone()];
+            };
+            crate::ir::lower_helpers::loop_range(left, right)
+                .into_iter()
+                .flat_map(|index| {
+                    body.stmts.iter().map(move |inner| {
+                        crate::ir::lower_helpers::subst_stmt(inner, &var.text, index)
+                    })
+                })
+                .flat_map(|inner| instance_array_statements(&inner, arrays))
+                .collect()
+        }
+        Stmt::Assign {
+            target,
+            value: ast::Expr::Construct { args, .. },
+            span,
+            ..
+        } if expr_path_root(target).is_some_and(|root| arrays.contains(&root)) => args
+            .iter()
+            .filter_map(|argument| {
+                Some(Stmt::Assign {
+                    label: None,
+                    target: ast::Expr::Field {
+                        base: Box::new(target.clone()),
+                        field: argument.field.clone()?,
+                        span: *span,
+                    },
+                    value: argument.value.clone()?,
+                    after: None,
+                    span: *span,
+                })
+            })
+            .collect(),
+        // `stage[i] = {}` lexes as an empty concatenation: nothing to wire.
+        Stmt::Assign {
+            target,
+            value: ast::Expr::Concat { parts, .. },
+            ..
+        } if parts.is_empty()
+            && expr_path_root(target).is_some_and(|root| arrays.contains(&root)) =>
+        {
+            Vec::new()
+        }
+        _ => vec![statement.clone()],
+    }
+}
+
+/// The name an access path starts from: `stage` of `stage[1].din`.
+fn expr_path_root(expression: &ast::Expr) -> Option<String> {
+    match expression {
+        ast::Expr::Path(path) if path.segments.len() == 1 => Some(path.segments[0].text.clone()),
+        ast::Expr::Field { base, .. } | ast::Expr::Index { base, .. } => expr_path_root(base),
+        _ => None,
+    }
 }
 
 /// Resolve the declaration's annotated type through generic/index wrappers.
