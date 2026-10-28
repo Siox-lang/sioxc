@@ -142,6 +142,59 @@ fn aggregate_results_wide_values_and_floats_follow_the_platform() {
 }
 
 #[test]
+fn handles_are_c_pointers_passed_by_value() {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let scratch = std::env::temp_dir().join(format!("siox_c_handles_{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let source = scratch.join("handles.siox");
+    std::fs::write(
+        &source,
+        r#"module handles;
+use std::ffi::{c_int, Handle};
+extern "C" {
+    fn tmpfile() -> Handle;
+    fn fputc(c: c_int, file: Handle) -> c_int;
+    fn rewind(file: Handle);
+    fn fgetc(file: Handle) -> c_int;
+    fn fclose(file: Handle) -> c_int;
+}
+#[test] entity HandlesTest {}
+impl HandlesTest { process {
+    let file: Handle = tmpfile();
+    assert!(not file.is_null(), "C made a FILE");
+    assert!(fputc(65, file) == 65, "written through the handle");
+    rewind(file);
+    assert!(fgetc(file) == 65, "read back through it");
+    assert!(fclose(file) == 0 and Handle::null().is_null() and file != Handle::null(), "closed");
+} }
+"#,
+    )
+    .unwrap();
+    let output = scratch.join("handles");
+    let build = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .current_dir(root)
+        .arg("--test")
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "handle fixture failed to build:\n{}{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&output).output().unwrap();
+    let report =
+        String::from_utf8_lossy(&run.stdout).to_string() + &String::from_utf8_lossy(&run.stderr);
+    assert!(
+        run.status.success() && report.contains("HandlesTest ... ok"),
+        "handle fixture failed:\n{report}"
+    );
+}
+
+#[test]
 fn aggregates_are_testbench_parameters_only() {
     let root = env!("CARGO_MANIFEST_DIR");
     let source = std::env::temp_dir().join(format!(
@@ -152,7 +205,8 @@ fn aggregates_are_testbench_parameters_only() {
         &source,
         "module m;\nstruct P { pub a: integer, }\n\
          extern \"C\" { fn take(p: P) -> integer; fn give() -> P; fn bad(c: Char[2]) -> integer; }\n\
-         entity E { y: integer out, }\nimpl E { process { let p: P = P { .a = 1 }; y = take(p); } }\n",
+         entity E { y: integer out, z: integer out, }\n\
+         impl E { process { let p: P = P { .a = 1 }; y = take(p); let q: P = give(); z = q.a; } }\n",
     )
     .unwrap();
     let compile = Command::new(env!("CARGO_BIN_EXE_sioxc"))
@@ -164,7 +218,8 @@ fn aggregates_are_testbench_parameters_only() {
     let stderr = String::from_utf8_lossy(&compile.stderr);
     for message in [
         "Char has no declared C character ABI",
-        "`take` takes an aggregate by pointer, so it can only be called in a testbench",
+        "`take` passes a struct or array to or from C, so it can only be called in a testbench",
+        "`give` passes a struct or array to or from C, so it can only be called in a testbench",
     ] {
         assert!(stderr.contains(message), "missing `{message}`:\n{stderr}");
     }

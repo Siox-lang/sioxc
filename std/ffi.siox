@@ -32,3 +32,19 @@ attr lang for c_uint = "c_uint";
 attr lang for c_long = "c_long";
 attr lang for c_ulong = "c_ulong";
 attr lang for c_float = "c_float";
+
+// An opaque C pointer (`FILE *`, a C model's context). C creates and frees
+// what it points at; siox only stores a handle, passes it back and compares
+// it. Unlike other structs it crosses `extern "C"` as the pointer itself.
+pub struct Handle(natural);
+attr lang for Handle = "c_handle";
+
+impl Eq<Handle> for Handle {
+    fn eq(self, rhs: Handle) -> Bool { return self == rhs; }
+}
+
+impl Handle {
+    // The null pointer.
+    pub fn null() -> Handle { return Handle(natural(0)); }
+    pub fn is_null(self) -> Bool { return self == Handle(natural(0)); }
+}

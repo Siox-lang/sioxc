@@ -605,7 +605,7 @@ impl<'a> Checker<'a> {
                         let name = crate::syntax::pretty::expr_string(callee);
                         let (message, help) = if aggregate {
                             (
-                                format!("`{name}` takes an aggregate by pointer, so it can only be called in a testbench"),
+                                format!("`{name}` passes a struct or array to or from C, so it can only be called in a testbench"),
                                 "hardware holds a struct or array as separate signals; pass C scalars instead",
                             )
                         } else {

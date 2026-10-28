@@ -7823,7 +7823,7 @@ fn lower_process_foreign_call(
         pointer_arguments.push(
             actual
                 .as_ref()
-                .is_some_and(crate::types::Ty::is_c_aggregate),
+                .is_some_and(|ty| ty.is_c_aggregate() && !is_c_handle(ty, context.resolved)),
         );
         arguments.push(value_ref_with_type(
             argument,
@@ -7846,7 +7846,9 @@ fn lower_process_foreign_call(
             .cloned()
             .or_else(|| declared_return.and_then(|ty| declared_process_type(ty, context.resolved)))
     };
-    let aggregate_result = ty.as_ref().is_some_and(crate::types::Ty::is_c_aggregate);
+    let aggregate_result = ty
+        .as_ref()
+        .is_some_and(|ty| ty.is_c_aggregate() && !is_c_handle(ty, context.resolved));
     let kind = ProcessValueKind::ForeignCall {
         name: function.name.text.clone(),
         arguments,
@@ -7873,6 +7875,12 @@ fn lower_process_foreign_call(
         context.process_ir.value_layouts[call.0 as usize] = layout;
     }
     Some(call)
+}
+
+/// Whether `ty` is `std::ffi::Handle`: an opaque C pointer, which crosses
+/// `extern "C"` by value rather than by pointer as other structs do.
+fn is_c_handle(ty: &crate::types::Ty, resolved: &Resolved) -> bool {
+    matches!(ty, crate::types::Ty::Named(id) if resolved.lang_of(*id) == Some("c_handle"))
 }
 
 /// Normalize deterministic randomization before it can become a generic
