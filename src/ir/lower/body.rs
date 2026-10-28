@@ -232,9 +232,9 @@ impl<'a> Lowering<'a> {
                             continue;
                         }
                     }
-                    // `let stage: Cell[N];`: N instances, not signals. A slot
-                    // that no `stage[i] = Cell { .. }` builds is made by the
-                    // declaration, its ports wired by later writes (#290).
+                    // `let stage: Cell[N];`: N instances, not signals. With no
+                    // `stage[i] = Cell { .. }` anywhere, the declaration makes
+                    // every slot, its ports wired by later writes (#290).
                     if let Some(ast::Type::Indexed { base, .. }) = &l.ty {
                         let entity = type_def_id(base, self.resolved)
                             .is_some_and(|id| self.entities.contains_key(&id))
@@ -243,12 +243,21 @@ impl<'a> Lowering<'a> {
                         if entity && l.value.is_none() {
                             self.instance_arrays.insert(l.name.text.clone());
                             let ty = l.ty.clone().expect("matched");
+                            // Its labels, for bounds checks; no signals.
                             if let Some((left, right)) = self.declared_range(&ty, env) {
+                                self.local_array
+                                    .insert(l.name.text.clone(), loop_range(left, right));
+                            }
+                            let prefix = format!("{}[", l.name.text);
+                            let constructed = subinsts
+                                .iter()
+                                .any(|(built, _, _)| built.starts_with(&prefix));
+                            if let Some((left, right)) =
+                                self.declared_range(&ty, env).filter(|_| !constructed)
+                            {
                                 for label in loop_range(left, right) {
                                     let name = format!("{}[{label}]", l.name.text);
-                                    if !subinsts.iter().any(|(built, _, _)| *built == name) {
-                                        subinsts.push((name, (**base).clone(), Vec::new()));
-                                    }
+                                    subinsts.push((name, (**base).clone(), Vec::new()));
                                 }
                             }
                             continue;

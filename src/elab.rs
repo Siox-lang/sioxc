@@ -780,12 +780,20 @@ impl<'a> Elaborator<'a> {
                 }
             }
         }
+        // A declaration builds its slots only for an array no element
+        // construction mentions; one that is built element-wise keeps exactly
+        // the slots its constructions reach, so a generate condition can leave
+        // a slot out.
+        let array_of = |name: &str| name.rsplit_once('[').map(|(array, _)| array.to_string());
         let constructed: HashSet<String> = specs
             .iter()
             .filter(|spec| !spec.declared_slot)
-            .map(|spec| spec.name.clone())
+            .filter_map(|spec| array_of(&spec.name))
             .collect();
-        specs.retain(|spec| !spec.declared_slot || !constructed.contains(&spec.name));
+        specs.retain(|spec| {
+            !spec.declared_slot
+                || array_of(&spec.name).is_none_or(|array| !constructed.contains(&array))
+        });
         // A generated name (`s_0`) shares the parent's namespace with declared
         // ones, and two loops can generate the same name. Recorded here and
         // reported once per site by `report_collisions`.
