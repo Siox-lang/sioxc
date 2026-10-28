@@ -171,6 +171,18 @@ impl<'a> Lowering<'a> {
                     }
                     ast::Item::Impl(im) if im.trait_.is_none() => {
                         self.register_static_fns(im);
+                        // A struct's or enum's impl constants are module
+                        // constants scoped by name resolution; an entity's
+                        // fold per instance (`fold_impl_constants`).
+                        let target_kind = type_def_id(&im.target, self.resolved)
+                            .and_then(|id| self.resolved.kind_of(id));
+                        if target_kind != Some(crate::resolve::DefKind::Entity) {
+                            for item in &im.items {
+                                if let ast::ImplItem::Const(c) = item {
+                                    constant_decls.push((self.free_fns.constant_decl_key(c), c));
+                                }
+                            }
+                        }
                         if let Some(key) = self.free_fns.type_head_key(&im.target) {
                             self.inherent_impls.entry(key).or_default().push(im);
                         }
@@ -484,6 +496,32 @@ impl<'a> Lowering<'a> {
         > = HashMap::new();
         for im in &impls {
             for item in &im.items {
+                // `let stage: Cell[N];` in a testbench: N unconnected DUTs,
+                // driven by later port writes (#290).
+                if let ast::ImplItem::Let(l) = item {
+                    if let (None, Some(ty @ ast::Type::Indexed { base, .. })) = (&l.value, &l.ty) {
+                        if let Some(sub) = type_def_id(base, self.resolved)
+                            .filter(|id| self.entities.contains_key(id))
+                        {
+                            let range = self.declared_range(ty, env);
+                            for label in range.map(|(l, r)| loop_range(l, r)).unwrap_or_default() {
+                                let sub_path = format!("{name}.{}[{label}]", l.name.text);
+                                let mut sub_env = self.consts.clone();
+                                sub_env.extend(self.construct_params(base, sub, env));
+                                let sub_tenv = self.construct_type_params(base, sub);
+                                self.lower_body(
+                                    sub,
+                                    &sub_path,
+                                    &sub_env,
+                                    &sub_tenv,
+                                    &HashMap::new(),
+                                    false,
+                                );
+                            }
+                            continue;
+                        }
+                    }
+                }
                 if let ast::ImplItem::Let(l) = item {
                     if let Some((cty, args)) = instance_let_parts(l, &self.entities, self.resolved)
                     {
@@ -794,6 +832,110 @@ impl<'a> Lowering<'a> {
     /// a lookup table or a real reported its own name as unknown while the
     /// module-level spelling of it worked.
     pub(super) fn fold_const(
+        &mut self,
+        name: &str,
+        constant: &ast::ConstDecl,
+        scope: &HashMap<String, i64>,
+    ) -> bool {
+        self.fold_const_literal(name, constant, scope)
+            || (!self.has_const_leaves(name) && self.fold_aggregate_const(name, constant, scope))
+    }
+
+    /// Whether an aggregate constant already has leaves (`K.a`, `M[0][1]`).
+    fn has_const_leaves(&self, name: &str) -> bool {
+        let member = |key: &String| {
+            key.strip_prefix(name)
+                .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+        };
+        self.const_values.keys().any(member) || self.const_arrays.keys().any(member)
+    }
+
+    /// Any other constant of an aggregate type: an alias (`P2 = P1`), a call
+    /// that returns one, a nested table or a table of structs (#284, #286,
+    /// #287). It is lowered as a value and kept when no leaf reads a signal.
+    /// Each leaf goes where a read looks it up: `K.a` and `M[0][1]` in the
+    /// value table, and every run of scalar elements (`A`, `M[0]`) also as a
+    /// table, which a runtime index selects from.
+    fn fold_aggregate_const(
+        &mut self,
+        name: &str,
+        constant: &ast::ConstDecl,
+        scope: &HashMap<String, i64>,
+    ) -> bool {
+        let layout = self.source_layout(&constant.ty, scope);
+        if !matches!(
+            layout.kind,
+            LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+        ) {
+            return false;
+        }
+        // An operand not folded yet defers to the next fixed-point round, so
+        // what this attempt reports about it is dropped.
+        let reported = (
+            self.unresolved_names.borrow().len(),
+            self.unsupported_exprs.borrow().len(),
+            self.depth_exceeded.borrow().len(),
+            self.bad_operators.borrow().len(),
+            self.bad_conversions.borrow().len(),
+        );
+        let value = self.lower_shaped_source(&constant.value, &HashMap::new(), &layout);
+        let leaves = match value {
+            Val::Fields(leaves)
+                if !leaves.is_empty() && leaves.iter().all(|(_, v)| is_constant_value(v)) =>
+            {
+                leaves
+            }
+            _ => {
+                self.unresolved_names.borrow_mut().truncate(reported.0);
+                self.unsupported_exprs.borrow_mut().truncate(reported.1);
+                self.depth_exceeded.borrow_mut().truncate(reported.2);
+                self.bad_operators.borrow_mut().truncate(reported.3);
+                self.bad_conversions.borrow_mut().truncate(reported.4);
+                return false;
+            }
+        };
+        let mut tables: HashMap<String, Vec<(i64, Expr)>> = HashMap::new();
+        for (leaf, value) in leaves {
+            let separator = if leaf.starts_with('[') { "" } else { "." };
+            let key = format!("{name}{separator}{leaf}");
+            if let Some((table, label)) = key
+                .strip_suffix(']')
+                .and_then(|rest| rest.rsplit_once('['))
+                .and_then(|(table, label)| Some((table, label.parse::<i64>().ok()?)))
+            {
+                tables
+                    .entry(table.to_string())
+                    .or_default()
+                    .push((label, value.clone()));
+            }
+            if let Expr::Const(word) = &value {
+                if let Ok(narrow) = i64::try_from(*word) {
+                    self.consts.insert(key.clone(), narrow);
+                }
+            }
+            self.const_values.insert(key, value);
+        }
+        for (table, mut elements) in tables {
+            elements.sort_by_key(|(label, _)| *label);
+            // ponytail: zero-based tables only, as the table reads index by
+            // position; a table over another range keeps its leaves alone.
+            if elements
+                .iter()
+                .enumerate()
+                .all(|(position, (label, _))| usize::try_from(*label) == Ok(position))
+            {
+                self.const_arrays.insert(
+                    table,
+                    elements.into_iter().map(|(_, value)| value).collect(),
+                );
+            }
+        }
+        true
+    }
+
+    /// The constant forms written out in source: literals, tables, struct
+    /// literals, aliases and table slices.
+    fn fold_const_literal(
         &mut self,
         name: &str,
         constant: &ast::ConstDecl,
@@ -1138,5 +1280,21 @@ fn connection_value_is_static(expression: &ast::Expr, resolved: &Resolved) -> bo
         | ast::Expr::Construct {
             spread: Some(_), ..
         } => false,
+    }
+}
+
+/// Whether a lowered value needs no signal: built from literals, and from
+/// canonical values that read none.
+fn is_constant_value(value: &Expr) -> bool {
+    match value {
+        Expr::Const(_) | Expr::WideConst(_) | Expr::Real(_) | Expr::Logic(_) => true,
+        Expr::Canonical { reads, .. } => reads.is_empty(),
+        Expr::Unary { rhs, .. } => is_constant_value(rhs),
+        Expr::Binary { lhs, rhs, .. } => is_constant_value(lhs) && is_constant_value(rhs),
+        Expr::Slice { base, .. } => is_constant_value(base),
+        Expr::Select { cond, then, els } => {
+            is_constant_value(cond) && is_constant_value(then) && is_constant_value(els)
+        }
+        _ => false,
     }
 }

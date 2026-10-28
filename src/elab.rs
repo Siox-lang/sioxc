@@ -780,6 +780,12 @@ impl<'a> Elaborator<'a> {
                 }
             }
         }
+        let constructed: HashSet<String> = specs
+            .iter()
+            .filter(|spec| !spec.declared_slot)
+            .map(|spec| spec.name.clone())
+            .collect();
+        specs.retain(|spec| !spec.declared_slot || !constructed.contains(&spec.name));
         // A generated name (`s_0`) shares the parent's namespace with declared
         // ones, and two loops can generate the same name. Recorded here and
         // reported once per site by `report_collisions`.
@@ -954,6 +960,44 @@ impl<'a> Elaborator<'a> {
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
     ) {
+        // `let stage: Cell[N];` declares its N instances (#290); ports are
+        // wired afterwards, `stage[i].din = ..`.
+        if let (
+            None,
+            Some(Type::Indexed {
+                base,
+                index: Some(index),
+                ..
+            }),
+        ) = (&l.value, &l.ty)
+        {
+            let entity = !type_head_name(base).is_some_and(|n| tparams.contains(n))
+                && type_def_id(base, self.resolved)
+                    .is_some_and(|id| self.entities.contains_key(&id));
+            let labels = match index.as_ref() {
+                Expr::Range { lo, hi, .. } => match (eval(lo, env), eval(hi, env)) {
+                    (ParamValue::Int(left), ParamValue::Int(right)) => loop_range(left, right),
+                    _ => Vec::new(),
+                },
+                count => match eval(count, env) {
+                    ParamValue::Int(count) if count > 0 => loop_range(0, count - 1),
+                    _ => Vec::new(),
+                },
+            };
+            if entity {
+                for label in labels {
+                    out.push(InstanceSpec {
+                        name: at.name(&format!("{}[{label}]", l.name.text)),
+                        ty: base,
+                        args: Vec::new(),
+                        attrs: &l.attrs,
+                        site: l.span,
+                        loop_env: env.clone(),
+                        declared_slot: true,
+                    });
+                }
+            }
+        }
         if let Some((ty, args, span)) = self.instance_let(l, tparams) {
             out.push(InstanceSpec {
                 name: at.name(&l.name.text),
@@ -962,6 +1006,7 @@ impl<'a> Elaborator<'a> {
                 attrs: &l.attrs,
                 site: span,
                 loop_env: env.clone(),
+                declared_slot: false,
             });
         }
     }
@@ -999,6 +1044,7 @@ impl<'a> Elaborator<'a> {
                     attrs: &[],
                     site: *span,
                     loop_env: env.clone(),
+                    declared_slot: false,
                 });
             }
             Stmt::For {
@@ -1485,6 +1531,9 @@ struct InstanceSpec<'a> {
     /// Loop-variable bindings for a generated instance (`for i in 0..N`),
     /// substituted into the connection signal names (`wires[i]`).
     loop_env: HashMap<String, i64>,
+    /// A slot of an instance array made by its declaration; an element
+    /// construction of the same slot replaces it.
+    declared_slot: bool,
 }
 
 /// The `Int`-valued subset of a param list, as a substitution environment.

@@ -833,6 +833,17 @@ impl<'a> Lowering<'a> {
             let Val::Fields(fields) = self.lower_val_env(expression, env) else {
                 return None;
             };
+            // Composite elements (`M[0][1]`, `P[0].x`) compare leaf by leaf;
+            // both operands have the checked type's leaves, so name order
+            // pairs them (#283).
+            if matches!(
+                element.kind,
+                LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+            ) {
+                let mut leaves = fields;
+                leaves.sort_by(|a, b| a.0.cmp(&b.0));
+                return Some((leaves.into_iter().map(|(_, value)| value).collect(), false));
+            }
             let fields = fields.into_iter().collect::<HashMap<_, _>>();
             let elements = loop_range(range.left, range.right)
                 .into_iter()

@@ -28,6 +28,13 @@ impl<'a> Lowering<'a> {
             self.const_arrays.remove(name);
             self.consts_real.remove(name);
             self.const_ranges.remove(name);
+            let member = |key: &String| {
+                key.strip_prefix(name.as_str())
+                    .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+            };
+            self.const_values.retain(|key, _| !member(key));
+            self.const_arrays.retain(|key, _| !member(key));
+            self.consts.retain(|key, _| !member(key));
         }
         for _ in 0..=body_consts.len() {
             let mut progressed = false;
@@ -222,6 +229,28 @@ impl<'a> Lowering<'a> {
                             type_head_name(&cty).is_some_and(|h| self.cur_type_env.contains_key(h));
                         if !is_type_param {
                             subinsts.push((l.name.text.clone(), cty, args));
+                            continue;
+                        }
+                    }
+                    // `let stage: Cell[N];`: N instances, not signals. A slot
+                    // that no `stage[i] = Cell { .. }` builds is made by the
+                    // declaration, its ports wired by later writes (#290).
+                    if let Some(ast::Type::Indexed { base, .. }) = &l.ty {
+                        let entity = type_def_id(base, self.resolved)
+                            .is_some_and(|id| self.entities.contains_key(&id))
+                            && !type_head_name(base)
+                                .is_some_and(|head| self.cur_type_env.contains_key(head));
+                        if entity && l.value.is_none() {
+                            self.instance_arrays.insert(l.name.text.clone());
+                            let ty = l.ty.clone().expect("matched");
+                            if let Some((left, right)) = self.declared_range(&ty, env) {
+                                for label in loop_range(left, right) {
+                                    let name = format!("{}[{label}]", l.name.text);
+                                    if !subinsts.iter().any(|(built, _, _)| *built == name) {
+                                        subinsts.push((name, (**base).clone(), Vec::new()));
+                                    }
+                                }
+                            }
                             continue;
                         }
                     }
