@@ -243,15 +243,17 @@ impl<'a> Checker<'a> {
                     continue;
                 };
                 for function in fns {
-                    let aggregate =
-                        function
-                            .params
-                            .iter()
-                            .filter_map(|p| p.ty.as_ref())
-                            .any(|ty| {
-                                self.ast_ty(ty).is_c_aggregate()
-                                    && self.c_aggregate_problem(ty, 0).is_none()
-                            });
+                    let aggregate = function
+                        .params
+                        .iter()
+                        .filter_map(|p| p.ty.as_ref())
+                        .chain(function.ret.as_ref())
+                        .any(|ty| {
+                            let checked = self.ast_ty(ty);
+                            checked.is_c_aggregate()
+                                && !self.is_c_handle(&checked)
+                                && self.c_aggregate_problem(ty, 0).is_none()
+                        });
                     if let Some(id) = self
                         .resolved
                         .declared(function.name.span)
@@ -262,6 +264,12 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    /// Whether `ty` is `std::ffi::Handle`, an opaque C pointer passed by
+    /// value.
+    pub(super) fn is_c_handle(&self, ty: &Ty) -> bool {
+        matches!(ty, Ty::Named(id) if self.resolved.lang_of(*id) == Some("c_handle"))
     }
 
     /// Why `ty` cannot cross to C as an aggregate, or `None`: a struct or
@@ -316,6 +324,10 @@ impl<'a> Checker<'a> {
     /// type: `real` maps to `double`, integer-shaped types to 64-bit words.
     pub(super) fn check_extern_c_type(&mut self, function: &FnDecl, ty: &Type, position: &str) {
         let checked = self.ast_ty(ty);
+        // `std::ffi::Handle` is the C pointer itself.
+        if self.is_c_handle(&checked) {
+            return;
+        }
         // A struct or fixed array of C scalars crosses by pointer, laid out
         // as C lays it out; the call is then testbench-only, since hardware
         // holds an aggregate as separate leaves.
