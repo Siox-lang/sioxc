@@ -883,9 +883,15 @@ pub(super) fn process_value_width_in_layout(
     layout: &SourceLayout,
 ) -> Option<u32> {
     match layout.kind {
-        LayoutKind::Array { .. } | LayoutKind::Struct { .. } => {
-            design.process_ir.values.get(id.0 as usize)?.bit_width
-        }
+        // An element a runtime index selects from a child's aggregate port
+        // (`line.links[r]`) carries no width of its own; it is the layout's
+        // (#307).
+        LayoutKind::Array { .. } | LayoutKind::Struct { .. } => design
+            .process_ir
+            .values
+            .get(id.0 as usize)?
+            .bit_width
+            .or_else(|| layout_width(layout)),
         LayoutKind::Scalar { .. } | LayoutKind::Packed { .. } | LayoutKind::Opaque { .. } => {
             layout_width(layout)
         }
