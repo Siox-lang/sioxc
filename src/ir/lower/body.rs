@@ -700,6 +700,27 @@ impl<'a> Lowering<'a> {
             // an output need not be wired to a local to be read.
             for (port, &(sig, _)) in &sub_ports {
                 self.locals.entry(format!("{inst}.{port}")).or_insert(sig);
+                // Each array a port path passes through (`data` of
+                // `data[2]`, `buses` and `buses[1].x` of `buses[1].x[0]`)
+                // gets its labels, so a runtime index can select among the
+                // child's elements, as among a local array's (#306).
+                let mut rest = port.as_str();
+                let mut consumed = 0;
+                while let Some(open) = rest.find('[') {
+                    let Some(close) = rest[open..].find(']').map(|close| open + close) else {
+                        break;
+                    };
+                    if let Ok(label) = rest[open + 1..close].parse::<i64>() {
+                        let array = format!("{inst}.{}", &port[..consumed + open]);
+                        let labels = self.local_array.entry(array).or_default();
+                        if !labels.contains(&label) {
+                            labels.push(label);
+                            labels.sort_unstable();
+                        }
+                    }
+                    consumed += close + 1;
+                    rest = &port[consumed..];
+                }
             }
             for (field, value) in &norm {
                 let field = field.as_str();
