@@ -50,6 +50,104 @@ impl<'a> Checker<'a> {
         );
     }
 
+    /// `unsigned[4](pkt)`, `integer(arr)`: a vector family or kernel type
+    /// built from a struct or an unpacked array needs a `From` for that pair,
+    /// as a struct or enum target does; without one it passed the checker
+    /// and had no hardware form, or reread the bytes in a test (#327).
+    /// `unsigned(v)` of a `Logic[]` stays: std declares it.
+    pub(super) fn check_composite_conversion(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        sym: &HashMap<String, Ty>,
+    ) {
+        let [argument] = args else { return };
+        let path = match callee {
+            Expr::Path(path) => path,
+            Expr::Index { base, .. } => match base.as_ref() {
+                Expr::Path(path) => path,
+                _ => return,
+            },
+            _ => return,
+        };
+        let [head] = path.segments.as_slice() else {
+            return;
+        };
+        let target = head.text.as_str();
+        let kernel = matches!(target, "integer" | "natural" | "real" | "Char");
+        let family = self
+            .path_key(path)
+            .is_some_and(|key| self.is_array_family(&key));
+        if !kernel && !family {
+            return;
+        }
+        if let Expr::Path(path) = callee {
+            if self.function_id(path).is_some() {
+                return;
+            }
+        }
+        // A named value only: a literal reads through its target (`B("0110")`),
+        // and typing a computed argument here ahead of the call's own check
+        // would fix its type out of context. What this lookup records is
+        // taken back, for the same reason.
+        if !matches!(argument, Expr::Path(_)) {
+            return;
+        }
+        let key = (
+            argument as *const Expr as usize,
+            sym as *const HashMap<String, Ty> as usize,
+        );
+        let span = expr_span(argument);
+        let cached = self.type_cache.borrow().contains_key(&key);
+        let recorded = self.expr_types.borrow().contains_key(&span);
+        let source_ty = self.type_of(argument, sym);
+        if !cached {
+            self.type_cache.borrow_mut().remove(&key);
+        }
+        if !recorded {
+            self.expr_types.borrow_mut().remove(&span);
+        }
+        let short = |key: &str| key.rsplit("::").next().unwrap_or(key).to_string();
+        let source = match &source_ty {
+            Ty::Named(id) => {
+                let key = self.definition_key(*id);
+                let record = key.as_ref().is_some_and(|key| {
+                    self.structs
+                        .get(key)
+                        .is_some_and(|(_, fields)| !fields.is_empty())
+                });
+                if !record {
+                    return;
+                }
+                key
+            }
+            Ty::Array {
+                family: None, elem, ..
+            } => self.ty_head(elem),
+            _ => return,
+        };
+        let Some(source) = source else { return };
+        let routed = self
+            .conversion_sigs
+            .iter()
+            .any(|(to, from)| short(to) == target && short(from) == short(&source));
+        if routed {
+            return;
+        }
+        self.error_with_help(
+            codes::TYPE_MISMATCH,
+            expr_span(callee),
+            format!(
+                "no conversion from `{}` to `{}`",
+                self.ty_display(&source_ty),
+                crate::syntax::pretty::expr_string(callee)
+            ),
+            "`T(x)` needs an `impl From<S> for T`; build the value from the struct's fields \
+             or the array's elements"
+                .to_string(),
+        );
+    }
+
     /// Whether `target(x)` is defined for an `x` of type `source`: an
     /// `impl From<source> for target`, or a total nominal derivation.
     pub(super) fn conversion_exists(&self, target: &str, source: &str) -> bool {

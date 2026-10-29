@@ -897,6 +897,7 @@ impl<'a> Checker<'a> {
                 self.check_conversion_fit(callee, args, e);
                 self.check_conversion_arity(callee, args);
                 self.check_conversion_route(callee, args, sym);
+                self.check_composite_conversion(callee, args, sym);
                 self.check_generic_bounds(callee, args, sym);
                 // A `name!(..)` still here is a macro expansion already
                 // reported (no matching form, or no such macro): it also
