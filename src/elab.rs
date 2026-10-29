@@ -784,7 +784,13 @@ impl<'a> Elaborator<'a> {
         // construction mentions; one that is built element-wise keeps exactly
         // the slots its constructions reach, so a generate condition can leave
         // a slot out.
-        let array_of = |name: &str| name.rsplit_once('[').map(|(array, _)| array.to_string());
+        let array_of = |name: &str| {
+            let mut array = name;
+            while let Some((rest, _)) = array.strip_suffix(']').and_then(|n| n.rsplit_once('[')) {
+                array = rest;
+            }
+            (array.len() < name.len()).then(|| array.to_string())
+        };
         let constructed: HashSet<String> = specs
             .iter()
             .filter(|spec| !spec.declared_slot)
@@ -968,41 +974,26 @@ impl<'a> Elaborator<'a> {
         tparams: &HashSet<String>,
         out: &mut Vec<InstanceSpec<'a>>,
     ) {
-        // `let stage: Cell[N];` declares its N instances (#290); ports are
-        // wired afterwards, `stage[i].din = ..`.
-        if let (
-            None,
-            Some(Type::Indexed {
-                base,
-                index: Some(index),
-                ..
-            }),
-        ) = (&l.value, &l.ty)
-        {
-            let entity = !type_head_name(base).is_some_and(|n| tparams.contains(n))
-                && type_def_id(base, self.resolved)
-                    .is_some_and(|id| self.entities.contains_key(&id));
-            let labels = match index.as_ref() {
-                Expr::Range { lo, hi, .. } => match (eval(lo, env), eval(hi, env)) {
-                    (ParamValue::Int(left), ParamValue::Int(right)) => loop_range(left, right),
-                    _ => Vec::new(),
-                },
-                count => match eval(count, env) {
-                    ParamValue::Int(count) if count > 0 => loop_range(0, count - 1),
-                    _ => Vec::new(),
-                },
-            };
-            if entity {
-                for label in labels {
-                    out.push(InstanceSpec {
-                        name: at.name(&format!("{}[{label}]", l.name.text)),
-                        ty: base,
-                        args: Vec::new(),
-                        attrs: &l.attrs,
-                        site: l.span,
-                        loop_env: env.clone(),
-                        declared_slot: true,
-                    });
+        // `let stage: Cell[N];` declares its N instances (#290), and
+        // `Cell[R][C]` its C * R (#300); ports are wired afterwards,
+        // `stage[i].din = ..`.
+        if let (None, Some(ty)) = (&l.value, &l.ty) {
+            if let Some((base, slots)) = instance_array_slots(ty, env) {
+                let entity = !type_head_name(base).is_some_and(|n| tparams.contains(n))
+                    && type_def_id(base, self.resolved)
+                        .is_some_and(|id| self.entities.contains_key(&id));
+                if entity {
+                    for slot in slots {
+                        out.push(InstanceSpec {
+                            name: at.name(&format!("{}{slot}", l.name.text)),
+                            ty: base,
+                            args: Vec::new(),
+                            attrs: &l.attrs,
+                            site: l.span,
+                            loop_env: env.clone(),
+                            declared_slot: true,
+                        });
+                    }
                 }
             }
         }
@@ -1872,12 +1863,23 @@ fn collect_field_assign_ports(s: &Stmt, inst: &str, out: &mut HashSet<String>) {
                 // ponytail: no loop-range evaluation, so `cells[k]` over
                 // `1..2` also covers `cells[0]`; a forgotten element 0 then
                 // goes unwarned.
-                Expr::Index { base, index, .. } => {
-                    if let Expr::Path(p) = base.as_ref() {
+                // `grid[1][0].a` names one element of a nested array (#300).
+                Expr::Index { .. } => {
+                    let mut root = base.as_ref();
+                    let mut labels = Vec::new();
+                    while let Expr::Index { base, index, .. } = root {
+                        labels.push(match index.as_ref() {
+                            Expr::Int { text, .. } => Some(text.clone()),
+                            _ => None,
+                        });
+                        root = base;
+                    }
+                    if let Expr::Path(p) = root {
                         let name = &p.segments[0].text;
-                        let element = match index.as_ref() {
-                            Expr::Int { text, .. } => inst == format!("{name}[{text}]"),
-                            _ => inst.starts_with(&format!("{name}[")),
+                        let element = match labels.iter().rev().cloned().collect::<Option<Vec<_>>>()
+                        {
+                            Some(labels) => inst == format!("{name}[{}]", labels.join("][")),
+                            None => inst.starts_with(&format!("{name}[")),
                         };
                         if p.segments.len() == 1 && element {
                             out.insert(field.text.clone());
@@ -1959,6 +1961,42 @@ fn render_signal(e: &Expr, env: &HashMap<String, i64>) -> String {
         Expr::Field { base, field, .. } => format!("{}.{}", render_signal(base, env), field.text),
         _ => "<expr>".to_string(),
     }
+}
+
+/// An instance array's element type and slot suffixes, outer index first:
+/// `Cell[2][3]` is three rows of `Cell[2]`, slots `[0][0]` to `[2][1]`.
+/// `None` for a type that is not indexed, or a bound that does not fold.
+pub(crate) fn instance_array_slots<'t>(
+    ty: &'t Type,
+    env: &HashMap<String, i64>,
+) -> Option<(&'t Type, Vec<String>)> {
+    let Type::Indexed {
+        base,
+        index: Some(index),
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    let labels = match index.as_ref() {
+        Expr::Range { lo, hi, .. } => match (eval(lo, env), eval(hi, env)) {
+            (ParamValue::Int(left), ParamValue::Int(right)) => loop_range(left, right),
+            _ => return None,
+        },
+        count => match eval(count, env) {
+            ParamValue::Int(count) if count > 0 => loop_range(0, count - 1),
+            _ => return None,
+        },
+    };
+    let (element, inner) = match base.as_ref() {
+        Type::Indexed { .. } => instance_array_slots(base, env)?,
+        element => (element, vec![String::new()]),
+    };
+    let slots = labels
+        .iter()
+        .flat_map(|label| inner.iter().map(move |rest| format!("[{label}]{rest}")))
+        .collect();
+    Some((element, slots))
 }
 
 /// The leading name of a type expression, looking through generic

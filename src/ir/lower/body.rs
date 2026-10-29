@@ -235,29 +235,45 @@ impl<'a> Lowering<'a> {
                     // `let stage: Cell[N];`: N instances, not signals. With no
                     // `stage[i] = Cell { .. }` anywhere, the declaration makes
                     // every slot, its ports wired by later writes (#290).
-                    if let Some(ast::Type::Indexed { base, .. }) = &l.ty {
+                    // `Cell[R][C]` nests (#300).
+                    let slots =
+                        l.ty.as_ref()
+                            .filter(|_| l.value.is_none())
+                            .and_then(|ty| crate::elab::instance_array_slots(ty, env));
+                    if let Some((base, slots)) = slots {
                         let entity = type_def_id(base, self.resolved)
                             .is_some_and(|id| self.entities.contains_key(&id))
                             && !type_head_name(base)
                                 .is_some_and(|head| self.cur_type_env.contains_key(head));
-                        if entity && l.value.is_none() {
+                        if entity {
                             self.instance_arrays.insert(l.name.text.clone());
-                            let ty = l.ty.clone().expect("matched");
-                            // Its labels, for bounds checks; no signals.
-                            if let Some((left, right)) = self.declared_range(&ty, env) {
-                                self.local_array
-                                    .insert(l.name.text.clone(), loop_range(left, right));
+                            // Each level's labels, for bounds checks; no signals.
+                            for slot in &slots {
+                                let mut prefix = l.name.text.clone();
+                                for label in slot
+                                    .trim_start_matches('[')
+                                    .trim_end_matches(']')
+                                    .split("][")
+                                {
+                                    let Ok(label) = label.parse::<i64>() else {
+                                        break;
+                                    };
+                                    let labels =
+                                        self.local_array.entry(prefix.clone()).or_default();
+                                    if !labels.contains(&label) {
+                                        labels.push(label);
+                                    }
+                                    prefix = format!("{prefix}[{label}]");
+                                }
                             }
                             let prefix = format!("{}[", l.name.text);
                             let constructed = subinsts
                                 .iter()
                                 .any(|(built, _, _)| built.starts_with(&prefix));
-                            if let Some((left, right)) =
-                                self.declared_range(&ty, env).filter(|_| !constructed)
-                            {
-                                for label in loop_range(left, right) {
-                                    let name = format!("{}[{label}]", l.name.text);
-                                    subinsts.push((name, (**base).clone(), Vec::new()));
+                            if !constructed {
+                                for slot in slots {
+                                    let name = format!("{}{slot}", l.name.text);
+                                    subinsts.push((name, base.clone(), Vec::new()));
                                 }
                             }
                             continue;

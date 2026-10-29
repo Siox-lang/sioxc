@@ -418,11 +418,38 @@ impl<'a> Checker<'a> {
                         // one-element vector, as `v(0 downto 0)` is in VHDL and
                         // `&v[0..1]` in Rust; `v[0]` is the element. Decaying
                         // it broke generic code at `W = 1` (#199).
+                        // A fixed or float format's slice keeps its binary
+                        // point: `x[0..-2]` of a `ufixed<8, 4>` is a
+                        // `ufixed<3, 2>`, its lowest label `-2` (#301).
+                        let low = if *base_low < 0 && width > 0 {
+                            let bounds = match index.as_ref() {
+                                Expr::Range { lo, hi, .. } => signed_lit(lo).zip(signed_lit(hi)),
+                                Expr::PartialRange { lo, hi, .. } => {
+                                    declared_labels_of(base, &self.array_bounds).and_then(
+                                        |(left, right)| {
+                                            let left = match lo {
+                                                Some(lo) => signed_lit(lo)?,
+                                                None => left,
+                                            };
+                                            let right = match hi {
+                                                Some(hi) => signed_lit(hi)?,
+                                                None => right,
+                                            };
+                                            Some((left, right))
+                                        },
+                                    )
+                                }
+                                _ => None,
+                            };
+                            bounds.map_or(0, |(left, right)| left.min(right))
+                        } else {
+                            0
+                        };
                         Ty::Array {
                             elem: elem.clone(),
                             family: family.clone(),
                             len: width,
-                            low: 0,
+                            low,
                         }
                     }
                     Ty::Array { elem, len, .. } if !is_range => {
