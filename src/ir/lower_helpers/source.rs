@@ -47,8 +47,15 @@ pub(in crate::ir) fn expr_path(e: &ast::Expr) -> Option<String> {
             Some(format!("{}.{}", expr_path(base)?, field.text))
         }
         ast::Expr::Index { base, index, .. } => match index.as_ref() {
+            // A slice's element statements name a negative label as a signed
+            // literal (`a[-3]` of `a[-3..-1]`); it read as no path, and every
+            // element took the wrong one (#343).
             ast::Expr::Int { text, .. } => {
-                Some(format!("{}[{}]", expr_path(base)?, parse_int(text)?))
+                let label = match text.trim().strip_prefix('-') {
+                    Some(magnitude) => format!("-{}", parse_int(magnitude)?),
+                    None => parse_int(text)?.to_string(),
+                };
+                Some(format!("{}[{label}]", expr_path(base)?))
             }
             _ => None,
         },

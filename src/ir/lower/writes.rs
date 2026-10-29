@@ -990,16 +990,7 @@ impl<'a> Lowering<'a> {
         // targets alone were taken as covered, so `0 => {}` / `_ => y = 1`
         // drew no latch warning, and an aggregate the `_` arm wrote whole
         // drew one per element (#331).
-        let named_all = || {
-            let ty = self.operand_type_name(&m.scrutinee)?;
-            let variants = self.enum_variants.get(&ty)?;
-            let mut named: std::collections::HashSet<String> = std::collections::HashSet::new();
-            for arm in &m.arms {
-                collect_named_variants(&arm.pattern, &mut named);
-            }
-            Some(variants.keys().all(|v| named.contains(v)))
-        };
-        if !m.arms.iter().any(|arm| catches_all(&arm.pattern)) && named_all() != Some(true) {
+        if !m.arms.iter().any(|arm| catches_all(&arm.pattern)) && !self.names_every_value(m) {
             return BTreeSet::new();
         }
         let mut covered: Option<BTreeSet<u32>> = None;
@@ -1011,6 +1002,77 @@ impl<'a> Lowering<'a> {
             });
         }
         covered.unwrap_or_default()
+    }
+
+    /// Whether a match's arms name every value of its enum scrutinee, or
+    /// every combination of a tuple of enums (`match (s, m)` over
+    /// `(A, X)`..`(B, Y)`, #342), with `_` standing for a whole position.
+    fn names_every_value(&self, m: &ast::MatchStmt) -> bool {
+        use std::collections::HashSet;
+        let positions = match &m.scrutinee {
+            ast::Expr::Tuple { elems, .. } => elems.iter().collect::<Vec<_>>(),
+            scrutinee => vec![scrutinee],
+        };
+        let Some(domains) = positions
+            .iter()
+            .map(|position| {
+                let ty = self.operand_type_name(position)?;
+                Some(
+                    self.enum_variants
+                        .get(&ty)?
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        // ponytail: enumerates the combinations; a wide tuple of big enums
+        // is not proved and keeps its latch warning.
+        let total = domains
+            .iter()
+            .map(Vec::len)
+            .try_fold(1usize, usize::checked_mul);
+        if total.is_none_or(|total| total > 4096) {
+            return false;
+        }
+        let names = |pattern: &ast::Pattern, domain: &[String]| -> Vec<String> {
+            if catches_all(pattern) {
+                return domain.to_vec();
+            }
+            let mut named = HashSet::new();
+            collect_named_variants(pattern, &mut named);
+            named.into_iter().collect()
+        };
+        let mut covered: HashSet<Vec<String>> = HashSet::new();
+        for arm in &m.arms {
+            let per_position = match (&arm.pattern, positions.len()) {
+                (ast::Pattern::Tuple { elems, .. }, n) if elems.len() == n && n > 1 => elems
+                    .iter()
+                    .zip(&domains)
+                    .map(|(pattern, domain)| names(pattern, domain))
+                    .collect::<Vec<_>>(),
+                (pattern, 1) => vec![names(pattern, &domains[0])],
+                _ => continue,
+            };
+            let mut combinations = vec![Vec::new()];
+            for choices in per_position {
+                combinations = combinations
+                    .into_iter()
+                    .flat_map(|prefix: Vec<String>| {
+                        choices.iter().map(move |choice| {
+                            let mut next = prefix.clone();
+                            next.push(choice.clone());
+                            next
+                        })
+                    })
+                    .collect();
+            }
+            covered.extend(combinations);
+        }
+        total == Some(covered.len())
     }
 
     /// Signals a block assigns on every path: its direct assignment targets,
