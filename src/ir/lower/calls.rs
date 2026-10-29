@@ -620,16 +620,18 @@ impl<'a> Lowering<'a> {
         self.inline_function(f, display_name, callee, args, env)
     }
 
-    /// `arg` as a `real` through its type's `impl From<S> for real`
-    /// (`real(ufixed)`), inlined at `site`. `None` when it has no such impl.
-    pub(super) fn real_from(
+    /// `arg` as a kernel `target` through its type's `impl From<S> for
+    /// target` (`real(ufixed)`, a user `integer(op)`), inlined at `site`.
+    /// `None` when it has no such impl.
+    pub(super) fn kernel_from(
         &self,
+        target: &str,
         site: &ast::Expr,
         arg: &ast::Expr,
         env: &HashMap<String, Val>,
     ) -> Option<Expr> {
         let family = self.operand_type_name(arg)?;
-        let function = self.op_impls.get("From", "real").and_then(|impls| {
+        let function = self.op_impls.get("From", target).and_then(|impls| {
             impls.iter().find_map(|(f, source)| {
                 (source.clone().or_else(|| {
                     f.params
@@ -643,7 +645,7 @@ impl<'a> Lowering<'a> {
         })?;
         match self.inline_function(
             function,
-            format!("real({family})"),
+            format!("{target}({family})"),
             site,
             std::slice::from_ref(arg),
             env,
@@ -680,7 +682,7 @@ impl<'a> Lowering<'a> {
         ) {
             return None;
         }
-        let converted = self.real_from(other, other, env)?;
+        let converted = self.kernel_from("real", other, other, env)?;
         let real = self.lower_scalar_env(if left_real { lhs } else { rhs }, env);
         Some(if left_real {
             (real, converted)
@@ -1499,6 +1501,19 @@ impl<'a> Lowering<'a> {
         };
         let _ = resize;
         let arg = args.first()?;
+        // `real(x)`, `integer(x)`, `natural(x)` for a type with its own
+        // `impl From<S> for real` (`real(ufixed)`) or `for integer` is that
+        // conversion, not the kernel reading of its word: an enum read its
+        // discriminant and a struct had no form (#337).
+        if let ast::Expr::Path(path) = callee {
+            if let [kernel] = path.segments.as_slice() {
+                if matches!(kernel.text.as_str(), "integer" | "natural" | "real") {
+                    if let Some(value) = self.kernel_from(&kernel.text, callee, arg, env) {
+                        return Some(value);
+                    }
+                }
+            }
+        }
         // Conversions are a raw resize (zero-extend / truncate). Signed
         // widening is the library `std::bits::sext`, not the compiler's job.
         let mut v = self.lower_scalar_env(arg, env);
@@ -1539,16 +1554,6 @@ impl<'a> Lowering<'a> {
         }
         if target == Some("natural") {
             return Some(v);
-        }
-        // `real(x)` for a type with `impl From<S> for real` (`real(ufixed)`)
-        // is that conversion, not the kernel reading of its word.
-        if to_real {
-            if let Some(value) = args
-                .first()
-                .and_then(|arg| self.real_from(callee, arg, env))
-            {
-                return Some(value);
-            }
         }
         if to_real {
             // ...and so is crossing into it: `real(n)` is the number n.

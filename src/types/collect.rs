@@ -399,13 +399,15 @@ impl<'a> Checker<'a> {
                                 self.into_sigs.insert((target, source));
                             }
                         }
+                        // A sized argument (`From<unsigned[8]>`) parses as an
+                        // expression; `as_type` reads it as the type it spells,
+                        // here and for the operator and comparison traits (#334).
                         if t == "From" {
-                            let source =
-                                im.trait_args.first().and_then(|argument| match argument {
-                                    GenericArg::Positional(Expr::Path(path)) => self.path_key(path),
-                                    GenericArg::PositionalType(ty) => self.type_key(ty),
-                                    _ => None,
-                                });
+                            let source = im
+                                .trait_args
+                                .first()
+                                .and_then(GenericArg::as_type)
+                                .and_then(|ty| self.type_key(&ty));
                             if let Some(source) = source {
                                 self.conversion_sigs.insert((ty.clone(), source));
                             }
@@ -535,11 +537,10 @@ impl<'a> Checker<'a> {
                             let skip = usize::from(custom);
                             let arg_name = |index: usize| {
                                 let index = if unary { index.checked_sub(1)? } else { index };
-                                im.trait_args.get(index + skip).and_then(|a| match a {
-                                    GenericArg::Positional(Expr::Path(p)) => self.path_key(p),
-                                    GenericArg::PositionalType(ty) => self.type_key(ty),
-                                    _ => None,
-                                })
+                                im.trait_args
+                                    .get(index + skip)
+                                    .and_then(GenericArg::as_type)
+                                    .and_then(|ty| self.type_key(&ty))
                             };
                             let input = arg_name(0).or_else(|| {
                                 im.items.iter().find_map(|item| match item {
@@ -579,11 +580,11 @@ impl<'a> Checker<'a> {
                         // comparisons, keyed by their representative symbol
                         // (`==` covers `!=`; `<` covers the other three).
                         if t == "Eq" || t == "Ord" {
-                            let input = im.trait_args.first().and_then(|a| match a {
-                                GenericArg::Positional(Expr::Path(p)) => self.path_key(p),
-                                GenericArg::PositionalType(ty) => self.type_key(ty),
-                                _ => None,
-                            });
+                            let input = im
+                                .trait_args
+                                .first()
+                                .and_then(GenericArg::as_type)
+                                .and_then(|ty| self.type_key(&ty));
                             let symbol = if t == "Eq" { "==" } else { "<" };
                             self.operator_sigs
                                 .entry((symbol.to_string(), ty.clone()))

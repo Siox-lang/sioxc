@@ -550,18 +550,6 @@ impl<'a> Lowering<'a> {
                 for arm in &m.arms {
                     let mc =
                         self.arm_match_cond(&arm.pattern, &m.scrutinee, &scrut, &HashMap::new());
-                    // A wildcard arm is the match's default branch: its direct
-                    // assignments cover "everything else", so those targets are
-                    // not latches even though the lowered driver is conditional.
-                    if mc.is_none() {
-                        for s in &arm.body.stmts {
-                            if let ast::Stmt::Assign { target, .. } = s {
-                                if let Some(id) = self.target_signal(target) {
-                                    self.lint_defaulted.insert(id.0);
-                                }
-                            }
-                        }
-                    }
                     let fire = match &mc {
                         Some(c) => Some(self.source_and(remaining.clone(), c.clone(), arm.span)),
                         None => remaining.clone(),

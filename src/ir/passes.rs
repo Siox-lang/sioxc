@@ -240,6 +240,17 @@ pub(super) fn collect_named_variants(
     }
 }
 
+/// Whether a pattern matches every value: `_`, a tuple of them, or an
+/// or-pattern with one among its alternatives.
+pub(super) fn catches_all(p: &ast::Pattern) -> bool {
+    match p {
+        ast::Pattern::Wildcard => true,
+        ast::Pattern::Tuple { elems, .. } => elems.iter().all(catches_all),
+        ast::Pattern::Or { alts, .. } => alts.iter().any(catches_all),
+        _ => false,
+    }
+}
+
 // --- per-element logical metavalue builders (0/1-valued Exprs) --------------
 
 /// `a & b` (bitwise; on 0/1 operands this is logical and).

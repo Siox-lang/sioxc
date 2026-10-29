@@ -254,6 +254,23 @@ impl<'a> Lowering<'a> {
                     },
                 }
             }
+            // `pkg::ORIGIN`: a struct constant named through its module reads
+            // as the imported name does (#336).
+            ast::Expr::Path(p)
+                if p.segments.len() > 1
+                    && self
+                        .free_fns
+                        .constant_path_key(p)
+                        .and_then(|key| self.const_struct_value(&key))
+                        .is_some() =>
+            {
+                Val::Fields(
+                    self.free_fns
+                        .constant_path_key(p)
+                        .and_then(|key| self.const_struct_value(&key))
+                        .unwrap_or_default(),
+                )
+            }
             ast::Expr::Path(p) if p.segments.len() == 1 => {
                 let name = &p.segments[0].text;
                 if let Some(v) = env.get(name) {
@@ -656,14 +673,29 @@ impl<'a> Lowering<'a> {
                 _ => break,
             }
         }
-        // A call's result, an array literal's elements (`[a, b][i]`, #318), or
-        // a string literal's characters (`"hello"[i]`, #325).
-        if std::ptr::eq(base, e)
-            || !matches!(
-                base,
-                ast::Expr::Call { .. } | ast::Expr::Array { .. } | ast::Expr::StrLit { .. }
+        // A call's result, an array literal's elements (`[a, b][i]`, #318), a
+        // string literal's characters (`"hello"[i]`, #325), or an aggregate
+        // an operator or branch computes (`(-c).re`, `(c1 + c2).re`,
+        // `(if s { c1 } else { c2 }).re`, #338). A packed one is a bit read.
+        let aggregate = || {
+            matches!(
+                self.expr_types.get(&ast::expr_span(base)),
+                Some(
+                    crate::types::Ty::Named(_)
+                        | crate::types::Ty::Tuple(_)
+                        | crate::types::Ty::Array { family: None, .. }
+                )
             )
-        {
+        };
+        let computed = match base {
+            ast::Expr::Call { .. } | ast::Expr::Array { .. } | ast::Expr::StrLit { .. } => true,
+            ast::Expr::Unary { .. }
+            | ast::Expr::Binary { .. }
+            | ast::Expr::IfExpr { .. }
+            | ast::Expr::Match { .. } => aggregate(),
+            _ => false,
+        };
+        if std::ptr::eq(base, e) || !computed {
             return None;
         }
         // Fields and elements (`split3(x)[1]`, `mk(x).v[1]`, `table(x)[sel]`):

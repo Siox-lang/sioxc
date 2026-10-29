@@ -984,17 +984,22 @@ impl<'a> Lowering<'a> {
         m: &ast::MatchStmt,
     ) -> std::collections::BTreeSet<u32> {
         use std::collections::BTreeSet;
-        let Some(ty) = self.operand_type_name(&m.scrutinee) else {
-            return BTreeSet::new();
+        // A catch-all arm (`_`, `(_, _)`, `A | _`) completes any match; so
+        // does naming every variant of an enum scrutinee. Either way a
+        // target is covered only when every arm assigns it: the `_` arm's
+        // targets alone were taken as covered, so `0 => {}` / `_ => y = 1`
+        // drew no latch warning, and an aggregate the `_` arm wrote whole
+        // drew one per element (#331).
+        let named_all = || {
+            let ty = self.operand_type_name(&m.scrutinee)?;
+            let variants = self.enum_variants.get(&ty)?;
+            let mut named: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for arm in &m.arms {
+                collect_named_variants(&arm.pattern, &mut named);
+            }
+            Some(variants.keys().all(|v| named.contains(v)))
         };
-        let Some(variants) = self.enum_variants.get(&ty) else {
-            return BTreeSet::new();
-        };
-        let mut named: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for arm in &m.arms {
-            collect_named_variants(&arm.pattern, &mut named);
-        }
-        if !variants.keys().all(|v| named.contains(v)) {
+        if !m.arms.iter().any(|arm| catches_all(&arm.pattern)) && named_all() != Some(true) {
             return BTreeSet::new();
         }
         let mut covered: Option<BTreeSet<u32>> = None;
