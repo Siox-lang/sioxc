@@ -538,6 +538,9 @@ pub mod codes {
     /// A loop in hardware whose bound is not a constant: it simulates as a
     /// procedural process, but has no RTL form.
     pub const NON_CONSTANT_LOOP_BOUND: &str = "W-P019";
+    /// `T::new()` on a type that declares no `new`: the default constructor
+    /// was renamed `T::default()`. It still builds the default, for now.
+    pub const RENAMED_DEFAULT: &str = "W-P020";
 }
 
 #[cfg(test)]

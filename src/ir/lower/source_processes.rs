@@ -7780,9 +7780,13 @@ fn lower_process_default(
         return None;
     }
     let definition = match callee.as_ref() {
-        ast::Expr::Path(path) if path.segments.last()?.text == "new" => context
-            .resolved
-            .resolved(path.segments.get(path.segments.len().checked_sub(2)?)?.span),
+        ast::Expr::Path(path)
+            if matches!(path.segments.last()?.text.as_str(), "default" | "new") =>
+        {
+            context
+                .resolved
+                .resolved(path.segments.get(path.segments.len().checked_sub(2)?)?.span)
+        }
         ast::Expr::Path(path) => context.resolved.resolved(path.span),
         ast::Expr::Index { base, .. } => match base.as_ref() {
             ast::Expr::Path(path) => context.resolved.resolved(path.span),

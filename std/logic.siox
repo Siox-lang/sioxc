@@ -1,7 +1,7 @@
 module std::logic;
 
 use core::convert::From;
-use core::default::New;
+use core::default::Default;
 use core::ops::{LogicEncoding, Resolve};
 
 
@@ -336,14 +336,14 @@ impl Resolve for Logic {
 // Uninitialized defaults (IEEE 1076-2019 / std_logic_1164): a `Bit` powers on
 // forcing-low `'0'`; a `Logic` powers on uninitialized `'U'` — the `std_ulogic`
 // default, so an undriven Logic signal reads `'U'` rather than a plausible `'0'`.
-impl New for Bit {
-    fn new() -> Bit { return '0'; }
+impl Default for Bit {
+    fn default() -> Bit { return '0'; }
 }
-impl New for ULogic {
-    fn new() -> ULogic { return 'U'; }
+impl Default for ULogic {
+    fn default() -> ULogic { return 'U'; }
 }
-impl New for Logic {
-    fn new() -> Logic { return 'U'; }
+impl Default for Logic {
+    fn default() -> Logic { return 'U'; }
 }
 
 // The ULogic <-> Logic crossing needs no explicit impl: `Logic(u)` / `ULogic(l)`

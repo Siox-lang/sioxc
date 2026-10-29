@@ -709,19 +709,19 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Fold each `impl New for T { fn new() -> T { return <const>; } }` to the
+    /// Fold each `impl Default for T { fn default() -> T { return <const>; } }` to the
     /// type's uninitialized default value. Runs after `impls`/`enum_variants`
     /// are collected.
     pub(super) fn compute_new_defaults(&self) -> HashMap<String, u64> {
         let mut out = HashMap::new();
-        // Trait impls land in `op_impls` keyed by (trait, type); `impl New for T`
-        // has a `new()` whose constant body is `T`'s uninitialized default.
+        // Trait impls land in `op_impls` keyed by (trait, type); `impl Default for T`
+        // has a `default()` whose constant body is `T`'s uninitialized default.
         for (tr, ty, fns) in self.op_impls.iter() {
-            if tr != "New" {
+            if tr != "Default" {
                 continue;
             }
             for (f, _) in fns {
-                if f.name.text != "new" {
+                if f.name.text != "default" {
                     continue;
                 }
                 if let Some(body) = &f.body {

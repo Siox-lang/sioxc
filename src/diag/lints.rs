@@ -99,6 +99,7 @@ pub const LINTS: &[(&str, &str)] = &[
         codes::OVERLAPPING_RANGE_ENDPOINTS,
     ),
     ("non_constant_loop_bound", codes::NON_CONSTANT_LOOP_BOUND),
+    ("renamed_default", codes::RENAMED_DEFAULT),
 ];
 
 /// The lint a warning code belongs to.

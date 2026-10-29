@@ -56,7 +56,7 @@ const COMPILER_TRAITS: &[&str] = &[
     "IndexAssign",
     "Boolean",
     "Resolve",
-    "New",
+    "Default",
     "From",
     "LogicEncoding",
     "Eq",
@@ -84,7 +84,7 @@ fn trait_role(name: &str) -> Option<&'static str> {
         "IndexAssign" => "index_assign",
         "Boolean" => "boolean",
         "Resolve" => "resolve",
-        "New" => "new",
+        "Default" => "default",
         "From" => "from",
         "LogicEncoding" => "logic_encoding",
         "Eq" => "eq",
@@ -2478,14 +2478,15 @@ impl<'a> Resolver<'a> {
             if let Some(id) = enum_id {
                 if self.out.kind_of(id) == Some(DefKind::Enum) {
                     let var = p.segments.last().expect("two segments").text.clone();
-                    // `Phase::new()` is the `New` trait's constructor, not a
-                    // variant — the same default `Phase()` builds. Resolving
-                    // `Enum::x` as a variant first made the documented pair
-                    // disagree: `Pair::new()` worked and `Phase::new()` was
-                    // "not a variant of enum `Phase`".
+                    // `Phase::default()` is the `Default` trait's constructor,
+                    // not a variant — the same default `Phase()` builds.
+                    // Resolving `Enum::x` as a variant first made the
+                    // documented pair disagree.
                     // An associated function of the enum (`State::default_state()`)
                     // is a call, not a variant (#265).
-                    if var == "new" || self.associated_fns.contains(&(head.clone(), var.clone())) {
+                    if matches!(var.as_str(), "default" | "new")
+                        || self.associated_fns.contains(&(head.clone(), var.clone()))
+                    {
                         self.record_qualified_use(p.segments[enum_position].span, id);
                         return;
                     }
