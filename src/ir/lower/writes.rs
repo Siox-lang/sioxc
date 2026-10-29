@@ -899,6 +899,20 @@ impl<'a> Lowering<'a> {
         target: &ast::Expr,
         value: &ast::Expr,
     ) -> Option<Vec<(SignalId, Expr)>> {
+        // `dout[0..1] = din` under a clock: a slice of an array (#319).
+        if let ast::Expr::Index { base, index, .. } = target {
+            if matches!(
+                index.as_ref(),
+                ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+            ) && self
+                .folded_elem_path(base)
+                .or_else(|| expr_path(base))
+                .and_then(|path| self.persisted_layout(&path))
+                .is_some_and(|layout| matches!(layout.kind, LayoutKind::Array { .. }))
+            {
+                return self.aggregate_assign_leaves(target, value);
+            }
+        }
         let path = self
             .folded_elem_path(target)
             .or_else(|| expr_path(target))?;

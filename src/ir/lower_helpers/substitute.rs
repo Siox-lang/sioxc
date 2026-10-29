@@ -624,3 +624,83 @@ pub(in crate::ir) fn subst_type(t: &ast::Type, var: &str, val: i64) -> ast::Type
         ast::Type::Path(_) => t.clone(),
     }
 }
+
+/// `target = value` with the runtime index `index` (a subexpression of
+/// `target`) taken one label at a time: `if index == l0 { target[l0..] =
+/// value } else if index == l1 { .. }`. A write with a form only at a
+/// constant element (a staged signal, a slice of a selected row) is written
+/// that way. The comparisons get spans of their own, so no checked type
+/// recorded for the source applies to them.
+pub(in crate::ir) fn label_chain(
+    target: &ast::Expr,
+    value: &ast::Expr,
+    index: &ast::Expr,
+    labels: &[i64],
+    span: crate::diag::Span,
+) -> Option<ast::Stmt> {
+    fn substitute(expression: &ast::Expr, at: &ast::Expr, label: &ast::Expr) -> ast::Expr {
+        match expression {
+            ast::Expr::Field { base, field, span } => ast::Expr::Field {
+                base: Box::new(substitute(base, at, label)),
+                field: field.clone(),
+                span: *span,
+            },
+            ast::Expr::Index { base, index, span } => ast::Expr::Index {
+                base: Box::new(substitute(base, at, label)),
+                index: Box::new(if std::ptr::eq(index.as_ref(), at) {
+                    label.clone()
+                } else {
+                    index.as_ref().clone()
+                }),
+                span: *span,
+            },
+            other => other.clone(),
+        }
+    }
+    let at = ast::expr_span(index);
+    let fresh = crate::diag::Span::new(at.file, at.start..at.start);
+    let literal = |label: i64| {
+        let int = ast::Expr::Int {
+            text: label.unsigned_abs().to_string(),
+            span: fresh,
+        };
+        if label < 0 {
+            ast::Expr::Unary {
+                op: ast::UnOp::Neg,
+                rhs: Box::new(int),
+                span: fresh,
+            }
+        } else {
+            int
+        }
+    };
+    let mut chain: Option<Box<ast::ElseBranch>> = None;
+    for &label in labels.iter().rev() {
+        let branch = ast::IfStmt {
+            label: None,
+            cond: ast::Expr::Binary {
+                op: ast::BinOp::Eq,
+                lhs: Box::new(index.clone()),
+                rhs: Box::new(literal(label)),
+                span: fresh,
+            },
+            then: ast::Block {
+                stmts: vec![ast::Stmt::Assign {
+                    label: None,
+                    target: substitute(target, index, &literal(label)),
+                    value: value.clone(),
+                    after: None,
+                    span,
+                }],
+                span,
+            },
+            else_: chain.take(),
+            span,
+        };
+        chain = Some(Box::new(ast::ElseBranch::If(branch)));
+    }
+    match *chain? {
+        ast::ElseBranch::If(head) => Some(ast::Stmt::If(head)),
+        ast::ElseBranch::Block(_) => None,
+    }
+}

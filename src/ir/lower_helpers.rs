@@ -18,6 +18,6 @@ pub(super) use substitute::*;
 pub(super) use types::*;
 
 pub use builders::{eval_const_fns, eval_const_stmts};
-pub(in crate::ir) use substitute::subst_stmt;
+pub(in crate::ir) use substitute::{label_chain, subst_stmt};
 pub use substitute::{loop_range, subst_expr_paths, subst_stmt_paths};
 pub use types::{array_families, derived_widths, enum_discriminants, enum_first_discriminants};

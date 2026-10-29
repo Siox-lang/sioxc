@@ -240,6 +240,43 @@ impl Lowering<'_> {
         if let Some(full) = self.full_range_slice(value) {
             return self.aggregate_assign_leaves(target, &full);
         }
+        // `dout[0..1] = din`: a constant slice of an unpacked array as the
+        // target, filled position by position from the value (#319).
+        if let ast::Expr::Index { base, index, .. } = target {
+            if matches!(
+                index.as_ref(),
+                ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+            ) {
+                let path = self.folded_elem_path(base).or_else(|| expr_path(base))?;
+                let base_layout = self.persisted_layout(&path)?;
+                if matches!(base_layout.kind, LayoutKind::Array { .. }) {
+                    let labels = self.slice_labels(base_layout, index)?;
+                    let slice_layout = self.array_step_layout(base_layout, index)?;
+                    let env = HashMap::new();
+                    let source_layout = self
+                        .source_operand_layout(value, &env)
+                        .filter(|layout| !has_open_parameter(layout))
+                        .unwrap_or_else(|| slice_layout.clone());
+                    let Val::Fields(fields) = self.lower_shaped_source(value, &env, &source_layout)
+                    else {
+                        return None;
+                    };
+                    let values = fields.into_iter().collect::<HashMap<_, _>>();
+                    return aggregate_leaf_pairs(&source_layout, &slice_layout)?
+                        .into_iter()
+                        .map(|(source, destination)| {
+                            // `[p]rest` of the slice is `[labels[p]]rest` of `base`.
+                            let (position, rest) =
+                                destination.strip_prefix('[')?.split_once(']')?;
+                            let label = labels.get(position.parse::<usize>().ok()?)?;
+                            let signal = *self.locals.get(&format!("{path}[{label}]{rest}"))?;
+                            let value = values.get(&source)?.clone();
+                            Some((signal, self.coerce_to_target(signal, value)))
+                        })
+                        .collect();
+                }
+            }
+        }
         let path = self
             .folded_elem_path(target)
             .or_else(|| expr_path(target))?;
