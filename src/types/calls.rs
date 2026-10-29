@@ -547,7 +547,8 @@ impl<'a> Checker<'a> {
             if self
                 .methods
                 .contains_key(&(owner.clone(), name.text.clone()))
-                || (name.text == "new" && self.is_conversion_name(&owner))
+                || (matches!(name.text.as_str(), "default" | "new")
+                    && self.is_conversion_name(&owner))
             {
                 return;
             }
@@ -665,7 +666,8 @@ impl<'a> Checker<'a> {
             if self
                 .methods
                 .contains_key(&(owner.clone(), name.text.clone()))
-                || (name.text == "new" && self.is_conversion_name(&owner))
+                || (matches!(name.text.as_str(), "default" | "new")
+                    && self.is_conversion_name(&owner))
             {
                 return;
             }

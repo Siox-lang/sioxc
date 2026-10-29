@@ -631,7 +631,7 @@ impl<'a> FunctionIndex<'a> {
             .resolved(path.span)
             .and_then(type_key)
             .or_else(|| {
-                (path.segments.last()?.text == "new").then_some(())?;
+                matches!(path.segments.last()?.text.as_str(), "default" | "new").then_some(())?;
                 let owner = path.segments.get(path.segments.len().checked_sub(2)?)?;
                 self.resolved.resolved(owner.span).and_then(type_key)
             })

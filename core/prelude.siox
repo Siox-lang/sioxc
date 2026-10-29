@@ -9,7 +9,7 @@ module core::prelude;
 pub use core::primitive::{Bool, string};
 pub use core::ops::{Boolean, Range, Index, IndexAssign, Resolve};
 pub use core::cmp::{Eq, Ord, Ordering, Match};
-pub use core::default::New;
+pub use core::default::Default;
 pub use core::convert::From;
 pub use core::attrs::precedence;
 pub use core::macros::{assert, warn, print, error, write};

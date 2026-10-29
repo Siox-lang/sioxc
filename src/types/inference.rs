@@ -559,7 +559,9 @@ impl<'a> Checker<'a> {
                         }
                         Some(Some(ret)) => self.ast_ty_for_owner(ret, &self.ty_from_head(&owner)),
                         Some(None) => Ty::Void,
-                        None if name == "new" && self.is_conversion_name(&owner) => {
+                        None if matches!(name.as_str(), "default" | "new")
+                            && self.is_conversion_name(&owner) =>
+                        {
                             self.ty_from_head(&owner)
                         }
                         None => self.free_call_return_type(path, args, sym),
