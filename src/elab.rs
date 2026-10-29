@@ -637,6 +637,20 @@ impl<'a> Elaborator<'a> {
         // connections of the children it instantiates.
         let parent_signals = self.entity_signals(entity_id, &env);
 
+        // Arrays wired element by element (`stage[i] = Cell { .. }`): a slot
+        // of one that nothing wires is still built, and warned about.
+        let array_of = |name: &str| {
+            let mut array = name;
+            while let Some((rest, _)) = array.strip_suffix(']').and_then(|n| n.rsplit_once('[')) {
+                array = rest;
+            }
+            (array.len() < name.len()).then(|| array.to_string())
+        };
+        let wired_arrays: HashSet<String> = specs
+            .iter()
+            .filter(|spec| !spec.declared_slot)
+            .filter_map(|spec| array_of(&spec.name))
+            .collect();
         stack.push(entity_id);
         let mut children = Vec::new();
         for spec in specs {
@@ -655,8 +669,29 @@ impl<'a> Elaborator<'a> {
                 // Ports this instance drives post-declaration (`inst.p = x;`)
                 // count as connected for the missing-connection check.
                 let driven = self.post_decl_driven(entity_id, &spec.name);
+                let unwired = spec.declared_slot
+                    && driven.is_empty()
+                    && array_of(&spec.name).is_some_and(|array| wired_arrays.contains(&array));
+                if unwired {
+                    self.sink.emit(
+                        Diagnostic::warning(format!(
+                            "`{}` is built but nothing wires it; it simulates on its default inputs",
+                            spec.name
+                        ))
+                        .with_code(codes::UNWIRED_INSTANCE)
+                        .at(spec.site)
+                        .help(format!(
+                            "wire it with `{} = {{ .. }}` or its ports, or size the array to the \
+                             slots in use",
+                            spec.name
+                        )),
+                    );
+                }
+                // An unwired slot's warning stands for its inputs.
+                let instance = if unwired { "" } else { spec.name.as_str() };
                 let cconns = self.resolve_connections(
                     sub_decl,
+                    instance,
                     &spec.args,
                     spec.site,
                     &child_env,
@@ -784,26 +819,15 @@ impl<'a> Elaborator<'a> {
                 }
             }
         }
-        // A declaration builds its slots only for an array no element
-        // construction mentions; one that is built element-wise keeps exactly
-        // the slots its constructions reach, so a generate condition can leave
-        // a slot out.
-        let array_of = |name: &str| {
-            let mut array = name;
-            while let Some((rest, _)) = array.strip_suffix(']').and_then(|n| n.rsplit_once('[')) {
-                array = rest;
-            }
-            (array.len() < name.len()).then(|| array.to_string())
-        };
+        // Every declared slot exists (`let stage: Cell[N];`); a construction
+        // of one (`stage[i] = Cell { .. }`, `= { .. }`) only wires it, so it
+        // replaces that slot's declaration and no other.
         let constructed: HashSet<String> = specs
             .iter()
             .filter(|spec| !spec.declared_slot)
-            .filter_map(|spec| array_of(&spec.name))
+            .map(|spec| spec.name.clone())
             .collect();
-        specs.retain(|spec| {
-            !spec.declared_slot
-                || array_of(&spec.name).is_none_or(|array| !constructed.contains(&array))
-        });
+        specs.retain(|spec| !spec.declared_slot || !constructed.contains(&spec.name));
         // A generated name (`s_0`) shares the parent's namespace with declared
         // ones, and two loops can generate the same name. Recorded here and
         // reported once per site by `report_collisions`.
@@ -1309,9 +1333,12 @@ impl<'a> Elaborator<'a> {
     /// Match an instance's connection arguments to the entity's ports, checking
     /// widths after parameter substitution and reporting unknown or unconnected
     /// ports.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_connections(
         &mut self,
         edecl: &EntityDecl,
+        // The instance's name; empty when its inputs are already warned about.
+        instance: &str,
         args: &[ConnectArg],
         site: Span,
         env: &HashMap<String, i64>,
@@ -1404,14 +1431,23 @@ impl<'a> Elaborator<'a> {
             if !connected.contains(&p.name.text)
                 && !driven.contains(&p.name.text)
                 && p.dir == Some(Direction::In)
+                && !instance.is_empty()
             {
                 // An unconnected input isn't an error — it holds its default
                 // value (§3.29; "always initialized, may be undriven"). Warn so
                 // a forgotten connection is still surfaced.
+                // A slot of an instance array is named, since the array's
+                // other slots may be wired: a partly wired array still builds
+                // every slot, and this one simulates on its defaults.
+                let owner = if instance.ends_with(']') {
+                    format!("`{instance}` (`{}`)", edecl.name.text)
+                } else {
+                    format!("`{}`", edecl.name.text)
+                };
                 self.sink.emit(
                     Diagnostic::warning(format!(
-                        "input port `{}` of `{}` is not connected; it holds its default value",
-                        p.name.text, edecl.name.text
+                        "input port `{}` of {owner} is not connected; it holds its default value",
+                        p.name.text
                     ))
                     .with_code(codes::UNCONNECTED_INPUT)
                     .at(site)
@@ -2303,10 +2339,9 @@ mod tests {
     }
 
     #[test]
-    /// A partially populated instance array must retain both its declared and
-    /// its actually-built slots, so an intentionally absent element is
-    /// distinguishable from an unresolved path.
-    fn hierarchy_retains_declared_and_conditionally_built_instance_slots() {
+    /// Every declared slot of an instance array is built, also one that a
+    /// generate condition leaves unwired (it simulates on its defaults).
+    fn every_declared_instance_slot_is_built() {
         let src = "module m;\n\
             entity Cell { y: Bit out }\n\
             impl Cell { y = '1'; }\n\
@@ -2327,7 +2362,7 @@ mod tests {
             vec![InstanceArrayFact {
                 name: "stage".into(),
                 declared: vec![3, 2, 1],
-                built: vec![3, 2],
+                built: vec![3, 2, 1],
                 span: chain.instance_arrays[0].span,
             }]
         );

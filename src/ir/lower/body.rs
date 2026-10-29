@@ -232,9 +232,9 @@ impl<'a> Lowering<'a> {
                             continue;
                         }
                     }
-                    // `let stage: Cell[N];`: N instances, not signals. With no
-                    // `stage[i] = Cell { .. }` anywhere, the declaration makes
-                    // every slot, its ports wired by later writes (#290).
+                    // `let stage: Cell[N];`: N instances, not signals, every
+                    // one built; `stage[i] = Cell { .. }` and later port
+                    // writes wire them (#290).
                     // `Cell[R][C]` nests (#300).
                     let slots =
                         l.ty.as_ref()
@@ -266,13 +266,11 @@ impl<'a> Lowering<'a> {
                                     prefix = format!("{prefix}[{label}]");
                                 }
                             }
-                            let prefix = format!("{}[", l.name.text);
-                            let constructed = subinsts
-                                .iter()
-                                .any(|(built, _, _)| built.starts_with(&prefix));
-                            if !constructed {
-                                for slot in slots {
-                                    let name = format!("{}{slot}", l.name.text);
+                            // Every slot exists; a construction only wires
+                            // the one it names.
+                            for slot in slots {
+                                let name = format!("{}{slot}", l.name.text);
+                                if !subinsts.iter().any(|(built, _, _)| *built == name) {
                                     subinsts.push((name, base.clone(), Vec::new()));
                                 }
                             }

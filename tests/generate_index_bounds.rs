@@ -199,7 +199,9 @@ fn an_instance_array_that_over_runs_is_named_as_instances() {
 }
 
 #[test]
-fn reading_an_instance_array_slot_that_was_not_elaborated_is_reported() {
+fn reading_an_unwired_instance_array_slot_warns() {
+    // Every declared slot is built; one no construction wires simulates on
+    // its default inputs, and says so.
     let src = "module m;\n\
                use std::bits::unsigned;\n\
                entity Inc { y: unsigned[8] out }\n\
@@ -214,19 +216,14 @@ fn reading_an_instance_array_slot_that_was_not_elaborated_is_reported() {
                }\n\
                entity Top { y: unsigned[8] out }\n\
                impl Top { let chain: Chain<N = 1> = { .y = y }; }\n";
-    let out = diagnostics("unbuilt_instance_slot", src);
+    let out = diagnostics("unwired_instance_slot", src);
     assert!(
-        out.contains("instance `stage[1]` was not elaborated"),
-        "an in-range but unbuilt instance slot should be named directly, got:\n{out}"
-    );
-    assert!(out.contains("E-P022"), "the diagnostic needs a stable code");
-    assert!(
-        out.contains("instance array `stage` declared here"),
-        "the array declaration should be a related source location, got:\n{out}"
+        out.contains("`stage[1]` is built but nothing wires it") && out.contains("W-P021"),
+        "an unwired slot should warn, got:\n{out}"
     );
     assert!(
-        !out.contains("`stage[1].y` has no hardware form"),
-        "the generic unsupported-expression diagnostic should be suppressed, got:\n{out}"
+        !out.contains("was not elaborated") && !out.contains("has no hardware form"),
+        "the slot exists and reads, got:\n{out}"
     );
 }
 
@@ -252,7 +249,7 @@ fn an_unreferenced_unbuilt_instance_array_slot_is_legal() {
 }
 
 #[test]
-fn driving_a_port_of_an_unbuilt_instance_array_slot_is_reported() {
+fn a_port_write_wires_a_slot_no_construction_names() {
     let src = "module m;\n\
                use std::bits::unsigned;\n\
                entity Cell { a: unsigned[8] in, y: unsigned[8] out }\n\
@@ -260,18 +257,17 @@ fn driving_a_port_of_an_unbuilt_instance_array_slot_is_reported() {
                entity Top { a: unsigned[8] in, y: unsigned[8] out }\n\
                impl Top {\n\
                    let stage: Cell[2];\n\
-                   if 1 == 1 { stage[0] = Cell {}; }\n\
+                   if 1 == 1 { stage[0] = Cell { .a = a }; }\n\
                    stage[1].a = a;\n\
-                   y = stage[0].y;\n\
+                   y = stage[1].y;\n\
                }\n";
-    let out = diagnostics("drive_unbuilt_instance_slot", src);
+    let out = diagnostics("port_write_slot", src);
     assert!(
-        out.contains("instance `stage[1]` was not elaborated"),
-        "driving a port of an absent child should name that child, got:\n{out}"
-    );
-    assert!(
-        !out.contains("cannot be assigned to") && !out.contains("cannot assign to"),
-        "the generic assignment-target diagnostic should be suppressed, got:\n{out}"
+        !out.contains("was not elaborated")
+            && !out.contains("cannot be assigned")
+            && !out.contains("W-P021")
+            && !out.contains("W-P012"),
+        "both slots are built and wired, got:\n{out}"
     );
 }
 

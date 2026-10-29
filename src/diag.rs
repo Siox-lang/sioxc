@@ -541,6 +541,10 @@ pub mod codes {
     /// `T::new()` on a type that declares no `new`: the default constructor
     /// was renamed `T::default()`. It still builds the default, for now.
     pub const RENAMED_DEFAULT: &str = "W-P020";
+    /// A slot of an instance array wired element by element that no
+    /// construction and no port write reaches: it is built, and simulates on
+    /// its default inputs.
+    pub const UNWIRED_INSTANCE: &str = "W-P021";
 }
 
 #[cfg(test)]
