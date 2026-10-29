@@ -100,6 +100,7 @@ pub const LINTS: &[(&str, &str)] = &[
     ),
     ("non_constant_loop_bound", codes::NON_CONSTANT_LOOP_BOUND),
     ("renamed_default", codes::RENAMED_DEFAULT),
+    ("unwired_instance", codes::UNWIRED_INSTANCE),
 ];
 
 /// The lint a warning code belongs to.
