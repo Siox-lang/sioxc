@@ -1000,6 +1000,17 @@ impl<'a> Lowering<'a> {
                     .and_then(|binding| self.declared_range(&binding.ty, &self.cur_env))
                     .or_else(|| self.persisted_range(&path))
             }
+            // A custom operator's impl that writes its result's range gives
+            // that range: `(a clip b)'right` of an `-> unsigned[3]` is 2, not
+            // the right of `a` (#143), and an alias of one keeps its labels.
+            ast::Expr::Binary {
+                op: ast::BinOp::Custom { symbol, .. },
+                lhs,
+                rhs,
+                ..
+            } if self.custom_operator_range(symbol, lhs, rhs).is_some() => {
+                self.custom_operator_range(symbol, lhs, rhs)
+            }
             // A literal operand has no range: `2 * a` is `a`'s format.
             ast::Expr::Binary { lhs, rhs, .. } => self
                 .operand_range(lhs, env)
@@ -1047,6 +1058,23 @@ impl<'a> Lowering<'a> {
                 .and_then(|layout| layout.index_range())
                 .map(|range| (range.left, range.right)),
         }
+    }
+
+    /// The range a custom operator's impl declares for its result, through
+    /// aliases; `None` when it writes none (`-> unsigned`, `-> Self`).
+    fn custom_operator_range(
+        &self,
+        symbol: &str,
+        lhs: &ast::Expr,
+        rhs: &ast::Expr,
+    ) -> Option<(i64, i64)> {
+        let function = self.source_binary_operator(
+            symbol,
+            &self.operand_type_name(lhs)?,
+            self.operand_type_name(rhs).as_deref(),
+            ast::expr_span(lhs).to(ast::expr_span(rhs)),
+        )?;
+        self.declared_range(self.resolve_alias(function.ret.as_ref()?), &self.cur_env)
     }
 
     /// Bind `name'left`/`'right`/`'high`/`'low` for an inlined body, beside

@@ -139,7 +139,7 @@ impl<'a> Checker<'a> {
         left: &Ty,
         right: &Ty,
         coerces_to_owner: bool,
-    ) -> Option<Option<String>> {
+    ) -> Option<Option<OperatorOutput>> {
         let owner = self.ty_head(left)?;
         let input = self.ty_head(right)?;
         self.operator_sigs
@@ -167,8 +167,21 @@ impl<'a> Checker<'a> {
                         .trait_impls
                         .get(requirement)
                         .is_some_and(|types| types.contains(element)))
-                .then_some(Some(owner))
+                .then_some(Some((owner, None)))
             })
+    }
+
+    /// The result an operator impl declares, when it is more than its head:
+    /// `unsigned[3]` or an alias of one keeps its width, where the head alone
+    /// fell back to an operand's type (#143, #144). `Self` is the owner; an
+    /// unsized family (`-> unsigned`) says nothing more than its head.
+    pub(super) fn declared_operator_output(
+        &self,
+        written: Option<&Type>,
+        owner: &Ty,
+    ) -> Option<Ty> {
+        let ty = self.ast_ty_for_owner(written?, owner);
+        (!matches!(ty, Ty::Error | Ty::Array { len: 0, .. })).then_some(ty)
     }
 
     /// Whether an operator impl accepts these operand types.

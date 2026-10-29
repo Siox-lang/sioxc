@@ -290,7 +290,12 @@ enum AttrValueTy {
 
 /// `(operator trait, implementing type)` to its overloads, each
 /// `(input type, output type)`.
-type OperatorSignatures = HashMap<(String, String), Vec<(Option<String>, Option<String>)>>;
+type OperatorSignatures = HashMap<(String, String), Vec<(Option<String>, Option<OperatorOutput>)>>;
+/// An operator's output type key, and the type as written when it is more
+/// than its head (`unsigned[3]`, an alias), which the result keeps (#143).
+type OperatorOutput = (String, Option<Type>);
+/// (`Index`/`IndexAssign`, target) to its (index type, value type) pairs.
+type IndexSignatures = HashMap<(String, String), Vec<(Option<String>, Option<String>)>>;
 /// A generic function's declared parameters and their written types.
 type GenericFnSignature = (Vec<Param>, Vec<Option<Type>>);
 /// A method's declared non-`self` parameter types, `None` where the
@@ -393,7 +398,7 @@ struct Checker<'a> {
     /// Multiple entries are overloads selected by the right operand.
     operator_sigs: OperatorSignatures,
     /// (`Index`/`IndexAssign`, target) -> (index type, value/output type).
-    index_sigs: OperatorSignatures,
+    index_sigs: IndexSignatures,
     /// Custom operator symbol to its declared precedence and declaration
     /// span. The span makes a conflicting redeclaration reportable at both
     /// sites.
