@@ -1,7 +1,9 @@
 # Conversions: `Default`, `From` and `Into`
 
-Status: **proposal, being implemented** (owner decisions of 2026-10-29). It
-settles sioxc #298 and the element-array half of #301.
+Status: **mostly implemented** (owner decisions of 2026-10-29). `Default`,
+`Into` and the std conversions have landed; port connections and struct
+literal fields are not yet implicit `Into` sites. It settles sioxc #298 and
+the element-array half of #301.
 
 ## Three traits, three jobs
 

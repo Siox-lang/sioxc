@@ -5,6 +5,9 @@ use super::*;
 impl<'a> Lowering<'a> {
     /// Lower an expression into IR.
     pub(super) fn lower_expr(&self, e: &ast::Expr) -> Expr {
+        if let Some(Val::Scalar(value)) = self.converted_value(e, &HashMap::new()) {
+            return value;
+        }
         if let Some(value) = self.promoted_operand(e, &HashMap::new()) {
             return value;
         }

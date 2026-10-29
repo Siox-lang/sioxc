@@ -2,10 +2,15 @@
 
 use std::process::Command;
 
-/// Build `source` as a test binary and run it, returning everything printed.
-fn run(name: &str, source: &str) -> String {
+fn scratch() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("siox_conversions_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Build `source` as a test binary and run it, returning everything printed.
+fn run(name: &str, source: &str) -> String {
+    let dir = scratch();
     let file = dir.join(format!("{name}.siox"));
     std::fs::write(&file, source).unwrap();
     let binary = dir.join(name);
@@ -66,4 +71,162 @@ impl T {
         out.contains("W-P020") && out.contains("`Pair::new()` is now `Pair::default()`"),
         "{out}"
     );
+}
+
+/// `Logic[]` and the vector families over it convert implicitly where a
+/// value is stored, both ways, through std's `impl Into` (#298, #301).
+#[test]
+fn into_converts_between_logic_arrays_and_vector_families() {
+    let out = run(
+        "into",
+        r#"module into;
+use std::fixed::{ufixed, sfixed};
+use std::float::float;
+#[test] entity T {}
+impl T { process {
+    let arr: Logic[8] = "00011000";
+    let u: unsigned[8] = arr;
+    let s: signed[8] = arr;
+    let f: ufixed<8, 4> = arr;
+    let g: sfixed<8, 4> = arr;
+    let b1: Logic[8] = u;
+    let b2: Logic[8] = f;
+    let w: Logic[32] = "00111111110000000000000000000000";
+    let x: float<32, 23> = w;
+    let b3: Logic[32] = x;
+    let n: Logic[8] = "11101000";
+    let ns: sfixed<8, 4> = n;
+    let bs: Logic[8] = x"80";
+    print!("{} {} {} {} {} {} {} {} {} {}\n", u, s, real(f), real(g), b1, b2, real(x), b3, real(ns), bs);
+    assert!(u == 24 and real(f) == 1.5 and real(g) == 1.5 and real(x) == 1.5 and real(ns) == -1.5);
+    assert!(b1 == arr and b2 == arr and b3 == w and bs == "10000000");
+} }
+"#,
+    );
+    assert!(out.contains("passed;") && !out.contains("FAILED"), "{out}");
+    assert!(
+        out.contains(
+            "24 24 1.5 1.5 00011000 00011000 1.5 00111111110000000000000000000000 -1.5 10000000"
+        ),
+        "{out}"
+    );
+}
+
+/// The same conversions in a design: run under a test, and built as an
+/// object (#298 did neither).
+#[test]
+fn into_converts_in_hardware() {
+    let out = run(
+        "hardware",
+        r#"module hw;
+use std::fixed::ufixed;
+entity Top {
+    u: unsigned[8] in,
+    arr_in: Logic[8] in,
+    f: ufixed<8, 4> in,
+    y1: Logic out,
+    y2: unsigned[8] out,
+    y3: Logic[4] out,
+    y4: Logic[8] out,
+    y5: ufixed<8, 4> out,
+}
+impl Top {
+    let arr: Logic[8];
+    arr = u;
+    y1 = arr[0];
+    let u_out: unsigned[8];
+    u_out = arr_in;
+    y2 = u_out;
+    y3 = u[7..4];
+    y4 = f;
+    y5 = arr_in;
+}
+#[test] entity T {}
+impl T {
+    let u: unsigned[8] = 0xA5; let arr_in: Logic[8] = "00011000"; let f: ufixed<8, 4> = ufixed<8, 4>(2.75);
+    let y1: Logic; let y2: unsigned[8]; let y3: Logic[4]; let y4: Logic[8]; let y5: ufixed<8, 4>;
+    let t: Top = { .u = u, .arr_in = arr_in, .f = f, .y1 = y1, .y2 = y2, .y3 = y3, .y4 = y4, .y5 = y5 };
+    process {
+        await 1ns;
+        print!("{} {} {} {} {}\n", y1, y2, y3, y4, real(y5));
+        assert!(y1 == '1' and y2 == 24 and y3 == "1010" and y4 == "00101100" and real(y5) == 1.5);
+    }
+}
+"#,
+    );
+    assert!(out.contains("passed;") && !out.contains("FAILED"), "{out}");
+    assert!(out.contains("'1' 24 1010 00101100 1.5"), "{out}");
+    let dir = scratch();
+    let file = dir.join("design.siox");
+    std::fs::write(&file, r#"module hw;
+use std::fixed::ufixed;
+entity Top {
+    u: unsigned[8] in,
+    arr_in: Logic[8] in,
+    f: ufixed<8, 4> in,
+    y1: Logic out,
+    y2: unsigned[8] out,
+    y3: Logic[4] out,
+    y4: Logic[8] out,
+    y5: ufixed<8, 4> out,
+}
+impl Top {
+    let arr: Logic[8];
+    arr = u;
+    y1 = arr[0];
+    let u_out: unsigned[8];
+    u_out = arr_in;
+    y2 = u_out;
+    y3 = u[7..4];
+    y4 = f;
+    y5 = arr_in;
+}
+#[test] entity T {}
+impl T {
+    let u: unsigned[8] = 0xA5; let arr_in: Logic[8] = "00011000"; let f: ufixed<8, 4> = ufixed<8, 4>(2.75);
+    let y1: Logic; let y2: unsigned[8]; let y3: Logic[4]; let y4: Logic[8]; let y5: ufixed<8, 4>;
+    let t: Top = { .u = u, .arr_in = arr_in, .f = f, .y1 = y1, .y2 = y2, .y3 = y3, .y4 = y4, .y5 = y5 };
+    process {
+        await 1ns;
+        print!("{} {} {} {} {}\n", y1, y2, y3, y4, real(y5));
+        assert!(y1 == '1' and y2 == 24 and y3 == "1010" and y4 == "00101100" and real(y5) == 1.5);
+    }
+}
+"#).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_sioxc"))
+        .args([
+            "--std",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/std"),
+            "--top",
+            "Top",
+            "-o",
+        ])
+        .arg(dir.join("design.o"))
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// An operator's operand is never converted: `u + arr` read `arr`'s raw
+/// storage and gave 1 for 1 + 2.
+#[test]
+fn an_operand_is_not_converted_implicitly() {
+    let out = run(
+        "operand",
+        r#"module ops;
+#[test] entity T {}
+impl T { process {
+    let u: unsigned[8] = 1; let arr: Logic[8] = "00000010";
+    let s: unsigned[8] = u + arr;
+    print!("{}\n", s);
+} }
+"#,
+    );
+    assert!(out.contains("`+` mixes unsigned[8] and Logic[8]"), "{out}");
+    assert!(out.contains("write `unsigned[8](arr)`"), "{out}");
 }

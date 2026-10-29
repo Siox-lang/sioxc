@@ -210,9 +210,10 @@ impl Lowering<'_> {
                     layout.kind,
                     LayoutKind::Array { .. } | LayoutKind::Struct { .. }
                 ) {
+                    let converted = self.conversions.contains_key(&ast::expr_span(expression));
                     let value = match self
                         .source_operand_layout(expression, env)
-                        .filter(|source| !has_open_parameter(source))
+                        .filter(|source| !converted && !has_open_parameter(source))
                     {
                         Some(source) => reindex_aggregate_value(value, &source, layout)
                             .unwrap_or(Val::Scalar(Expr::Unknown)),
@@ -302,9 +303,11 @@ impl Lowering<'_> {
         // A generic's layout with a parameter left open (`Box<T>` from
         // `Box<integer>::make`) is the target's: the checker matched the
         // types (#294).
+        // A converted value (`impl Into`) arrives in the target's shape.
+        let converted = self.conversions.contains_key(&ast::expr_span(value));
         let source_layout = self
             .source_operand_layout(value, &env)
-            .filter(|layout| !has_open_parameter(layout))
+            .filter(|layout| !converted && !has_open_parameter(layout))
             .unwrap_or_else(|| target_layout.clone());
         let value = self.lower_shaped_source(value, &env, &source_layout);
         let Val::Fields(fields) = value else {

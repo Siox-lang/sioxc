@@ -1093,6 +1093,25 @@ impl<'a> Lowering<'a> {
             _ => self.operand_type_name(arg),
         });
         let f = self.find_method(&ty, &field.text, input.as_deref())?;
+        self.inline_method(f, &ty, &field.text, callee, base, args, env, None)
+    }
+
+    /// Inline method `f` on the receiver `base`, called as `callee`: what
+    /// `lower_method_call` does once it has chosen the method, and what an
+    /// implicit `Into` conversion does with the impl's `into` (#298).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn inline_method(
+        &self,
+        f: &ast::FnDecl,
+        ty: &str,
+        method: &str,
+        callee: &ast::Expr,
+        base: &ast::Expr,
+        args: &[ast::Expr],
+        env: &HashMap<String, Val>,
+        result: Option<SourceLayout>,
+    ) -> Option<Val> {
+        let ty = ty.to_string();
         f.body.as_ref()?;
         let is_op_method = self
             .op_impls
@@ -1105,7 +1124,7 @@ impl<'a> Lowering<'a> {
             if self.depth_exceeded.borrow().is_empty() {
                 self.depth_exceeded
                     .borrow_mut()
-                    .push((format!("{ty}.{}", field.text), ast::expr_span(callee)));
+                    .push((format!("{ty}.{method}"), ast::expr_span(callee)));
             }
             return None;
         }
@@ -1272,7 +1291,9 @@ impl<'a> Lowering<'a> {
                     .insert("self".to_string(), receiver_width),
             ));
         }
-        let return_layout = self.source_function_return_layout(f, &shapes);
+        // The caller may know the result's shape when the declaration does
+        // not (`fn into(self) -> Logic[]` stored into a `Logic[8]`).
+        let return_layout = result.or_else(|| self.source_function_return_layout(f, &shapes));
         let _shapes = self.source_shape_scope(shapes, return_layout);
         // Marked only now: the receiver and arguments above are the caller's
         // expressions, and a comparison inside them (`(if d > c { d } else
@@ -1280,7 +1301,7 @@ impl<'a> Lowering<'a> {
         // fell back to the built-in unsigned order.
         self.inlining_methods
             .borrow_mut()
-            .push((ty.clone(), field.text.clone()));
+            .push((ty.clone(), method.to_string()));
         let out = self.inline_source_function(f, ast::expr_span(callee), &mut fenv, None);
         for (name, prev) in saved.into_iter().rev() {
             match prev {
@@ -1771,12 +1792,77 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// The structural default of a layout: an enum's default variant, zero
+    /// otherwise, one leaf per element and field.
+    pub(super) fn layout_default(&self, layout: &SourceLayout) -> Val {
+        match &layout.kind {
+            LayoutKind::Array {
+                range: Some(range),
+                element,
+            } => {
+                let mut fields = Vec::new();
+                for label in loop_range(range.left, range.right) {
+                    Self::prefix_block_value(
+                        &format!("[{label}]"),
+                        self.layout_default(element),
+                        &mut fields,
+                    );
+                }
+                Val::Fields(fields)
+            }
+            LayoutKind::Struct { fields, .. } => {
+                let mut out = Vec::new();
+                for field in fields {
+                    Self::prefix_block_value(
+                        &field.name,
+                        self.layout_default(&field.layout),
+                        &mut out,
+                    );
+                }
+                Val::Fields(out)
+            }
+            LayoutKind::Scalar {
+                domain: crate::ir::ScalarDomain::Enum(name),
+                ..
+            } => {
+                let short = name.rsplit("::").next().unwrap_or(name);
+                let value = [name.as_str(), short]
+                    .iter()
+                    .find_map(|key| {
+                        self.new_defaults
+                            .get(*key)
+                            .or_else(|| self.enum_first_disc.get(*key))
+                    })
+                    .copied()
+                    .unwrap_or(0);
+                Val::Scalar(Expr::Const(value))
+            }
+            _ => Val::Scalar(Expr::Const(0)),
+        }
+    }
+
     /// Statements that only bind and assign, applied to `env` in order: a
     /// loop body, a return-free branch, or one such statement of a body.
     fn inline_effects(&self, stmts: &[ast::Stmt], env: &mut HashMap<String, Val>) -> Option<()> {
         for stmt in stmts {
             match stmt {
                 ast::Stmt::Use(_) => {}
+                // `let r: Logic[8];` takes its type's default, element by
+                // element, before the body writes it (`r[k] = ..`). Without
+                // one the whole call had no value form.
+                ast::Stmt::Let(l) if l.value.is_none() => {
+                    let layout = self.source_layout(l.ty.as_ref()?, &self.attribute_env(env));
+                    let default = self.layout_default(&layout);
+                    let mut lowered = self.bind_source_value(default, l.span, None);
+                    self.source_inline_local(
+                        &l.name.text,
+                        l.span,
+                        Some(layout.clone()),
+                        &mut lowered,
+                    );
+                    self.bind_source_shape(l.name.text.clone(), layout);
+                    env.insert(l.name.text.clone(), lowered);
+                }
                 ast::Stmt::Let(l) => {
                     let value = l.value.as_ref()?;
                     self.register_local_type(l, value);
@@ -2506,6 +2592,23 @@ impl<'a> Lowering<'a> {
         let mut scoped = std::borrow::Cow::Borrowed(env);
         loop {
             while let [ast::Stmt::Let(l), rest @ ..] = stmts {
+                // `let r: Logic[8];`: its type's default, written next.
+                if l.value.is_none() {
+                    let layout =
+                        self.source_layout(l.ty.as_ref()?, &self.attribute_env(scoped.as_ref()));
+                    let default = self.layout_default(&layout);
+                    let mut lowered = self.bind_source_value(default, l.span, None);
+                    self.source_inline_local(
+                        &l.name.text,
+                        l.span,
+                        Some(layout.clone()),
+                        &mut lowered,
+                    );
+                    self.bind_source_shape(l.name.text.clone(), layout);
+                    scoped.to_mut().insert(l.name.text.clone(), lowered);
+                    stmts = rest;
+                    continue;
+                }
                 let value = l.value.as_ref()?;
                 self.register_local_type(l, value);
                 // A width-generic declaration (`let r: unsigned = v;`) has the

@@ -373,7 +373,7 @@ impl<'a> Checker<'a> {
         if self.report_bitless_concat(&lhs, value, sym) {
             return;
         }
-        if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
+        if !matches!(lhs, Ty::Error) && !self.site_assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
             let mut diag = Diagnostic::error(format!(
                 "cannot initialize {} with {} without an explicit conversion",
@@ -438,7 +438,7 @@ impl<'a> Checker<'a> {
         if self.report_bitless_concat(&lhs, value, sym) {
             return;
         }
-        if !matches!(lhs, Ty::Error) && !self.assignable(&lhs, value, sym) {
+        if !matches!(lhs, Ty::Error) && !self.site_assignable(&lhs, value, sym) {
             let rhs = self.type_of(value, sym);
             // Suggest `T(...)` only where that conversion is defined: a named
             // type without a route from the value's type would reject it.

@@ -159,6 +159,9 @@ pub struct Hierarchy {
     /// Operands of mixed numeric operations that widen, by span, to the type
     /// they widen to (Stage 4's `Typed::promotions`).
     pub(crate) promotions: HashMap<Span, Ty>,
+    /// Each value an `impl Into` converts where stored (Stage 4's
+    /// `Typed::conversions`).
+    pub(crate) conversions: HashMap<Span, crate::types::Conversion>,
     /// Stable display/storage spelling for each entity declaration. Keeping it
     /// beside the instance forest lets downstream consumers disambiguate equal
     /// root leaves without rediscovering module ownership from source text.
@@ -494,6 +497,7 @@ fn elaborate_roots(
     };
     e.out.expr_types = typed.expr_types().clone();
     e.out.promotions = typed.promotions().clone();
+    e.out.conversions = typed.conversions().clone();
     e.collect(modules);
 
     let mut stack = Vec::new();

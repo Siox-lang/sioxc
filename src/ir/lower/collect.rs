@@ -35,6 +35,7 @@ impl<'a> Lowering<'a> {
             resolved,
             expr_types: HashMap::new(),
             promotions: HashMap::new(),
+            conversions: HashMap::new(),
             widening: std::cell::RefCell::new(HashSet::new()),
             base_dir: std::path::PathBuf::new(),
             lint_defaulted: std::collections::HashSet::new(),
@@ -196,6 +197,7 @@ impl<'a> Lowering<'a> {
                     // argument, its `suffix` method inlined at the use site
                     // (spec 3.24).
                     ast::Item::Impl(im) => {
+                        self.free_fns.insert_conversion_impl(im);
                         let trait_path = im.trait_.as_ref();
                         let trait_key =
                             trait_path.and_then(|path| self.free_fns.trait_path_key(path));

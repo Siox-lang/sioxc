@@ -226,6 +226,59 @@ impl From<ufixed> for sfixed {
     }
 }
 
+// `ufixed<8, 4>(v)` for a `Logic[]` (VHDL's `to_ufixed(slv, 3, -4)`): the
+// elements by position, the leftmost at `'high`; the format places the point.
+impl From<Logic[]> for ufixed {
+    fn from(value: Logic[]) -> ufixed {
+        return integer(unsigned(value));
+    }
+}
+
+impl From<Logic[]> for sfixed {
+    fn from(value: Logic[]) -> sfixed {
+        return integer(unsigned(value));
+    }
+}
+
+// Stored where the other is expected, a `Logic[]` and a fixed-point format
+// convert implicitly, element for element; the format places the point.
+impl Into<ufixed> for Logic[] {
+    fn into(self) -> ufixed {
+        return ufixed(self);
+    }
+}
+
+impl Into<sfixed> for Logic[] {
+    fn into(self) -> sfixed {
+        return sfixed(self);
+    }
+}
+
+impl Into<Logic[]> for ufixed {
+    fn into(self) -> Logic[] {
+        return elements(self);
+    }
+}
+
+impl Into<Logic[]> for sfixed {
+    fn into(self) -> Logic[] {
+        return elements(self);
+    }
+}
+
+// A format's bits as a `Logic[]`, the most significant first: its bits read
+// as an `unsigned` of the same length, so every label is non-negative.
+// `unsigned(value)` keeps the bits (there is no numeric `From` from a format
+// to `unsigned`), metavalues included.
+fn elements<T>(value: T) -> Logic[] {
+    let bits: unsigned[value'length] = unsigned(value);
+    let r: Logic[value'length];
+    for k in 0..value'length - 1 {
+        r[k] = bits[value'length - 1 - k];
+    }
+    return r;
+}
+
 impl From<unsigned> for ufixed {
     fn from(value: unsigned) -> ufixed {
         if Self'low <= 0 and Self'high >= value'length - 1 {

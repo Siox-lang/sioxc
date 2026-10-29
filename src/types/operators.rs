@@ -486,6 +486,69 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether `value` may be stored into `lhs` where a value is stored — a
+    /// `let` initializer, an assignment, an argument, a returned value. A
+    /// nominal vector family and a plain array over the same elements
+    /// (`unsigned[8]`, `Logic[8]`) are different types there; an `impl Into`
+    /// converts between them, and the site is recorded for lowering. A
+    /// literal or constructor keeps reading through its target.
+    pub(super) fn site_assignable(
+        &mut self,
+        lhs: &Ty,
+        value: &Expr,
+        sym: &HashMap<String, Ty>,
+    ) -> bool {
+        // A literal or constructor reads through its target, and typing it
+        // alone here would record its standalone type for it.
+        let contextual = matches!(
+            value,
+            Expr::StrLit { .. }
+                | Expr::Array { .. }
+                | Expr::Tuple { .. }
+                | Expr::Construct { .. }
+                | Expr::Concat { .. }
+                | Expr::Int { .. }
+                | Expr::CharLit { .. }
+                | Expr::IfExpr { .. }
+                | Expr::Match { .. }
+        );
+        if contextual {
+            return self.assignable(lhs, value, sym);
+        }
+        let rhs = self.type_of(value, sym);
+        let crosses = matches!(
+            (lhs, &rhs),
+            (
+                Ty::Array { family: a, elem: ea, .. },
+                Ty::Array { family: b, elem: eb, .. },
+            ) if a.is_some() != b.is_some() && ea == eb
+        );
+        if !crosses && self.assignable(lhs, value, sym) {
+            return true;
+        }
+        let same_length = match (lhs, &rhs) {
+            (Ty::Array { len: a, .. }, Ty::Array { len: b, .. }) => a == b || *a == 0 || *b == 0,
+            _ => true,
+        };
+        let keys = match (self.conversion_key(lhs), self.conversion_key(&rhs)) {
+            (Some(target), Some(source)) if same_length => Some((target, source)),
+            _ => None,
+        }
+        .filter(|keys| self.into_sigs.contains(keys));
+        let Some((target_key, source_key)) = keys else {
+            return false;
+        };
+        self.conversions.insert(
+            expr_span(value),
+            Conversion {
+                target: lhs.clone(),
+                target_key,
+                source_key,
+            },
+        );
+        true
+    }
+
     /// Whether `value` may be assigned to `lhs`. Widths are strict, but a
     /// contextual literal adopts the target's type.
     pub(super) fn assignable(&self, lhs: &Ty, value: &Expr, sym: &HashMap<String, Ty>) -> bool {

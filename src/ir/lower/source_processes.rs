@@ -4694,6 +4694,36 @@ fn operand_type(
     ty
 }
 
+/// A value stored where an `impl Into` converts it: the impl's `into`,
+/// inlined with the value as `self` (conversions proposal). The span is held
+/// while the receiver lowers, so it lowers unconverted.
+fn process_converted_value(
+    expression: &ast::Expr,
+    process: &ProcessCfg,
+    context: &mut LoweringContext<'_>,
+) -> Option<ProcessValueId> {
+    let span = ast::expr_span(expression);
+    if context.widening.contains(&span) {
+        return None;
+    }
+    let conversion = context.typed.conversion(span)?.clone();
+    let function = context
+        .functions
+        .get_into(&conversion.target_key, &conversion.source_key)?;
+    context.widening.insert(span);
+    let receiver = value_ref(expression, process, context);
+    context.widening.remove(&span);
+    inline_process_function(
+        function,
+        span,
+        Some(receiver),
+        &[],
+        process,
+        context,
+        Some(&conversion.target),
+    )
+}
+
 /// `expression` widened to its promoted type (spec 3.17) through std's
 /// `From<Source>` impl for that type, inlined with `Self` as the promoted
 /// format. `None` when it does not widen.
@@ -10713,6 +10743,9 @@ fn value_ref_with_type(
     context: &mut LoweringContext<'_>,
     contextual_type: Option<&crate::types::Ty>,
 ) -> crate::ir::ProcessValueId {
+    if let Some(value) = process_converted_value(expression, process, context) {
+        return value;
+    }
     if let Some(value) = struct_suffix_literal(expression, process, context) {
         return value;
     }

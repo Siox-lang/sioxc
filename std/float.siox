@@ -370,6 +370,41 @@ impl Sqrt for float {
 }
 
 // `real(x)`: the number a float holds.
+// `float<32, 23>(v)` for a `Logic[]` (VHDL's `to_float(slv, 8, 23)`): the
+// raw sign, exponent and fraction bits, the leftmost at `'high`.
+impl From<Logic[]> for float {
+    fn from(value: Logic[]) -> float {
+        return integer(unsigned(value));
+    }
+}
+
+// Stored where the other is expected, a `Logic[]` and a float convert
+// implicitly: the raw sign, exponent and fraction bits.
+impl Into<float> for Logic[] {
+    fn into(self) -> float {
+        return float(self);
+    }
+}
+
+impl Into<Logic[]> for float {
+    fn into(self) -> Logic[] {
+        return elements(self);
+    }
+}
+
+// A format's bits as a `Logic[]`, the most significant first: its bits read
+// as an `unsigned` of the same length, so every label is non-negative.
+// `unsigned(value)` keeps the bits (there is no numeric `From` from a format
+// to `unsigned`), metavalues included.
+fn elements<T>(value: T) -> Logic[] {
+    let bits: unsigned[value'length] = unsigned(value);
+    let r: Logic[value'length];
+    for k in 0..value'length - 1 {
+        r[k] = bits[value'length - 1 - k];
+    }
+    return r;
+}
+
 impl From<float> for real {
     fn from(value: float) -> real {
         let e: integer = value'high;

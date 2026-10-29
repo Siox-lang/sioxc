@@ -173,6 +173,8 @@ impl<'a> Checker<'a> {
             type_attrs: HashMap::new(),
             type_attr_reads: HashMap::new(),
             promotions: HashMap::new(),
+            into_sigs: HashSet::new(),
+            conversions: HashMap::new(),
         }
     }
 
@@ -182,6 +184,7 @@ impl<'a> Checker<'a> {
             expr_types: self.expr_types.into_inner(),
             type_attr_reads: self.type_attr_reads,
             promotions: self.promotions,
+            conversions: self.conversions,
             covered_tuple_matches: self.covered_tuple_matches,
         }
     }
@@ -379,6 +382,23 @@ impl<'a> Checker<'a> {
                     let trait_name = self.trait_key(tr);
                     let target = self.type_key(&im.target);
                     if let (Some(mut t), Some(ty)) = (trait_name, target) {
+                        if t == "Into" {
+                            let target =
+                                im.trait_args.first().and_then(|argument| match argument {
+                                    GenericArg::Positional(Expr::Path(path)) => {
+                                        Some(Ty::Named(self.resolved.resolved(path.span)?))
+                                    }
+                                    GenericArg::PositionalType(ty) => Some(self.ast_ty(ty)),
+                                    _ => None,
+                                });
+                            let source = self.ast_ty(&im.target);
+                            if let (Some(target), Some(source)) = (
+                                target.and_then(|t| self.conversion_key(&t)),
+                                self.conversion_key(&source),
+                            ) {
+                                self.into_sigs.insert((target, source));
+                            }
+                        }
                         if t == "From" {
                             let source =
                                 im.trait_args.first().and_then(|argument| match argument {

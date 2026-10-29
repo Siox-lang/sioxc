@@ -139,9 +139,23 @@ pub struct Typed {
     /// Each operand of a mixed numeric operation that widens, keyed by its
     /// span, to the type it widens to (spec 3.17, ``From``).
     promotions: HashMap<Span, Ty>,
+    /// Each value an `impl Into` converts where it is stored, keyed by its
+    /// span (conversions proposal).
+    conversions: HashMap<Span, Conversion>,
     /// Each tuple `match` whose arms cover every combination without a `_`,
     /// by the match's span: its last arm needs no condition.
     covered_tuple_matches: HashSet<Span>,
+}
+
+/// A value converted where it is stored, through `impl Into<T> for S`.
+#[derive(Clone, Debug)]
+pub struct Conversion {
+    /// The type stored into, `T` at its declared width.
+    pub target: Ty,
+    /// `T`'s key: a type's head, or `Logic[]` for a plain array.
+    pub target_key: String,
+    /// The value's type `S`, keyed the same way.
+    pub source_key: String,
 }
 
 impl Typed {
@@ -154,6 +168,16 @@ impl Typed {
     /// The type an operand widens to in a mixed numeric operation.
     pub fn promotion(&self, span: Span) -> Option<&Ty> {
         self.promotions.get(&span)
+    }
+
+    /// The `impl Into` a stored value converts through.
+    pub fn conversion(&self, span: Span) -> Option<&Conversion> {
+        self.conversions.get(&span)
+    }
+
+    /// Every implicit conversion, keyed by the converted value's span.
+    pub fn conversions(&self) -> &HashMap<Span, Conversion> {
+        &self.conversions
     }
 
     /// Every operand promotion, keyed by the operand's span.
@@ -528,6 +552,10 @@ struct Checker<'a> {
     type_attr_reads: HashMap<Span, Expr>,
     /// Operand promotions of mixed numeric operations; handed on in [`Typed`].
     promotions: HashMap<Span, Ty>,
+    /// `impl Into<T> for S` as `(T, S)` keys (see `conversion_key`).
+    into_sigs: HashSet<(String, String)>,
+    /// Values converted by an `impl Into` where stored; handed on in [`Typed`].
+    conversions: HashMap<Span, Conversion>,
 }
 
 #[cfg(test)]
