@@ -2594,7 +2594,14 @@ impl<'a> Parser<'a> {
             lo.clone()
         } else if matches!(
             self.kind(),
-            TokenKind::FatArrow | TokenKind::Pipe | TokenKind::Comma | TokenKind::RBrace
+            // `)` closes an open range ending a tuple pattern (`(..0, 1..)`,
+            // #302); `if` starts an arm's guard.
+            TokenKind::FatArrow
+                | TokenKind::Pipe
+                | TokenKind::Comma
+                | TokenKind::RBrace
+                | TokenKind::RParen
+                | TokenKind::If
         ) {
             None
         } else {

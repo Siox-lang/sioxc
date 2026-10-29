@@ -702,20 +702,26 @@ pub fn inline_loop_ranges(modules: &mut [Module], resolved: &Resolved) {
 /// slot already exists from its declaration; this only rebuilds it with the
 /// connections written (#290).
 pub fn type_instance_slots(modules: &mut [Module], resolved: &Resolved) {
-    fn stmt(statement: &mut Stmt, arrays: &HashMap<String, Type>) {
+    fn stmt(statement: &mut Stmt, arrays: &HashMap<String, (Type, usize)>) {
         match statement {
             Stmt::Assign { target, value, .. } => {
+                // A whole slot: as many indices as the array has levels.
                 let mut root = &*target;
-                while let Expr::Index { base, .. } | Expr::Field { base, .. } = root {
+                let mut depth = 0;
+                while let Expr::Index { base, .. } = root {
                     root = base;
+                    depth += 1;
                 }
                 let Expr::Path(path) = root else { return };
                 let [name] = path.segments.as_slice() else {
                     return;
                 };
-                let (Some(entity), Expr::Index { .. }) = (arrays.get(&name.text), &*target) else {
+                let Some((entity, levels)) = arrays.get(&name.text) else {
                     return;
                 };
+                if depth != *levels {
+                    return;
+                }
                 match value {
                     Expr::Construct { ty: ty @ None, .. } => *ty = Some(entity.clone()),
                     Expr::Concat { parts, span } if parts.is_empty() => {
@@ -738,7 +744,7 @@ pub fn type_instance_slots(modules: &mut [Module], resolved: &Resolved) {
             _ => {}
         }
     }
-    fn if_stmt(statement: &mut IfStmt, arrays: &HashMap<String, Type>) {
+    fn if_stmt(statement: &mut IfStmt, arrays: &HashMap<String, (Type, usize)>) {
         for inner in &mut statement.then.stmts {
             stmt(inner, arrays);
         }
@@ -757,17 +763,24 @@ pub fn type_instance_slots(modules: &mut [Module], resolved: &Resolved) {
             let Item::Impl(implementation) = item else {
                 continue;
             };
-            let arrays: HashMap<String, Type> = implementation
+            let arrays: HashMap<String, (Type, usize)> = implementation
                 .items
                 .iter()
                 .filter_map(|member| match member {
                     ImplItem::Let(LetDecl {
                         name,
-                        ty: Some(Type::Indexed { base, .. }),
+                        ty: Some(ty @ Type::Indexed { .. }),
                         value: None,
                         ..
                     }) => {
-                        let head = match base.as_ref() {
+                        // `Cell[R][C]`: the element under every level (#300).
+                        let mut base = ty;
+                        let mut levels = 0;
+                        while let Type::Indexed { base: inner, .. } = base {
+                            base = inner;
+                            levels += 1;
+                        }
+                        let head = match base {
                             Type::Generic { base, .. } => base.as_ref(),
                             head => head,
                         };
@@ -776,7 +789,7 @@ pub fn type_instance_slots(modules: &mut [Module], resolved: &Resolved) {
                         };
                         let id = resolved.resolved(path.span)?;
                         (resolved.kind_of(id) == Some(DefKind::Entity))
-                            .then(|| (name.text.clone(), (**base).clone()))
+                            .then(|| (name.text.clone(), (base.clone(), levels)))
                     }
                     _ => None,
                 })

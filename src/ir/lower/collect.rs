@@ -499,13 +499,16 @@ impl<'a> Lowering<'a> {
                 // `let stage: Cell[N];` in a testbench: N unconnected DUTs,
                 // driven by later port writes (#290).
                 if let ast::ImplItem::Let(l) = item {
-                    if let (None, Some(ty @ ast::Type::Indexed { base, .. })) = (&l.value, &l.ty) {
+                    let slots =
+                        l.ty.as_ref()
+                            .filter(|_| l.value.is_none())
+                            .and_then(|ty| crate::elab::instance_array_slots(ty, env));
+                    if let Some((base, slots)) = slots {
                         if let Some(sub) = type_def_id(base, self.resolved)
                             .filter(|id| self.entities.contains_key(id))
                         {
-                            let range = self.declared_range(ty, env);
-                            for label in range.map(|(l, r)| loop_range(l, r)).unwrap_or_default() {
-                                let sub_path = format!("{name}.{}[{label}]", l.name.text);
+                            for slot in slots {
+                                let sub_path = format!("{name}.{}{slot}", l.name.text);
                                 let mut sub_env = self.consts.clone();
                                 sub_env.extend(self.construct_params(base, sub, env));
                                 let sub_tenv = self.construct_type_params(base, sub);
