@@ -208,6 +208,15 @@ pub fn fold_value_lengths(modules: &mut [Module], typed: &Typed) {
                 Expr::Range { lo, hi, .. } => literal(lo).zip(literal(hi)),
                 _ => None,
             },
+            // A constructor builds its written labels: `unsigned[6..4](5)'left`
+            // is 6, where the testbench read the checked width as 0..2 (#144).
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Index { index, .. } => match index.as_ref() {
+                    Expr::Range { lo, hi, .. } => literal(lo).zip(literal(hi)),
+                    _ => None,
+                },
+                _ => None,
+            },
             _ => None,
         };
         let len = match (attribute, typed.expr_type(expr_span(base)), labels) {

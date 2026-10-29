@@ -10038,7 +10038,31 @@ fn inline_process_binary_operator(
     if result.is_none() {
         truncate_process_values(context, first_value);
     }
-    result.map(|result| inherit_receiver_layout(result, left, context))
+    result.map(|result| {
+        let result = inherit_receiver_layout(result, left, context);
+        label_declared_result(result, function.ret.as_ref(), context);
+        result
+    })
+}
+
+/// An operator impl that writes its result's range (`-> unsigned[6..4]`, or
+/// an alias of one) labels the result so: the checked type carries only the
+/// width, and `(a clip b)'left` read 0 where hardware read 6 (#144).
+fn label_declared_result(
+    result: ProcessValueId,
+    declared: Option<&ast::Type>,
+    context: &mut LoweringContext<'_>,
+) {
+    let Some(declared) = declared else {
+        return;
+    };
+    let Some(mut layout) = process_value_source_layout(result, context.process_ir).cloned() else {
+        return;
+    };
+    let mut aliases = std::collections::HashSet::new();
+    if apply_process_declared_ranges(&mut layout, declared, context, &mut aliases).is_some() {
+        context.process_ir.value_layouts[result.0 as usize] = Some(layout);
+    }
 }
 
 /// A comparison on a type with an `Eq`/`Ord` impl (spec 3.25) calls its

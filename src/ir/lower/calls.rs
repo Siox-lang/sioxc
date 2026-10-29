@@ -1661,7 +1661,9 @@ impl<'a> Lowering<'a> {
                 }
             }
             // A custom operator's result is its impl's: the checker recorded
-            // it. Without it a nested `(a xor b) nand c` had no family.
+            // it. Without it a nested `(a xor b) nand c` had no family, and a
+            // `Bool` or struct result found no impl for the next operator
+            // (`(a choose b) combine (c choose b)`, #143).
             ast::Expr::Binary {
                 op: ast::BinOp::Custom { .. },
                 span,
@@ -1671,6 +1673,9 @@ impl<'a> Lowering<'a> {
                     family: Some(family),
                     ..
                 }) => Some(self.free_fns.canonical_type_key(family)),
+                Some(crate::types::Ty::Named(definition)) => {
+                    self.free_fns.nominal_type_key(*definition)
+                }
                 _ => None,
             },
             ast::Expr::Int { .. } => Some("integer".to_string()),

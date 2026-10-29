@@ -560,10 +560,20 @@ impl<'a> Checker<'a> {
                                     _ => None,
                                 })
                             });
+                            let written = im
+                                .trait_args
+                                .get(usize::from(!unary) + skip)
+                                .and_then(GenericArg::as_type)
+                                .or_else(|| {
+                                    im.items.iter().find_map(|item| match item {
+                                        ImplItem::Fn(f) => f.ret.clone(),
+                                        _ => None,
+                                    })
+                                });
                             self.operator_sigs
                                 .entry((t.clone(), ty.clone()))
                                 .or_default()
-                                .push((input, output));
+                                .push((input, output.map(|head| (head, written))));
                         }
                         // `impl Eq<Rhs> for T` / `impl Ord<Rhs> for T`: the
                         // comparisons, keyed by their representative symbol
@@ -578,7 +588,7 @@ impl<'a> Checker<'a> {
                             self.operator_sigs
                                 .entry((symbol.to_string(), ty.clone()))
                                 .or_default()
-                                .push((input, Some("Bool".to_string())));
+                                .push((input, Some(("Bool".to_string(), None))));
                         }
                         if matches!(t.as_str(), "Index" | "IndexAssign") {
                             let arg_name = |index: usize| {

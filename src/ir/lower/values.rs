@@ -879,6 +879,15 @@ impl<'a> Lowering<'a> {
             if let Some(sig) = self.base_signal(base) {
                 return Expr::Const(self.out.signals[sig.0 as usize].width as u64);
             }
+            // A computed vector (`(a clip b)'length`, `(a + b)'length`) is as
+            // long as the checker typed it.
+            if let Some(crate::types::Ty::Array { len, .. }) =
+                self.expr_types.get(&ast::expr_span(base))
+            {
+                if *len > 0 {
+                    return Expr::Const(u64::from(*len));
+                }
+            }
             return Expr::Unknown;
         }
         // Range bounds from the declared index range (VHDL `'left`/`'right`/
@@ -903,6 +912,9 @@ impl<'a> Lowering<'a> {
             if let Some((l, r)) = local_declared
                 .or_else(|| expr_path(base).and_then(|path| self.persisted_range(&path)))
                 .or_else(signal_range)
+                // A computed one has its operator's range: `(a clip b)'left`
+                // reads the impl's declared result, `(a + b)'left` `a`'s.
+                .or_else(|| self.operand_range(base, &HashMap::new()))
             {
                 let v = match attr {
                     "left" => l,
