@@ -2699,6 +2699,18 @@ fn lower_statement(
             });
             lower_statement(&call, context, process, block)
         }
+        // `rx.data[i] = v`, `stage[i].din = v`: a runtime index into design
+        // signals, written as an `if` chain over the array's labels.
+        Stmt::Assign {
+            target,
+            value,
+            after: None,
+            span,
+            ..
+        } if dynamic_signal_write(target, value, *span, process, context).is_some() => {
+            let chain = dynamic_signal_write(target, value, *span, process, context)?;
+            lower_statement(&chain, context, process, block)
+        }
         Stmt::Assign {
             target,
             value,
@@ -8340,6 +8352,168 @@ fn symbol_encode(
     Some(result)
 }
 
+/// A write through a runtime index into an array of design signals (a
+/// child's array port, an instance array): the staged write has a form only
+/// at a constant element, so it is an `if` chain over the array's labels,
+/// each branch writing one element (#309, #310, #312). `None` for any other
+/// target.
+fn dynamic_signal_write(
+    target: &ast::Expr,
+    value: &ast::Expr,
+    span: crate::diag::Span,
+    process: &ProcessCfg,
+    context: &LoweringContext<'_>,
+) -> Option<Stmt> {
+    // The first runtime index from the root: the array it selects in.
+    fn first_dynamic(expression: &ast::Expr) -> Option<(&ast::Expr, &ast::Expr)> {
+        match expression {
+            ast::Expr::Field { base, .. } => first_dynamic(base),
+            ast::Expr::Index { base, index, .. } => first_dynamic(base).or_else(|| {
+                (literal_arithmetic(index).is_none()
+                    && !matches!(
+                        index.as_ref(),
+                        ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+                    ))
+                .then_some((base.as_ref(), index.as_ref()))
+            }),
+            _ => None,
+        }
+    }
+    // `expression` with the index at `at` replaced by `label`.
+    fn substitute(expression: &ast::Expr, at: &ast::Expr, label: &ast::Expr) -> ast::Expr {
+        match expression {
+            ast::Expr::Field { base, field, span } => ast::Expr::Field {
+                base: Box::new(substitute(base, at, label)),
+                field: field.clone(),
+                span: *span,
+            },
+            ast::Expr::Index { base, index, span } => ast::Expr::Index {
+                base: Box::new(substitute(base, at, label)),
+                index: Box::new(if std::ptr::eq(index.as_ref(), at) {
+                    label.clone()
+                } else {
+                    index.as_ref().clone()
+                }),
+                span: *span,
+            },
+            other => other.clone(),
+        }
+    }
+    let (base, index) = first_dynamic(target)?;
+    signal_reference(base, process, context)?;
+    let path = format!(
+        "{}.{}",
+        context.root_path,
+        crate::syntax::pretty::expr_string(base)
+    );
+    let range = context.design.source_layouts.get(&path)?.index_range()?;
+    let labels = layout_labels(range)?;
+    // A span of its own, so no checked type recorded for the source applies.
+    let at = ast::expr_span(index);
+    let fresh = crate::diag::Span::new(at.file, at.start..at.start);
+    let literal = |label: i64| {
+        let int = ast::Expr::Int {
+            text: label.unsigned_abs().to_string(),
+            span: fresh,
+        };
+        if label < 0 {
+            ast::Expr::Unary {
+                op: ast::UnOp::Neg,
+                rhs: Box::new(int),
+                span: fresh,
+            }
+        } else {
+            int
+        }
+    };
+    let mut chain: Option<Box<ast::ElseBranch>> = None;
+    for &label in labels.iter().rev() {
+        let branch = ast::IfStmt {
+            label: None,
+            cond: ast::Expr::Binary {
+                op: ast::BinOp::Eq,
+                lhs: Box::new(index.clone()),
+                rhs: Box::new(literal(label)),
+                span: fresh,
+            },
+            then: ast::Block {
+                stmts: vec![Stmt::Assign {
+                    label: None,
+                    target: substitute(target, index, &literal(label)),
+                    value: value.clone(),
+                    after: None,
+                    span,
+                }],
+                span,
+            },
+            else_: chain.take(),
+            span,
+        };
+        chain = Some(Box::new(ast::ElseBranch::If(branch)));
+    }
+    match *chain? {
+        ast::ElseBranch::If(head) => Some(Stmt::If(head)),
+        ast::ElseBranch::Block(_) => None,
+    }
+}
+
+/// An instance array's layout with each instance as the struct of its
+/// ports: the design records the instance itself as opaque, which has no
+/// width to select an element by (#309, #312). The ports are the first
+/// slot's, in signal order, with their own recorded layouts.
+fn instance_array_layout(
+    path: &str,
+    layout: crate::ir::SourceLayout,
+    design: &Design,
+) -> crate::ir::SourceLayout {
+    let LayoutKind::Array {
+        range: Some(range),
+        element,
+    } = &layout.kind
+    else {
+        return layout;
+    };
+    let LayoutKind::Opaque { name, .. } = &element.kind else {
+        return layout;
+    };
+    let slot = format!("{path}[{}].", range.left);
+    let mut fields: Vec<crate::ir::LayoutField> = Vec::new();
+    for signal in &design.signals {
+        let Some(rest) = signal.path.strip_prefix(&slot) else {
+            continue;
+        };
+        let port = rest.split(['.', '[']).next().unwrap_or(rest).to_string();
+        if fields.iter().any(|field| field.name == port) {
+            continue;
+        }
+        let Some(port_layout) = design.source_layouts.get(&format!("{slot}{port}")) else {
+            return layout;
+        };
+        fields.push(crate::ir::LayoutField {
+            name: port,
+            direction: None,
+            layout: port_layout.clone(),
+        });
+    }
+    if fields.is_empty() {
+        return layout;
+    }
+    crate::ir::SourceLayout {
+        span: layout.span,
+        kind: LayoutKind::Array {
+            range: Some(*range),
+            element: Box::new(crate::ir::SourceLayout {
+                span: element.span,
+                kind: LayoutKind::Struct {
+                    name: name.clone(),
+                    view: None,
+                    fields,
+                },
+            }),
+        },
+    }
+}
+
 /// The runtime array element read (`StringIndex`) a place is rooted in, and
 /// the projection over it when the place is part of the element.
 fn runtime_element_place(
@@ -11150,6 +11324,7 @@ fn value_ref_with_type_inner(
                     state: ProcessSignalState::Current,
                 }
             } else {
+                let base_source = &**base;
                 let base = value_ref(base, process, context);
                 // An element of a computed vector (`(not u)[2]`) decodes
                 // through the vector's layout, which an operator result
@@ -11305,6 +11480,20 @@ fn value_ref_with_type_inner(
                         };
                         (*owner == process.id)
                             .then(|| process.locals.get(local.0 as usize)?.layout.clone())?
+                    })
+                    // A child's array port (`rx.data`) or an instance array
+                    // (`rxs`) read as its group of signals: the layout the
+                    // design keeps for its path (#309, #310, #312).
+                    .or_else(|| {
+                        let path = format!(
+                            "{}.{}",
+                            context.root_path,
+                            crate::syntax::pretty::expr_string(base_source)
+                        );
+                        let layout = context.design.source_layouts.get(&path)?.clone();
+                        let layout = instance_array_layout(&path, layout, context.design);
+                        context.process_ir.value_layouts[base.0 as usize] = Some(layout.clone());
+                        Some(layout)
                     });
                 let bounds = base_layout
                     .as_ref()
@@ -11378,9 +11567,27 @@ fn value_ref_with_type_inner(
                 // The selected element is a source enum, not a raw bit.
                 // Named enum widths come from the elaborated declaration;
                 // Ty::bit_width alone cannot represent a Logic discriminant.
+                // An element whose type has no width of its own (an instance
+                // of an instance array, a struct element of a child's port)
+                // takes its element layout's, and that layout for the field
+                // read after it (#309, #312).
+                let element = base_layout.as_ref().and_then(|layout| match &layout.kind {
+                    LayoutKind::Array { element, .. } => Some((**element).clone()),
+                    _ => None,
+                });
                 let width = source_value_width(&kind, ty.as_ref(), process, context)
-                    .or_else(|| packed.then_some(1));
-                return push_value(span, ty, width, kind, context);
+                    .or_else(|| packed.then_some(1))
+                    .or_else(|| {
+                        element
+                            .as_ref()
+                            .and_then(crate::ir::SourceLayout::bit_width)
+                            .and_then(|width| u32::try_from(width).ok())
+                    });
+                let id = push_value(span, ty, width, kind, context);
+                if context.process_ir.value_layouts[id.0 as usize].is_none() {
+                    context.process_ir.value_layouts[id.0 as usize] = element;
+                }
+                return id;
             }
         }
         ast::Expr::Range { lo, hi, .. } => ProcessValueKind::Range {
