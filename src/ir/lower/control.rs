@@ -17,6 +17,20 @@ impl<'a> Lowering<'a> {
     /// Lower one statement under an optional guard, which accumulates as
     /// branches nest.
     pub(super) fn lower_stmt_at(&mut self, stmt: &ast::Stmt, cond: Option<Expr>) {
+        // `dout[i][0..1] = v`: a slice of a row a runtime index selects is
+        // written row by row, each a constant-row slice write (#320).
+        if let ast::Stmt::Assign {
+            target,
+            value,
+            after: None,
+            span,
+            ..
+        } = stmt
+        {
+            if let Some(chain) = self.runtime_row_slice_write(target, value, *span) {
+                return self.lower_stmt_at(&chain, cond);
+            }
+        }
         // `sub = arr[2..]` is `sub = arr[2..3]` (#296).
         if let ast::Stmt::Assign {
             label,
@@ -956,6 +970,23 @@ impl<'a> Lowering<'a> {
                 self.report_bad_indices(bad);
             }
             match s {
+                // `mem[i][0..1] = v` under a clock (#320).
+                ast::Stmt::Assign {
+                    target,
+                    value,
+                    after: None,
+                    span,
+                    ..
+                } if self.runtime_row_slice_write(target, value, *span).is_some() => {
+                    let chain = ast::Block {
+                        stmts: self
+                            .runtime_row_slice_write(target, value, *span)
+                            .into_iter()
+                            .collect(),
+                        span: *span,
+                    };
+                    self.lower_event_block(&chain, cond.clone(), out);
+                }
                 ast::Stmt::Assign {
                     target,
                     value,
@@ -1336,4 +1367,52 @@ pub(super) fn tuple_literal_parts(target: &ast::Expr, value: &ast::Expr) -> Opti
             })
             .collect(),
     )
+}
+
+impl Lowering<'_> {
+    /// `target = value` as a chain over the rows of the array a runtime index
+    /// selects in, when what is written is a slice of that row (#320).
+    fn runtime_row_slice_write(
+        &self,
+        target: &ast::Expr,
+        value: &ast::Expr,
+        span: crate::diag::Span,
+    ) -> Option<ast::Stmt> {
+        let ast::Expr::Index {
+            base: row,
+            index: slice,
+            ..
+        } = target
+        else {
+            return None;
+        };
+        if !matches!(
+            slice.as_ref(),
+            ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+        ) {
+            return None;
+        }
+        // The first runtime index from the root.
+        let mut steps = Vec::new();
+        let mut walk = row.as_ref();
+        loop {
+            match walk {
+                ast::Expr::Field { base, .. } => walk = base,
+                ast::Expr::Index { base, index, .. } => {
+                    steps.push((base.as_ref(), index.as_ref()));
+                    walk = base;
+                }
+                _ => break,
+            }
+        }
+        let (array, index) = steps.into_iter().rev().find(|(_, index)| {
+            !matches!(
+                index,
+                ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+            ) && self.eval_const(index, &self.cur_env).is_none()
+        })?;
+        let path = self.folded_elem_path(array).or_else(|| expr_path(array))?;
+        let labels = self.local_array.get(&path)?.clone();
+        crate::ir::lower_helpers::label_chain(target, value, index, &labels, span)
+    }
 }

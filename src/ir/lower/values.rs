@@ -656,7 +656,10 @@ impl<'a> Lowering<'a> {
                 _ => break,
             }
         }
-        if std::ptr::eq(base, e) || !matches!(base, ast::Expr::Call { .. }) {
+        // A call's result, or an array literal's elements (`[a, b][i]`, #318).
+        if std::ptr::eq(base, e)
+            || !matches!(base, ast::Expr::Call { .. } | ast::Expr::Array { .. })
+        {
             return None;
         }
         // Fields and elements (`split3(x)[1]`, `mk(x).v[1]`, `table(x)[sel]`):
@@ -716,7 +719,21 @@ impl<'a> Lowering<'a> {
         segments.reverse();
         let joined = segments.concat();
         let path = joined.strip_prefix('.').unwrap_or(&joined).to_string();
-        let Val::Fields(fields) = self.lower_val_env(base, env) else {
+        let value = match base {
+            ast::Expr::Array { elems, .. } => {
+                let mut fields = Vec::new();
+                for (position, element) in elems.iter().enumerate() {
+                    Self::prefix_block_value(
+                        &format!("[{position}]"),
+                        self.lower_val_env(element, env),
+                        &mut fields,
+                    );
+                }
+                Val::Fields(fields)
+            }
+            _ => self.lower_val_env(base, env),
+        };
+        let Val::Fields(fields) = value else {
             return None;
         };
         if let Some(index) = runtime {

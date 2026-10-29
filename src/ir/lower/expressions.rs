@@ -8,6 +8,9 @@ impl<'a> Lowering<'a> {
         if let Some(Val::Scalar(value)) = self.converted_value(e, &HashMap::new()) {
             return value;
         }
+        if let Some(value) = self.computed_bit(e) {
+            return value;
+        }
         if let Some(value) = self.promoted_operand(e, &HashMap::new()) {
             return value;
         }
@@ -1172,12 +1175,72 @@ impl<'a> Lowering<'a> {
     /// Constant source bounds translated from declared labels to packed
     /// storage positions. Arrays are excluded because their elements are
     /// separate signals rather than bits of one scalar.
+    /// A runtime bit of a computed packed value (`(a + b)[i]`, `f()[i]`):
+    /// the value shifted down to the bit, as a signal's runtime bit is
+    /// (#316). A named vector reads through its own signal instead.
+    pub(super) fn computed_bit(&self, e: &ast::Expr) -> Option<Expr> {
+        let ast::Expr::Index { base, index, .. } = e else {
+            return None;
+        };
+        if expr_path(base).is_some()
+            || matches!(
+                index.as_ref(),
+                ast::Expr::Range { .. } | ast::Expr::PartialRange { .. }
+            )
+            || self.eval_const(index, &self.cur_env).is_some()
+        {
+            return None;
+        }
+        let Some(crate::types::Ty::Array {
+            family: Some(_),
+            len,
+            low,
+            ..
+        }) = self.expr_types.get(&ast::expr_span(base))
+        else {
+            return None;
+        };
+        let labels: Vec<i64> = (0..i64::from(*len)).map(|offset| low + offset).collect();
+        let span = ast::expr_span(index);
+        let checked = self.checked_runtime_index_with_bounds(
+            index,
+            &labels,
+            low + i64::from(*len) - 1,
+            *low,
+        )?;
+        let position = self.source_binary(
+            BinOp::Sub,
+            &checked,
+            &self.source_index_label(*low, span),
+            span,
+        );
+        let position = self.bind_source_scalar(position, span, crate::types::Ty::Integer);
+        let value = self.lower_expr(base);
+        let shifted = self.source_binary(BinOp::Shr, &value, &position, span);
+        Some(self.source_slice(&shifted, 0, 0, span))
+    }
+
     pub(super) fn storage_slice_bounds(
         &self,
         base: &ast::Expr,
         index: &ast::Expr,
     ) -> Option<(u32, u32)> {
         let named = expr_path(base).and_then(|path| {
+            // An unpacked array's elements are signals of their own, not
+            // bits of one: `arr[0..1]` is no bit slice (#314).
+            let unpacked = |layout: &SourceLayout| {
+                matches!(
+                    layout.kind,
+                    LayoutKind::Array { .. } | LayoutKind::Struct { .. }
+                )
+            };
+            if self.persisted_layout(&path).is_some_and(unpacked)
+                || self
+                    .block_local_binding(base)
+                    .is_some_and(|binding| matches!(binding.value, Val::Fields(_)))
+            {
+                return None;
+            }
             let range = self
                 .block_local_binding(base)
                 .and_then(|binding| self.declared_range(&binding.ty, &self.cur_env))

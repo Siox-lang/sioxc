@@ -303,9 +303,17 @@ pub fn flatten_slice_chains(modules: &mut [Module]) {
                 },
                 _ => return true,
             },
+            // A runtime index counts the same way: `arr[1..3][i]` is
+            // `arr[1 + i]` (#315). ponytail: checked against the array's
+            // bounds, not the slice's.
             single => match literal(single) {
                 Some(position) => at(position),
-                None => return true,
+                None => Expr::Binary {
+                    op: if step > 0 { BinOp::Add } else { BinOp::Sub },
+                    lhs: Box::new(at(0)),
+                    rhs: Box::new(single.clone()),
+                    span: *span,
+                },
             },
         };
         *e = Expr::Index {

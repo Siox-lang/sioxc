@@ -8379,26 +8379,6 @@ fn dynamic_signal_write(
             _ => None,
         }
     }
-    // `expression` with the index at `at` replaced by `label`.
-    fn substitute(expression: &ast::Expr, at: &ast::Expr, label: &ast::Expr) -> ast::Expr {
-        match expression {
-            ast::Expr::Field { base, field, span } => ast::Expr::Field {
-                base: Box::new(substitute(base, at, label)),
-                field: field.clone(),
-                span: *span,
-            },
-            ast::Expr::Index { base, index, span } => ast::Expr::Index {
-                base: Box::new(substitute(base, at, label)),
-                index: Box::new(if std::ptr::eq(index.as_ref(), at) {
-                    label.clone()
-                } else {
-                    index.as_ref().clone()
-                }),
-                span: *span,
-            },
-            other => other.clone(),
-        }
-    }
     let (base, index) = first_dynamic(target)?;
     signal_reference(base, process, context)?;
     let path = format!(
@@ -8408,53 +8388,7 @@ fn dynamic_signal_write(
     );
     let range = context.design.source_layouts.get(&path)?.index_range()?;
     let labels = layout_labels(range)?;
-    // A span of its own, so no checked type recorded for the source applies.
-    let at = ast::expr_span(index);
-    let fresh = crate::diag::Span::new(at.file, at.start..at.start);
-    let literal = |label: i64| {
-        let int = ast::Expr::Int {
-            text: label.unsigned_abs().to_string(),
-            span: fresh,
-        };
-        if label < 0 {
-            ast::Expr::Unary {
-                op: ast::UnOp::Neg,
-                rhs: Box::new(int),
-                span: fresh,
-            }
-        } else {
-            int
-        }
-    };
-    let mut chain: Option<Box<ast::ElseBranch>> = None;
-    for &label in labels.iter().rev() {
-        let branch = ast::IfStmt {
-            label: None,
-            cond: ast::Expr::Binary {
-                op: ast::BinOp::Eq,
-                lhs: Box::new(index.clone()),
-                rhs: Box::new(literal(label)),
-                span: fresh,
-            },
-            then: ast::Block {
-                stmts: vec![Stmt::Assign {
-                    label: None,
-                    target: substitute(target, index, &literal(label)),
-                    value: value.clone(),
-                    after: None,
-                    span,
-                }],
-                span,
-            },
-            else_: chain.take(),
-            span,
-        };
-        chain = Some(Box::new(ast::ElseBranch::If(branch)));
-    }
-    match *chain? {
-        ast::ElseBranch::If(head) => Some(Stmt::If(head)),
-        ast::ElseBranch::Block(_) => None,
-    }
+    crate::ir::lower_helpers::label_chain(target, value, index, &labels, span)
 }
 
 /// An instance array's layout with each instance as the struct of its
@@ -11358,6 +11292,36 @@ fn value_ref_with_type_inner(
                         }
                     }
                 }
+                // `arr[lo..hi]` with bounds known only when the test runs, of
+                // a fixed array: a runtime array of its elements, sliced as
+                // one is (#317). Positions count from the array's first label.
+                let runtime_bounds = match index.as_ref() {
+                    ast::Expr::Range { lo, hi, .. } => {
+                        literal_arithmetic(lo).is_none() || literal_arithmetic(hi).is_none()
+                    }
+                    ast::Expr::PartialRange { lo, hi, .. } => [lo, hi]
+                        .into_iter()
+                        .flatten()
+                        .any(|bound| literal_arithmetic(bound).is_none()),
+                    _ => false,
+                };
+                let base = match process_value_type(base, context) {
+                    Some(crate::types::Ty::Array {
+                        elem,
+                        len,
+                        family: None,
+                        ..
+                    }) if runtime_bounds && len > 0 => {
+                        let runtime = crate::types::Ty::Array {
+                            elem,
+                            len: 0,
+                            family: None,
+                            low: 0,
+                        };
+                        runtime_array_copy(base, Some(&runtime), context)
+                    }
+                    _ => base,
+                };
                 if process_value_is_runtime_string(base, process, context) {
                     // `s[1..3]`: a new string (or array) of those elements.
                     // As an index, the range had no native form (#160).
